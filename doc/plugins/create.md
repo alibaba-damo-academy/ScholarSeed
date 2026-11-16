@@ -20,11 +20,13 @@ This tutorial builds **paper-reading-notes**. A user supplies a paper or excerpt
 
 Send this in a ScholarSeed conversation:
 
-> Use plugin-create to create a paper-reading-notes plugin. After the user supplies a paper or excerpt, show a card asking for a reading focus: Understand the method or Check the evidence. For method notes, summarize the research question, method steps, and applicable conditions. For evidence notes, summarize conclusions, supporting evidence, and limitations. Include page or paragraph locations and mark missing information as not stated. Generate the source, validate and package the ZIP, then provide an installation card.
+> Use plugin-create to create a version comparison plugin. Compare the supplied versions and show the item, earlier value, revised value and source in a fixed OpenUI table. Generate a data schema, validate and package the ZIP, then provide an installation card.
 
 The AI generates the Skill, descriptor, component, and scenarios. Review the source and reports before confirming installation. To revise it, ask `plugin-create` for changes in the same conversation; do not create a second plugin with the same identity.
 
 ## Write It Yourself
+
+The hand-written paper-reading example below uses the existing JavaScript plugin SDK. `plugin-create` does not depend on that SDK: it uses fixed OpenUI layouts for compatible results and checks native interaction and workbench support separately.
 
 In a Python environment with the target ScholarSeed backend installed, obtain the required `host` value:
 

@@ -4,10 +4,7 @@
 @source '../components/primitive/Iconfont';
 @source '../components/business/Destination.tsx';
 @source '../components/business/Options.tsx';
-@source '../features/literature/References.tsx';
 @source '../features/literature/Summary.tsx';
-@source '../features/literature/Downloads.tsx';
-@source '../features/literature/Delivery.tsx';
 @source '../features/literature/Review.tsx';
 @source '../features/literature/DestinationTree.tsx';
 @source '../features/literature/Choices.tsx';

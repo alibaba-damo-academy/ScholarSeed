@@ -42,7 +42,7 @@ class MigrationEntry:
 
     #: 相对项目根的源位置 (顶层条目名)。
     source: str
-    #: 相对项目根的目标位置 (`resources/x` 或 `literature/x`)。
+    #: 相对项目根的资料目标位置 (`resources/x`)。
     target: str
     #: 字节数 (目录为递归求和)。给用户一个「要搬多少」的量级。
     size: int
@@ -120,24 +120,19 @@ class MigrationService:
             return MigrationPlan(project.id, project.name, str(root), (), blocked="already_managed")
 
         resources_root = root / MANAGED_RESOURCES_ROOT_RELATIVE
-        literature_root = root / MANAGED_LITERATURE_ROOT_RELATIVE
         entries: list[MigrationEntry] = []
         for item in sorted(root.iterdir(), key=lambda path: path.name.lower()):
             if item.name in {
                 MANAGED_RESOURCES_ROOT_RELATIVE,
                 MANAGED_LITERATURE_ROOT_RELATIVE,
+                LITERATURE_ROOT_RELATIVE,
                 PROJECT_STATE_DIRNAME,
             }:
                 continue
             if not visible(item.name):
                 # 隐藏文件与产品状态目录留在原处: 它们不是用户的资料。
                 continue
-            # LEGACY 的 `文献` 目录整体成为 `literature`; 其余顶层条目进 `resources`。
-            if item.name == LITERATURE_ROOT_RELATIVE and item.is_dir():
-                target_root, target_name = literature_root, ""
-            else:
-                target_root, target_name = resources_root, item.name
-            target = target_root if not target_name else target_root / target_name
+            target = resources_root / item.name
             entries.append(
                 MigrationEntry(
                     source=item.name,
@@ -159,7 +154,7 @@ class MigrationService:
     ) -> MigrationOutcome:
         """执行迁移。`skip` 里的条目保持原位 (用户选了「暂不迁移」)。
 
-        只有**全部**计划条目都成功搬完时才把 layout 改成 MANAGED: 部分迁移的
+        全部计划条目搬完且没有保留旧文献根时才把 layout 改成 MANAGED: 部分迁移的
         项目仍按 LEGACY 解析, 于是留在根下的资料照样看得见 —— 否则用户会看到
         一个「半空」的资料库, 而文件其实还在磁盘上。
         """
@@ -203,10 +198,13 @@ class MigrationService:
         # 只有「计划里每一项都搬完了」才转 MANAGED。用户选了暂不迁移的条目同样
         # 算没搬完 —— 它们还铺在项目根下, 按 MANAGED 解析就会从资料树里消失。
         remaining = [entry.source for entry in plan.entries if entry.source not in set(moved)]
-        layout = ProjectLayout.MANAGED if not remaining else project.layout
+        layout = (
+            ProjectLayout.MANAGED
+            if not remaining and not (root / LITERATURE_ROOT_RELATIVE).exists()
+            else project.layout
+        )
         if layout is ProjectLayout.MANAGED:
-            for relative in (MANAGED_RESOURCES_ROOT_RELATIVE, MANAGED_LITERATURE_ROOT_RELATIVE):
-                (root / relative).mkdir(parents=True, exist_ok=True)
+            (root / MANAGED_RESOURCES_ROOT_RELATIVE).mkdir(parents=True, exist_ok=True)
             self._catalog.set_layout(project.id, ProjectLayout.MANAGED.value)
         self._catalog.record(
             AUDIT_MIGRATE,

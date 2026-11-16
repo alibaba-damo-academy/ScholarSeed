@@ -7,6 +7,7 @@ import sqlite3
 import time
 from contextlib import closing
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from service.assistant.domain.model import AnswerAnnotation
@@ -1480,6 +1481,45 @@ class AssistantStore:
                 connection.execute("ROLLBACK")
                 raise
         return snapshot
+
+    def inherit_snapshot(
+        self,
+        source_session_id: str,
+        target_session_id: str,
+        snapshot_id: str,
+        connection: sqlite3.Connection,
+    ) -> str | None:
+        validate_transaction(connection, self._database)
+        row = connection.execute(
+            f"""SELECT snapshot.* FROM {ASSISTANT_SNAPSHOT_TABLE} AS snapshot
+            JOIN {SESSION_CATALOG_TABLE} AS source ON source.session_id=snapshot.session_id
+            JOIN {SESSION_CATALOG_TABLE} AS target ON target.session_id=?
+            WHERE snapshot.session_id=? AND snapshot.snapshot_id=?
+              AND source.principal_id=target.principal_id
+              AND source.project_path IS target.project_path AND source.archived=0""",
+            (target_session_id, source_session_id, snapshot_id),
+        ).fetchone()
+        if row is None:
+            return None
+        inherited_id = sha256(f"{target_session_id}\0{snapshot_id}".encode()).hexdigest()
+        existing = self._snapshot_by_client(connection, target_session_id, row["client_turn_id"])
+        if existing is not None:
+            if existing.snapshot_id != inherited_id:
+                raise AssistantStateConflictError("assistant fork snapshot conflict")
+            return inherited_id
+        values = dict(row)
+        values.update(snapshot_id=inherited_id, session_id=target_session_id)
+        connection.execute(
+            f"INSERT INTO {ASSISTANT_SNAPSHOT_TABLE} ({', '.join(SNAPSHOT_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in SNAPSHOT_COLUMNS)})",
+            tuple(values[column] for column in SNAPSHOT_COLUMNS),
+        )
+        connection.execute(
+            f"INSERT INTO {ASSISTANT_ITEM_TABLE} ({', '.join(ITEM_COLUMNS)}) "
+            f"SELECT ?, {', '.join(ITEM_COLUMNS[1:])} FROM {ASSISTANT_ITEM_TABLE} WHERE snapshot_id=?",
+            (inherited_id, snapshot_id),
+        )
+        return inherited_id
 
     @classmethod
     def _snapshot_by_client(

@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import { useState } from 'react'
 import { I18nextProvider } from 'react-i18next'
@@ -42,7 +43,7 @@ Object.assign(window.scholarseed, {
   },
 })
 const localization = createLocalization('zh', resources, { report: () => undefined })
-export function Fixture(): JSX.Element {
+export function Fixture(): React.JSX.Element {
   const [visible, setVisible] = useState(true)
   const [, rerender] = useState(0)
   Object.assign(window, {

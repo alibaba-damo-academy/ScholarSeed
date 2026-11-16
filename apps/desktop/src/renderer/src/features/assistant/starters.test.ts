@@ -61,6 +61,21 @@ test('skill references display friendly titles while retaining invocation identi
   }
 })
 
+test('localized skill references retain invocation identity across language changes', () => {
+  const selected = skill({
+    display_name: 'Precise Literature Search',
+    display_names: { zh: '精确文献检索' },
+    version: '1.0.27',
+  })
+  const chinese = resolveTaskStarterSkill([selected], selected.name, 'zh-CN').reference
+  const english = resolveTaskStarterSkill([selected], selected.name, 'en').reference
+  assert.ok(chinese)
+  assert.ok(english)
+  assert.equal(chinese.title, '精确文献检索')
+  assert.equal(english.title, 'Precise Literature Search')
+  assert.deepEqual({ ...chinese, title: '' }, { ...english, title: '' })
+})
+
 test('all research starters preserve Windows absolute skill paths', () => {
   for (const starter of AI_TASK_STARTERS) {
     for (const root of [

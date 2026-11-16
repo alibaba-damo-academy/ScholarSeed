@@ -6,7 +6,7 @@ import sys
 import subprocess
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
-from platform_runtime import utf8_env, product_command
+from platform_runtime import PYTHON_REQUIREMENT, supports_python, utf8_env, product_command
 
 
 def main():
@@ -20,8 +20,8 @@ def main():
     python=binding.get('python') or sys.executable
     if not Path(python).is_file():
         raise SystemExit('bound Python is missing; restore the environment')
-    if sys.version_info[:2]!=(3,12):
-        raise SystemExit('workspace requires Python 3.12.x')
+    if not supports_python(sys.version_info):
+        raise SystemExit(f'workspace requires {PYTHON_REQUIREMENT}')
     for i,arg in enumerate(args):
         supplied=args[i+1] if arg=='--workspace' and i+1<len(args) else arg.split('=',1)[1] if arg.startswith('--workspace=') else None
         if supplied is not None and Path(supplied).resolve()!=ws:

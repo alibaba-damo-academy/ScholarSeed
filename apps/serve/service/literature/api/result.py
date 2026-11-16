@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Literal
+from hashlib import sha256
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN, HTTP_404_NOT_FOUND
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_403_FORBIDDEN,
+    HTTP_404_NOT_FOUND,
+    HTTP_409_CONFLICT,
+)
 
 from service.assistant.service.authorization import (
     PRECISE_SEARCH_FULLTEXT,
@@ -17,6 +24,11 @@ from service.assistant.service.authorization import (
     task_authorization_policy,
 )
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
+from service.chat.constants import (
+    PRODUCT_DECISION_SOURCE,
+    PRODUCT_DECISION_USER,
+    PRODUCT_INTERACTION_MANUAL,
+)
 from service.chat.persistence.catalog import (
     SessionAccessError,
     SessionCatalogStore,
@@ -42,11 +54,25 @@ from service.literature.api.gate import FulltextGate, publish_checkpoint_card
 from service.literature.persistence.files import scoped_relative
 from service.literature.service.agentic import project_agentic_papers
 from service.literature.service.checkpoint import agentic_checkpoint, policy_for
+from service.literature.service.cited import (
+    CITATIONS_CHECKPOINT,
+    CITATIONS_ORIGIN,
+    prepare_citations,
+    project_citations,
+)
+from service.literature.service.holdings import (
+    HELD_UNSUPPORTED,
+    HeldAttachmentRequest,
+    HoldingsRequest,
+    admit_held_fulltexts,
+    session_holdings,
+)
 from service.literature.service.receipt import issue_receipt
 from service.literature.service.result import (
     AGENTIC_SEARCH_ORIGIN,
     ARTIFACT_REFERENCE_FIELDS,
     LITERATURE_REVIEW_ORIGINS,
+    PRECISE_SEARCH_ORIGIN,
     SEARCH_CARD,
     SELECTION_NOT_PREPARED,
     AuthorizedFulltext,
@@ -65,15 +91,27 @@ from service.literature.service.review import (
 from service.literature.service.status import ResultStatusRequest, ResultStatusService
 from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.bridge import (
+    CONFIRM_SEARCH_START_ROUTE,
     LITERATURE_RESULT_ROUTE,
     ArtifactPublishFailure,
     DisplayCardContent,
     LiteratureResultPublish,
+    LiteratureSearchStart,
+    LiteratureSearchStartResult,
 )
+from service.platform.citations import PDF_INDEX_STATE
 from service.platform.context import FulltextBindingScope, ProductTaskType
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 RESULT_STATUS_ROUTE = "/api/sessions/{session_id}/literature/result-status"
+FULLTEXT_HOLDINGS_ROUTE = (
+    "/api/sessions/{session_id}/literature/results/{card_id}/fulltext-holdings"
+)
+HELD_ATTACHMENTS_ROUTE = "/api/sessions/{session_id}/literature/results/{card_id}/attachments/held"
+RESULT_NOT_FOUND = "literature_result_not_found"
+SEARCH_START_PRESENTATION = "precise-search-start"
+SEARCH_START: Literal["start"] = "start"
+SEARCH_DEFER: Literal["defer"] = "defer"
+SESSION_WORKDIR_UNAVAILABLE = "literature_session_workdir_unavailable"
 RESULT_REPORT_ROLE = "supporting"
 AGENTIC_CANDIDATES_CHECKPOINT = "candidates"
 AGENTIC_METADATA_CHECKPOINT = "metadata"
@@ -82,6 +120,14 @@ FINAL_DELIVERY_CHECKPOINT: Literal["final"] = "final"
 SELECTION_CHECKPOINT: Literal["selection"] = "selection"
 PRECISE_TASK_CHECKPOINTS = frozenset((SELECTION_CHECKPOINT, FINAL_DELIVERY_CHECKPOINT))
 FULLTEXT_AUTHORIZATION_TASK_REQUIRED = "fulltext_authorization_task_required"
+
+
+class ReauthorizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assistant_context_revision: int = Field(ge=0, strict=True)
+
+
 RESULT_ARTIFACT_INVALID = "literature_result_artifact_invalid"
 RESULT_PUBLICATION_FAILED = "literature_result_publication_failed"
 SELECTION_PREPARE_ACTION = "prepare and register the confirmed selection before retrying"
@@ -100,6 +146,30 @@ UNKNOWN_CHECKPOINT = "unknown"
 logger = logging.getLogger(__name__)
 
 
+def search_card_content(
+    events: ProductEventStore | None, session_id: str, card_id: str
+) -> dict[str, Any]:
+    """One published literature-search card's content, exactly as the product stored it."""
+    if events is None:
+        raise ValueError(RESULT_NOT_FOUND)
+    card = next(
+        (
+            card
+            for card in session_cards(events, session_id, SEARCH_CARD)
+            if card.get("card_id") == card_id
+        ),
+        None,
+    )
+    if card is None:
+        raise ValueError(RESULT_NOT_FOUND)
+    return dict(card["content"])
+
+
+def request_pdf_indexes(request: Request) -> Any:
+    """The process-wide full-text index port, when this deployment wires one."""
+    return getattr(request.app.state, PDF_INDEX_STATE, None)
+
+
 def register_result_routes(
     app: FastAPI,
     sessions: SessionService,
@@ -114,6 +184,47 @@ def register_result_routes(
 ) -> APIRouter:
     router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
 
+    @router.post(CONFIRM_SEARCH_START_ROUTE)
+    async def confirm_search_start(request: Request) -> JSONResponse:
+        live = bridge_caller(request, sessions)
+        if live is None or not (turn_id := live.publication_turn_id):
+            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
+        try:
+            LiteratureSearchStart.model_validate_json(await request.body())
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "invalid_search_start_request"}, HTTP_400_BAD_REQUEST
+            )
+        if sessions.bridge_caller(live.id) is not live or live.publication_turn_id != turn_id:
+            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
+        identity = sha256(json.dumps([live.id, turn_id]).encode()).hexdigest()
+        request_id = f"{SEARCH_START_PRESENTATION}:{identity}"
+        decision = await live.interactions.request_product_input(
+            {
+                "id": request_id,
+                "header": "Confirm literature search",
+                "question": "Start the literature search?",
+                "options": [{"label": action} for action in (SEARCH_START, SEARCH_DEFER)],
+                "presentation": {"kind": SEARCH_START_PRESENTATION},
+                PRODUCT_INTERACTION_MANUAL: True,
+            },
+            turn_id=turn_id,
+            activity=live.bridge_activity,
+        )
+        start = (
+            sessions.bridge_caller(live.id) is live
+            and live.publication_turn_id == turn_id
+            and decision.get(PRODUCT_DECISION_SOURCE) == PRODUCT_DECISION_USER
+            and not decision.get("cancelled")
+            and not decision.get("timed_out")
+            and not decision.get("free_text")
+            and decision.get("answers") == {request_id: SEARCH_START}
+        )
+        result = LiteratureSearchStartResult(
+            ok=True, disposition=SEARCH_START if start else SEARCH_DEFER
+        )
+        return JSONResponse(result.model_dump())
+
     @router.post(LITERATURE_RESULT_ROUTE)
     async def publish_result(request: Request) -> JSONResponse:
         live = bridge_caller(request, sessions)
@@ -121,13 +232,7 @@ def register_result_routes(
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         turn_id = live.publication_turn_id
         checkpoint = UNKNOWN_CHECKPOINT
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"}, HTTP_400_BAD_REQUEST
-                )
+        raw = await request.body()
         try:
             command = LiteratureResultPublish.model_validate(json.loads(raw))
             checkpoint = command.checkpoint
@@ -179,13 +284,18 @@ def register_result_routes(
             result_checkpoint: Literal["search", "selection"] = (
                 SELECTION_CHECKPOINT if command.checkpoint == SELECTION_CHECKPOINT else "search"
             )
-            prepared = await activities.to_thread(
-                ActivityDomain.BRIDGE,
-                prepare_result,
-                live.runtime_workdir,
-                command.run,
-                result_checkpoint,
-            )
+            if command.checkpoint == CITATIONS_CHECKPOINT:
+                prepared = await activities.to_thread(
+                    ActivityDomain.BRIDGE, prepare_citations, live.runtime_workdir, command.run
+                )
+            else:
+                prepared = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    prepare_result,
+                    live.runtime_workdir,
+                    command.run,
+                    result_checkpoint,
+                )
             if sessions.bridge_caller(live.id) is not live or live.publication_turn_id != turn_id:
                 return JSONResponse(
                     {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
@@ -218,7 +328,7 @@ def register_result_routes(
                 return JSONResponse(
                     {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
                 )
-            content = prepared.card.model_copy(
+            resultContent = prepared.card.model_copy(
                 update={
                     "session_id": live.id,
                     "report": {key: report.get(key) for key in ARTIFACT_REFERENCE_FIELDS},
@@ -231,7 +341,7 @@ def register_result_routes(
                 }
             ).model_dump(mode="json")
             card = await live.display_card(
-                SEARCH_CARD, DisplayCardContent(data=content), turn_id=turn_id
+                SEARCH_CARD, DisplayCardContent(data=resultContent), turn_id=turn_id
             )
             authorization = None
             if command.checkpoint == SELECTION_CHECKPOINT and prepared.authorization_refs:
@@ -251,6 +361,7 @@ def register_result_routes(
                         {"id": source.ref_id, "label": source.title, "description": ""}
                         for source in prepared.authorization_sources
                     ),
+                    result_card_id=str(card["card_id"]),
                 )
                 authorization = {
                     "authorization_type": challenge.authorization_type,
@@ -414,10 +525,12 @@ def register_result_routes(
             snapshot_id=live.active_assistant_snapshot_id,
             authorization_type=RESEARCH_IDEA_FULLTEXT,
             refs=content.refs,
-            papers=tuple(
-                {"id": source.ref_id, "label": source.title} for source in content.sources
-            ),
             source_count=len(content.sources),
+            papers=tuple(
+                {"id": source.ref_id, "label": source.title, "description": ""}
+                for source in content.sources
+            ),
+            result_card_id=str(card["card_id"]),
         )
         return JSONResponse(
             {
@@ -450,6 +563,46 @@ def register_result_routes(
 
     read_admission = [Depends(admit_read)]
 
+    @app.post(
+        "/api/sessions/{session_id}/literature/authorizations/{question_id}/retry",
+        dependencies=read_admission,
+    )
+    async def retry_authorization(
+        session_id: str, question_id: str, command: ReauthorizationRequest, request: Request
+    ) -> dict:
+        try:
+            catalog.require(session_id, SessionPrincipal(request_owner_id(request)))
+        except SessionAccessError as error:
+            raise HTTPException(HTTP_404_NOT_FOUND, "session_not_found") from error
+        record = catalog.get(session_id)
+        if record is None or record.archived or sessions.is_readonly(session_id):
+            raise HTTPException(HTTP_409_CONFLICT, "session_readonly")
+        live = sessions.interaction_session(session_id)
+        if live is None or fulltext_gate is None:
+            raise HTTPException(HTTP_409_CONFLICT, "session_not_live")
+        try:
+            return await fulltext_gate.retry(
+                live, question_id, context_revision=command.assistant_context_revision
+            )
+        except (ValueError, SessionAccessError) as error:
+            raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+
+    @app.get(
+        "/api/sessions/{session_id}/literature/authorizations/{question_id}/retry",
+        dependencies=read_admission,
+    )
+    async def retry_authorization_status(
+        session_id: str, question_id: str, request: Request
+    ) -> dict:
+        try:
+            catalog.require(session_id, SessionPrincipal(request_owner_id(request)))
+            if authorizer is None:
+                raise ValueError("fulltext_authorization_unavailable")
+            renewed = authorizer.renewal(session_id, question_id)
+        except (ValueError, SessionAccessError) as error:
+            raise HTTPException(HTTP_404_NOT_FOUND, "fulltext_reauthorization_not_found") from error
+        return {"ok": True, "request_id": renewed.question_id}
+
     @app.post(RESULT_STATUS_ROUTE, dependencies=read_admission)
     async def result_status(
         session_id: str, command: ResultStatusRequest, request: Request
@@ -463,26 +616,84 @@ def register_result_routes(
         )
         return {"items": result}
 
+    def precise_card_run(
+        session_id: str, card_id: str, request: Request
+    ) -> tuple[dict[str, Any], str]:
+        """Resolve one published precise-search card and the workdir holding its run.
+
+        只有精确检索卡片能走「元信息和全文」: 别的结果卡片既没有产品托管的字节, 也没有
+        技能自己下载的 run 目录 PDF 可复用, 所以这里直接拒绝, 界面也不会给出这个选项。
+        """
+        try:
+            catalog.require(session_id, SessionPrincipal(request_owner_id(request)))
+        except SessionAccessError as error:
+            raise HTTPException(HTTP_404_NOT_FOUND, "session_not_found") from error
+        try:
+            content = search_card_content(events, session_id, card_id)
+        except ValueError as error:
+            raise HTTPException(HTTP_404_NOT_FOUND, str(error)) from error
+        if content.get("origin") != PRECISE_SEARCH_ORIGIN:
+            raise HTTPException(HTTP_400_BAD_REQUEST, HELD_UNSUPPORTED)
+        record = catalog.get(session_id)
+        workdir = record.runtime_workdir_path if record is not None else None
+        if workdir is None:
+            raise HTTPException(HTTP_409_CONFLICT, SESSION_WORKDIR_UNAVAILABLE)
+        return content, workdir
+
+    @app.post(FULLTEXT_HOLDINGS_ROUTE, dependencies=read_admission)
+    async def fulltext_holdings(
+        session_id: str, card_id: str, command: HoldingsRequest, request: Request
+    ) -> dict:
+        """Which selected papers already have full-text bytes the product can reuse."""
+        card, workdir = precise_card_run(session_id, card_id, request)
+        held = await activities.to_thread(
+            ActivityDomain.LITERATURE,
+            session_holdings,
+            workdir,
+            session_id,
+            str(card.get("run_id") or ""),
+            [paper.id for paper in command.papers],
+        )
+        return {
+            "items": {
+                paper_id: {"storage": holding.storage, "name": holding.name}
+                for paper_id, holding in held.items()
+            }
+        }
+
+    @app.post(HELD_ATTACHMENTS_ROUTE, dependencies=read_admission)
+    async def attach_held_fulltexts(
+        session_id: str, card_id: str, command: HeldAttachmentRequest, request: Request
+    ) -> dict:
+        """Admit already-downloaded PDFs into the library; never download them again."""
+        card, workdir = precise_card_run(session_id, card_id, request)
+        outcomes = await activities.to_thread(
+            ActivityDomain.LITERATURE,
+            admit_held_fulltexts,
+            workdir,
+            session_id,
+            str(card.get("run_id") or ""),
+            command.papers,
+            pdf_indexes=request_pdf_indexes(request),
+        )
+        items = [outcome.payload() for outcome in outcomes]
+        return {
+            "items": items,
+            "acquired": sum(item["attached"] for item in items),
+            "fulltext": sum(item["fulltext"] for item in items),
+            "failed": sum(1 for item in items if not item["fulltext"]),
+        }
+
     @app.get("/api/sessions/{session_id}/literature/results/{card_id}", dependencies=read_admission)
     async def read_result(session_id: str, card_id: str, request: Request) -> dict:
         try:
             catalog.require(session_id, SessionPrincipal(request_owner_id(request)))
         except SessionAccessError as error:
             raise HTTPException(HTTP_404_NOT_FOUND, "session_not_found") from error
-        if events is None or artifacts is None:
-            raise HTTPException(HTTP_404_NOT_FOUND, "literature_result_not_found")
-        card = next(
-            (
-                card
-                for card in session_cards(events, session_id, SEARCH_CARD)
-                if card.get("card_id") == card_id
-            ),
-            None,
-        )
-        if card is None:
-            raise HTTPException(HTTP_404_NOT_FOUND, "literature_result_not_found")
-        value = dict(card["content"])
+        if artifacts is None:
+            raise HTTPException(HTTP_404_NOT_FOUND, RESULT_NOT_FOUND)
         try:
+            value = search_card_content(events, session_id, card_id)
             if value.get("origin") in LITERATURE_REVIEW_ORIGINS:
                 snapshots = {}
                 for name, field in (
@@ -501,6 +712,12 @@ def register_result_routes(
                     )
                     snapshots[name] = raw
                 papers = project_review_search_artifacts(snapshots)
+            elif value.get("origin") == CITATIONS_ORIGIN:
+                reference = value["metadata"]
+                raw, _ = artifacts.export_bytes(
+                    session_id, reference["artifact_id"], reference["sha256"]
+                )
+                papers = project_citations(json.loads(raw), complete=True)
             elif value.get("origin") == AGENTIC_SEARCH_ORIGIN:
                 reference = value["metadata"]
                 raw, _ = artifacts.export_bytes(
@@ -525,6 +742,8 @@ def register_result_routes(
                     papers = project_selected_papers(papers, selection, value["run_id"])
             value["papers"] = [paper.model_dump(mode="json") for paper in papers]
         except (ArtifactReadError, ValueError, KeyError, TypeError) as error:
+            if str(error) == RESULT_NOT_FOUND:
+                raise HTTPException(HTTP_404_NOT_FOUND, RESULT_NOT_FOUND) from error
             raise HTTPException(
                 HTTP_400_BAD_REQUEST, "literature_result_artifact_unavailable"
             ) from error

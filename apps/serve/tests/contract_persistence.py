@@ -34,6 +34,7 @@ from service.content.persistence import snapshots
 from service.content.service.space import prepare_project_storage, project_database
 from service.identity.persistence.handoff import HandoffClaimStore
 from service.paths import PROJECT_DB_RELATIVE
+from service.persistence.notifications import NotificationConnection
 from service.persistence.project import (
     StorageFailureKind,
     classify_storage_failure,
@@ -54,16 +55,6 @@ WORKERS = 8
 FRESH_DATABASES = 24
 LOCK_TEST_TIMEOUT = 0.05
 LOCK_TEST_WALL_LIMIT = 1.0
-
-
-class ObservedConnection(sqlite3.Connection):
-    """Observe successful close on the owning thread, without disabling affinity."""
-
-    closed = False
-
-    def close(self):
-        super().close()
-        self.closed = True
 
 
 class AssistantSchemaContracts(unittest.TestCase):
@@ -399,6 +390,15 @@ class SessionPersistenceContracts(unittest.TestCase):
         original = sqlite3.connect
 
         def connect_real(*args, **kwargs):
+            factory = kwargs.pop("factory", sqlite3.Connection)
+
+            class ObservedConnection(factory):
+                closed = False
+
+                def close(self):
+                    super().close()
+                    self.closed = True
+
             connection = original(*args, factory=ObservedConnection, **kwargs)
             opened.append(connection)
             if deny_pragma:
@@ -529,6 +529,7 @@ class SessionPersistenceContracts(unittest.TestCase):
     def test_borrowed_transaction_remains_open_and_uncommitted_until_owner_exits(self) -> None:
         with self.tracked_connections() as opened:
             with self.events.transaction() as connection:
+                self.assertIsInstance(connection, NotificationConnection)
                 event = self.append("borrowed-event", connection=connection)
                 artifact = self.index(event, connection=connection)
                 self.assertEqual(

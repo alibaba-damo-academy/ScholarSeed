@@ -3,9 +3,49 @@ import { codeBlockSchema } from '@milkdown/kit/preset/commonmark'
 import type { Node as ProseNode } from '@milkdown/kit/prose/model'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { $remark } from '@milkdown/kit/utils'
+import { editorViewOptionsCtx } from '@milkdown/kit/core'
+import type { Ctx } from '@milkdown/kit/ctx'
 
 const LITERAL_LATEX_LANGUAGE = 'latex-source'
 const LATEX_LANGUAGE = 'latex'
+export const INLINE_MATH_NODE = 'math_inline'
+const MATHML_NAMESPACE = 'http://www.w3.org/1998/Math/MathML'
+const TEX_ANNOTATION_SELECTOR = 'annotation[encoding="application/x-tex"]'
+
+export function mathClipboardHtml(html: string, document: Document): string {
+  const template = document.createElement('template')
+  template.innerHTML = html
+  let changed = false
+  for (const math of template.content.querySelectorAll('math')) {
+    if (math.namespaceURI !== MATHML_NAMESPACE || math.closest('pre, code')) continue
+    const source = math.querySelector(TEX_ANNOTATION_SELECTOR)?.textContent
+    if (!source?.trim()) continue
+    const block = math.getAttribute('display') === 'block'
+    const replacement = document.createElement(block ? 'pre' : 'span')
+    if (block) {
+      replacement.dataset.language = LATEX_LANGUAGE
+      replacement.textContent = source
+    } else {
+      replacement.dataset.type = INLINE_MATH_NODE
+      replacement.dataset.value = source
+    }
+    math.replaceWith(replacement)
+    changed = true
+  }
+  return changed ? template.innerHTML : html
+}
+
+export function configureMathClipboard(ctx: Ctx): void {
+  ctx.update(editorViewOptionsCtx, (previous) => ({
+    ...previous,
+    transformPastedHTML: (html, view) => {
+      const transformed = previous.transformPastedHTML?.(html, view) ?? html
+      return view.state.selection.$from.parent.type.spec.code
+        ? transformed
+        : mathClipboardHtml(transformed, view.dom.ownerDocument)
+    },
+  }))
+}
 
 export const codeLanguageLabel = (language: string, literalLatexLabel: string): string =>
   language === LITERAL_LATEX_LANGUAGE ? literalLatexLabel : language

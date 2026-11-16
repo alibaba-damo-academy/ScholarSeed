@@ -12,12 +12,28 @@ export const PDFE_PAGE_GROUPS = [
   { id: 'browser', title: 'pageBrowser' },
   { id: 'settings', title: 'pageSettings' },
   { id: 'application', title: 'pageApplication' },
+  { id: 'dialogs', title: 'pageDialogs' },
 ] as const
-type PageGroup = typeof PDFE_PAGE_GROUPS[number]['id']
-const VIEWS: Partial<Record<MainView, PageGroup>> = { home: 'center', projects: 'center', conversation: 'conversation', resource: 'workspace', literature: 'literature', skills: 'skills', browser: 'browser', writing: 'workspace' }
+type PageGroup = (typeof PDFE_PAGE_GROUPS)[number]['id']
+const VIEWS: Partial<Record<MainView, PageGroup>> = {
+  home: 'center',
+  projects: 'center',
+  conversation: 'conversation',
+  resource: 'workspace',
+  literature: 'literature',
+  skills: 'skills',
+  browser: 'browser',
+  writing: 'workspace',
+}
 const APPLICATION_SURFACES = new Set(['login', 'feedback', 'close', 'error'])
 
 export function pdfeNavigationGroup(page: PreviewPage) {
-  const id = page.category === 'settings' ? 'settings' : page.category === 'surface' && APPLICATION_SURFACES.has(page.entry) ? 'application' : VIEWS[page.target?.view ?? page.entry as MainView] ?? 'application'
-  return PDFE_PAGE_GROUPS.find(group => group.id === id)!
+  const id =
+    page.navigationGroup ??
+    (page.category === 'settings'
+      ? 'settings'
+      : page.category === 'surface' && APPLICATION_SURFACES.has(page.entry)
+        ? 'application'
+        : (VIEWS[page.target?.view ?? (page.entry as MainView)] ?? 'application'))
+  return PDFE_PAGE_GROUPS.find((group) => group.id === id)!
 }

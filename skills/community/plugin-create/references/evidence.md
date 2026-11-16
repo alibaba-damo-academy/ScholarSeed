@@ -1,12 +1,23 @@
-# 证据与最新决策检查
+# Evidence and current decisions
 
-将下面的检查放进生成 Skill 的分析步骤。不同领域沿相同证据原则，不硬编码某篇论文的答案。
+Put the applicable checks into the generated Skill's actual analysis steps. Use them across domains rather than encoding a test case's answer.
 
-1. 建立材料表：真实 ref_id、标题、版本、已读范围。无法取得引用时标记不可读，不虚构 ref_id，也不把缺引用材料静默删除。
-   文献库的 readable 表示主 PDF 可读，不等于补充附件已授权；自定义卡片选择和文字“同意”不创建宿主来源绑定。读取主 PDF 保留实际 attachment_id，遵守当前项目范围；已有来源绑定不得切换到未选择的附件。补充附件须由用户通过宿主附加整篇文献或该附件建立来源范围，不能删除 attachment_id 偷换为主 PDF。出现 citation_source_not_authorized 后核对来源和绑定，不重复同一请求，不伪造授权；明确说明需要的宿主操作。
-2. 每个决定性主张记录原文位置与短摘录、条件、单位、原值和“事实／计算／假设／未知”类别。先在已读材料中定位再标未知；无全文证据不能把摘要措辞升级为全文结论。
-3. 比较双方版本和实验设置。不能将后继方法的压缩或性能结果归给原方法；设置不同只说明不可直接比较，不自动判矛盾。
-4. 保留原文限定：通常、建议、启发式、可能与必需不同；性能变慢与不能运行不同；未报告与不存在不同。数值阈值必须核对条件，不从附近数字推导硬约束。
-5. 明确比较方向、分母和单位。推算展示公式；反证说明“若观察到什么，哪条主张将被推翻”，与原主张逐对核验，避免把支持条件写成反证。
-6. 用最新用户决策确定分析范围。被取消的维度可列为未评价，但不能继续作为拒绝或推荐的理由。推荐许可关闭时只输出比较与缺证，不越权选路线。
-7. 收尾逐条检查结论是否有对应片段且条件一致；缺证输出具体缺项与影响，不借无关引用填空。高风险未核实结论保持未知。
+## Read only the authorized sources
+
+Keep a materials record with each source's real identifier or file locator, title, version and read coverage. Distinguish file paths from citation handles. Never invent either or drop an unavailable source silently. Report unreadable or partial coverage; do not guess page numbers or claim unperformed searches or library checks.
+
+- **Project files:** If reading requires a prior decision, use only `resource/list` before confirmation; show “File exists; not yet read” and do not draft findings. After confirmation, read only the final selection. For text comparison, discover `resource/read-text` with `contract/describe` and check `truncated` and failures. Do not pass paths to `pdf/status` or `pdf/read` as `ref_id` or bypass host retry/exclusion decisions in the terminal.
+- **Library items:** A readable primary PDF does not authorize supplemental attachments. Respect project scope and preserve the real `attachment_id`. Do not switch bindings to an unselected attachment or drop its ID to substitute the primary PDF. A card answer or textual consent does not create a source binding; the user must attach the paper or supplement through the host. On `citation_source_not_authorized`, check the binding and explain the host action instead of repeating the same request.
+- **Whole PDFs and page verification:** Follow the host's `pdf-evidence` workflow for project library materials. Use an existing authorized locator, or retrieve the same version's bytes via `resource/read` in base64 chunks and parse them page by page.
+
+## Verify claims and comparisons
+
+For each decisive claim, keep one fact record: stable ID, source version and location, short excerpt, subject, applicable conditions, time, original value, unit and category (fact, calculation, assumption or unknown). Check the passage actually read, not just the presence of a citation. Search the read material before marking a gap; an abstract cannot establish a full-text finding. State what is missing and its effect instead of borrowing a nearby citation or value.
+
+Check version, experimental setting, comparison direction, denominator and unit before comparing. Preserve qualifications: recommended is not required, slower is not impossible, and unreported is not absent. Show calculations for derived values and state which observation would falsify which claim. Do not attribute a successor's result to the original, infer a threshold from a nearby number, or label different settings as a contradiction. Keep conflicting sources side by side with their citations. When a revision explicitly restates an earlier value, retain it with that source and mark original verification as pending.
+
+## Use the latest decision to produce one result
+
+Do not offer excluded topics or let withdrawn dimensions drive rejection or recommendation. If recommendation is disallowed, report comparisons and gaps without choosing a route. For a revision limited to one item, replace it by stable ID and preserve all other items and their order. A revision submission is not final confirmation; when final confirmation is required, cancellation or its absence must not produce a final artifact.
+
+Derive the conversation, workbench, evidence details and exports from the same checked records and final confirmed values. Resolve mutually exclusive branches once to determine current tasks and deadline status; historical dates may be explained but are not current deadlines. Keep same-named counts separate by stage, source version and denominator. Recheck ambiguous labels, nearby values and section boundaries before publication.

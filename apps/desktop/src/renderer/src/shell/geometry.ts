@@ -92,6 +92,21 @@ export function floatingPanelDockPosition(
   }
 }
 
+export function floatingPanelDockStyle(
+  dock: FloatingPanelDock,
+  bounds: FloatingPanelBounds
+): { left: number; top: number | 'auto'; right: 'auto'; bottom: number | 'auto' } {
+  const position = floatingPanelDockPosition(dock, bounds)
+  return FLOATING_PANEL_DOCKS[dock].vertical === 1
+    ? {
+        left: position.left,
+        top: 'auto',
+        right: 'auto',
+        bottom: bounds.hostHeight - position.top - bounds.panelHeight,
+      }
+    : { ...position, right: 'auto', bottom: 'auto' }
+}
+
 export function nearestFloatingPanelDock(
   position: { left: number; top: number },
   bounds: FloatingPanelBounds

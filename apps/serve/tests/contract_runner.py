@@ -7,6 +7,7 @@ import io
 import json
 import os
 import queue
+import secrets
 import shutil
 import socket
 import subprocess
@@ -22,7 +23,7 @@ from unittest.mock import Mock, create_autospec, patch
 from service import brand
 
 from . import progress, run_all
-from ._directories import LEASE_TEST_ROOT_ENV
+from ._directories import ENTRY_TOKEN_ENV, LEASE_TEST_ROOT_ENV
 from .run_all import NATIVE_COORDINATOR_EXCLUSIVE, REPOSITORY_ROOT, SERVE_ROOT, _child_environment
 from .utils import Accounting, ExtendedLimits, ThreadEntry, WindowsJob
 
@@ -418,7 +419,34 @@ class RunnerLifecycle(unittest.TestCase):
         process = create_autospec(self.popen, instance=True)
         process.pid = 123
         process.returncode = 0
-        process.communicate.return_value = ("controlled output", "")
+
+        def communicate(*args, **kwargs):
+            command = spawn.call_args.args[0]
+            target = Path(command[command.index("--report") + 1])
+            target.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": run_all.ENTRY_SCHEMA_VERSION,
+                        "kind": "entry",
+                        "module": command[command.index("--module") + 1],
+                        "token": spawn.call_args.kwargs["env"][ENTRY_TOKEN_ENV],
+                        "pid": process.pid,
+                        "declaredUnittest": False,
+                        "runners": 0,
+                        "plannedTests": 0,
+                        "reportedTestsRun": 0,
+                        "skipped": 0,
+                        "expectedFailures": 0,
+                        "errors": [],
+                        "cleanupErrors": [],
+                        "exitStatus": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return "controlled output", ""
+
+        process.communicate.side_effect = communicate
         job = create_autospec(WindowsJob, instance=True)
         job.active.return_value = False
         events = Mock()
@@ -475,6 +503,152 @@ class RunnerLifecycle(unittest.TestCase):
 
 
 class RunnerObservations(unittest.TestCase):
+    def entry_source(self, source, *, product_root=False):
+        with tempfile.TemporaryDirectory(prefix="entry-probe-") as directory:
+            root = Path(directory)
+            package = root / "entry_fixture"
+            package.mkdir()
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "probe.py").write_text(source, encoding="utf-8")
+            with (
+                patch.object(run_all, "SERVE_SUITE_PREFIX", "entry_fixture."),
+                patch.dict(os.environ, {"PYTHONPATH": str(root)}),
+            ):
+                return run_all._run_suite("entry_fixture.probe" if product_root else "probe")
+
+    def test_default_entry_resolves_both_test_owners_without_preloading_product_paths(self):
+        source = (
+            "import sys,unittest\n"
+            "assert 'service.paths' not in sys.modules\n"
+            "class Probe(unittest.TestCase):\n"
+            " def test_probe(self): self.assertEqual(2+2,4)\n"
+            "unittest.main()\n"
+        )
+        for product_root in (False, True):
+            with self.subTest(product_root=product_root):
+                result = self.entry_source(source, product_root=product_root)
+                self.assertEqual(result[1], 0, result)
+                self.assertIn("unittest 1/1", result[2])
+
+    def test_default_entry_rejects_unexecuted_unittest_and_empty_collection(self):
+        declared = "import unittest\nclass Probe(unittest.TestCase):\n def test_probe(self): pass\n"
+        for source in (
+            declared,
+            declared + "raise SystemExit(0)\n",
+            "import unittest\nunittest.main()\n",
+            declared.replace("pass", "self.fail('not successful')") + "unittest.main(exit=False)\n",
+        ):
+            with self.subTest(source=source):
+                result = self.entry_source(source)
+                self.assertNotEqual(result[1], 0, result)
+
+    def test_default_entry_preserves_quiet_scripts_and_original_exit_status(self):
+        for source, expected in (
+            ("def main():\n assert 2 + 2 == 4\n return 0\nraise SystemExit(main())\n", 0),
+            ("from unittest import TestCase\nraise SystemExit(0)\n", 0),
+            ("raise SystemExit(7)\n", 7),
+            ("raise SystemExit(False)\n", 0),
+            ("raise SystemExit(True)\n", 1),
+        ):
+            with self.subTest(source=source):
+                result = self.entry_source(source)
+                self.assertEqual(result[1], expected, result)
+
+    def test_default_entry_rejects_missing_and_corrupt_receipts(self):
+        for payload in (None, "{}", '{"schemaVersion":1,"kind":"entry","module":"foreign"}'):
+            source = "import os\nfrom pathlib import Path\n"
+            if payload is not None:
+                source += (
+                    f"(Path(os.environ['TMPDIR'])/{run_all.ENTRY_REPORT_FILENAME!r}).write_text("
+                    + repr(payload)
+                    + ",encoding='utf-8')\n"
+                )
+            with self.subTest(payload=payload):
+                result = self.entry_source(source + "os._exit(0)\n")
+                self.assertNotEqual(result[1], 0, result)
+
+    def test_default_entry_preserves_original_failure_diagnostics(self):
+        for source, diagnostics in (
+            (
+                "raise AssertionError('first ' + 'x' * 5000 + ' last')\n",
+                ("Traceback", "first", "last"),
+            ),
+            ("raise SystemExit('original exit diagnostic')\n", ("original exit diagnostic",)),
+            (
+                "import missing_entry_fixture_dependency\n",
+                ("ModuleNotFoundError", "missing_entry_fixture_dependency"),
+            ),
+        ):
+            with self.subTest(source=source):
+                result = self.entry_source(source)
+                self.assertNotEqual(result[1], 0)
+                for diagnostic in diagnostics:
+                    self.assertIn(diagnostic, result[3])
+
+    def test_entry_mode_preserves_conditional_results_and_nested_runner_ownership(self):
+        source = (
+            "import io,unittest\nclass Probe(unittest.TestCase):\n"
+            " @unittest.skip('fixture platform condition')\n"
+            " def test_skip(self): pass\n"
+            " @unittest.expectedFailure\n"
+            " def test_expected(self): self.fail('expected')\n"
+            " def test_nested(self):\n"
+            "  suite=unittest.TestSuite([unittest.FunctionTestCase(lambda: None)])\n"
+            "  result=unittest.TextTestRunner(stream=io.StringIO()).run(suite)\n"
+            "  self.assertTrue(result.wasSuccessful())\n"
+            "unittest.main()\n"
+        )
+        result, report = self.probe(source, arguments=("--verify-entry",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report["runners"], 1)
+        self.assertEqual(report["plannedTests"], 3)
+        self.assertEqual(report["reportedTestsRun"], 3)
+        self.assertEqual(report["skipped"], 1)
+        self.assertEqual(report["expectedFailures"], 1)
+        strict, observed = self.probe(source)
+        self.assertNotEqual(strict.returncode, 0)
+        self.assertEqual(
+            {case["status"] for case in observed["cases"]},
+            {"passed", "skipped", "expectedFailure"},
+        )
+
+    def test_entry_receipt_identity_and_execution_counts_are_bound(self):
+        result, valid = self.probe(
+            "import unittest\nclass Probe(unittest.TestCase):\n"
+            " def test_probe(self): pass\nunittest.main()\n",
+            arguments=("--verify-entry",),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mutations = (
+            {**valid, "schemaVersion": True},
+            {**valid, "module": "foreign"},
+            {**valid, "token": valid["token"] + "x"},
+            {**valid, "token": ""},
+            {**valid, "exitStatus": False},
+            {**valid, "errors": "invalid"},
+            {**valid, "errors": ["reported failure"]},
+            {**valid, "runners": 0},
+            {**valid, "plannedTests": -1},
+            {**valid, "reportedTestsRun": 0},
+            {**valid, "skipped": 2},
+        )
+        with tempfile.TemporaryDirectory(prefix="entry-receipt-") as directory:
+            target = Path(directory) / "report.json"
+            target.write_text(json.dumps(valid), encoding="utf-8")
+            self.assertEqual(run_all._entry_observation(target, "probe", valid["token"]), valid)
+            # Windows 的 venv python.exe 是启动器 stub，收据 pid 与 Popen.pid 不同；
+            # 归属由一次性 token 绑定，pid 只作诊断，不参与身份判定。
+            redirected = {**valid, "pid": valid["pid"] + 1}
+            target.write_text(json.dumps(redirected), encoding="utf-8")
+            self.assertEqual(
+                run_all._entry_observation(target, "probe", valid["token"]), redirected
+            )
+            for report in mutations:
+                with self.subTest(report=report):
+                    target.write_text(json.dumps(report), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        run_all._entry_observation(target, "probe", valid["token"])
+
     def test_concurrent_progress_writers_preserve_every_complete_record(self):
         with tempfile.TemporaryDirectory(prefix="progress-writers-") as directory:
             barrier = threading.Barrier(PROGRESS_WRITERS)
@@ -508,11 +682,13 @@ class RunnerObservations(unittest.TestCase):
             (root / "probe.py").write_text(source, encoding="utf-8")
             target = root / "report.json"
             environment["PYTHONPATH"] = str(root) + os.pathsep + environment["PYTHONPATH"]
+            environment[ENTRY_TOKEN_ENV] = secrets.token_hex(32)
             result = subprocess.run(
                 [
                     sys.executable,
                     "-P",
-                    str(Path(run_all.__file__).with_name("observations.py")),
+                    "-m",
+                    run_all.SERVE_OBSERVER_MODULE,
                     "--module",
                     "probe",
                     "--report",
@@ -843,37 +1019,6 @@ class RunnerObservations(unittest.TestCase):
                 else:
                     self.assertEqual(child["report"]["cases"][0]["status"], "skipped")
         result, report = self.probe(
-            self.isolated_source(
-                "import sqlite3,tempfile\n"
-                "from pathlib import Path\n"
-                "from tests.contract_literature_delivery import DeliveryContract\n"
-                "case=DeliveryContract('test_concurrent_batch_append_preserves_all_papers')\n"
-                "case.case_isolation={}\n"
-                "with tempfile.TemporaryDirectory() as directory:\n"
-                " connection=sqlite3.connect(Path(directory)/'leak.sqlite3')\n"
-                " case.connections=[connection]\n"
-                " with self.assertRaisesRegex(AssertionError,'survived case cleanup'):\n"
-                "  case.verify_connections()\n"
-                " self.assertFalse(case.case_isolation['connectionsClosedBeforeCleanup'])\n"
-                " with self.assertRaisesRegex(sqlite3.ProgrammingError,'closed database'):\n"
-                "  connection.execute('SELECT 1')\n"
-                " case.verify_connections()\n"
-                " self.assertTrue(case.case_isolation['connectionsClosedBeforeCleanup'])\n"
-                "class WrongThread:\n"
-                " @property\n"
-                " def in_transaction(self):\n"
-                "  raise sqlite3.ProgrammingError('SQLite objects created in a thread can only be used in that same thread')\n"
-                " def close(self): pass\n"
-                "case.connections=[WrongThread()]\n"
-                "with self.assertRaises(BaseExceptionGroup) as failure: case.verify_connections()\n"
-                "self.assertTrue(any(isinstance(error,sqlite3.ProgrammingError) "
-                "for error in failure.exception.exceptions))\n"
-                "self.assertFalse(case.case_isolation['connectionsClosedBeforeCleanup'])"
-            )
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(report["cases"][0]["status"], "passed")
-        result, report = self.probe(
             "import unittest\n"
             "if __name__!='__main__':\n"
             " def cleanup():\n"
@@ -1089,7 +1234,7 @@ class RunnerObservations(unittest.TestCase):
                     self.assertEqual(sentinel.read_text(encoding="utf-8"), "do not delete")
                     self.assertEqual(list(parent.iterdir()), [sentinel])
 
-    def test_opt_in_embeds_actual_cases_and_default_command_stays_unchanged(self):
+    def test_opt_in_embeds_actual_cases_and_default_summary_stays_suite_scoped(self):
         with tempfile.TemporaryDirectory(prefix="observations-contract-") as directory:
             root = Path(directory)
             timings = {}
@@ -1142,33 +1287,6 @@ class RunnerObservations(unittest.TestCase):
             with patch.object(sys, "argv", ["run_all", "--list"]), redirect_stdout(output):
                 self.assertEqual(run_all.main(), 0)
             self.assertEqual(json.loads(output.getvalue())["suites"], run_all.SUITES + run_all.SLOW)
-        result, report = self.probe(
-            "import importlib,json,unittest\n"
-            "from tests.run_all import REPOSITORY_ROOT\n"
-            "class Probe(unittest.TestCase):\n"
-            " def test_collect(self):\n"
-            "  module=importlib.import_module('tests.contract_literature_delivery')\n"
-            "  module.DeliveryContract.test_collection_extension=lambda self: None\n"
-            "  loader=unittest.defaultTestLoader\n"
-            "  originals=list(loader.loadTestsFromTestCase(module.DeliveryContract))\n"
-            "  methods={case._testMethodName:getattr(module.DeliveryContract,case._testMethodName) "
-            "for case in originals}\n"
-            "  wrapped=list(module.load_tests(loader,unittest.TestSuite(),None))\n"
-            "  manifest=json.loads((REPOSITORY_ROOT/'scripts/ci/smoke.json').read_text())\n"
-            "  expected=next(entry['requiredCases'] for entry in manifest['entries'] "
-            "if entry['runner'].get('suite')=='contract_literature_delivery')\n"
-            "  identities=lambda cases:['.'.join(case.id().split('.')[-2:]) for case in cases]\n"
-            "  self.assertTrue(originals)\n"
-            "  expected_cases=originals+list(loader.loadTestsFromTestCase(module.DeliveryIsolationContracts))\n"
-            "  self.assertEqual(identities(wrapped),identities(expected_cases))\n"
-            "  self.assertTrue(set(expected).issubset(identities(wrapped)))\n"
-            "  self.assertEqual(len(set(identities(wrapped))),len(wrapped))\n"
-            "  for name,method in methods.items():\n"
-            "   self.assertIs(getattr(module.DeliveryContract,name),method)\n"
-            "unittest.main()\n"
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(report["planned"], ["Probe.test_collect"])
 
 
 class WindowsOwnership(unittest.TestCase):

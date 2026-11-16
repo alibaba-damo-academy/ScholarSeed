@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { type ButtonHTMLAttributes, type HTMLAttributes } from 'react'
 
@@ -17,7 +18,7 @@ export interface CalendarProps extends HTMLAttributes<HTMLDivElement> {
   selectedDay?: number
 }
 
-export function Calendar({ className, onSelectDay, selectedDay = 0, ...props }: CalendarProps): JSX.Element {
+export function Calendar({ className, onSelectDay, selectedDay = 0, ...props }: CalendarProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   return (
     <div className={cx(CALENDAR_CLASS_NAME, className)} {...props}>
@@ -40,4 +41,4 @@ export function Calendar({ className, onSelectDay, selectedDay = 0, ...props }: 
 }
 
 export type CalendarDayButtonProps = ButtonHTMLAttributes<HTMLButtonElement>
-export const CalendarDayButton = (props: CalendarDayButtonProps): JSX.Element => <button type="button" {...props} />
+export const CalendarDayButton = (props: CalendarDayButtonProps): React.JSX.Element => <button type="button" {...props} />

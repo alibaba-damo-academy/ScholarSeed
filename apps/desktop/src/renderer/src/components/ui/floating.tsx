@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import {
   cloneElement,
   createContext,
@@ -20,6 +21,7 @@ import {
 
 import { cx } from './utils'
 import { inFocusScope, visibleContent } from './focus'
+import { usePortalDocument } from './portal'
 
 export interface OpenRootProps {
   children?: ReactNode
@@ -33,10 +35,11 @@ export interface OpenRootProps {
 export interface OpenContextValue {
   anchorRef: MutableRefObject<HTMLElement | null>
   contentId: string
-  contentRef: RefObject<HTMLDivElement>
+  contentRef: RefObject<HTMLDivElement | null>
   open: boolean
   position: FloatingPosition | null
   setOpen: (open: boolean) => void
+  setContentDocument: (document: Document | null) => void
   setPosition: (position: FloatingPosition | null) => void
 }
 
@@ -54,9 +57,13 @@ export type FloatingSide = 'auto' | 'bottom' | 'left' | 'right' | 'top'
  */
 export type FloatingAlign = 'center' | 'end' | 'start'
 
-const openContents = new Set<RefObject<HTMLDivElement>>()
+const openContents = new Set<RefObject<HTMLDivElement | null>>()
 const FLOATING_OFFSET = 6
 const FLOATING_VIEWPORT_PADDING = 8
+const FLOATING_ANCHOR_WIDTH = '--floating-anchor-width'
+const FLOATING_AVAILABLE_HEIGHT = '--floating-available-height'
+type FloatingContentStyle = CSSProperties &
+  Partial<Record<typeof FLOATING_AVAILABLE_HEIGHT | typeof FLOATING_ANCHOR_WIDTH, string>>
 const CLIPPING_OVERFLOW_VALUES = new Set(['auto', 'clip', 'hidden', 'scroll'])
 
 function elementClipsContent(element: Element): boolean {
@@ -123,10 +130,12 @@ function anchorAlignedTop(
 
 function floatingPositionStyle(
   position: FloatingPosition,
-  contentSize: { height: number; width: number },
+  contentSize: { height: number; width: number; verticalChrome: number },
   side: FloatingSide = 'auto',
-  align: FloatingAlign = 'start'
-): CSSProperties {
+  align: FloatingAlign = 'start',
+  window: Pick<Window, 'innerWidth' | 'innerHeight'> = globalThis.window,
+  sideOffset = FLOATING_OFFSET
+): FloatingContentStyle {
   const viewportWidth = window.innerWidth
   const viewportHeight = window.innerHeight
 
@@ -144,8 +153,8 @@ function floatingPositionStyle(
   if (side === 'left' || side === 'right') {
     const rawLeft =
       side === 'right'
-        ? position.left + position.width + FLOATING_OFFSET
-        : position.left - contentSize.width - FLOATING_OFFSET
+        ? position.left + position.width + sideOffset
+        : position.left - contentSize.width - sideOffset
     return {
       left: clampFloatingLeft(rawLeft, contentSize.width, viewportWidth),
       position: 'fixed',
@@ -154,26 +163,28 @@ function floatingPositionStyle(
   }
 
   const left = anchorAlignedLeft(position, contentSize.width, viewportWidth, align)
-  const belowTop = position.bottom + FLOATING_OFFSET
-  const aboveTop = position.top - contentSize.height - FLOATING_OFFSET
+  const belowTop = position.bottom + sideOffset
+  const aboveTop = position.top - contentSize.height - sideOffset
   const fitsBelow = belowTop + contentSize.height <= viewportHeight - FLOATING_VIEWPORT_PADDING
   const fitsAbove = aboveTop >= FLOATING_VIEWPORT_PADDING
-  const rawTop =
-    side === 'top'
-      ? aboveTop
-      : side === 'bottom'
-        ? belowTop
-        : fitsBelow || !fitsAbove
-          ? belowTop
-          : aboveTop
+  const resolvedSide = side === 'auto' ? (fitsBelow || !fitsAbove ? 'bottom' : 'top') : side
+  const rawTop = resolvedSide === 'top' ? aboveTop : belowTop
+  const availableHeight = Math.max(
+    0,
+    (resolvedSide === 'top'
+      ? position.top - sideOffset - FLOATING_VIEWPORT_PADDING
+      : viewportHeight - belowTop - FLOATING_VIEWPORT_PADDING) - contentSize.verticalChrome
+  )
   return {
     ...(align === 'end' ? { right: viewportWidth - left - contentSize.width } : { left }),
+    [FLOATING_AVAILABLE_HEIGHT]: `${availableHeight}px`,
     position: 'fixed',
     top: clampFloatingTop(rawTop, contentSize.height, viewportHeight),
   }
 }
 
 function anchorIntersectsVisibleArea(anchor: HTMLElement, rect: DOMRect): boolean {
+  const window = anchor.ownerDocument.defaultView ?? globalThis.window
   let visibleBottom = window.innerHeight
   let visibleLeft = 0
   let visibleRight = window.innerWidth
@@ -209,7 +220,7 @@ export function createOpenContext(
   name: string,
   { dismissOutside = true }: { dismissOutside?: boolean } = {}
 ): {
-  Provider: (props: OpenRootProps) => JSX.Element
+  Provider: (props: OpenRootProps) => React.JSX.Element
   useOpenContext: () => OpenContextValue
 } {
   const Context = createContext<OpenContextValue | null>(null)
@@ -221,10 +232,12 @@ export function createOpenContext(
     dismissOnOutsidePointerDown = true,
     onOpenChange,
     open,
-  }: OpenRootProps): JSX.Element {
+  }: OpenRootProps): React.JSX.Element {
+    const document = usePortalDocument()
     const anchorRef = useRef<HTMLElement | null>(null)
     const contentId = useId()
     const contentRef = useRef<HTMLDivElement>(null)
+    const [contentDocument, setContentDocument] = useState<Document | null>(null)
     const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen)
     const [position, setPosition] = useState<FloatingPosition | null>(null)
     const currentOpen = open ?? uncontrolledOpen
@@ -254,20 +267,21 @@ export function createOpenContext(
         top: rect.top,
         width: rect.width,
       })
-    }, [contentId, currentOpen, position])
+    }, [contentId, currentOpen, position, document])
 
     useEffect(() => {
       if (!currentOpen) return undefined
 
       openContents.add(contentRef)
       const handleKeyDown = (event: KeyboardEvent): void => {
+        const eventDocument = event.currentTarget as Document
         if (
           event.defaultPrevented ||
           !dismissOnEscape ||
           event.key !== 'Escape' ||
           !visibleContent(contentRef.current) ||
-          (!inFocusScope(contentRef.current, document.activeElement) &&
-            document.activeElement?.getAttribute('aria-controls') !== contentId)
+          (!inFocusScope(contentRef.current, eventDocument.activeElement) &&
+            eventDocument.activeElement?.getAttribute('aria-controls') !== contentId)
         )
           return
         const content = contentRef.current
@@ -277,8 +291,8 @@ export function createOpenContext(
               ref !== contentRef &&
               visibleContent(ref.current) &&
               inFocusScope(content, ref.current) &&
-              (inFocusScope(ref.current, document.activeElement) ||
-                document.activeElement?.getAttribute('aria-controls') === ref.current.id)
+              (inFocusScope(ref.current, eventDocument.activeElement) ||
+                eventDocument.activeElement?.getAttribute('aria-controls') === ref.current.id)
           )
         )
           return
@@ -286,27 +300,39 @@ export function createOpenContext(
         setOpen(false)
       }
 
-      document.addEventListener('keydown', handleKeyDown)
+      const documents = new Set(
+        [document, contentDocument].filter((target): target is Document => Boolean(target))
+      )
+      for (const target of documents) target.addEventListener('keydown', handleKeyDown)
       return () => {
         openContents.delete(contentRef)
-        document.removeEventListener('keydown', handleKeyDown)
+        for (const target of documents) target.removeEventListener('keydown', handleKeyDown)
       }
-    }, [contentId, currentOpen, dismissOnEscape, setOpen])
+    }, [contentId, currentOpen, dismissOnEscape, setOpen, document, contentDocument])
 
     useEffect(() => {
       if (!currentOpen) return undefined
 
       const handlePointerDown = (event: PointerEvent): void => {
         if (!dismissOutside || !dismissOnOutsidePointerDown) return
-        if (event.target instanceof Node && anchorRef.current?.contains(event.target)) return
+        if (
+          event.target instanceof document.defaultView!.Node &&
+          anchorRef.current?.contains(event.target)
+        )
+          return
         if (!visibleContent(contentRef.current) || inFocusScope(contentRef.current, event.target))
           return
         setOpen(false)
       }
 
-      document.addEventListener('pointerdown', handlePointerDown)
-      return () => document.removeEventListener('pointerdown', handlePointerDown)
-    }, [currentOpen, dismissOnOutsidePointerDown, setOpen])
+      const documents = new Set(
+        [document, contentDocument].filter((target): target is Document => Boolean(target))
+      )
+      for (const target of documents) target.addEventListener('pointerdown', handlePointerDown)
+      return () => {
+        for (const target of documents) target.removeEventListener('pointerdown', handlePointerDown)
+      }
+    }, [currentOpen, dismissOnOutsidePointerDown, setOpen, document, contentDocument])
 
     return (
       <Context.Provider
@@ -317,6 +343,7 @@ export function createOpenContext(
           open: currentOpen,
           position,
           setOpen,
+          setContentDocument,
           setPosition,
         }}
       >
@@ -382,7 +409,7 @@ export function renderTrigger(
   context: OpenContextValue,
   props: HTMLAttributes<HTMLElement> & { asChild?: boolean; children?: ReactNode },
   eventName: 'onClick' | 'onContextMenu' | 'onMouseEnter' = 'onClick'
-): JSX.Element {
+): React.JSX.Element {
   const { asChild, children, ...rest } = props
   const nextProps = triggerProps(context, rest, eventName)
   if (asChild && isValidElement(children)) {
@@ -409,10 +436,18 @@ function useTrackedFloatingStyle(
   side: FloatingSide,
   align: FloatingAlign = 'start',
   sideBoundaryRef?: RefObject<HTMLElement | null>,
-  horizontalAnchorRef?: RefObject<HTMLElement | null>
+  horizontalAnchorRef?: RefObject<HTMLElement | null>,
+  sideOffset = FLOATING_OFFSET
 ): CSSProperties | undefined {
-  const { anchorRef, contentRef, position, setOpen } = context
+  const { anchorRef, contentRef, position, setOpen, setContentDocument } = context
+  const document = usePortalDocument()
+  const window = document.defaultView ?? globalThis.window
   const [floatingStyle, setFloatingStyle] = useState<CSSProperties | undefined>(undefined)
+
+  useLayoutEffect(() => {
+    setContentDocument(document)
+    return () => setContentDocument(null)
+  }, [document, setContentDocument])
 
   useLayoutEffect(() => {
     if (!active || !position || !contentRef.current) {
@@ -464,24 +499,35 @@ function useTrackedFloatingStyle(
         maxWidth === undefined
           ? contentRef.current.offsetWidth
           : Math.min(contentRef.current.offsetWidth, maxWidth)
+      const contentStyle = window.getComputedStyle(contentRef.current)
+      const verticalChrome =
+        parseFloat(contentStyle.paddingTop) +
+        parseFloat(contentStyle.paddingBottom) +
+        parseFloat(contentStyle.borderTopWidth) +
+        parseFloat(contentStyle.borderBottomWidth)
       setFloatingStyle({
         ...floatingPositionStyle(
           boundaryPosition,
           {
             height: contentRef.current.offsetHeight,
             width,
+            verticalChrome,
           },
           resolvedSide,
-          align
+          align,
+          window,
+          sideOffset
         ),
         ...(maxWidth === undefined ? {} : { maxWidth }),
+        ...(horizontalAnchor ? { [FLOATING_ANCHOR_WIDTH]: `${horizontalAnchor.width}px` } : {}),
       })
     }
 
     const handleScroll = (event: Event): void => {
       const anchor = position.kind === 'anchor' ? anchorRef.current : null
       const anchorRect = anchor?.getBoundingClientRect()
-      const scrollContainer = event.target instanceof Element ? event.target : null
+      const anchorWindow = anchor?.ownerDocument.defaultView ?? window
+      const scrollContainer = event.target instanceof anchorWindow.Element ? event.target : null
       if (
         anchor &&
         anchorRect &&
@@ -497,20 +543,26 @@ function useTrackedFloatingStyle(
     }
 
     update()
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', handleScroll, true)
+    const windows = new Set([window, anchorRef.current?.ownerDocument.defaultView ?? window])
+    for (const target of windows) {
+      target.addEventListener('resize', update)
+      target.addEventListener('scroll', handleScroll, true)
+    }
     const observer = new ResizeObserver(update)
     observer.observe(contentRef.current)
     if (anchorRef.current) observer.observe(anchorRef.current)
     if (horizontalAnchorRef?.current) observer.observe(horizontalAnchorRef.current)
     if (sideBoundaryRef?.current) observer.observe(sideBoundaryRef.current)
     return () => {
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', handleScroll, true)
+      for (const target of windows) {
+        target.removeEventListener('resize', update)
+        target.removeEventListener('scroll', handleScroll, true)
+      }
       observer.disconnect()
     }
   }, [
     active,
+    window,
     align,
     anchorRef,
     contentRef,
@@ -519,6 +571,7 @@ function useTrackedFloatingStyle(
     setOpen,
     side,
     sideBoundaryRef,
+    sideOffset,
   ])
 
   return floatingStyle
@@ -555,10 +608,20 @@ export function useFloatingContentPosition(
   style?: CSSProperties,
   side: FloatingSide = 'auto',
   align: FloatingAlign = 'start',
-  sideBoundaryRef?: RefObject<HTMLElement | null>
+  sideBoundaryRef?: RefObject<HTMLElement | null>,
+  positionAnchorRef?: RefObject<HTMLElement | null>,
+  sideOffset?: number
 ): CSSProperties | undefined {
   const { position } = context
-  const floatingStyle = useTrackedFloatingStyle(context, active, side, align, sideBoundaryRef)
+  const floatingStyle = useTrackedFloatingStyle(
+    positionAnchorRef?.current ? { ...context, anchorRef: positionAnchorRef } : context,
+    active,
+    side,
+    align,
+    sideBoundaryRef,
+    undefined,
+    sideOffset
+  )
 
   if (!position) return style
   return {

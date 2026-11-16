@@ -13,6 +13,7 @@ from service.invocation.service.model import (
     InvocationRecord,
     InvocationStatus,
 )
+from service.invocation.service.utils import diagnostic_code, invocation_diagnostic
 from service.paths import ONE_SHOT_WORKSPACE_DIRNAME
 
 METADATA_FILENAME = "metadata.json"
@@ -31,6 +32,8 @@ class InvocationMetadata:
             "status": record.status.value,
             "skill": record.skill,
             "execution": record.execution,
+            "error_code": diagnostic_code(record.error_code),
+            "diagnostic": invocation_diagnostic(record.diagnostic),
             "artifacts": [asdict(artifact) for artifact in record.artifacts],
         }
         temporary_path = ""
@@ -105,7 +108,8 @@ class InvocationMetadata:
                 ),
                 model_key=str(payload.get("model_key", "")),
                 output_text=str(payload.get("output_text", "")),
-                error_code=str(payload.get("error_code", "")),
+                error_code=diagnostic_code(payload.get("error_code")),
+                diagnostic=invocation_diagnostic(payload.get("diagnostic")),
                 input_tokens=int(payload.get("input_tokens", 0)),
                 output_tokens=int(payload.get("output_tokens", 0)),
                 vendor_thread_id=str(payload.get("vendor_thread_id", "")),

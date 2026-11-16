@@ -19,12 +19,13 @@ from manuscript import prepare
 from operator_cli import approve, configure_outline, review_packet
 from task_contract import atomic_json, configure, read_request, validate_request
 from writing_contract import require_approval, digest
+from planning import packet as front_packet, complete as front_complete, decide as front_decide, require_plan
 
 ROOT = Path(__file__).resolve().parents[1]
 
 CHOICES = {
     "formats": ["markdown", "latex_pdf"],
-    "templates": [{"id": "neurips", "usable": True}, {"id": "ctexart", "usable": True}],
+    "templates": [{"id": "neurips", "usable": True}, {"id": "standard_chinese", "usable": True}],
     "citation_styles": [{"id": style_id, "usable": True} for style_id in style_ids()],
 }
 
@@ -53,6 +54,65 @@ class ReviewTimeoutTest(unittest.TestCase):
         return {"packet_id": self.pid, "snapshot_id": digest(self.packet["snapshot"]),
                 "request_id": "product-question", "started_at": self.now - 300,
                 "deadline_at": self.now, "decision": decision}
+
+    def front_plan(self, change=False):
+        configure(self.ws, {"execution": {"mode": "standard"}})
+        front = front_packet(self.ws)
+        front_complete(self.ws, {"packet_id": front["packet_id"], "snapshot_id": digest(front["snapshot"]),
+                       "request_id": "front", "started_at": 0, "deadline_at": 300,
+                       "decision": {"answers": {"front": "Proceed."}}})
+        front_decide(self.ws, {"packet_id": front["packet_id"], "action": "proceed"})
+        self.packet = review_packet(self.ws)
+        self.pid = self.packet["packet_id"]
+        if change:
+            self.packet["publication"]["citation_style"] = "numeric"
+            atomic_json(self.ws / "04_outline/review_packet.json", self.packet)
+
+    def test_front_plan_timeout_unchanged_preserves_request_bytes(self):
+        self.front_plan()
+        before = (self.ws / "01_input/writing_request.json").read_bytes()
+        timer.complete(self.ws, self.host_receipt({"timed_out": True}))
+        self.assertEqual((self.ws / "01_input/writing_request.json").read_bytes(), before)
+        require_plan(self.ws)
+        require_approval(self.ws)
+
+    def test_front_plan_timeout_changed_publication_and_exact_replay(self):
+        self.front_plan(change=True)
+        receipt = self.host_receipt({"timed_out": True})
+        first = timer.complete(self.ws, receipt)
+        require_plan(self.ws)
+        require_approval(self.ws)
+        self.assertEqual(timer.complete(self.ws, receipt)["decision_id"], first["decision_id"])
+        configure(self.ws, {"effective_requirements": "Unrelated changed scope"})
+        with self.assertRaises(ValueError):
+            timer.complete(self.ws, receipt)
+
+    def test_front_plan_timeout_recovers_views_and_finalization_failures(self):
+        self.front_plan(change=True)
+        receipt = self.host_receipt({"timed_out": True})
+        with patch("task_contract.sync_views", side_effect=OSError("views interrupted")):
+            with self.assertRaises(OSError):
+                timer.complete(self.ws, receipt)
+        with patch("review_timeout.complete_outline_amendment", side_effect=OSError("finalization interrupted")):
+            with self.assertRaises(OSError):
+                timer.complete(self.ws, receipt)
+        with self.assertRaises(ValueError):
+            require_plan(self.ws)
+        timer.complete(self.ws, receipt)
+        require_plan(self.ws)
+        require_approval(self.ws)
+
+    def test_front_plan_pending_timeout_rejects_superseding_reply(self):
+        self.front_plan(change=True)
+        receipt = self.host_receipt({"timed_out": True})
+        with patch("review_timeout.configure", side_effect=OSError("configuration interrupted")):
+            with self.assertRaises(OSError):
+                timer.complete(self.ws, receipt)
+        timer.record_response_locked(self.ws, self.pid, "Pause instead.", "actual-message")
+        with self.assertRaises(ValueError):
+            timer.complete(self.ws, receipt)
+        with self.assertRaises(ValueError):
+            require_plan(self.ws)
 
     def test_every_registered_style_completes_timeout_in_both_languages(self):
         for language in ("CHINESE", "ENGLISH"):
@@ -321,6 +381,8 @@ class ReviewTimeoutTest(unittest.TestCase):
             require_approval(self.ws)
 
     def test_crash_after_configuration_recovers_same_decision(self):
+        self.packet["publication"]["citation_style"] = "numeric"
+        atomic_json(self.ws / "04_outline/review_packet.json", self.packet)
         self.start()
         self.now = 1400
         original = timer.configure
@@ -371,7 +433,7 @@ class ReviewTimeoutTest(unittest.TestCase):
         self.assertEqual(resumed["confirmation"]["state"], "expired")
         result = timer.apply_timeout(self.ws, self.pid)
         self.assertEqual(result["decision_id"], pending["decision_id"])
-        self.assertEqual(result["publication"]["template"], "ctexart")
+        self.assertEqual(result["publication"]["template"], "standard_chinese")
         require_approval(self.ws)
 
     def test_cli_status_and_wait_are_bounded_and_resume_saved_deadline(self):

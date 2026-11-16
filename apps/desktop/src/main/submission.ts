@@ -24,9 +24,27 @@ const REQUEST_FIELDS = new Set([
   'rendererDiagnostics',
 ])
 const REPORT_VERSION = 1
+const SANDBOX_DIAGNOSTICS_ARCNAME = 'host/sandbox-diagnostics.log'
 const ZIP_STORE_LEVEL = 0
 const JWT_SEGMENTS = 3
 const PLATFORM_NAMES: Record<string, string> = { darwin: 'macos', win32: 'windows', linux: 'linux' }
+
+type CollectionFailure =
+  | 'timeout'
+  | 'transport_error'
+  | 'http_error'
+  | 'unexpected_content_type'
+  | 'bundle_too_large'
+  | 'empty_bundle'
+
+class FeedbackCollectionError extends Error {
+  constructor(
+    readonly category: CollectionFailure,
+    readonly httpStatus?: number
+  ) {
+    super(category)
+  }
+}
 
 export interface FeedbackSubmissionPorts {
   baseUrl: string
@@ -39,6 +57,8 @@ export interface FeedbackSubmissionPorts {
   collectBundle(request: FeedbackSubmissionRequest, token: string): Promise<Uint8Array>
   sourceBaseline?(): string | undefined
   hostDiagnostics(): string
+  sandboxDiagnostics?(): Promise<string>
+  updateDiagnostics?(): Promise<string>
   fetch: typeof fetch
 }
 
@@ -100,10 +120,7 @@ export function feedbackSubmissionRequest(value: unknown): value is FeedbackSubm
   return total <= FEEDBACK_LIMITS.imagesBytes
 }
 
-export async function feedbackResponseBytes(
-  response: Response,
-  maximum: number
-): Promise<Uint8Array> {
+async function feedbackResponseBytes(response: Response, maximum: number): Promise<Uint8Array> {
   const reader = response.body?.getReader()
   if (!reader) return new Uint8Array()
   const chunks: Uint8Array[] = []
@@ -113,7 +130,7 @@ export async function feedbackResponseBytes(
       const next = await reader.read()
       if (next.done) break
       length += next.value.byteLength
-      if (length > maximum) throw new Error('feedback_response_too_large')
+      if (length > maximum) throw new FeedbackCollectionError('bundle_too_large')
       chunks.push(next.value)
     }
   } finally {
@@ -126,6 +143,22 @@ export async function feedbackResponseBytes(
     offset += chunk.byteLength
   }
   return bytes
+}
+
+export async function collectServeFeedbackBundle(
+  request: (signal: AbortSignal) => Promise<Response>
+): Promise<Uint8Array> {
+  const signal = AbortSignal.timeout(FEEDBACK_LIMITS.collectionTimeoutMs)
+  try {
+    const response = await request(signal)
+    if (!response.ok) throw new FeedbackCollectionError('http_error', response.status)
+    if (!response.headers.get('content-type')?.startsWith('application/zip'))
+      throw new FeedbackCollectionError('unexpected_content_type')
+    return await feedbackResponseBytes(response, FEEDBACK_LIMITS.bundleBytes)
+  } catch (error) {
+    if (error instanceof FeedbackCollectionError) throw error
+    throw new FeedbackCollectionError(signal.aborted ? 'timeout' : 'transport_error')
+  }
 }
 
 async function responseObject(response: Response): Promise<Record<string, unknown>> {
@@ -144,13 +177,15 @@ function blob(bytes: Uint8Array, type: string): Blob {
 async function localBundle(
   request: FeedbackSubmissionRequest,
   ports: FeedbackSubmissionPorts,
-  backendUnavailable: boolean
+  failure?: FeedbackCollectionError
 ): Promise<Uint8Array> {
   const entries: Record<string, Uint8Array> = {
     'feedback/collection.json': strToU8(
       JSON.stringify({
         schemaVersion: REPORT_VERSION,
-        backend: backendUnavailable ? 'unavailable' : 'not_requested',
+        backend: failure ? 'unavailable' : 'not_requested',
+        backendFailure: failure?.category,
+        backendHttpStatus: failure?.httpStatus,
         conversationRequested:
           request.includeLogs && request.includeTrace && Boolean(request.sessionId),
         diagnosticsRequested: request.includeLogs,
@@ -162,10 +197,21 @@ async function localBundle(
   if (request.recordingReport) entries['feedback/recording-report.json'] = request.recordingReport
   if (request.rendererDiagnostics)
     entries['feedback/renderer-diagnostics.json'] = request.rendererDiagnostics
-  if (request.includeLogs)
+  if (request.includeLogs) {
     entries['host/desktop.log'] = strToU8(redactUpdateLog(ports.hostDiagnostics())).slice(
       -FEEDBACK_LIMITS.hostBytes
     )
+    const [updateLog, sandboxLog] = await Promise.all([
+      ports.updateDiagnostics?.(),
+      ports.platform === 'win32' ? ports.sandboxDiagnostics?.().catch(() => '') : undefined,
+    ])
+    if (updateLog)
+      entries['update/update.log'] = strToU8(redactUpdateLog(updateLog)).slice(
+        -FEEDBACK_LIMITS.updateLogBytes
+      )
+    if (sandboxLog)
+      entries[SANDBOX_DIAGNOSTICS_ARCNAME] = strToU8(sandboxLog).slice(-FEEDBACK_LIMITS.hostBytes)
+  }
   return zipSync(entries, { level: ZIP_STORE_LEVEL })
 }
 
@@ -226,15 +272,20 @@ export class FeedbackSubmissionService {
     if (request.includeLogs) {
       try {
         bundle = await ports.collectBundle(request, token)
-        if (!bundle.byteLength || bundle.byteLength > FEEDBACK_LIMITS.bundleBytes)
-          throw new Error('feedback_bundle_invalid')
+        if (!bundle.byteLength) throw new FeedbackCollectionError('empty_bundle')
+        if (bundle.byteLength > FEEDBACK_LIMITS.bundleBytes)
+          throw new FeedbackCollectionError('bundle_too_large')
         diagnostics = 'complete'
-      } catch {
-        bundle = await localBundle(request, ports, true)
+      } catch (error) {
+        const failure =
+          error instanceof FeedbackCollectionError
+            ? error
+            : new FeedbackCollectionError('transport_error')
+        bundle = await localBundle(request, ports, failure)
         diagnostics = 'partial'
       }
     } else if (request.recordingReport || request.rendererDiagnostics)
-      bundle = await localBundle(request, ports, false)
+      bundle = await localBundle(request, ports)
     if (bundle && bundle.byteLength > FEEDBACK_LIMITS.bundleBytes)
       return { ok: false, code: 'invalid_request' }
     if (!isCurrent() || (await ports.readToken()) !== token)

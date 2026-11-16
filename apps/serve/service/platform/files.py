@@ -20,6 +20,7 @@ MAX_DIRECTORY_ITEMS = 500
 FILE_READ_MAX_BYTES = 512 * 1024
 FILE_RAW_MAX_BYTES = 16 * 1024 * 1024
 MEDIA_TYPE_OVERRIDES = {
+    ".lean": "text/plain",
     ".md": "text/markdown",
     ".markdown": "text/markdown",
     ".doc": "application/msword",
@@ -190,7 +191,12 @@ def list_directory(
                 size = 0
                 updated_at = None
             items.append(
-                {"name": child.name, "dir": child.is_dir(), "size": size, "updated_at": updated_at}
+                {
+                    "name": child.name,
+                    "dir": child.is_dir(),
+                    "size": size,
+                    "updated_at": updated_at,
+                }
             )
     except OSError as error:
         raise HTTPException(status_code=403, detail="unreadable") from error

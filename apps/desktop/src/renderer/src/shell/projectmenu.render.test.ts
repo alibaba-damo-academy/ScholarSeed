@@ -6,7 +6,7 @@ import { build } from 'esbuild'
 
 const DESKTOP = fileURLToPath(new URL('../../../../', import.meta.url))
 
-test('project menu distinguishes pinned and selected projects and updates pin presence', async () => {
+test('project menu sorts pinned projects first without displaying a pin indicator', async () => {
   const bundle = await build({
     stdin: {
       contents: `
@@ -65,7 +65,7 @@ test('project menu distinguishes pinned and selected projects and updates pin pr
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
     const pinned = page.getByTestId('project-menu-option-Long project name for pin indicator')
     const plain = page.getByTestId('project-menu-option-Plain project')
-    await expect(pinned.getByRole('img', { name: 'pinned', exact: true })).toBeAttached()
+    await expect(pinned.getByRole('img')).toHaveCount(0)
     await expect(pinned).toHaveAttribute('aria-current', 'page')
     await expect(plain.getByRole('img')).toHaveCount(0)
     assert.deepEqual(
@@ -78,7 +78,7 @@ test('project menu distinguishes pinned and selected projects and updates pin pr
       ]
     )
     await page.evaluate(() => Reflect.get(window, 'renderMenu')(true, 'plain'))
-    await expect(pinned.getByRole('img', { name: 'pinned', exact: true })).toBeAttached()
+    await expect(pinned.getByRole('img')).toHaveCount(0)
     await expect(pinned).not.toHaveAttribute('aria-current', 'page')
     await expect(plain).toHaveAttribute('aria-current', 'page')
     await pinned.focus()
@@ -89,6 +89,10 @@ test('project menu distinguishes pinned and selected projects and updates pin pr
       'resource',
     ])
     await page.evaluate(() => Reflect.get(window, 'renderMenu')(false, 'pinned'))
+    await expect(page.locator('[data-testid^="project-menu-option-"]').first()).toHaveAttribute(
+      'data-testid',
+      'project-menu-option-Plain project'
+    )
     await expect(pinned.getByRole('img')).toHaveCount(0)
     await expect(pinned).toHaveAttribute('aria-current', 'page')
   } finally {

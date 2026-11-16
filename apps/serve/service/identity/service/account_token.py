@@ -113,7 +113,7 @@ class AccountTokenHolder:
             return
         if not looks_like_jwt(token):
             return
-        if sha256(token.encode()).hexdigest() in self._revoked:
+        if self.is_revoked(token):
             return
         if self._tokens.get(owner) != token:
             self._tokens[owner] = token
@@ -123,6 +123,9 @@ class AccountTokenHolder:
         """当前已知的 access token；未登录 / 无记录返回空串。"""
 
         return self._tokens.get(str(user_id or "").strip(), "")
+
+    def is_revoked(self, credential: str) -> bool:
+        return sha256(credential.encode()).hexdigest() in self._revoked
 
     def forget(self, user_id: str) -> None:
         """登出时清掉（本地不再持有该用户凭据）。"""

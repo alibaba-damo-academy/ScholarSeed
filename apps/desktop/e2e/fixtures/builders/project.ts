@@ -1,14 +1,13 @@
 import { createReadyProject } from '../projects'
-// project.ts — infrastructure awaiting first consumer.
-// TODO(e2e): buildProject / buildScenario / loadScenario currently have no spec
-// consumers (verified by `grep -rn 'buildProject\|buildScenario\|loadScenario' e2e/*.spec.ts`).
-// Kept as the seeding backbone for upcoming scenario-driven specs; wire the first
-// consumer or re-evaluate removal when the next e2e scenario spec lands.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'path'
 import { expect, type Page } from '@playwright/test'
-import { enterWorkbenchShell } from '../electron'
+import { apiBase, enterWorkbenchShell } from '../electron'
 import type { RuntimePaths } from '../runtime'
+import { resolveExample } from '../../../../../scripts/shared/examples.cjs'
+import type { ExampleOptions } from '../../../../../scripts/shared/examples.cjs'
+import { prepareExample } from '../../../../../scripts/shared/preparation.cjs'
+import type { PreparationReceipt } from '../../../../../scripts/shared/preparation.cjs'
 
 const ACTION_TIMEOUT_MS = 15_000
 const RESOURCES_DIRNAME = 'resources'
@@ -164,4 +163,12 @@ export async function buildScenario(
   const scenario = loadScenario(name)
   if (!scenario.project) throw new Error(`scenario has no project to build: ${name}`)
   return buildProject(page, runtime, scenario.project)
+}
+
+export async function buildExample(
+  page: Page,
+  runtime: RuntimePaths,
+  selection: ExampleOptions = {}
+): Promise<PreparationReceipt> {
+  return prepareExample({ baseUrl: await apiBase(page), workspace: runtime.workspace, plan: resolveExample(selection) })
 }

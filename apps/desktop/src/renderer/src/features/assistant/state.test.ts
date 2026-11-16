@@ -5,20 +5,59 @@ import type {
   AssistantContextCandidate,
   AssistantContextSelection,
   AssistantContextRef,
+  AnswerAnnotation,
 } from '../../contracts/assistant.ts'
 import type { ConvItem } from '../../model.ts'
+import { fileIconKind } from '../../components/primitive/utils.ts'
 import {
   INITIAL_AI_PANEL_STATE,
   assistantContextSaveError,
   assistantContextProjection,
+  assistantContextLoadState,
   loadedAssistantContext,
   beginContextCandidateLoad,
   contextRefMatchesCandidate,
   mergeContextCandidates,
+  literatureAttachmentNames,
   replaceCurrentDocumentRefs,
   sentAnswerAnnotationIds,
+  deletableAnswerAnnotationIds,
   submittedContextRefIds,
 } from './state.ts'
+
+test('accepted literature references keep picker attachment names without persisting them', () => {
+  const candidates: AssistantContextCandidate[] = [
+    {
+      kind: 'literature',
+      source_id: 'pdf',
+      label: 'PDF paper',
+      origin: 'explicit',
+      display_file_name: 'paper.pdf',
+    },
+    {
+      kind: 'literature',
+      source_id: 'word',
+      label: 'Word paper',
+      origin: 'explicit',
+      display_file_name: 'paper.docx',
+    },
+    { kind: 'literature', source_id: 'empty', label: 'No attachment', origin: 'explicit' },
+  ]
+  const { refs } = mergeContextCandidates([], candidates, [], (candidate) => candidate.source_id)
+  const names = literatureAttachmentNames(refs, new Map(), candidates)
+  assert.equal(names.get('pdf'), 'paper.pdf')
+  assert.equal(names.get('word'), 'paper.docx')
+  assert.equal(names.get('empty'), undefined)
+  assert.deepEqual(
+    refs.map((reference) => fileIconKind(names.get(reference.ref_id) ?? '')),
+    ['pdf', 'word', undefined]
+  )
+  assert.equal(Object.hasOwn(refs[0], 'display_file_name'), false)
+  assert.deepEqual(
+    [...literatureAttachmentNames(refs.slice(1), names, [])],
+    [['word', 'paper.docx']]
+  )
+})
 
 const ref = (
   refId: string,
@@ -32,6 +71,49 @@ const ref = (
   label: sourceId,
   retention: 'next_turn',
   origin,
+})
+
+test('same-session context refresh preserves the snapshot without claiming readiness', () => {
+  const panel = { ...INITIAL_AI_PANEL_STATE, sessionId: 'session', contextState: 'ready' as const }
+  assert.equal(assistantContextLoadState(panel, 'session'), 'refreshing')
+  assert.equal(
+    assistantContextLoadState({ ...panel, contextState: 'refreshing' }, 'session'),
+    'refreshing'
+  )
+  assert.equal(assistantContextLoadState({ ...panel, contextState: 'saving' }, 'session'), 'saving')
+  assert.equal(assistantContextLoadState(panel, 'other'), 'loading')
+  assert.equal(assistantContextLoadState(INITIAL_AI_PANEL_STATE, 'session'), 'loading')
+  assert.equal(assistantContextLoadState({ ...panel, contextState: 'error' }, 'session'), 'loading')
+})
+
+test('an older context response settles a read without rolling back refs or an active save', () => {
+  const selection: AssistantContextSelection = {
+    session_id: 'session',
+    revision: 2,
+    project_policy: 'explicit_only',
+    search_scope: 'web',
+    refs: [],
+    capabilities: [],
+    updated_at: 0,
+  }
+  const panel = {
+    ...INITIAL_AI_PANEL_STATE,
+    sessionId: 'session',
+    revision: 3,
+    refs: [ref('fresh', 'fresh.pdf', 'explicit')],
+  }
+  for (const contextState of ['loading', 'refreshing'] as const) {
+    const settled = loadedAssistantContext({ ...panel, contextState }, selection, [], [])
+    assert.equal(settled.contextState, 'ready')
+    assert.equal(settled.revision, 3)
+    assert.deepEqual(settled.refs, panel.refs)
+    assert.equal(settled.contextError, null)
+  }
+  const saving = { ...panel, contextState: 'saving' as const }
+  assert.equal(loadedAssistantContext(saving, selection, [], []), saving)
+  const failed = loadedAssistantContext({ ...panel, contextState: 'refreshing' }, null, [], [])
+  assert.equal(failed.contextState, 'error')
+  assert.deepEqual(failed.refs, panel.refs)
 })
 
 test('a late context read cannot roll a newer selection back after consumption', () => {
@@ -245,6 +327,22 @@ test('sent annotation remains readonly when another annotation is pending', () =
   const pending = { ...ref('pending-ref', 'pending-note', 'explicit'), kind: 'note' as const }
 
   assert.deepEqual([...sentAnswerAnnotationIds([message], [pending], [])], ['sent-note'])
+  const panel = {
+    ...INITIAL_AI_PANEL_STATE,
+    sessionId: 'session-1',
+    refs: [pending],
+    annotations: [
+      { annotation_id: 'sent-note', session_id: 'session-1' },
+      { annotation_id: 'pending-note', session_id: 'session-1' },
+      { annotation_id: 'foreign-note', session_id: 'session-2' },
+    ] as AnswerAnnotation[],
+  }
+  assert.deepEqual(
+    [...deletableAnswerAnnotationIds('session-1', panel, [message])],
+    ['pending-note']
+  )
+  assert.equal(deletableAnswerAnnotationIds('session-2', panel, [message]).size, 0)
+  assert.equal(deletableAnswerAnnotationIds(null, panel, [message]).size, 0)
 })
 
 test('current document replacement preserves explicit and submitted refs', () => {

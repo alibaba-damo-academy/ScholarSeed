@@ -6,8 +6,9 @@ import {
 import type { AnswerSource, ConvItem } from '../../model'
 import type { i18n } from 'i18next'
 import type { InteractionPolicyContribution } from '../../contracts/features'
+import { literatureResultAuthorization } from '../../features/literature/interaction.ts'
 import { copyCitationLinks } from '../markdown/citations.ts'
-import { referenceRanges, visibleMarkdownText } from '../markdown/source.ts'
+import { referenceRanges, visibleMarkdownText } from '../../../../markdown/source.ts'
 import { artifactText, deliveryText } from './representation.ts'
 
 const CITATION_AT_END = /\[(\d+)\](?:\([^\n)]*\)|\[[^\n\]]*\])?$/
@@ -21,8 +22,9 @@ export function answerCopyText(text: string, sources: readonly AnswerSource[] = 
     for (const url of source.citation_urls) {
       if (!numbers.has(url)) numbers.set(url, source.number)
     }
-    if (source.kind !== 'searched') continue
+    if (source.kind === 'receipt') continue
     references.push(`[${source.number}] ${source.title}\n${source.url}`)
+    if (source.kind !== 'searched') continue
     for (const occurrence of source.occurrences ?? []) {
       const offset = occurrence.end_utf16
       if (!Number.isInteger(offset) || offset <= 0 || offset > text.length) continue
@@ -124,7 +126,17 @@ export async function replyCopyText(
       const identity = reference.binding ?? item.card.cardId
       if (seen.has(identity)) continue
       seen.add(identity)
-      parts.push((await card(reference, item.card.content, item.card.cardId))?.text ?? missing)
+      const content =
+        item.card.type === 'literature-search'
+          ? {
+              ...item.card.content,
+              context: {
+                ...(item.card.content.context as Record<string, unknown> | undefined),
+                authorization: literatureResultAuthorization(items, item.card.cardId),
+              },
+            }
+          : item.card.content
+      parts.push((await card(reference, content, item.card.cardId))?.text ?? missing)
     }
     if (item.kind === 'hil' || item.kind === 'interaction_reply') {
       const interaction = interactions.get(item.requestId)

@@ -127,15 +127,6 @@ export function ProjectMenu({
                 >
                   {project.name}
                 </span>
-                {project.pinned && (
-                  <IconFont
-                    type="line-tool-pin"
-                    role="img"
-                    aria-hidden={false}
-                    aria-label={layoutText('pinned')}
-                    className="inline-flex size-[var(--vds-icon-7)] shrink-0 items-center justify-center !text-[length:var(--vds-icon-7)] !leading-none text-[var(--vds-brand-text-primary)]"
-                  />
-                )}
                 <span className="flex w-[var(--vds-control-height-sm)] shrink-0 items-center justify-end">
                   {active && (
                     <Check

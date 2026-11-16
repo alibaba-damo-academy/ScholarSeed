@@ -19,7 +19,7 @@ from paper_materials import source_identity
 from chapter_pipeline import generate
 from manuscript import prepare
 from manuscript_delta import apply_delta
-from manuscript_publication import publish,audit
+from manuscript_publication import publish,audit,native_references,native_heading_ids
 from generation_errors import GenerationError
 from templates import LATEX_AUTHORING_GUIDANCE
 
@@ -28,11 +28,13 @@ CFG={'provider':'qwen','model':'fixture','base_url':'http://fixture.invalid','ap
      'max_attempts':1,'timeout':5,'request_deadline_sec':5,'figure_wait_timeout_sec':1}
 
 
+
+
 class Model:
     def __init__(self):self.calls=[];self.systems=[];self.fail=None;self.bad_delta=False;self.active=0;self.peak=0
     async def chat_stream(self,messages,**kwargs):
         packet=json.loads(messages[1]['content']);self.calls.append(packet);self.systems.append(messages[0]['content'])
-        assert 'response_format' not in kwargs  # Chapters are not JSON strings.
+        assert 'response_format' not in kwargs  # Raw chapter text and a plain source delta.
         if 'sources' in packet:
             if self.bad_delta:text='not a valid delta'
             else:text=json.dumps({'edits':[{'target':'main','before':'Mechanisms vary',
@@ -50,6 +52,48 @@ class Model:
 
 
 class NativeTest(unittest.TestCase):
+
+    def test_markdown_heading_ids_preserve_links_and_literal_examples(self):
+        source = ('## **Methods** {#sec:methods} ##\n\n[Methods](#sec:methods).\n\n'
+                  'Results {#sec:results}\n---\n\nLiteral {#sec:body}.\n\n'
+                  '## Code `{#sec:code}`\n\n```md\n## Sample {#sec:sample}\n```\n')
+        result = native_heading_ids(source)
+        self.assertIn('## **Methods** <a id="sec:methods"></a> ##', result)
+        self.assertIn('[Methods](#sec:methods)', result)
+        self.assertIn('Results <a id="sec:results"></a>\n---', result)
+        self.assertIn('Literal {#sec:body}.', result)
+        self.assertIn('## Code `{#sec:code}`', result)
+        self.assertIn('## Sample {#sec:sample}', result)
+        for duplicate in ('## A {#same}\n\n## B {#same}', '<a id="same"></a>\n\n## A {#same}'):
+            with self.subTest(source=duplicate), self.assertRaisesRegex(ValueError, 'duplicate heading identifier'):
+                native_heading_ids(duplicate)
+    def test_native_asset_references_use_displayed_numbers(self):
+        source=(r'图~\ref{fig:F1}；\autoref{fig:F1}；未知\ref{fig:missing}；x~y.'
+                '\n\n<a id="fig-F1"></a>\n\n![图 7](figures/F1.png)\n\n**图 7.** Actual caption.\n')
+        rendered=native_references(source,'chinese')
+        self.assertIn('图 [7](#fig-F1)',rendered)
+        self.assertIn('[图 7](#fig-F1)',rendered)
+        self.assertIn(r'\ref{fig:missing}',rendered)
+        self.assertIn('x~y',rendered)
+        self.assertIn('**图 7.** Actual caption.',rendered)
+        table=r'Table~\ref{tab:T1}'+'\n\n<a id="tab-T1"></a>\n\n**Table 3.** Comparison.\n'
+        self.assertIn('Table [3](#tab-T1)',native_references(table,'english'))
+        table=r'表~\ref{tab:T9}'+'\n\n<a id="tab:T9"></a>\n来源比较。\n\n| A | B |\n| --- | --- |\n| x | y |\n'
+        rendered=native_references(table,'chinese')
+        self.assertIn('表 [1](#tab:T9)',rendered)
+        self.assertIn('**表 1.**',rendered)
+        self.assertIn('来源比较。',rendered)
+        self.assertIn('| x | y |',rendered)
+        figure=(r'图~\ref{fig:methods}。'+'\n\n<a id="fig-methods"></a>\n\n'
+                '![图 2](figures/methods.png)\n\nA descriptive caption without a number.\n\n'
+                '<a id="fig-results"></a>\n\n![Results](figures/results.png)\n')
+        rendered=native_references(figure,'chinese')
+        self.assertIn('图 [2](#fig-methods)',rendered)
+        self.assertIn('**图 2.**',rendered)
+        self.assertIn('**图 3.**',rendered)
+        self.assertNotIn('](#fig:methods)',rendered)
+        self.assertEqual(native_references(rendered,'chinese'),rendered)
+
     def test_clean_precompile_keeps_refinement_context_unchanged(self):
         model = Model()
         with patch('chapter_pipeline.precompile', return_value={'status': 'SUCCESS'}) as compile_once:
@@ -105,6 +149,33 @@ class NativeTest(unittest.TestCase):
 
     def run_pipeline(self,model):return asyncio.run(generate(self.ws,CFG,CFG,model))
 
+
+
+
+    def test_refine_response_resume_preserves_frozen_compilation_diagnostics(self):
+        model=Model()
+        with patch('chapter_pipeline.precompile',return_value={'status':'FAILED','errors':['fixture syntax']}):
+            self.run_pipeline(model)
+        gen=self.ws/'05_generation'
+        packet=(gen/'refine.packet.json').read_bytes()
+        (gen/'full_draft_v2.tex').unlink()  # Simulate interrupted handoff in an isolated fixture.
+        self.run_pipeline(model)
+        self.assertEqual(len(model.calls),4)
+        self.assertEqual((gen/'refine.packet.json').read_bytes(),packet)
+
+    def test_stale_refinement_source_preserves_packet_and_never_overwrites_work(self):
+        configure(self.ws,{'publication':{'format':'markdown'}})
+        model=Model();model.bad_delta=True
+        with self.assertRaises(GenerationError):self.run_pipeline(model)
+        gen=self.ws/'05_generation';packet=(gen/'refine.packet.json').read_bytes()
+        source=gen/'full_draft_v1.md';source.write_text(source.read_text()+'\nUser edit.')
+        with self.assertRaisesRegex(GenerationError,'Current source bundle'):self.run_pipeline(model)
+        self.assertEqual((gen/'refine.packet.json').read_bytes(),packet)
+        self.assertFalse((gen/'full_draft_v2.md').exists())
+        self.assertEqual(len(model.calls),4)
+
+
+
     def test_raw_parallel_complete_template_refinement_and_handoff(self):
         model=Model();out=self.run_pipeline(model)
         self.assertEqual(model.peak,3);self.assertEqual(len(model.calls),4)
@@ -120,11 +191,8 @@ class NativeTest(unittest.TestCase):
         self.assertIn('Mechanisms vary',(gen/'full_draft_v1.tex').read_text())
         self.assertFalse((gen/'manuscript.json').exists())
         self.assertFalse((gen/'full_draft_v3.tex').exists())
-        for p in gen.rglob('*.json'):
-            if p.name in ('writing_evidence.json','evidence_index.json'):continue
-            self.assertNotIn('sha256',p.read_text(),str(p))
         v2.write_text(v2.read_text()+'\n% Main edit\n')
-        self.run_pipeline(model);self.assertEqual(len(model.calls),4)
+        reopened=self.run_pipeline(model);self.assertEqual(len(model.calls),4)
         self.assertIn('Main edit',v2.read_text())
 
     def test_abstract_warnings_feed_existing_refinement_and_clear_after_repair(self):
@@ -406,6 +474,26 @@ class NativeTest(unittest.TestCase):
         self.assertEqual(publish(self.ws)['status'],'SUCCESS')
         self.assertEqual((self.ws/'06_output/figures/F1.png').read_bytes(),png.read_bytes())
 
+    def test_component_publication_contains_its_own_references(self):
+        configure(self.ws, {'output_scope': 'section', 'publication': {'format': 'markdown'}})
+        generation = self.ws / '05_generation'
+        generation.mkdir(exist_ok=True)
+        atomic_json(generation / 'publication.json', {'output_scope': 'section', 'format': 'markdown'})
+        (generation / 'full_draft_v2.md').write_text('## Findings {#sec:findings}\n\n'
+                                                   r'A bounded synthesis \cite{Keyp1}. [Findings](#sec:findings).')
+        shutil.copyfile(self.ws / '03_process/references.bib', generation / 'citations.bib')
+        result = publish(self.ws)
+        content = Path(result['deliverable']).read_text()
+        self.assertEqual(result['status'], 'SUCCESS')
+        self.assertIn('Evidence', content)
+        self.assertIn('](#ref-', content)
+        self.assertNotIn('](references.md#', content)
+        self.assertEqual(content.count('id="ref-'), 1)
+        self.assertIn('<a id="sec:findings"></a>', content)
+        self.assertIn('[Findings](#sec:findings)', content)
+        self.assertNotIn('{#sec:findings}', content)
+        self.assertIn('{#sec:findings}', (generation / 'full_draft_v2.md').read_text())
+
     @unittest.skipUnless(shutil.which('pdflatex'),'TeX unavailable')
     def test_outline_titles_are_escaped_by_assembler(self):
         self.outline['outline_tree'][1]['title']='Methods & Applications: 50% #1'
@@ -413,12 +501,14 @@ class NativeTest(unittest.TestCase):
         self.run_pipeline(Model())
         self.assertEqual(publish(self.ws)['status'],'SUCCESS')
 
-    def test_malformed_refine_hands_v1_to_main_without_new_calls(self):
-        model=Model();model.bad_delta=True;out=self.run_pipeline(model)
+    def test_malformed_refine_preserves_v1_without_creating_v2_or_new_calls(self):
+        model=Model();model.bad_delta=True
+        with self.assertRaises(GenerationError):self.run_pipeline(model)
         gen=self.ws/'05_generation'
-        self.assertFalse(out['refinement_applied']);self.assertTrue(out['issues'])
-        self.assertEqual((gen/'full_draft_v1.tex').read_bytes(),(gen/'full_draft_v2.tex').read_bytes())
-        self.run_pipeline(model);self.assertEqual(len(model.calls),4)
+        self.assertTrue((gen/'full_draft_v1.tex').exists())
+        self.assertFalse((gen/'full_draft_v2.tex').exists())
+        with self.assertRaises(GenerationError):self.run_pipeline(model)
+        self.assertEqual(len(model.calls),4)
 
     def test_complete_but_editorially_broken_chapter_is_not_retried(self):
         model=Model();prepare(self.ws)
@@ -488,7 +578,8 @@ class NativeTest(unittest.TestCase):
                 try:
                     req=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                     requests.append(req)
-                    assert req['stream'] and 'response_format' not in req
+                    assert req['stream']
+                    assert 'response_format' not in req
                     text=asyncio.run(model.chat_stream(req['messages'],_capture={}))
                     self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
                     for i in range(0,len(text),23):

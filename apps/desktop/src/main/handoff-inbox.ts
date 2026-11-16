@@ -13,15 +13,7 @@
 // 日志纪律同 handoff-local.ts：code 是凭据，只打 state 与错误码，绝不打原值。
 
 import { randomUUID } from 'crypto'
-import {
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'fs'
+import { readdirSync, readFileSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
 
 import { STATE_TTL_MS } from './handoff.ts'
@@ -38,6 +30,7 @@ const ENTRY_SCHEMA = 1
 
 export interface HandoffInboxDependencies {
   home: () => string
+  publish: (path: string, bytes: string) => void
   log: (line: string) => void
   now?: () => number
 }
@@ -72,13 +65,10 @@ export function parkCallbackUrl(
   const name = `${randomUUID()}${ENTRY_SUFFIX}`
   try {
     const dir = inboxDir(deps)
-    mkdirSync(dir, { recursive: true })
-    const tmp = join(dir, `${name}${TMP_SUFFIX}`)
     const payload: InboxEntry = { schema: ENTRY_SCHEMA, url, written_at_ms: nowOf(deps) }
     const validated = validateCallbackTiming(timing, url)
     if (validated) payload.launch_timing = validated
-    writeFileSync(tmp, JSON.stringify(payload), { encoding: 'utf8' })
-    renameSync(tmp, join(dir, name))
+    deps.publish(join(dir, name), JSON.stringify(payload))
     return 'parked'
   } catch (e) {
     deps.log(

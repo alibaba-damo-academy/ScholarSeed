@@ -3,26 +3,20 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Callable
 from contextlib import closing
-from copy import deepcopy
 from hashlib import sha256
 from uuid import uuid4
 
 from service.literature.domain.delivery import (
-    DELIVERY_ADMISSION_FIELDS,
-    DELIVERY_DESTINATION_FIELDS,
-    DELIVERY_NOT_FOUND,
     FULLTEXT_BINDING_CONFLICT,
     DeliveryItemState,
     DeliveryState,
 )
-from service.literature.persistence.downloads import DOWNLOAD_ADMISSION_CONFLICT
 from service.literature.persistence.store import connect
 
+DOWNLOAD_ADMISSION_CONFLICT = "download_admission_conflict"
 DELIVERIES_TABLE = "literature_deliveries"
 SOURCE_ALIASES = "source_aliases"
-ATTEMPT_FIELDS = ("id", "session_id", "project_id", "choice", "state", "papers")
 DELIVERIES_DDL = f"""
 CREATE TABLE IF NOT EXISTS {DELIVERIES_TABLE} (
     id TEXT PRIMARY KEY,
@@ -62,6 +56,20 @@ class DeliveryStore:
             self.ensure(connection)
             rows = connection.execute(
                 f"SELECT payload FROM {DELIVERIES_TABLE} ORDER BY created_at DESC"
+            ).fetchall()
+        return tuple(json.loads(row["payload"]) for row in rows)
+
+    def session_batches(self, session_id: str) -> tuple[dict, ...]:
+        """Every delivery batch one session recorded, newest first, any project scope.
+
+        产品侧「这次会话已经拿到过哪些全文」只需要会话这一层范围: 一个会话只属于一个
+        项目, 而 payload 里本来就带着当时记录的 project_id/run, 不需要调用方先猜出来。
+        """
+        with closing(connect()) as connection:
+            self.ensure(connection)
+            rows = connection.execute(
+                f"SELECT payload FROM {DELIVERIES_TABLE} WHERE session_id=? ORDER BY created_at DESC, id",
+                (session_id,),
             ).fetchall()
         return tuple(json.loads(row["payload"]) for row in rows)
 
@@ -251,113 +259,3 @@ class DeliveryStore:
             (delivery_id, session_id, project_id, run, json.dumps(value), time.time(), time.time()),
         )
         return delivery_id
-
-    def acquisition(
-        self, session_id: str, project_id: str, run: str, paper_id: str, revision: str
-    ) -> dict | None:
-        binding = self.bindings(session_id, project_id, run).get(paper_id)
-        return binding if binding is not None and binding["revision"] == revision else None
-
-    def source(self, session_id: str, operation_id: str) -> dict | None:
-        with closing(connect()) as connection:
-            self.ensure(connection)
-            rows = connection.execute(
-                f"SELECT payload FROM {DELIVERIES_TABLE} WHERE session_id=? ORDER BY created_at DESC",
-                (session_id,),
-            ).fetchall()
-        return next(
-            (
-                paper
-                for row in rows
-                for current in json.loads(row["payload"])["papers"]
-                for paper in self.sources(current)
-                if paper.get("admission_operation") == operation_id
-            ),
-            None,
-        )
-
-    def by_run(self, session_id: str, run: str) -> dict:
-        with closing(connect()) as connection, connection:
-            self.ensure(connection)
-            row = connection.execute(
-                f"SELECT payload FROM {DELIVERIES_TABLE} WHERE session_id=? AND run=? "
-                "ORDER BY created_at DESC, id DESC LIMIT 1",
-                (session_id, run),
-            ).fetchone()
-        if row is None:
-            raise ValueError(DELIVERY_NOT_FOUND)
-        return json.loads(row["payload"])
-
-    def get(self, session_id: str, delivery_id: str) -> dict:
-        with closing(connect()) as connection, connection:
-            self.ensure(connection)
-            row = connection.execute(
-                f"SELECT payload FROM {DELIVERIES_TABLE} WHERE session_id=? AND id=?",
-                (session_id, delivery_id),
-            ).fetchone()
-        if row is None:
-            raise ValueError(DELIVERY_NOT_FOUND)
-        return json.loads(row["payload"])
-
-    def begin(self, session_id: str, delivery_id: str, choice: dict) -> dict:
-        def change(value: dict) -> None:
-            previous = value["choice"]
-            same_destination = previous is not None and all(
-                previous.get(key) == choice.get(key) for key in DELIVERY_DESTINATION_FIELDS
-            )
-            resume = (
-                bool(value.get("attempt_id"))
-                and value["state"] in (DeliveryState.SAVING, DeliveryState.PARTIAL)
-                and same_destination
-                and previous is not None
-                and all(previous.get(key) == choice.get(key) for key in DELIVERY_ADMISSION_FIELDS)
-            )
-            if not resume:
-                previous_id = value.get("attempt_id") or value["id"]
-                if previous is not None:
-                    snapshot = deepcopy({key: value[key] for key in ATTEMPT_FIELDS})
-                    snapshot["attempt_id"] = previous_id
-                    value.setdefault("history", []).append(snapshot)
-                value["attempt_id"] = uuid4().hex
-                for paper in value["papers"]:
-                    operation = (
-                        paper.get("save_operation") or f'{previous_id}:{paper["paper_id"]}'
-                        if same_destination
-                        else f'{value["attempt_id"]}:{paper["paper_id"]}'
-                    )
-                    retain_saved = same_destination and paper["saved"] == DeliveryItemState.SAVED
-                    paper.update(
-                        saved=(
-                            DeliveryItemState.SAVED if retain_saved else DeliveryItemState.PENDING
-                        ),
-                        resource_path=paper["resource_path"] if retain_saved else "",
-                        library=DeliveryItemState.PENDING,
-                        literature_id="",
-                        error="",
-                        library_error="",
-                        save_reused=False,
-                        library_reused=False,
-                        versions=[],
-                        save_operation=operation,
-                    )
-            value.update(choice=deepcopy(choice), state=DeliveryState.SAVING, prompted=True)
-
-        return self.update(session_id, delivery_id, change)
-
-    def update(self, session_id: str, delivery_id: str, change: Callable[[dict], None]) -> dict:
-        with closing(connect()) as connection, connection:
-            self.ensure(connection)
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                f"SELECT payload FROM {DELIVERIES_TABLE} WHERE session_id=? AND id=?",
-                (session_id, delivery_id),
-            ).fetchone()
-            if row is None:
-                raise ValueError(DELIVERY_NOT_FOUND)
-            value = json.loads(row["payload"])
-            change(value)
-            connection.execute(
-                f"UPDATE {DELIVERIES_TABLE} SET payload=?,updated_at=? WHERE id=?",
-                (json.dumps(value), time.time(), delivery_id),
-            )
-        return value

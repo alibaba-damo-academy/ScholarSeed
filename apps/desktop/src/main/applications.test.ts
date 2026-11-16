@@ -14,7 +14,11 @@ const code = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
 
-function discovery(candidates: AppCandidate[], unavailable = false) {
+function discovery(
+  candidates: AppCandidate[],
+  unavailable = false,
+  defaultPath: string | null = candidates.find((candidate) => candidate.isDefault)?.path ?? null
+) {
   const calls: Array<{ executable: string; args: string[] }> = []
   const exports: { appsForFile?: (filePath: string) => Promise<AppCandidate[]> } = {}
   runInNewContext(code, {
@@ -31,7 +35,7 @@ function discovery(candidates: AppCandidate[], unavailable = false) {
               child.emit('error', new Error('osascript unavailable'))
               return
             }
-            child.stdout.end(JSON.stringify({ default: null, apps: candidates }))
+            child.stdout.end(JSON.stringify({ default: defaultPath, apps: candidates }))
             child.emit('close', 0)
           })
           return child
@@ -134,4 +138,120 @@ test('missing paths and an unavailable macOS enumerator retain the empty-list be
   assert.equal((await fixture.appsForFile('')).length, 0)
   assert.equal(fixture.calls.length, 0)
   assert.equal((await fixture.appsForFile('C:\\workspace\\document.docx')).length, 0)
+})
+
+const testingIdentity = {
+  bundleId: 'com.google.chrome.for.testing',
+  bundleName: 'Google Chrome for Testing',
+  executable: 'Google Chrome for Testing',
+}
+
+function versioned(path: string, version?: string, build?: string) {
+  return {
+    ...application(path, false, 'Google Chrome for Testing'),
+    ...testingIdentity,
+    version,
+    build,
+  }
+}
+
+test('software versions collapse before the cap using bundle versions, not directory numbers', async () => {
+  const newest = versioned('/chromium-1208/Testing.app', '156.0.8078.4', '8078.4')
+  const candidates = [
+    ...Array.from({ length: 12 }, (_, index) =>
+      versioned(`/chromium-${1234 + index}/Testing.app`, '151.0.7922.34', '7922.34')
+    ),
+    versioned('/chromium-9999/Testing.app', '147.0.7727.15', '7727.15'),
+    newest,
+    application('/Applications/Other.app'),
+  ]
+  const result = await discovery(candidates).appsForFile('/sample.png')
+  assert.deepEqual(
+    result.map((candidate) => candidate.path).sort(),
+    [newest.path, '/Applications/Other.app'].sort()
+  )
+  assert.deepEqual(
+    result.find((candidate) => candidate.path === newest.path),
+    application(newest.path, false, newest.name)
+  )
+})
+
+test('the exact system default wins over newer versions and remains ahead of the cap', async () => {
+  const preferred = versioned('/Z/Testing.app', '147.0.7727.15')
+  const newer = versioned('/A/Testing.app', '156.0.8078.4')
+  const others = Array.from({ length: 12 }, (_, index) =>
+    application(`/Applications/A${index}.app`)
+  )
+  const result = await discovery([...others, newer, preferred], false, preferred.path).appsForFile(
+    '/sample.png'
+  )
+  assert.equal(result.length, 10)
+  assert.deepEqual(result[0], application(preferred.path, true, preferred.name))
+  assert.equal(
+    result.some((candidate) => candidate.path === newer.path),
+    false
+  )
+})
+
+test('equal short versions compare build facts and equal builds select a stable actual path', async () => {
+  const candidates = [
+    versioned('/Z/Testing.app', '156.0.0.0', '100.10'),
+    versioned('/A/Testing.app', '156.0', '100.10.0'),
+    versioned('/B/Testing.app', '156.0.0', '100.9'),
+  ]
+  for (const ordered of [candidates, [...candidates].reverse()]) {
+    const result = await discovery(ordered).appsForFile('/sample.png')
+    assert.deepEqual(
+      result.map((candidate) => candidate.path),
+      ['/A/Testing.app']
+    )
+  }
+})
+
+test('missing, nonnumeric and prerelease versions fall back stably without guessing latest', async () => {
+  for (const unknown of [undefined, '', 'latest', '156.0.0-beta.1', '26.8.0.0.alpha0']) {
+    const candidates = [versioned('/Z/Testing.app', '999.0'), versioned('/A/Testing.app', unknown)]
+    for (const ordered of [candidates, [...candidates].reverse()]) {
+      assert.deepEqual(
+        (await discovery(ordered).appsForFile('/sample.png')).map((candidate) => candidate.path),
+        ['/A/Testing.app']
+      )
+    }
+  }
+  const builds = [
+    versioned('/Z/Testing.app', '1.0', '200'),
+    versioned('/A/Testing.app', '1.0', 'alpha0'),
+  ]
+  assert.deepEqual(
+    (await discovery(builds).appsForFile('/sample.png')).map((candidate) => candidate.path),
+    ['/A/Testing.app']
+  )
+})
+
+test('same names, shared bundle identifiers and unknown identities do not merge different products', async () => {
+  const candidates = [
+    versioned('/Testing.app', '156.0'),
+    { ...versioned('/Chrome.app', '157.0'), bundleId: 'com.google.Chrome' },
+    {
+      ...versioned('/LibreOffice.app', '25.0'),
+      bundleId: 'org.libreoffice.script',
+      bundleName: 'LibreOffice',
+      executable: 'soffice',
+    },
+    {
+      ...versioned('/LibreOfficeDev.app', '26.0'),
+      bundleId: 'org.libreoffice.script',
+      bundleName: 'LibreOfficeDev',
+      executable: 'soffice',
+    },
+    { ...versioned('/Other.app', '157.0'), executable: 'other' },
+    { ...versioned('/Edition.app', '157.0'), bundleDisplayName: 'Testing Dev' },
+    { ...versioned('/Unknown.app', '157.0'), bundleName: undefined },
+    { ...versioned('/Unknown2.app', '157.0'), bundleId: undefined },
+  ]
+  const result = await discovery([...candidates, candidates[0]]).appsForFile('/sample.png')
+  assert.deepEqual(
+    result.map((candidate) => candidate.path).sort(),
+    candidates.map((candidate) => candidate.path).sort()
+  )
 })

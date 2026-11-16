@@ -7,13 +7,15 @@ from pathlib import Path
 
 from service.chat.constants import (
     PRODUCT_EVENT_USER_MESSAGE,
+    PRODUCT_REFERENCE_DIRECTORY,
     PRODUCT_REFERENCE_FILE,
+    PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
 )
 from service.chat.persistence.catalog import SessionCatalogStore
 from service.chat.persistence.events import ProductEventStore
 from service.chat.service.artifacts import ArtifactReadError
-from service.paths import SESSION_ATTACHMENT_DIRNAME
+from service.paths import session_attachment_root
 from service.platform.citations import CitationDocument, CitationSourceChanged
 
 ATTACHMENT_NOT_FOUND = "session_attachment_not_found"
@@ -93,11 +95,14 @@ class AttachmentService:
                 for ref in event.payload.get("refs", []):
                     if not isinstance(ref, dict):
                         continue
-                    if ref.get("type") != PRODUCT_REFERENCE_FILE or ref.get("id") != reference_id:
+                    if ref.get("type") not in (
+                        PRODUCT_REFERENCE_FILE,
+                        PRODUCT_REFERENCE_DIRECTORY,
+                    ) or reference_id not in (ref.get("id"), ref.get("path")):
                         continue
                     target = self._reference_path(session_id, ref, event.product_seq)
                     try:
-                        if ref.get("sha256"):
+                        if ref.get("type") == PRODUCT_REFERENCE_FILE and ref.get("sha256"):
                             with target.open("rb") as stream:
                                 if file_digest(stream, "sha256").hexdigest() != ref["sha256"]:
                                     raise ArtifactReadError(ATTACHMENT_CHANGED)
@@ -116,14 +121,26 @@ class AttachmentService:
         target = raw.resolve()
         if target != raw:
             raise ArtifactReadError(ATTACHMENT_FORBIDDEN)
-        if ref.get("origin") != PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE:
+        directory = ref.get("type") == PRODUCT_REFERENCE_DIRECTORY
+        expected_origin = (
+            PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY
+            if directory
+            else PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE
+        )
+        if ref.get("origin") != expected_origin:
+            if directory:
+                raise ArtifactReadError(ATTACHMENT_FORBIDDEN)
             try:
                 origin = self._events.workspace_for_sequence(session, source_seq)
             except ValueError as error:
                 raise ArtifactReadError(ATTACHMENT_FORBIDDEN) from error
-            root = Path(origin.runtime_workdir).resolve()
-            if not target.is_relative_to(root / SESSION_ATTACHMENT_DIRNAME):
+            root = session_attachment_root(
+                origin.session_id,
+                Path(origin.runtime_workdir),
+                Path(origin.project_path) if origin.project_path else None,
+            )
+            if not target.is_relative_to(root):
                 raise ArtifactReadError(ATTACHMENT_FORBIDDEN)
-        if not target.is_file():
+        if not (target.is_dir() if directory else target.is_file()):
             raise ArtifactReadError(ATTACHMENT_NOT_FOUND)
         return target

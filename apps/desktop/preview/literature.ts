@@ -13,6 +13,7 @@ export const PREVIEW_LITERATURE = {
   busy: 'preview_literature_write_pending',
   readFailure: 'preview_literature_read_unavailable',
   detailFailure: 'preview_literature_detail_unavailable',
+  sourceChanged: 'pdf_ai_source_changed',
   writeFailure: 'preview_literature_write_unavailable',
   invalidQuery: 'preview_literature_query_invalid',
   invalid: 'literature_library_invalid',

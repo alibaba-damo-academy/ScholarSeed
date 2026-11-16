@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp } from 'node:fs/promises'
+import type { ServerResponse } from 'node:http'
 import path from 'node:path'
+import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import test, { after } from 'node:test'
-import { chromium, expect, type Browser, type Page, type Route } from '@playwright/test'
+import { chromium, expect, type Browser, type Page, type Request } from '@playwright/test'
 import react from '@vitejs/plugin-react'
+import { transformSync } from 'esbuild'
+import { RENDERER_SHARED_DEPENDENCIES } from '../../../../../renderer.ts'
 import { renderServers } from '../../../../test-helpers/render.ts'
 
 const DESKTOP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..')
@@ -11,6 +16,21 @@ const servers = renderServers({ after })
 const STORE = '\0history-store'
 const ENTRY = '\0history-entry'
 const CHILDREN = '\0history-children'
+const HISTORY_PATH = '/api/serve/sessions'
+interface HistoryRequest {
+  url: URL
+  response: ServerResponse
+}
+const childrenSource = `
+import React from 'react'
+export const Composer = ({ inputBoxRef }) => React.createElement('div', { ref: inputBoxRef })
+export const ConversationControls = ({ children }) => children
+export const PendingHilDock = () => null
+export const Stream = () => null
+export const TodoPanel = () => null
+export const LoginPrompt = () => null
+export const Translation = () => null
+`
 const store = `
 import React from 'react'
 import { INITIAL_AI_PANEL_STATE } from '/src/renderer/src/features/assistant/state.ts'
@@ -55,12 +75,31 @@ createRoot(document.getElementById('root')).render(
 `
 
 async function fixture(
-  run: (page: Page, pending: Route[], requests: URL[]) => Promise<void>
+  run: (page: Page, pending: HistoryRequest[], requests: URL[]) => Promise<void>
 ): Promise<void> {
+  const startedAt = performance.now()
+  const navigation: { stage: string; elapsedMs: number; error?: string }[] = []
+  const recordNavigation = (stage: string, error?: unknown): void => {
+    const event = {
+      stage,
+      elapsedMs: performance.now() - startedAt,
+      ...(error === undefined ? {} : { error: String(error) }),
+    }
+    navigation.push(event)
+    console.info('[history-navigation]', JSON.stringify(event))
+  }
+  transformSync(childrenSource, { loader: 'js' })
+  const pending: HistoryRequest[] = []
+  const requests: URL[] = []
   const server = await servers.create({
     cacheKey: 'history',
     configFile: false,
     root: DESKTOP,
+    optimizeDeps: {
+      entries: ['src/renderer/src/features/assistant/AiPanel.tsx'],
+      include: [...RENDERER_SHARED_DEPENDENCIES, 'react-dom/client'],
+    },
+    resolve: { dedupe: RENDERER_SHARED_DEPENDENCIES },
     plugins: [
       {
         name: 'history-fixture',
@@ -87,26 +126,31 @@ async function fixture(
         load(id) {
           if (id === STORE) return store
           if (id === ENTRY) return entry
-          if (id === CHILDREN)
-            return `
-          import React from 'react'
-          export const Composer = ({ inputBoxRef }) => React.createElement('div', { ref: inputBoxRef })
-          export const ConversationControls = ({ children }) => children
-          export const Stream = () => null
-          export const TodoPanel = () => null
-          export const LoginPrompt = () => null
-          export const Translation = () => null
-        `
+          if (id === CHILDREN) return childrenSource
         },
         configureServer(server) {
-          server.middlewares.use('/history-fixture.html', async (_request, response) => {
+          server.middlewares.use((request, response, next) => {
+            const url = new URL(request.url ?? '/', `http://${request.headers.host}`)
+            if (url.pathname !== HISTORY_PATH) return next()
+            requests.push(url)
+            pending.push({ url, response })
+          })
+          server.middlewares.use('/history-fixture.html', async (_request, response, next) => {
+            recordNavigation('request')
+            response.once('finish', () => recordNavigation('response-finished'))
+            response.once('close', () => recordNavigation('response-closed'))
             response.setHeader('Content-Type', 'text/html')
-            response.end(
-              await server.transformIndexHtml(
+            try {
+              const html = await server.transformIndexHtml(
                 '/history-fixture.html',
                 '<div id="root"></div><script type="module" src="/@id/__x00__history-entry"></script>'
               )
-            )
+              recordNavigation('html-ready')
+              response.end(html)
+            } catch (error) {
+              recordNavigation('html-failed', error)
+              next(error)
+            }
           })
         },
       },
@@ -115,34 +159,114 @@ async function fixture(
     server: { host: '127.0.0.1', port: 0, hmr: false },
   })
   let browser: Browser | undefined
+  server.httpServer?.prependListener('request', (request) => {
+    if (request.url?.startsWith('/history-fixture.html')) recordNavigation('http-request')
+  })
   try {
     await server.listen()
     browser = await chromium.launch({ headless: true })
     const page = await browser.newPage()
     page.setDefaultTimeout(5_000)
     const errors: string[] = []
-    const pending: Route[] = []
-    const requests: URL[] = []
+    const diagnostics: string[] = []
+    const loading = new Set<Request>()
+    const documents: Request[] = []
+    page.on('domcontentloaded', () => recordNavigation('domcontentloaded'))
+    page.on('load', () => recordNavigation('load'))
     page.on('pageerror', (error) => errors.push(error.stack ?? error.message))
-    await page.route('**/api/serve/sessions?**', (route) => {
-      requests.push(new URL(route.request().url()))
-      pending.push(route)
+    page.on('request', (request) => {
+      loading.add(request)
+      if (request.isNavigationRequest()) {
+        documents.push(request)
+        recordNavigation('browser-request')
+      }
     })
-    await page.goto(new URL('/history-fixture.html', server.resolvedUrls!.local[0]).href)
-    await expect(page.getByTestId('ai-session-toggle'))
-      .toBeVisible()
-      .catch((error) => {
-        throw new Error(`${error.message}\nRenderer errors: ${errors.join('; ')}`)
-      })
-    await expect.poll(() => pending.length).toBe(2)
-    await reply(pending.shift()!, 0, 0, null)
-    const prewarm = pending.shift()!
-    await page.getByTestId('ai-session-toggle').click()
-    await expect(page.getByTestId('ai-session-search')).toBeFocused()
-    await expect.poll(() => pending.length).toBe(1)
-    await reply(prewarm, 0, 0, null)
-    await run(page, pending, requests)
-    assert.deepEqual(errors, [])
+    page.on('requestfinished', (request) => loading.delete(request))
+    page.on('requestfailed', (request) => {
+      loading.delete(request)
+      diagnostics.push(`${request.failure()?.errorText} ${new URL(request.url()).pathname}`)
+    })
+    page.on('console', (message) => {
+      if (message.type() === 'error') diagnostics.push(message.text())
+    })
+    page.on('response', (response) => {
+      if (response.status() >= 400)
+        diagnostics.push(`${response.status()} ${new URL(response.url()).pathname}`)
+    })
+    const navigationCpu = process.cpuUsage()
+    const eventLoop = monitorEventLoopDelay()
+    eventLoop.enable()
+    try {
+      recordNavigation('goto')
+      await page.goto(new URL('/history-fixture.html', server.resolvedUrls!.local[0]).href)
+      await expect(page.getByTestId('ai-session-toggle')).toBeVisible()
+      await expect.poll(() => pending.length).toBe(2)
+      await reply(pending.shift()!, 0, 0, null)
+      const prewarm = pending.shift()!
+      recordNavigation('open-menu')
+      await page.getByTestId('ai-session-toggle').click()
+      await expect(page.getByTestId('ai-session-search')).toBeFocused()
+      await expect.poll(() => pending.length).toBe(1)
+      await reply(prewarm, 0, 0, null)
+      recordNavigation('case')
+      await run(page, pending, requests)
+      assert.deepEqual(errors, [])
+    } catch (error) {
+      recordNavigation('fixture-failed', error)
+      const runtime = {
+        cpu: process.cpuUsage(navigationCpu),
+        eventLoopMaxMs: eventLoop.max / 1e6,
+        timeOrigin: performance.timeOrigin,
+        startedAt,
+      }
+      const document = await page
+        .evaluate(() => {
+          const toggle = globalThis.document.querySelector('[data-testid="ai-session-toggle"]')
+          const style = toggle && getComputedStyle(toggle)
+          return {
+            url: location.href,
+            rootChildren: globalThis.document.getElementById('root')?.childElementCount,
+            scripts: Array.from(globalThis.document.scripts, (script) => script.src),
+            visibility: globalThis.document.visibilityState,
+            focused: globalThis.document.hasFocus(),
+            fonts: globalThis.document.fonts.status,
+            toggle: toggle && {
+              rect: toggle.getBoundingClientRect().toJSON(),
+              disabled: toggle instanceof HTMLButtonElement && toggle.disabled,
+              display: style?.display,
+              visibility: style?.visibility,
+              animation: style?.animationName,
+            },
+            animations: globalThis.document.getAnimations().map((animation) => ({
+              state: animation.playState,
+              time: animation.currentTime,
+              target:
+                animation.effect instanceof KeyframeEffect &&
+                animation.effect.target instanceof Element
+                  ? (animation.effect.target.getAttribute('data-testid') ??
+                    animation.effect.target.tagName)
+                  : null,
+            })),
+          }
+        })
+        .catch((failure) => ({ error: String(failure) }))
+      let screenshot: string
+      try {
+        const parent = path.join(DESKTOP, 'test-results')
+        await mkdir(parent, { recursive: true })
+        const directory = await mkdtemp(path.join(parent, 'history-'))
+        screenshot = path.join(directory, 'failure.png')
+        await page.screenshot({ path: screenshot })
+      } catch (failure) {
+        screenshot = `capture failed: ${String(failure)}`
+      }
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\nRenderer errors: ${errors.join('; ')}\nDiagnostics: ${diagnostics.join('; ')}\nLoading: ${JSON.stringify([...loading].map((request) => request.url()))}\nDocument: ${JSON.stringify(document)}\nNetwork: ${JSON.stringify(documents.map((request) => ({ url: request.url(), timing: request.timing() })))}\nNavigation: ${JSON.stringify(navigation)}\nRuntime: ${JSON.stringify(runtime)}\nScreenshot: ${screenshot}`,
+        { cause: error }
+      )
+    } finally {
+      eventLoop.disable()
+    }
   } finally {
     await browser?.close()
     await server.close()
@@ -161,18 +285,27 @@ const rows = (start: number, end: number) =>
     last_agent_reply_at: 1_000 - (start + index),
   }))
 
-const reply = (route: Route, start: number, end: number, next: number | null) =>
-  route.fulfill({
-    json: {
-      sessions: rows(start, end),
-      total: 65,
-      next_cursor: next === null ? null : 'page-' + next,
-    },
+function respond(request: HistoryRequest, payload: unknown, status = 200): Promise<void> {
+  return new Promise((resolve, reject) => {
+    request.response.once('error', reject)
+    request.response.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    })
+    request.response.end(JSON.stringify(payload), resolve)
+  })
+}
+
+const reply = (request: HistoryRequest, start: number, end: number, next: number | null) =>
+  respond(request, {
+    sessions: rows(start, end),
+    total: 65,
+    next_cursor: next === null ? null : 'page-' + next,
   })
 
 const items = (page: Page) => page.locator('[data-testid^="ai-session-saved-"]')
 
-async function nextRequest(pending: Route[]): Promise<Route> {
+async function nextRequest(pending: HistoryRequest[]): Promise<HistoryRequest> {
   await expect.poll(() => pending.length).toBe(1)
   return pending.shift()!
 }
@@ -217,9 +350,7 @@ test(
       const requestCount = requests.length
       await page.evaluate(() => Reflect.get(window, 'historyProbe').unmount())
       await expect(page.getByTestId('ai-session-toggle')).toHaveCount(0)
-      const responseReady = page.waitForResponse(
-        (response) => response.url() === initial.request().url()
-      )
+      const responseReady = page.waitForResponse((response) => response.url() === initial.url.href)
       await reply(initial, 0, 30, 30)
       await (await responseReady).finished()
       await page.evaluate(
@@ -246,9 +377,7 @@ test(
       await expect(items(page)).toHaveCount(0)
       const lastRows = rows(59, 65)
       lastRows.at(-1)!.last_agent_reply_at = 2_000
-      await last.fulfill({
-        json: { sessions: lastRows, total: 65, next_cursor: null },
-      })
+      await respond(last, { sessions: lastRows, total: 65, next_cursor: null })
       await expect(items(page)).toHaveCount(65)
       assert.deepEqual(
         await items(page).evaluateAll((elements) =>
@@ -272,13 +401,13 @@ test(
   { timeout: 60_000 },
   async () =>
     fixture(async (page, pending, requests) => {
-      await pending.shift()!.fulfill({ status: 503, json: {} })
+      await respond(pending.shift()!, {}, 503)
       await page.getByTestId('ai-session-retry').click()
       await reply(await nextRequest(pending), 0, 30, 30)
       assertCursor(requests, null)
       const continuation = await nextRequest(pending)
       assertCursor(requests, 'page-30')
-      await continuation.fulfill({ status: 503, json: {} })
+      await respond(continuation, {}, 503)
       await expect(page.getByTestId('ai-session-retry')).toBeVisible()
       await expect(items(page)).toHaveCount(0)
       await page.getByTestId('ai-session-retry').click()
@@ -289,11 +418,11 @@ test(
       await expect(items(page)).toHaveCount(65)
 
       await refresh(page)
-      await (await nextRequest(pending)).fulfill({ status: 503, json: {} })
+      await respond(await nextRequest(pending), {}, 503)
       await expect(items(page)).toHaveCount(65)
       await page.getByTestId('ai-session-retry').click()
       await reply(await nextRequest(pending), 0, 30, 30)
-      await (await nextRequest(pending)).fulfill({ status: 503, json: {} })
+      await respond(await nextRequest(pending), {}, 503)
       await expect(items(page)).toHaveCount(65)
       await page.getByTestId('ai-session-retry').click()
       const replacement = await nextRequest(pending)
@@ -309,7 +438,7 @@ test(
   async () =>
     fixture(async (page, pending) => {
       const search = page.getByTestId('ai-session-search')
-      await pending.shift()!.fulfill({ status: 503, json: {} })
+      await respond(pending.shift()!, {}, 503)
       const retry = page.getByTestId('ai-session-retry')
       await retry.focus()
       await page.keyboard.press('Enter')
@@ -348,7 +477,7 @@ test(
       await reply(first, 0, 30, 30)
       const second = await nextRequest(pending)
       assertCursor(requests, 'page-30')
-      await second.fulfill({ status: 503, json: {} })
+      await respond(second, {}, 503)
       await expect(page.getByTestId('ai-session-retry')).toBeVisible()
       await page.getByTestId('ai-session-retry').click()
       const restarted = await nextRequest(pending)

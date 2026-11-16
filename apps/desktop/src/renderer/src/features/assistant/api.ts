@@ -1,5 +1,7 @@
 import { assistantRequestFailure, AssistantRequestError } from './failure.ts'
 import type { AssistantFailure } from '../../contracts/assistant'
+import type { AnswerSource, SessionArtifact } from '../../model'
+import { getSessionFiles } from '../../api.ts'
 import type { ContextLabelFallback } from '../../contracts/assistant'
 /** HTTP client owned by the Assistant feature. */
 import type { TFunction } from 'i18next'
@@ -52,6 +54,56 @@ const SELECTION_ACTIVITY_TYPES = new Set([
   'output_completed',
 ])
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
+
+export type ArtifactDirectoryEntry =
+  | { path: string; kind: 'directory' }
+  | { path: string; kind: 'file'; sha256: string; size: number; media_type: string }
+
+export interface ArtifactDirectorySnapshot {
+  artifact_id: string
+  kind: 'directory'
+  sha256: string
+  version: 1
+  total_size: number
+  entries: ArtifactDirectoryEntry[]
+}
+
+export async function resolveArtifactDirectorySource(
+  sessionId: string,
+  artifact: SessionArtifact
+): Promise<string | undefined> {
+  const source = artifact.absolute_path
+  if (!sessionId || !source || artifact.status === 'deleted') return undefined
+  const listing = await getSessionFiles(sessionId, source)
+  return listing?.path === artifact.path ? source : undefined
+}
+
+export async function fetchArtifactDirectory(
+  sessionId: string,
+  artifactId: string,
+  signal?: AbortSignal
+): Promise<ArtifactDirectorySnapshot> {
+  const response = await fetch(
+    `${base()}/api/serve/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/entries`,
+    { credentials: 'include', signal }
+  )
+  if (!response.ok) throw new Error(`artifact_directory_http_${response.status}`)
+  return response.json()
+}
+
+export async function previewPdfComment(
+  sourceId: string,
+  sourceRevision: string
+): Promise<{ comment: string; page: number }> {
+  const response = await fetch(`${base()}/api/workbench/pdf-comments/preview`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_id: sourceId, source_revision: sourceRevision }),
+  })
+  if (!response.ok) throw new Error('pdf_comment_preview_failed')
+  return (await response.json()) as { comment: string; page: number }
+}
 
 export interface SessionReferenceMessage {
   message_id: string
@@ -240,6 +292,8 @@ interface LiteratureContextItem {
   publication_display: string
   year: number | null
   created_at: string
+  updated_at?: string
+  primary_attachment?: { name: string } | null
   last_read_at: string | null
 }
 
@@ -388,18 +442,21 @@ export async function updateAnswerAnnotation(
   }
 }
 
-async function deleteAnswerAnnotationRequest(
+const ANNOTATION_CONTEXT_SUFFIX = '/context'
+
+async function annotationSelectionRequest(
   sessionId: string,
   annotationId: string,
   suffix: string,
-  body: Record<string, number>
+  body: Record<string, number>,
+  method: 'POST' | 'DELETE' = 'DELETE'
 ): Promise<AnswerAnnotationApiResult> {
   try {
     const response = await fetch(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}` +
         `/annotations/${encodeURIComponent(annotationId)}${suffix}`,
       {
-        method: 'DELETE',
+        method,
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -421,9 +478,25 @@ export async function removeAnswerAnnotationContext(
   annotationId: string,
   expectedContextRevision: number
 ): Promise<AnswerAnnotationApiResult> {
-  return deleteAnswerAnnotationRequest(sessionId, annotationId, '/context', {
+  return annotationSelectionRequest(sessionId, annotationId, ANNOTATION_CONTEXT_SUFFIX, {
     expected_context_revision: expectedContextRevision,
   })
+}
+
+export async function enqueueAnswerAnnotation(
+  sessionId: string,
+  annotationId: string,
+  expectedContextRevision: number
+): Promise<AnswerAnnotationApiResult> {
+  return annotationSelectionRequest(
+    sessionId,
+    annotationId,
+    ANNOTATION_CONTEXT_SUFFIX,
+    {
+      expected_context_revision: expectedContextRevision,
+    },
+    'POST'
+  )
 }
 
 export async function deleteAnswerAnnotation(
@@ -432,7 +505,7 @@ export async function deleteAnswerAnnotation(
   expectedAnnotationRevision: number,
   expectedContextRevision: number
 ): Promise<AnswerAnnotationApiResult> {
-  return deleteAnswerAnnotationRequest(sessionId, annotationId, '', {
+  return annotationSelectionRequest(sessionId, annotationId, '', {
     expected_annotation_revision: expectedAnnotationRevision,
     expected_context_revision: expectedContextRevision,
   })
@@ -1097,6 +1170,7 @@ async function queryLiteratureCandidates(
       items.push(
         ...(payload.items ?? []).map((item) => {
           const createdAt = Date.parse(item.created_at)
+          const updatedAt = item.updated_at ? Date.parse(item.updated_at) : Number.NaN
           const openedAt = item.last_read_at ? Date.parse(item.last_read_at) : Number.NaN
           return {
             kind: 'literature' as const,
@@ -1106,6 +1180,10 @@ async function queryLiteratureCandidates(
               .filter(Boolean)
               .join(' · '),
             ...(Number.isFinite(createdAt) ? { created_at: createdAt / 1000 } : {}),
+            ...(Number.isFinite(updatedAt) ? { updated_at: updatedAt / 1000 } : {}),
+            ...(item.primary_attachment?.name
+              ? { display_file_name: item.primary_attachment.name }
+              : {}),
             ...(Number.isFinite(openedAt) ? { opened_at: openedAt / 1000 } : {}),
             retention: 'next_turn' as const,
             origin: 'explicit' as const,
@@ -1147,6 +1225,22 @@ export async function getAssistantInvocation(
   } catch {
     return null
   }
+}
+
+export async function turnCitationSources(
+  sessionId: string,
+  turnId: string
+): Promise<{
+  sources: AnswerSource[]
+  markdown: string
+  answer_id: string
+}> {
+  const response = await fetch(
+    `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/sources`,
+    { credentials: 'include' }
+  )
+  if (!response.ok) throw new Error('citation_sources_unavailable')
+  return response.json()
 }
 
 export async function citationSources(

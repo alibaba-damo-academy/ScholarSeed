@@ -6,11 +6,44 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent, Session, WebContentsView } from 'electron'
 import { createMenuOwner, MenuActionRegistry } from './menuhost.ts'
-import { MENU_CHANNEL, parseMenuEvent, parseMenuModel } from '../menu.ts'
+import {
+  MENU_ACTION,
+  MENU_CHANNEL,
+  isAccountMenuLanguageValue,
+  menuActions,
+  parseMenuEvent,
+  parseMenuModel,
+} from '../menu.ts'
+import { SYSTEM_LANGUAGE_MODE } from '../preferences.ts'
 import type { MenuActionResult } from '../menu.ts'
 import type { FindState } from '../browser.ts'
 
 type IpcHandler = Parameters<IpcMain['handle']>[1]
+
+test('account language display and execution share a bounded surface-specific value contract', () => {
+  const registry = new MenuActionRegistry()
+  registry.register(MENU_ACTION.language, {
+    surface: 'account-menu',
+    close: 'keep-open',
+    validateValue: isAccountMenuLanguageValue,
+    execute: () => undefined,
+  })
+  const model = parseMenuModel(accountModel)
+  const item = { ...menuActions(model.items)[0], actionId: MENU_ACTION.language }
+  for (const value of ['zh-CN', 'en', SYSTEM_LANGUAGE_MODE]) {
+    const choice = { kind: 'choice', value } as const
+    assert.equal(registry.displays({ ...item, value: choice }, model), true)
+    assert.ok(registry.resolve(item.actionId, model, choice))
+    assert.equal(
+      registry.resolve(item.actionId, { ...model, surface: 'browser-menu' }, choice),
+      null
+    )
+  }
+  for (const value of [{ kind: 'choice', value: 'unsupported' }, { kind: 'none' }] as const) {
+    assert.equal(registry.displays({ ...item, value }, model), false)
+    assert.equal(registry.resolve(item.actionId, model, value), null)
+  }
+})
 
 const model = {
   sessionId: 'session',
@@ -60,6 +93,41 @@ const accountModel = {
   ],
 }
 
+test('docked developer tools use independently measured renderer geometry, not the whole window', async (context) => {
+  const host = await fixture(context)
+  host.setSize([700, 300])
+  host.product.isDevToolsOpened = () => true
+  host.product.executeJavaScriptInIsolatedWorld = async () => ({ width: 500, height: 300 })
+  const pending = host.owner.publish(model)
+  await new Promise((resolve) => setImmediate(resolve))
+  host.resolveLoad()
+  await new Promise((resolve) => setImmediate(resolve))
+  await host.paint()
+  assert.equal((await pending).ok, true)
+  host.owner.dismiss('escape')
+  assert.equal(
+    (await host.owner.publish({ ...model, revision: 2, viewport: { width: 700, height: 300 } })).ok,
+    false
+  )
+})
+
+test('a revoked docked geometry measurement cannot resurrect a menu or dismiss its replacement', async (context) => {
+  const host = await fixture(context)
+  host.product.isDevToolsOpened = () => true
+  let rejectMeasurement!: (error: Error) => void
+  host.product.executeJavaScriptInIsolatedWorld = () =>
+    new Promise((_resolve, reject) => {
+      rejectMeasurement = reject
+    })
+  const pending = host.owner.publish(model)
+  host.owner.dismiss('replaced')
+  host.product.isDevToolsOpened = () => false
+  await host.show()
+  rejectMeasurement(new Error('measurement revoked'))
+  assert.equal((await pending).ok, false)
+  assert.equal(host.visible(), true)
+})
+
 test('menu diagnostics record lifecycle and validation without model content', async (context) => {
   const host = await fixture(context)
   await host.show()
@@ -108,6 +176,40 @@ test('menu timeout keeps its deadline and records loading state', async (context
   assert.equal(timeout.loaded, false)
   assert.equal(timeout.painted, false)
   assert.equal(timeout.shown, false)
+})
+
+test('unfocused browser publication is revoked and a focused retry remains available', async (context) => {
+  const host = await fixture(context)
+  host.window.isFocused = () => false
+  assert.deepEqual(await host.owner.publish(model), { ok: false, error: 'menu_revoked' })
+  host.window.isFocused = () => true
+  await host.show()
+})
+
+test('focus lost during docked geometry measurement revokes publication', async (context) => {
+  const host = await fixture(context)
+  host.product.isDevToolsOpened = () => true
+  let resolveMeasurement!: (value: { width: number; height: number }) => void
+  host.product.executeJavaScriptInIsolatedWorld = () =>
+    new Promise((resolve) => {
+      resolveMeasurement = resolve
+    })
+  const pending = host.owner.publish(model)
+  host.window.isFocused = () => false
+  resolveMeasurement({ width: 500, height: 300 })
+  assert.deepEqual(await pending, { ok: false, error: 'menu_revoked' })
+  assert.equal(host.visible(), false)
+})
+
+test('ineligible publication releases an existing native presentation', async (context) => {
+  const host = await fixture(context)
+  await host.show()
+  host.window.isFocused = () => false
+  assert.deepEqual(await host.owner.publish({ ...model, revision: 2 }), {
+    ok: false,
+    error: 'menu_revoked',
+  })
+  assert.equal(host.visible(), false)
 })
 
 test('unfocused account seed is eligible without relaxing browser menu presentation', async (context) => {
@@ -254,9 +356,11 @@ async function fixture(
     isDestroyed: () => false,
     isCrashed: (): boolean => false,
     getZoomFactor: () => 1,
+    isDevToolsOpened: (): boolean => false,
+    executeJavaScriptInIsolatedWorld: async (): Promise<unknown> => ({ width: 500, height: 300 }),
     send: (channel: string, payload: unknown) => messages.push({ channel, payload }),
     focus: (): void => {
-      assert.equal(closed, true)
+      assert.equal(visible, false)
       assert.equal(messages.at(-1)?.channel, MENU_CHANNEL.revoked)
       operations.push('product-focus')
     },
@@ -281,11 +385,13 @@ async function fixture(
       operations.push('painting')
     },
     setWindowOpenHandler: () => undefined,
-    loadURL: () =>
-      new Promise<void>((resolve, reject) => {
+    loadURL: () => {
+      operations.push('load-menu')
+      return new Promise<void>((resolve, reject) => {
         resolveLoad = resolve
         rejectLoad = reject
-      }),
+      })
+    },
   })
   const view = {
     get webContents() {
@@ -297,7 +403,7 @@ async function fixture(
       operations.push(value ? 'show' : 'hide')
     },
     setBounds: (bounds: unknown) => {
-      assert.deepEqual(bounds, { x: 0, y: 0, width: 500, height: 300 })
+      assert.deepEqual(bounds, { x: 0, y: 0, width: size[0], height: size[1] })
       operations.push('bounds')
     },
     setBackgroundColor: () => undefined,
@@ -323,8 +429,16 @@ async function fixture(
     isMinimized: (): boolean => false,
     getContentSize: () => size,
     contentView: {
-      addChildView: () => operations.push('reorder'),
-      removeChildView: () => operations.push('remove'),
+      children: [] as unknown[],
+      addChildView(child: unknown) {
+        this.children = this.children.filter((candidate) => candidate !== child)
+        this.children.push(child)
+        operations.push('reorder')
+      },
+      removeChildView(child: unknown) {
+        this.children = this.children.filter((candidate) => candidate !== child)
+        operations.push('remove')
+      },
     },
   })
   const actions: unknown[] = []
@@ -615,7 +729,8 @@ for (const owned of [false, true])
     probe.setMenuFocused(owned)
     probe.owner.dismiss('escape')
     assert.equal(probe.visible(), false)
-    assert.equal(probe.closed(), true)
+    assert.equal(probe.closed(), false)
+    assert.equal((await probe.action()).ok, false)
     assert.equal(
       probe.operations.filter((operation) => operation === 'product-focus').length,
       Number(owned)
@@ -733,7 +848,8 @@ test('close_before_failure_reports_typed_result_to_original_product_after_native
   const probe = await fixture(context, false, false, false, task)
   await probe.show()
   const acting = probe.action()
-  assert.equal(probe.closed(), true)
+  assert.equal(probe.closed(), false)
+  assert.equal(probe.visible(), false)
   rejectAction(new Error('real_dispatch_failed'))
   assert.equal((await acting).ok, false)
   assert.deepEqual(
@@ -775,7 +891,8 @@ for (const outcome of ['succeeded', 'failed'] as const)
       else rejectAction(new Error('delayed_failure'))
       await acting
       assert.equal(probe.visible(), false)
-      assert.equal(probe.closed(), true)
+      assert.equal(probe.closed(), lifecycle !== 'replaced')
+      assert.equal((await probe.action()).ok, false)
       const results = probe.messages.filter(
         (message) => message.channel === 'scholarseed:menu-result'
       )
@@ -819,7 +936,7 @@ test('current_revision_outside_dismiss_during_visible_repaint_revokes_immediatel
     true
   )
   assert.equal(probe.visible(), false)
-  assert.equal(probe.closed(), true)
+  assert.equal(probe.closed(), false)
   assert.ok(probe.operations.includes('remove'))
   assert.equal((await pending).ok, false)
   assert.equal(
@@ -1076,6 +1193,48 @@ test('crash_and_invalid_bounds_revoke_ack', async (context) => {
   next.window.emit('resize')
   assert.equal(next.visible(), false)
   assert.equal((await next.action()).ok, false)
+})
+
+test('preloaded menu has no authority and reopens without another document load', async (context) => {
+  const probe = await fixture(context)
+  probe.owner.prepare()
+  probe.resolveLoad()
+  await Promise.resolve()
+  assert.equal(probe.visible(), false)
+  assert.equal(await probe.invoke('seed'), null)
+  assert.equal((await probe.action()).ok, false)
+  const pending = probe.owner.publish(model)
+  await probe.paint()
+  assert.equal((await pending).ok, true)
+  probe.owner.dismiss('outside')
+  assert.equal(probe.visible(), false)
+  assert.equal(probe.closed(), false)
+  assert.equal((await probe.action()).ok, false)
+  const next = probe.owner.publish({ ...model, sessionId: 'next', revision: 2 })
+  await Promise.resolve()
+  assert.equal((await probe.paint()).ok, false)
+  await probe.invoke('paint-ready', [{ sessionId: 'next', revision: 2 }])
+  assert.equal((await next).ok, true)
+  assert.equal((await probe.action()).ok, false)
+  assert.equal((await probe.action({ sessionId: 'next', revision: 2 })).ok, true)
+  assert.equal(probe.operations.filter((operation) => operation === 'load-menu').length, 1)
+  probe.owner.dispose()
+  assert.equal(probe.closed(), true)
+})
+
+test('idle preloaded renderer is released on target invalidation and can be prepared again', async (context) => {
+  const probe = await fixture(context)
+  probe.owner.prepare()
+  probe.resolveLoad()
+  await Promise.resolve()
+  probe.owner.dismiss('target')
+  assert.equal(probe.closed(), true)
+  probe.owner.prepare()
+  probe.resolveLoad()
+  await Promise.resolve()
+  assert.equal(probe.closed(), false)
+  assert.equal(probe.visible(), false)
+  assert.equal(probe.operations.filter((operation) => operation === 'load-menu').length, 2)
 })
 
 test('dismiss_during_load_cannot_resurrect', async (context) => {

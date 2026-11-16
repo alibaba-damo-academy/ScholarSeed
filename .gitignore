@@ -82,3 +82,4 @@ id_rsa*
 /.mcp.json
 /apps/serve/service/capabilities/skills/
 /apps/serve/service/capabilities/ui.zip
+/handoff.md

@@ -1,5 +1,6 @@
 import { useStartup } from './app/connection'
 import { FeedbackRecovery } from './components/business/Feedback'
+import { useSessionChildCount } from './components/business/deletion'
 import { STARTUP_PHASE } from '../../startup'
 import { useUpdateHealth } from './features/updates/health'
 import { Onboarding } from './contracts/onboarding'
@@ -38,6 +39,10 @@ import { Landing } from './components/business/Landing'
 import { WindowCloseDialog } from './shell/Close'
 import { BackgroundMenu } from './shell/Background'
 import { AccountPanel } from './components/business/AccountPanel'
+import { NativeSettingsPortal } from './shell/Settings'
+import { FloatingPortal, useFloatingPortal } from './shell/Floating'
+import { FOREGROUND_PORTAL } from '../../portal'
+import { availabilityPolicy } from './app/policy'
 import { ArchiveDialog } from './components/business/Archive'
 import { SessionRenameDialog } from './components/business/SessionTitle'
 import { LanguageSwitchDialog } from './components/business/Preferences'
@@ -691,13 +696,21 @@ const ComponentsPage = React.lazy(() =>
 )
 
 export function App(): React.JSX.Element {
-  if (
-    import.meta.env.DEV &&
-    new URLSearchParams(window.location.search).get('dev') === 'components'
-  ) {
+  const [showComponents, setShowComponents] = React.useState(
+    () =>
+      import.meta.env.DEV && new URLSearchParams(window.location.search).get('dev') === 'components'
+  )
+  if (showComponents) {
     return (
       <React.Suspense fallback={<></>}>
-        <ComponentsPage />
+        <ComponentsPage
+          onExitPreview={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.delete('dev')
+            window.history.replaceState(null, '', url)
+            setShowComponents(false)
+          }}
+        />
       </React.Suspense>
     )
   }
@@ -1025,7 +1038,7 @@ function AppMain({
   return (
     <OfficeRuntimeProvider ready={workspaceReady && state.backendReady}>
       <div
-        className={`vds-app-shell h-[var(--vds-app-shell-viewport-height)] min-h-[var(--vds-app-shell-viewport-height)] flex flex-col relative overflow-hidden bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] before:fixed before:inset-x-0 before:top-0 before:z-[var(--vds-app-shell-drag-region-z-index)] before:h-[var(--vds-app-shell-drag-region-height)] before:content-[''] before:[-webkit-app-region:drag]${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
+        className={`vds-app-shell h-[var(--vds-app-shell-viewport-height)] min-h-[var(--vds-app-shell-viewport-height)] flex flex-col relative overflow-hidden bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] has-[.vds-workbench]:before:hidden before:fixed before:inset-x-0 before:top-0 before:z-[var(--vds-app-shell-drag-region-z-index)] before:h-[var(--vds-app-shell-drag-region-height)] before:content-[''] before:[-webkit-app-region:drag]${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
       >
         <div
           id={OFFICE_RUNTIME_ROOT_ID}
@@ -1089,36 +1102,41 @@ function AppMain({
         )}
 
         {workspaceReady && (
-          <Dialog
+          <NativeSettingsPortal
             open={Boolean(state.accountSettingsPage)}
-            onOpenChange={(open) => {
-              if (!open) act.openSettings(null)
-            }}
+            onFailure={() => act.openSettings(null)}
           >
-            <DialogContent
-              aria-label={accountText('settings.title')}
-              className="!z-[var(--vds-z-modal)] !h-[min(720px,calc(100vh-48px))] !w-[min(920px,calc(100vw-48px))] !max-w-none overflow-hidden !p-0"
-              closeButtonClassName="z-[6] !right-3 !top-3"
-              overlayClassName="!z-[var(--vds-z-overlay)]"
+            <Dialog
+              open={Boolean(state.accountSettingsPage)}
+              onOpenChange={(open) => {
+                if (!open) act.openSettings(null)
+              }}
             >
-              {state.accountSettingsPage && (
-                <AccountPanel
-                  embedded
-                  page={state.accountSettingsPage}
-                  browserSettingsSection={state.browserSettingsSection}
-                  isBrowserSettingsCurrent={act.captureSettingsSurface()}
-                  onPage={act.openSettings}
-                  onClose={() => act.openSettings(null)}
-                  onLogin={onLogin}
-                  onLogout={async () => {
-                    const result = await onLogout()
-                    if (result.ok) act.openSettings(null)
-                    return result
-                  }}
-                />
-              )}
-            </DialogContent>
-          </Dialog>
+              <DialogContent
+                aria-label={accountText('settings.title')}
+                className="!z-[var(--vds-z-modal)] !h-[min(720px,calc(100vh-48px))] !w-[min(920px,calc(100vw-48px))] !max-w-none overflow-hidden !p-0"
+                closeButtonClassName="z-[6] !right-3 !top-3"
+                overlayClassName="!z-[var(--vds-z-overlay)]"
+              >
+                {state.accountSettingsPage && (
+                  <AccountPanel
+                    embedded
+                    page={state.accountSettingsPage}
+                    browserSettingsSection={state.browserSettingsSection}
+                    isBrowserSettingsCurrent={act.captureSettingsSurface()}
+                    onPage={act.openSettings}
+                    onClose={() => act.openSettings(null)}
+                    onLogin={onLogin}
+                    onLogout={async () => {
+                      const result = await onLogout()
+                      if (result.ok) act.openSettings(null)
+                      return result
+                    }}
+                  />
+                )}
+              </DialogContent>
+            </Dialog>
+          </NativeSettingsPortal>
         )}
 
         {workspaceReady && state.projectForm && <ProjectFormHost />}
@@ -1182,23 +1200,48 @@ function ProjectFormHost(): React.JSX.Element {
 function ForegroundError(): React.JSX.Element {
   const { state, set } = useApp()
   const { t, i18n } = useTranslation('shell')
+  const { t: ui } = useTranslation('ui')
+  const host = useRef<HTMLDivElement>(null)
+  const region = useRef<HTMLDivElement>(null)
+  const [failed, setFailed] = React.useState(false)
+  const bridge = window.scholarseed?.foregroundPortal
+  const browserTabActive =
+    availabilityPolicy.browserEnabled &&
+    state.tabs.some((tab) => tab.id === state.activeTab && tab.kind === 'browser')
+  const presentation = useFloatingPortal({
+    enabled: browserTabActive && Boolean(bridge) && !failed,
+    bridge,
+    surface: FOREGROUND_PORTAL,
+    failureText: ui('nativeForegroundUnavailable'),
+    host,
+    regions: [region],
+    onFailure: () => setFailed(true),
+  })
   const message = renderFeedback(i18n, state.foregroundError || '')
   return (
     <div
+      ref={host}
       className="absolute left-1/2 top-14 z-[95] w-[min(760px,calc(100%_-_48px))] -translate-x-1/2"
-      data-testid="foreground-error"
     >
-      <Alert closable onClose={() => set({ foregroundError: null })} tone="error">
-        <div className="grid gap-[var(--vds-space-2)]">
-          <AlertTitle>{t('foreground.title')}</AlertTitle>
-          <div className="text-xs leading-5 text-[var(--vds-text-secondary)]">
-            {t('foreground.hint')}
+      <FloatingPortal presentation={presentation}>
+        <Alert
+          ref={region}
+          data-testid="foreground-error"
+          closable
+          onClose={() => set({ foregroundError: null })}
+          tone="error"
+        >
+          <div className="grid gap-[var(--vds-space-2)]">
+            <AlertTitle>{t('foreground.title')}</AlertTitle>
+            <div className="text-xs leading-5 text-[var(--vds-text-secondary)]">
+              {t('foreground.hint')}
+            </div>
+            <div className="overflow-x-auto whitespace-pre-wrap break-words rounded-[var(--vds-radius-3)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] text-xs leading-5 text-[var(--vds-text-secondary)]">
+              {message}
+            </div>
           </div>
-          <div className="overflow-x-auto whitespace-pre-wrap break-words rounded-[var(--vds-radius-3)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] text-xs leading-5 text-[var(--vds-text-secondary)]">
-            {message}
-          </div>
-        </div>
-      </Alert>
+        </Alert>
+      </FloatingPortal>
     </div>
   )
 }
@@ -1348,6 +1391,10 @@ function ConfirmDialog(): React.JSX.Element {
   const { t: assistantText } = useTranslation('assistant')
   const { state, set, act } = useApp()
   const cd = state.confirmDelete!
+  const localPlaceholder = Boolean(
+    cd.sessionId && state.threads[cd.sessionId] && !state.threads[cd.sessionId].sessionId
+  )
+  const children = useSessionChildCount(localPlaceholder ? undefined : cd.sessionId)
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState<'delete.stopFailed' | 'delete.failed' | null>(null)
   const title = sessionDisplayTitle(
@@ -1356,7 +1403,7 @@ function ConfirmDialog(): React.JSX.Element {
   )
 
   const onDelete = async (): Promise<void> => {
-    if (busy) return
+    if (busy || children.count === null) return
     // sessionId 缺失 → 能力卡占位删除 (暂无端点), 仅关闭对话框。
     if (!cd.sessionId) {
       set({ confirmDelete: null })
@@ -1403,12 +1450,20 @@ function ConfirmDialog(): React.JSX.Element {
               />
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {children.count !== null && children.count > 0 && (
+            <AlertDialogDescription>
+              {t('delete.children', { count: children.count })}
+            </AlertDialogDescription>
+          )}
+          {children.failed && (
+            <AlertDialogDescription>{t('delete.childrenFailed')}</AlertDialogDescription>
+          )}
           {err && <Alert tone="error" description={t(err)} />}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{t('delete.cancel')}</AlertDialogCancel>
             <AlertDialogAction
               variant="danger"
-              disabled={busy}
+              disabled={busy || children.count === null}
               onClick={(event) => {
                 event.preventDefault()
                 void onDelete()

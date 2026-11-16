@@ -5,7 +5,7 @@ packaged ScholarSeed.app so the desktop backend runs off any machine (no dev rep
 `.venv`). That runtime comes from
 [astral-sh/python-build-standalone](https://github.com/astral-sh/python-build-standalone).
 
-The archives are not stored in Git. `manifest.json` pins reviewed OSS download URLs,
+The archives are not stored in Git. `manifest.json` pins reviewed HTTPS download URLs,
 byte lengths and SHA-256 values. `scripts/shared/artifacts.cjs` restores missing files
 through a verified user-level cache before development setup or packaging.
 
@@ -28,9 +28,16 @@ Currently reviewed:
 
 | Platform      | Target triple            | Asset                                                             |
 | ------------- | ------------------------ | ---------------------------------------------------------------- |
-| macOS arm64   | `aarch64-apple-darwin`   | `cpython-3.12.13+20260623-aarch64-apple-darwin-install_only.tar.gz` |
-| macOS x86_64  | `x86_64-apple-darwin`    | `cpython-3.12.13+20260623-x86_64-apple-darwin-install_only.tar.gz` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` | `cpython-3.12.13+20260623-x86_64-pc-windows-msvc-install_only.tar.gz` |
+| macOS arm64   | `aarch64-apple-darwin`   | `cpython-3.14.10+20261026-aarch64-apple-darwin-install_only.tar.gz` |
+| macOS x86_64  | `x86_64-apple-darwin`    | `cpython-3.14.10+20261026-x86_64-apple-darwin-install_only.tar.gz` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `cpython-3.14.10+20261026-x86_64-pc-windows-msvc-install_only.tar.gz` |
+
+This upgrade candidate uses standard-GIL builds from the official GitHub release,
+mirrored byte-for-byte under `oss://deep-rd/scholarseed-vendor/vendor/python-build-standalone/`.
+All three manifest URLs were anonymously downloaded and verified against their frozen
+byte lengths and SHA-256 values before switching to OSS. The manifest change is not native-platform acceptance
+or release authorization. Python package metadata retains the separate `>=3.12`
+library compatibility contract. See the [Chinese version](README_zh.md).
 
 New targets add an entry to `manifest.json` with URL, byte length and SHA-256.
 New Desktop targets also register their installer policy in `target.cjs`.
@@ -42,12 +49,12 @@ explicitly. There is no system-Python fallback.
 
 ```bash
 cd scripts/vendor/python-build-standalone
-SERIES=3.12                          # Python minor series build.cjs pins
+SERIES=3.14                          # Python minor series build.cjs pins
 TRIPLE=aarch64-apple-darwin          # or x86_64-pc-windows-msvc, x86_64-apple-darwin, …
 
 # 1. pick the release + asset (browse https://github.com/astral-sh/python-build-standalone/releases)
-REL=20260623
-ASSET="cpython-3.12.13+${REL}-${TRIPLE}-install_only.tar.gz"
+REL=20261026
+ASSET="cpython-3.14.10+${REL}-${TRIPLE}-install_only.tar.gz"
 URL="https://github.com/astral-sh/python-build-standalone/releases/download/${REL}/${ASSET/+/%2B}"
 
 # 2. download and calculate the reviewed metadata
@@ -59,7 +66,9 @@ shasum -a 256 "$ASSET"
 ```
 
 Update `manifest.json` with the Python version, release and actual SQLite version,
-then upload the byte-exact archive to OSS and set its public HTTPS URL in the manifest.
+and use the verified official HTTPS URL for local candidate work. If a vendor mirror
+is required for release, obtain upload authorization, upload the byte-exact archive,
+and anonymously verify its bytes before changing the URL. Do not point at a missing mirror.
 Verify every affected native target. Packaging verifies the actual engine again in
 the final App. `fetch-vendor.sh` is a legacy macOS upstream acquisition helper;
 normal development and packaging use the manifest through `scripts/shared/artifacts.cjs`.

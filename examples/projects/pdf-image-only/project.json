@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "pdf-image-only",
+  "revision": "1",
+  "name": "图片型 PDF 合成输入",
+  "description": "单页无文本层合成 PDF 原始输入，不包含产品状态或执行结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic image-only PDF generated with Pillow and ReportLab invariant mode.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "image-only-pdf",
+      "source": "files/image-only.pdf",
+      "target": "image-only.pdf",
+      "mediaType": "application/pdf",
+      "size": 21496,
+      "sha256": "a1e04eddbf1780744e154da50fb5d65066b796f1547c365a55a3705a9a263680"
+    }
+  ]
+}

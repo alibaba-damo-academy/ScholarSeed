@@ -1,3 +1,5 @@
+% ScholarSeed display configuration, 2026-11-05: carrier suffix and consultation date disabled.
+% The upstream GB/T 7714 style and license notices follow; see the asset manifest for provenance.
 %%
 %% This is file `gbt7714-2025-numeric.bst',
 %% generated with the docstrip utility.
@@ -99,7 +101,7 @@ FUNCTION {load.config}
   #0 'control.patent.country :=
   #1 'control.entry.type.id :=
   #0 'control.space.before.type.id :=
-  #1 'control.entry.medium.id :=
+  #0 'control.entry.medium.id :=
   #1 'control.slash :=
   #0 'control.in :=
   #0 'control.emph.booktitle :=
@@ -112,7 +114,7 @@ FUNCTION {load.config}
   #1 'control.space.before.pages :=
   #1 'control.page.ranges :=
   "-" 'control.page.range.delim :=
-  #1 'control.urldate :=
+  #0 'control.urldate :=
   #1 'control.url :=
   #1 'control.doi :=
   #1 'control.cstr :=

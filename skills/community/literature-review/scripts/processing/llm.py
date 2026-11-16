@@ -11,6 +11,7 @@ from gateway_headers import build_gateway_headers  # noqa: E402
 
 class _LightLLM:
     """Lightweight async LLM wrapper for OpenAI-compatible APIs."""
+    supports_processing_capture = True
 
     def __init__(self, model: str, base_url: str, api_key: str,
                  thinking: bool = False, timeout: float = 300.0, default_max_tokens: int = 16000):
@@ -35,7 +36,7 @@ class _LightLLM:
         )
 
     async def chat(self, system: str, user: str, max_tokens: Optional[int] = None,
-                   json_mode: bool = False) -> tuple[str, dict]:
+                   json_mode: bool = False, _capture=None) -> tuple[str, dict]:
         """Send a chat request. Returns (content, usage_dict).
         The gateway caches the prompt prefix implicitly — no explicit cache markers."""
         messages = [
@@ -85,6 +86,8 @@ class _LightLLM:
                     except Exception:
                         usage = dict(chunk_usage.__dict__)
         finally:
+            if _capture is not None:
+                _capture.update(partial_response=''.join(content_parts), usage=usage, finish_reason=finish)
             await lifecycle.close()
         if finish != 'stop':
             raise ValueError('paper extraction stream ended without a complete response: '+str(finish))

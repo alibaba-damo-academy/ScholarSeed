@@ -14,6 +14,7 @@ MCP_MAX_NAME_CHARS = 128
 MCP_MAX_DESCRIPTION_CHARS = 1000
 MCP_MIN_TOOL_TIMEOUT_MS = 1000
 MCP_MIN_STARTUP_TIMEOUT_MS = 1000
+MCP_MIN_REMOTE_PORT = 1
 MCP_MAX_STARTUP_TIMEOUT_MS = 2**53 - 1
 MCP_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 MCP_ENVIRONMENT_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -86,8 +87,9 @@ class McpStdioServer(McpServerBase):
         return self
 
 
-class McpHttpServer(McpServerBase):
-    transport: Literal["http"] = MCP_HTTP_TRANSPORT
+class McpRemoteServer(McpServerBase):
+    """Shared HTTP/SSE fields; concrete transport declarations use the leaf models."""
+
     url: McpValue
     headers: dict[str, McpValue] = Field(default_factory=dict)
     header_secrets: dict[str, McpValue] = Field(default_factory=dict)
@@ -97,11 +99,12 @@ class McpHttpServer(McpServerBase):
     def validate_url(cls, value: str) -> str:
         parsed = urlsplit(value)
         try:
-            parsed.port
+            port = parsed.port
         except ValueError:
             raise ValueError(MCP_INVALID_CONFIG) from None
         if (
-            parsed.scheme not in MCP_HTTP_SCHEMES
+            (port is not None and port < MCP_MIN_REMOTE_PORT)
+            or parsed.scheme not in MCP_HTTP_SCHEMES
             or not parsed.hostname
             or parsed.username is not None
             or parsed.password is not None
@@ -112,7 +115,7 @@ class McpHttpServer(McpServerBase):
         return value
 
     @model_validator(mode="after")
-    def validate_headers(self) -> McpHttpServer:
+    def validate_headers(self) -> McpRemoteServer:
         plain_names = {name.casefold() for name in self.headers}
         secret_names = {name.casefold() for name in self.header_secrets}
         if (
@@ -130,7 +133,11 @@ class McpHttpServer(McpServerBase):
         return self
 
 
-class McpSseServer(McpHttpServer):
+class McpHttpServer(McpRemoteServer):
+    transport: Literal["http"] = MCP_HTTP_TRANSPORT
+
+
+class McpSseServer(McpRemoteServer):
     transport: Literal["sse"] = "sse"
 
 

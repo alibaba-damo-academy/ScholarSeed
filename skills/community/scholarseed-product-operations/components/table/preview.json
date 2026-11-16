@@ -1,0 +1,136 @@
+{
+  "data": {
+    "dataset": {
+      "columns": [
+        {
+          "key": "method",
+          "label": "示例方法 / Sample method"
+        },
+        {
+          "key": "score",
+          "label": "示例得分 / Sample score",
+          "unit": "%"
+        }
+      ],
+      "rows": [
+        {
+          "id": "sample-a",
+          "values": [
+            "A",
+            80
+          ]
+        },
+        {
+          "id": "sample-b",
+          "values": [
+            "B",
+            85
+          ]
+        },
+        {
+          "id": "sample-c",
+          "values": [
+            "C",
+            null
+          ]
+        }
+      ]
+    }
+  },
+  "responses": {
+    "continue": {
+      "state": "resolved",
+      "data": {
+        "dataset": {
+          "columns": [
+            {
+              "key": "method",
+              "label": "示例方法 / Sample method"
+            },
+            {
+              "key": "score",
+              "label": "示例得分 / Sample score",
+              "unit": "%"
+            }
+          ],
+          "rows": [
+            {
+              "id": "sample-a",
+              "values": [
+                "A",
+                80
+              ]
+            },
+            {
+              "id": "sample-b",
+              "values": [
+                "B",
+                85
+              ]
+            },
+            {
+              "id": "sample-c",
+              "values": [
+                "C",
+                null
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "cancel": {
+      "state": "cancelled",
+      "data": {
+        "dataset": {
+          "columns": [
+            {
+              "key": "method",
+              "label": "示例方法 / Sample method"
+            },
+            {
+              "key": "score",
+              "label": "示例得分 / Sample score",
+              "unit": "%"
+            }
+          ],
+          "rows": [
+            {
+              "id": "sample-a",
+              "values": [
+                "A",
+                80
+              ]
+            },
+            {
+              "id": "sample-b",
+              "values": [
+                "B",
+                85
+              ]
+            },
+            {
+              "id": "sample-c",
+              "values": [
+                "C",
+                null
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "submissions": {
+    "continue": [
+      {
+        "selected": []
+      }
+    ],
+    "cancel": [
+      {
+        "selected": []
+      }
+    ]
+  }
+}

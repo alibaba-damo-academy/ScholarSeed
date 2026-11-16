@@ -1,4 +1,9 @@
+import type { PreviewAuthorizationKind, PreviewAuthorizationState } from './authorization.ts'
+
 export interface PreviewConversationPolicy {
+  references?: boolean
+  mixedReferences?: boolean
+  draftReferences?: boolean
   mode: 'chat' | 'streaming' | 'tools' | 'approval' | 'failure'
   stream?: 'normal' | 'interruptible'
   tool?: 'normal' | 'delayed' | 'failed'
@@ -6,6 +11,8 @@ export interface PreviewConversationPolicy {
   approvalResume?: 'normal' | 'delayed'
   disconnectAfterDeltas?: number
   readonly reconnectDelayMs?: number
+  authorization?: PreviewAuthorizationState
+  authorizationKind?: PreviewAuthorizationKind
 }
 
 const TOOL_OUTPUT_CHUNKS = Object.freeze(['模拟', '文件内容'])
@@ -19,7 +26,11 @@ export const PREVIEW_CONVERSATION = Object.freeze({
   approvalAnswer: '模拟审批已批准；没有执行真实命令。',
   denialAnswer: '已拒绝模拟审批；没有执行任何操作。',
   submissionCancelled: 'preview_submission_cancelled',
+  userInterruptReason: 'user_requested',
+  predictionUnavailable: 'prediction_source_unavailable',
   toolName: 'read_file',
+  toolRecoveryAction: 'tools/recovery',
+  recoveryTurnRequired: 'preview_tool_recovery_turn_required',
   toolInput: Object.freeze({ path: 'readme.md' }),
   toolOutput: TOOL_OUTPUT_CHUNKS.join(''),
   toolFailedOutput: TOOL_FAILED_OUTPUT_CHUNKS.join(''),
@@ -30,7 +41,8 @@ export const PREVIEW_CONVERSATION = Object.freeze({
   reconnectDelayMs: 2000,
   paragraphSeparator: '\n\n',
   reasoning: '正在准备模拟结果；不会调用真实模型。',
-  answer: '## 模拟回答\n\n这里复用真实产品组件与事件投影。\n\n- 支持主题、语言和布局检查\n- 数据仅保存在当前预览实例\n\n**这不是模型或原生能力验收。**',
+  answer:
+    '## 模拟回答\n\n这里复用真实产品组件与事件投影。\n\n- 支持主题、语言和布局检查\n- 数据仅保存在当前预览实例\n\n**这不是模型或原生能力验收。**',
   normalChunks: Object.freeze(['这是', '模拟流式', '回答。']),
   normalIntervalMs: 25,
   interruptibleChunks: Object.freeze([
@@ -59,36 +71,65 @@ const RAW_POLICIES: Readonly<Record<string, Readonly<PreviewConversationPolicy>>
   empty: Object.freeze({ mode: 'chat' }),
 })
 
-export function previewConversationPolicy(explicit?: PreviewConversationPolicy, scene?: string): PreviewConversationPolicy {
+export function previewConversationPolicy(
+  explicit?: PreviewConversationPolicy,
+  scene?: string
+): PreviewConversationPolicy {
   if (explicit) return { ...explicit }
   const key = scene && Object.prototype.hasOwnProperty.call(RAW_POLICIES, scene) ? scene : 'chat'
   return { ...RAW_POLICIES[key] }
 }
 
-export function previewConversationTool(policy: PreviewConversationPolicy): { name: string; runMs: number; success: boolean; input: { path: string }; output: string; answer: string; chunks: string[] } {
+export function previewConversationTool(policy: PreviewConversationPolicy): {
+  name: string
+  runMs: number
+  success: boolean
+  input: { path: string }
+  output: string
+  answer: string
+  chunks: string[]
+} {
   const failed = policy.tool === 'failed'
   return {
     name: PREVIEW_CONVERSATION.toolName,
-    runMs: policy.tool === 'delayed' || failed ? PREVIEW_CONVERSATION.toolRunMs : PREVIEW_CONVERSATION.tickMs,
+    runMs:
+      policy.tool === 'delayed' || failed
+        ? PREVIEW_CONVERSATION.toolRunMs
+        : PREVIEW_CONVERSATION.tickMs,
     success: !failed,
     input: { ...PREVIEW_CONVERSATION.toolInput },
     output: failed ? PREVIEW_CONVERSATION.toolFailedOutput : PREVIEW_CONVERSATION.toolOutput,
-    answer: failed ? PREVIEW_CONVERSATION.toolFailureAnswer : PREVIEW_CONVERSATION.toolSuccessAnswer,
-    chunks: failed ? [...PREVIEW_CONVERSATION.toolFailedOutputChunks]
-      : policy.tool === 'delayed' ? [...PREVIEW_CONVERSATION.toolOutputChunks]
+    answer: failed
+      ? PREVIEW_CONVERSATION.toolFailureAnswer
+      : PREVIEW_CONVERSATION.toolSuccessAnswer,
+    chunks: failed
+      ? [...PREVIEW_CONVERSATION.toolFailedOutputChunks]
+      : policy.tool === 'delayed'
+        ? [...PREVIEW_CONVERSATION.toolOutputChunks]
         : [PREVIEW_CONVERSATION.toolOutput],
   }
 }
 
-export function previewConversationStream(policy: PreviewConversationPolicy): { chunks: string[]; intervalMs: number } {
+export function previewConversationStream(policy: PreviewConversationPolicy): {
+  chunks: string[]
+  intervalMs: number
+} {
   if (policy.mode === 'failure') {
     const separator = PREVIEW_CONVERSATION.paragraphSeparator
     return {
-      chunks: PREVIEW_CONVERSATION.answer.split(separator).map((paragraph, index) => index === 0 ? paragraph : separator + paragraph),
+      chunks: PREVIEW_CONVERSATION.answer
+        .split(separator)
+        .map((paragraph, index) => (index === 0 ? paragraph : separator + paragraph)),
       intervalMs: PREVIEW_CONVERSATION.normalIntervalMs,
     }
   }
   return policy.stream === 'interruptible'
-    ? { chunks: [...PREVIEW_CONVERSATION.interruptibleChunks], intervalMs: PREVIEW_CONVERSATION.interruptibleIntervalMs }
-    : { chunks: [...PREVIEW_CONVERSATION.normalChunks], intervalMs: PREVIEW_CONVERSATION.normalIntervalMs }
+    ? {
+        chunks: [...PREVIEW_CONVERSATION.interruptibleChunks],
+        intervalMs: PREVIEW_CONVERSATION.interruptibleIntervalMs,
+      }
+    : {
+        chunks: [...PREVIEW_CONVERSATION.normalChunks],
+        intervalMs: PREVIEW_CONVERSATION.normalIntervalMs,
+      }
 }

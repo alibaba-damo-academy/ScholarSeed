@@ -6,7 +6,10 @@ import { resources } from '../../localization/resources'
 import { ToastProvider } from './components/ui'
 import { StoreProvider, useApp, type SessionSurface, type Store } from './store'
 import { Composer } from './components/business/Composer'
-import { Stream } from './components/business/Stream'
+import { AiPanel } from './features/assistant/AiPanel'
+import { ConversationControls, Stream } from './components/business/Stream'
+import { InteractionPolicyProvider } from './components/business/Interactions'
+import { fileRecovery } from './features/assistant/recovery'
 import { TodoPanel } from './components/business/TodoPanel'
 import { DocumentWorkspaceContext, documentWorkspaces } from './features/workbench/workspace'
 import { getBackendHealth, getSharedRuntimeReconfiguration } from './api'
@@ -18,7 +21,6 @@ let hideComposer: () => void
 let setComposerSurface: (surface: SessionSurface) => void
 Object.assign(window, {
   launchProbe: {
-    language: (language: 'zh' | 'en') => localization.changeLanguage(language),
     patch: (patch: Parameters<Store['set']>[0]) => store.set(patch),
     catalog: (catalog: Parameters<Store['act']['applyModelCatalog']>[0]) =>
       store.act.applyModelCatalog(catalog),
@@ -28,6 +30,7 @@ Object.assign(window, {
     draft: (panel = false) => (panel ? store.act.startPanelDraft() : store.act.startDraft()),
     hide: () => hideComposer(),
     surface: (surface: SessionSurface) => setComposerSurface(surface),
+    language: (language: string) => localization.changeLanguage(language),
     health: async () => {
       const health = await getBackendHealth()
       const reconfiguration =
@@ -43,21 +46,36 @@ function Fixture(): React.JSX.Element {
   const [surface, setSurface] = useState<SessionSurface>('conversation')
   hideComposer = () => setVisible(false)
   setComposerSurface = setSurface
-  return visible ? (
+  return visible && Reflect.get(window, 'aiPanelFixture') ? (
+    <AiPanel embedded />
+  ) : visible ? (
     <>
       {Reflect.get(window, 'streamFixture') === true && <Stream home />}
-      <Composer
-        home
-        surface={surface}
-        header={({ continueTurn, continueDisabled }) => (
-          <TodoPanel
-            compact
-            currentTurnOnly
-            onContinue={continueTurn}
-            continueDisabled={continueDisabled}
-          />
-        )}
-      />
+      <ConversationControls externalConfirmation={Reflect.get(window, 'hilDockFixture') !== true}>
+        <Composer
+          home
+          contextReferences={
+            Reflect.get(window, 'composerContextFixture')
+              ? [
+                  {
+                    key: 'context:fixture',
+                    inline: false,
+                    content: <span>Context attachment</span>,
+                  },
+                ]
+              : undefined
+          }
+          surface={surface}
+          header={({ continueTurn, continueDisabled }) => (
+            <TodoPanel
+              compact
+              currentTurnOnly
+              onContinue={continueTurn}
+              continueDisabled={continueDisabled}
+            />
+          )}
+        />
+      </ConversationControls>
     </>
   ) : (
     <output data-testid="composer-hidden" />
@@ -69,7 +87,9 @@ createRoot(document.getElementById('root')!).render(
     <ToastProvider>
       <StoreProvider assistantSources={[]}>
         <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
-          <Fixture />
+          <InteractionPolicyProvider policies={[fileRecovery]}>
+            <Fixture />
+          </InteractionPolicyProvider>
         </DocumentWorkspaceContext.Provider>
       </StoreProvider>
     </ToastProvider>

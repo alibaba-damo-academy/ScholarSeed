@@ -375,6 +375,26 @@ class AssistantInvocationStore:
             ).fetchone()
         return self._record(row) if row is not None else None
 
+    def latest_source_attempt(
+        self,
+        *,
+        owner_id: str,
+        source_id: str,
+        source_revision: str,
+        kind: str,
+        child_marker: str = "",
+    ) -> AssistantInvocationRecord | None:
+        """Find a source workflow root, including interrupted attempts after restart."""
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"""SELECT * FROM {ASSISTANT_INVOCATION_TABLE}
+                WHERE owner_id=? AND source_id=? AND source_revision=? AND kind=?
+                  AND (?='' OR instr(client_attempt_id, ?)=0)
+                ORDER BY created_at DESC LIMIT 1""",
+                (owner_id, source_id, source_revision, kind, child_marker, child_marker),
+            ).fetchone()
+        return self._record(row) if row is not None else None
+
 
 __all__ = [
     "ASSISTANT_INVOCATION_TABLE",

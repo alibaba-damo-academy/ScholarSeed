@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import type { ButtonHTMLAttributes, CSSProperties, HTMLAttributes, MouseEvent, ReactNode } from 'react'
 
@@ -33,7 +34,7 @@ const TAG_CLOSE_CLASS_NAME = [
   'focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
 ].join(' ')
 
-export function Tag({ children, className, closeIcon = '×', closeLabel, color, onClose, selected = false, size, style, tone, variant, ...props }: TagProps): JSX.Element {
+export function Tag({ children, className, closeIcon = '×', closeLabel, color, onClose, selected = false, size, style, tone, variant, ...props }: TagProps): React.JSX.Element {
   const { t } = useTranslation('ui')
   const handleClose = (event: MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
@@ -48,7 +49,7 @@ export function Tag({ children, className, closeIcon = '×', closeLabel, color, 
   )
 }
 
-export function TagClose({ children = '×', className, type = 'button', ...props }: TagCloseProps): JSX.Element {
+export function TagClose({ children = '×', className, type = 'button', ...props }: TagCloseProps): React.JSX.Element {
   return (
     <button className={cx(TAG_CLOSE_CLASS_NAME, className)} type={type} {...props}>
       {children}

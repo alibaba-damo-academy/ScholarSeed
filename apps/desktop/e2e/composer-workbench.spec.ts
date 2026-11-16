@@ -4,11 +4,8 @@ import { expect, test } from '@playwright/test'
 
 import { ONBOARDING_GROUPS } from '../src/onboarding'
 import { DesktopSession, liveStatus } from './fixtures/electron'
-import { createRuntime, seedLiveConfig } from './fixtures/runtime'
+import { createRuntime, seedSkillHost } from './fixtures/runtime'
 import { seedProject } from './fixtures/workbench'
-import { skipQuarantined } from './fixtures/quarantine'
-
-test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
 
 const PASTE_SHORTCUT = process.platform === 'darwin' ? 'Meta+V' : 'Control+V'
 const RUNTIME_READY_TIMEOUT_MS = 45_000
@@ -16,11 +13,11 @@ const ATTACHMENT_TIMEOUT_MS = 30_000
 const DRAFT = '请分析粘贴的截图。'
 const PASTED_TEXT = '保留普通文本粘贴\n第二行'
 const RENDERER_PREFERENCES_FILE = 'renderer-preferences.json'
+const FIND_PASTEBOARD_FORMAT = 'electron application/findtext'
 
 test('composer pastes clipboard images through attachments without replacing its text draft', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
-  const blocker = seedLiveConfig(runtime)
-  test.skip(Boolean(blocker), blocker ?? '')
+  seedSkillHost(runtime)
   writeFileSync(join(runtime.userData, RENDERER_PREFERENCES_FILE), JSON.stringify({
     language: 'zh',
     onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
@@ -28,42 +25,66 @@ test('composer pastes clipboard images through attachments without replacing its
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
+    let turnSubmissions = 0
+    page.on('request', request => {
+      const pathname = new URL(request.url()).pathname
+      if (request.method() === 'POST' && pathname.startsWith('/api/serve/sessions/') && pathname.endsWith('/turns')) {
+        turnSubmissions += 1
+      }
+    })
     await seedProject(page, runtime)
     await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
       timeout: RUNTIME_READY_TIMEOUT_MS
     }).toBe(true)
     const input = page.getByTestId('composer-input')
-    const attachments = page.getByTestId('composer-drop-zone').locator('[data-testid^="message-attachment-"]')
+    const attachmentTray = page.getByTestId('composer-drop-zone').getByTestId('attachment-images')
+    const attachments = attachmentTray.getByRole('button', { name: /^查看图片 / })
     await input.fill(DRAFT)
     const source = await page.screenshot({ path: join(runtime.artifacts, 'clipboard-source.png') })
-    await desktop.app!.evaluate(async ({ clipboard, ClipboardItem }, bytes) => {
+    await desktop.app!.evaluate(async ({ clipboard, ClipboardItem }, { bytes, findPasteboardFormat }) => {
       const state = globalThis as typeof globalThis & { composerClipboard?: Electron.ClipboardItem[] }
-      state.composerClipboard = await clipboard.read()
+      const copies = []
+      for (const item of await clipboard.read()) {
+        const types = item.types.filter(type => type !== findPasteboardFormat)
+        if (types.length === 0) continue
+        const entries = await Promise.all(types.map(async type => [type, await item.getType(type)] as const))
+        copies.push(new ClipboardItem(Object.fromEntries(entries)))
+      }
+      state.composerClipboard = copies
       await clipboard.write([new ClipboardItem({
         'image/png': new Blob([new Uint8Array(bytes)], { type: 'image/png' }),
         'text/plain': new Blob(['image fallback must not replace the draft'], { type: 'text/plain' })
       })])
-    }, Array.from(source))
+    }, { bytes: Array.from(source), findPasteboardFormat: FIND_PASTEBOARD_FORMAT })
     const paste = async (): Promise<void> => {
       await input.focus()
       await expect(input).toBeFocused()
       await input.press(PASTE_SHORTCUT)
     }
-    await paste()
+    const [previewResult] = await Promise.all([
+      page.waitForResponse(response => {
+        const url = new URL(response.url())
+        return response.request().method() === 'GET' && url.pathname.startsWith('/api/serve/sessions/') &&
+          url.pathname.endsWith('/files/raw') && url.searchParams.has('path')
+      }),
+      paste()
+    ])
     await expect(attachments).toHaveCount(1, { timeout: ATTACHMENT_TIMEOUT_MS })
     await expect(input).toHaveValue(DRAFT)
     const sessionId = (await liveStatus(page))?.activeSession
     expect(sessionId).toBeTruthy()
     await page.screenshot({ path: join(runtime.artifacts, 'composer-pasted-image.png') })
-    const previewResponse = page.waitForResponse(response => response.url().includes('/raw?path='))
-    await attachments.getByRole('button').first().click()
-    const previewResult = await previewResponse
+    expect(new URL(previewResult.url()).pathname).toBe(`/api/serve/sessions/${sessionId}/files/raw`)
     expect(previewResult.ok(), previewResult.ok() ? previewResult.url() : await previewResult.text()).toBe(true)
-    const preview = page.getByTestId('image-viewer').locator('img')
+    await attachments.click()
+    const viewer = page.getByTestId('attachment-image-viewer')
+    const preview = viewer.locator('img')
     await expect(preview).toBeVisible()
     await expect.poll(() => preview.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
     await page.screenshot({ path: join(runtime.artifacts, 'composer-image-preview.png') })
-    await attachments.getByRole('button', { name: /^移除附件 / }).click()
+    await page.keyboard.press('Escape')
+    await expect(viewer).not.toBeVisible()
+    await attachmentTray.getByRole('button', { name: /^移除图片 / }).click()
     await expect(attachments).toHaveCount(0)
     await expect(input).toHaveValue(DRAFT)
 
@@ -96,17 +117,18 @@ test('composer pastes clipboard images through attachments without replacing its
     await expect(input).toHaveValue(PASTED_TEXT)
     await expect(attachments).toHaveCount(1)
     await page.screenshot({ path: join(runtime.artifacts, 'composer-image-and-text.png') })
+    expect(turnSubmissions).toBe(0)
     desktop.assertNoPageErrors()
   } finally {
-    if (desktop.app) await desktop.app.evaluate(async ({ clipboard, ClipboardItem }) => {
-      const state = globalThis as typeof globalThis & { composerClipboard?: Electron.ClipboardItem[] }
-      if (!state.composerClipboard) return
-      const copies = await Promise.all(state.composerClipboard.map(async item => {
-        const entries = await Promise.all(item.types.map(async type => [type, await item.getType(type)] as const))
-        return new ClipboardItem(Object.fromEntries(entries))
-      }))
-      await clipboard.write(copies)
-    })
-    await desktop.attachArtifacts()
+    try {
+      if (desktop.app) await desktop.app.evaluate(async ({ clipboard }) => {
+        const state = globalThis as typeof globalThis & { composerClipboard?: Electron.ClipboardItem[] }
+        if (!state.composerClipboard) return
+        if (state.composerClipboard.length === 0) clipboard.clear()
+        else await clipboard.write(state.composerClipboard)
+      })
+    } finally {
+      await desktop.attachArtifacts()
+    }
   }
 })

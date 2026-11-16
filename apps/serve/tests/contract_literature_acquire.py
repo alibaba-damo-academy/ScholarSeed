@@ -240,6 +240,7 @@ class LiteratureReceiptContract(unittest.TestCase):
                 SimpleNamespace(
                     status=HilStatus.RESOLVED,
                     decision={
+                        "decision_source": "user_explicit",
                         "answers": {question_id: answer},
                         **({"values": values} if values else {}),
                     },

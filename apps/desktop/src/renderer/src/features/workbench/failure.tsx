@@ -1,20 +1,45 @@
 import { useTranslation } from 'react-i18next'
-import { OfficeImageError, OFFICE_IMAGE_BYTES_PER_MIB, OFFICE_IMAGE_MAX_BYTES, OFFICE_IMAGE_MAX_PIXELS } from '../../../../images'
+import {
+  OfficeImageError,
+  OFFICE_IMAGE_BYTES_PER_MIB,
+  OFFICE_IMAGE_MAX_BYTES,
+  OFFICE_IMAGE_MAX_PIXELS,
+} from '../../../../images'
 import { createFormatters } from '../../../../localization/format'
-import { ImageOperationError } from './api'
+import { ImageOperationError, type DocumentLoadFailure } from './api'
+
+const DOCUMENT_READ_FAILURE_KEYS = {
+  read_permission_denied: 'dock.readPermissionDenied',
+  read_failed: 'dock.readFailed',
+} as const
+
+export function useDocumentFailureText(): (failure: DocumentLoadFailure) => string {
+  const { t } = useTranslation('workbench')
+  return (failure) => {
+    const key = DOCUMENT_READ_FAILURE_KEYS[failure.code as keyof typeof DOCUMENT_READ_FAILURE_KEYS]
+    return key
+      ? t(key)
+      : t('dock.loadFailureDetail', { message: failure.message, code: failure.code })
+  }
+}
 
 export function useImageFailureText(): (error: unknown) => string {
   const { t, i18n } = useTranslation('workbench')
   const format = createFormatters(i18n.resolvedLanguage === 'en' ? 'en' : 'zh')
   const labels = {
-    stageUnsupported: t('imageError.stageUnsupported'), stageFailed: t('imageError.stageFailed'),
-    releaseFailed: t('imageError.releaseFailed'), saveUnsupported: t('imageError.saveUnsupported'),
-    saveFailed: t('imageError.saveFailed'), readFailed: t('imageError.readFailed')
+    stageUnsupported: t('imageError.stageUnsupported'),
+    stageFailed: t('imageError.stageFailed'),
+    releaseFailed: t('imageError.releaseFailed'),
+    saveUnsupported: t('imageError.saveUnsupported'),
+    saveFailed: t('imageError.saveFailed'),
+    readFailed: t('imageError.readFailed'),
   }
-  return error => {
+  return (error) => {
     if (error instanceof OfficeImageError) {
       const failure = error.failure
-      const maxMiB = format.number((failure.maxBytes ?? OFFICE_IMAGE_MAX_BYTES) / OFFICE_IMAGE_BYTES_PER_MIB)
+      const maxMiB = format.number(
+        (failure.maxBytes ?? OFFICE_IMAGE_MAX_BYTES) / OFFICE_IMAGE_BYTES_PER_MIB
+      )
       const maxPixels = format.number(failure.maxPixels ?? OFFICE_IMAGE_MAX_PIXELS)
       const acquisition = {
         pixel_limit: t('imageAcquisition.pixelLimit', { maxPixels }),
@@ -24,13 +49,17 @@ export function useImageFailureText(): (error: unknown) => string {
         unsupported_source: t('imageAcquisition.unsupportedSource'),
         clipboard_limit: t('imageAcquisition.clipboardLimit', { maxMiB }),
         invalid_sender: t('imageAcquisition.invalidSender'),
-        read_failed: t('imageAcquisition.readFailed')
+        read_failed: t('imageAcquisition.readFailed'),
       }
       const message = acquisition[failure.code]
-      return failure.message ? t('imageAcquisition.diagnostic', { message, detail: failure.message }) : message
+      return failure.message
+        ? t('imageAcquisition.diagnostic', { message, detail: failure.message })
+        : message
     }
     return error instanceof ImageOperationError
-    ? error.status === undefined ? labels[error.code] : t('imageError.http', { message: labels[error.code], status: error.status })
-    : t('imageError.unknown', { detail: error instanceof Error ? error.message : String(error) })
+      ? error.status === undefined
+        ? labels[error.code]
+        : t('imageError.http', { message: labels[error.code], status: error.status })
+      : t('imageError.unknown', { detail: error instanceof Error ? error.message : String(error) })
   }
 }

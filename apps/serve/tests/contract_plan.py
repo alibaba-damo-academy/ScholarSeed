@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -21,12 +26,19 @@ from service.chat.persistence.catalog import SessionCatalogStore
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.evidence import SessionTrace
 from service.chat.runtime.live import LiveSession
+from service.chat.runtime.tools import execute_service_tool
+from service.chat.service.events import EventService
 from service.chat.service.plan import (
     PlanConflict,
     PlanExecutionError,
+    PlanToolProjection,
     SessionPlans,
+    completion_ids,
+    plan_tool_receipt,
+    plan_tool_recoveries,
     progress_transitions,
 )
+from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     PLAN_MAX_ITEMS,
@@ -38,6 +50,7 @@ from service.platform.bridge import (
 from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
+    INTERNAL_BASE_URL_ENV,
 )
 from tests.contract_session_catalog import register_session
 
@@ -50,6 +63,56 @@ def item(identity: str, parent: str | None = None, status: str = "pending") -> d
 
 
 class PlanContract(unittest.TestCase):
+    def test_plan_estimate_is_saved_revised_and_cleared(self) -> None:
+        estimate = {"lower_seconds": 600, "upper_seconds": 900}
+        self.write(self.command(estimate=estimate))
+        self.assertEqual(self.plans.current()["plan"]["estimate"], estimate)
+        self.write(self.command(operation="update", expected_revision=1, request_id="keep"))
+        self.assertEqual(self.plans.current()["plan"]["estimate"], estimate)
+        self.write(
+            self.command(
+                operation="revise", expected_revision=2, request_id="revise", reason="Scope changed"
+            )
+        )
+        self.assertIsNone(self.plans.current()["plan"]["estimate"])
+
+    def test_plan_estimate_rejects_invalid_ranges(self) -> None:
+        for estimate in (
+            {"lower_seconds": -1, "upper_seconds": 10},
+            {"lower_seconds": 20, "upper_seconds": 10},
+            {"lower_seconds": True, "upper_seconds": 10},
+        ):
+            with self.assertRaises(ValueError):
+                self.command(estimate=estimate)
+
+    def test_plan_estimate_replays_and_distinguishes_clear_from_omission(self) -> None:
+        estimate = {"lower_seconds": 600, "upper_seconds": 900}
+        self.write(self.command(estimate=estimate))
+        resumed = self.command(
+            operation="update",
+            expected_revision=1,
+            request_id="resume",
+            turn_id="turn-2",
+            items=[item("root", status="in_progress")],
+        )
+        self.write(resumed)
+        restored = SessionPlans(
+            SESSION, ProductEventStore(self.database), SessionCatalogStore(self.database)
+        )
+        self.assertEqual(restored.current()["plan"]["estimate"], estimate)
+        with self.assertRaisesRegex(PlanConflict, "request_id_reused"):
+            self.write(resumed.model_copy(update={"estimate": None}))
+        self.write(
+            self.command(
+                operation="update",
+                expected_revision=2,
+                request_id="clear",
+                estimate=None,
+                items=[item("root", status="in_progress")],
+            )
+        )
+        self.assertIsNone(restored.current()["plan"]["estimate"])
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -111,7 +174,7 @@ class PlanContract(unittest.TestCase):
         )
 
     def test_structure_cannot_write_execution_status_and_actions_preserve_timing(self):
-        metadata = self.command().model_dump(exclude={"operation", "items"})
+        metadata = self.command().model_dump(exclude={"operation", "items", "estimate"})
         nodes = [
             {"id": "root", "content": "root", "kind": "group"},
             {"id": "leaf", "content": "leaf", "parent_id": "root"},
@@ -173,7 +236,7 @@ class PlanContract(unittest.TestCase):
         self.assertTrue(all(row["status"] == "completed" for row in finished.payload["items"]))
 
     def test_structure_refinement_does_not_start_new_pending_work(self):
-        metadata = self.command().model_dump(exclude={"operation", "items"})
+        metadata = self.command().model_dump(exclude={"operation", "items", "estimate"})
         self.write(
             PlanStructure.model_validate(
                 {
@@ -201,7 +264,7 @@ class PlanContract(unittest.TestCase):
         self.assertEqual(result.payload["plan"]["started_ids"], [])
 
     def test_execution_actions_pause_resume_and_replay_share_the_existing_transaction(self):
-        metadata = self.command().model_dump(exclude={"operation", "items"})
+        metadata = self.command().model_dump(exclude={"operation", "items", "estimate"})
         self.write(
             PlanStructure.model_validate(
                 {**metadata, "operation": "create", "items": [{"id": "root", "content": "root"}]}
@@ -330,6 +393,498 @@ class PlanContract(unittest.TestCase):
                 **fields,
             }
         )
+
+    def test_verified_completion_atomically_handles_started_and_unstarted_leaves(self):
+        self.write(self.command(items=[item("started"), item("unstarted")]))
+        self.write(self.action("start", ["started"], revision=1, request_id="start"))
+        completion = self.action(
+            "complete",
+            ["started", "unstarted"],
+            revision=2,
+            request_id="complete",
+            reason="Verified both output files and their published artifact receipts.",
+        )
+        event = self.write(completion)
+        self.assertEqual([row["status"] for row in event.payload["items"]], ["completed"] * 2)
+        self.assertEqual(event.payload["plan"]["started_ids"], ["started"])
+        self.assertEqual(event.payload["plan"]["reconciled_ids"], ["unstarted"])
+        self.assertEqual(self.write(completion), event)
+        with self.assertRaisesRegex(PlanConflict, "revision_conflict"):
+            self.write(completion.model_copy(update={"request_id": "stale"}))
+        reopened = SessionPlans(SESSION, self.events, self.catalog)
+        self.assertEqual(reopened.current()["plan"]["started_ids"], ["started"])
+
+    def test_plan_recovery_requires_a_newer_same_turn_receipt_covering_all_original_targets(self):
+        arguments = {
+            "operation": "finish",
+            "plan_id": "review",
+            "step_ids": ["started", "unstarted"],
+        }
+        state = {
+            "turn_id": "turn-1",
+            "plan": {"plan_id": "review", "revision": 2},
+            "items": [item("started", status="in_progress"), item("unstarted")],
+        }
+        failure = plan_tool_receipt(
+            arguments,
+            {
+                "ok": False,
+                "error": "plan_step_start_required",
+                "step_ids": ["unstarted"],
+                "current": state,
+            },
+            "turn-1",
+        )
+        record = self.events.append(
+            session_id=SESSION,
+            runtime_id="codex",
+            vendor_thread_id=THREAD,
+            vendor_turn_id="turn-1",
+            vendor_item_id="failed-call",
+            kind="tool_completed",
+            payload={"tool_id": "failed-call", "success": False, **failure},
+            idempotency_key="failed-call",
+        )
+        completed = {
+            **state,
+            "ok": True,
+            "plan": {"plan_id": "review", "revision": 3},
+            "items": [item("started", status="completed"), item("unstarted", status="completed")],
+        }
+        receipt = plan_tool_receipt({**arguments, "operation": "complete"}, completed, "turn-1")
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "turn-1"), ["failed-call"])
+        for changed in (
+            {**receipt, "completed_ids": ["unstarted"]},
+            {**receipt, "revision": 2},
+            {**receipt, "plan_id": "other"},
+        ):
+            self.assertEqual(plan_tool_recoveries(changed, [record], "turn-1"), [])
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "other-turn"), [])
+        read_receipt = plan_tool_receipt({"operation": "get"}, completed, "turn-1")
+        self.assertEqual(read_receipt, {"operation": "get"})
+        self.assertEqual(plan_tool_recoveries(read_receipt, [record], "turn-1"), [])
+        self.assertEqual(
+            plan_tool_receipt(
+                arguments, {"ok": False, "error": "unknown", "current": state}, "turn-1"
+            ),
+            {},
+        )
+        self.assertEqual(plan_tool_receipt(arguments, completed, "other-turn"), {})
+
+    def test_corrected_read_recovers_only_read_rejections_in_the_same_turn(self):
+        arguments = {"operation": "get", "plan_id": "invalid-extra-field"}
+        failure = plan_tool_receipt(
+            arguments, {"ok": False, "error": "bridge_invalid_parameters"}, "turn-1"
+        )
+        self.assertIn("plan_failure", failure)
+        record = self.events.append(
+            session_id=SESSION,
+            runtime_id="codex",
+            vendor_thread_id=THREAD,
+            vendor_turn_id="turn-1",
+            vendor_item_id="invalid-read",
+            kind="tool_completed",
+            payload={"tool_id": "invalid-read", "success": False, **failure},
+            idempotency_key="invalid-read",
+        )
+        result = {"ok": True, "turn_id": "turn-1", "items": [], "plan": None}
+        receipt = plan_tool_receipt({"operation": "get"}, result, "turn-1")
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "turn-1"), ["invalid-read"])
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "other-turn"), [])
+        self.assertEqual(plan_tool_receipt({"operation": "get"}, result, "other-turn"), {})
+        self.assertEqual(
+            plan_tool_receipt({"operation": "get"}, {"ok": True, "turn_id": "turn-1"}, "turn-1"),
+            {},
+        )
+        self.assertEqual(
+            plan_tool_recoveries(
+                {"plan_id": "review", "revision": 3, "completed_ids": ["leaf"]},
+                [record],
+                "turn-1",
+            ),
+            [],
+        )
+        for error in ("bridge_access_denied", "plan_turn_inactive", "bridge_execution_failed"):
+            self.assertEqual(
+                plan_tool_receipt(arguments, {"ok": False, "error": error}, "turn-1"), {}
+            )
+
+    def test_structural_recovery_requires_the_complete_requested_tree(self):
+        nodes = [{"id": "root", "content": "Original"}, {"id": "check", "content": "Verify"}]
+        arguments = {"operation": "update", "plan_id": "review", "items": nodes}
+        state = {
+            "turn_id": "turn-1",
+            "plan": {"plan_id": "review", "revision": 2, "source": "structured"},
+            "items": [item("root")],
+        }
+        failure = plan_tool_receipt(
+            arguments,
+            {"ok": False, "error": "plan_roots_locked_use_revise", "current": state},
+            "turn-1",
+        )
+        self.assertIn("plan_failure", failure)
+        record = self.events.append(
+            session_id=SESSION,
+            runtime_id="codex",
+            vendor_thread_id=THREAD,
+            vendor_turn_id="turn-1",
+            vendor_item_id="structure-rejected",
+            kind="tool_completed",
+            payload={"tool_id": "structure-rejected", "success": False, **failure},
+            idempotency_key="structure-rejected",
+        )
+        completed = {
+            "ok": True,
+            "turn_id": "turn-1",
+            "plan": {"plan_id": "review", "revision": 3, "source": "structured"},
+            "items": [dict(node, status="pending") for node in nodes],
+        }
+        receipt = plan_tool_receipt({**arguments, "operation": "revise"}, completed, "turn-1")
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "turn-1"), ["structure-rejected"])
+        for changes in (
+            {"items": completed["items"][:1]},
+            {"items": list(reversed(completed["items"]))},
+            {"items": [dict(node, content="Changed") for node in completed["items"]]},
+            {"plan": {**completed["plan"], "revision": 2}},
+            {"plan": {**completed["plan"], "source": "released"}},
+            {"turn_id": "other-turn"},
+        ):
+            changed = plan_tool_receipt(arguments, {**completed, **changes}, "turn-1")
+            self.assertEqual(plan_tool_recoveries(changed, [record], "turn-1"), [])
+
+    def test_history_reconstructs_exact_tool_recovery_without_rewriting_events(self):
+        nodes = [{"id": "root", "content": "Original"}, {"id": "check", "content": "Verify"}]
+        state = {
+            "turn_id": "turn-1",
+            "plan": {"plan_id": "review", "revision": 2, "source": "structured"},
+            "items": [item("root")],
+        }
+        calls = [
+            (
+                "bad-read",
+                {"operation": "get", "extra": True},
+                {"ok": False, "error": "bridge_invalid_parameters"},
+            ),
+            ("good-read", {"operation": "get"}, {"ok": True, **state}),
+            (
+                "bad-structure",
+                {"operation": "update", "plan_id": "review", "items": nodes},
+                {"ok": False, "error": "plan_roots_locked_use_revise", "current": state},
+            ),
+            (
+                "good-structure",
+                {"operation": "revise", "plan_id": "review", "items": nodes},
+                {
+                    "ok": True,
+                    **state,
+                    "plan": {**state["plan"], "revision": 3},
+                    "items": [dict(node, status="pending") for node in nodes],
+                },
+            ),
+        ]
+        rows = []
+        for identity, arguments, result in calls:
+            for kind, payload in (
+                ("tool_started", {"input": arguments}),
+                (
+                    "tool_completed",
+                    {
+                        "success": result["ok"],
+                        "output": json.dumps([{"type": "inputText", "text": json.dumps(result)}]),
+                    },
+                ),
+            ):
+                rows.append(
+                    self.events.append(
+                        session_id=SESSION,
+                        runtime_id="codex",
+                        vendor_thread_id=THREAD,
+                        vendor_turn_id="turn-1",
+                        vendor_item_id=identity,
+                        kind=kind,
+                        payload={"tool_id": identity, "name": "update_plan", **payload},
+                        idempotency_key=f"{identity}:{kind}",
+                    )
+                )
+        service = EventService({}, self.events, logging.getLogger(__name__))
+        snapshot = service.activity_snapshot(SESSION)
+        resolved = {
+            event["data"]["tool_id"]: event["data"].get("resolved_tool_ids")
+            for event in snapshot
+            if event["type"] == "tool_completed"
+        }
+        self.assertEqual(resolved["good-read"], ["bad-read"])
+        self.assertEqual(resolved["good-structure"], ["bad-structure"])
+
+        async def resumed():
+            stream = service.open(SESSION, rows[5].product_seq)
+            try:
+                return [json.loads((await anext(stream)).removeprefix("data: ")) for _ in range(2)]
+            finally:
+                await stream.aclose()
+
+        replayed = asyncio.run(resumed())
+        self.assertEqual(replayed[-1]["data"]["resolved_tool_ids"], ["bad-structure"])
+        self.assertEqual(self.events.replay(SESSION), tuple(rows))
+        for changes in (
+            {"runtime_id": "another-runtime"},
+            {"vendor_thread_id": "another-thread"},
+            {"vendor_turn_id": "another-turn"},
+        ):
+            projection = PlanToolProjection()
+            projected = [
+                projection.project(
+                    replace(record, **changes) if record.payload.get("success") is True else record
+                )
+                for record in rows
+            ]
+            self.assertFalse(any(record.payload.get("resolved_tool_ids") for record in projected))
+
+        for changes in (
+            {"output": "truncated{"},
+            {"output": json.dumps({"ok": True, "turn_id": "turn-1"})},
+            {"name": "unrelated-tool"},
+        ):
+            projection = PlanToolProjection()
+            projected = [
+                projection.project(
+                    replace(record, payload={**record.payload, **changes})
+                    if record.payload.get("success") is True
+                    else record
+                )
+                for record in rows
+            ]
+            self.assertFalse(any(record.payload.get("resolved_tool_ids") for record in projected))
+
+    def test_create_and_release_recovery_require_the_actual_matching_operation(self):
+        nodes = [{"id": "root", "content": "Original"}]
+        for operation, source in (("create", "structured"), ("release", "released")):
+            arguments = {"operation": operation, "plan_id": "review", "items": nodes}
+            state = {
+                "turn_id": "turn-1",
+                "plan": {"plan_id": "review", "revision": 2, "source": "structured"},
+                "items": [dict(nodes[0], status="pending")],
+            }
+            failure = plan_tool_receipt(
+                arguments,
+                {
+                    "ok": False,
+                    "error": "plan_revision_conflict",
+                    "current": state,
+                },
+                "turn-1",
+            )
+            record = self.events.append(
+                session_id=SESSION,
+                runtime_id="codex",
+                vendor_thread_id=THREAD,
+                vendor_turn_id="turn-1",
+                vendor_item_id=operation,
+                kind="tool_completed",
+                payload={"tool_id": operation, "success": False, **failure},
+                idempotency_key=operation,
+            )
+            success = {
+                "ok": True,
+                **state,
+                "plan": {**state["plan"], "revision": 3, "source": source},
+            }
+            receipt = plan_tool_receipt(arguments, success, "turn-1")
+            self.assertEqual(plan_tool_recoveries(receipt, [record], "turn-1"), [operation])
+            other = plan_tool_receipt({**arguments, "operation": "revise"}, success, "turn-1")
+            self.assertEqual(plan_tool_recoveries(other, [record], "turn-1"), [])
+
+    def test_start_conflict_recovers_only_after_authoritative_execution_start(self):
+        arguments = {"operation": "start", "plan_id": "review", "step_ids": ["runner"]}
+        state = {
+            "turn_id": "turn-1",
+            "plan": {"plan_id": "review", "revision": 5},
+            "items": [item("runner")],
+        }
+        failure = plan_tool_receipt(
+            arguments,
+            {"ok": False, "error": "plan_revision_conflict", "current": state},
+            "turn-1",
+        )
+        self.assertIn("plan_failure", failure)
+        record = self.events.append(
+            session_id=SESSION,
+            runtime_id="codex",
+            vendor_thread_id=THREAD,
+            vendor_turn_id="turn-1",
+            vendor_item_id="stale-start",
+            kind="tool_completed",
+            payload={"tool_id": "stale-start", "success": False, **failure},
+            idempotency_key="stale-start",
+        )
+        reconciled = {
+            **state,
+            "ok": True,
+            "plan": {"plan_id": "review", "revision": 6, "started_ids": []},
+            "items": [item("runner", status="completed")],
+        }
+        receipt = plan_tool_receipt({**arguments, "operation": "complete"}, reconciled, "turn-1")
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "turn-1"), [])
+        started = {
+            **reconciled,
+            "plan": {"plan_id": "review", "revision": 6, "started_ids": ["runner"]},
+            "items": [item("runner", status="in_progress")],
+        }
+        receipt = plan_tool_receipt(arguments, started, "turn-1")
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "turn-1"), ["stale-start"])
+        self.assertEqual(plan_tool_recoveries(receipt, [record], "other-turn"), [])
+
+    def test_completion_rejection_receipts_require_known_targets_and_authoritative_state(self):
+        arguments = {"operation": "complete", "plan_id": "review", "step_ids": ["deliver"]}
+        state = {
+            "turn_id": "turn-1",
+            "plan": {"plan_id": "review", "revision": 2},
+            "items": [item("deliver")],
+        }
+        for error in (
+            "plan_step_start_required",
+            "plan_revision_conflict",
+            "plan_completed_parent_has_unfinished_child",
+            "bridge_invalid_parameters",
+        ):
+            rejected = {"ok": False, "error": error}
+            self.assertIn(
+                "plan_failure", plan_tool_receipt(arguments, rejected, "turn-1", current=state)
+            )
+            self.assertEqual(plan_tool_receipt(arguments, rejected, "turn-1"), {})
+        for error in (
+            "bridge_access_denied",
+            "plan_turn_inactive",
+            "bridge_execution_failed",
+            "unknown",
+        ):
+            self.assertEqual(
+                plan_tool_receipt(
+                    arguments, {"ok": False, "error": error}, "turn-1", current=state
+                ),
+                {},
+            )
+        self.assertEqual(
+            plan_tool_receipt(
+                {**arguments, "step_ids": ["unknown"]},
+                {"ok": False, "error": "bridge_invalid_parameters"},
+                "turn-1",
+                current=state,
+            ),
+            {},
+        )
+        self.assertEqual(
+            plan_tool_receipt(
+                {**arguments, "operation": ["complete"]},
+                {"ok": False, "error": "bridge_operation_unknown"},
+                "turn-1",
+                current=state,
+            ),
+            {},
+        )
+        self.assertEqual(
+            plan_tool_receipt(
+                arguments, {"ok": False, "error": ["unknown"]}, "turn-1", current=state
+            ),
+            {},
+        )
+
+    def test_verified_completion_closes_containers_only_after_all_descendants_complete(self):
+        tree = [
+            {**item("root"), "kind": "group"},
+            {**item("nested", "root"), "kind": "group"},
+            item("started", "nested"),
+            item("unstarted", "nested"),
+            item("outside"),
+        ]
+        self.write(self.command(items=tree))
+        self.write(self.action("start", ["started"], revision=1, request_id="start"))
+        before = self.plans.current()
+        with self.assertRaisesRegex(ValueError, "completed_parent_has_unfinished_child"):
+            self.write(
+                self.action(
+                    "complete",
+                    ["root", "nested", "started"],
+                    revision=2,
+                    request_id="incomplete-container",
+                    reason="Only the first output was verified.",
+                )
+            )
+        self.assertEqual(self.plans.current(), before)
+        completed = self.write(
+            self.action(
+                "complete",
+                ["root", "nested", "started", "unstarted"],
+                revision=2,
+                request_id="whole-container",
+                reason="Verified both child output artifacts.",
+            )
+        )
+        self.assertTrue(
+            all(row["status"] == "completed" for row in completed.payload["items"][:-1])
+        )
+        self.assertEqual(completed.payload["items"][-1]["status"], "pending")
+        self.assertEqual(completed.payload["plan"]["started_ids"], ["started"])
+        self.assertEqual(completed.payload["plan"]["reconciled_ids"], ["unstarted"])
+        self.assertTrue({"root", "nested"} <= completion_ids(self.plans.current()))
+
+    def test_verified_completion_can_close_a_parent_after_its_children(self):
+        self.write(self.command(items=[{**item("root"), "kind": "group"}, item("child", "root")]))
+        self.write(
+            self.action(
+                "complete",
+                ["child"],
+                revision=1,
+                request_id="child",
+                reason="Verified the child result.",
+            )
+        )
+        self.assertIn("root", completion_ids(self.plans.current()))
+        completed = self.write(
+            self.action(
+                "complete",
+                ["root"],
+                revision=2,
+                request_id="parent",
+                reason="All child results are complete.",
+            )
+        )
+        self.assertTrue(all(row["status"] == "completed" for row in completed.payload["items"]))
+        self.assertEqual(completed.payload["plan"]["started_ids"], [])
+        self.assertEqual(completed.payload["plan"]["reconciled_ids"], ["child"])
+
+    def test_verified_completion_requires_evidence_and_preserves_unfinished_children_atomically(
+        self,
+    ):
+        self.write(self.command(items=[item("root"), item("child", "root"), item("later")]))
+        for identities, reason in ((["child"], "  "), (["root", "later"], "Verified result")):
+            with self.assertRaises(ValueError):
+                self.write(
+                    self.action(
+                        "complete", identities, revision=1, request_id="invalid", reason=reason
+                    )
+                )
+            self.assertEqual(self.plans.current()["plan"]["revision"], 1)
+            self.assertEqual(self.plans.current()["items"][-1]["status"], "pending")
+        self.write(
+            self.command(
+                operation="revise",
+                expected_revision=1,
+                request_id="empty",
+                reason="Remove the child before any work begins.",
+                items=[{**item("root"), "kind": "group"}],
+            )
+        )
+        with self.assertRaisesRegex(PlanExecutionError, "completion_target_invalid"):
+            self.write(
+                self.action(
+                    "complete",
+                    ["root"],
+                    revision=2,
+                    request_id="empty-complete",
+                    reason="No result exists.",
+                )
+            )
 
     def test_reconcile_records_completion_without_inventing_a_start(self):
         self.write(self.command(items=[item("root"), item("later")]))
@@ -696,16 +1251,18 @@ class PlanContract(unittest.TestCase):
             self.assertEqual(client.post(PLAN_ROUTE_PREFIX + "get", json={}).status_code, 403)
             response = client.post(PLAN_ROUTE_PREFIX + "get", json={}, headers=headers)
             self.assertEqual(response.json()["turn_id"], "turn-1")
+            self.assertEqual(response.json()["expected_revision"], 0)
             response = client.post(
                 PLAN_ROUTE_PREFIX + "write", json=self.command().model_dump(), headers=headers
             )
             self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["expected_revision"], 1)
             stale = self.command(operation="update", request_id="stale").model_dump()
             self.assertEqual(
                 client.post(PLAN_ROUTE_PREFIX + "write", json=stale, headers=headers).status_code,
                 409,
             )
-            metadata = self.command().model_dump(exclude={"operation", "items"})
+            metadata = self.command().model_dump(exclude={"operation", "items", "estimate"})
             rejected = client.post(
                 PLAN_ROUTE_PREFIX + "action",
                 headers=headers,
@@ -779,6 +1336,95 @@ class PlanContract(unittest.TestCase):
                 client.post(PLAN_ROUTE_PREFIX + "write", json=current, headers=headers).status_code,
                 403,
             )
+
+    def test_model_plan_binds_callback_turn_without_trusting_model_identity(self) -> None:
+        live = self.live()
+        sessions = cast(
+            SessionService,
+            SimpleNamespace(bridge_caller=lambda identity: live if identity == SESSION else None),
+        )
+        app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_plan_routes(app, sessions, activities=activities)
+
+        async def call(arguments, *, callback_turn_id="turn-1", callback_request_id="callback"):
+            client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app))
+            try:
+                with (
+                    patch.dict(os.environ, {INTERNAL_BASE_URL_ENV: "http://127.0.0.1"}),
+                    patch("service.chat.runtime.tools.httpx.AsyncClient", return_value=client),
+                ):
+                    return await execute_service_tool(
+                        arguments,
+                        session_id=SESSION,
+                        token=live.bridge_token,
+                        local_socket=None,
+                        tool_name="update_plan",
+                        callback_request_id=callback_request_id,
+                        callback_turn_id=callback_turn_id,
+                    )
+            finally:
+                await client.aclose()
+
+        async def scenario():
+            metadata = {"plan_id": "fast-search", "request_id": "create", "expected_revision": 0}
+            created = await call(
+                {
+                    **metadata,
+                    "operation": "create",
+                    "turn_id": "t1",
+                    "items": [{"id": "search", "content": "Discover papers"}],
+                }
+            )
+            self.assertTrue(created["ok"], created)
+            self.assertEqual(created["turn_id"], "turn-1")
+            self.assertEqual(created["expected_revision"], 1)
+            record = self.catalog.get(SESSION)
+            assert record is not None
+            self.assertEqual(record.todo_turn_id, "turn-1")
+            started = await call(
+                {
+                    **metadata,
+                    "operation": "start",
+                    "expected_revision": 1,
+                    "request_id": "start",
+                    "step_ids": ["search"],
+                }
+            )
+            self.assertTrue(started["ok"], started)
+            self.assertEqual(started["items"][0]["status"], "in_progress")
+            self.assertEqual(started["expected_revision"], 2)
+            before = live.plans.current()
+            mutation = {
+                **metadata,
+                "operation": "finish",
+                "expected_revision": 2,
+                "request_id": "finish",
+                "turn_id": "turn-1",
+                "step_ids": ["search"],
+            }
+            for callback in ({"callback_turn_id": "old-turn"}, {"callback_request_id": ""}):
+                rejected = await call(mutation, **callback)
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertEqual(live.plans.current(), before)
+            conflict = await call({**mutation, "expected_revision": 0})
+            self.assertEqual(conflict["error"], "plan_revision_conflict")
+            self.assertEqual(conflict["current"]["expected_revision"], 2)
+            self.assertEqual(live.plans.current(), before)
+            finished = await call({**mutation, "turn_id": "t1"})
+            self.assertTrue(finished["ok"], finished)
+            self.assertEqual(finished["items"][0]["status"], "completed")
+            self.assertEqual(finished["expected_revision"], 3)
+            live.interrupting = True
+            before = live.plans.current()
+            rejected = await call({**mutation, "expected_revision": 3, "request_id": "late"})
+            self.assertEqual(rejected["error"], "plan_turn_inactive")
+            self.assertIn("plan/get", rejected["next_action"])
+            self.assertEqual(live.plans.current(), before)
+
+        asyncio.run(scenario())
 
     def test_bridge_reconciles_verified_completion_and_preserves_untimed_state(self):
         self.write(self.command(items=[item("root", status="blocked")]))

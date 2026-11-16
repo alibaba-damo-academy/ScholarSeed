@@ -24,6 +24,18 @@ import {
 } from '../../components/business/Language'
 import { ModelMenu } from '../../components/business/ModelMenu'
 import { PromptSettingsGuide } from '../../components/business/PromptSettingsGuide'
+import { useTranslationText } from '../translation/text'
+import { useTranslationBackend } from '../translation/context'
+import { TranslationControls } from '../translation/Controls'
+import { translationError } from '../translation/live'
+import { useTranslationNotice } from '../translation/Notice'
+import {
+  AI_ENGINE_PREFIX,
+  translationAllowed,
+  translationChoice,
+  translationDirty,
+  type TranslationChoice,
+} from '../translation/model'
 import type { AssistantTranslationTarget } from '../../contracts/assistant'
 import { effectiveSessionModelKey, selectableActionModelKey } from '../../catalog'
 import { useApp } from '../../store'
@@ -169,6 +181,11 @@ export function ResourceSuggestion({
 }: SuggestionProps): React.JSX.Element {
   const { state, act } = useApp()
   const { t, i18n } = useTranslation('resources')
+  const translationText = useTranslationText()
+  const translationNotice = useTranslationNotice()
+  const { backend: translationBackend, settings: translationSettings } = useTranslationBackend()
+  const [serviceError, setServiceError] = useState('')
+  const [appliedChoice, setAppliedChoice] = useState<TranslationChoice>()
   const { t: ui } = useTranslation('ui')
   const [instruction, setInstruction] = useState('')
   const [output, setOutput] = useState('')
@@ -189,6 +206,11 @@ export function ResourceSuggestion({
       defaultTranslationTarget(i18n.resolvedLanguage || i18n.language, selectedText)
   )
   const [busy, setBusy] = useState(false)
+  const choice =
+    translationSettings && action === 'translate'
+      ? translationChoice(translationSettings, identity, 'selection', target)
+      : null
+  const usesService = Boolean(choice && !choice.engine.startsWith(AI_ENGINE_PREFIX))
   const [complete, setComplete] = useState(false)
   const [applying, setApplying] = useState(false)
   const [annotating, setAnnotating] = useState(false)
@@ -280,8 +302,8 @@ export function ResourceSuggestion({
     setAnnotated(false)
   }, [identity])
   useEffect(() => {
-    if (!hasModel) setError({ key: ERRORS.resource_model_unavailable })
-  }, [hasModel])
+    if (!hasModel && !usesService) setError({ key: ERRORS.resource_model_unavailable })
+  }, [hasModel, usesService])
   const close = (): void => {
     stream.current?.abort()
     onClose()
@@ -292,6 +314,50 @@ export function ResourceSuggestion({
     modelOverride = selectedModel
   ): Promise<void> => {
     if (busy) return
+    setServiceError('')
+    if (choice && translationSettings && translationBackend) {
+      if (!translationAllowed(translationSettings, choice)) {
+        setServiceError(translationText('invalidDirection'))
+        return
+      }
+      if (!choice.engine.startsWith(AI_ENGINE_PREFIX)) {
+        const abort = new AbortController()
+        stream.current?.abort()
+        stream.current = abort
+        taskId.current = ''
+        setBusy(true)
+        setSubmitted(true)
+        setComplete(false)
+        setError(null)
+        setAnnotated(false)
+        setOutput('')
+        applySnapshot.current = onApply
+        try {
+          const translated = await translationBackend.translate(
+            choice,
+            selectedText,
+            abort.signal,
+            () => translationNotice('recovered')
+          )
+          if (!mounted.current || abort.signal.aborted) return
+          setOutput(translated)
+          setComplete(true)
+          setAppliedChoice({ ...choice })
+        } catch (cause) {
+          if (mounted.current && !abort.signal.aborted)
+            setServiceError(translationText(`errors.${translationError(cause)}`))
+          if (translationError(cause) === 'rate_limited') translationNotice('rate_limited')
+        } finally {
+          if (mounted.current && stream.current === abort) {
+            setBusy(false)
+            stream.current = null
+          }
+        }
+        return
+      }
+      targetLanguage = choice.target as AssistantTranslationTarget
+      modelOverride = choice.engine.slice(AI_ENGINE_PREFIX.length) || modelOverride
+    }
     if (!state.catalog.models.some((item) => item.key === modelOverride && !item.disabled)) {
       setError({ key: ERRORS.resource_model_unavailable })
       return
@@ -340,6 +406,7 @@ export function ResourceSuggestion({
           )
         }
       })
+      if (choice && !abort.signal.aborted && mounted.current) setAppliedChoice({ ...choice })
       if (!mounted.current || abort.signal.aborted) return
       if (result.status === 'completed') {
         setOutput(result.output)
@@ -550,31 +617,41 @@ export function ResourceSuggestion({
     <>
       {integratedInput ? toolbarActions : null}
       {moveHandle}
-      {submitted && action === 'translate' && (
-        <>
-          <TranslationTargetPicker
-            value={target}
+      {submitted &&
+        action === 'translate' &&
+        (choice && translationBackend ? (
+          <TranslationControls
+            value={choice}
             disabled={busy}
-            onChange={(nextTarget) => {
-              writeTranslationTarget('resource-selection', nextTarget)
-              setTarget(nextTarget)
-              void run(false, nextTarget)
-            }}
+            changed={translationDirty(choice, appliedChoice)}
+            onChange={(next) => translationBackend.choose(identity, 'selection', next)}
+            onRefresh={() => void run()}
           />
-          <ModelMenu
-            compact
-            independent
-            modelKey={selectedModel}
-            onModelSelect={(model) => {
-              writeTranslationModel('resource-selection', model.key)
-              setTranslationModel(model.key)
-              if (submitted) void run(false, target, model.key)
-            }}
-            showEffort={false}
-            testIdPrefix="resource-translation-model"
-          />
-        </>
-      )}
+        ) : (
+          <>
+            <TranslationTargetPicker
+              value={target}
+              disabled={busy}
+              onChange={(nextTarget) => {
+                writeTranslationTarget('resource-selection', nextTarget)
+                setTarget(nextTarget)
+                void run(false, nextTarget)
+              }}
+            />
+            <ModelMenu
+              compact
+              independent
+              modelKey={selectedModel}
+              onModelSelect={(model) => {
+                writeTranslationModel('resource-selection', model.key)
+                setTranslationModel(model.key)
+                if (submitted) void run(false, target, model.key)
+              }}
+              showEffort={false}
+              testIdPrefix="resource-translation-model"
+            />
+          </>
+        ))}
       {submitted && (action === 'explain' || action === 'translate') ? (
         <IconButton
           aria-pressed={pinned}
@@ -600,7 +677,7 @@ export function ResourceSuggestion({
       ref={root}
       data-resource-ai-suggestion
       data-testid="resource-ai-suggestion"
-      className={`fixed z-[var(--vds-z-popover)] flex flex-col overflow-hidden [&>[role=toolbar]]:shrink-0 [&>[role=toolbar]]:flex-wrap ${integratedInput ? 'max-w-[var(--vds-resource-suggestion-max-width)]' : submitted ? 'max-w-[88vw]' : 'max-w-[86vw] [&_[role=toolbar]]:gap-[var(--vds-space-2)] [&_[role=toolbar]>label]:flex-1'}`}
+      className={`fixed z-[var(--vds-z-floating-panel)] flex flex-col overflow-hidden [&>[role=toolbar]]:shrink-0 [&>[role=toolbar]]:flex-wrap ${integratedInput ? 'max-w-[var(--vds-resource-suggestion-max-width)]' : submitted ? 'max-w-[88vw]' : 'max-w-[86vw] [&_[role=toolbar]]:gap-[var(--vds-space-2)] [&_[role=toolbar]>label]:flex-1'}`}
       style={{
         left,
         top,
@@ -632,7 +709,10 @@ export function ResourceSuggestion({
           />
           <PromptSettingsGuide
             prefix={t(PROMPT_GUIDES[action])}
-            linkLabel={t('suggestion.promptSettings')}
+            linkLabel={
+              action === 'translate' ? translationText('title') : t('suggestion.promptSettings')
+            }
+            page={action === 'translate' ? 'translation' : 'prompts'}
             suffix={action === 'translate' ? t('suggestion.promptGuideSuffix') : undefined}
           />
           <Button
@@ -730,6 +810,7 @@ export function ResourceSuggestion({
           </div>
         </div>
       )}
+      {serviceError && <Alert tone="error" description={serviceError} />}
       {submitted && (
         <div
           className={`flex shrink-0 items-center justify-between gap-[var(--vds-space-3)] border-t border-[var(--vds-divider-default)] bg-[var(--vds-bg-component)] px-[var(--vds-space-4)] py-[var(--vds-space-3)]${size ? ' flex-wrap' : ''}`}
@@ -738,7 +819,8 @@ export function ResourceSuggestion({
             <PromptSettingsGuide
               className={size ? 'min-w-0 flex-1 basis-1/2' : 'min-w-0 flex-1'}
               prefix={t(PROMPT_GUIDES.translate)}
-              linkLabel={t('suggestion.promptSettings')}
+              linkLabel={translationText('title')}
+              page="translation"
               suffix={t('suggestion.promptGuideSuffix')}
             />
           ) : (

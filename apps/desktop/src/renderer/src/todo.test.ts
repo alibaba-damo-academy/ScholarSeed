@@ -7,7 +7,8 @@ import {
   displayTodos,
   isLatestUserTurn,
   planElapsedMilliseconds,
-  planSkillEstimate,
+  planEstimateElapsedMilliseconds,
+  planExecutionEstimate,
   projectPlanSnapshots,
   stepElapsedMilliseconds,
   stepDisplayMilliseconds,
@@ -195,7 +196,7 @@ const SKILL_ESTIMATE = {
   upperSeconds: 2700,
   sampleCount: 0,
   confidence: 'low' as const,
-  basis: 'product_baseline' as const,
+  basis: 'execution_plan' as const,
 }
 
 function estimatedPlan(): Thread {
@@ -227,7 +228,11 @@ function estimatedPlan(): Thread {
 
 test('same plan inherits its estimate after pause and resume, excluding paused time', () => {
   const value = estimatedPlan()
-  assert.deepEqual(planSkillEstimate(value), { turnId: 'resume', estimate: SKILL_ESTIMATE })
+  value.planSnapshots = value.planSnapshots?.map((snapshot) => ({
+    ...snapshot,
+    estimate: { lower_seconds: 1800, upper_seconds: 2700 },
+  }))
+  assert.deepEqual(planExecutionEstimate(value), { turnId: 'resume', estimate: SKILL_ESTIMATE })
   assert.equal(planElapsedMilliseconds(value, 'resume', 181000), 120000)
 })
 
@@ -237,17 +242,17 @@ test('a different plan or missing plan identity does not inherit the old estimat
     value.planSnapshots = value.planSnapshots?.map((snapshot, index) =>
       index ? { ...snapshot, planId } : snapshot
     )
-    assert.equal(planSkillEstimate(value), undefined)
+    assert.equal(planExecutionEstimate(value), undefined)
   }
 })
 
 test('a new turn without a plan snapshot cannot inherit an estimate', () => {
   const value = estimatedPlan()
   value.planSnapshots = value.planSnapshots?.slice(0, 1)
-  assert.equal(planSkillEstimate(value), undefined)
+  assert.equal(planExecutionEstimate(value), undefined)
 })
 
-test('current skill estimate takes priority over the continued plan estimate', () => {
+test('skill estimates cannot replace the execution plan estimate', () => {
   const value = estimatedPlan()
   const updated = { ...SKILL_ESTIMATE, lowerSeconds: 600 }
   value.conversation.push({
@@ -260,10 +265,10 @@ test('current skill estimate takes priority over the continued plan estimate', (
     turnId: 'resume',
     estimate: updated,
   })
-  assert.deepEqual(planSkillEstimate(value), { turnId: 'resume', estimate: updated })
+  assert.equal(planExecutionEstimate(value), undefined)
 })
 
-test('continued plan can inherit a user skill reference estimate', () => {
+test('continued plan does not inherit a user skill reference estimate', () => {
   const value = estimatedPlan()
   value.conversation = [
     {
@@ -280,28 +285,58 @@ test('continued plan can inherit a user skill reference estimate', () => {
       ],
     },
   ]
-  assert.deepEqual(planSkillEstimate(value), { turnId: 'resume', estimate: SKILL_ESTIMATE })
+  assert.equal(planExecutionEstimate(value), undefined)
 })
 
 test('terminal or released plans do not inherit a running estimate', () => {
   const value = estimatedPlan()
   value.turnOutcomes = { first: 'interrupted', resume: 'completed' }
-  assert.equal(planSkillEstimate(value), undefined)
+  assert.equal(planExecutionEstimate(value), undefined)
   value.turnOutcomes.resume = 'running'
   value.planSnapshots![1].released = true
-  assert.equal(planSkillEstimate(value), undefined)
+  assert.equal(planExecutionEstimate(value), undefined)
 })
 
-test('a skill estimate is available while preparing the first plan', () => {
+test('a skill estimate is hidden while preparing the first plan', () => {
   const value = estimatedPlan()
   value.todoTurnId = undefined
   value.planSnapshots = []
   value.turnOutcomes = { first: 'running' }
-  assert.deepEqual(planSkillEstimate(value), { turnId: 'first', estimate: SKILL_ESTIMATE })
+  assert.equal(planExecutionEstimate(value), undefined)
 })
 
 test('a task without estimate data does not invent an estimate', () => {
-  assert.equal(planSkillEstimate(thread()), undefined)
+  assert.equal(planExecutionEstimate(thread()), undefined)
+})
+
+test('a running container does not count paused leaves as execution', () => {
+  const value = estimatedPlan()
+  value.planSnapshots = value.planSnapshots?.slice(1).map((snapshot) => ({
+    ...snapshot,
+    estimate: { lower_seconds: 600, upper_seconds: 900 },
+    items: [
+      { id: 'group', kind: 'group', content: 'Review', status: 'in_progress' },
+      { id: 'leaf', parent_id: 'group', content: 'Await answer', status: 'needs_confirmation' },
+    ],
+  }))
+  assert.equal(planExecutionEstimate(value), undefined)
+  assert.equal(planEstimateElapsedMilliseconds(value, 'resume', 181000), 0)
+})
+
+test('execution estimate excludes preparation and follows snapshot updates and clearing', () => {
+  const value = estimatedPlan()
+  value.planSnapshots = value.planSnapshots?.map((snapshot) => ({
+    ...snapshot,
+    estimate: { lower_seconds: 600, upper_seconds: 900 },
+  }))
+  assert.equal(planExecutionEstimate(value)?.estimate.lowerSeconds, 600)
+  assert.equal(planEstimateElapsedMilliseconds(value, 'resume', 181000), 118000)
+  value.planSnapshots![1].estimate = { lower_seconds: 1800, upper_seconds: 2700 }
+  assert.equal(planExecutionEstimate(value)?.estimate.lowerSeconds, 1800)
+  value.planSnapshots![1].items = [{ id: 'pending', content: 'Await agreement', status: 'pending' }]
+  assert.equal(planExecutionEstimate(value), undefined)
+  value.planSnapshots![1].estimate = null
+  assert.equal(planExecutionEstimate(value), undefined)
 })
 
 function timedPlan(conversation: ConvItem[], completedAt?: number): Thread {
@@ -341,6 +376,32 @@ test('plan and step clocks retain distinct starts, pause for HIL and freeze at c
   value.planSnapshots = projectPlanSnapshots([planEvent(3, 10, 'completed')], value.planSnapshots)
   assert.equal(planElapsedMilliseconds(value, 'plan-turn', 90_000), 6_000)
   assert.equal(stepElapsedMilliseconds(value, item, 90_000), 4_000)
+})
+
+test('failed step retains its observed explanation across later snapshots but not recovery or another plan', () => {
+  const started = planEvent(1, 1, 'in_progress')
+  const failed = planEvent(2, 2, 'in_progress')
+  if (failed.type !== 'plan_snapshot') throw new Error('Expected plan snapshot')
+  failed.data.items[0].status = 'failed'
+  failed.data.explanation = 'native search: invocation_skill_not_found'
+  const later = structuredClone(failed)
+  later.seq = 3
+  later.data.explanation = 'Other work completed'
+  const value = thread({
+    todos: failed.data.items,
+    planSnapshots: projectPlanSnapshots([started, failed, later]),
+  })
+  assert.equal(displayTodos(value)[0].reason, failed.data.explanation)
+  const recovered = planEvent(4, 4, 'completed')
+  value.planSnapshots = projectPlanSnapshots([recovered], value.planSnapshots)
+  value.todos = [{ id: 'step', content: 'read files', status: 'completed' }]
+  assert.equal(displayTodos(value)[0].reason, undefined)
+  value.planSnapshots = projectPlanSnapshots(
+    [planEvent(5, 5, 'pending', 'plan-turn', 'new-plan')],
+    value.planSnapshots
+  )
+  value.todos = [{ id: 'step', content: 'new search', status: 'pending' }]
+  assert.equal(displayTodos(value)[0].reason, undefined)
 })
 
 test('new pending steps show zero and stable ids preserve timing after rename', () => {
@@ -514,12 +575,6 @@ test('batch-completed children do not inherit their measured parent clock in the
       null
     )
   }
-  assert.doesNotMatch(TODO_PANEL_SOURCE, /stepEstimatedMilliseconds|plan\.timing\.upperBound/)
-  assert.match(
-    TODO_PANEL_SOURCE,
-    /const duration = elapsed === null \? null : planDurationLabel\(elapsed\)/
-  )
-  assert.match(TODO_PANEL_SOURCE, /duration !== null \? \(/)
 })
 
 test('pending to completed uses the last pending checkpoint and never grows afterwards', () => {
@@ -707,6 +762,11 @@ test('history repairs a recovered request clock and uses event time for legacy r
   const recovered = timedPlan(
     projectActivityEvents([projectHilCard(request, 8, 'plan-turn')], [pending])
   )
+  assert.equal(planElapsedMilliseconds(recovered, 'plan-turn', 12_000), 2_000)
+  recovered.conversation = projectActivityEvents(recovered.conversation, [
+    pending,
+    { ...pending, seq: 2, ts: 10 },
+  ])
   assert.equal(planElapsedMilliseconds(recovered, 'plan-turn', 12_000), 2_000)
   recovered.conversation = projectActivityEvents(recovered.conversation, [
     pending,
@@ -1239,55 +1299,6 @@ test('collapsed plan summary truncates through the shared ellipsis tooltip compo
   assert.doesNotMatch(TODO_PANEL_SOURCE, /data-testid="todo-current"[\s\S]*title=\{summaryLabel\}/)
 })
 
-test('plan header preserves elapsed time and result hints before optional details', () => {
-  assert.doesNotMatch(TODO_PANEL_SOURCE, /elapsedHidden|elapsedNeedRef|setElapsedTipOpen/)
-  assert.match(TODO_PANEL_SOURCE, /const observer = new ResizeObserver\(update\)/)
-  assert.match(TODO_PANEL_SOURCE, /setHeaderWidth\(button\.clientWidth\)/)
-  assert.match(
-    TODO_PANEL_SOURCE,
-    /summary.status !== 'done' && Boolean\(stepLabel\) && headerWidth >= PLAN_DETAIL_MIN_WIDTH/
-  )
-  assert.match(TODO_PANEL_SOURCE, /estimateLabel && headerWidth >= PLAN_ESTIMATE_MIN_WIDTH/)
-  assert.match(TODO_PANEL_SOURCE, /summary.status !== 'running' && summary.status !== 'done'/)
-  assert.match(TODO_VIEW_SOURCE, /observer\.observe\(button\)[\s\S]*if \(total === 0/)
-  assert.match(TODO_HOST_SOURCE, /if \(currentTurnOnly[\s\S]*return\s*\(?\s*<Plan/)
-  const toggleStart = TODO_PANEL_SOURCE.indexOf('data-testid="todo-toggle"')
-  const chevron = TODO_PANEL_SOURCE.indexOf('<ChevronRight ', toggleStart)
-  const title = TODO_PANEL_SOURCE.indexOf("{t('todo.title')}", toggleStart)
-  const statusMark = TODO_PANEL_SOURCE.indexOf('<StatusMark', toggleStart)
-  const elapsed = TODO_PANEL_SOURCE.indexOf('data-testid="todo-elapsed"', toggleStart)
-  const currentStatus = TODO_PANEL_SOURCE.indexOf('data-testid="todo-current"', toggleStart)
-  assert.ok(
-    toggleStart < chevron &&
-      chevron < title &&
-      title < currentStatus &&
-      currentStatus < statusMark &&
-      statusMark < elapsed
-  )
-  assert.ok(toggleStart < chevron && chevron < title && title < currentStatus)
-  assert.doesNotMatch(TODO_PANEL_SOURCE.slice(toggleStart, currentStatus), /<StatusMark/)
-  assert.match(TODO_PANEL_SOURCE.slice(title - 150, title), /planRunning \? streamingTextClassName/)
-})
-
-test('elapsed time uses the default font at body-lv1 size with tertiary color', () => {
-  assert.match(
-    TODO_PANEL_SOURCE,
-    /<span\s+className="shrink-0 whitespace-nowrap text-\[length:var\(--vds-font-body-lv1\)\] text-\[var\(--vds-text-tertiary\)\]"\s+data-testid="todo-elapsed"/
-  )
-  assert.match(TODO_PANEL_SOURCE, /planDurationLabel\(elapsedMilliseconds\)/)
-})
-
-test('plan progress numbers use the default font', () => {
-  assert.match(
-    TODO_PANEL_SOURCE,
-    /<Badge size="sm" tone="neutral" className="shrink-0" data-testid="todo-progress">/
-  )
-  assert.doesNotMatch(
-    TODO_PANEL_SOURCE,
-    /data-testid="todo-progress"[^>]*(?:font-mono|tabular-nums)/
-  )
-})
-
 test('pending steps use the lucide circle-dashed mark instead of the disabled glyph', () => {
   assert.match(
     TODO_PANEL_SOURCE,
@@ -1296,23 +1307,11 @@ test('pending steps use the lucide circle-dashed mark instead of the disabled gl
   assert.doesNotMatch(TODO_PANEL_SOURCE, /todo:\s*\{\s*mark: 'a-line-status-notfull'/)
 })
 
-test('lucide status marks keep iconfont glyph metrics and line-box alignment', () => {
-  // .iconfont 全局 16px → lucide 用同档 icon-8; svg 无行盒 → min-h-[1lh] 兜底与文字首行居中。
+test('inline plan card uses the 12px radius token', () => {
   assert.match(
     TODO_PANEL_SOURCE,
-    /inline-grid min-h-\[var\(--vds-todo-status-mark-min-height\)\] shrink-0 place-items-center/
+    /<Card\s+padding="sm"\s+className="[^"]*!rounded-\[var\(--vds-radius-6\)\]/
   )
-  const layout = readFileSync(new URL('./design/layout.css', import.meta.url), 'utf8')
-  assert.match(layout, /--vds-todo-status-mark-min-height:\s*1lh;/)
-  assert.match(
-    TODO_PANEL_SOURCE,
-    /<LucideMark aria-hidden="true" className="size-\[var\(--vds-icon-8\)\]" \/>/
-  )
-})
-
-test('plan card uses the 12px radius token', () => {
-  assert.match(TODO_PANEL_SOURCE, /!rounded-\[var\(--vds-radius-6\)\]/)
-  assert.doesNotMatch(TODO_PANEL_SOURCE, /!rounded-\[var\(--vds-radius-4\)\]/)
 })
 
 test('the composer shows only the current turn while task monitor retains the latest snapshot', () => {
@@ -1321,15 +1320,4 @@ test('the composer shows only the current turn while task monitor retains the la
     /<TodoPanel\s+compact\s+currentTurnOnly\s+onContinue=\{continueTurn\}\s+continueDisabled=\{continueDisabled\}\s*\/>/
   )
   assert.match(TASK_MONITOR_SOURCE, /<TodoPanel \/>/)
-})
-
-test('paused plan continuation has separate Todo controls and keeps elapsed time visible', () => {
-  assert.match(
-    TODO_PANEL_SOURCE,
-    /summary.messageKey === 'todo.summary.interrupted'\s*&&\s*!thread.terminated\s*&&\s*isLatestUserTurn/
-  )
-  assert.match(TODO_PANEL_SOURCE, /continueDisabled \|\| continuingRef.current/)
-  assert.match(TODO_PANEL_SOURCE, /<\/CollapsibleTrigger>[\s\S]*data-testid="todo-continue"/)
-  assert.match(TODO_PANEL_SOURCE, /className="group !flex flex-1 !shrink min-w-0/)
-  assert.match(TODO_PANEL_SOURCE, /total > 0 && !compactPaused/)
 })

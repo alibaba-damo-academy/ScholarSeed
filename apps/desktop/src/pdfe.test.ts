@@ -6,6 +6,7 @@ import {
   readPdfeTarget,
   isPdfeTargetUrl,
   pdfeDockWidth,
+  pdfeWindowWidth,
 } from './pdfe.ts'
 
 const manifest = {
@@ -24,6 +25,15 @@ const manifest = {
     { id: 'page-placeholder', scenes: ['placeholder'], available: false, components: false },
   ],
 }
+
+test('PDFE initial width reserves the workbench while preserving the product minimum and display limit', () => {
+  assert.equal(pdfeWindowWidth(1920), 1700)
+  assert.equal(pdfeWindowWidth(1512), 1512)
+  assert.equal(pdfeWindowWidth(1280), 1280)
+  assert.equal(pdfeWindowWidth(900), 1040)
+  for (const available of [0, -1, NaN, Infinity, 1280.5])
+    assert.throws(() => pdfeWindowWidth(available))
+})
 
 test('PDFE dock width rejects invalid IPC data and clamps to its native container', () => {
   assert.equal(pdfeDockWidth(1280, 420), 420)
@@ -56,6 +66,12 @@ test('native PDFE accepts only frozen same-origin catalog targets, never rendere
   ]) {
     assert.throws(() => readPdfeTarget(parsed, value))
   }
+  assert.throws(
+    () =>
+      readPdfeTarget(parsed, { pageId: 'unknown-preview-page', sceneId: 'unknown-preview-scene' }),
+    { message: 'Unknown PDFE target' }
+  )
+  assert.deepEqual(parsed.initial, manifest.initial)
 })
 
 test('native PDFE rejects foreign origins, credentials, duplicate catalog identities and missing initial scenes', () => {

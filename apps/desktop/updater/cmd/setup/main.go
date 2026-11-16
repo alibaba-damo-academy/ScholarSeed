@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"scholarseed.local/desktop/updater/handoff"
 )
 
 // Build replaces these inputs in a private copy, before branding and signing.
@@ -25,6 +27,9 @@ var payload []byte
 var compilerLicense string
 
 type messages struct {
+	CloseRunning         string `json:"closeRunning"`
+	Running              string `json:"running"`
+	Downgrade            string `json:"downgrade"`
 	LegacyRemoval        string `json:"legacyRemoval"`
 	LegacyUnknown        string `json:"legacyUnknown"`
 	UninstallWaiting     string `json:"uninstallWaiting"`
@@ -70,9 +75,11 @@ type messages struct {
 	MigrationIdentity    string `json:"migrationIdentity"`
 }
 type configuration struct {
+	PackVersion   string              `json:"packVersion"`
 	AppID         string              `json:"appId"`
 	Legacy        *legacyPolicy       `json:"legacy,omitempty"`
 	PayloadSHA256 string              `json:"payloadSha256"`
+	Replacement   replacementPackage  `json:"replacement"`
 	MaxRootUnits  int                 `json:"maxRootUnits"`
 	Messages      map[string]messages `json:"messages"`
 }
@@ -80,6 +87,12 @@ type configuration struct {
 var errUnsafePermissions = errors.New("installation directory cannot be protected")
 
 func directoryError(text messages, err error) string {
+	if errors.Is(err, errSetupBusy) {
+		return text.Running
+	}
+	if errors.Is(err, errReplacementDowngrade) {
+		return text.Downgrade
+	}
 	var issue *directoryIssue
 	if errors.As(err, &issue) {
 		return formatDirectoryIssue(text, issue)
@@ -153,6 +166,13 @@ func installerArguments(o options, directory string) []string {
 	if o.Silent {
 		result = append(result, "--silent")
 	}
+	// The wrapper launches the application after securing the installation.
+	// Forward only engine options; application arguments belong to Update start.
+	for i, arg := range o.Forward {
+		if arg == "--" {
+			return append(result, o.Forward[:i]...)
+		}
+	}
 	return append(result, o.Forward...)
 }
 
@@ -184,6 +204,12 @@ func parseConfiguration() (configuration, error) {
 	if c.AppID != "scholarseed" || c.PayloadSHA256 != hex.EncodeToString(digest[:]) || c.MaxRootUnits <= 3 || c.MaxRootUnits > 259 {
 		return c, errors.New("invalid embedded installer configuration")
 	}
+	if _, err = checkedPackage(payload, c.Replacement); err != nil {
+		return c, err
+	}
+	if _, err = handoff.ComparePackVersions(c.PackVersion, c.PackVersion); err != nil {
+		return c, err
+	}
 	if err = validateLegacyPolicy(c.Legacy); err != nil {
 		return c, err
 	}
@@ -199,7 +225,7 @@ func parseConfiguration() (configuration, error) {
 				return c, errors.New("incomplete installer directory localization")
 			}
 		}
-		for _, s := range []string{m.LegacyRemoval, m.LegacyUnknown, m.Title, m.Heading, m.Description, m.Directory, m.Browse, m.Install, m.Cancel, m.Existing, m.Invalid, m.Failed, m.Unsafe, m.Installing, m.Preparing, m.Migration, m.Migrating, m.MigrationUnsupported, m.MigrationRunning, m.MigrationIncomplete, m.MigrationIdentity} {
+		for _, s := range []string{m.CloseRunning, m.Running, m.Downgrade, m.LegacyRemoval, m.LegacyUnknown, m.Title, m.Heading, m.Description, m.Directory, m.Browse, m.Install, m.Cancel, m.Existing, m.Invalid, m.Failed, m.Unsafe, m.Installing, m.Preparing, m.Migration, m.Migrating, m.MigrationUnsupported, m.MigrationRunning, m.MigrationIncomplete, m.MigrationIdentity} {
 			if s == "" || strings.ContainsRune(s, 0) {
 				return c, errors.New("incomplete installer localization")
 			}
@@ -250,6 +276,11 @@ func run() int {
 	existing, err := installedDirectory(c.AppID)
 	if err != nil {
 		return fail(err)
+	}
+	if existing != "" {
+		if err = validateReplacementVersion(existing, c); err != nil {
+			return fail(err)
+		}
 	}
 	legacy, err := awaitLegacy(c, text, existing, "", o.Silent)
 	if errors.Is(err, errLegacyCancelled) {
@@ -349,7 +380,19 @@ func run() int {
 	if hex.EncodeToString(digest[:]) != c.PayloadSHA256 {
 		return fail(errors.New("embedded installer changed"))
 	}
+	var packagePath, updaterPath string
+	if existing != "" {
+		var release func()
+		packagePath, updaterPath, release, err = preparePackage(temporary, written, c.Replacement)
+		if err != nil {
+			return fail(err)
+		}
+		defer release()
+	}
 	retiredLegacy := false
+	replacementWasRunning := false
+	replacementVersion := ""
+	engineStarted := false
 	operation := func() (operationErr error) {
 		// The chooser can remain open while another installer registers an old
 		// client. Fresh installation must not silently turn into coexistence.
@@ -395,27 +438,70 @@ func run() int {
 		if err := prepareInstallationDirectory(directory, existing, c, consent); err != nil {
 			return err
 		}
-		if err := pins.replace(directory, func() error {
+		if existing != "" {
+			replacementVersion, err = setupInstalledVersion(directory, c.AppID)
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			replacementWasRunning, err = installationActive(directory)
+			if err != nil {
+				return err
+			}
+			if err = prepareReplacement(directory, text, o.Silent); err != nil {
+				return err
+			}
+		}
+		install := func() error {
 			if legacy != nil {
 				if err := legacy.remove(temporary, directory); err != nil {
 					return err
 				}
 				retiredLegacy = true
 			}
+			if existing != "" {
+				if err := validateReplacementVersion(directory, c); err != nil {
+					return err
+				}
+			}
+			if existing != "" {
+				active, err := installationActive(directory)
+				if err != nil {
+					return err
+				}
+				if active {
+					return errSetupBusy
+				}
+			}
 			// The official engine owns replacement/hooks/registration. Suppress its
 			// normal launch until this application's directory permissions are ready.
 			inner := o
 			inner.Silent = true
 			command := exec.Command(filename, installerArguments(inner, directory)...)
+			if replacementVersion != "" {
+				// Updating current preserves the sibling component store. Run the
+				// embedded package's updater outside the installation it replaces.
+				command = exec.Command(updaterPath, replacementArguments(directory, packagePath)...)
+			}
 			if legacy != nil {
 				command.Env = legacy.environment(os.Environ())
 			}
 			command.Stdout, command.Stderr = os.Stdout, os.Stderr
+			engineStarted = true
 			return command.Run()
-		}); err != nil {
+		}
+		if replacementVersion != "" {
+			// Keep the installation root pinned: apply replaces current only.
+			err = install()
+		} else {
+			err = pins.replace(directory, install)
+		}
+		if err != nil {
 			return err
 		}
 		if err := verifyInstalled(directory, c.AppID); err != nil {
+			return err
+		}
+		if err := validateReplacedVersion(directory, c); err != nil {
 			return err
 		}
 		if err := secureInstallation(directory); err != nil {
@@ -427,6 +513,14 @@ func run() int {
 		err = operation()
 	} else {
 		err = performInstallation(c, text, directory, operation)
+	}
+	if errors.Is(err, errSetupCancelled) {
+		return 0
+	}
+	if err != nil && replacementWasRunning && !engineStarted {
+		if recovery := recoverReplacement(directory, c.AppID, replacementVersion); recovery != nil {
+			err = errors.Join(err, recovery)
+		}
 	}
 	if err != nil {
 		if retiredLegacy {

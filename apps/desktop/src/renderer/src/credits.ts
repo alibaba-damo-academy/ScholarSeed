@@ -5,8 +5,9 @@ import {
   INITIAL_CREDITS_STATE,
   accountCredits,
   creditsWarningBucket,
+  reconcileCreditsSummary,
   setAccountBase,
-  type CreditsWarningBucket
+  type CreditsWarningBucket,
 } from './account'
 import { getAuthMe, getAuthStatus } from './api.ts'
 import { useToast } from './components/ui'
@@ -23,7 +24,9 @@ export function useCreditsLowWarning(
   running: boolean,
   activeSession: string | null
 ): void {
-  const { set } = useApp()
+  const { state, set } = useApp()
+  const creditsRef = React.useRef(state.credits)
+  creditsRef.current = state.credits
   const { toast } = useToast()
   const { t } = useTranslation('components')
   const [loggedIn, setLoggedIn] = React.useState(false)
@@ -79,23 +82,27 @@ export function useCreditsLowWarning(
       return undefined
     }
     let cancelled = false
-    set((current) => current.credits.summary === null
-      ? { credits: { ...current.credits, phase: 'loading' } }
-      : {})
+    const requestedSummary = creditsRef.current.summary
+    set((current) =>
+      current.credits.summary === null ? { credits: { ...current.credits, phase: 'loading' } } : {}
+    )
     void accountCredits().then((result) => {
       if (cancelled) return
       if (!result.ok) {
         set((current) => ({
-          credits: { ...current.credits, phase: 'error' }
+          credits: { ...current.credits, phase: 'error' },
         }))
         return
       }
-      set({ credits: { phase: 'ready', summary: result.data } })
       if (
-        result.data.unlimited ||
-        !result.data.enforcing ||
-        result.data.balance_credits === null
-      ) {
+        reconcileCreditsSummary(creditsRef.current, requestedSummary, result.data) ===
+        creditsRef.current
+      )
+        return
+      set((current) => ({
+        credits: reconcileCreditsSummary(current.credits, requestedSummary, result.data),
+      }))
+      if (result.data.unlimited || !result.data.enforcing || result.data.balance_credits === null) {
         warned.current = null
         return
       }
@@ -105,9 +112,9 @@ export function useCreditsLowWarning(
       if (bucket !== 'low') return
       toast({
         title: t('accountMenu.creditsLow', {
-          balance: Math.floor(result.data.balance_credits)
+          balance: Math.floor(result.data.balance_credits),
         }),
-        tone: 'warning'
+        tone: 'warning',
       })
     })
     return () => {

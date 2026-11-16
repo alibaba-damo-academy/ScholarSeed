@@ -57,11 +57,11 @@ def decode_qualification_failure(
     index, cause = decoded.get("root_index"), decoded.get("cause")
     if (
         set(decoded) != {"version", "error", "root_index", "cause"}
-        or type(decoded.get("version")) is not int
+        or (not isinstance(decoded.get("version"), int) or isinstance(decoded.get("version"), bool))
         or decoded.get("version") != 1
         or payload.get("operation") != "extend"
         or not isinstance(roots, list)
-        or type(index) is not int
+        or (not isinstance(index, int) or isinstance(index, bool))
         or not 0 <= index < len(roots)
         or cause not in ("permission", "missing", "busy")
     ):
@@ -102,7 +102,7 @@ def decode_workbench(value: object) -> WorkbenchState:
     )
     recovery_at = value["recovery_at"]
     if (
-        type(generation) is not int
+        (not isinstance(generation, int) or isinstance(generation, bool))
         or not 0 < generation < 2**64
         or not isinstance(release, str)
         or not _DIGEST.fullmatch(release)
@@ -110,7 +110,7 @@ def decode_workbench(value: object) -> WorkbenchState:
         or (attempt != "" and not _DIGEST.fullmatch(attempt))
         or phase not in ("warming", "ready")
         or (phase == "warming" and not attempt)
-        or type(recovery_at) is not int
+        or (not isinstance(recovery_at, int) or isinstance(recovery_at, bool))
         or not 0 <= recovery_at <= 9007199254740991
         or (bool(attempt) != bool(recovery_at))
     ):
@@ -373,7 +373,10 @@ class Guardian:
                 raise GuardianError("invalid directory broker response encoding") from error
             if (
                 not isinstance(decoded, dict)
-                or type(decoded.get("version")) is not int
+                or (
+                    not isinstance(decoded.get("version"), int)
+                    or isinstance(decoded.get("version"), bool)
+                )
                 or decoded["version"] != 1
             ):
                 raise GuardianError("invalid directory broker response")

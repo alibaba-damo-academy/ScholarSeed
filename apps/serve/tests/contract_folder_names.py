@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE, ContentError
 from service.content.persistence.catalog import ContentCatalog
-from service.content.service.assets import MARKDOWN_SUFFIX
+from service.content.service.assets import MARKDOWN_SUFFIX, unique_path
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.utils import filesystem_error
 from service.platform.activity import Activities
@@ -95,7 +95,14 @@ class FolderNames(unittest.TestCase):
         windows_error = OSError(errno.ENOENT, "path not found")
         windows_error.winerror = 3
         long_name = "a" * 260
-        with patch("pathlib.Path.exists", side_effect=windows_error):
+        original_stat = Path.stat
+
+        def probe_stat(path, *args, **kwargs):
+            if path.name == long_name:
+                raise windows_error
+            return original_stat(path, *args, **kwargs)
+
+        with patch("pathlib.Path.stat", probe_stat):
             with self.assertRaises(ContentError) as caught:
                 self.create(long_name)
         self.assertEqual(caught.exception.code, "name_too_long")
@@ -110,6 +117,13 @@ class FolderNames(unittest.TestCase):
             filesystem_error(windows_error, "write_failed", Path("C:/short/target")).code,
             "write_failed",
         )
+
+    def test_name_probe_does_not_hide_permission_or_io_errors(self):
+        for error in (PermissionError(errno.EACCES, "denied"), OSError(errno.EIO, "io")):
+            with self.subTest(error=error), patch("pathlib.Path.stat", side_effect=error):
+                with self.assertRaises(type(error)) as caught:
+                    unique_path(Path(self.project.root), "new.md")
+                self.assertIs(caught.exception, error)
 
     def test_markdown_names_and_content(self):
         for create in (

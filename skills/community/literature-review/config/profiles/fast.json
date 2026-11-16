@@ -32,16 +32,7 @@
     {
       "id": "fulltext",
       "title": "Acquire the full text of every selected paper",
-      "description": "Parse supplied local PDF snapshots first; otherwise try PaperHub by document ID, then a known arXiv ID with a short deadline. Use existing abstracts when neither source succeeds. Report fulltext, abstract_only and no_text distinctly.",
-      "command": [
-        "scholarseed-skill-python",
-        "${SLR_HOME}/scripts/processing/fetch_fulltext.py",
-        "${WORKSPACE}",
-        "--concurrency",
-        "8",
-        "--sources",
-        "paperhub,arxiv_pdf"
-      ],
+      "description": "Parse supplied local PDF snapshots first; otherwise try PaperHub by document ID, then a known arXiv ID with a short fallback deadline. Direct arXiv acquisition uses the configured request budget. Use existing abstracts when neither source succeeds. Report fulltext, abstract_only and no_text distinctly.",
       "cwd": "workspace",
       "timeout_sec": 2400,
       "reads": [
@@ -53,19 +44,43 @@
       ],
       "status": {
         "kind": "trailing_json"
-      }
+      },
+      "steps": [
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/processing/build_bib.py",
+          "${WORKSPACE}",
+          "--check-only",
+          "--material-only"
+        ],
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/processing/fetch_fulltext.py",
+          "${WORKSPACE}",
+          "--concurrency",
+          "8",
+          "--sources",
+          "paperhub,arxiv_pdf"
+        ]
+      ]
     },
     {
       "id": "processing",
       "title": "Paper card extraction, bibliography, corpus index",
-      "description": "Extract current valid cards, freeze citation identities, build indexes and audit metadata. Aggregate all child statuses; selected-paper/card set readiness gates downstream writing. Reuse unchanged cards and archive changed evidence before re-extraction.",
+      "description": "Reuse framework machine assets or extract missing cards without reading prose. Source maps stay in the product; successful assets are cached independently of library membership. Prepare citation identities and authoring indexes.",
       "steps": [
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/processing/build_bib.py",
+          "${WORKSPACE}",
+          "--check-only",
+          "--material-only"
+        ],
         [
           "scholarseed-skill-python",
           "${SLR_HOME}/scripts/processing/paper_card_tools.py",
           "run",
           "${WORKSPACE}",
-          "--reclassify-type",
           "--concurrency",
           "20"
         ],
@@ -102,7 +117,48 @@
       "status": {
         "kind": "trailing_json"
       },
-      "progress_file": "03_process/processing_progress.json"
+      "progress_file": "03_process/processing_progress.json",
+      "resume_steps": {
+        "2": {
+          "id": "paper_cards",
+          "validator": "paper_cards"
+        },
+        "3": {
+          "id": "bibliography",
+          "inputs": [
+            "02_retrieval/selected_paper.json",
+            "03_process/paper_cards.json"
+          ],
+          "outputs": [
+            "03_process/references.bib",
+            "03_process/cite_keys.json"
+          ]
+        },
+        "4": {
+          "id": "cards_index",
+          "inputs": [
+            "02_retrieval/selected_paper.json",
+            "03_process/paper_cards.json",
+            "03_process/cite_keys.json",
+            "02_retrieval/fulltext_report.json"
+          ],
+          "outputs": [
+            "03_process/cards_index.jsonl",
+            "03_process/corpus_summary.json"
+          ]
+        },
+        "5": {
+          "id": "citation_audit",
+          "inputs": [
+            "02_retrieval/selected_paper.json",
+            "03_process/references.bib"
+          ],
+          "outputs": [
+            "03_process/citation_metadata_audit.json",
+            "03_process/citation_metadata_audit.md"
+          ]
+        }
+      }
     },
     {
       "id": "generation_prep",

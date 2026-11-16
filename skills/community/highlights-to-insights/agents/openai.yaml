@@ -1,0 +1,4 @@
+interface:
+  display_name: "Highlights to Insights"
+  short_description: "融合论文、高亮批注与个人笔记，写成保留思考脉络且可回查来源的文献笔记"
+  default_prompt: "使用 $highlights-to-insights，综合这篇论文的原文、页面标记、批注和我的笔记，生成一篇围绕我的关注点、可回查来源的中文文献笔记。"

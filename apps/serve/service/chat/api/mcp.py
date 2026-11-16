@@ -41,7 +41,6 @@ from service.platform.mcp import (
     McpServer,
     McpStatusRequest,
 )
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 from service.settings.mcp import (
     MCP_APPLICATION_FAILED,
     MCP_CONFIG_TOO_LARGE,
@@ -221,11 +220,7 @@ def register_mcp_bridge(
         entry = BRIDGE_REQUESTS.get((MCP_BRIDGE_CAPABILITY, operation))
         if entry is None:
             raise HTTPException(HTTP_422_UNPROCESSABLE_CONTENT, MCP_INVALID_CONFIG)
-        body = bytearray()
-        async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > BRIDGE_MAX_REQUEST_BYTES:
-                raise HTTPException(HTTP_413_CONTENT_TOO_LARGE, MCP_CONFIG_TOO_LARGE)
+        body = await request.body()
         try:
             command = entry.request_type.model_validate_json(body)
         except ValueError:

@@ -60,23 +60,27 @@ export async function showProductWindow(page: Page): Promise<void> {
   await page.bringToFront()
 }
 
-export async function enterWorkbenchShell(page: Page): Promise<void> {
-  await expect(page.getByTestId(PRODUCT_SHELL_TEST_ID)).toBeVisible({ timeout: PRODUCT_WINDOW_TIMEOUT_MS })
+export async function enterWorkbenchShell(page: Page, timeout = PRODUCT_WINDOW_TIMEOUT_MS): Promise<void> {
   const landing = page.getByTestId(LANDING_DIALOG_TEST_ID)
-  if (await landing.isVisible().catch(() => false)) {
-    await page.getByTestId(LANDING_SKIP_TEST_ID).click()
-    await expect(landing).toHaveCount(0)
-  }
-  const onboardingDismiss = page.locator(ONBOARDING_DISMISS_SELECTOR).first()
-  if (await onboardingDismiss.isVisible().catch(() => false)) {
-    await onboardingDismiss.click()
-  }
-  if (await page.getByTestId(HOME_SPACE_TEST_ID).isVisible().catch(() => false)) {
-    await page.getByTestId(HOME_ESCAPE_ACTIVITY_TEST_ID).click()
-    await expect(page.getByTestId(HOME_SPACE_TEST_ID)).toHaveCount(0)
-  }
-  if (await onboardingDismiss.isVisible().catch(() => false)) {
-    await onboardingDismiss.click()
+  await page.addLocatorHandler(landing, async () => {
+    await landing.getByTestId(LANDING_SKIP_TEST_ID).click()
+  }, { times: 1 })
+  try {
+    await expect(page.getByTestId(PRODUCT_SHELL_TEST_ID)).toBeVisible({ timeout })
+    if (await landing.isVisible()) await expect(landing).toBeHidden()
+    const onboardingDismiss = page.locator(ONBOARDING_DISMISS_SELECTOR).first()
+    if (await onboardingDismiss.isVisible().catch(() => false)) {
+      await onboardingDismiss.click()
+    }
+    if (await page.getByTestId(HOME_SPACE_TEST_ID).isVisible().catch(() => false)) {
+      await page.getByTestId(HOME_ESCAPE_ACTIVITY_TEST_ID).click()
+      await expect(page.getByTestId(HOME_SPACE_TEST_ID)).toHaveCount(0)
+    }
+    if (await onboardingDismiss.isVisible().catch(() => false)) {
+      await onboardingDismiss.click()
+    }
+  } finally {
+    await page.removeLocatorHandler(landing)
   }
 }
 
@@ -92,10 +96,12 @@ export interface LiveStatus {
 
 export interface DesktopSessionOptions {
   browserEnabled?: boolean
+  browserAdvancedSettings?: boolean
   preserveNavigation?: boolean
   preserveRuntime?: boolean
   nativeWindowLifecycle?: boolean
   homeFromPointer?: boolean
+  workbenchTimeoutMs?: number
   /** Functional acceptance records by default; timing runs can omit tracing overhead. */
   recordTrace?: boolean
 }
@@ -137,7 +143,7 @@ export class DesktopSession {
   async launch(): Promise<Page> {
     this.traceIndex += 1
     const appRoot = this.options.browserEnabled === undefined ? DESKTOP_ROOT
-      : createProductAppRoot(this.runtime.artifacts, DESKTOP_ROOT, this.options.browserEnabled)
+      : createProductAppRoot(this.runtime.artifacts, DESKTOP_ROOT, this.options.browserEnabled, this.options.browserAdvancedSettings)
     this.app = await electron.launch({
       args: ['.', ...(this.options.nativeWindowLifecycle ? [] : ['--drive', this.runtime.drive]), `--user-data-dir=${this.runtime.userData}`],
       cwd: appRoot,
@@ -225,7 +231,7 @@ export class DesktopSession {
       await expect(this.page.getByTestId(PRODUCT_SHELL_TEST_ID)).toBeVisible({ timeout: PRODUCT_WINDOW_TIMEOUT_MS })
       return this.page
     }
-    await enterWorkbenchShell(this.page)
+    await enterWorkbenchShell(this.page, this.options.workbenchTimeoutMs)
     // Live suites exercise the conversation surface. The 0.2 workbench keeps that
     // surface in a user-toggleable panel, so enter it through the real product control.
     if (!await this.page.getByTestId(AI_PANEL_TEST_ID).isVisible().catch(() => false)) {
@@ -263,29 +269,44 @@ export class DesktopSession {
     for (const removeListener of this.lifecycleListeners.splice(0)) removeListener()
   }
 
-  async attachArtifacts(): Promise<void> {
-    if (this.testInfo.status !== this.testInfo.expectedStatus && this.page) {
-      await this.page.screenshot({ path: join(this.runtime.artifacts, 'failure.png'), fullPage: true }).catch(() => undefined)
+  async attachArtifacts(failure?: { error: unknown }): Promise<void> {
+    const failures: unknown[] = []
+    try {
+      if ((failure || this.testInfo.status !== this.testInfo.expectedStatus) && this.page) {
+        await this.page.screenshot({ path: join(this.runtime.artifacts, 'failure.png'), fullPage: true }).catch(() => undefined)
+      }
+      await this.close()
+      for (const [name, path, contentType] of [
+        ['desktop-log', this.desktopLog, 'text/plain'],
+        ['renderer-log', this.rendererLog, 'text/plain'],
+        // home 在短根下（见 fixtures/runtime.ts），不在 test-results 里；serve 的启动
+        // 失败只写在它的 backend.log，不附上来失败时就只剩窗口超时这一个表象。
+        ['backend-log', join(this.runtime.home, 'logs', 'backend.log'), 'text/plain']
+      ] as const) {
+        if (existsSync(path)) await this.testInfo.attach(name, { body: readFileSync(path), contentType })
+      }
+      const tracePath = join(this.runtime.artifacts, `trace-${this.traceIndex}.zip`)
+      if (existsSync(tracePath)) await this.testInfo.attach('playwright-trace', { path: tracePath })
+    } catch (error) {
+      failures.push(error)
+    } finally {
+      if (!this.options.preserveRuntime) {
+        try {
+          rmSync(this.runtime.home, {
+            recursive: true,
+            force: true,
+            maxRetries: CLEANUP_MAX_RETRIES,
+            retryDelay: CLEANUP_RETRY_DELAY_MS
+          })
+        } catch (error) {
+          failures.push(error)
+        }
+      }
     }
-    await this.close()
-    for (const [name, path, contentType] of [
-      ['desktop-log', this.desktopLog, 'text/plain'],
-      ['renderer-log', this.rendererLog, 'text/plain'],
-      // home 在短根下（见 fixtures/runtime.ts），不在 test-results 里；serve 的启动
-      // 失败只写在它的 backend.log，不附上来失败时就只剩窗口超时这一个表象。
-      ['backend-log', join(this.runtime.home, 'logs', 'backend.log'), 'text/plain']
-    ] as const) {
-      if (existsSync(path)) await this.testInfo.attach(name, { body: readFileSync(path), contentType })
-    }
-    const tracePath = join(this.runtime.artifacts, `trace-${this.traceIndex}.zip`)
-    if (existsSync(tracePath)) await this.testInfo.attach('playwright-trace', { path: tracePath })
-    if (!this.options.preserveRuntime) {
-      rmSync(this.runtime.home, {
-        recursive: true,
-        force: true,
-        maxRetries: CLEANUP_MAX_RETRIES,
-        retryDelay: CLEANUP_RETRY_DELAY_MS
-      })
+    if (failures.length) {
+      if (failure) failures.unshift(failure.error)
+      if (failures.length === 1) throw failures[0]
+      throw new AggregateError(failures, 'Desktop test and artifact cleanup failed')
     }
   }
 

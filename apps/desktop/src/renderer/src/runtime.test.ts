@@ -6,6 +6,11 @@ import { createInstance } from 'i18next'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
+import { isRuntimePreparationBusyFeedback } from './contracts/feedback.ts'
+import {
+  runtimePreparationForegroundFailure,
+  runtimePreparationRequestFailure,
+} from './preparation.ts'
 import zh from '../../localization/locales/zh/conversation.json' with { type: 'json' }
 import en from '../../localization/locales/en/conversation.json' with { type: 'json' }
 import componentsZh from '../../localization/locales/zh/components.json' with { type: 'json' }
@@ -43,6 +48,8 @@ import {
   blocksRuntimePreflight,
   catalogRunStateIsCurrent,
   canOfferTurnRecovery,
+  projectRecoveryCheck,
+  recoveryCheckIsCurrent,
   canContinueFailedTurn,
   classifyReadiness,
   effectiveReadiness,
@@ -241,6 +248,18 @@ test('recoverable provider continuation obeys authoritative thread and submissio
     turnOutcomes: { 'failed-turn': 'failed' },
   }
   assert.equal(canContinueFailedTurn(current, failure), true)
+  const pending: Thread = { ...current, recoveryPending: true }
+  assert.equal(canContinueFailedTurn(pending, failure), false)
+  const settled: Thread = {
+    ...pending,
+    ...projectSessionState({
+      state: 'failed',
+      runtime_id: 'codex',
+      recovery_pending: false,
+      recovery_blocked: false,
+    }),
+  }
+  assert.equal(canContinueFailedTurn(settled, failure), true)
   for (const update of [
     { running: true },
     { status: 'running' as const },
@@ -510,7 +529,8 @@ test('turn failures map stable provider codes to actionable product guidance', a
     retryable: true,
   })
   assert.equal(display(quota).title, '回答生成失败')
-  assert.match(display(quota).action, /剩余积分/)
+  assert.equal(display(quota).message, '模型限流')
+  assert.doesNotMatch(JSON.stringify(display(quota)), /积分|内置模型/)
   assert.equal(quota.runtimeAction, undefined)
 
   const allocationQuota = describeTurnFailure({
@@ -518,7 +538,7 @@ test('turn failures map stable provider codes to actionable product guidance', a
       'id:1\nevent:error\n:HTTP_STATUS/429\ndata:{"request_id":"private","code":"Throttling.AllocationQuota","message":"Allocated quota exceeded. https://private.example"}',
     retryable: true,
   })
-  assert.equal(display(allocationQuota).message, '模型分配额度已用完。')
+  assert.equal(display(allocationQuota).message, '模型限流')
   assert.doesNotMatch(JSON.stringify(allocationQuota), /private|HTTP_STATUS|event:error/)
   assert.equal(allocationQuota.runtimeAction, undefined)
 
@@ -527,7 +547,9 @@ test('turn failures map stable provider codes to actionable product guidance', a
     message: 'Please retry later.',
     retryable: true,
   })
-  assert.match(display(rateLimit).message, /请求过于频繁/)
+  assert.equal(display(rateLimit).message, zh.failure.rateLimit.message)
+  assert.match(display(rateLimit).action, /请求过于频繁.*429/)
+  assert.equal(rateLimit.failure?.kind, 'rate_limit')
   assert.equal(rateLimit.runtimeAction, 'continue_turn')
 
   const auth = describeTurnFailure({
@@ -583,7 +605,8 @@ test('turn failures map stable provider codes to actionable product guidance', a
   assert.equal(sameTurnFailureMessage(overloaded, exhausted), false)
   await locale.changeLanguage('en')
   assert.equal(display(quota).title, 'Answer generation failed')
-  assert.equal(display(quota).message, 'The allocated model quota has been exhausted.')
+  assert.equal(display(quota).message, 'Model rate limit reached')
+  assert.doesNotMatch(JSON.stringify(display(quota)), /credits|built-in/i)
   assert.equal(display(overloaded).message, 'The upstream model service reported overload.')
   assert.equal(
     display(retriedOverload).message,
@@ -836,7 +859,7 @@ test('composer header continuation blocks only the current capability failure', 
   }
 })
 
-test('classified turn failures keep a distinct reason for the card to surface', async () => {
+test('classified turn failures keep a distinct reason in their complete guidance', async () => {
   const locale = createInstance()
   await locale.init({
     lng: 'zh',
@@ -856,14 +879,20 @@ test('classified turn failures keep a distinct reason for the card to surface', 
   assert.equal(display(bridge).message, '模型服务认证失败。')
   assert.equal(display(bridge).action, zh.failure.auth.action)
 
-  // 限流是原因句最要紧的一条：action 只说「已保留」，看不出是限流。
   const rateLimit = describeTurnFailure({
     code: 'rate_limit_exceeded',
     message: 'The model provider rate limit was reached.',
     retryable: true,
   })
-  assert.equal(display(rateLimit).message, '模型请求过于频繁，请稍后再试。')
+  assert.equal(rateLimit.failure?.kind, 'rate_limit')
+  assert.equal(display(rateLimit).message, zh.failure.rateLimit.message)
+  assert.equal(display(rateLimit).action, zh.failure.rateLimit.action)
+  assert.match(display(rateLimit).action, /请求过于频繁.*429/)
   assert.notEqual(display(rateLimit).action, display(rateLimit).message)
+  assert.notEqual(
+    display(rateLimit).action,
+    display(describeTurnFailure({ code: 'service_unavailable', retryable: true })).action
+  )
 
   // 未登记码仍落 unknown，原始诊断留在事件中，但错误卡片只显示通用文案。
   const unregistered = describeTurnFailure({
@@ -878,7 +907,9 @@ test('classified turn failures keep a distinct reason for the card to surface', 
 
   await locale.changeLanguage('en')
   assert.equal(display(bridge).message, 'Model service authentication failed.')
-  assert.equal(display(rateLimit).message, 'Too many model requests. Try again later.')
+  assert.equal(display(rateLimit).message, en.failure.rateLimit.message)
+  assert.equal(display(rateLimit).action, en.failure.rateLimit.action)
+  assert.match(display(rateLimit).action, /Too many requests.*429/)
 })
 
 test('the turn failure card uses a compact description and retry action', () => {
@@ -911,8 +942,106 @@ test('recoverable failures reuse the compact continuation notice and interrupted
   assert.match(stream.slice(notice, card), /t\('stream\.continueInterrupted'\)/)
 })
 
+test('user stop and interruption render nonblocking warnings without recovery actions', async () => {
+  const source = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const syntax = ts.createSourceFile(
+    'Stream.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const functions = syntax.statements.filter(
+    (node): node is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(node) &&
+      ['StatusLine', 'isUserStoppedStatus'].includes(node.name?.text ?? '')
+  )
+  assert.equal(functions.length, 2)
+  const script = ts.transpileModule(
+    `${functions.map((node) => node.getText(syntax)).join('\n')}\nStatusLine({ item })`,
+    { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }
+  ).outputText
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { components: componentsZh }, en: { components: componentsEn } },
+  })
+  for (const language of ['zh', 'en']) {
+    await locale.changeLanguage(language)
+    for (const stopped of [true, false]) {
+      const item = {
+        kind: 'status',
+        text: '',
+        hideIcon: true,
+        displayMessage: {
+          ns: 'components',
+          key: stopped ? 'stream.stopped' : 'stream.interrupted',
+        },
+      }
+      const element = runInNewContext(script, {
+        React,
+        item,
+        LEGACY_USER_STOPPED_STATUS: '已停止',
+        useTranslation: () => ({ t: locale.getFixedT(null, 'components'), i18n: locale }),
+        useApp: () => ({ state: {} }),
+        renderFeedback: (
+          _localization: unknown,
+          message: { key: 'stream.stopped' | 'stream.interrupted' }
+        ) => locale.t(message.key, { ns: 'components' }),
+        Info: () => React.createElement('svg', { 'aria-hidden': true, 'data-icon': 'info' }),
+        Alert: ({
+          children,
+          title,
+          description,
+          tone,
+          layout,
+          ...props
+        }: React.HTMLAttributes<HTMLDivElement> & {
+          tone: string
+          layout: string
+          description?: React.ReactNode
+        }) =>
+          React.createElement(
+            'div',
+            { ...props, 'data-tone': tone, 'data-layout': layout },
+            React.createElement('strong', null, title),
+            description,
+            children
+          ),
+        AlertDescription: ({ children }: { children: React.ReactNode }) =>
+          React.createElement('span', null, children),
+        Card: ({
+          children,
+          padding: _padding,
+          ...props
+        }: React.HTMLAttributes<HTMLDivElement> & { padding: string }) =>
+          React.createElement('div', props, children),
+      })
+      const markup = renderToStaticMarkup(element)
+      assert.match(markup, /role="status"/)
+      assert.doesNotMatch(markup, /<button/)
+      if (stopped) {
+        assert.match(markup, /data-testid="user-stopped-card"/)
+        assert.match(markup, /data-tone="warning"/)
+        assert.match(markup, /data-layout="inline"/)
+        assert.ok(markup.includes(locale.t('stream.stopped', { ns: 'components' })))
+      } else {
+        assert.doesNotMatch(markup, /user-stopped-card/)
+        assert.match(markup, /data-testid="task-interrupted-card"/)
+        assert.match(markup, /data-tone="warning"/)
+        assert.match(markup, /layout="stacked"/)
+        assert.match(markup, /aria-live="polite"/)
+        assert.ok(!markup.includes(locale.t('stream.stopped', { ns: 'components' })))
+        assert.ok(markup.includes(locale.t('stream.interruptedTitle', { ns: 'components' })))
+        assert.ok(markup.includes(locale.t('stream.interruptedDescription', { ns: 'components' })))
+      }
+    }
+  }
+})
+
 test('recoverable notice JSX renders localized messages, pending buttons and bound continuation', async () => {
-  const source = readFileSync(new URL('./components/business/Failure.tsx', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
   const syntax = ts.createSourceFile(
     'Stream.tsx',
     source,
@@ -949,6 +1078,8 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
       'service_unavailable',
       'overloaded',
       'rate_limit_exceeded',
+      'connection_error',
+      'timeout',
     ]) {
       for (const attempts of [undefined, 3]) {
         for (const actionState of ['idle', 'submitting', 'outcome_unknown'] as const) {
@@ -959,6 +1090,8 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
           }
           for (const recoveryAvailable of [false, true]) {
             let button: { disabled: boolean; onClick: () => void } | undefined
+            let switchButton: { disabled: boolean; onClick: () => void } | undefined
+            let modelMenuOpen = false
             let continued: ConvItem | undefined
             const element = runInNewContext(script, {
               React,
@@ -973,13 +1106,37 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
               actionError: undefined,
               aiThinking: '',
               IconFont: () => null,
+              TriangleAlert: () => null,
               Spinner: () => null,
+              Alert: (props: {
+                layout: string
+                title: React.ReactNode
+                action: React.ReactNode
+                children: React.ReactNode
+                'data-testid': string
+              }) =>
+                React.createElement(
+                  'section',
+                  { 'data-testid': props['data-testid'], 'data-layout': props.layout },
+                  props.title,
+                  props.children,
+                  props.action
+                ),
+              AlertDescription: (props: { children: React.ReactNode }) =>
+                React.createElement('p', null, props.children),
+              AlertTitle: (props: { children: React.ReactNode }) =>
+                React.createElement('h5', null, props.children),
+              set: (state: { modelMenuOpen: boolean }) => {
+                modelMenuOpen = state.modelMenuOpen
+              },
               Button: (props: {
                 children: React.ReactNode
                 disabled: boolean
                 onClick: () => void
+                'data-testid': string
               }) => {
-                button = props
+                if (props['data-testid'] === 'turn-continue') button = props
+                if (props['data-testid'] === 'turn-switch-model') switchButton = props
                 return React.createElement('button', { disabled: props.disabled }, props.children)
               },
               onContinue: (failure: ConvItem) => {
@@ -988,6 +1145,16 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
             })
             const html = renderToStaticMarkup(element)
             assert.ok(html.includes('data-testid="turn-recoverable-notice"'))
+            assert.ok(html.includes('data-layout="inline"'))
+            assert.ok(html.includes(formatTurnFailure(item, conversation).action))
+            if (item.failure?.kind === 'rate_limit') {
+              assert.ok(
+                html.includes(
+                  language === 'zh' ? '请求过于频繁（429）' : 'Too many requests (429)'
+                ),
+                `${language}: rate limit reason must remain visible`
+              )
+            }
             assert.equal(html.includes('turn-failure-card'), false)
             const message =
               item.failure?.kind === 'unknown'
@@ -995,15 +1162,23 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
                 : formatTurnFailure(item, conversation).message
             assert.ok(html.includes(message), `${language}: ${code}: ${attempts}: ${actionState}`)
             assert.equal(Boolean(button), recoveryAvailable)
+            assert.equal(Boolean(switchButton), recoveryAvailable)
+            if (switchButton) {
+              assert.equal(switchButton.disabled, actionState !== 'idle')
+              if (!switchButton.disabled) {
+                switchButton.onClick()
+                assert.equal(modelMenuOpen, true)
+              }
+            }
             if (button) {
               assert.equal(button.disabled, actionState !== 'idle')
               assert.ok(
                 html.includes(
-                  componentsTranslation(
-                    actionState === 'outcome_unknown'
-                      ? 'stream.continuePending'
-                      : 'stream.continueInterrupted'
-                  )
+                  actionState === 'outcome_unknown'
+                    ? componentsTranslation('stream.continuePending')
+                    : item.failure?.kind === 'unknown' || item.failure?.kind === 'connection'
+                      ? componentsTranslation('stream.continueInterrupted')
+                      : conversation('failure.retry')
                 )
               )
               if (!button.disabled) {
@@ -1032,10 +1207,160 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
   }
 })
 
-test('assistant copy action appears only after the turn stops running', () => {
+test('assistant copy action requires text, a stopped turn and no pending confirmation', () => {
   const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
-  assert.match(stream, /copyEnabled=\{turnOutcome !== 'running'\}/)
-  assert.match(stream, /\{item\.text && copyEnabled && \(/)
+  const syntax = ts.createSourceFile(
+    'Stream.tsx',
+    stream,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const agent = syntax.statements.find(
+    (node): node is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(node) && node.name?.text === 'AgentMsg'
+  )
+  assert.ok(agent)
+  const gates: ts.Expression[] = []
+  const contentGates: ts.Expression[] = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxAttribute(node) && node.name.getText(syntax) === 'copyEnabled') {
+      assert.ok(node.initializer && ts.isJsxExpression(node.initializer))
+      assert.ok(node.initializer.expression)
+      gates.push(node.initializer.expression)
+    }
+    if (
+      node.pos >= agent.pos &&
+      node.end <= agent.end &&
+      ts.isJsxElement(node) &&
+      node.openingElement.tagName.getText(syntax) === 'MessageActions'
+    ) {
+      const parent = node.parent
+      if (ts.isParenthesizedExpression(parent) && ts.isBinaryExpression(parent.parent)) {
+        assert.equal(parent.parent.operatorToken.kind, ts.SyntaxKind.AmpersandAmpersandToken)
+        contentGates.push(parent.parent.left)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(gates.length, 1)
+  assert.equal(contentGates.length, 1)
+  const gateScript = ts.transpileModule(`Boolean(${gates[0].getText(syntax)})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const contentScript = ts.transpileModule(`Boolean(${contentGates[0].getText(syntax)})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  for (const awaitingConfirmation of [false, true]) {
+    for (const turnOutcome of [
+      'running',
+      'completed',
+      'failed',
+      'interrupted',
+      'unknown',
+      undefined,
+    ]) {
+      const copyEnabled = runInNewContext(gateScript, { awaitingConfirmation, turnOutcome })
+      const expected = !awaitingConfirmation && turnOutcome !== 'running'
+      assert.equal(copyEnabled, expected, `${turnOutcome}/${awaitingConfirmation}`)
+      for (const text of ['', '完整回答']) {
+        assert.equal(
+          runInNewContext(contentScript, { item: { text }, copyEnabled }),
+          Boolean(text) && expected,
+          `${turnOutcome}/${awaitingConfirmation}/${text}`
+        )
+      }
+    }
+  }
+})
+
+test('successful preparation reconnects only an existing failed session', async () => {
+  const source = readFileSync(
+    new URL('./components/business/Composer.tsx', import.meta.url),
+    'utf8'
+  )
+  const syntax = ts.createSourceFile(
+    'Composer.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const blocks: ts.Block[] = []
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBlock(node) &&
+      node.statements.some(
+        (statement) => statement.getText(syntax) === 'preparationController = controller'
+      )
+    )
+      blocks.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(syntax)
+  assert.equal(blocks.length, 1)
+  const script = ts.transpileModule(
+    `(async () => { ${blocks[0].getText(syntax)}; return true })()`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }
+  ).outputText
+  for (const preparationState of ['applied', 'rejected', 'restart_required']) {
+    for (const resumeState of ['failed', 'pending', 'ready']) {
+      for (const sessionId of ['session', null]) {
+        const requests: string[] = []
+        const current = {
+          activeSession: 'thread',
+          draftGeneration: 1,
+          modelSelectionGeneration: 1,
+          modelSelectionPending: 0,
+          aiPanel: { sessionId, revision: 1 },
+          serviceInstanceId: 'instance',
+          catalog: { models: [] },
+          model: 'model',
+          threads: { thread: { sessionId, resumeState } },
+          turnLaunch: null as unknown,
+        }
+        const result = await runInNewContext(script, {
+          AbortController,
+          preparationController: undefined,
+          preparationWait: { current: null },
+          preparationInstanceId: undefined,
+          optimisticUserMessage: { itemId: 'message' },
+          clientUserMessageId: 'message',
+          presentAsUserMessage: false,
+          getSnapshot: () => current,
+          state: current,
+          activeThreadId: 'thread',
+          sid: sessionId,
+          selectedEffort: '',
+          selectedModelKey: 'model',
+          preparationProject: 'project',
+          composerReasoningEffort: () => '',
+          effectiveSessionModelKey: () => 'model',
+          selectedProjectPath: () => 'project',
+          prepareModel: async () => ({
+            state: preparationState,
+            service_instance_id: 'instance',
+          }),
+          waitForPreparation: async (pending: Promise<unknown>) => pending,
+          isRuntimePreparationBusyFeedback,
+          runtimePreparationForegroundFailure,
+          runtimePreparationRequestFailure,
+          requestSessionResume: (identity: string) => requests.push(identity),
+          set: (update: object | ((state: typeof current) => object)) =>
+            Object.assign(current, typeof update === 'function' ? update(current) : update),
+        })
+        assert.equal(result, preparationState === 'applied')
+        assert.deepEqual(
+          requests,
+          preparationState === 'applied' && resumeState === 'failed' && sessionId
+            ? [sessionId]
+            : [],
+          `${preparationState}/${resumeState}/${sessionId}`
+        )
+      }
+    }
+  }
 })
 
 test('queued send failures use product copy instead of raw service errors', () => {
@@ -1127,6 +1452,46 @@ test('session catalog HTTP failures distinguish retryable service outages', () =
     retryable: false,
     status: 401,
   })
+})
+
+test('recovery check keeps a live turn running independently of pending settlement', () => {
+  for (const pending of [true, false]) {
+    const response = { ok: true, recovery_blocked: false, recovery_pending: pending }
+    assert.deepEqual(projectRecoveryCheck({ ...response, activity_active: true }), {
+      recoveryBlocked: false,
+      recoveryPending: pending,
+      running: true,
+      status: 'running',
+    })
+    assert.deepEqual(projectRecoveryCheck({ ...response, activity_active: false }), {
+      recoveryBlocked: false,
+      recoveryPending: pending,
+      running: false,
+      status: 'done',
+    })
+  }
+})
+
+test('recovery check ignores superseded recovery state, not ordinary stream progress', () => {
+  const requested: Thread = {
+    ...thread(),
+    activeTurnId: 'old-turn',
+    recoveryIncidentId: 'old-incident',
+    recoverySourceSeq: 10,
+    lastSeq: 10,
+  }
+
+  assert.equal(recoveryCheckIsCurrent({ ...requested }, requested), true)
+  assert.equal(recoveryCheckIsCurrent({ ...requested, lastSeq: 11 }, requested), true)
+  for (const update of [
+    { sessionId: 'another-session' },
+    { activeTurnId: 'queued-turn' },
+    { recoveryIncidentId: 'new-incident' },
+    { recoverySourceSeq: 11 },
+    { recoveryIncidentId: null, recoverySourceSeq: 0 },
+  ]) {
+    assert.equal(recoveryCheckIsCurrent({ ...requested, ...update }, requested), false)
+  }
 })
 
 function thread(): Thread {
@@ -2151,6 +2516,7 @@ test('sandbox recovery incidents explain their exact cause without suggesting me
     ['windows_sandbox_setup_unknown', /结果尚未确认/, /outcome is unconfirmed/],
     ['windows_sandbox_setup_in_progress', /仍在初始化/, /still being initialized/],
     ['windows_sandbox_policy_rejected', /安全策略/, /security policy/],
+    ['windows_sandbox_password_policy_rejected', /密码.*2245/, /password.*2245/],
     ['windows_sandbox_tool_access_failed', /内置工具/, /built-in tools/],
   ] as const
   for (const [reason, chinese, english] of cases) {
@@ -2274,6 +2640,85 @@ test('resume request reasons translate on redraw without changing vendor diagnos
     ),
     /timed out/
   )
+})
+
+test('unavailable session model renders recovery instructions in both languages', async () => {
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const notice = { key: 'resume.modelUnavailable' } as const
+  assert.match(
+    formatRuntimeStatus(notice, locale.getFixedT(null, 'conversation')),
+    /恢复模型连接或选择其他模型/
+  )
+  await locale.changeLanguage('en')
+  assert.match(
+    formatRuntimeStatus(notice, locale.getFixedT(null, 'conversation')),
+    /Restore its connection or choose another model/
+  )
+})
+
+test('session status renders the unavailable-model notice and reconnect action', async () => {
+  const source = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const syntax = ts.createSourceFile(
+    'Stream.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const declaration = syntax.statements.find(
+    (node): node is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(node) && node.name?.text === 'StatusLine'
+  )
+  assert.ok(declaration)
+  const script = ts.transpileModule(`(${declaration.getText(syntax)})({ item })`, {
+    compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    resources: {
+      zh: { conversation: zh, components: componentsZh },
+      en: { conversation: en, components: componentsEn },
+    },
+  })
+  for (const language of ['zh', 'en']) {
+    await locale.changeLanguage(language)
+    const item = sessionResumeStatusItem(
+      'session-1',
+      { key: 'resume.modelUnavailable' },
+      'tension',
+      true
+    )
+    const element = runInNewContext(script, {
+      React,
+      item,
+      formatRuntimeStatus,
+      useTranslation: (ns: 'conversation' | 'components') => ({
+        t: locale.getFixedT(null, ns),
+        i18n: locale,
+      }),
+      useApp: () => ({ state: {} }),
+      activeThread: () => ({ readOnly: false }),
+      isUserStoppedStatus: () => false,
+      LEGACY_USER_STOPPED_STATUS: 'stopped',
+      cx: (...args: unknown[]) => args.filter(Boolean).join(' '),
+      IconFont: () => null,
+      Button: (props: { children: React.ReactNode }) =>
+        React.createElement('button', { 'data-testid': 'session-resume-retry' }, props.children),
+    })
+    const html = renderToStaticMarkup(element)
+    assert.match(
+      html,
+      language === 'zh'
+        ? /恢复模型连接或选择其他模型/
+        : /Restore its connection or choose another model/
+    )
+    assert.match(html, /data-testid="session-resume-retry"/)
+  }
 })
 
 test('application status descriptors can be redrawn in either language', async () => {

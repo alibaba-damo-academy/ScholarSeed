@@ -8,14 +8,17 @@ import componentsEn from '../../localization/locales/en/components.json' with { 
 import browserZh from '../../localization/locales/zh/browser.json' with { type: 'json' }
 import browserEn from '../../localization/locales/en/browser.json' with { type: 'json' }
 import { projectActivityEvents } from './transcript.ts'
-
 import {
   componentOptionAnswers,
+  submittedPluginValues,
+  declarativeAnswer,
   browserApprovalBody,
   browserApprovalResolution,
   browserApprovalSubmission,
   browserApprovalTarget,
   browserApprovalCardRole,
+  approvalDetails,
+  fileApprovalOperation,
   formatHilResolution,
   formatHilSubmissionError,
   hilEventResolution,
@@ -23,6 +26,7 @@ import {
   hilSubmissionFailure,
   pendingHilItems,
   projectHilCard,
+  reviseHilCard,
   settlePendingHil,
   hilResolvedRunState,
   hilRequestedRunState,
@@ -30,7 +34,123 @@ import {
   permissionDecisionOptions,
   transcriptPresentationItems,
 } from './hil.ts'
-import type { ConvItem } from './model.ts'
+import { type ConvItem } from './model.ts'
+
+test('custom component history restores submitted values and tolerates older receipts', () => {
+  const question = {
+    question: 'Research graph',
+    options: [],
+    component: {
+      plugin: 'research-graph',
+      component: 'graph',
+      fingerprint: 'fixed',
+      binding: 'one',
+    },
+  }
+  const values = { filtered: false, edgeId: 'citation-2', note: '' }
+  assert.deepEqual(
+    submittedPluginValues(question, JSON.stringify({ action: 'confirm', values })),
+    values
+  )
+  assert.deepEqual(submittedPluginValues(question, '{"action":"confirm","values":{}}'), {})
+  assert.equal(submittedPluginValues(question, '{"action":"cancel","values":{}}'), undefined)
+  assert.equal(submittedPluginValues(question, '{"action":"confirm","values":[]}'), undefined)
+  assert.equal(submittedPluginValues(question, 'Legacy receipt'), undefined)
+  assert.equal(submittedPluginValues({ ...question, component: undefined }, undefined), undefined)
+})
+
+test('declarative receipts present real form values without exposing transport JSON', () => {
+  const question = {
+    question: 'Research',
+    options: [],
+    component: {
+      plugin: 'host',
+      component: 'conversation.ui',
+      fingerprint: 'host-v3',
+      binding: 'same',
+    },
+  }
+  const labels = { submitted: 'Submitted', cancelled: 'Cancelled' }
+  const answer = JSON.stringify({
+    action: 'choose',
+    values: { form: { research: { value: '方向 B' }, motivation: { value: '真实理由' } } },
+    content_revision: 3,
+  })
+  assert.equal(declarativeAnswer(question, answer, labels), '方向 B\n真实理由')
+  assert.equal(
+    declarativeAnswer(question, '{"action":"choose","values":{}}', labels),
+    labels.submitted
+  )
+  assert.equal(
+    declarativeAnswer(question, '{"action":"cancel","values":{}}', labels),
+    labels.cancelled
+  )
+  assert.equal(declarativeAnswer(question, 'not json', labels), undefined)
+  assert.equal(
+    declarativeAnswer(
+      { ...question, component: { ...question.component, plugin: 'custom' } },
+      answer,
+      labels
+    ),
+    undefined
+  )
+  assert.equal(
+    declarativeAnswer(
+      question,
+      JSON.stringify({ action: 'choose', values: { rows: Array(1100).fill('too many') } }),
+      labels
+    ),
+    undefined
+  )
+})
+
+test('declarative revisions update only the same pending binding without resetting local state or position', () => {
+  const question = {
+    id: 'surface',
+    question: 'Confirm',
+    component: {
+      plugin: 'host',
+      component: 'conversation.ui',
+      fingerprint: 'host-v3',
+      binding: 'binding',
+    },
+    component_data: { source: 'first' },
+    component_revision: 0,
+  }
+  const data = { request_id: 'request', kind: 'question', questions: [question] }
+  const initial = {
+    ...projectHilCard(data, 1, 'turn', 'item', 3),
+    hilState: 'submitting' as const,
+    submissionError: 'retained',
+  }
+  const updated = reviseHilCard(initial, {
+    ...data,
+    questions: [{ ...question, component_data: { source: 'second' }, component_revision: 1 }],
+  })
+  assert.equal(updated.eventSeq, 3)
+  assert.equal(updated.hilState, 'submitting')
+  assert.equal(updated.submissionError, 'retained')
+  assert.deepEqual(updated.questions?.[0].componentData, { source: 'second' })
+  assert.equal(reviseHilCard(updated, data), updated)
+  const completed = { ...updated, hilState: 'resolved' as const }
+  assert.equal(
+    reviseHilCard(completed, { ...data, questions: [{ ...question, component_revision: 2 }] }),
+    completed
+  )
+  assert.equal(
+    reviseHilCard(updated, {
+      ...data,
+      questions: [
+        {
+          ...question,
+          component: { ...question.component, binding: 'other' },
+          component_revision: 2,
+        },
+      ],
+    }),
+    updated
+  )
+})
 
 test('curation display provenance survives live projection, history and settled replies', () => {
   const data = {
@@ -133,6 +253,53 @@ test('component options are proposals restricted to the original question', () =
     null
   )
   assert.equal(componentOptionAnswers(question, { selected_paper_ids: ['Write'] }), null)
+})
+
+test('file approval preserves every native change without inferring paths from shell commands', () => {
+  const changes = [
+    { path: '/one.md', kind: 'add' },
+    { path: '/two.md', kind: 'update' },
+  ]
+  const card = projectHilCard({ request_id: 'files', kind: 'file_approval', changes }, 1, 'turn')
+  assert.deepEqual(card.changes, changes)
+  assert.equal(fileApprovalOperation(card), 'changes')
+  assert.equal(
+    fileApprovalOperation({ ...card, changes: [{ path: '/one.md', kind: { type: 'add' } }] }),
+    'create'
+  )
+  assert.equal(
+    fileApprovalOperation({ ...card, changes: [{ path: '/one.md', kind: { type: 'delete' } }] }),
+    'delete'
+  )
+  const moved = {
+    ...card,
+    changes: [{ path: '/one.md', kind: { type: 'update', move_path: '/moved.md' } }],
+  }
+  assert.deepEqual(approvalDetails(moved).paths, ['/one.md', '/moved.md'])
+  assert.equal(fileApprovalOperation(moved), 'changes')
+  assert.deepEqual(approvalDetails(card), { kind: 'file', paths: ['/one.md', '/two.md'] })
+  assert.deepEqual(
+    approvalDetails(
+      projectHilCard(
+        { request_id: 'shell', kind: 'command_approval', command: 'echo text > /one.md' },
+        1
+      )
+    ),
+    { kind: 'command', paths: [] }
+  )
+  assert.deepEqual(
+    approvalDetails(
+      projectHilCard(
+        {
+          request_id: 'scope',
+          kind: 'permission',
+          permissions: { filesystem: { write: ['/folder'] } },
+        },
+        1
+      )
+    ),
+    { kind: 'permission', paths: [] }
+  )
 })
 
 test('product authorization survives completion while native callbacks expire', () => {
@@ -300,8 +467,8 @@ test('browser approval preserves scoped request and sends only a structured deci
   )
   assert.equal(resolved[0].kind === 'hil' && resolved[0].resolvedMessage?.kind, 'browserExpired')
   assert.equal(transcriptPresentationItems(resolved).length, 1)
-  assert.equal(browserZh.approval.title, '浏览器访问请求')
-  assert.equal(browserEn.approval.title, 'Browser access request')
+  assert.equal(browserZh.approval.title, '请求浏览器访问')
+  assert.equal(browserEn.approval.title, 'Request browser access')
 })
 
 test('history approval projects only a bounded query, without inventing a tab or origin', () => {
@@ -907,4 +1074,23 @@ test('history restores application HIL fallback provenance and a later user answ
     resolved: '已处理',
     resolvedMessage: { kind: 'handled' },
   })
+})
+
+test('an already resolved product decision never enters the confirmation dock', () => {
+  const card = projectHilCard(
+    {
+      request_id: 'automatic',
+      kind: 'question',
+      lifetime: 'session',
+      state: 'resolved',
+      questions: [{ id: 'scope', question: 'Read?', options: [] }],
+      answers: { scope: '一键授权' },
+    },
+    1,
+    'turn'
+  )
+  assert.equal(pendingHilItems([card]).length, 0)
+  const replies = transcriptPresentationItems([card])
+  assert.equal(replies[0]?.kind, 'interaction_reply')
+  assert.equal(replies[0]?.kind === 'interaction_reply' && replies[0].answers.scope, '一键授权')
 })

@@ -36,6 +36,10 @@ const CITATION: CitationResolution = {
 }
 
 test('document links distinguish browser, citation, and fragment targets', () => {
+  assert.deepEqual(documentLinkTarget('references.md#ref-key'), {
+    kind: 'reference',
+    href: 'references.md#ref-key',
+  })
   assert.deepEqual(documentLinkTarget('https://example.org/paper?q=1#section'), {
     kind: 'external',
     href: 'https://example.org/paper?q=1#section',

@@ -24,6 +24,10 @@ test('file names select the available design assets', () => {
     ['archive.tar.gz', 'zip'],
     ['code.py', 'html'],
     ['https://host/report.PDF?download=1#page=2', 'pdf'],
+    ['Why does X? A study.pdf', 'pdf'],
+    ['What is life? #2.pdf', 'pdf'],
+    ['C:\\papers\\Q3?.pdf', 'pdf'],
+    ['notes #1.md', 'text'],
     ['C:\\folder.pdf\\README', undefined],
     ['folder.pdf/README', undefined],
     ['.pdf', undefined],
@@ -45,7 +49,7 @@ test('shared file icons render imported assets and preserve the document fallbac
     format: 'cjs',
     platform: 'node',
     packages: 'external',
-    loader: { '.webp': 'dataurl', '.png': 'dataurl' },
+    loader: { '.svg': 'dataurl' },
     jsx: 'transform',
   }).outputFiles[0].text
   const loaded = { exports: {} as typeof FileIcons }
@@ -87,14 +91,14 @@ test('shared file icons render imported assets and preserve the document fallbac
         className: 'consumer-icon',
       })
     )
-    assert.match(markup, /<img[^>]+src="data:image\/(?:webp|png);base64,/)
+    assert.match(markup, /<img[^>]+src="data:image\/svg\+xml[,;]/)
     assert.match(markup, /width:20px;height:20px/)
     assert.match(markup, /consumer-icon/)
   }
   const directory = renderToStaticMarkup(
     createElement(loaded.exports.FileFormatIcon, { name: 'folder.pdf', kind: 'dir' })
   )
-  assert.match(directory, /<img[^>]+src="data:image\/webp;base64,/)
+  assert.match(directory, /<img[^>]+src="data:image\/svg\+xml[,;]/)
   assert.notEqual(
     loaded.exports.fileIconForName('folder.pdf', 'dir'),
     loaded.exports.fileIconForName('folder.pdf')
@@ -104,5 +108,26 @@ test('shared file icons render imported assets and preserve the document fallbac
     assert.doesNotMatch(markup, /<img/)
     assert.match(markup, /lucide-file/)
   }
+  const literature = renderToStaticMarkup(
+    createElement(loaded.exports.FileFormatIcon, {
+      name: '',
+      source: 'literature',
+      size: 16,
+      strokeWidth: 1.8,
+    })
+  )
+  assert.match(literature, /lucide-book-open-text/)
+  assert.match(literature, /stroke-width="1.5"/)
+  assert.match(literature, /width:16px;height:16px/)
+  assert.match(
+    renderToStaticMarkup(
+      createElement(loaded.exports.FileFormatIcon, { name: 'paper.pdf', source: 'literature' })
+    ),
+    /<img[^>]+src="data:image\/svg\+xml[,;]/
+  )
+  assert.equal(
+    loaded.exports.fileIconForName('paper.pdf', 'file', 'literature'),
+    loaded.exports.fileIconForName('one.pdf')
+  )
   assert.equal(loaded.exports.fileIconForName('one.pdf'), loaded.exports.fileIconForName('two.PDF'))
 })

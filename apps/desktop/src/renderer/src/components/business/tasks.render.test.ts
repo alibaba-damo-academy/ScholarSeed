@@ -128,5 +128,51 @@ for (const theme of ['light', 'dark'])
       await page.evaluate(() => Reflect.get(window, 'taskStoreProbe').release())
       await expect(clear).toBeEnabled()
       await expect(center.locator('article')).toHaveCount(3)
+
+      url.searchParams.set('scenario', 'literature')
+      await page.goto(url.href)
+      const finished = center.getByRole('article').filter({ hasText: '部分完成' })
+      const running = center.getByRole('article').filter({ hasText: '进行中' })
+      const result = finished.getByText('已加入 2/2 篇 · 全文成功 1 篇，失败 1 篇', { exact: true })
+      const scope = finished.getByText(/目标：我的文献库/)
+      await expect(result).toBeVisible()
+      assert.ok((await result.boundingBox())!.y < (await scope.boundingBox())!.y)
+      const progress = running.getByRole('progressbar', { name: '已处理全文 1/2 篇' })
+      await expect(progress).toHaveAttribute('aria-valuenow', '50')
+      const progressText = running.getByText('已处理全文 1/2 篇', { exact: true })
+      await expect(progressText).toHaveCount(1)
+      assert.ok(
+        (await progressText.boundingBox())!.y <
+          (await running.getByText(/目标：我的文献库/).boundingBox())!.y
+      )
+      const runningAction = running.getByRole('button', { name: '论文清单（2 篇）', exact: true })
+      const runningActionBox = (await runningAction.boundingBox())!
+      assert.ok((await progress.boundingBox())!.y >= runningActionBox.y + runningActionBox.height)
+      const disclosure = finished.getByRole('button', { name: '论文清单（2 篇）', exact: true })
+      const timestamp = (await finished.locator('time').boundingBox())!
+      const disclosureBox = (await disclosure.boundingBox())!
+      assert.ok(
+        Math.abs(timestamp.y + timestamp.height / 2 - disclosureBox.y - disclosureBox.height / 2) <
+          1
+      )
+      assert.ok(disclosureBox.x > timestamp.x + timestamp.width)
+      await expect(disclosure).toHaveClass(/\bvds-button--outline\b/)
+      await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+      await expect(finished.getByText('第一篇论文', { exact: true })).toBeHidden()
+      await disclosure.press('Enter')
+      await expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+      await expect(finished.getByText('第一篇论文', { exact: true })).toBeVisible()
+      const longPaper = finished.getByTestId('task-source-name').last()
+      const panel = page.locator(`[id="${await disclosure.getAttribute('aria-controls')}"]`)
+      assert.ok((await longPaper.boundingBox())!.width < (await panel.boundingBox())!.width)
+      assert.equal(
+        await longPaper.evaluate((element) => element.scrollWidth > element.clientWidth),
+        true
+      )
+      await expect(running.getByText('第一篇论文', { exact: true })).toBeHidden()
+      await disclosure.press('Space')
+      await expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+      await expect(finished.getByText('第一篇论文', { exact: true })).toBeHidden()
+      await expect(disclosure).toBeFocused()
     }
   )

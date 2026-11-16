@@ -49,7 +49,7 @@ from service.resources.service.excerpts import (
     ResourceExcerptError,
     ResourceExcerptService,
 )
-from service.resources.service.fetcher import PageFetchError, SiteIconFetcher
+from service.resources.service.fetcher import PageFetchError, SiteIconFetcher, WebPreviewFetcher
 from service.resources.service.history import ResourceVersionError
 from service.resources.service.importer import (
     ResourceImportError,
@@ -123,6 +123,8 @@ WEB_ICON_CACHE_CONTROL = f"private, max-age={WEB_ICON_CACHE_SECONDS}"
 WEB_ICON_CROSS_ORIGIN_RESOURCE_POLICY = "cross-origin"
 WEB_ICON_SERVICE_UNAVAILABLE = "web_icon_unavailable"
 WEB_ICON_UNAVAILABLE_STATUS = 404
+WEB_PREVIEW_UNAVAILABLE = "web_preview_unavailable"
+WEB_PREVIEW_UNAVAILABLE_STATUS = 503
 WEB_ICON_RESPONSE_HEADERS = {
     "Cache-Control": WEB_ICON_CACHE_CONTROL,
     "Content-Disposition": "inline",
@@ -780,6 +782,19 @@ def register_resource_routes(app: FastAPI) -> None:
             "failed": len(items) - succeeded,
             "items": [_web_item_payload(item) for item in items],
         }
+
+    @app.get(f"{RESOURCE_ROUTE_PREFIX}/web-preview")
+    async def resource_web_preview(
+        request: Request,
+        url: str = Query(..., min_length=1, max_length=WEB_CANDIDATE_URL_LIMIT),
+    ) -> dict:
+        fetcher = getattr(request.app.state, "web_preview_fetcher", None)
+        if not isinstance(fetcher, WebPreviewFetcher):
+            raise HTTPException(WEB_PREVIEW_UNAVAILABLE_STATUS, WEB_PREVIEW_UNAVAILABLE)
+        try:
+            return asdict(await fetcher.fetch_preview(url))
+        except (PageFetchError, TimeoutError) as error:
+            raise HTTPException(WEB_PREVIEW_UNAVAILABLE_STATUS, WEB_PREVIEW_UNAVAILABLE) from error
 
     @app.get(f"{RESOURCE_ROUTE_PREFIX}/web-icon")
     async def resource_web_icon(  # type: ignore[unused-ignore]

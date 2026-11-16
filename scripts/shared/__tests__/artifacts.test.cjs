@@ -61,7 +61,11 @@ test('artifact download is verified, cached and restored without another request
     }
     await ensureArtifact(destination, artifact, { environment })
     assert.deepEqual(fs.readFileSync(destination), payload)
-    assert.equal(fs.statSync(destination).mode & 0o777, 0o755)
+    if (process.platform === 'win32') {
+      fs.accessSync(destination, fs.constants.R_OK | fs.constants.W_OK)
+    } else {
+      assert.equal(fs.statSync(destination).mode & 0o777, 0o755)
+    }
     fs.unlinkSync(destination)
     await ensureArtifact(destination, artifact, { environment })
     assert.deepEqual(fs.readFileSync(destination), payload)

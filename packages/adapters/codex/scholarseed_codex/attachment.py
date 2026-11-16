@@ -35,4 +35,5 @@ class ThreadAttachment:
     attachment_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     permission_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     permission_confirmation: asyncio.Future[dict[str, Any]] | None = field(default=None, repr=False)
+    unload_confirmation: asyncio.Future[None] | None = field(default=None, repr=False)
     permission_expected: dict[str, Any] = field(default_factory=dict, repr=False)

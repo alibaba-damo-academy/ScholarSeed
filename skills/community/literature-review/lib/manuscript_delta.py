@@ -4,60 +4,40 @@ from generation_diagnostics import GenerationError
 from figure_caption import CAPTION_CONTENT_GUIDANCE
 
 REFINE_GUIDANCE = TASK_GUIDANCE + '\n' + MANUSCRIPT_WRITING_GUIDANCE + r'''
-Refine the complete assembled document once, returning a source delta.
+Refine the complete assembled document once. Follow the confirmed task and
+outline, including language, document scope and requested format. Improve
+organization, clarity, terminology and transitions using the supplied evidence.
+Keep the abstract compact unless the user requests otherwise. Report specific
+unresolved issues without creating an additional review stage.
 
-DOCUMENT REPAIR
-The sources already include the actual template, chapters and figure wrappers.
-Use the confirmed outline, user instructions and full evidence to repair content,
-mathematics, repetition, transitions, LaTeX, citations and caption wording.
-Abstract, synthesis/summary and conclusion chapters were drafted concurrently
-with the body from the plan and supplied evidence, not from the completed body.
-Check their claims individually against what the body actually establishes and
-revise unsupported or overstated claims; rewrite the abstract's findings to state
-only what the body establishes. Keep the abstract as one compact paragraph.
-Merge provenance or evidence limitations into its existing limitation statement,
-remove repeated or chapter-by-chapter summary language, and replace the entire
-abstract text through one exact-match delta edit when it needs repair. Unless the
-user explicitly asked for a more detailed abstract, improve it without increasing
-its length.
-The publisher owns the reference list. Resolve bibliography_warnings by removing
-chapter-authored duplicate headings/lists, retaining the single publisher
-bibliography entry point and existing inline citations. Repair prose references
-to any removed bibliography chapter. Do not rewrite bibliography metadata.
-Preserve resolved_section_languages, planned titles and section labels. Top-level
-chapters use \section and direct children \subsection; when removing a repeated
-parent heading, correct its descendants rather than leaving a skipped level.
+The outline owns the asset inventory and placement. Retain one instance of each
+planned table and completed figure with its label, evidence and qualifications.
+Use asset_contract_warnings to reconcile the source with that inventory.
+Preserve supported content when moving it between a table and prose.
+The publisher owns the reference list and metadata. Keep one bibliography entry
+point and valid inline citations. Resolve bibliography_warnings at that boundary.
 
-ASSET RECONCILIATION
-The confirmed outline owns the asset inventory, identities and section placement.
-Retain one instance of each planned table and completed figure at its owner, with
-its actual image path, label, supported meaning, citations and qualifications.
-Chapters may have invented extra tables or figure shells: reconcile reported
-asset_contract_warnings against sources and the plan. Keep the genuine completed
-figure wrapper, remove a duplicate/placeholder shell, and repair its references.
-Convert necessary supported content in an unplanned table into its owning prose,
-with citations, rather than discarding evidence or treating it as a new asset.
-Repair missing planned tables only from supplied evidence; report unresolved
-content or ambiguous identities in issues instead of guessing. Captions preserve
-scientific meaning, not erroneous self-numbering. Surrounding callouts use labels.
-Preamble, headings and actual captions are editable. No image model, chapter
-regeneration or second refinement follows; main handles unresolved issues in v2.
+Resolve reported compile, hierarchy and layout errors within the supplied sources.
+Preserve section labels, resolved_section_languages, planned titles, actual asset
+paths and reader-facing captions. Report unresolved content or ambiguous identity
+in issues. Image links ending in .tex name native forest sources; preserve those
+links and sources so the publisher can render the real tree for Markdown or DOCX.
+This pass does not invoke another model, regenerate chapters or images,
+or change the confirmed scientific scope.
 
 ''' + '\n' + CAPTION_CONTENT_GUIDANCE + r'''
-DELTA OUTPUT
-Return one JSON object:
-{"edits":[{"target":"main","before":"exact original text","after":"replacement",
-           "reason":"why"}],"issues":[]}
-Use actual targets from sources. Each nonempty before must match exactly once
-in that target's ORIGINAL text. All edits address the same original v1; they
-must not overlap. Use enough surrounding context to disambiguate repeated text.
-Do not return hashes, base_version, section_updates or a rewritten manuscript.
-Empty edits is valid. JSON-escape backslashes in delta strings only.
+DELTA RULES
+Return one JSON object: {"edits":[{"target":"main","before":"exact original text",
+"after":"replacement","reason":"why"}],"issues":[]}.
+Targets must exist in sources. Each nonempty before matches exactly once in its
+original target. All edits address the same original source and must not overlap.
+Use sufficient surrounding text to identify a replacement. Empty edits is valid.
+Apply JSON escaping to string values. Return only this delta object.
 '''
 
 def apply_delta(sources, delta):
     """Validate the entire patch before producing any modified text."""
-    if not isinstance(delta,dict) or set(delta)-{'edits','issues'}:
+    if not isinstance(delta,dict) or 'edits' not in delta or set(delta)-{'edits','issues'}:
         raise GenerationError('DELTA_SCHEMA','expected edits and optional issues')
     edits=delta.get('edits',[]);issues=delta.get('issues',[])
     if not isinstance(edits,list) or not isinstance(issues,list):

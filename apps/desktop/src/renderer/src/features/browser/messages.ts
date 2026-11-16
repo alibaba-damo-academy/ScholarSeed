@@ -1,6 +1,15 @@
 import type { ParseKeys } from 'i18next'
-import type { BrowserErrorCode, BrowserDataType } from '../../../../browser'
+import type { BrowserErrorCode, BrowserDataType, BrowserDownloadNotice } from '../../../../browser'
 import type { VaultError, VaultState, VaultIntent } from '../../../../vault'
+
+export const BROWSER_DOWNLOAD_KEYS = {
+  started: 'downloadNotice.started',
+  saved: 'downloadNotice.saved',
+  interrupted: 'downloadNotice.interrupted',
+} as const satisfies Record<
+  Exclude<BrowserDownloadNotice['status'], 'cancelled'>,
+  ParseKeys<'browser'>
+>
 
 export const BROWSER_ERROR_KEYS = {
   print_busy: 'errors.print_busy',

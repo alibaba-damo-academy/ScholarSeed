@@ -6,13 +6,15 @@ import argparse
 import base64
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from io import BytesIO
-from typing import Any
+from typing import Any, cast
 
+import pdfplumber
 import pypdfium2
 import pypdfium2.raw as pdfium
+from PIL import Image
 
 from service.platform.pdf import (
     PDF_WORKER_MAXIMUM_INPUT_BYTES,
@@ -23,6 +25,7 @@ from service.platform.pdf import (
     PdfDocumentError,
     PdfNativeOperation,
     PdfRect,
+    pdf_page_layout,
 )
 
 PDF_IMAGE_OBJECT_TYPE = int(getattr(pdfium, "FPDF_PAGEOBJ_IMAGE"))
@@ -81,7 +84,8 @@ def _render(payload: bytes, page_number: int, scale: float) -> str:
     with pypdfium2.PdfDocument(payload, password="") as document:
         _pages(document, [page_number])
         with closing(document[page_number - 1]) as page:
-            with closing(page.render(scale=scale)) as bitmap:
+            renderPage = cast(Callable[[float], pypdfium2.PdfBitmap], page.render)
+            with closing(renderPage(scale)) as bitmap:
                 with bitmap.to_pil() as view:
                     image = view.convert(PDF_IMAGE_MODE)
             with image, BytesIO() as output:
@@ -102,6 +106,48 @@ def _execute(payload: bytes, operation: PdfNativeOperation, parameters: dict[str
             [[rect.x0, rect.top, rect.x1, rect.bottom] for rect in page]
             for page in image_bounds(payload, parameters.get("page_numbers"))
         ]
+    if operation is PdfNativeOperation.TABLE:
+        with pdfplumber.open(BytesIO(payload)) as document:
+            page = document.pages[parameters["page_number"] - 1]
+            x0, y0, x1, y1 = parameters["quad"]
+            crop = page.crop((x0 * page.width, y0 * page.height, x1 * page.width, y1 * page.height))
+            grids = [table.extract() for table in crop.find_tables()]
+            grids = [
+                rows
+                for rows in grids
+                if len(rows) >= 2 and all(sum(bool(cell) for cell in row) >= 2 for row in rows)
+            ]
+            text = ""
+            if grids:
+                text = "\n".join(
+                    " | ".join(" ".join((cell or "").split()) for cell in row)
+                    for rows in grids
+                    for row in rows
+                )
+            elif parameters["allow_unruled"]:
+                value = crop.extract_text(layout=True, **parameters["layout_settings"]) or ""
+                lines = [line.rstrip() for line in value.splitlines() if line.strip()]
+                if len(lines) >= 2:
+                    text = "\n".join(lines)
+            return {"text": text, "partial": bool(crop.images) if text else False}
+    if operation is PdfNativeOperation.PREVIEW:
+        layout = pdf_page_layout(payload, parameters["page_number"])
+        scale = parameters["scale"]
+        x0, y0, x1, y1 = parameters["quad"]
+        rendered = _render(payload, parameters["page_number"], scale)
+        with Image.open(BytesIO(base64.b64decode(rendered))) as image:
+            with image.crop(
+                (
+                    round(x0 * layout.width * scale),
+                    round(y0 * layout.height * scale),
+                    round(x1 * layout.width * scale),
+                    round(y1 * layout.height * scale),
+                )
+            ) as crop:
+                crop.thumbnail((parameters["max_edge"], parameters["max_edge"]))
+                with BytesIO() as output:
+                    crop.save(output, format="JPEG", quality=parameters["quality"])
+                    return base64.b64encode(output.getvalue()).decode("ascii")
     if operation is PdfNativeOperation.RENDER:
         return _render(payload, parameters["page_number"], parameters["scale"])
     raise PdfDocumentError("pdf_worker_operation_invalid")

@@ -11,7 +11,6 @@ from fastapi.responses import JSONResponse
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
-    HTTP_413_CONTENT_TOO_LARGE,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
 
@@ -23,7 +22,6 @@ from service.chat.api.bridge import scoped_bridge_admission, scoped_bridge_calle
 from service.chat.runtime.composition import LiveSessionService
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import SkillCaller
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 SKILL_ACCESS_DENIED = "skill_access_denied"
 SKILL_UNAVAILABLE = "skill_unavailable"
@@ -45,14 +43,7 @@ def register_skill_admission(
         if caller is None:
             return JSONResponse({"ok": False, "error": SKILL_ACCESS_DENIED}, HTTP_403_FORBIDDEN)
         activity = caller.bridge_activity
-        body = bytearray()
-        async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"},
-                    HTTP_413_CONTENT_TOO_LARGE,
-                )
+        body = await request.body()
         try:
             command = SkillAdmission.model_validate(json.loads(body))
             script = Path(command.path)

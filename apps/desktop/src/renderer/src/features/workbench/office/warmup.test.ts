@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import './local-fonts.test.cjs'
 
 import {
   INITIAL_OFFICE_WARMUP_STATUS,

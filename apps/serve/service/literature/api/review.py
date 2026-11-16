@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -11,24 +12,37 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
 
 from service.assistant.service.authorization import (
     LITERATURE_REVIEW_FULLTEXT,
+    AuthorizationDisposition,
 )
-from service.capabilities.service.plugins import PLUGIN_OUTLINE_SLOT
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.service.cards import DisplayCardError
+from service.chat.service.handoffs import OUTLINE_RECEIPT, PLAN_RECEIPT, publish_receipt
 from service.chat.service.sessions import SessionService
 from service.chat.service.tasks import (
     TASK_ACTIVATION_REQUIRED_ACTION,
     verified_authorization_context,
 )
 from service.literature.api.gate import FulltextGate
-from service.literature.persistence.files import scoped_workspace, scoped_workspace_path
+from service.literature.persistence.files import (
+    read_scoped_file,
+    scoped_workspace,
+    scoped_workspace_path,
+)
 from service.literature.service.confirmation import (
     OUTLINE_CHECKPOINT,
+    PLAN_CHECKPOINT,
+    PLAN_NEXT_ACTION,
     REVIEW_NEXT_ACTION,
+    await_confirmation,
     confirmation_continuation,
     prepare_confirmation,
 )
-from service.literature.service.result import ARTIFACT_REFERENCE_FIELDS, SEARCH_CARD
+from service.literature.service.result import (
+    ARTIFACT_REFERENCE_FIELDS,
+    SEARCH_CARD,
+    FulltextApplicability,
+)
+from service.literature.service.reuse import ReadingReuse
 from service.literature.service.review import (
     CORPUS,
     FULLTEXT,
@@ -37,11 +51,14 @@ from service.literature.service.review import (
     REVIEW_CARD,
     PreparedReview,
     PreparedReviewSearch,
+    ReviewMetadataError,
     prepare_review,
     prepare_review_search,
     review_retrieval_run,
+    review_workspace_run,
     validate_review_checkpoint,
 )
+from service.literature.service.selected import SELECTED_MAX_BYTES
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     LITERATURE_REVIEW_ROUTE,
@@ -50,7 +67,6 @@ from service.platform.bridge import (
     LiteratureReviewPublish,
 )
 from service.platform.context import ProductTaskType
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 RETRIEVAL_REFERENCE_ROLE = "supporting"
 REVIEW_WORKSPACE_MISMATCH = "review_workspace_mismatch"
@@ -81,6 +97,7 @@ def register_literature_review_routes(
     fulltext_gate: FulltextGate | None = None,
     *,
     activities: Activities,
+    reading_reuse: ReadingReuse | None = None,
 ) -> APIRouter:
     router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
 
@@ -95,18 +112,67 @@ def register_literature_review_routes(
             if sessions.bridge_caller(live.id) is not live or live.publication_turn_id != turn_id:
                 raise PermissionError("bridge_access_denied")
 
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"}, HTTP_400_BAD_REQUEST
-                )
+        raw = await request.body()
         checkpoint = ""
         try:
             command = LiteratureReviewPublish.model_validate(json.loads(raw))
             checkpoint = command.checkpoint
             workspace = scoped_workspace(command.workspace)
+            if checkpoint == PLAN_CHECKPOINT:
+                lease = getattr(live, "active_task_lease", None)
+                if lease is None:
+                    raise ValueError(REVIEW_TASK_MISSING)
+                plan_run_id = await activities.to_thread(
+                    ActivityDomain.BRIDGE, review_workspace_run, live.runtime_workdir, workspace
+                )
+                plan_context = verified_authorization_context(
+                    live, ProductTaskType.LITERATURE_REVIEW, workspace=workspace, run_id=plan_run_id
+                )
+                prepared_plan = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    prepare_confirmation,
+                    live.runtime_workdir,
+                    workspace,
+                    live.id,
+                    turn_id,
+                    PLAN_CHECKPOINT,
+                )
+                require_turn()
+                confirmation = await await_confirmation(
+                    live, activities, prepared_plan, workspace, turn_id, PLAN_CHECKPOINT
+                )
+                require_turn()
+                if (
+                    verified_authorization_context(
+                        live,
+                        ProductTaskType.LITERATURE_REVIEW,
+                        workspace=workspace,
+                        run_id=plan_run_id,
+                    )
+                    != plan_context
+                ):
+                    raise ValueError("task_context_stale")
+                response = {
+                    "ok": True,
+                    "confirmation": confirmation,
+                    "next_action": (
+                        PLAN_NEXT_ACTION
+                        if confirmation is not None
+                        else "The current execution plan already has a decision. Continue without another confirmation."
+                    ),
+                }
+                if confirmation is not None:
+                    response["receipt_ref"] = await activities.to_thread(
+                        ActivityDomain.BRIDGE,
+                        publish_receipt,
+                        live.runtime_workdir,
+                        workspace,
+                        plan_run_id,
+                        PLAN_RECEIPT,
+                        dict(response),
+                    )
+                    require_turn()
+                return JSONResponse(response)
             prepared: PreparedReview | PreparedReviewSearch
             retrieval_prepared: PreparedReviewSearch | None = None
             run_id: str | None = None
@@ -199,7 +265,7 @@ def register_literature_review_routes(
                             return reference
                     return {}
 
-                update = {
+                update: dict[str, object] = {
                     "session_id": live.id,
                     "metadata": find_artifact(METADATA),
                     "selection": find_artifact(CORPUS),
@@ -223,52 +289,44 @@ def register_literature_review_routes(
                 if checkpoint == OUTLINE_CHECKPOINT
                 else None
             )
+            task_request = {}
+            if retrieval_prepared is not None:
+                try:
+                    task_request = json.loads(
+                        read_scoped_file(
+                            live.runtime_workdir,
+                            scoped_workspace_path(workspace, "01_input/writing_request.json"),
+                            SELECTED_MAX_BYTES,
+                        )
+                    )
+                except FileNotFoundError:
+                    pass  # Existing Standard workspaces can predate writing_request.json.
+            abstract_only = task_request.get("execution", {}).get("mode") == "quick"
+            if retrieval_prepared is not None and abstract_only:
+                update["fulltext_authorization"] = FulltextApplicability()
             content = prepared.card.model_copy(update=update).model_dump(mode="json")
             card = await live.display_card(
                 card_type, DisplayCardContent(data=content), turn_id=turn_id
             )
-            authorization = None
+            authorization: dict[str, Any] | None = None
+            reading_assets = None
             confirmation = None
             if outline_confirmation is not None and outline_confirmation.question is not None:
-                reference = await live.component_for(
-                    PLUGIN_OUTLINE_SLOT, interaction_id=str(outline_confirmation.question["id"])
+                confirmation = await await_confirmation(
+                    live, activities, outline_confirmation, workspace, turn_id, OUTLINE_CHECKPOINT
                 )
-                if reference is not None:
-                    outline_confirmation.question["component"] = reference
-                    outline_confirmation.question["component_data"] = content
-                with activities.enter(ActivityDomain.BRIDGE) as activity:
-                    decision = await live.interactions.request_product_input(
-                        outline_confirmation.question,
-                        turn_id=turn_id,
-                        timeout_seconds=outline_confirmation.timeout_seconds,
-                        activity=activity,
-                    )
                 require_turn()
-                current = await activities.to_thread(
-                    ActivityDomain.BRIDGE,
-                    prepare_confirmation,
-                    live.runtime_workdir,
-                    workspace,
-                    live.id,
-                    turn_id,
-                )
-                if current.digest != outline_confirmation.digest:
-                    raise ValueError("review_packet_changed")
-                request_id = str(outline_confirmation.question["id"])
-                record = live.catalog.hil(request_id)
-                confirmation = {
-                    "packet_id": outline_confirmation.packet_id,
-                    "snapshot_id": outline_confirmation.snapshot_id,
-                    "request_id": request_id,
-                    "started_at": record.created_at,
-                    "deadline_at": (
-                        record.created_at + outline_confirmation.timeout_seconds
-                        if outline_confirmation.timeout_seconds
-                        else None
-                    ),
-                    "decision": decision,
+            if retrieval_prepared is not None and abstract_only:
+                authorization = {
+                    "disposition": "not_required",
+                    "evidence_kind": "abstract",
+                    "granted_refs": [],
                 }
-            if retrieval_prepared is not None and retrieval_prepared.authorization_refs:
+            if (
+                retrieval_prepared is not None
+                and retrieval_prepared.authorization_refs
+                and not abstract_only
+            ):
                 assert run_id is not None
                 if fulltext_gate is None:
                     raise ValueError("fulltext_authorization_unavailable")
@@ -278,17 +336,30 @@ def register_literature_review_routes(
                     snapshot_id=live.active_assistant_snapshot_id,
                     authorization_type=LITERATURE_REVIEW_FULLTEXT,
                     refs=retrieval_prepared.authorization_refs,
-                    papers=tuple(
-                        {"id": source.ref_id, "label": source.title}
-                        for source in retrieval_prepared.authorization_sources
-                    ),
                     task_context=verified_authorization_context(
                         live, ProductTaskType.LITERATURE_REVIEW, workspace=workspace, run_id=run_id
                     ),
                     source_count=len(retrieval_prepared.authorization_sources),
+                    papers=tuple(
+                        {"id": source.ref_id, "label": source.title, "description": ""}
+                        for source in retrieval_prepared.authorization_sources
+                    ),
+                    result_card_id=str(card["card_id"]),
+                )
+                require_turn()
+                context = verified_authorization_context(
+                    live, ProductTaskType.LITERATURE_REVIEW, workspace=workspace, run_id=run_id
+                )
+                granted_refs = fulltext_gate.granted_refs(
+                    live,
+                    turn_id=turn_id,
+                    authorization_type=LITERATURE_REVIEW_FULLTEXT,
+                    refs=retrieval_prepared.authorization_refs,
+                    task_context=context,
                 )
                 authorization = {
                     "disposition": disposition.value,
+                    "granted_refs": list(granted_refs),
                     "authorization_type": challenge.authorization_type,
                     "scope_digest": challenge.scope_digest,
                     "sources": [
@@ -296,6 +367,61 @@ def register_literature_review_routes(
                         for source in retrieval_prepared.authorization_sources
                     ],
                 }
+            if (
+                retrieval_prepared is not None
+                and reading_reuse is not None
+                and task_request.get("execution", {}).get("mode") != "quick"
+                and authorization is not None
+                and authorization["disposition"] == AuthorizationDisposition.AUTHORIZED.value
+                and set(retrieval_prepared.authorization_refs) <= set(authorization["granted_refs"])
+            ):
+                require_turn()
+                verified_authorization_context(
+                    live, ProductTaskType.LITERATURE_REVIEW, workspace=workspace, run_id=run_id
+                )
+                bundle = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    reading_reuse.prepare,
+                    live.runtime_workdir,
+                    workspace,
+                    retrieval_prepared.corpus_sha256,
+                    run_id,
+                )
+                require_turn()
+                verified_authorization_context(
+                    live, ProductTaskType.LITERATURE_REVIEW, workspace=workspace, run_id=run_id
+                )
+                reading_assets = reading_reuse.publish(live.runtime_workdir, workspace, bundle)
+            response = {
+                "ok": True,
+                "card_id": card["card_id"],
+                **({"reading_assets": reading_assets} if reading_assets is not None else {}),
+                "status": prepared.card.status,
+                **({"authorization": authorization} if authorization is not None else {}),
+            }
+            if confirmation is not None:
+                response.update(confirmation=confirmation, next_action=REVIEW_NEXT_ACTION)
+                outline_run_id = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    review_workspace_run,
+                    live.runtime_workdir,
+                    workspace,
+                )
+                require_turn()
+                reference = await activities.to_thread(
+                    ActivityDomain.BRIDGE,
+                    publish_receipt,
+                    live.runtime_workdir,
+                    workspace,
+                    outline_run_id,
+                    OUTLINE_RECEIPT,
+                    dict(response),
+                )
+                require_turn()
+                response.update(
+                    receipt_ref=reference,
+                    continuation=confirmation_continuation(confirmation, reference),
+                )
         except PermissionError:
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         except (ValueError, OSError, DisplayCardError, ArtifactPublishFailure) as error:
@@ -329,6 +455,13 @@ def register_literature_review_routes(
                 )
                 + REVIEW_RETRY_ACTION
             )
+            if isinstance(error, ReviewMetadataError):
+                action = (
+                    "Repair the listed fields in the named artifact using source candidate metadata. "
+                    "Keep the selected papers, local source references and citation mappings; "
+                    "do not repeat discovery or reread full text for an identifier/type error. "
+                    "Then retry this checkpoint."
+                )
             return JSONResponse(
                 {
                     "ok": False,
@@ -337,26 +470,11 @@ def register_literature_review_routes(
                     "recoverable": reason not in REVIEW_TASK_BLOCKED_ACTIONS,
                     "action": action,
                     "next_action": action,
+                    **({"issues": error.issues} if isinstance(error, ReviewMetadataError) else {}),
                 },
                 HTTP_400_BAD_REQUEST,
             )
-        return JSONResponse(
-            {
-                "ok": True,
-                "card_id": card["card_id"],
-                "status": prepared.card.status,
-                **({"authorization": authorization} if authorization is not None else {}),
-                **(
-                    {
-                        "confirmation": confirmation,
-                        "continuation": confirmation_continuation(confirmation),
-                        "next_action": REVIEW_NEXT_ACTION,
-                    }
-                    if confirmation is not None
-                    else {}
-                ),
-            }
-        )
+        return JSONResponse(response)
 
     app.include_router(router)
     return router

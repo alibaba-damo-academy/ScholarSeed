@@ -1,5 +1,16 @@
 import { UPDATE_HEALTH_CHANNEL, UPDATE_REPAIR_CHANNEL, PREVIEW_UPDATE_IPC } from '../updates'
 import { PLUGIN_NAVIGATION_CHANNEL, PLUGIN_REVOKED_CHANNEL } from '../plugins'
+import { SETTINGS_PORTAL_CHANNEL } from '../settings'
+import {
+  CONVERSATION_PORTAL,
+  FOREGROUND_PORTAL,
+  UPDATE_PORTAL,
+  RESIZE_PORTAL,
+  RESIZE_PORTAL_CAPACITY,
+  type PortalBridge,
+  type FloatingPortalBridge,
+  type ResizePortalBridge,
+} from '../portal'
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
 import type { PreferenceSubmission, PreferenceReceipt } from '../preference-diagnostics'
 import { TRAY_CHANNEL, type TrayNavigation, type TrayReply } from '../tray'
@@ -9,14 +20,6 @@ import {
   type PreferenceShutdownRequest,
   type PreferenceShutdownReply,
 } from '../quiescence'
-import {
-  DELIVERY_PICK_CHANNEL,
-  DELIVERY_OPEN_CHANNEL,
-  DELIVERY_SAVE_CHANNEL,
-  type DeliveryRequest,
-  type DeliverySaveRequest,
-  type DeliveryNativeReply,
-} from '../delivery'
 import {
   VAULT_CHANNEL,
   parseVaultOpen,
@@ -44,6 +47,7 @@ import {
   BROWSER_COMMAND_CHANNEL,
   BROWSER_DATA_CHANNEL,
   BROWSER_DOWNLOAD_CHANNEL,
+  BROWSER_DOWNLOAD_NOTICE_CHANNEL,
   BROWSER_FRAME_ACK_CHANNEL,
   BROWSER_FRAME_CHANNEL,
   BROWSER_FRAME_INPUT_CHANNEL,
@@ -59,7 +63,12 @@ import {
   type BrowserReveal,
 } from '../browser'
 import type { BrowserPageTarget } from '../browser'
-import type { BrowserBridge, BrowserFrame, BrowserSnapshot } from '../browser'
+import type {
+  BrowserBridge,
+  BrowserDownloadNotice,
+  BrowserFrame,
+  BrowserSnapshot,
+} from '../browser'
 import {
   BROWSER_APPROVAL_RESPONSE_CHANNEL,
   BROWSER_HISTORY_APPROVAL_RESPONSE_CHANNEL,
@@ -101,21 +110,30 @@ import type {
   PreviewUpdateLine,
 } from '../updates'
 import type { PreferenceLanguage, RendererPreferences } from '../preferences'
-import {
-  ATTENTION_CLICK_CHANNEL,
-  ATTENTION_READY_CHANNEL,
-  type AttentionSnapshot,
-} from '../attention'
+import { ATTENTION_CLICK_CHANNEL, ATTENTION_READY_CHANNEL } from '../attention'
 import {
   ATTENTION_STATE_CHANNEL,
   NOTIFICATION_CHANNEL,
   NOTIFICATION_SYNC_CHANNEL,
   type NotificationFrame,
 } from '../notifications'
-import type { SystemPermissionId, SystemPermissionsSnapshot } from '../permissions'
+import type { AttentionSnapshot } from '../attention'
+import type { SystemPermissionTarget, SystemPermissionsSnapshot } from '../permissions'
 import type { CommitDataHomeResult, StorageConfig } from '../storage'
-import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
-import type { ImportPickerTarget } from '../picker'
+import {
+  OFFICE_IMAGE_CHANNEL,
+  REMOTE_IMAGE_CHANNEL,
+  type OfficeImageSource,
+  type OfficeImageResult,
+  type RemoteImageResult,
+} from '../images'
+import {
+  IMPORT_PICKER_CHANNEL,
+  IMPORT_PICKER_PREVIEW,
+  type ImportPickerTarget,
+  type ImportPreview,
+} from '../picker'
+import { TRANSLATION_CHANNEL, type TranslationRequest, type TranslationReply } from '../translation'
 import { SKILLS_CHANNEL, type DeviceSkillRequest, type DeviceSkillResponse } from '../skills'
 import {
   MCP_SETTINGS_CHANNEL,
@@ -161,6 +179,8 @@ interface Boot {
   channel: string
   developerToolsEnabled: boolean
   browserEnabled: boolean
+  browserAdvancedSettingsEnabled: boolean
+  browserAgentNavigationEnabled?: boolean
   feedbackRecorderEnabled: boolean
   preferences: RendererPreferences
 }
@@ -173,6 +193,8 @@ ipcRenderer.on(STARTUP_CHANNEL, (_event, next: StartupSnapshot) => {
   for (const listener of startupListeners) listener(next)
 })
 const boot = ipcRenderer.sendSync('scholarseed:boot') as Boot
+const browserAdvancedEnabled =
+  boot.browserEnabled === true && boot.browserAdvancedSettingsEnabled === true
 if (!startup || startup.revision < boot.startup.revision) startup = boot.startup
 
 const bridge = {
@@ -262,23 +284,90 @@ const bridge = {
   ): Promise<BrowserHistoryApprovalResponseReply> {
     return ipcRenderer.invoke(BROWSER_HISTORY_APPROVAL_RESPONSE_CHANNEL, request)
   },
-  vault: {
-    status: () => ipcRenderer.invoke(VAULT_CHANNEL.status),
-    subscribeStatus: (callback: (status: VaultStatus) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, status: VaultStatus) => callback(status)
-      ipcRenderer.on(VAULT_CHANNEL.changed, listener)
-      return () => {
-        ipcRenderer.removeListener(VAULT_CHANNEL.changed, listener)
+  ...(browserAdvancedEnabled
+    ? {
+        vault: {
+          status: () => ipcRenderer.invoke(VAULT_CHANNEL.status),
+          subscribeStatus: (callback: (status: VaultStatus) => void) => {
+            const listener = (_event: Electron.IpcRendererEvent, status: VaultStatus) =>
+              callback(status)
+            ipcRenderer.on(VAULT_CHANNEL.changed, listener)
+            return () => {
+              ipcRenderer.removeListener(VAULT_CHANNEL.changed, listener)
+            }
+          },
+          listMetadata: () => ipcRenderer.invoke(VAULT_CHANNEL.metadata),
+          open: (value: Parameters<VaultBridge['open']>[0]) =>
+            parseVaultOpen(value)
+              ? ipcRenderer.invoke(VAULT_CHANNEL.open, value)
+              : Promise.resolve({ ok: false, error: VAULT_ERROR.invalidInput }),
+          lock: () => ipcRenderer.invoke(VAULT_CHANNEL.lock),
+        } satisfies VaultBridge,
       }
+    : {}),
+  updatePortal: {
+    reserve: () => ipcRenderer.invoke(UPDATE_PORTAL.channels.reserve),
+    paint: (sessionId) => ipcRenderer.invoke(UPDATE_PORTAL.channels.paint, sessionId),
+    close: (sessionId) => ipcRenderer.invoke(UPDATE_PORTAL.channels.close, sessionId),
+    subscribeRevoked(callback) {
+      const listener = (_event: unknown, sessionId: string) => callback(sessionId)
+      ipcRenderer.on(UPDATE_PORTAL.channels.revoked, listener)
+      return () => ipcRenderer.removeListener(UPDATE_PORTAL.channels.revoked, listener)
     },
-    listMetadata: () => ipcRenderer.invoke(VAULT_CHANNEL.metadata),
-    open: (value: Parameters<VaultBridge['open']>[0]) =>
-      parseVaultOpen(value)
-        ? ipcRenderer.invoke(VAULT_CHANNEL.open, value)
-        : Promise.resolve({ ok: false, error: VAULT_ERROR.invalidInput }),
-    lock: () => ipcRenderer.invoke(VAULT_CHANNEL.lock),
-  } satisfies VaultBridge,
+  } satisfies PortalBridge,
+  settingsPortal: {
+    reserve: () => ipcRenderer.invoke(SETTINGS_PORTAL_CHANNEL.reserve),
+    paint: (sessionId) => ipcRenderer.invoke(SETTINGS_PORTAL_CHANNEL.paint, sessionId),
+    close: (sessionId) => ipcRenderer.invoke(SETTINGS_PORTAL_CHANNEL.close, sessionId),
+    subscribeRevoked(callback) {
+      const listener = (_event: unknown, sessionId: string) => callback(sessionId)
+      ipcRenderer.on(SETTINGS_PORTAL_CHANNEL.revoked, listener)
+      return () => ipcRenderer.removeListener(SETTINGS_PORTAL_CHANNEL.revoked, listener)
+    },
+  } satisfies PortalBridge,
+  conversationPortal: {
+    reserve: () => ipcRenderer.invoke(CONVERSATION_PORTAL.channels.reserve),
+    paint: (sessionId) => ipcRenderer.invoke(CONVERSATION_PORTAL.channels.paint, sessionId),
+    close: (sessionId) => ipcRenderer.invoke(CONVERSATION_PORTAL.channels.close, sessionId),
+    place: (sessionId, bounds) =>
+      ipcRenderer.invoke(CONVERSATION_PORTAL.channels.place, sessionId, bounds),
+    subscribeRevoked: (callback) => {
+      const listener = (_event: unknown, sessionId: string): void => callback(sessionId)
+      ipcRenderer.on(CONVERSATION_PORTAL.channels.revoked, listener)
+      return () => ipcRenderer.removeListener(CONVERSATION_PORTAL.channels.revoked, listener)
+    },
+  } satisfies FloatingPortalBridge,
+  foregroundPortal: {
+    reserve: () => ipcRenderer.invoke(FOREGROUND_PORTAL.channels.reserve),
+    paint: (sessionId) => ipcRenderer.invoke(FOREGROUND_PORTAL.channels.paint, sessionId),
+    close: (sessionId) => ipcRenderer.invoke(FOREGROUND_PORTAL.channels.close, sessionId),
+    place: (sessionId, bounds) =>
+      ipcRenderer.invoke(FOREGROUND_PORTAL.channels.place, sessionId, bounds),
+    subscribeRevoked: (callback) => {
+      const listener = (_event: unknown, sessionId: string): void => callback(sessionId)
+      ipcRenderer.on(FOREGROUND_PORTAL.channels.revoked, listener)
+      return () => ipcRenderer.removeListener(FOREGROUND_PORTAL.channels.revoked, listener)
+    },
+  } satisfies FloatingPortalBridge,
+  resizePortal: {
+    maxInstances: RESIZE_PORTAL_CAPACITY,
+    reserve: () => ipcRenderer.invoke(RESIZE_PORTAL.channels.reserve),
+    paint: (sessionId) => ipcRenderer.invoke(RESIZE_PORTAL.channels.paint, sessionId),
+    close: (sessionId) => ipcRenderer.invoke(RESIZE_PORTAL.channels.close, sessionId),
+    place: (sessionId, bounds) =>
+      ipcRenderer.invoke(RESIZE_PORTAL.channels.place, sessionId, bounds),
+    subscribeRevoked: (callback) => {
+      const listener = (_event: unknown, sessionId: string): void => callback(sessionId)
+      ipcRenderer.on(RESIZE_PORTAL.channels.revoked, listener)
+      return () => ipcRenderer.removeListener(RESIZE_PORTAL.channels.revoked, listener)
+    },
+  } satisfies ResizePortalBridge,
   browser: {
+    subscribeDownloads(callback) {
+      const handler = (_event: unknown, notice: BrowserDownloadNotice) => callback(notice)
+      ipcRenderer.on(BROWSER_DOWNLOAD_NOTICE_CHANNEL, handler)
+      return () => ipcRenderer.removeListener(BROWSER_DOWNLOAD_NOTICE_CHANNEL, handler)
+    },
     subscribeReveal(callback) {
       const handler = (_event: unknown, request: BrowserReveal) => callback(request)
       ipcRenderer.on(BROWSER_REVEAL_CHANNEL, handler)
@@ -361,6 +450,9 @@ const bridge = {
   mcpSettings(request: McpSettingsRequest): Promise<McpSettingsResponse> {
     return ipcRenderer.invoke(MCP_SETTINGS_CHANNEL, request)
   },
+  translation(request: TranslationRequest): Promise<TranslationReply> {
+    return ipcRenderer.invoke(TRANSLATION_CHANNEL, request)
+  },
   getApiBase(): string {
     if (!startup?.apiBase) throw new Error('backend_not_ready')
     return startup.apiBase
@@ -380,6 +472,9 @@ const bridge = {
   channel: boot.channel,
   developerToolsEnabled: boot.developerToolsEnabled,
   browserEnabled: boot.browserEnabled === true,
+  browserAdvancedSettingsEnabled: browserAdvancedEnabled,
+  browserAgentNavigationEnabled:
+    boot.browserEnabled === true && boot.browserAgentNavigationEnabled === true,
   feedbackRecorderEnabled: boot.feedbackRecorderEnabled,
   preferences: boot.preferences,
   async savePreferences(
@@ -410,7 +505,7 @@ const bridge = {
   systemPermissions(): Promise<SystemPermissionsSnapshot> {
     return ipcRenderer.invoke('scholarseed:system-permissions')
   },
-  openSystemPermission(id: SystemPermissionId): Promise<boolean> {
+  openSystemPermission(id: SystemPermissionTarget): Promise<boolean> {
     return ipcRenderer.invoke('scholarseed:system-permission-open', id)
   },
   onNotificationClick(cb: (attentionId: string) => void): () => void {
@@ -488,18 +583,12 @@ const bridge = {
   pickDir(): Promise<string | null> {
     return ipcRenderer.invoke('scholarseed:pick-dir')
   },
-  pickDeliveryDirectory(request: DeliveryRequest): Promise<DeliveryNativeReply> {
-    return ipcRenderer.invoke(DELIVERY_PICK_CHANNEL, request)
-  },
-  saveDelivery(request: DeliverySaveRequest): Promise<DeliveryNativeReply> {
-    return ipcRenderer.invoke(DELIVERY_SAVE_CHANNEL, request)
-  },
-  openDeliveryDirectory(request: DeliveryRequest): Promise<DeliveryNativeReply> {
-    return ipcRenderer.invoke(DELIVERY_OPEN_CHANNEL, request)
-  },
   /** 用户触发的 Office 图片选择或剪贴板读取，不接受文件路径。 */
   acquireOfficeImage(source: OfficeImageSource): Promise<OfficeImageResult> {
     return ipcRenderer.invoke(OFFICE_IMAGE_CHANNEL, source)
+  },
+  readRemoteImage(url: string): Promise<RemoteImageResult> {
+    return ipcRenderer.invoke(REMOTE_IMAGE_CHANNEL, url)
   },
   /** 写系统剪贴板。不走 navigator.clipboard（它要求文档聚焦，桌面端易失焦被拒）。 */
   writeClipboard(text: string): Promise<{ ok: boolean; error?: string }> {
@@ -519,15 +608,25 @@ const bridge = {
   },
   /** 资料导入：按指定范围多选本地资料，返回绝对路径数组。 */
   pickImport(target: ImportPickerTarget): Promise<string[]> {
-    return ipcRenderer.invoke('scholarseed:pick-import', target)
+    return ipcRenderer.invoke(IMPORT_PICKER_CHANNEL, target)
+  },
+  pickImportPreview(target: ImportPickerTarget): Promise<ImportPreview[]> {
+    return ipcRenderer.invoke(IMPORT_PICKER_CHANNEL, target, IMPORT_PICKER_PREVIEW)
   },
   pickExecutable(): Promise<string | null> {
     return ipcRenderer.invoke('scholarseed:pick-executable')
   },
-  saveFileCopy(payload: {
-    suggestedName: string
-    bytes: Uint8Array
-  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
+  saveFileCopy(
+    payload:
+      | {
+          suggestedName: string
+          bytes: Uint8Array
+        }
+      | {
+          suggestedName: string
+          sourcePath: string
+        }
+  ): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
     return ipcRenderer.invoke('scholarseed:save-copy', payload)
   },
   requestOfficeFontAccess(): Promise<boolean> {

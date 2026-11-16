@@ -118,7 +118,9 @@ async def run_command(
 
     if payload is not None and not isinstance(payload, bytes):
         raise TypeError("command payload must be bytes")
-    if output_limit is not None and (type(output_limit) is not int or output_limit <= 0):
+    if output_limit is not None and (
+        not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit <= 0
+    ):
         raise ValueError("command output limit must be positive")
     creation = asyncio.create_task(
         asyncio.create_subprocess_exec(

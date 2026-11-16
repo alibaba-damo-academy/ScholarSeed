@@ -63,9 +63,17 @@ Ordinary custom cards currently connect plugin-call only to `skills.list` and `n
 
 Register text after UI state updates. When copying a message, ScholarSeed merges turn prose and card content in order. Public cards generate this text from business data; do not register it again.
 
-Inside `mount()`, official `Conversation.Choices`, `Results`, `Details`, `References`, `Downloads`, `Delivery`, and `Review` components automatically register text. Compositions merge their content. Collapsed review sections, citations, checks, and questions remain included. Artifacts retain titles and paths; their file contents are not automatically read.
+Inside `mount()`, official `Conversation.Results`, `Details`, `References`, `Downloads`, `Delivery`, and `Review` automatically register text. Compositions merge content, including collapsed review sections, citations, checks, and questions. Artifacts retain titles and paths without reading file contents.
 
-`Markdown`, `Message`, `Code`, `Formula`, and `Artifact` also register automatically. Code retains its full source even when collapsed; formulas retain LaTeX, descriptions, and annotations. `Tabulation` requires `copyText` or `invalidSource` and does not infer data from table DOM.
+`Markdown`, `Code`, `Formula`, and `Artifact` also register automatically. Code retains its full collapsed source; formulas retain LaTeX, descriptions, and annotations. `Tabulation` requires `copyText` or `invalidSource`; it does not infer data from table DOM.
+
+User input, context, execution, plans, confirmation, clarification, next steps, failures, and empty answers use native ScholarSeed UI, not official package exports. `interaction.question` and `literature.authorization` remain native entry points; review iframes display content without duplicating outline approval. Shared image and menu components retain their own loading, copy, and rendering error handling.
+
+`Plot`, its ten concrete chart types, `DataTable`, and `Content` also register automatically. Charts and tables retain complete original rows and units through filtering, paging, and collapse, without replacing missing values with zero. Evidence retains full excerpts and locations; artifacts retain supplied previews without reading files. The three unified compositions register titles, content, and saved selections, not submit/cancel buttons.
+
+These texts feed the whole-turn copy action beneath the message; cards have no separate copy button. Layout, icons, and menus are not business text. Ordinary plugins retain their isolated bridge, with no direct `navigator.clipboard`, host DOM, or file access.
+
+Upgrades do not rewrite historical cards' frozen resources or registered text. Preserve original questions and final confirmed answers separately. Verify new registration capabilities with new versions and bindings; do not alter databases or use old cards as proof of new-component acceptance.
 
 For custom rendering, call `window.scholarseedUI.useCopyContent(text)` inside a component and declare `useCopyContent` in `ui.exports`. The Hook combines text from components and re-registers it after saved state updates; registration failures appear inside the card. Do not combine this Hook with direct `setCopyContent()` calls that replace the entire card's text.
 
@@ -141,8 +149,7 @@ Names in this table follow `scholarseed-bridge`.
 | `literature authorize` | Request full-text permission | Shows candidate papers and waits for user confirmation. |
 | `literature result / review` | Show search-result or review-workflow cards | Presents checkpoint results, collects choices, or confirms an outline. |
 | `literature acquire` | Obtain authorized candidates' open full text | Downloads and manages files; returns per-paper outcomes. |
-| `literature ingest / import` | Import downloads or session files into the literature library | Writes library entries and associates the current project; `import` follows an explicit user instruction. |
-| `literature delivery` | Present the full-text saving workflow | Pins a delivery batch, then saves or imports according to later user choices. |
+| `literature import` | Import a session file into the literature library | Writes to the current project only on explicit user instruction. |
 | `literature collection.list / tag.list` | List collections or tags | Collections belong to the current project; tags are shared globally. |
 | `literature collection.create / collection.update` | Create, rename, or move collections | Modifies the current project's collection structure. |
 | `literature tag.create / tag.update` | Create or rename tags | Changes global tags; renaming affects every project using them. |

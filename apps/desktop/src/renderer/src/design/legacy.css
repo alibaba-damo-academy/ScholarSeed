@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme='dark'] {
   --bg: var(--vds-bg-white-default);
   --bg-2: var(--vds-bg-white-default);
   --bg-3: var(--vds-bg-component);

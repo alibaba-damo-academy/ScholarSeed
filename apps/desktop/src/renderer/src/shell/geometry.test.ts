@@ -7,12 +7,38 @@ import {
   MODULE_PANEL_WIDTH_STEP,
   constrainFloatingPanel,
   floatingPanelDockPosition,
+  floatingPanelDockStyle,
   nearestFloatingPanelDock,
   modulePanelWidthCss,
   parseModulePanelWidth,
   topBarLeftWidth,
   resizeFloatingPanel,
 } from './geometry.ts'
+
+test('bottom docks retain a CSS bottom anchor as the composer grows', () => {
+  const bounds = {
+    hostWidth: 1000,
+    hostHeight: 800,
+    panelWidth: 388,
+    panelHeight: 120,
+    minimumTop: 80,
+    inset: 16,
+  }
+  for (const dock of ['bottomLeft', 'bottomCenter', 'bottomRight'] as const) {
+    const initial = floatingPanelDockStyle(dock, bounds)
+    const grown = floatingPanelDockStyle(dock, { ...bounds, panelHeight: 240 })
+    assert.equal(initial.top, 'auto')
+    assert.equal(initial.bottom, 16)
+    assert.deepEqual(grown, initial)
+  }
+  assert.deepEqual(floatingPanelDockStyle('topRight', bounds), {
+    left: 596,
+    top: 80,
+    right: 'auto',
+    bottom: 'auto',
+  })
+  assert.equal(floatingPanelDockStyle('bottomRight', { ...bounds, panelHeight: 760 }).bottom, -40)
+})
 
 test('floating resize keeps the opposite edge fixed and clamps to host and minimum width', () => {
   const panel = { left: 400, width: 388 }

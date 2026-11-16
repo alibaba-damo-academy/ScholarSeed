@@ -9,7 +9,6 @@ import argparse
 import copy
 import json
 
-
 MODE_ALIASES = {
     "quick": "quick",
     "fast": "quick",
@@ -22,6 +21,9 @@ MODE_ALIASES = {
     "unbounded": "quality",
     "timed": "quality",
 }
+
+QUICK_MIN_COUNT = 1
+QUICK_MAX_COUNT = 25
 
 
 POLICIES = {

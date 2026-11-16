@@ -24,7 +24,8 @@ import type { DirectoryWriter } from './writer'
 import { PREFERENCE_DIAGNOSTIC_PREFIX } from '../preference-diagnostics.ts'
 import { LOGIN_DIAGNOSTIC_PREFIX } from '../authentication.ts'
 import { NAVIGATION_DIAGNOSTIC_PREFIX } from '../navigation.ts'
-import { API_DIAGNOSTIC_PREFIX } from '../requests.ts'
+import { API_DIAGNOSTIC_PREFIX, HTTP_LATENCY_DIAGNOSTIC_PREFIX } from '../requests.ts'
+import { BROWSER_DIAGNOSTIC_PREFIX } from '../browserdiagnostics.ts'
 
 export const LOG_MAX_BYTES = 50 * 1024 * 1024
 export const LOG_BACKUPS = 3
@@ -42,7 +43,11 @@ const RENDERER_DIAGNOSTIC_PREFIXES = [
   '[session-recovery]',
   '[notification]',
   '[account-menu]',
+  '[reading-first-text]',
+  '[reading-background-observation]',
   API_DIAGNOSTIC_PREFIX,
+  HTTP_LATENCY_DIAGNOSTIC_PREFIX,
+  BROWSER_DIAGNOSTIC_PREFIX,
 ]
 
 export function isRendererDiagnostic(message: string): boolean {

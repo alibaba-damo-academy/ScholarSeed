@@ -20,11 +20,13 @@ import { copyAnswer } from '../features/assistant/copy'
 import { InteractionPolicyProvider } from '../components/business/Interactions'
 import { TaskCenterProvider } from '../components/business/Tasks'
 import { Toaster, ToastProvider } from '../components/ui'
+import { NativeSettingsProvider } from '../shell/Settings'
 import { resolveDocumentWorkspaceProject } from '../features/workbench/scope'
 import { DocumentWorkspaceContext, documentWorkspaces } from '../features/workbench/workspace'
 import { installRendererDiagnostics } from '../diagnostics'
 import { assistantProject, StoreProvider, useApp } from '../store'
 import { NavigationRecoveryContext } from '../contracts/navigation'
+import { CanvasProvider } from '../features/canvas/Scope'
 
 function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const { state } = useApp()
@@ -50,29 +52,31 @@ export function RendererProviders({ children }: { children: React.ReactNode }): 
       <NavigationRecoveryContext.Provider value={() => setRecovery((current) => current + 1)}>
         <ErrorBoundary key={recovery}>
           <ToastProvider>
-            <WindowCloseDialog />
-            <Startup>
-              <StoreProvider
-                assistantSources={featureRegistry.assistantSources}
-                recoverHome={recovery > 0}
-              >
-                <ProjectWorkspaceProvider>
-                  <TaskCenterProvider sources={featureRegistry.taskSources}>
-                    <DisplayCardProvider
-                      cards={featureRegistry.displayCards}
-                      publicComponents={featureRegistry.publicComponents}
-                    >
-                      <InteractionPolicyProvider policies={featureRegistry.interactionPolicies}>
-                        <AnswerCopyContext.Provider value={copyAnswer}>
-                          {children}
-                        </AnswerCopyContext.Provider>
-                      </InteractionPolicyProvider>
-                    </DisplayCardProvider>
-                  </TaskCenterProvider>
-                </ProjectWorkspaceProvider>
-              </StoreProvider>
-            </Startup>
-            <Toaster placement="top-right" />
+            <NativeSettingsProvider>
+              <WindowCloseDialog />
+              <Startup>
+                <StoreProvider
+                  assistantSources={featureRegistry.assistantSources}
+                  recoverHome={recovery > 0}
+                >
+                  <ProjectWorkspaceProvider>
+                    <TaskCenterProvider sources={featureRegistry.taskSources}>
+                      <DisplayCardProvider
+                        cards={featureRegistry.displayCards}
+                        publicComponents={featureRegistry.publicComponents}
+                      >
+                        <InteractionPolicyProvider policies={featureRegistry.interactionPolicies}>
+                          <AnswerCopyContext.Provider value={copyAnswer}>
+                            <CanvasProvider>{children}</CanvasProvider>
+                          </AnswerCopyContext.Provider>
+                        </InteractionPolicyProvider>
+                      </DisplayCardProvider>
+                    </TaskCenterProvider>
+                  </ProjectWorkspaceProvider>
+                </StoreProvider>
+              </Startup>
+              <Toaster placement="top-right" />
+            </NativeSettingsProvider>
           </ToastProvider>
         </ErrorBoundary>
       </NavigationRecoveryContext.Provider>

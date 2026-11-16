@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -8,12 +8,450 @@ import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
-import { PLUGIN_MESSAGE_CHANNEL } from '../../../../plugins.ts'
+import { createServer as createViteServer, type InlineConfig, type ViteDevServer } from 'vite'
+import { renderConfig } from '../../../../test-helpers/render.ts'
+import { RENDERER_OPTIMIZE_DEPS } from '../../../../../renderer.ts'
+import { build } from 'esbuild'
+import {
+  PLUGIN_MESSAGE_CHANNEL,
+  PLUGIN_FRAME_START_TIMEOUT_MS,
+  PLUGIN_GESTURE_TTL_MS,
+  PLUGIN_MAX_PLOT_BYTES,
+} from '../../../../plugins.ts'
 import { createPreviewSession } from './preview.ts'
 import type { PluginScenario } from '../../../../plugins.ts'
+import { renderFixture, renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const createServer = (config: InlineConfig) =>
+  createViteServer(
+    renderConfig({
+      ...config,
+      optimizeDeps: RENDERER_OPTIMIZE_DEPS,
+    })
+  )
+
+test(
+  'fixed OpenUI layout renders two inputs through the Desktop renderer without a frame',
+  { timeout: 180_000 },
+  async (context) => {
+    const fixture = await renderFixture(ROOT)
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    const target = new URL(
+      '/components/business/plugin.render.fixture.html?mode=fixed-openui',
+      fixture.url
+    )
+    for (const current of ['15 days', '21 days']) {
+      target.searchParams.set('current', current)
+      await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 120_000 })
+      await expect(page.locator('[data-conversation-ui]')).toHaveAttribute('data-state', 'ready')
+      await expect(page.getByText('Previous', { exact: true })).toBeVisible()
+      await expect(page.getByText('Current', { exact: true })).toBeVisible()
+      await expect(page.getByText('10 days', { exact: true })).toBeVisible()
+      await expect(page.getByText(current, { exact: true })).toBeVisible()
+      await expect(page.locator('iframe')).toHaveCount(0)
+    }
+  }
+)
+
+test(
+  'declarative content rejects a missing root without reporting an unavailable plugin',
+  { timeout: 60_000 },
+  async (context) => {
+    const fixture = await renderFixture(ROOT)
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    const target = new URL(
+      '/components/business/plugin.render.fixture.html?mode=declarative',
+      fixture.url
+    )
+    const source = 'Conversation([TextContent("晚餐备选")])'
+    target.searchParams.set('source', source)
+    await page.goto(target.href)
+    await expect(page.locator('[data-conversation-ui]')).toHaveAttribute(
+      'data-error',
+      'openui_description_invalid'
+    )
+    await expect(page.getByRole('alert')).toHaveText('这段对话内容无法显示。')
+
+    target.searchParams.set('source', 'root = ' + source)
+    await page.goto(target.href)
+    await expect(page.getByText('晚餐备选')).toBeVisible()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  }
+)
+
+test(
+  'explicit card copy requires authenticated trusted clicks, current revision and binding without replacing registered text',
+  { timeout: 60_000 },
+  async () => {
+    const work = path.resolve(ROOT, '../../../../../work/ui-runtime-repair')
+    await mkdir(work, { recursive: true })
+    const directory = await mkdtemp(path.join(work, 'copy-container-'))
+    const containerModule = path.join(directory, 'container.cjs')
+    await build({
+      entryPoints: [path.resolve(ROOT, '../../main/plugins.ts')],
+      outfile: containerModule,
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      external: [createRequire(import.meta.url).resolve('electron')],
+      alias: { electron: createRequire(import.meta.url).resolve('electron') },
+    })
+    const { container } = createRequire(import.meta.url)(containerModule) as {
+      container: (entry: string, lease: string) => string
+    }
+    const server = await createServer({
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.route('**/guest.html?*', (route) => {
+        const lease = new URL(route.request().url()).searchParams.get('lease')
+        return route.fulfill({
+          contentType: 'text/html; charset=utf-8',
+          body: container('entry.js', lease!),
+        })
+      })
+      await page.route('**/entry.js', (route) =>
+        route.fulfill({
+          contentType: 'text/javascript',
+          body: `
+          document.getElementById('root').innerHTML='<button>Copy source</button><output></output>';
+          const lease=new URL(location.href).searchParams.get('lease');
+          let revision=0; let sequence=0;
+          window.replies=[];
+          window.send=(extra={},id='copy-'+(++sequence))=>parent.postMessage({channel:'${PLUGIN_MESSAGE_CHANNEL}',lease,requestId:id,revision,copyText:'source text',...extra},'*');
+          addEventListener('message',event=>{
+            if(event.data.state)revision=event.data.state.revision;
+            if(event.data.requestId){window.replies.push(event.data);document.querySelector('output').textContent=event.data.error||'copied';}
+          });
+          document.querySelector('button').onclick=()=>{
+            if(window.delay)setTimeout(()=>window.send(),window.delay);
+            else{window.send(window.extra,window.sameId);if(window.duplicate)window.send(window.extra,window.sameId);}
+          };
+        `,
+        })
+      )
+      await page.goto(
+        new URL(
+          '/components/business/plugin.render.fixture.html?mode=copy',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      await expect.poll(() => page.evaluate('window.fixture.created.length')).toBeGreaterThan(0)
+      await page.evaluate('window.fixture.resolve()')
+      await page.evaluate(() => {
+        const host = window as unknown as {
+          scholarseed: {
+            deviceSkills: (request: {
+              operation: string
+            }) => Promise<{ status: number; body: string }>
+          }
+          fixture: { valid?: boolean }
+        }
+        host.fixture.valid = true
+        const original = host.scholarseed.deviceSkills
+        host.scholarseed.deviceSkills = async (request) => {
+          const response = await original(request)
+          if (request.operation === 'plugin-valid' && !host.fixture.valid)
+            return { status: 410, body: '{}' }
+          return response
+        }
+      })
+      const guest = page.frameLocator('iframe')
+      await expect(guest.getByRole('button', { name: 'Copy source' })).toBeVisible()
+      const frame = page.frames().find((candidate) => candidate.url().includes('/guest.html'))!
+      await frame.evaluate('window.send()')
+      await expect(guest.locator('output')).toHaveText('plugin_copy_gesture_required')
+      assert.deepEqual(await page.evaluate('window.fixture.copied'), [])
+      await page.locator('body').click({ position: { x: 1, y: 1 } })
+      await frame.evaluate('window.focus();document.querySelector("button").focus();window.send()')
+      await expect(guest.locator('output')).toHaveText('plugin_copy_gesture_required')
+      await frame.evaluate(
+        `parent.postMessage({channel:'${PLUGIN_MESSAGE_CHANNEL}',lease:new URL(location.href).searchParams.get('lease'),gesture:'init',secret:'f'.repeat(64)},'*');parent.postMessage({channel:'${PLUGIN_MESSAGE_CHANNEL}',lease:new URL(location.href).searchParams.get('lease'),gesture:'proof',secret:'f'.repeat(64),sequence:999},'*');window.send()`
+      )
+      await expect(guest.locator('output')).toHaveText('plugin_copy_gesture_required')
+      await frame.evaluate(
+        'document.querySelector("button").dispatchEvent(new MouseEvent("click",{bubbles:true}))'
+      )
+      await expect(guest.locator('output')).toHaveText('plugin_copy_gesture_required')
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect(guest.locator('output')).toHaveText('copied')
+      assert.deepEqual(await page.evaluate('window.fixture.copied'), ['source text'])
+      for (const key of ['Enter', 'Space']) {
+        await guest.getByRole('button', { name: 'Copy source' }).press(key)
+        await expect
+          .poll(() => page.evaluate('window.fixture.copied.length'))
+          .toBe(key === 'Enter' ? 2 : 3)
+      }
+      assert.equal(
+        await frame.evaluate(
+          'Array.from(document.scripts).some(script=>/[a-f0-9]{64}/.test(script.textContent))'
+        ),
+        false
+      )
+      assert.equal(await frame.evaluate('window.replies.some(reply=>"secret" in reply)'), false)
+      await page.evaluate(`window.fixture.exports=[];window.fixture.exportResult={ok:true};
+        window.scholarseed.saveFileCopy=async request=>{
+          window.fixture.exports.push({name:request.suggestedName,svg:new TextDecoder().decode(request.bytes)});
+          return window.fixture.exportResult;
+        }`)
+      await frame.evaluate(`window.originalSend=window.send;
+        window.originalTimer=window.setTimeout;window.exportTimers=[];
+        window.setTimeout=(callback,delay,...args)=>{window.exportTimers.push(delay);return window.originalTimer(callback,delay,...args)};
+        window.chartSVG='<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300"><rect width="16" height="100" fill="#888858"/><text>Mass (kg)</text></svg>';
+        window.plot={svg:window.chartSVG.replace('<rect width="16" height="100" fill="#888858"/>','<rect width="640" height="300" fill="#faf8f4"/><svg><rect width="16" height="100" fill="#888858"/></svg>')};
+        window.send=()=>window.plugin.exportPlot(window.plot).then(result=>{window.exportResult=result;document.querySelector('output').textContent=JSON.stringify(result)}).catch(error=>document.querySelector('output').textContent=error.message);`)
+      await frame.evaluate('window.send()')
+      await expect(guest.locator('output')).toHaveText('plot_export_gesture_required')
+      assert.equal(await page.evaluate('window.fixture.exports.length'), 0)
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect.poll(() => frame.evaluate('window.exportResult?.ok')).toBe(true)
+      const exported = (await page.evaluate('window.fixture.exports[0]')) as {
+        name: string
+        svg: string
+      }
+      assert.equal(exported.name, 'chart.svg')
+      assert.doesNotMatch(exported.svg, /#faf8f4/)
+      assert.match(exported.svg, /<rect width="16" height="100" fill="#888858"/)
+      await page.evaluate('window.fixture.exportResult={ok:false,canceled:true}')
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect.poll(() => frame.evaluate('window.exportResult?.canceled')).toBe(true)
+      await page.evaluate(
+        'window.fixture.exportResult={ok:false,error:"private filesystem detail"}'
+      )
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect
+        .poll(() => frame.evaluate('window.exportResult?.error'))
+        .toBe('plot_export_save_failed')
+      for (const svg of [
+        '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+        '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject/></svg>',
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://example.org/track.svg)"/></svg>',
+      ]) {
+        await frame.evaluate('window.plot.svg=' + JSON.stringify(svg))
+        await guest.getByRole('button', { name: 'Copy source' }).click()
+        await expect(guest.locator('output')).toHaveText('plot_export_invalid')
+      }
+      assert.equal(await page.evaluate('window.fixture.exports.length'), 3)
+      await frame.evaluate(`window.plot.svg='x'.repeat(${PLUGIN_MAX_PLOT_BYTES})`)
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect(guest.locator('output')).toHaveText('plugin_request_limit')
+      assert.equal(await page.evaluate('window.fixture.exports.length'), 3)
+      await frame.evaluate('window.plot.svg=window.chartSVG')
+      await page.evaluate('window.fixture.valid=false')
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect(guest.locator('output')).toHaveText('plugin_instance_revoked')
+      assert.equal(await page.evaluate('window.fixture.exports.length'), 3)
+      await page.evaluate('window.fixture.valid=true')
+      await frame.evaluate(
+        `window.plot={model:{kind:'bar',x:0,y:[1],dataset:{columns:[{key:'name',label:'Method'},{key:'value',label:'Mass',unit:'kg'}],rows:[{id:'a',values:['A',2]}]}},width:1000,height:600,title:'Pinned chart',sources:['Private source'],version:'old-revision'}`
+      )
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect.poll(() => page.evaluate('window.fixture.exports.length')).toBe(4)
+      const legacy = await page.evaluate<string>('window.fixture.exports[3].svg')
+      assert.match(legacy, /Pinned chart/)
+      assert.doesNotMatch(legacy, /Private source|old-revision/)
+      assert.doesNotMatch(legacy, /<rect width="100%" height="100%"/)
+      assert.deepEqual(await frame.evaluate('window.exportTimers'), [])
+      await page.evaluate(`window.fixture.images=[];
+        window.scholarseed.writeClipboardImage=async bytes=>{window.fixture.images.push(bytes);return {ok:true}}`)
+      await frame.evaluate(`window.plot={svg:window.chartSVG}; window.send=()=>window.plugin.copyPlot(window.plot)
+        .then(result=>document.querySelector('output').textContent=String(result.ok))
+        .catch(error=>document.querySelector('output').textContent=error.message)`)
+      await frame.evaluate('window.send()')
+      await expect(guest.locator('output')).toHaveText('plot_export_gesture_required')
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect.poll(() => page.evaluate('window.fixture.images.length')).toBe(1)
+      const pixels = await page.evaluate(`(async()=>{
+        const bytes=window.fixture.images[0];
+        const image=await createImageBitmap(new Blob([bytes],{type:'image/png'}));
+        const canvas=document.createElement('canvas');
+        canvas.width=image.width;canvas.height=image.height;
+        const context=canvas.getContext('2d');context.drawImage(image,0,0);
+        return {foreground:context.getImageData(8,8,1,1).data[3],background:context.getImageData(100,100,1,1).data[3],count:window.fixture.images.length};
+      })()`)
+      assert.deepEqual(pixels, { foreground: 255, background: 0, count: 1 })
+      await frame.evaluate('window.send=window.originalSend;window.setTimeout=window.originalTimer')
+      await frame.evaluate('window.extra={revision:99}')
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect(guest.locator('output')).toHaveText('plugin_copy_unavailable')
+      await frame.evaluate('window.send()')
+      await expect(guest.locator('output')).toHaveText('plugin_copy_gesture_required')
+      await frame.evaluate('window.extra={};window.duplicate=true;window.sameId="duplicate"')
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect.poll(() => page.evaluate('window.fixture.copied.length')).toBe(4)
+      await expect
+        .poll(() =>
+          frame.evaluate('window.replies.filter(reply=>reply.requestId==="duplicate").length')
+        )
+        .toBe(1)
+      await frame.evaluate(
+        'window.duplicate=false;window.sameId=undefined;window.delay=' +
+          String(PLUGIN_GESTURE_TTL_MS + 100)
+      )
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect
+        .poll(() => frame.evaluate('window.replies.at(-1)?.error'))
+        .toBe('plugin_copy_gesture_required')
+      await frame.evaluate('window.delay=0')
+      await page.evaluate('window.fixture.valid=false')
+      await guest.getByRole('button', { name: 'Copy source' }).click()
+      await expect(guest.locator('output')).toHaveText('plugin_instance_revoked')
+      await frame.evaluate(
+        'parent.postMessage({channel:"scholarseed:component",lease:new URL(location.href).searchParams.get("lease"),requestId:"undeclared",action:"open-results",values:{}},"*")'
+      )
+      await expect(guest.locator('output')).toHaveText('plugin_capability_undeclared')
+      await frame.evaluate('window.send({lease:"old-lease"},"wrong-lease")')
+      await frame.evaluate('window.send({},"barrier")')
+      await expect
+        .poll(() => frame.evaluate('window.replies.some(reply=>reply.requestId==="barrier")'))
+        .toBe(true)
+      assert.equal(
+        await frame.evaluate('window.replies.some(reply=>reply.requestId==="wrong-lease")'),
+        false
+      )
+      assert.equal(
+        await page.evaluate(
+          'window.fixture.requests.filter(request=>request.operation==="plugin-copy" && request.content).length'
+        ),
+        0
+      )
+      assert.deepEqual(await page.evaluate('window.fixture.copied'), Array(4).fill('source text'))
+      await page.evaluate('window.fixture.revoke()')
+      await expect(page.locator('iframe')).toHaveCount(0)
+    } finally {
+      await browser.close()
+      await server.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+)
+test(
+  'live frame themes follow host data attributes without remounting or losing local edits',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'plugin',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.route('**/guest.html?*', (route) =>
+        route.fulfill({
+          contentType: 'text/html; charset=utf-8',
+          body: '<meta charset="utf-8"><input aria-label="草稿"><script>addEventListener("message", event => { if(event.data.state) document.body.dataset.theme=event.data.state.theme })</script>',
+        })
+      )
+      await page.goto(
+        new URL(
+          '/components/business/plugin.render.fixture.html?mode=readonly',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      await expect.poll(() => page.evaluate('window.fixture.created.length')).toBe(2)
+      await page.evaluate('window.fixture.resolve()')
+      const guest = page.frameLocator('iframe')
+      await expect(guest.locator('body')).toHaveAttribute('data-theme', 'light')
+      await guest.getByRole('textbox', { name: '草稿' }).fill('保留局部编辑')
+      for (const theme of ['dark', 'light']) {
+        await page.evaluate((theme) => {
+          document.documentElement.dataset.theme = theme
+        }, theme)
+        await expect(guest.locator('body')).toHaveAttribute('data-theme', theme)
+        await expect(guest.getByRole('textbox', { name: '草稿' })).toHaveValue('保留局部编辑')
+      }
+      await expect(page.locator('iframe')).toHaveAttribute('sandbox', 'allow-scripts')
+      await expect(page.locator('iframe')).toHaveAttribute('referrerpolicy', 'no-referrer')
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+for (const mode of ['draft-preview', 'draft-boundary']) {
+  test(
+    `custom frame keeps field definitions separate from saved values in ${mode}`,
+    {
+      timeout: 60_000,
+    },
+    async () => {
+      const server = await servers.create({
+        cacheKey: 'plugin',
+        configFile: false,
+        root: ROOT,
+        plugins: [react()],
+        server: { host: '127.0.0.1', port: 0 },
+      })
+      await server.listen()
+      const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+      try {
+        const page = await browser.newPage()
+        await page.route('**/guest.html?*', (route) => {
+          const lease = new URL(route.request().url()).searchParams.get('lease')
+          return route.fulfill({
+            contentType: 'text/html; charset=utf-8',
+            body: `<meta charset="utf-8"><input aria-label="研究约束"><button>保存草稿</button><output></output>
+            <script>
+              const input = document.querySelector('input');
+              const button = document.querySelector('button');
+              const output = document.querySelector('output');
+              let sequence = 0;
+              addEventListener('message', ({ data: message }) => {
+                if (!message.state) return;
+                const { data, draft, revision } = message.state;
+                output.textContent = data.fields.map(field => field.label).join(',') + ':' + revision;
+                input.value = draft.fields?.notes ?? '';
+              });
+              button.onclick = () => parent.postMessage({
+                channel: '${PLUGIN_MESSAGE_CHANNEL}', lease: '${lease}',
+                requestId: 'draft-' + ++sequence, draft: { fields: { notes: input.value } }
+              }, '*');
+            </script>`,
+          })
+        })
+        await page.goto(
+          new URL(
+            `/components/business/plugin.render.fixture.html?mode=${mode}`,
+            server.resolvedUrls!.local[0]
+          ).href
+        )
+        await expect.poll(() => page.evaluate('window.fixture.created.length')).toBeGreaterThan(0)
+        await page.evaluate('window.fixture.resolve()')
+        const guest = page.frameLocator('iframe')
+        const notes = guest.getByRole('textbox', { name: '研究约束' })
+        await expect(guest.locator('output')).toHaveText('研究约束:0')
+        for (const [index, value] of ['初稿', ''].entries()) {
+          await notes.fill(value)
+          await guest.getByRole('button', { name: '保存草稿' }).click()
+          await expect(guest.locator('output')).toHaveText(`研究约束:${index + 1}`)
+          await expect(notes).toHaveValue(value)
+        }
+        if (mode === 'draft-boundary') {
+          assert.deepEqual(await page.evaluate('window.fixture.draft'), { fields: { notes: '' } })
+        }
+      } finally {
+        await browser.close()
+        await server.close()
+      }
+    }
+  )
+}
+
 const REVIEW_PACKAGE = path.resolve(
   ROOT,
   '../../../../../skills/community/literature-review/components'
@@ -32,7 +470,8 @@ test(
   'authorization selection validation remains independent of button appearance',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -49,20 +488,25 @@ test(
             server.resolvedUrls!.local[0]
           ).href
         )
-        const authorize = page.getByTestId('hil-question-option-0-0')
-        const reject = page.getByTestId('hil-question-option-0-1')
+        const authorize = page.getByRole('button', { name: '确认授权', exact: true })
+        const reject = page.getByRole('button', { name: '拒绝', exact: true })
         const selectAll = page.getByTestId('hil-subset-all-0')
         await expect(page.getByTestId('plugin-copy')).toHaveCount(0)
         await expect(authorize).toBeEnabled()
+        const toggle = page.getByTestId('hil-question-toggle')
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        await toggle.click()
         await expect(selectAll).toBeChecked()
         await selectAll.click()
         await expect(authorize).toBeDisabled()
         await expect(reject).toBeEnabled()
-        await page.getByTestId('hil-subset-paper-0-one').click()
+        await page.getByRole('checkbox', { name: '论文一', exact: true }).click()
         await expect(authorize).toBeEnabled()
-        await expect(reject).toHaveClass((await authorize.getAttribute('class')) ?? '')
+        await expect(authorize).toHaveAttribute('type', 'button')
+        await expect(reject).toHaveAttribute('type', 'button')
+        await expect(reject).not.toHaveClass((await authorize.getAttribute('class')) ?? '')
         if (decision === 'reject') {
-          await page.getByTestId('hil-subset-paper-0-one').click()
+          await page.getByRole('checkbox', { name: '论文一', exact: true }).click()
           await expect(authorize).toBeDisabled()
           await expect(reject).toBeEnabled()
         }
@@ -87,7 +531,8 @@ test(
   'isolated cards register text without clipboard access and replies copy persisted content without a frame',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -166,10 +611,11 @@ test(
   }
 )
 test(
-  'question pages preserve choices and submit all answers together',
+  'paged questions skip the current answer and retain earlier choices',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -185,24 +631,24 @@ test(
           server.resolvedUrls!.local[0]
         ).href
       )
-      await expect(page.getByText('选择阅读目标', { exact: true })).toBeVisible()
-      await expect(page.getByText('选择阅读深度', { exact: true })).toBeHidden()
+      await expect(page.getByText(/^1\. 选择阅读目标/)).toBeVisible()
+      await expect(page.getByText(/^2\. 选择阅读深度/)).toHaveCount(0)
       const first = page.getByRole('radio', { name: '理解方法 关注假设和方法细节' })
       await expect(first).not.toBeChecked()
       await first.click()
+      await expect(page.getByTestId('hil-question-confirm')).toHaveCount(0)
+      await page.getByTestId('hil-question-next').click()
       await expect(page.getByTestId('hil-question-confirm')).toBeDisabled()
-      const pages = page.getByTestId('hil-question-pages')
-      await pages.getByRole('button', { name: '第 2 页', exact: true }).click()
+      await expect(page.getByTestId('hil-question-previous')).toBeVisible()
+      await expect(first).toHaveCount(0)
       await page.getByRole('radio', { name: '深入阅读', exact: true }).click()
-      await pages.getByRole('button', { name: '第 1 页', exact: true }).click()
-      await expect(first).toBeChecked()
-      await page.getByTestId('hil-question-confirm').click()
+      await page.getByTestId('hil-question-skip').click()
       await expect(page.getByTestId('hil-card')).toHaveAttribute('data-hil-state', 'resolved')
       assert.deepEqual(await page.evaluate('window.fixture.requests.at(-1).answers'), {
         goal: '理解方法',
-        depth: '深入阅读',
       })
-      await expect(pages).toHaveCount(0)
+      await expect(page.getByTestId('hil-question-next')).toHaveCount(0)
+      await expect(page.getByTestId('hil-question-pages')).toHaveCount(0)
       await expect(page.getByText('深入阅读', { exact: true })).toBeVisible()
     } finally {
       await browser.close()
@@ -210,12 +656,77 @@ test(
     }
   }
 )
+test(
+  'paged questions retain choices and supplements on return and submit the latest edits',
+  { timeout: 60_000 },
+  async (context) => {
+    const server = await servers.create({
+      cacheKey: 'plugin',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    context.after(async () => {
+      await browser.close()
+      await server.close()
+    })
+    const page = await browser.newPage()
+    await page.goto(
+      new URL(
+        '/components/business/plugin.render.fixture.html?mode=pagination',
+        server.resolvedUrls!.local[0]
+      ).href
+    )
+    const previous = page.getByTestId('hil-question-previous')
+    const next = page.getByTestId('hil-question-next')
+    const firstText = page.getByTestId('hil-question-other-0')
+    const secondText = page.getByTestId('hil-question-other-1')
+    await expect(previous).toHaveCount(0)
+    await page.getByTestId('hil-question-skip').click()
+    await previous.click()
+    await page.getByRole('radio', { name: '理解方法 关注假设和方法细节' }).click()
+    await firstText.fill('保留方法细节')
+    await next.click()
+    await expect(page.getByTestId('hil-question-actions').getByRole('button')).toHaveText([
+      '跳过',
+      '上一项',
+      '提交',
+    ])
+    await page.getByRole('radio', { name: '深入阅读', exact: true }).click()
+    await secondText.fill('保留深度说明')
+    await previous.focus()
+    await page.keyboard.press('Enter')
+    await expect(firstText).toHaveValue('保留方法细节')
+    await expect(page.getByRole('radio', { name: '理解方法 关注假设和方法细节' })).toBeChecked()
+    await expect(previous).toHaveCount(0)
+    await page.getByRole('radio', { name: '复现实验', exact: true }).click()
+    await firstText.fill('修改后的方法说明')
+    await next.click()
+    await expect(secondText).toHaveValue('保留深度说明')
+    await expect(page.getByRole('radio', { name: '深入阅读', exact: true })).toBeChecked()
+    await previous.click()
+    await expect(firstText).toHaveValue('修改后的方法说明')
+    await expect(page.getByRole('radio', { name: '复现实验', exact: true })).toBeChecked()
+    await next.click()
+    await page.getByTestId('hil-question-confirm').click()
+    await expect(page.getByTestId('hil-card')).toHaveAttribute('data-hil-state', 'resolved')
+    assert.deepEqual(await page.evaluate('window.fixture.requests.at(-1).answers'), {
+      goal: '复现实验\n修改后的方法说明',
+      depth: '深入阅读\n保留深度说明',
+    })
+    await expect(previous).toHaveCount(0)
+  }
+)
 for (const changeScope of [false, true])
   test(
     `parent renders preserve local edits without weakening changed scope rejection: ${changeScope}`,
     { timeout: 60_000 },
     async () => {
-      const server = await createServer({
+      const server = await servers.create({
+        cacheKey: 'plugin',
         configFile: false,
         root: ROOT,
         plugins: [react()],
@@ -301,7 +812,8 @@ test(
   'preview validates before resolving and retries the same retained answer',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -354,7 +866,8 @@ test(
   'revision-pinned public resources use the isolated frame and persist selection under StrictMode',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -400,7 +913,59 @@ test(
     }
   }
 )
-let publicServer: Awaited<ReturnType<typeof createServer>> | undefined
+test(
+  'hosted presentation retains pinned binding and restores subset draft before edits',
+  { timeout: 60_000 },
+  async () => {
+    const server = await servers.create({
+      cacheKey: 'plugin',
+      configFile: false,
+      root: ROOT,
+      plugins: [react()],
+      server: { host: '127.0.0.1', port: 0 },
+    })
+    await server.listen()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage()
+      await page.goto(
+        new URL(
+          '/components/business/plugin.render.fixture.html?mode=external-native',
+          server.resolvedUrls!.local[0]
+        ).href
+      )
+      await expect.poll(() => page.evaluate('window.fixture.created.length')).toBe(2)
+      await page.evaluate('window.fixture.resolve()')
+      await expect(page.getByTestId('hil-subset-paper-0-one')).toBeChecked()
+      await expect(page.getByTestId('hil-subset-paper-0-two')).not.toBeChecked()
+      await expect(page.locator('iframe')).toHaveCount(0)
+      await page.getByTestId('hil-subset-paper-0-two').click()
+      await expect(page.getByTestId('hil-subset-paper-0-two')).toBeChecked()
+      assert.deepEqual(
+        await page.evaluate(
+          'window.fixture.requests.filter(request => request.operation === "plugin-draft").at(-1).values'
+        ),
+        { selected_paper_ids: ['one', 'two'] }
+      )
+      assert.deepEqual(
+        await page.evaluate(
+          'window.fixture.requests.find(request => request.operation === "plugin-open").reference'
+        ),
+        {
+          plugin: 'host',
+          component: 'literature.selection',
+          fingerprint: 'ui-release-one',
+          binding: 'fixed-public-binding',
+        }
+      )
+    } finally {
+      await browser.close()
+      await server.close()
+    }
+  }
+)
+
+let publicServer: ViteDevServer | undefined
 let officialResources: string | undefined
 after(async () => {
   await publicServer?.close()
@@ -452,64 +1017,10 @@ async function openPackagedScenario(
     if (response.state === 'failed') throw new Error(String(response.data.error))
     return response.data.result
   })
-  if (component.public && component.slot === 'literature.selection') {
-    if (!officialResources) {
-      officialResources = await mkdtemp(path.join(os.tmpdir(), 'official-selection-'))
-      await buildOfficialUI(officialResources)
-    }
-    await page.route('http://plugin.test/**', (route) => {
-      const asset = new URL(route.request().url()).pathname.slice(1)
-      if (!asset)
-        return route.fulfill({
-          contentType: 'text/html; charset=utf-8',
-          body: '<div id="root"></div>',
-        })
-      if (asset === 'component.html')
-        return route.fulfill({
-          contentType: 'text/html; charset=utf-8',
-          body: `<div id="root"></div><script>
-        let state; const listeners = new Set();
-        window.plugin = { onState(callback) { listeners.add(callback); if (state) callback(state); return () => listeners.delete(callback); }, submit(action, values) { parent.postMessage({ action, values }, '*'); } };
-        addEventListener('message', event => { if (event.source !== parent) return; state = event.data; for (const listener of listeners) listener(state); });
-        parent.postMessage({ ready: true }, '*');
-      </script><script src="/__ui__/ui.js"></script><script src="/__ui__/selection.js"></script>`,
-        })
-      return route.fulfill({
-        body: readFileSync(path.join(officialResources!, asset.replace(/^__ui__\//, ''))),
-        contentType: asset.endsWith('.js')
-          ? 'text/javascript'
-          : asset.endsWith('.css')
-            ? 'text/css'
-            : 'font/woff2',
-      })
-    })
-    await page.goto('http://plugin.test/')
-    await page.evaluate(
-      ({ data, slot }) => {
-        const state = { data, slot, language: 'zh', status: 'pending' }
-        const calls: { action: string; values: Record<string, unknown> }[] = []
-        const frame = document.createElement('iframe')
-        frame.setAttribute('sandbox', 'allow-scripts')
-        frame.src = '/component.html'
-        Object.assign(window, { previewCalls: calls })
-        addEventListener('message', (event) => {
-          if (event.source !== frame.contentWindow) return
-          if (event.data.action) {
-            calls.push(event.data)
-            state.data = { ...state.data, ...event.data.values }
-          }
-          frame.contentWindow!.postMessage(state, '*')
-        })
-        document.getElementById('root')!.append(frame)
-      },
-      { data: { ...scenario.data, ...selected?.data }, slot: component.slot }
-    )
-    await expect(page.frameLocator('iframe').getByRole('checkbox').first()).toBeVisible()
-    return
-  }
   if (component.public) {
     if (!publicServer) {
-      publicServer = await createServer({
+      publicServer = await servers.create({
+        cacheKey: 'plugin',
         configFile: false,
         root: ROOT,
         plugins: [react()],
@@ -556,12 +1067,20 @@ async function openPackagedScenario(
     )
     return
   }
+  if (descriptor.ui && !officialResources) {
+    officialResources = await mkdtemp(path.join(os.tmpdir(), 'official-selection-'))
+    await buildOfficialUI(officialResources)
+  }
   await page.route('http://plugin.test/**', (route) => {
     const asset = new URL(route.request().url()).pathname.slice(1)
     return route.fulfill(
       asset
         ? {
-            body: readFileSync(path.join(directory, asset)),
+            body: readFileSync(
+              asset.startsWith('__ui__/')
+                ? path.join(officialResources!, asset.slice('__ui__/'.length))
+                : path.join(directory, asset)
+            ),
             contentType: asset.endsWith('.js') ? 'text/javascript' : 'text/css',
           }
         : { body: '<div id="root"></div>', contentType: 'text/html' }
@@ -608,58 +1127,6 @@ async function openPackagedScenario(
 }
 
 test(
-  'packaged delivery retries a failure and retains saved state when reopened',
-  { timeout: 60_000 },
-  async () => {
-    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
-    try {
-      const page = await browser.newPage()
-      await openPackagedScenario(page, 'precise-literature-search', 'delivery', '保存失败后重试')
-      await page.getByRole('button', { name: '选择保存位置', exact: true }).click()
-      await page.getByRole('button', { name: '保存全文', exact: true }).click()
-      await expect(
-        page
-          .getByTestId('literature-delivery-body')
-          .getByText('保存操作未完成，请检查目标目录后重试。')
-      ).toBeVisible()
-      await page.getByRole('button', { name: '保存全文', exact: true }).click()
-      await expect(page.getByText('全文保存完成', { exact: true })).toBeVisible()
-      await page.getByRole('button', { name: '选择保存位置', exact: true }).click()
-      await expect(page.getByTestId('literature-delivery-dialog')).toBeVisible()
-      await expect(page.getByText('全文保存完成', { exact: true })).toBeVisible()
-    } finally {
-      await browser.close()
-    }
-  }
-)
-
-test(
-  'packaged delivery keeps conflict open until a version is chosen',
-  { timeout: 60_000 },
-  async () => {
-    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
-    try {
-      const page = await browser.newPage()
-      await openPackagedScenario(
-        page,
-        'precise-literature-search',
-        'delivery',
-        '保存冲突后选择版本'
-      )
-      await page.getByRole('button', { name: '选择保存位置', exact: true }).click()
-      await page.getByRole('button', { name: '保存全文', exact: true }).click()
-      await expect(page.getByTestId('delivery-version-conflicts')).toBeVisible()
-      await page.getByRole('combobox', { name: '选择《样例：长上下文论文》的版本处理方式' }).click()
-      await page.getByRole('option', { name: '跳过本次版本' }).click()
-      await page.getByRole('button', { name: '重试未完成项', exact: true }).click()
-      await expect(page.getByText('已按选择跳过本次版本，未新增保存文件')).toBeVisible()
-    } finally {
-      await browser.close()
-    }
-  }
-)
-
-test(
   'packaged result details retain focus through asynchronous menu and admission',
   { timeout: 60_000 },
   async () => {
@@ -684,59 +1151,95 @@ test(
 )
 
 test(
-  'review result preview covers citations, evidence limits, checks and body navigation',
+  'native review receipt opens its result page with outline, citations, checks and exact body identity',
   { timeout: 60_000 },
-  async () => {
-    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
-    try {
-      const page = await browser.newPage()
-      await openPackagedScenario(page, 'literature-review', 'review')
-      await expect(
-        page.getByText('1. 样例：长上下文信息利用 · Example Author · 2024', { exact: true })
-      ).toBeVisible()
-      await expect(page.getByText('样例限制：仅获得摘要，不用于支持具体实验数值。')).toBeVisible()
-      await page.getByRole('button', { name: '查看引用核对状态' }).click()
-      await expect(page.getByText('样例：一篇论文只有摘要证据，需要补读全文。')).toBeVisible()
-      await page.getByRole('button', { name: '打开正文', exact: true }).click()
-      assert.deepEqual(await page.evaluate('window.previewCalls'), [
-        { action: 'open-artifact', values: { artifactId: 'sample-body' } },
-      ])
-    } finally {
-      await browser.close()
-    }
+  async (context) => {
+    const fixture = await renderFixture(ROOT, {
+      launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+    })
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    const errors: string[] = []
+    page.on('pageerror', (error) => {
+      errors.push(error.message)
+      context.diagnostic(error.message)
+    })
+    await page.goto(
+      new URL('/components/business/review.render.fixture.html?mode=native-review', fixture.url)
+        .href
+    )
+    await expect(page.getByRole('button', { name: '加载原生综述样例', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '加载原生综述样例', exact: true }).click()
+    const inline = page.getByTestId('review-inline')
+    await expect(inline.getByText('综述核对', { exact: true })).toBeVisible()
+    await expect(inline.getByTestId('artifact-more-actions')).toHaveCount(0)
+    await expect(inline.getByTestId('receipt-preview')).toHaveCount(0)
+    await expect(inline.getByRole('button')).toHaveCount(2)
+    await expect(page.getByTestId('review-native-detail')).toHaveCount(0)
+    await inline.getByTestId('artifact-open').click()
+    const detail = page.getByTestId('review-native-detail').getByTestId('literature-review-card')
+    await expect(detail).toBeVisible()
+    await expect(detail.getByText('1. 问题与评估设置', { exact: true })).toBeVisible()
+    await expect(page.getByRole('radio')).toHaveCount(0)
+    await expect(page.getByRole('checkbox')).toHaveCount(0)
+    const evidence = detail.getByRole('table', { name: '文献引用情况' })
+    await expect(
+      evidence.getByRole('columnheader', { name: '引用文献', exact: true })
+    ).toBeVisible()
+    await expect(evidence.getByRole('columnheader', { name: '引用方式' })).toBeVisible()
+    const fulltext = evidence.getByRole('row', { name: /样例：长上下文信息利用/ })
+    const abstract = evidence.getByRole('row', { name: /样例：上下文评测方法/ })
+    await expect(
+      fulltext.getByRole('button', { name: '样例：长上下文信息利用', exact: true })
+    ).toBeVisible()
+    await expect(fulltext.getByText('全文引用', { exact: true })).toBeVisible()
+    await expect(abstract.getByText('摘要引用', { exact: true })).toBeVisible()
+    await abstract.getByRole('button', { name: '引用依据说明' }).focus()
+    await expect(page.getByRole('tooltip')).toContainText(
+      '样例限制：仅获得摘要，不用于支持具体实验数值。'
+    )
+    await expect(page.getByRole('tooltip')).toContainText('已提取 0 个字符')
+    await expect(page.getByRole('tooltip')).toContainText('不等于已阅读全文')
+    await expect(detail.getByText('样例：一篇论文只有摘要证据，需要补读全文。')).toBeVisible()
+    await abstract.getByRole('button', { name: '样例：上下文评测方法' }).click()
+    await expect(page.getByTestId('review-web-target')).toHaveText(
+      'https://example.org/review-paper'
+    )
+    await page.route('**/api/v1/literatures/review-test-item*', (route) =>
+      route.fulfill({ status: 404 })
+    )
+    const libraryRequest = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === '/api/v1/literatures/review-test-item'
+    )
+    await fulltext.getByRole('button', { name: '样例：长上下文信息利用' }).click()
+    await libraryRequest
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await detail.getByRole('button', { name: '打开正文', exact: true }).click()
+    const target = JSON.parse(
+      (await page.getByTestId('review-artifact-target').textContent()) || 'null'
+    )
+    assert.equal(target.artifactId, 'sample-body')
+    assert.equal(target.sessionId, 'plugin-preview')
+    assert.equal(target.path, 'sample-review/06_output/survey.md')
+    assert.deepEqual(errors, [])
   }
 )
 
-test(
-  'download preview shows an open failure and allows the same paper to retry',
-  { timeout: 60_000 },
-  async () => {
-    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
-    try {
-      const page = await browser.newPage()
-      await openPackagedScenario(
-        page,
-        'precise-literature-search',
-        'downloads',
-        '打开全文失败后重试'
-      )
-      await page.getByRole('button', { name: '打开全文', exact: true }).click()
-      await expect(
-        page.getByText('此全文暂不可用。如果文献已删除，可在保存卡中勾选加入文献库后恢复。')
-      ).toBeVisible()
-      await page.getByRole('button', { name: '打开全文', exact: true }).click()
-      await expect(
-        page.getByText('此全文暂不可用。如果文献已删除，可在保存卡中勾选加入文献库后恢复。')
-      ).toHaveCount(0)
-      assert.deepEqual(await page.evaluate('window.previewCalls'), [
-        { action: 'open-fulltext', values: { paperId: 'sample-0' } },
-        { action: 'open-fulltext', values: { paperId: 'sample-0' } },
-      ])
-    } finally {
-      await browser.close()
-    }
-  }
-)
+test('precise search publishes current previews without retired download and delivery cards', () => {
+  const descriptor = JSON.parse(
+    readFileSync(
+      path.join(PACKAGE_ROOT, 'precise-literature-search', '.scholarseed-plugin.json'),
+      'utf8'
+    )
+  )
+  const ids = descriptor.components.map((component: { id: string }) => component.id)
+  assert.ok(ids.includes('results'))
+  assert.ok(ids.includes('details'))
+  assert.ok(!ids.includes('downloads'))
+  assert.ok(!ids.includes('delivery'))
+})
 
 for (const name of BUILTIN_PACKAGES) {
   test(
@@ -755,8 +1258,9 @@ for (const name of BUILTIN_PACKAGES) {
           page.on('pageerror', (error) => errors.push(error.message))
           await openPackagedScenario(page, name, component.id)
           if (component.public && component.slot === 'literature.selection') {
-            await expect(page.locator('iframe')).toHaveAttribute('sandbox', 'allow-scripts')
-            await expect(page.frameLocator('iframe').locator('#root')).not.toBeEmpty()
+            await expect(page.locator('iframe')).toHaveCount(0)
+            await expect(page.getByRole('checkbox').first()).toBeVisible()
+            await expect(page.locator('#root')).not.toBeEmpty()
           } else await expect(page.locator('#root')).not.toBeEmpty()
           assert.deepEqual(errors, [], `${name}/${component.id}`)
           await page.close()
@@ -772,7 +1276,8 @@ test(
   'preview HIL failure can retry but unknown and stale outcomes cannot resubmit',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -832,7 +1337,8 @@ test(
   'cancelled preview responses retain cancellation semantics including after failed retry',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -885,10 +1391,106 @@ test(
 )
 
 test(
-  'installation cards keep preview hidden across conversation timer renders',
+  'a live receipt keeps the already-ready plugin frame and its read-only state',
+  { timeout: 60_000 },
+  async (context) => {
+    const fixture = await renderFixture(ROOT, { create: createServer })
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    await page.route('**/guest.html?*', (route) => {
+      const lease = new URL(route.request().url()).searchParams.get('lease')
+      return route.fulfill({
+        contentType: 'text/html; charset=utf-8',
+        body: `<button>Submit</button><output></output><script>
+          const send = payload => parent.postMessage({channel:'${PLUGIN_MESSAGE_CHANNEL}',lease:'${lease}',...payload}, '*');
+          send({phase:'document'});
+          send({phase:'ready'});
+          addEventListener('message', ({data:{state}}) => {
+            if (!state) return;
+            document.querySelector('output').textContent = JSON.stringify([state.status,state.draft]);
+            document.querySelector('button').disabled = state.status !== 'pending';
+          });
+          document.querySelector('button').onclick = () => send({action:'select',values:{edgeId:'citation-2'}});
+        </script>`,
+      })
+    })
+    await page.goto(
+      new URL('/components/business/plugin.render.fixture.html?mode=live-receipt', fixture.url).href
+    )
+    await expect.poll(() => page.evaluate('window.fixture.created.length')).toBeGreaterThan(0)
+    await page.evaluate('window.fixture.resolve()')
+    const frame = page.locator('iframe')
+    const guest = frame.contentFrame()
+    await expect(guest.locator('output')).toContainText('pending')
+    const initial = await frame.elementHandle()
+    await guest.getByRole('button', { name: 'Submit' }).click()
+    await expect(guest.locator('output')).toHaveText(
+      '["resolved",{"edgeId":"citation-2","visible":false}]'
+    )
+    await expect(guest.getByRole('button', { name: 'Submit' })).toBeDisabled()
+    // The guest sends its startup phases only once.
+    await page.waitForTimeout(PLUGIN_FRAME_START_TIMEOUT_MS + 500)
+    await expect(guest.locator('output')).toContainText('resolved')
+    assert.ok(await frame.evaluate((element, before) => element === before, initial))
+  }
+)
+
+test(
+  'historical custom components restore the submitted state without allowing mutations',
+  { timeout: 60_000 },
+  async (context) => {
+    const fixture = await renderFixture(ROOT, { create: createServer })
+    context.after(() => fixture.close())
+    const page = await fixture.page(context)
+    await page.route('**/guest.html?*', (route) => {
+      const lease = new URL(route.request().url()).searchParams.get('lease')
+      return route.fulfill({
+        contentType: 'text/html; charset=utf-8',
+        body: `<p id="values"></p><button>Attempt changes</button><output></output><script>
+          const send = payload => parent.postMessage({channel:'${PLUGIN_MESSAGE_CHANNEL}',lease:'${lease}',...payload}, '*');
+          addEventListener('message', event => {
+            const { state, error } = event.data;
+            if (state) document.querySelector('#values').textContent = JSON.stringify([state.status, state.data.title, state.draft]);
+            if (error) document.querySelector('output').textContent += error + ' ';
+            if (event.data.requestId === 'copy' && event.data.result) document.querySelector('output').textContent += 'copy acknowledged';
+          });
+          document.querySelector('button').onclick = () => {
+            send({ requestId: 'draft', draft: { edgeId: 'changed' } });
+            send({ requestId: 'request', action: 'select', values: { edgeId: 'changed' } });
+            send({ action: 'select', values: { edgeId: 'changed' } });
+            send({ requestId: 'copy', copy: { text: 'archive' }, revision: 0 });
+          };
+        </script>`,
+      })
+    })
+    await page.goto(
+      new URL('/components/business/plugin.render.fixture.html?mode=history', fixture.url).href
+    )
+    await expect.poll(() => page.evaluate('window.fixture.created.length')).toBeGreaterThan(0)
+    await page.evaluate('window.fixture.resolve()')
+    const guest = page.frameLocator('iframe')
+    await expect(guest.locator('#values')).toHaveText(
+      '["resolved","Bound graph",{"edgeId":"citation-2","visible":false}]'
+    )
+    await guest.getByRole('button', { name: 'Attempt changes' }).click()
+    await expect(guest.locator('output')).toHaveText(
+      'plugin_draft_unavailable plugin_card_read_only copy acknowledged'
+    )
+    assert.equal(
+      await page.evaluate(
+        'window.fixture.requests.some(call => ["plugin-draft", "plugin-call", "plugin-copy"].includes(call.operation))'
+      ),
+      false
+    )
+  }
+)
+
+test(
+  'generated installation card does not offer interaction preview',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -898,35 +1500,16 @@ test(
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
-      await page.route('**/guest.html?*', (route) =>
-        route.fulfill({
-          contentType: 'text/html; charset=utf-8',
-          body: '<input aria-label="阅读目标">',
-        })
-      )
       await page.goto(
         new URL(
           '/components/business/plugin.render.fixture.html?mode=installation',
           server.resolvedUrls!.local[0]
         ).href
       )
-      await expect(page.getByTestId('plugin-installation-card')).toBeVisible()
-      await expect(page.getByRole('button', { name: '对话交互预览', exact: true })).toHaveCount(0)
-      await expect(page.getByRole('button', { name: '安装到书深', exact: true })).toBeEnabled()
-      const before = await page.evaluate(
-        'window.fixture.requests.filter(request => request.operation === "plugin-preview").length'
-      )
-      await page.waitForTimeout(2200)
-      const after = await page.evaluate(
-        'window.fixture.requests.filter(request => request.operation === "plugin-preview").length'
-      )
-      assert.equal(after, before)
-      assert.equal(after, 0)
-      await expect(page.locator('iframe')).toHaveCount(0)
-      await page.getByRole('button', { name: '安装到书深', exact: true }).click()
-      await expect(page.getByTestId('skill-add-modal')).toBeVisible()
-      await expect(page.getByRole('button', { name: '对话交互预览', exact: true })).toHaveCount(0)
-      await expect(page.getByRole('button', { name: '授权并安装', exact: true })).toBeEnabled()
+      const card = page.getByTestId('plugin-installation-card')
+      await expect(card.getByRole('button', { name: '对话交互预览', exact: true })).toHaveCount(0)
+      await expect(card.getByRole('button', { name: '暂不安装', exact: true })).toBeVisible()
+      await expect(card.getByRole('button', { name: '安装到书深', exact: true })).toBeVisible()
     } finally {
       await browser.close()
       await server.close()
@@ -938,7 +1521,8 @@ test(
   'generated plugin installation card returns only the host receipt',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -955,14 +1539,46 @@ test(
         ).href
       )
       await page.getByRole('button', { name: '安装到书深', exact: true }).click()
-      await expect(page.getByTestId('skill-add-modal')).toBeVisible()
-      await page.getByRole('button', { name: '授权并安装', exact: true }).click()
+      const review = page.getByTestId('skill-add-modal')
+      await expect(
+        review.getByRole('heading', { name: 'generated-plugin', exact: true })
+      ).toBeVisible()
+      await expect(review).toContainText('版本 1.0.0')
+      await expect(review).toContainText('Generated description')
+      const document = review.getByRole('region', { name: '技能正文', exact: true })
+      await expect(document.getByRole('heading', { name: 'Generated instructions' })).toBeVisible()
+      await expect(document).not.toContainText('name: generated-plugin')
+      await expect(review.getByTestId('plugin-report')).toHaveCount(0)
+      await expect(review).not.toContainText(/a{64}|interaction\.answer|只安装可信来源/)
+      await review.getByRole('button', { name: '取消', exact: true }).click()
+      await expect(review).toHaveCount(0)
+      assert.equal(
+        await page.evaluate(
+          'window.fixture.requests.some((call) => call.operation === "plugin-confirm")'
+        ),
+        false
+      )
+      await page.getByRole('button', { name: '安装到书深', exact: true }).click()
+      await review.getByRole('button', { name: '授权并安装', exact: true }).click()
       await expect(page.getByTestId('hil-card')).toHaveAttribute('data-hil-state', 'resolved')
       await expect(page.getByRole('status')).toHaveText('安装成功')
       const calls = (await page.evaluate('window.fixture.requests')) as Array<
         Record<string, unknown>
       >
-      assert.ok(calls.some((call) => call.operation === 'plugin-confirm'))
+      assert.deepEqual(
+        calls.filter((call) => call.operation === 'plugin-confirm'),
+        [
+          {
+            operation: 'plugin-confirm',
+            candidate: 'candidate',
+            sha256: 'a'.repeat(64),
+            confirmed: true,
+            grants: ['interaction.answer'],
+            enable: true,
+            update: false,
+          },
+        ]
+      )
       const response = calls.find((call) => call.answers) as { answers: Record<string, string> }
       assert.deepEqual(JSON.parse(response.answers.question), {
         name: 'generated-plugin',
@@ -982,7 +1598,8 @@ test(
   'skipped installation remains actionable and failed installation can retry without another answer',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -999,7 +1616,7 @@ test(
         ).href
       )
       await expect(page.getByRole('status')).toContainText('尚未安装')
-      await page.getByRole('button', { name: 'generated-plugin · 1.0.0', exact: true }).click()
+      await page.getByRole('button', { name: '生成包目录', exact: true }).click()
       await page.getByRole('button', { name: '暂不安装', exact: true }).click()
       await expect(page.getByRole('status')).toContainText('已跳过安装')
       await expect(page.getByText('已取消任务', { exact: true })).toHaveCount(0)
@@ -1027,91 +1644,11 @@ test(
 )
 
 test(
-  'packaged outline renders real descriptions and proposes original options only',
-  { timeout: 60_000 },
-  async () => {
-    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
-    try {
-      const page = await browser.newPage()
-      const scenario = JSON.parse(readFileSync(path.join(REVIEW_PACKAGE, 'outline.json'), 'utf8'))
-      await page.route('http://plugin.test/**', (route) => {
-        const asset = new URL(route.request().url()).pathname.slice(1)
-        return route.fulfill(
-          asset
-            ? {
-                body: readFileSync(path.join(REVIEW_PACKAGE, asset)),
-                contentType: asset.endsWith('.js') ? 'text/javascript' : 'text/css',
-              }
-            : { body: '<div id="root"></div>', contentType: 'text/html' }
-        )
-      })
-      await page.goto('http://plugin.test/')
-      await page.evaluate(
-        (data) => {
-          const fixture = {
-            data,
-            actions: [] as { action: string; values: Record<string, unknown> }[],
-            listener: null as ((state: unknown) => void) | null,
-          }
-          Object.assign(window, {
-            fixture,
-            plugin: {
-              onState(listener: (state: unknown) => void) {
-                fixture.listener = listener
-                listener({ data, status: 'pending', language: 'zh', slot: 'literature.outline' })
-              },
-              submit(action: string, values: Record<string, unknown>) {
-                fixture.actions.push({ action, values })
-                Object.assign(fixture.data, values)
-                fixture.listener?.({
-                  data: fixture.data,
-                  status: 'pending',
-                  language: 'zh',
-                  slot: 'literature.outline',
-                })
-              },
-              async setCopyContent(content: unknown) {
-                Object.assign(window, { previewCopy: content })
-                return { saved: true }
-              },
-            },
-          })
-        },
-        { ...scenario.data, options: scenario.interaction.questions[0].options }
-      )
-      await loadOfficialRuntime(page)
-      await page.addScriptTag({ url: 'http://plugin.test/cards.js' })
-      await page.getByText(scenario.data.sections[0].title, { exact: true }).click()
-      await expect(
-        page.getByText(scenario.data.sections[0].description, { exact: true })
-      ).toBeVisible()
-      await page.getByRole('radio').first().check()
-      await expect(page.getByRole('radio').first()).toBeChecked()
-      const option = scenario.interaction.questions[0].options[0]
-      await expect(page.getByRole('radio').first()).toHaveAttribute(
-        'aria-label',
-        `${option.label} ${option.description}`
-      )
-      assert.deepEqual(await page.evaluate('window.fixture.actions'), [
-        {
-          action: 'choose',
-          values: { answers: [scenario.interaction.questions[0].options[0].label] },
-        },
-      ])
-      await page.evaluate(
-        'window.fixture.listener({data:window.fixture.data,status:"resolved",language:"zh",slot:"literature.outline"})'
-      )
-      await expect(page.getByRole('radio').first()).toBeDisabled()
-    } finally {
-      await browser.close()
-    }
-  }
-)
-test(
   'preview action confirmation can retry a failed response without resetting input',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -1153,7 +1690,8 @@ test(
   'StrictMode replay keeps the owner lease live through selection and confirmation',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -1191,7 +1729,8 @@ test(
   'fixed binding survives catalog changes and generic component submission resolves the waiting request',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -1259,7 +1798,8 @@ test(
   'public component persists its selection and restores the same binding after remount',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -1315,10 +1855,11 @@ test(
 )
 
 test(
-  'legacy host-v1 selection retains existing choices, persists changes and restores its pinned binding',
+  'legacy host-v1 selection is unavailable without modifying its saved data or replaying actions',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -1334,50 +1875,15 @@ test(
           server.resolvedUrls!.local[0]
         ).href
       )
-      await expect.poll(() => page.evaluate('window.fixture.created.length')).toBe(2)
-      await page.evaluate('window.fixture.resolve()')
-      await expect(page.getByRole('checkbox', { name: /旧论文一\s*旧证据说明/ })).toBeChecked()
-      await expect(page.getByRole('checkbox', { name: '全选', exact: true })).toHaveAttribute(
-        'aria-checked',
-        'mixed'
-      )
-      await page.getByRole('checkbox', { name: '旧论文二', exact: true }).check()
-      await expect(page.getByTestId('legacy-selection')).toHaveText('one,two')
-      assert.deepEqual(
-        await page.evaluate(
-          'window.fixture.requests.filter(request => request.operation === "plugin-draft").map(request => ({reference:request.reference,values:request.values,revision:request.expected_revision}))'
-        ),
-        [
-          {
-            reference: {
-              plugin: 'host',
-              fingerprint: 'host-v1',
-              component: 'literature.selection',
-              binding: 'legacy-binding',
-            },
-            values: { selected_paper_ids: ['one', 'two'] },
-            revision: 0,
-          },
-        ]
-      )
+      await expect(page.getByRole('alert')).toBeVisible()
+      await expect(page.getByRole('checkbox')).toHaveCount(0)
+      assert.deepEqual(await page.evaluate('window.fixture.draft'), { selected_paper_ids: ['one'] })
+      assert.deepEqual(await page.evaluate('window.fixture.requests'), [])
       await page.getByRole('button', { name: '重新挂载', exact: true }).click()
       await page.getByRole('button', { name: '重新挂载', exact: true }).click()
-      await expect.poll(() => page.evaluate('window.fixture.created.length')).toBe(4)
-      await page.evaluate('window.fixture.resolve()')
-      await expect(page.getByRole('checkbox', { name: /旧论文一\s*旧证据说明/ })).toBeChecked()
-      await expect(page.getByRole('checkbox', { name: '旧论文二', exact: true })).toBeChecked()
-      await expect(page.getByRole('checkbox', { name: '全选', exact: true })).toBeChecked()
-      assert.ok(
-        (
-          (await page.evaluate(
-            'window.fixture.requests.filter(request => request.operation === "plugin-open")'
-          )) as { reference: { fingerprint: string; binding: string } }[]
-        ).every(
-          (request) =>
-            request.reference.fingerprint === 'host-v1' &&
-            request.reference.binding === 'legacy-binding'
-        )
-      )
+      await expect(page.getByRole('alert')).toBeVisible()
+      assert.deepEqual(await page.evaluate('window.fixture.draft'), { selected_paper_ids: ['one'] })
+      assert.deepEqual(await page.evaluate('window.fixture.requests'), [])
       await expect(page.locator('iframe')).toHaveCount(0)
     } finally {
       await browser.close()
@@ -1390,7 +1896,8 @@ test(
   'legacy host-v1 preview without an existing binding cannot render a selection fallback',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -1421,7 +1928,8 @@ test(
   'read-only preview exposes local details without a pretend confirmation',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'plugin',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -1435,7 +1943,12 @@ test(
       await page.route('**/guest.html?*', (route) =>
         route.fulfill({
           contentType: 'text/html',
-          body: '<details><summary>Paper</summary><p>Evidence</p></details><script>addEventListener("message", () => document.querySelector("details").open = false)</script>',
+          body: `<output></output><details><summary>Paper</summary><p>Evidence</p></details><script>
+            addEventListener("message", ({data}) => {
+              if (!data.state) return
+              document.querySelector("output").textContent = data.state.status
+            })
+          </script>`,
         })
       )
       await page.goto(
@@ -1446,6 +1959,7 @@ test(
       )
       await expect.poll(() => page.evaluate('window.fixture.created.length')).toBe(2)
       await page.evaluate('window.fixture.resolve()')
+      await expect(page.frameLocator('iframe').locator('output')).toHaveText('resolved')
       await page.frameLocator('iframe').getByText('Paper', { exact: true }).click()
       await expect(page.frameLocator('iframe').getByText('Evidence')).toBeVisible()
       await expect(page.getByRole('button', { name: '确认选择', exact: true })).toHaveCount(0)
@@ -1466,7 +1980,8 @@ for (const mode of ['installed', 'candidate']) {
     `${mode} preview owns StrictMode generations, late completion and actual close`,
     { timeout: 60_000 },
     async () => {
-      const server = await createServer({
+      const server = await servers.create({
+        cacheKey: 'plugin',
         configFile: false,
         root: ROOT,
         plugins: [react()],

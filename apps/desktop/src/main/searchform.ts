@@ -11,7 +11,14 @@ const SEARCH_FORM_BLOCKED = 'browser_search_submission_blocked'
 const SEARCH_FORM_INSPECTION_ERRORS = new Set([
   'browser_search_form_invalid',
   'browser_search_form_page',
-  'browser_search_form_input',
+  'browser_search_form_input_type',
+  'browser_search_form_input_disabled',
+  'browser_search_form_input_readonly',
+  'browser_search_form_input_name',
+  'browser_search_form_input_length',
+  'browser_search_form_input_selector',
+  'browser_search_form_input_visibility',
+  'browser_search_form_submit_selector',
   'browser_search_form_submit',
   'browser_search_form_charset',
   'browser_search_form_action',
@@ -176,12 +183,20 @@ const SEARCH_FORM_INSPECT = String.raw`function(config, query) {
   if (window !== top || location.href !== config.landingUrl) fail('page')
   const inputs = document.querySelectorAll(config.inputSelector)
   const submits = document.querySelectorAll(config.submitSelector)
-  if (inputs.length !== 1 || submits.length !== 1) fail('input')
+  if (inputs.length !== 1) fail('input_selector')
+  if (submits.length !== 1) fail('submit_selector')
   const input = inputs[0]
   const submit = submits[0]
-  if (!(input instanceof HTMLInputElement) || !['text', 'search'].includes(input.type)
-    || !visible(input) || input.matches(':disabled') || input.readOnly || input.name !== config.queryParameter
-    || input.maxLength >= 0 && input.maxLength < query.length || !visible(submit)) fail('input')
+  const textInput = input instanceof HTMLInputElement && ['text', 'search'].includes(input.type)
+  const textArea = input instanceof HTMLTextAreaElement && input.wrap !== 'hard' && !/[\r\n]/.test(query)
+  if ((!textInput && !textArea) || input.hasAttribute('dirname')) fail('input_type')
+  if (input.matches(':disabled')) fail('input_disabled')
+  if (input.readOnly) fail('input_readonly')
+  if (input.name !== config.queryParameter) fail('input_name')
+  if (input.maxLength >= 0 && input.maxLength < query.length) fail('input_length')
+  if (!visible(input)) fail('input_visibility')
+  if (!visible(submit) && !(config.submitter && submit instanceof HTMLInputElement
+    && submit.type === 'submit' && submit.hidden && submit.getAttribute('aria-hidden') === 'true')) fail('submit')
   const form = input.form
   const submitControl = submit instanceof HTMLLabelElement ? submit.control : submit
   if (!(form instanceof HTMLFormElement) || !submitControl
@@ -200,7 +215,7 @@ const SEARCH_FORM_INSPECT = String.raw`function(config, query) {
   const names = new Set()
   const parameters = new URLSearchParams()
   for (const control of form.elements) {
-    if (!(control instanceof HTMLInputElement || control instanceof HTMLButtonElement)) fail('fields')
+    if (control !== input && !(control instanceof HTMLInputElement || control instanceof HTMLButtonElement)) fail('fields')
     const kind = control.type.toLowerCase()
     if (kind === 'submit') {
       if (control !== submitControl || control.hasAttribute('formaction') || control.hasAttribute('formmethod')

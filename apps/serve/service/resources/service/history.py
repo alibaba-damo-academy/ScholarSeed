@@ -1248,9 +1248,7 @@ class ResourceVersionService:
                     raise
                 current_pending = store.pending(managed.file_id)
                 drifted = managed.object_id != object_id or managed.mode_bits != stable.mode_bits
-                if drifted and current_pending is not None and current_pending.needs_review:
-                    raise ResourceVersionError(ReviewConflict.CANDIDATE_REVISION.value)
-                if drifted:
+                if drifted and not (current_pending is not None and current_pending.needs_review):
                     store.accept_working(
                         managed.file_id,
                         SnapshotVersion(
@@ -1422,8 +1420,10 @@ class ResourceVersionService:
         project_id: str,
         version_id: str,
         base_version_id: str | None,
+        *,
+        base_first: bool = False,
     ) -> tuple[str, ...]:
-        """Return a line-level unified diff against another version or current disk."""
+        """Compare a version with another version or disk, using the requested direction."""
 
         version = self.version(project_id, version_id)
         if version.state is not FileState.PRESENT or version.object_id is None:
@@ -1447,11 +1447,15 @@ class ResourceVersionService:
             base_lines = current.decode("utf-8").splitlines(keepends=True)
         except UnicodeDecodeError as exc:
             raise ResourceVersionError("diff_not_supported") from exc
+        source_label = f"v{version.sequence}"
+        if base_first:
+            source_lines, base_lines = base_lines, source_lines
+            source_label, base_label = base_label, source_label
         return tuple(
             unified_diff(
                 source_lines,
                 base_lines,
-                fromfile=f"v{version.sequence}",
+                fromfile=source_label,
                 tofile=base_label,
                 lineterm="",
             )

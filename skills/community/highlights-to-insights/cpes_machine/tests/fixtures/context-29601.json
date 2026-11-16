@@ -1,0 +1,5245 @@
+{
+  "source_pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+  "source_text_sha256": "87723a341b0214b1879c7861064bf20d57645af5469735cfe154afc907e277ba",
+  "origin": "/Users/yifan/Desktop/work/0918_cpes_eval/runs/20261012-011414-2607.29601/original-pdf",
+  "rows": [
+    {
+      "source_line_id": "p0003-b0014-l0002",
+      "bbox_points": [
+        241.6697998046875,
+        686.0867919921875,
+        265.2911071777344,
+        696.1785278320312
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        483.339599609375,
+        1372.173583984375,
+        530.5822143554688,
+        1392.3570556640625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 280,
+      "in_figure_scope": true,
+      "text": "i̸ = j."
+    },
+    {
+      "source_line_id": "p0003-b0014-l0003",
+      "bbox_points": [
+        281.57000732421875,
+        686.451904296875,
+        293.1863708496094,
+        696.4144897460938
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        563.1400146484375,
+        1372.90380859375,
+        586.3727416992188,
+        1392.8289794921875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 281,
+      "in_figure_scope": true,
+      "text": "(3)"
+    },
+    {
+      "source_line_id": "p0003-b0015-l0000",
+      "bbox_points": [
+        329.4630126953125,
+        54.8967399597168,
+        557.996826171875,
+        66.39948272705078
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        658.926025390625,
+        109.7934799194336,
+        1115.99365234375,
+        132.79896545410156
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 282,
+      "in_figure_scope": true,
+      "text": "For each task group T (k), each organized optimization"
+    },
+    {
+      "source_line_id": "p0003-b0015-l0001",
+      "bbox_points": [
+        319.5,
+        67.37186431884766,
+        537.1130981445312,
+        77.33446502685547
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        134.7437286376953,
+        1074.2261962890625,
+        154.66893005371094
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 283,
+      "in_figure_scope": true,
+      "text": "path is instantiated as an independent QLoRA adapter:"
+    },
+    {
+      "source_line_id": "p0003-b0016-l0000",
+      "bbox_points": [
+        328.0580139160156,
+        80.95793151855469,
+        406.2816162109375,
+        95.03350830078125
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        656.1160278320312,
+        161.91586303710938,
+        812.563232421875,
+        190.0670166015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 284,
+      "in_figure_scope": true,
+      "text": "∆θ(k) = A(k)B(k),"
+    },
+    {
+      "source_line_id": "p0003-b0016-l0001",
+      "bbox_points": [
+        417.907958984375,
+        80.82881927490234,
+        477.57061767578125,
+        95.0335693359375
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        835.81591796875,
+        161.6576385498047,
+        955.1412353515625,
+        190.067138671875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 285,
+      "in_figure_scope": true,
+      "text": "A(k) ∈Rd×rk,"
+    },
+    {
+      "source_line_id": "p0003-b0016-l0002",
+      "bbox_points": [
+        489.19696044921875,
+        80.8288803100586,
+        549.4435424804688,
+        95.0335693359375
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        978.3939208984375,
+        161.6577606201172,
+        1098.8870849609375,
+        190.067138671875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 286,
+      "in_figure_scope": true,
+      "text": "B(k) ∈Rrk×d."
+    },
+    {
+      "source_line_id": "p0003-b0017-l0000",
+      "bbox_points": [
+        547.0509643554688,
+        96.26590728759766,
+        558.6674194335938,
+        106.22850799560547
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        1094.1019287109375,
+        192.5318145751953,
+        1117.3348388671875,
+        212.45701599121094
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 287,
+      "in_figure_scope": true,
+      "text": "(4)"
+    },
+    {
+      "source_line_id": "p0003-b0017-l0001",
+      "bbox_points": [
+        319.5,
+        105.70979309082031,
+        559.6592407226562,
+        117.21149444580078
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        211.41958618164062,
+        1119.3184814453125,
+        234.42298889160156
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 288,
+      "in_figure_scope": true,
+      "text": "Given an input x from a task assigned to T (k), the corre-"
+    },
+    {
+      "source_line_id": "p0003-b0017-l0002",
+      "bbox_points": [
+        319.5,
+        118.18387603759766,
+        433.54180908203125,
+        128.146484375
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        236.3677520751953,
+        867.0836181640625,
+        256.29296875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 289,
+      "in_figure_scope": true,
+      "text": "sponding policy is activated:"
+    },
+    {
+      "source_line_id": "p0003-b0018-l0000",
+      "bbox_points": [
+        396.40399169921875,
+        134.34593200683594,
+        481.1051025390625,
+        145.95556640625
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        792.8079833984375,
+        268.6918640136719,
+        962.210205078125,
+        291.9111328125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 290,
+      "in_figure_scope": true,
+      "text": "f(x) = fθ+∆θ(k)(x)."
+    },
+    {
+      "source_line_id": "p0003-b0018-l0001",
+      "bbox_points": [
+        547.0574951171875,
+        134.58189392089844,
+        558.6739501953125,
+        144.54449462890625
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        1094.114990234375,
+        269.1637878417969,
+        1117.347900390625,
+        289.0889892578125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 291,
+      "in_figure_scope": true,
+      "text": "(5)"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0000",
+      "bbox_points": [
+        329.4630126953125,
+        150.97508239746094,
+        558.0039672851562,
+        160.9426727294922
+      ],
+      "font_size": 9.96757984161377,
+      "bold": false,
+      "bbox_pixels": [
+        658.926025390625,
+        301.9501647949219,
+        1116.0079345703125,
+        321.8853454589844
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 292,
+      "in_figure_scope": true,
+      "text": "In QLoRA, there are two components: a frozen backbone"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0001",
+      "bbox_points": [
+        319.5,
+        162.01373291015625,
+        557.9989013671875,
+        171.87619018554688
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        324.0274658203125,
+        1115.997802734375,
+        343.75238037109375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 293,
+      "in_figure_scope": true,
+      "text": "and a set of trainable parameters that adapt the backbone based"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0002",
+      "bbox_points": [
+        319.5,
+        172.8855743408203,
+        558.000732421875,
+        182.86309814453125
+      ],
+      "font_size": 9.977532386779785,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        345.7711486816406,
+        1116.00146484375,
+        365.7261962890625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 294,
+      "in_figure_scope": true,
+      "text": "on the fine-tuning. In the multi-policy approach, each of the"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0003",
+      "bbox_points": [
+        319.5,
+        183.9317626953125,
+        557.9990234375,
+        193.79421997070312
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        367.863525390625,
+        1115.998046875,
+        387.58843994140625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 295,
+      "in_figure_scope": true,
+      "text": "policies is initialized from the same frozen backbone, whereas"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0004",
+      "bbox_points": [
+        319.5,
+        194.86029052734375,
+        558.1640014648438,
+        204.762939453125
+      ],
+      "font_size": 9.902643203735352,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        389.7205810546875,
+        1116.3280029296875,
+        409.52587890625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 296,
+      "in_figure_scope": true,
+      "text": "the trainable adapter parameters are developed separately for"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0005",
+      "bbox_points": [
+        319.5,
+        205.8497314453125,
+        557.9991455078125,
+        215.71218872070312
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        411.699462890625,
+        1115.998291015625,
+        431.42437744140625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 297,
+      "in_figure_scope": true,
+      "text": "each policy using the tasks grouped for that policy. As shown"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0006",
+      "bbox_points": [
+        319.5,
+        216.65672302246094,
+        557.9988403320312,
+        226.7184600830078
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        433.3134460449219,
+        1115.9976806640625,
+        453.4369201660156
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 298,
+      "in_figure_scope": true,
+      "text": "in Figure 1, our process for developing fine-tuned policies"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0007",
+      "bbox_points": [
+        319.5,
+        227.5236358642578,
+        558.0045166015625,
+        237.6631317138672
+      ],
+      "font_size": 10.002370834350586,
+      "bold": true,
+      "bbox_pixels": [
+        639.0,
+        455.0472717285156,
+        1116.009033203125,
+        475.3262634277344
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 299,
+      "in_figure_scope": true,
+      "text": "happens in two steps: Stage 1 determines how optimization"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0008",
+      "bbox_points": [
+        319.5,
+        238.64988708496094,
+        557.9945678710938,
+        248.61248779296875
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        477.2997741699219,
+        1115.9891357421875,
+        497.2249755859375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 300,
+      "in_figure_scope": true,
+      "text": "paths are allocated by constructing optimization-compatible"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0009",
+      "bbox_points": [
+        319.5,
+        249.5030975341797,
+        558.0037841796875,
+        259.5617980957031
+      ],
+      "font_size": 9.92266845703125,
+      "bold": true,
+      "bbox_pixels": [
+        639.0,
+        499.0061950683594,
+        1116.007568359375,
+        519.1235961914062
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 301,
+      "in_figure_scope": true,
+      "text": "task groups. Stage 2 determines how each optimization path"
+    },
+    {
+      "source_line_id": "p0003-b0019-l0010",
+      "bbox_points": [
+        319.5,
+        260.5678405761719,
+        450.41845703125,
+        270.53045654296875
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        521.1356811523438,
+        900.8369140625,
+        541.0609130859375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 302,
+      "in_figure_scope": true,
+      "text": "evolves through task sequencing."
+    },
+    {
+      "source_line_id": "p0003-b0020-l0000",
+      "bbox_points": [
+        319.5,
+        276.98480224609375,
+        473.5233459472656,
+        287.0465087890625
+      ],
+      "font_size": 10.061732292175293,
+      "bold": true,
+      "bbox_pixels": [
+        639.0,
+        553.9696044921875,
+        947.0466918945312,
+        574.093017578125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 303,
+      "in_figure_scope": true,
+      "text": "Stage 1: Automatic Task Grouping"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0001",
+      "bbox_points": [
+        483.49212646484375,
+        277.12274169921875,
+        559.6654052734375,
+        287.1844482421875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        966.9842529296875,
+        554.2454833984375,
+        1119.330810546875,
+        574.368896484375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 304,
+      "in_figure_scope": true,
+      "text": "This procedure at-"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0002",
+      "bbox_points": [
+        319.5,
+        288.23175048828125,
+        559.658935546875,
+        298.0942077636719
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        576.4635009765625,
+        1119.31787109375,
+        596.1884155273438
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 305,
+      "in_figure_scope": true,
+      "text": "tends to allocate optimization paths by grouping optimization-"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0003",
+      "bbox_points": [
+        319.5,
+        299.0922546386719,
+        558.0026245117188,
+        309.084716796875
+      ],
+      "font_size": 9.992443084716797,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        598.1845092773438,
+        1116.0052490234375,
+        618.16943359375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 306,
+      "in_figure_scope": true,
+      "text": "compatible tasks into independent adaptation spaces. These"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0004",
+      "bbox_points": [
+        319.5,
+        310.0814208984375,
+        557.9950561523438,
+        320.0340576171875
+      ],
+      "font_size": 9.952631950378418,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        620.162841796875,
+        1115.9901123046875,
+        640.068115234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 307,
+      "in_figure_scope": true,
+      "text": "adaptation spaces are implemented as separate policies. The"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0005",
+      "bbox_points": [
+        319.5,
+        320.957763671875,
+        559.6654052734375,
+        331.01947021484375
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        641.91552734375,
+        1119.330810546875,
+        662.0389404296875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 308,
+      "in_figure_scope": true,
+      "text": "objective is to construct task groups with low internal opti-"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0006",
+      "bbox_points": [
+        319.5,
+        331.96173095703125,
+        559.6614379882812,
+        341.9640808105469
+      ],
+      "font_size": 10.002370834350586,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        663.9234619140625,
+        1119.3228759765625,
+        683.9281616210938
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 309,
+      "in_figure_scope": true,
+      "text": "mization conflict, similar capability requirements, and com-"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0007",
+      "bbox_points": [
+        319.5,
+        343.0267639160156,
+        557.9990234375,
+        352.88922119140625
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        686.0535278320312,
+        1115.998046875,
+        705.7784423828125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 310,
+      "in_figure_scope": true,
+      "text": "patible output behaviours, so that tasks within each policy are"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0008",
+      "bbox_points": [
+        319.5,
+        353.9857482910156,
+        557.9991455078125,
+        363.84820556640625
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        707.9714965820312,
+        1115.998291015625,
+        727.6964111328125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 311,
+      "in_figure_scope": true,
+      "text": "more likely to benefit from positive transfer while minimizing"
+    },
+    {
+      "source_line_id": "p0003-b0020-l0009",
+      "bbox_points": [
+        319.5,
+        364.79376220703125,
+        557.9989013671875,
+        374.85546875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        729.5875244140625,
+        1115.997802734375,
+        749.7109375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 3,
+      "line_number": 312,
+      "in_figure_scope": true,
+      "text": "optimization interference. These groups preserve positive"
+    },
+    {
+      "source_line_id": "p0006-b0008-l0002",
+      "bbox_points": [
+        319.5,
+        455.8343505859375,
+        559.6589965820312,
+        465.76202392578125
+      ],
+      "font_size": 9.927669525146484,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        911.668701171875,
+        1119.3179931640625,
+        931.5240478515625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 790,
+      "in_figure_scope": true,
+      "text": "indicate more compatible optimization directions and behav-"
+    },
+    {
+      "source_line_id": "p0006-b0008-l0003",
+      "bbox_points": [
+        319.5,
+        466.6917419433594,
+        557.9989013671875,
+        476.7534484863281
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        933.3834838867188,
+        1115.997802734375,
+        953.5068969726562
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 791,
+      "in_figure_scope": true,
+      "text": "ior characteristics, providing the basis for constructing the"
+    },
+    {
+      "source_line_id": "p0006-b0008-l0004",
+      "bbox_points": [
+        319.5,
+        477.7258605957031,
+        470.52294921875,
+        487.6884765625
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        955.4517211914062,
+        941.0458984375,
+        975.376953125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 792,
+      "in_figure_scope": true,
+      "text": "two optimization-compatible policies."
+    },
+    {
+      "source_line_id": "p0006-b0009-l0000",
+      "bbox_points": [
+        319.5,
+        516.3718872070312,
+        366.7127380371094,
+        526.33447265625
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1032.7437744140625,
+        733.4254760742188,
+        1052.6689453125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 793,
+      "in_figure_scope": true,
+      "text": "sequencing."
+    },
+    {
+      "source_line_id": "p0006-b0010-l0000",
+      "bbox_points": [
+        329.4630126953125,
+        529.8679809570312,
+        559.6675415039062,
+        540.0476684570312
+      ],
+      "font_size": 10.041984558105469,
+      "bold": true,
+      "bbox_pixels": [
+        658.926025390625,
+        1059.7359619140625,
+        1119.3350830078125,
+        1080.0953369140625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 794,
+      "in_figure_scope": true,
+      "text": "Task grouping. To evaluate the proposed grouping strat-"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0001",
+      "bbox_points": [
+        319.5,
+        540.9684448242188,
+        558.0029907226562,
+        551.0054931640625
+      ],
+      "font_size": 10.037040710449219,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1081.9368896484375,
+        1116.0059814453125,
+        1102.010986328125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 795,
+      "in_figure_scope": true,
+      "text": "egy, we compare it with two alternative task groupings. All"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0002",
+      "bbox_points": [
+        319.5,
+        552.0597534179688,
+        558.2527465820312,
+        561.9222412109375
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1104.1195068359375,
+        1116.5054931640625,
+        1123.844482421875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 796,
+      "in_figure_scope": true,
+      "text": "settings use the same two-adapter architecture, the same rank"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0003",
+      "bbox_points": [
+        319.5,
+        563.0187377929688,
+        558.3505859375,
+        572.8812255859375
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1126.0374755859375,
+        1116.701171875,
+        1145.762451171875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 797,
+      "in_figure_scope": true,
+      "text": "allocation, and the same sequential fine-tuning protocol. Only"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0004",
+      "bbox_points": [
+        319.5,
+        573.9625244140625,
+        559.658935546875,
+        583.8450927734375
+      ],
+      "font_size": 9.882577896118164,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1147.925048828125,
+        1119.31787109375,
+        1167.690185546875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 798,
+      "in_figure_scope": true,
+      "text": "the task assignments are changed. As shown in Table 3, com-"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0005",
+      "bbox_points": [
+        319.5,
+        584.936767578125,
+        557.9992065429688,
+        594.7992553710938
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1169.87353515625,
+        1115.9984130859375,
+        1189.5985107421875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 799,
+      "in_figure_scope": true,
+      "text": "pared to the two alternative groupings, the proposed grouping"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0006",
+      "bbox_points": [
+        319.5,
+        595.7447509765625,
+        559.7467041015625,
+        605.8064575195312
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1191.489501953125,
+        1119.493408203125,
+        1211.6129150390625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 800,
+      "in_figure_scope": true,
+      "text": "achieves the best OP of 44.78 and the best BWT of 0.013."
+    },
+    {
+      "source_line_id": "p0006-b0010-l0007",
+      "bbox_points": [
+        319.1910095214844,
+        606.7487182617188,
+        557.9966430664062,
+        616.7510986328125
+      ],
+      "font_size": 10.002370834350586,
+      "bold": false,
+      "bbox_pixels": [
+        638.3820190429688,
+        1213.4974365234375,
+        1115.9932861328125,
+        1233.502197265625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 801,
+      "in_figure_scope": true,
+      "text": "This indicates that transfer learning has been effective, with"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0008",
+      "bbox_points": [
+        319.5,
+        617.71142578125,
+        557.9988403320312,
+        627.7088623046875
+      ],
+      "font_size": 9.997407913208008,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1235.4228515625,
+        1115.9976806640625,
+        1255.417724609375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 802,
+      "in_figure_scope": true,
+      "text": "methods such as MTL-LoRA (Yang et al. 2025) and MoRE"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0009",
+      "bbox_points": [
+        319.1709899902344,
+        628.6742553710938,
+        558.0042114257812,
+        638.6666870117188
+      ],
+      "font_size": 9.992443084716797,
+      "bold": false,
+      "bbox_pixels": [
+        638.3419799804688,
+        1257.3485107421875,
+        1116.0084228515625,
+        1277.3333740234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 803,
+      "in_figure_scope": true,
+      "text": "(Zhang et al. 2025) having a maximum BWT of 0. Since all"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0010",
+      "bbox_points": [
+        319.5,
+        639.5797729492188,
+        557.9989013671875,
+        649.6414794921875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1279.1595458984375,
+        1115.997802734375,
+        1299.282958984375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 804,
+      "in_figure_scope": true,
+      "text": "other settings remain unchanged, the improvement comes"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0011",
+      "bbox_points": [
+        319.5,
+        650.68212890625,
+        557.9966430664062,
+        660.5546875
+      ],
+      "font_size": 9.872529029846191,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1301.3642578125,
+        1115.9932861328125,
+        1321.109375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 805,
+      "in_figure_scope": true,
+      "text": "from organizing optimization-compatible tasks into the same"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0012",
+      "bbox_points": [
+        319.5,
+        661.6487426757812,
+        559.658935546875,
+        671.51123046875
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1323.2974853515625,
+        1119.31787109375,
+        1343.0224609375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 806,
+      "in_figure_scope": true,
+      "text": "policy rather than simply introducing multiple adapters. More-"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0013",
+      "bbox_points": [
+        319.5,
+        672.6077880859375,
+        558.3506469726562,
+        682.4702758789062
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1345.215576171875,
+        1116.7012939453125,
+        1364.9405517578125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 807,
+      "in_figure_scope": true,
+      "text": "over, Figure 2 is used to visualize the fused task-compatibility"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0014",
+      "bbox_points": [
+        319.5,
+        683.415771484375,
+        557.9986572265625,
+        693.4774780273438
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1366.83154296875,
+        1115.997314453125,
+        1386.9549560546875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 808,
+      "in_figure_scope": true,
+      "text": "matrix used in Stage 1, which combines gradient conflict"
+    },
+    {
+      "source_line_id": "p0006-b0010-l0015",
+      "bbox_points": [
+        319.5,
+        694.5257568359375,
+        557.9990234375,
+        704.3882446289062
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        1389.051513671875,
+        1115.998046875,
+        1408.7764892578125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 6,
+      "line_number": 809,
+      "in_figure_scope": true,
+      "text": "and behavior differences to organize optimization-compatible"
+    },
+    {
+      "source_line_id": "p0007-b0000-l0000",
+      "bbox_points": [
+        53.691001892089844,
+        54.04576110839844,
+        558.3084106445312,
+        64.10749053955078
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        107.38200378417969,
+        108.09152221679688,
+        1116.6168212890625,
+        128.21498107910156
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 810,
+      "in_figure_scope": true,
+      "text": "Table 2: Task-level analysis of destructive interference under different task grouping and sequencing strategies. Lower BWT"
+    },
+    {
+      "source_line_id": "p0007-b0000-l0001",
+      "bbox_points": [
+        54.0,
+        65.07987213134766,
+        503.1936950683594,
+        75.04247283935547
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        130.1597442626953,
+        1006.3873901367188,
+        150.08494567871094
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 811,
+      "in_figure_scope": true,
+      "text": "indicates stronger destructive interference. “–” denotes the last task within a policy, for which BWT is undefined."
+    },
+    {
+      "source_line_id": "p0007-b0001-l0000",
+      "bbox_points": [
+        61.210811614990234,
+        88.91828155517578,
+        142.9607391357422,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        122.42162322998047,
+        177.83656311035156,
+        285.9214782714844,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 812,
+      "in_figure_scope": true,
+      "text": "Grouping / sequencing"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0001",
+      "bbox_points": [
+        153.13812255859375,
+        88.91828155517578,
+        195.8068084716797,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        306.2762451171875,
+        177.83656311035156,
+        391.6136169433594,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 813,
+      "in_figure_scope": true,
+      "text": "C-STANCE"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0002",
+      "bbox_points": [
+        205.98422241210938,
+        88.91828155517578,
+        231.89414978027344,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        411.96844482421875,
+        177.83656311035156,
+        463.7882995605469,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 814,
+      "in_figure_scope": true,
+      "text": "FOMC"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0003",
+      "bbox_points": [
+        242.071533203125,
+        88.91828155517578,
+        281.6446838378906,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        484.14306640625,
+        177.83656311035156,
+        563.2893676757812,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 815,
+      "in_figure_scope": true,
+      "text": "ScienceQA"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0004",
+      "bbox_points": [
+        291.8220520019531,
+        88.91828155517578,
+        344.2186584472656,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        583.6441040039062,
+        177.83656311035156,
+        688.4373168945312,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 816,
+      "in_figure_scope": true,
+      "text": "NumGLUE-ds"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0005",
+      "bbox_points": [
+        354.39605712890625,
+        88.91828155517578,
+        403.31536865234375,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        708.7921142578125,
+        177.83656311035156,
+        806.6307373046875,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 817,
+      "in_figure_scope": true,
+      "text": "MeetingBank"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0006",
+      "bbox_points": [
+        413.4927673339844,
+        88.91828155517578,
+        435.6370544433594,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        826.9855346679688,
+        177.83656311035156,
+        871.2741088867188,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 818,
+      "in_figure_scope": true,
+      "text": "Py150"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0007",
+      "bbox_points": [
+        445.814453125,
+        88.91828155517578,
+        501.02685546875,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        891.62890625,
+        177.83656311035156,
+        1002.0537109375,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 819,
+      "in_figure_scope": true,
+      "text": "NumGLUE-cm"
+    },
+    {
+      "source_line_id": "p0007-b0001-l0008",
+      "bbox_points": [
+        511.2042541503906,
+        88.91828155517578,
+        550.785888671875,
+        97.39944458007812
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        1022.4085083007812,
+        177.83656311035156,
+        1101.57177734375,
+        194.79888916015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 820,
+      "in_figure_scope": true,
+      "text": "20Minuten"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0000",
+      "bbox_points": [
+        61.210811614990234,
+        102.62127685546875,
+        125.2944564819336,
+        111.1024398803711
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        122.42162322998047,
+        205.2425537109375,
+        250.5889129638672,
+        222.2048797607422
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 821,
+      "in_figure_scope": true,
+      "text": "Random / Random"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0001",
+      "bbox_points": [
+        163.51904296875,
+        102.62127685546875,
+        185.42588806152344,
+        111.1024398803711
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        327.0380859375,
+        205.2425537109375,
+        370.8517761230469,
+        222.2048797607422
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 822,
+      "in_figure_scope": true,
+      "text": "-0.002"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0002",
+      "bbox_points": [
+        216.8231201171875,
+        102.62127685546875,
+        221.06370544433594,
+        111.1024398803711
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        433.646240234375,
+        205.2425537109375,
+        442.1274108886719,
+        222.2048797607422
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 823,
+      "in_figure_scope": true,
+      "text": "–"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0003",
+      "bbox_points": [
+        250.90890502929688,
+        102.62127685546875,
+        272.8157043457031,
+        111.1024398803711
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        501.81781005859375,
+        205.2425537109375,
+        545.6314086914062,
+        222.2048797607422
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 824,
+      "in_figure_scope": true,
+      "text": "-0.046"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0004",
+      "bbox_points": [
+        307.0711364746094,
+        102.62127685546875,
+        328.97796630859375,
+        111.1024398803711
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        614.1422729492188,
+        205.2425537109375,
+        657.9559326171875,
+        222.2048797607422
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 825,
+      "in_figure_scope": true,
+      "text": "-0.030"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0005",
+      "bbox_points": [
+        367.906494140625,
+        102.50501251220703,
+        389.81329345703125,
+        110.98617553710938
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        735.81298828125,
+        205.01002502441406,
+        779.6265869140625,
+        221.97235107421875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 826,
+      "in_figure_scope": true,
+      "text": "-0.357"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0006",
+      "bbox_points": [
+        413.6114501953125,
+        102.62127685546875,
+        435.51824951171875,
+        111.1024398803711
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        827.222900390625,
+        205.2425537109375,
+        871.0364990234375,
+        222.2048797607422
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 827,
+      "in_figure_scope": true,
+      "text": "-0.018"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0007",
+      "bbox_points": [
+        462.47137451171875,
+        102.50501251220703,
+        484.3782958984375,
+        110.98617553710938
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        924.9427490234375,
+        205.01002502441406,
+        968.756591796875,
+        221.97235107421875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 828,
+      "in_figure_scope": true,
+      "text": "-0.256"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0008",
+      "bbox_points": [
+        528.8789672851562,
+        102.62127685546875,
+        533.1195678710938,
+        111.1024398803711
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        1057.7579345703125,
+        205.2425537109375,
+        1066.2391357421875,
+        222.2048797607422
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 829,
+      "in_figure_scope": true,
+      "text": "–"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0009",
+      "bbox_points": [
+        61.210811614990234,
+        111.95068359375,
+        113.25968933105469,
+        120.43184661865234
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        122.42162322998047,
+        223.9013671875,
+        226.51937866210938,
+        240.8636932373047
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 830,
+      "in_figure_scope": true,
+      "text": "Auto / Random"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0010",
+      "bbox_points": [
+        164.93539428710938,
+        111.95068359375,
+        184.0179901123047,
+        120.43184661865234
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        329.87078857421875,
+        223.9013671875,
+        368.0359802246094,
+        240.8636932373047
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 831,
+      "in_figure_scope": true,
+      "text": "0.000"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0011",
+      "bbox_points": [
+        209.40213012695312,
+        111.95068359375,
+        228.48472595214844,
+        120.43184661865234
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        418.80426025390625,
+        223.9013671875,
+        456.9694519042969,
+        240.8636932373047
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 832,
+      "in_figure_scope": true,
+      "text": "0.109"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0012",
+      "bbox_points": [
+        252.3167724609375,
+        111.95068359375,
+        271.39935302734375,
+        120.43184661865234
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        504.633544921875,
+        223.9013671875,
+        542.7987060546875,
+        240.8636932373047
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 833,
+      "in_figure_scope": true,
+      "text": "0.052"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0013",
+      "bbox_points": [
+        307.0711364746094,
+        111.95068359375,
+        328.97796630859375,
+        120.43184661865234
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        614.1422729492188,
+        223.9013671875,
+        657.9559326171875,
+        240.8636932373047
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 834,
+      "in_figure_scope": true,
+      "text": "-0.012"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0014",
+      "bbox_points": [
+        367.906494140625,
+        111.83441925048828,
+        389.81329345703125,
+        120.31558227539062
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        735.81298828125,
+        223.66883850097656,
+        779.6265869140625,
+        240.63116455078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 835,
+      "in_figure_scope": true,
+      "text": "-0.048"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0015",
+      "bbox_points": [
+        422.4488220214844,
+        111.95068359375,
+        426.68939208984375,
+        120.43184661865234
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        844.8976440429688,
+        223.9013671875,
+        853.3787841796875,
+        240.8636932373047
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 836,
+      "in_figure_scope": true,
+      "text": "–"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0016",
+      "bbox_points": [
+        462.471435546875,
+        111.83441925048828,
+        484.37835693359375,
+        120.31558227539062
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        924.94287109375,
+        223.66883850097656,
+        968.7567138671875,
+        240.63116455078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 837,
+      "in_figure_scope": true,
+      "text": "-0.231"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0017",
+      "bbox_points": [
+        520.0416259765625,
+        111.95068359375,
+        541.9485473632812,
+        120.43184661865234
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        1040.083251953125,
+        223.9013671875,
+        1083.8970947265625,
+        240.8636932373047
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 838,
+      "in_figure_scope": true,
+      "text": "-0.004"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0018",
+      "bbox_points": [
+        61.210811614990234,
+        121.280029296875,
+        101.22491455078125,
+        129.76119995117188
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        122.42162322998047,
+        242.56005859375,
+        202.4498291015625,
+        259.52239990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 839,
+      "in_figure_scope": true,
+      "text": "Auto / Auto"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0019",
+      "bbox_points": [
+        164.93539428710938,
+        121.280029296875,
+        184.0179901123047,
+        129.76119995117188
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        329.87078857421875,
+        242.56005859375,
+        368.0359802246094,
+        259.52239990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 840,
+      "in_figure_scope": true,
+      "text": "0.009"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0020",
+      "bbox_points": [
+        209.40213012695312,
+        121.280029296875,
+        228.48472595214844,
+        129.76119995117188
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        418.80426025390625,
+        242.56005859375,
+        456.9694519042969,
+        259.52239990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 841,
+      "in_figure_scope": true,
+      "text": "0.107"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0021",
+      "bbox_points": [
+        252.3167724609375,
+        121.280029296875,
+        271.39935302734375,
+        129.76119995117188
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        504.633544921875,
+        242.56005859375,
+        542.7987060546875,
+        259.52239990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 842,
+      "in_figure_scope": true,
+      "text": "0.135"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0022",
+      "bbox_points": [
+        315.9000244140625,
+        121.280029296875,
+        320.1405944824219,
+        129.76119995117188
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        631.800048828125,
+        242.56005859375,
+        640.2811889648438,
+        259.52239990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 843,
+      "in_figure_scope": true,
+      "text": "–"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0023",
+      "bbox_points": [
+        367.9065246582031,
+        121.16376495361328,
+        389.8133239746094,
+        129.64492797851562
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        735.8130493164062,
+        242.32752990722656,
+        779.6266479492188,
+        259.28985595703125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 844,
+      "in_figure_scope": true,
+      "text": "-0.171"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0024",
+      "bbox_points": [
+        413.6114501953125,
+        121.280029296875,
+        435.5182800292969,
+        129.76119995117188
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        827.222900390625,
+        242.56005859375,
+        871.0365600585938,
+        259.52239990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 845,
+      "in_figure_scope": true,
+      "text": "-0.014"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0025",
+      "bbox_points": [
+        463.8792724609375,
+        121.16376495361328,
+        482.9619445800781,
+        129.64492797851562
+      ],
+      "font_size": 8.481161117553711,
+      "bold": true,
+      "bbox_pixels": [
+        927.758544921875,
+        242.32752990722656,
+        965.9238891601562,
+        259.28985595703125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 846,
+      "in_figure_scope": true,
+      "text": "0.000"
+    },
+    {
+      "source_line_id": "p0007-b0002-l0026",
+      "bbox_points": [
+        528.8789672851562,
+        121.280029296875,
+        533.1195678710938,
+        129.76119995117188
+      ],
+      "font_size": 8.481161117553711,
+      "bold": false,
+      "bbox_pixels": [
+        1057.7579345703125,
+        242.56005859375,
+        1066.2391357421875,
+        259.52239990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 847,
+      "in_figure_scope": true,
+      "text": "–"
+    },
+    {
+      "source_line_id": "p0007-b0003-l0000",
+      "bbox_points": [
+        53.691001892089844,
+        144.64573669433594,
+        558.0036010742188,
+        154.7074737548828
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        107.38200378417969,
+        289.2914733886719,
+        1116.0072021484375,
+        309.4149475097656
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 848,
+      "in_figure_scope": true,
+      "text": "Table 3: Ablation on task grouping strategy. “Auto Group” denotes the task-compatibility-aware grouping used in the main"
+    },
+    {
+      "source_line_id": "p0007-b0003-l0001",
+      "bbox_points": [
+        54.0,
+        155.6798553466797,
+        513.8136596679688,
+        165.6424560546875
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        311.3597106933594,
+        1027.6273193359375,
+        331.284912109375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 849,
+      "in_figure_scope": true,
+      "text": "experiments, which is compared with two alternative groupings derived from the fused task-compatibility structure."
+    },
+    {
+      "source_line_id": "p0007-b0004-l0000",
+      "bbox_points": [
+        54.0,
+        180.77700805664062,
+        88.17265319824219,
+        189.6923828125
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        361.55401611328125,
+        176.34530639648438,
+        379.384765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 850,
+      "in_figure_scope": true,
+      "text": "Grouping"
+    },
+    {
+      "source_line_id": "p0007-b0004-l0001",
+      "bbox_points": [
+        107.59927368164062,
+        180.77700805664062,
+        137.0646209716797,
+        189.6923828125
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        215.19854736328125,
+        361.55401611328125,
+        274.1292419433594,
+        379.384765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 851,
+      "in_figure_scope": true,
+      "text": "Group 1"
+    },
+    {
+      "source_line_id": "p0007-b0004-l0002",
+      "bbox_points": [
+        307.99029541015625,
+        180.77700805664062,
+        337.4556884765625,
+        189.6923828125
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        615.9805908203125,
+        361.55401611328125,
+        674.911376953125,
+        379.384765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 852,
+      "in_figure_scope": true,
+      "text": "Group 2"
+    },
+    {
+      "source_line_id": "p0007-b0004-l0003",
+      "bbox_points": [
+        505.7156982421875,
+        180.4503173828125,
+        523.9208984375,
+        189.6923828125
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        1011.431396484375,
+        360.900634765625,
+        1047.841796875,
+        379.384765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 853,
+      "in_figure_scope": true,
+      "text": "OP ↑"
+    },
+    {
+      "source_line_id": "p0007-b0004-l0004",
+      "bbox_points": [
+        531.7842407226562,
+        180.4503173828125,
+        558.00439453125,
+        189.6923828125
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        1063.5684814453125,
+        360.900634765625,
+        1116.0087890625,
+        379.384765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 854,
+      "in_figure_scope": true,
+      "text": "BWT ↑"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0000",
+      "bbox_points": [
+        54.0,
+        196.32513427734375,
+        291.2383117675781,
+        205.36273193359375
+      ],
+      "font_size": 8.91538143157959,
+      "bold": true,
+      "bbox_pixels": [
+        108.0,
+        392.6502685546875,
+        582.4766235351562,
+        410.7254638671875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 855,
+      "in_figure_scope": true,
+      "text": "Alternative 1 {C-STANCE, FOMC, NumGLUE-ds, 20Minuten}"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0001",
+      "bbox_points": [
+        307.99029541015625,
+        196.32513427734375,
+        524.8482055664062,
+        205.36273193359375
+      ],
+      "font_size": 8.91538143157959,
+      "bold": true,
+      "bbox_pixels": [
+        615.9805908203125,
+        392.6502685546875,
+        1049.6964111328125,
+        410.7254638671875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 856,
+      "in_figure_scope": true,
+      "text": "{MeetingBank, Py150, NumGLUE-cm, ScienceQA} 41.29"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0002",
+      "bbox_points": [
+        533.3802490234375,
+        196.44735717773438,
+        556.4087524414062,
+        205.36273193359375
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        1066.760498046875,
+        392.89471435546875,
+        1112.8175048828125,
+        410.7254638671875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 857,
+      "in_figure_scope": true,
+      "text": "-0.017"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0003",
+      "bbox_points": [
+        54.0,
+        207.02386474609375,
+        488.45562744140625,
+        216.06146240234375
+      ],
+      "font_size": 8.91538143157959,
+      "bold": true,
+      "bbox_pixels": [
+        108.0,
+        414.0477294921875,
+        976.9112548828125,
+        432.1229248046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 858,
+      "in_figure_scope": true,
+      "text": "Alternative 2 {C-STANCE, FOMC, NumGLUE-ds, MeetingBank} {Py150, ScienceQA, NumGLUE-cm, 20Minuten}"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0004",
+      "bbox_points": [
+        504.7886047363281,
+        207.14608764648438,
+        524.8482055664062,
+        216.06146240234375
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        1009.5772094726562,
+        414.29217529296875,
+        1049.6964111328125,
+        432.1229248046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 859,
+      "in_figure_scope": true,
+      "text": "41.96"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0005",
+      "bbox_points": [
+        533.3802490234375,
+        207.14608764648438,
+        556.4087524414062,
+        216.06146240234375
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        1066.760498046875,
+        414.29217529296875,
+        1112.8175048828125,
+        432.1229248046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 860,
+      "in_figure_scope": true,
+      "text": "-0.003"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0006",
+      "bbox_points": [
+        54.0,
+        217.84487915039062,
+        96.57093811035156,
+        226.76025390625
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        435.68975830078125,
+        193.14187622070312,
+        453.5205078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 861,
+      "in_figure_scope": true,
+      "text": "Auto Group"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0007",
+      "bbox_points": [
+        107.5992660522461,
+        217.84487915039062,
+        290.23089599609375,
+        226.76025390625
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        215.1985321044922,
+        435.68975830078125,
+        580.4617919921875,
+        453.5205078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 862,
+      "in_figure_scope": true,
+      "text": "{C-STANCE, FOMC, ScienceQA, NumGLUE-ds}"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0008",
+      "bbox_points": [
+        307.99029541015625,
+        217.84487915039062,
+        495.3917541503906,
+        226.76025390625
+      ],
+      "font_size": 8.91538143157959,
+      "bold": false,
+      "bbox_pixels": [
+        615.9805908203125,
+        435.68975830078125,
+        990.7835083007812,
+        453.5205078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 863,
+      "in_figure_scope": true,
+      "text": "{MeetingBank, Py150, NumGLUE-cm, 20Minuten}"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0009",
+      "bbox_points": [
+        504.78857421875,
+        217.72265625,
+        524.8482055664062,
+        226.63804626464844
+      ],
+      "font_size": 8.91538143157959,
+      "bold": true,
+      "bbox_pixels": [
+        1009.5771484375,
+        435.4453125,
+        1049.6964111328125,
+        453.2760925292969
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 864,
+      "in_figure_scope": true,
+      "text": "44.78"
+    },
+    {
+      "source_line_id": "p0007-b0005-l0010",
+      "bbox_points": [
+        534.869140625,
+        217.72265625,
+        554.9287719726562,
+        226.63804626464844
+      ],
+      "font_size": 8.91538143157959,
+      "bold": true,
+      "bbox_pixels": [
+        1069.73828125,
+        435.4453125,
+        1109.8575439453125,
+        453.2760925292969
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 865,
+      "in_figure_scope": true,
+      "text": "0.013"
+    },
+    {
+      "source_line_id": "p0007-b0006-l0000",
+      "bbox_points": [
+        54.0,
+        252.69508361816406,
+        292.5015563964844,
+        262.59271240234375
+      ],
+      "font_size": 9.89763069152832,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        505.3901672363281,
+        585.0031127929688,
+        525.1854248046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 866,
+      "in_figure_scope": true,
+      "text": "tasks into two policies. Figure 2 and Table 3 demonstrate the"
+    },
+    {
+      "source_line_id": "p0007-b0006-l0001",
+      "bbox_points": [
+        54.0,
+        263.52978515625,
+        292.4986877441406,
+        273.59149169921875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        527.0595703125,
+        584.9973754882812,
+        547.1829833984375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 867,
+      "in_figure_scope": true,
+      "text": "necessity of task grouping for effective parameter-efficient"
+    },
+    {
+      "source_line_id": "p0007-b0006-l0002",
+      "bbox_points": [
+        54.0,
+        274.5638732910156,
+        240.81866455078125,
+        284.5264892578125
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        549.1277465820312,
+        481.6373291015625,
+        569.052978515625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 868,
+      "in_figure_scope": true,
+      "text": "fine-tuning over heterogeneous task sequences."
+    },
+    {
+      "source_line_id": "p0007-b0007-l0000",
+      "bbox_points": [
+        63.9630012512207,
+        286.8649597167969,
+        294.1666259765625,
+        297.0144958496094
+      ],
+      "font_size": 10.012289047241211,
+      "bold": true,
+      "bbox_pixels": [
+        127.9260025024414,
+        573.7299194335938,
+        588.333251953125,
+        594.0289916992188
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 869,
+      "in_figure_scope": true,
+      "text": "Rank allocation. We further analyze how the fixed train-"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0001",
+      "bbox_points": [
+        54.0,
+        297.99786376953125,
+        292.4947204589844,
+        307.9604797363281
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        595.9957275390625,
+        584.9894409179688,
+        615.9209594726562
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 870,
+      "in_figure_scope": true,
+      "text": "able budget should be allocated across the two policies. The"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0002",
+      "bbox_points": [
+        54.0,
+        309.0251159667969,
+        294.159912109375,
+        318.89764404296875
+      ],
+      "font_size": 9.872529029846191,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        618.0502319335938,
+        588.31982421875,
+        637.7952880859375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 871,
+      "in_figure_scope": true,
+      "text": "total effective rank is fixed at 128, while only the rank alloca-"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0003",
+      "bbox_points": [
+        54.0,
+        319.9423522949219,
+        292.49700927734375,
+        329.8700256347656
+      ],
+      "font_size": 9.927669525146484,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        639.8847045898438,
+        584.9940185546875,
+        659.7400512695312
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 872,
+      "in_figure_scope": true,
+      "text": "tion between the two adapters is changed. We compare three"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0004",
+      "bbox_points": [
+        54.0,
+        330.79974365234375,
+        292.498779296875,
+        340.8614501953125
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        661.5994873046875,
+        584.99755859375,
+        681.722900390625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 873,
+      "in_figure_scope": true,
+      "text": "settings: 32 + 96, 64 + 64, and 96 + 32. As shown in Table"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0005",
+      "bbox_points": [
+        53.6510009765625,
+        341.7849426269531,
+        292.50091552734375,
+        351.8121032714844
+      ],
+      "font_size": 10.02714729309082,
+      "bold": false,
+      "bbox_pixels": [
+        107.302001953125,
+        683.5698852539062,
+        585.0018310546875,
+        703.6242065429688
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 874,
+      "in_figure_scope": true,
+      "text": "4, the balanced 64 + 64 allocation achieves the best OP and"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0006",
+      "bbox_points": [
+        54.0,
+        352.8534851074219,
+        292.50201416015625,
+        362.736083984375
+      ],
+      "font_size": 9.882577896118164,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        705.7069702148438,
+        585.0040283203125,
+        725.47216796875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 875,
+      "in_figure_scope": true,
+      "text": "BWT. This indicates that the performance improvement does"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0007",
+      "bbox_points": [
+        54.0,
+        363.6767578125,
+        292.4986572265625,
+        373.73846435546875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        727.353515625,
+        584.997314453125,
+        747.4769287109375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 876,
+      "in_figure_scope": true,
+      "text": "not depend on allocating more trainable parameters to one"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0008",
+      "bbox_points": [
+        54.0,
+        374.6357421875,
+        292.4987487792969,
+        384.69744873046875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        749.271484375,
+        584.9974975585938,
+        769.3948974609375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 877,
+      "in_figure_scope": true,
+      "text": "policy. Instead, balancing the trainable capacity across the"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0009",
+      "bbox_points": [
+        54.0,
+        385.68878173828125,
+        292.8088073730469,
+        395.6264343261719
+      ],
+      "font_size": 9.937662124633789,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        771.3775634765625,
+        585.6176147460938,
+        791.2528686523438
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 878,
+      "in_figure_scope": true,
+      "text": "two policies provides a more effective use of the fixed PEFT"
+    },
+    {
+      "source_line_id": "p0007-b0007-l0010",
+      "bbox_points": [
+        54.0,
+        396.62884521484375,
+        83.35977935791016,
+        406.5914611816406
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        793.2576904296875,
+        166.7195587158203,
+        813.1829223632812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 879,
+      "in_figure_scope": true,
+      "text": "budget."
+    },
+    {
+      "source_line_id": "p0007-b0008-l0000",
+      "bbox_points": [
+        63.9630012512207,
+        409.0135498046875,
+        292.4989013671875,
+        419.05194091796875
+      ],
+      "font_size": 9.902643203735352,
+      "bold": true,
+      "bbox_pixels": [
+        127.9260025024414,
+        818.027099609375,
+        584.997802734375,
+        838.1038818359375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 880,
+      "in_figure_scope": true,
+      "text": "Task sequencing. The task grouping, rank allocation, and"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0001",
+      "bbox_points": [
+        54.0,
+        420.1235046386719,
+        292.7471008300781,
+        430.006103515625
+      ],
+      "font_size": 9.882577896118164,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        840.2470092773438,
+        585.4942016601562,
+        860.01220703125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 881,
+      "in_figure_scope": true,
+      "text": "training configuration remain unchanged, while only the task"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0002",
+      "bbox_points": [
+        54.0,
+        431.0977478027344,
+        293.7487487792969,
+        440.960205078125
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        862.1954956054688,
+        587.4974975585938,
+        881.92041015625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 882,
+      "in_figure_scope": true,
+      "text": "sequence within each policy is changed. As shown in Table 5,"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0003",
+      "bbox_points": [
+        54.0,
+        442.0567626953125,
+        292.6650390625,
+        451.9192199707031
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        884.113525390625,
+        585.330078125,
+        903.8384399414062
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 883,
+      "in_figure_scope": true,
+      "text": "the automatic sequence achieves the highest OP and BWT for"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0004",
+      "bbox_points": [
+        54.0,
+        452.86474609375,
+        292.4986877441406,
+        462.92645263671875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        905.7294921875,
+        584.9973754882812,
+        925.8529052734375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 884,
+      "in_figure_scope": true,
+      "text": "both groups, while both random sequences reduce OP and"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0005",
+      "bbox_points": [
+        54.0,
+        463.8237609863281,
+        292.7527160644531,
+        473.8854675292969
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        927.6475219726562,
+        585.5054321289062,
+        947.7709350585938
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 885,
+      "in_figure_scope": true,
+      "text": "further increase forgetting. These results indicate that task"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0006",
+      "bbox_points": [
+        54.0,
+        474.7817687988281,
+        292.4986877441406,
+        484.8434753417969
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        949.5635375976562,
+        584.9973754882812,
+        969.6869506835938
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 886,
+      "in_figure_scope": true,
+      "text": "grouping alone is insufficient. Organizing the optimization"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0007",
+      "bbox_points": [
+        54.0,
+        485.7407531738281,
+        292.4986572265625,
+        495.8024597167969
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        971.4815063476562,
+        584.997314453125,
+        991.6049194335938
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 887,
+      "in_figure_scope": true,
+      "text": "trajectory within each policy further improves sequential"
+    },
+    {
+      "source_line_id": "p0007-b0008-l0008",
+      "bbox_points": [
+        54.0,
+        496.7748718261719,
+        294.23809814453125,
+        506.73748779296875
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        993.5497436523438,
+        588.4761962890625,
+        1013.4749755859375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 888,
+      "in_figure_scope": true,
+      "text": "fine-tuning performance and reduces catastrophic forgetting."
+    },
+    {
+      "source_line_id": "p0007-b0009-l0000",
+      "bbox_points": [
+        63.9630012512207,
+        509.29254150390625,
+        292.50360107421875,
+        519.2001953125
+      ],
+      "font_size": 9.90765380859375,
+      "bold": false,
+      "bbox_pixels": [
+        127.9260025024414,
+        1018.5850830078125,
+        585.0072021484375,
+        1038.400390625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 889,
+      "in_figure_scope": true,
+      "text": "Overall, these results demonstrate that the effectiveness of"
+    },
+    {
+      "source_line_id": "p0007-b0009-l0001",
+      "bbox_points": [
+        54.0,
+        520.1647338867188,
+        294.24755859375,
+        530.1868896484375
+      ],
+      "font_size": 10.022196769714355,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        1040.3294677734375,
+        588.4951171875,
+        1060.373779296875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 890,
+      "in_figure_scope": true,
+      "text": "the proposed framework depends on the above components."
+    },
+    {
+      "source_line_id": "p0007-b0009-l0002",
+      "bbox_points": [
+        54.0,
+        531.2447509765625,
+        292.49908447265625,
+        541.1072387695312
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        1062.489501953125,
+        584.9981689453125,
+        1082.2144775390625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 891,
+      "in_figure_scope": true,
+      "text": "Meaningful task grouping organizes optimization-compatible"
+    },
+    {
+      "source_line_id": "p0007-b0009-l0003",
+      "bbox_points": [
+        54.0,
+        542.0517578125,
+        294.16522216796875,
+        552.1134643554688
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        1084.103515625,
+        588.3304443359375,
+        1104.2269287109375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 892,
+      "in_figure_scope": true,
+      "text": "tasks into the same adaptation space, balanced rank alloca-"
+    },
+    {
+      "source_line_id": "p0007-b0009-l0004",
+      "bbox_points": [
+        54.0,
+        553.0107421875,
+        292.49871826171875,
+        563.0724487304688
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        1106.021484375,
+        584.9974365234375,
+        1126.1448974609375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 893,
+      "in_figure_scope": true,
+      "text": "tion makes effective use of the fixed trainable budget, and"
+    },
+    {
+      "source_line_id": "p0007-b0009-l0005",
+      "bbox_points": [
+        54.0,
+        564.0109252929688,
+        294.15863037109375,
+        574.0182495117188
+      ],
+      "font_size": 10.007330894470215,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        1128.0218505859375,
+        588.3172607421875,
+        1148.0364990234375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 894,
+      "in_figure_scope": true,
+      "text": "automatic task sequencing further improves fine-tuning per-"
+    },
+    {
+      "source_line_id": "p0007-b0009-l0006",
+      "bbox_points": [
+        54.0,
+        575.00390625,
+        193.95458984375,
+        584.9664916992188
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        1150.0078125,
+        387.9091796875,
+        1169.9329833984375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 895,
+      "in_figure_scope": true,
+      "text": "formance and knowledge retention."
+    },
+    {
+      "source_line_id": "p0007-b0010-l0000",
+      "bbox_points": [
+        53.691001892089844,
+        599.783203125,
+        292.4978332519531,
+        609.7954711914062
+      ],
+      "font_size": 10.012289047241211,
+      "bold": false,
+      "bbox_pixels": [
+        107.38200378417969,
+        1199.56640625,
+        584.9956665039062,
+        1219.5909423828125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 896,
+      "in_figure_scope": true,
+      "text": "Table 4: Ablation on rank allocation across policies under a"
+    },
+    {
+      "source_line_id": "p0007-b0010-l0001",
+      "bbox_points": [
+        54.0,
+        610.7047729492188,
+        292.498779296875,
+        620.7664794921875
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        108.0,
+        1221.4095458984375,
+        584.99755859375,
+        1241.532958984375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 897,
+      "in_figure_scope": true,
+      "text": "fixed total trainable budget.The total LoRA rank is fixed at"
+    },
+    {
+      "source_line_id": "p0007-b0010-l0002",
+      "bbox_points": [
+        53.25299835205078,
+        621.7378540039062,
+        129.78565979003906,
+        631.700439453125
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        106.50599670410156,
+        1243.4757080078125,
+        259.5713195800781,
+        1263.40087890625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 898,
+      "in_figure_scope": true,
+      "text": "128 for all settings."
+    },
+    {
+      "source_line_id": "p0007-b0011-l0000",
+      "bbox_points": [
+        59.39622116088867,
+        645.9358520507812,
+        179.9532470703125,
+        654.0296630859375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        118.79244232177734,
+        1291.8717041015625,
+        359.906494140625,
+        1308.059326171875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 899,
+      "in_figure_scope": true,
+      "text": "Rank allocation (Group 1 + Group 2)"
+    },
+    {
+      "source_line_id": "p0007-b0011-l0001",
+      "bbox_points": [
+        190.74224853515625,
+        645.9358520507812,
+        223.50592041015625,
+        654.0296630859375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        381.4844970703125,
+        1291.8717041015625,
+        447.0118408203125,
+        1308.059326171875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 900,
+      "in_figure_scope": true,
+      "text": "Total rank"
+    },
+    {
+      "source_line_id": "p0007-b0011-l0002",
+      "bbox_points": [
+        235.14479064941406,
+        645.6392822265625,
+        251.67233276367188,
+        654.0296630859375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        470.2895812988281,
+        1291.278564453125,
+        503.34466552734375,
+        1308.059326171875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 901,
+      "in_figure_scope": true,
+      "text": "OP ↑"
+    },
+    {
+      "source_line_id": "p0007-b0011-l0003",
+      "bbox_points": [
+        263.3031005859375,
+        645.6392822265625,
+        287.1069641113281,
+        654.0296630859375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        526.606201171875,
+        1291.278564453125,
+        574.2139282226562,
+        1308.059326171875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 902,
+      "in_figure_scope": true,
+      "text": "BWT ↑"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0000",
+      "bbox_points": [
+        59.39622116088867,
+        659.4426879882812,
+        84.19559478759766,
+        667.5364990234375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        118.79244232177734,
+        1318.8853759765625,
+        168.3911895751953,
+        1335.072998046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 903,
+      "in_figure_scope": true,
+      "text": "32 + 96"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0001",
+      "bbox_points": [
+        201.05374145507812,
+        659.4426879882812,
+        213.1944122314453,
+        667.5364990234375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        402.10748291015625,
+        1318.8853759765625,
+        426.3888244628906,
+        1335.072998046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 904,
+      "in_figure_scope": true,
+      "text": "128"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0002",
+      "bbox_points": [
+        234.3030242919922,
+        659.4426879882812,
+        252.5140380859375,
+        667.5364990234375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        468.6060485839844,
+        1318.8853759765625,
+        505.028076171875,
+        1335.072998046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 905,
+      "in_figure_scope": true,
+      "text": "41.61"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0003",
+      "bbox_points": [
+        264.7518615722656,
+        659.4426879882812,
+        285.6581115722656,
+        667.5364990234375
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        529.5037231445312,
+        1318.8853759765625,
+        571.3162231445312,
+        1335.072998046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 906,
+      "in_figure_scope": true,
+      "text": "-0.018"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0004",
+      "bbox_points": [
+        59.39622116088867,
+        668.4360961914062,
+        84.19559478759766,
+        676.5299072265625
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        118.79244232177734,
+        1336.8721923828125,
+        168.3911895751953,
+        1353.059814453125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 907,
+      "in_figure_scope": true,
+      "text": "96 + 32"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0005",
+      "bbox_points": [
+        201.05374145507812,
+        668.4360961914062,
+        213.1944122314453,
+        676.5299072265625
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        402.10748291015625,
+        1336.8721923828125,
+        426.3888244628906,
+        1353.059814453125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 908,
+      "in_figure_scope": true,
+      "text": "128"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0006",
+      "bbox_points": [
+        234.3030242919922,
+        668.4360961914062,
+        252.5140380859375,
+        676.5299072265625
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        468.6060485839844,
+        1336.8721923828125,
+        505.028076171875,
+        1353.059814453125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 909,
+      "in_figure_scope": true,
+      "text": "42.58"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0007",
+      "bbox_points": [
+        264.7518615722656,
+        668.4360961914062,
+        285.6581115722656,
+        676.5299072265625
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        529.5037231445312,
+        1336.8721923828125,
+        571.3162231445312,
+        1353.059814453125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 910,
+      "in_figure_scope": true,
+      "text": "-0.011"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0008",
+      "bbox_points": [
+        59.39622116088867,
+        677.4285888671875,
+        84.19559478759766,
+        685.5223999023438
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        118.79244232177734,
+        1354.857177734375,
+        168.3911895751953,
+        1371.0447998046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 911,
+      "in_figure_scope": true,
+      "text": "64 + 64"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0009",
+      "bbox_points": [
+        201.05374145507812,
+        677.4285888671875,
+        213.1944122314453,
+        685.5223999023438
+      ],
+      "font_size": 8.093790054321289,
+      "bold": false,
+      "bbox_pixels": [
+        402.10748291015625,
+        1354.857177734375,
+        426.3888244628906,
+        1371.0447998046875
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 912,
+      "in_figure_scope": true,
+      "text": "128"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0010",
+      "bbox_points": [
+        234.3030242919922,
+        677.317626953125,
+        252.5140380859375,
+        685.4114379882812
+      ],
+      "font_size": 8.093790054321289,
+      "bold": true,
+      "bbox_pixels": [
+        468.6060485839844,
+        1354.63525390625,
+        505.028076171875,
+        1370.8228759765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 913,
+      "in_figure_scope": true,
+      "text": "44.78"
+    },
+    {
+      "source_line_id": "p0007-b0012-l0011",
+      "bbox_points": [
+        266.0954284667969,
+        677.317626953125,
+        284.3064880371094,
+        685.4114379882812
+      ],
+      "font_size": 8.093790054321289,
+      "bold": true,
+      "bbox_pixels": [
+        532.1908569335938,
+        1354.63525390625,
+        568.6129760742188,
+        1370.8228759765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 914,
+      "in_figure_scope": true,
+      "text": "0.013"
+    },
+    {
+      "source_line_id": "p0007-b0013-l0000",
+      "bbox_points": [
+        319.1910095214844,
+        250.42315673828125,
+        558.0008544921875,
+        260.2956848144531
+      ],
+      "font_size": 9.872529029846191,
+      "bold": false,
+      "bbox_pixels": [
+        638.3820190429688,
+        500.8463134765625,
+        1116.001708984375,
+        520.5913696289062
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 915,
+      "in_figure_scope": true,
+      "text": "Table 5: Ablation on task sequencing strategy. Task grouping"
+    },
+    {
+      "source_line_id": "p0007-b0013-l0001",
+      "bbox_points": [
+        319.5,
+        261.3176574707031,
+        557.9951171875,
+        271.2752685546875
+      ],
+      "font_size": 9.95761775970459,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        522.6353149414062,
+        1115.990234375,
+        542.550537109375
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 916,
+      "in_figure_scope": true,
+      "text": "is fixed using the optimization-compatible groups generated"
+    },
+    {
+      "source_line_id": "p0007-b0013-l0002",
+      "bbox_points": [
+        319.5,
+        272.2728576660156,
+        379.8035888671875,
+        282.2354736328125
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        544.5457153320312,
+        759.607177734375,
+        564.470947265625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 917,
+      "in_figure_scope": true,
+      "text": "by our method."
+    },
+    {
+      "source_line_id": "p0007-b0014-l0000",
+      "bbox_points": [
+        324.02093505859375,
+        295.9189147949219,
+        348.80523681640625,
+        302.6998596191406
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        648.0418701171875,
+        591.8378295898438,
+        697.6104736328125,
+        605.3997192382812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 918,
+      "in_figure_scope": true,
+      "text": "sequence"
+    },
+    {
+      "source_line_id": "p0007-b0014-l0001",
+      "bbox_points": [
+        387.605712890625,
+        295.9189147949219,
+        419.24560546875,
+        302.6998596191406
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        775.21142578125,
+        591.8378295898438,
+        838.4912109375,
+        605.3997192382812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 919,
+      "in_figure_scope": true,
+      "text": "Group1-OP"
+    },
+    {
+      "source_line_id": "p0007-b0014-l0002",
+      "bbox_points": [
+        428.2913513183594,
+        295.9189147949219,
+        466.0272521972656,
+        302.6998596191406
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        856.5827026367188,
+        591.8378295898438,
+        932.0545043945312,
+        605.3997192382812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 920,
+      "in_figure_scope": true,
+      "text": "Group1-BWT"
+    },
+    {
+      "source_line_id": "p0007-b0014-l0003",
+      "bbox_points": [
+        475.0662536621094,
+        295.9189147949219,
+        506.7061767578125,
+        302.6998596191406
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        950.1325073242188,
+        591.8378295898438,
+        1013.412353515625,
+        605.3997192382812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 921,
+      "in_figure_scope": true,
+      "text": "Group2-OP"
+    },
+    {
+      "source_line_id": "p0007-b0014-l0004",
+      "bbox_points": [
+        515.7451171875,
+        295.9189147949219,
+        553.4811401367188,
+        302.6998596191406
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        1031.490234375,
+        591.8378295898438,
+        1106.9622802734375,
+        605.3997192382812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 922,
+      "in_figure_scope": true,
+      "text": "Group2-BWT"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0000",
+      "bbox_points": [
+        324.02093505859375,
+        307.2348327636719,
+        378.5667724609375,
+        314.0157775878906
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        648.0418701171875,
+        614.4696655273438,
+        757.133544921875,
+        628.0315551757812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 923,
+      "in_figure_scope": true,
+      "text": "Random sequence 1"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0001",
+      "bbox_points": [
+        395.7970886230469,
+        307.2348327636719,
+        411.05419921875,
+        314.0157775878906
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        791.5941772460938,
+        614.4696655273438,
+        822.1083984375,
+        628.0315551757812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 924,
+      "in_figure_scope": true,
+      "text": "54.86"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0002",
+      "bbox_points": [
+        439.52734375,
+        307.2348327636719,
+        454.7844543457031,
+        314.0157775878906
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        879.0546875,
+        614.4696655273438,
+        909.5689086914062,
+        628.0315551757812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 925,
+      "in_figure_scope": true,
+      "text": "0.054"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0003",
+      "bbox_points": [
+        483.257568359375,
+        307.2348327636719,
+        498.5146789550781,
+        314.0157775878906
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        966.51513671875,
+        614.4696655273438,
+        997.0293579101562,
+        628.0315551757812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 926,
+      "in_figure_scope": true,
+      "text": "25.89"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0004",
+      "bbox_points": [
+        525.8554077148438,
+        307.2348327636719,
+        543.3705444335938,
+        314.0157775878906
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        1051.7108154296875,
+        614.4696655273438,
+        1086.7410888671875,
+        628.0315551757812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 927,
+      "in_figure_scope": true,
+      "text": "-0.119"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0005",
+      "bbox_points": [
+        324.02093505859375,
+        314.76947021484375,
+        378.5667724609375,
+        321.5504150390625
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        648.0418701171875,
+        629.5389404296875,
+        757.133544921875,
+        643.100830078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 928,
+      "in_figure_scope": true,
+      "text": "Random sequence 2"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0006",
+      "bbox_points": [
+        395.7970886230469,
+        314.76947021484375,
+        411.05419921875,
+        321.5504150390625
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        791.5941772460938,
+        629.5389404296875,
+        822.1083984375,
+        643.100830078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 929,
+      "in_figure_scope": true,
+      "text": "54.02"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0007",
+      "bbox_points": [
+        439.52734375,
+        314.76947021484375,
+        454.7844543457031,
+        321.5504150390625
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        879.0546875,
+        629.5389404296875,
+        909.5689086914062,
+        643.100830078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 930,
+      "in_figure_scope": true,
+      "text": "0.049"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0008",
+      "bbox_points": [
+        483.257568359375,
+        314.76947021484375,
+        498.5146789550781,
+        321.5504150390625
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        966.51513671875,
+        629.5389404296875,
+        997.0293579101562,
+        643.100830078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 931,
+      "in_figure_scope": true,
+      "text": "27.75"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0009",
+      "bbox_points": [
+        525.8554077148438,
+        314.76947021484375,
+        543.3705444335938,
+        321.5504150390625
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        1051.7108154296875,
+        629.5389404296875,
+        1086.7410888671875,
+        643.100830078125
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 932,
+      "in_figure_scope": true,
+      "text": "-0.094"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0010",
+      "bbox_points": [
+        324.02093505859375,
+        322.3033142089844,
+        363.85888671875,
+        329.0842590332031
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": false,
+      "bbox_pixels": [
+        648.0418701171875,
+        644.6066284179688,
+        727.7177734375,
+        658.1685180664062
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 933,
+      "in_figure_scope": true,
+      "text": "Auto sequence"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0011",
+      "bbox_points": [
+        395.79705810546875,
+        322.2103576660156,
+        411.0541687011719,
+        328.9913024902344
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": true,
+      "bbox_pixels": [
+        791.5941162109375,
+        644.4207153320312,
+        822.1083374023438,
+        657.9826049804688
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 934,
+      "in_figure_scope": true,
+      "text": "55.81"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0012",
+      "bbox_points": [
+        439.52728271484375,
+        322.2103576660156,
+        454.7843933105469,
+        328.9913024902344
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": true,
+      "bbox_pixels": [
+        879.0545654296875,
+        644.4207153320312,
+        909.5687866210938,
+        657.9826049804688
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 935,
+      "in_figure_scope": true,
+      "text": "0.084"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0013",
+      "bbox_points": [
+        483.25750732421875,
+        322.2103576660156,
+        498.5146484375,
+        328.9913024902344
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": true,
+      "bbox_pixels": [
+        966.5150146484375,
+        644.4207153320312,
+        997.029296875,
+        657.9826049804688
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 936,
+      "in_figure_scope": true,
+      "text": "33.90"
+    },
+    {
+      "source_line_id": "p0007-b0015-l0014",
+      "bbox_points": [
+        525.8553466796875,
+        322.2103576660156,
+        543.3705444335938,
+        328.9913024902344
+      ],
+      "font_size": 6.7809295654296875,
+      "bold": true,
+      "bbox_pixels": [
+        1051.710693359375,
+        644.4207153320312,
+        1086.7410888671875,
+        657.9826049804688
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 937,
+      "in_figure_scope": true,
+      "text": "-0.062"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0000",
+      "bbox_points": [
+        319.5,
+        351.1499938964844,
+        333.1363830566406,
+        362.0591125488281
+      ],
+      "font_size": 10.909099578857422,
+      "bold": true,
+      "bbox_pixels": [
+        639.0,
+        702.2999877929688,
+        666.2727661132812,
+        724.1182250976562
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 938,
+      "in_figure_scope": true,
+      "text": "4.4"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0001",
+      "bbox_points": [
+        344.04547119140625,
+        351.1499938964844,
+        510.3763732910156,
+        362.0591125488281
+      ],
+      "font_size": 10.909099578857422,
+      "bold": true,
+      "bbox_pixels": [
+        688.0909423828125,
+        702.2999877929688,
+        1020.7527465820312,
+        724.1182250976562
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 939,
+      "in_figure_scope": true,
+      "text": "Analysis of Destructive Interference"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0002",
+      "bbox_points": [
+        319.1910095214844,
+        365.44244384765625,
+        559.66455078125,
+        375.4596862792969
+      ],
+      "font_size": 10.017244338989258,
+      "bold": false,
+      "bbox_pixels": [
+        638.3820190429688,
+        730.8848876953125,
+        1119.3291015625,
+        750.9193725585938
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 940,
+      "in_figure_scope": true,
+      "text": "Table 2 provides a task-level analysis of destructive interfer-"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0003",
+      "bbox_points": [
+        319.5,
+        376.51776123046875,
+        559.7467651367188,
+        386.3802185058594
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        753.0355224609375,
+        1119.4935302734375,
+        772.7604370117188
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 941,
+      "in_figure_scope": true,
+      "text": "ence under different optimization-path organization strategies."
+    },
+    {
+      "source_line_id": "p0007-b0016-l0004",
+      "bbox_points": [
+        319.5,
+        387.3631896972656,
+        557.9949340820312,
+        397.37548828125
+      ],
+      "font_size": 10.012289047241211,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        774.7263793945312,
+        1115.9898681640625,
+        794.7509765625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 942,
+      "in_figure_scope": true,
+      "text": "Under random grouping and sequencing, MeetingBank and"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0005",
+      "bbox_points": [
+        319.5,
+        398.34478759765625,
+        559.2488403320312,
+        408.3273010253906
+      ],
+      "font_size": 9.982504844665527,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        796.6895751953125,
+        1118.4976806640625,
+        816.6546020507812
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 943,
+      "in_figure_scope": true,
+      "text": "NumGLUE-cm show the largest negative backward transfer,"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0006",
+      "bbox_points": [
+        319.5,
+        409.2437438964844,
+        557.9989013671875,
+        419.3054504394531
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        818.4874877929688,
+        1115.997802734375,
+        838.6109008789062
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 944,
+      "in_figure_scope": true,
+      "text": "indicating severe interference from later tasks. Automatic"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0007",
+      "bbox_points": [
+        319.5,
+        420.353759765625,
+        557.9992065429688,
+        430.2162170410156
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        840.70751953125,
+        1115.9984130859375,
+        860.4324340820312
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 945,
+      "in_figure_scope": true,
+      "text": "grouping greatly reduces interference on MeetingBank, while"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0008",
+      "bbox_points": [
+        319.5,
+        431.1617431640625,
+        559.6653442382812,
+        441.22344970703125
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        862.323486328125,
+        1119.3306884765625,
+        882.4468994140625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 946,
+      "in_figure_scope": true,
+      "text": "automatic sequencing further improves ScienceQA and re-"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0009",
+      "bbox_points": [
+        319.5,
+        442.1207580566406,
+        557.998779296875,
+        452.1824645996094
+      ],
+      "font_size": 10.061732292175293,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        884.2415161132812,
+        1115.99755859375,
+        904.3649291992188
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 947,
+      "in_figure_scope": true,
+      "text": "moves forgetting on NumGLUE-cm. Overall, our method"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0010",
+      "bbox_points": [
+        319.5,
+        453.1134338378906,
+        557.999267578125,
+        463.13067626953125
+      ],
+      "font_size": 10.017244338989258,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        906.2268676757812,
+        1115.99853515625,
+        926.2613525390625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 948,
+      "in_figure_scope": true,
+      "text": "does not eliminate interference for every task, but improves"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0011",
+      "bbox_points": [
+        319.5,
+        464.18975830078125,
+        557.9990234375,
+        474.0522155761719
+      ],
+      "font_size": 9.862470626831055,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        928.3795166015625,
+        1115.998046875,
+        948.1044311523438
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 949,
+      "in_figure_scope": true,
+      "text": "the overall distribution of transfer effects across tasks, leading"
+    },
+    {
+      "source_line_id": "p0007-b0016-l0012",
+      "bbox_points": [
+        319.5,
+        475.0728454589844,
+        529.5314331054688,
+        485.03546142578125
+      ],
+      "font_size": 9.962599754333496,
+      "bold": false,
+      "bbox_pixels": [
+        639.0,
+        950.1456909179688,
+        1059.0628662109375,
+        970.0709228515625
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 950,
+      "in_figure_scope": true,
+      "text": "to stronger positive transfer among compatible tasks."
+    },
+    {
+      "source_line_id": "p0007-b0017-l0000",
+      "bbox_points": [
+        401.2170104980469,
+        495.8798522949219,
+        407.1946105957031,
+        507.8350524902344
+      ],
+      "font_size": 11.9552001953125,
+      "bold": true,
+      "bbox_pixels": [
+        802.4340209960938,
+        991.7597045898438,
+        814.3892211914062,
+        1015.6701049804688
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 951,
+      "in_figure_scope": true,
+      "text": "5"
+    },
+    {
+      "source_line_id": "p0007-b0017-l0001",
+      "bbox_points": [
+        419.1498107910156,
+        495.8798522949219,
+        476.2837219238281,
+        507.8350524902344
+      ],
+      "font_size": 11.9552001953125,
+      "bold": true,
+      "bbox_pixels": [
+        838.2996215820312,
+        991.7597045898438,
+        952.5674438476562,
+        1015.6701049804688
+      ],
+      "extraction_method": "native",
+      "coordinate_precision": "line",
+      "page_number": 7,
+      "line_number": 952,
+      "in_figure_scope": true,
+      "text": "Conclusion"
+    }
+  ],
+  "items": [
+    {
+      "object_id": "figure_cc27312b87b1dd82",
+      "paper_id": "paper_0d65297f15734409",
+      "kind": "figure",
+      "printed_label": "Figure 1",
+      "status": "completed",
+      "image": "figure-cards/figure-1/figure.png",
+      "caption": "Figure 1: Our approach automatically organizes optimization paths through task grouping and task sequencing. These organized\npaths are implemented using independent QLoRA policies, reducing interference while preserving positive transfer. This indeed\nprovides a new design perspective for parameter-efficient fine-tuning over heterogeneous task sequences.",
+      "caption_path": "figure-cards/figure-1/caption.md",
+      "caption_source_lines": [
+        {
+          "source_line_id": "p0004-b0033-l0000",
+          "text": "Figure 1: Our approach automatically organizes optimization paths through task grouping and task sequencing. These organized",
+          "bbox_points": [
+            54.0,
+            286.7322998046875,
+            558.0029296875,
+            296.63494873046875
+          ],
+          "font_size": 9.902643203735352,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            573.464599609375,
+            1116.005859375,
+            593.2698974609375
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0004-b0033-l0001",
+          "text": "paths are implemented using independent QLoRA policies, reducing interference while preserving positive transfer. This indeed",
+          "bbox_points": [
+            54.0,
+            297.69512939453125,
+            557.9949951171875,
+            307.5927429199219
+          ],
+          "font_size": 9.89763069152832,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            595.3902587890625,
+            1115.989990234375,
+            615.1854858398438
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0004-b0033-l0002",
+          "text": "provides a new design perspective for parameter-efficient fine-tuning over heterogeneous task sequences.",
+          "bbox_points": [
+            54.0,
+            308.6048583984375,
+            469.9186096191406,
+            318.5674743652344
+          ],
+          "font_size": 9.962599754333496,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            617.209716796875,
+            939.8372192382812,
+            637.1349487304688
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        }
+      ],
+      "extraction_method": "native",
+      "caption_ref": {
+        "source_id": "paper_0d65297f15734409.figure_cc27312b87b1dd82.caption",
+        "version": "v_c306346d62e1",
+        "line_start": 1,
+        "line_end": 3
+      },
+      "source_refs": [
+        {
+          "source_id": "paper_0d65297f15734409.figure_cc27312b87b1dd82.caption",
+          "version": "v_c306346d62e1",
+          "line_start": 1,
+          "line_end": 3
+        }
+      ],
+      "pdf_locator": {
+        "pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+        "page_number": 4,
+        "bbox_pixels": [
+          157.9012451171875,
+          108.27821350097656,
+          1059.655029296875,
+          547.1995849609375
+        ],
+        "coordinate_space": "paddle_page_pixels_top_left",
+        "region_ids": [
+          "p0004-r0001"
+        ]
+      },
+      "producer": "cpes-format-converter",
+      "trust": "internal_trusted",
+      "issues": []
+    },
+    {
+      "object_id": "figure_05abed2c0f75b61d",
+      "paper_id": "paper_0d65297f15734409",
+      "kind": "figure",
+      "printed_label": "Figure 2",
+      "status": "completed",
+      "image": "figure-cards/figure-2/figure.png",
+      "caption": "Figure 2: Visualization of the fused task-compatibility struc-\nture used for automatic grouping. Lower pairwise distances\nindicate more compatible optimization directions and behav-\nior characteristics, providing the basis for constructing the\ntwo optimization-compatible policies.",
+      "caption_path": "figure-cards/figure-2/caption.md",
+      "caption_source_lines": [
+        {
+          "source_line_id": "p0006-b0008-l0000",
+          "text": "Figure 2: Visualization of the fused task-compatibility struc-",
+          "bbox_points": [
+            319.5,
+            433.8974304199219,
+            559.6652221679688,
+            443.8500671386719
+          ],
+          "font_size": 9.952631950378418,
+          "bold": false,
+          "bbox_pixels": [
+            639.0,
+            867.7948608398438,
+            1119.3304443359375,
+            887.7001342773438
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0006-b0008-l0001",
+          "text": "ture used for automatic grouping. Lower pairwise distances",
+          "bbox_points": [
+            319.5,
+            444.8036804199219,
+            558.0032958984375,
+            454.8258972167969
+          ],
+          "font_size": 10.022196769714355,
+          "bold": false,
+          "bbox_pixels": [
+            639.0,
+            889.6073608398438,
+            1116.006591796875,
+            909.6517944335938
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0006-b0008-l0002",
+          "text": "indicate more compatible optimization directions and behav-",
+          "bbox_points": [
+            319.5,
+            455.8343505859375,
+            559.6589965820312,
+            465.76202392578125
+          ],
+          "font_size": 9.927669525146484,
+          "bold": false,
+          "bbox_pixels": [
+            639.0,
+            911.668701171875,
+            1119.3179931640625,
+            931.5240478515625
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0006-b0008-l0003",
+          "text": "ior characteristics, providing the basis for constructing the",
+          "bbox_points": [
+            319.5,
+            466.6917419433594,
+            557.9989013671875,
+            476.7534484863281
+          ],
+          "font_size": 10.061732292175293,
+          "bold": false,
+          "bbox_pixels": [
+            639.0,
+            933.3834838867188,
+            1115.997802734375,
+            953.5068969726562
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0006-b0008-l0004",
+          "text": "two optimization-compatible policies.",
+          "bbox_points": [
+            319.5,
+            477.7258605957031,
+            470.52294921875,
+            487.6884765625
+          ],
+          "font_size": 9.962599754333496,
+          "bold": false,
+          "bbox_pixels": [
+            639.0,
+            955.4517211914062,
+            941.0458984375,
+            975.376953125
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        }
+      ],
+      "extraction_method": "native",
+      "caption_ref": {
+        "source_id": "paper_0d65297f15734409.figure_05abed2c0f75b61d.caption",
+        "version": "v_52629de3fca0",
+        "line_start": 1,
+        "line_end": 5
+      },
+      "source_refs": [
+        {
+          "source_id": "paper_0d65297f15734409.figure_05abed2c0f75b61d.caption",
+          "version": "v_52629de3fca0",
+          "line_start": 1,
+          "line_end": 5
+        }
+      ],
+      "pdf_locator": {
+        "pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+        "page_number": 6,
+        "bbox_pixels": [
+          665.40380859375,
+          486.4310302734375,
+          1089.1077880859375,
+          835.7059326171875
+        ],
+        "coordinate_space": "paddle_page_pixels_top_left",
+        "region_ids": [
+          "p0006-r0007"
+        ]
+      },
+      "producer": "cpes-format-converter",
+      "trust": "internal_trusted",
+      "issues": []
+    },
+    {
+      "object_id": "table_87ca44e068c537b7",
+      "paper_id": "paper_0d65297f15734409",
+      "kind": "table",
+      "printed_label": "Table 1",
+      "status": "completed",
+      "image": "table-cards/table-1/table.png",
+      "caption": "Table 1: Comparison of different optimization-path organization strategies under the same trainable capacity on the TRACE\nbenchmark using the LLaMA-2-7B-Chat and Vicuna-7B-V1.5 backbones. O-LoRA is included as a representative parameter-\nisolation multi-adapter PEFT baseline. * denotes results reproduced in our experimental setting.",
+      "caption_path": "table-cards/table-1/caption.md",
+      "caption_source_lines": [
+        {
+          "source_line_id": "p0006-b0000-l0000",
+          "text": "Table 1: Comparison of different optimization-path organization strategies under the same trainable capacity on the TRACE",
+          "bbox_points": [
+            53.691001892089844,
+            54.04576110839844,
+            558.0036010742188,
+            64.10749053955078
+          ],
+          "font_size": 10.061732292175293,
+          "bold": false,
+          "bbox_pixels": [
+            107.38200378417969,
+            108.09152221679688,
+            1116.0072021484375,
+            128.21498107910156
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0006-b0000-l0001",
+          "text": "benchmark using the LLaMA-2-7B-Chat and Vicuna-7B-V1.5 backbones. O-LoRA is included as a representative parameter-",
+          "bbox_points": [
+            54.0,
+            65.03096008300781,
+            559.665283203125,
+            75.05810546875
+          ],
+          "font_size": 10.02714729309082,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            130.06192016601562,
+            1119.33056640625,
+            150.1162109375
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0006-b0000-l0002",
+          "text": "isolation multi-adapter PEFT baseline. * denotes results reproduced in our experimental setting.",
+          "bbox_points": [
+            54.0,
+            76.03885650634766,
+            435.9858703613281,
+            86.00145721435547
+          ],
+          "font_size": 9.962599754333496,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            152.0777130126953,
+            871.9717407226562,
+            172.00291442871094
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        }
+      ],
+      "extraction_method": "native",
+      "caption_ref": {
+        "source_id": "paper_0d65297f15734409.table_87ca44e068c537b7.caption",
+        "version": "v_794311677504",
+        "line_start": 1,
+        "line_end": 3
+      },
+      "source_refs": [
+        {
+          "source_id": "paper_0d65297f15734409.table_87ca44e068c537b7.caption",
+          "version": "v_794311677504",
+          "line_start": 1,
+          "line_end": 3
+        }
+      ],
+      "pdf_locator": {
+        "pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+        "page_number": 6,
+        "bbox_pixels": [
+          105.15921020507812,
+          191.30831909179688,
+          1115.152099609375,
+          445.2566833496094
+        ],
+        "coordinate_space": "paddle_page_pixels_top_left",
+        "region_ids": [
+          "p0006-r0002"
+        ]
+      },
+      "producer": "cpes-format-converter",
+      "trust": "internal_trusted",
+      "issues": []
+    },
+    {
+      "object_id": "table_b2d6f1705cf80fd5",
+      "paper_id": "paper_0d65297f15734409",
+      "kind": "table",
+      "printed_label": "Table 2",
+      "status": "completed",
+      "image": "table-cards/table-2/table.png",
+      "caption": "Table 2: Task-level analysis of destructive interference under different task grouping and sequencing strategies. Lower BWT\nindicates stronger destructive interference. “–” denotes the last task within a policy, for which BWT is undefined.",
+      "caption_path": "table-cards/table-2/caption.md",
+      "caption_source_lines": [
+        {
+          "source_line_id": "p0007-b0000-l0000",
+          "text": "Table 2: Task-level analysis of destructive interference under different task grouping and sequencing strategies. Lower BWT",
+          "bbox_points": [
+            53.691001892089844,
+            54.04576110839844,
+            558.3084106445312,
+            64.10749053955078
+          ],
+          "font_size": 10.061732292175293,
+          "bold": false,
+          "bbox_pixels": [
+            107.38200378417969,
+            108.09152221679688,
+            1116.6168212890625,
+            128.21498107910156
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0007-b0000-l0001",
+          "text": "indicates stronger destructive interference. “–” denotes the last task within a policy, for which BWT is undefined.",
+          "bbox_points": [
+            54.0,
+            65.07987213134766,
+            503.1936950683594,
+            75.04247283935547
+          ],
+          "font_size": 9.962599754333496,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            130.1597442626953,
+            1006.3873901367188,
+            150.08494567871094
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        }
+      ],
+      "extraction_method": "native",
+      "caption_ref": {
+        "source_id": "paper_0d65297f15734409.table_b2d6f1705cf80fd5.caption",
+        "version": "v_5a7d201e5eab",
+        "line_start": 1,
+        "line_end": 2
+      },
+      "source_refs": [
+        {
+          "source_id": "paper_0d65297f15734409.table_b2d6f1705cf80fd5.caption",
+          "version": "v_5a7d201e5eab",
+          "line_start": 1,
+          "line_end": 2
+        }
+      ],
+      "pdf_locator": {
+        "pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+        "page_number": 7,
+        "bbox_pixels": [
+          109.0245361328125,
+          169.63601684570312,
+          1110.9669189453125,
+          263.7629699707031
+        ],
+        "coordinate_space": "paddle_page_pixels_top_left",
+        "region_ids": [
+          "p0007-r0002"
+        ]
+      },
+      "producer": "cpes-format-converter",
+      "trust": "internal_trusted",
+      "issues": []
+    },
+    {
+      "object_id": "table_725eb961f89b2c0b",
+      "paper_id": "paper_0d65297f15734409",
+      "kind": "table",
+      "printed_label": "Table 3",
+      "status": "completed",
+      "image": "table-cards/table-3/table.png",
+      "caption": "Table 3: Ablation on task grouping strategy. “Auto Group” denotes the task-compatibility-aware grouping used in the main\nexperiments, which is compared with two alternative groupings derived from the fused task-compatibility structure.",
+      "caption_path": "table-cards/table-3/caption.md",
+      "caption_source_lines": [
+        {
+          "source_line_id": "p0007-b0003-l0000",
+          "text": "Table 3: Ablation on task grouping strategy. “Auto Group” denotes the task-compatibility-aware grouping used in the main",
+          "bbox_points": [
+            53.691001892089844,
+            144.64573669433594,
+            558.0036010742188,
+            154.7074737548828
+          ],
+          "font_size": 10.061732292175293,
+          "bold": false,
+          "bbox_pixels": [
+            107.38200378417969,
+            289.2914733886719,
+            1116.0072021484375,
+            309.4149475097656
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0007-b0003-l0001",
+          "text": "experiments, which is compared with two alternative groupings derived from the fused task-compatibility structure.",
+          "bbox_points": [
+            54.0,
+            155.6798553466797,
+            513.8136596679688,
+            165.6424560546875
+          ],
+          "font_size": 9.962599754333496,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            311.3597106933594,
+            1027.6273193359375,
+            331.284912109375
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        }
+      ],
+      "extraction_method": "native",
+      "caption_ref": {
+        "source_id": "paper_0d65297f15734409.table_725eb961f89b2c0b.caption",
+        "version": "v_322a56563f87",
+        "line_start": 1,
+        "line_end": 2
+      },
+      "source_refs": [
+        {
+          "source_id": "paper_0d65297f15734409.table_725eb961f89b2c0b.caption",
+          "version": "v_322a56563f87",
+          "line_start": 1,
+          "line_end": 2
+        }
+      ],
+      "pdf_locator": {
+        "pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+        "page_number": 7,
+        "bbox_pixels": [
+          103.3197021484375,
+          350.818359375,
+          1114.7105712890625,
+          457.1707763671875
+        ],
+        "coordinate_space": "paddle_page_pixels_top_left",
+        "region_ids": [
+          "p0007-r0004"
+        ]
+      },
+      "producer": "cpes-format-converter",
+      "trust": "internal_trusted",
+      "issues": []
+    },
+    {
+      "object_id": "table_eff7d007a60db73c",
+      "paper_id": "paper_0d65297f15734409",
+      "kind": "table",
+      "printed_label": "Table 4",
+      "status": "completed",
+      "image": "table-cards/table-4/table.png",
+      "caption": "Table 4: Ablation on rank allocation across policies under a\nfixed total trainable budget.The total LoRA rank is fixed at\n128 for all settings.",
+      "caption_path": "table-cards/table-4/caption.md",
+      "caption_source_lines": [
+        {
+          "source_line_id": "p0007-b0010-l0000",
+          "text": "Table 4: Ablation on rank allocation across policies under a",
+          "bbox_points": [
+            53.691001892089844,
+            599.783203125,
+            292.4978332519531,
+            609.7954711914062
+          ],
+          "font_size": 10.012289047241211,
+          "bold": false,
+          "bbox_pixels": [
+            107.38200378417969,
+            1199.56640625,
+            584.9956665039062,
+            1219.5909423828125
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0007-b0010-l0001",
+          "text": "fixed total trainable budget.The total LoRA rank is fixed at",
+          "bbox_points": [
+            54.0,
+            610.7047729492188,
+            292.498779296875,
+            620.7664794921875
+          ],
+          "font_size": 10.061732292175293,
+          "bold": false,
+          "bbox_pixels": [
+            108.0,
+            1221.4095458984375,
+            584.99755859375,
+            1241.532958984375
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0007-b0010-l0002",
+          "text": "128 for all settings.",
+          "bbox_points": [
+            53.25299835205078,
+            621.7378540039062,
+            129.78565979003906,
+            631.700439453125
+          ],
+          "font_size": 9.962599754333496,
+          "bold": false,
+          "bbox_pixels": [
+            106.50599670410156,
+            1243.4757080078125,
+            259.5713195800781,
+            1263.40087890625
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        }
+      ],
+      "extraction_method": "native",
+      "caption_ref": {
+        "source_id": "paper_0d65297f15734409.table_eff7d007a60db73c.caption",
+        "version": "v_70c4ce59159e",
+        "line_start": 1,
+        "line_end": 3
+      },
+      "source_refs": [
+        {
+          "source_id": "paper_0d65297f15734409.table_eff7d007a60db73c.caption",
+          "version": "v_70c4ce59159e",
+          "line_start": 1,
+          "line_end": 3
+        }
+      ],
+      "pdf_locator": {
+        "pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+        "page_number": 7,
+        "bbox_pixels": [
+          106.78619384765625,
+          1284.046875,
+          584.0486450195312,
+          1375.84228515625
+        ],
+        "coordinate_space": "paddle_page_pixels_top_left",
+        "region_ids": [
+          "p0007-r0013"
+        ]
+      },
+      "producer": "cpes-format-converter",
+      "trust": "internal_trusted",
+      "issues": []
+    },
+    {
+      "object_id": "table_da8f834d0fa38794",
+      "paper_id": "paper_0d65297f15734409",
+      "kind": "table",
+      "printed_label": "Table 5",
+      "status": "completed",
+      "image": "table-cards/table-5/table.png",
+      "caption": "Table 5: Ablation on task sequencing strategy. Task grouping\nis fixed using the optimization-compatible groups generated\nby our method.",
+      "caption_path": "table-cards/table-5/caption.md",
+      "caption_source_lines": [
+        {
+          "source_line_id": "p0007-b0013-l0000",
+          "text": "Table 5: Ablation on task sequencing strategy. Task grouping",
+          "bbox_points": [
+            319.1910095214844,
+            250.42315673828125,
+            558.0008544921875,
+            260.2956848144531
+          ],
+          "font_size": 9.872529029846191,
+          "bold": false,
+          "bbox_pixels": [
+            638.3820190429688,
+            500.8463134765625,
+            1116.001708984375,
+            520.5913696289062
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0007-b0013-l0001",
+          "text": "is fixed using the optimization-compatible groups generated",
+          "bbox_points": [
+            319.5,
+            261.3176574707031,
+            557.9951171875,
+            271.2752685546875
+          ],
+          "font_size": 9.95761775970459,
+          "bold": false,
+          "bbox_pixels": [
+            639.0,
+            522.6353149414062,
+            1115.990234375,
+            542.550537109375
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        },
+        {
+          "source_line_id": "p0007-b0013-l0002",
+          "text": "by our method.",
+          "bbox_points": [
+            319.5,
+            272.2728576660156,
+            379.8035888671875,
+            282.2354736328125
+          ],
+          "font_size": 9.962599754333496,
+          "bold": false,
+          "bbox_pixels": [
+            639.0,
+            544.5457153320312,
+            759.607177734375,
+            564.470947265625
+          ],
+          "extraction_method": "native",
+          "coordinate_precision": "line"
+        }
+      ],
+      "extraction_method": "native",
+      "caption_ref": {
+        "source_id": "paper_0d65297f15734409.table_da8f834d0fa38794.caption",
+        "version": "v_a0a483dbef05",
+        "line_start": 1,
+        "line_end": 3
+      },
+      "source_refs": [
+        {
+          "source_id": "paper_0d65297f15734409.table_da8f834d0fa38794.caption",
+          "version": "v_a0a483dbef05",
+          "line_start": 1,
+          "line_end": 3
+        }
+      ],
+      "pdf_locator": {
+        "pdf_sha256": "0d65297f157344091595ce204ec47b146543d361460425beec09575167639b8a",
+        "page_number": 7,
+        "bbox_pixels": [
+          635.9967041015625,
+          584.4073486328125,
+          1114.746826171875,
+          661.7083740234375
+        ],
+        "coordinate_space": "paddle_page_pixels_top_left",
+        "region_ids": [
+          "p0007-r0015"
+        ]
+      },
+      "producer": "cpes-format-converter",
+      "trust": "internal_trusted",
+      "issues": []
+    }
+  ]
+}

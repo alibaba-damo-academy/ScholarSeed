@@ -197,14 +197,17 @@ def read_request(stream: BinaryIO):
     if verb == Verb.REMOVE:
         required |= {"confirmDigest"}
     reject(not required <= header.keys() or header.keys() - COMMON_FIELDS - VERB_FIELDS[verb])
-    reject(type(header["version"]) is not int or header["version"] != VERSION)
+    reject(
+        (not isinstance(header["version"], int) or isinstance(header["version"], bool))
+        or header["version"] != VERSION
+    )
     reject(
         not valid_identifier(header["requestId"])
         or not isinstance(header["profileId"], str)
         or not DIGEST_PATTERN.fullmatch(header["profileId"])
     )
     size = header["payloadLength"]
-    reject(type(size) is not int or size < 0)
+    reject((not isinstance(size, int) or isinstance(size, bool)) or size < 0)
     maximum = 0
     if verb != Verb.HANDSHAKE:
         try:
@@ -227,7 +230,10 @@ def read_request(stream: BinaryIO):
             query
             and (
                 not valid_identifier(header.get("operationId"))
-                or type(header.get("sequence")) is not int
+                or (
+                    not isinstance(header.get("sequence"), int)
+                    or isinstance(header.get("sequence"), bool)
+                )
                 or header["sequence"] < 1
             )
         )
@@ -263,7 +269,10 @@ def validate_snapshot(value) -> bool:
         value["digest"] is not None
         and isinstance(identity, list)
         and len(identity) == 2
-        and all(type(part) is int and part >= 0 for part in identity)
+        and all(
+            (isinstance(part, int) and not isinstance(part, bool)) and part >= 0
+            for part in identity
+        )
     )
 
 
@@ -410,13 +419,15 @@ class Store:
         slot = decode(body)
         reject(not isinstance(slot, dict) or slot.keys() != SLOT_FIELDS, Code.UNKNOWN)
         reject(
-            slot["version"] != VERSION or type(slot["version"]) is not int or slot["kind"] != kind,
+            slot["version"] != VERSION
+            or (not isinstance(slot["version"], int) or isinstance(slot["version"], bool))
+            or slot["kind"] != kind,
             Code.UNKNOWN,
         )
         settled, retired = slot["settledThrough"], slot["retiredThrough"]
         reject(
-            type(settled) is not int
-            or type(retired) is not int
+            (not isinstance(settled, int) or isinstance(settled, bool))
+            or (not isinstance(retired, int) or isinstance(retired, bool))
             or not 0 <= retired <= settled <= MAX_SEQUENCE
             or settled - retired > MAX_TERMINALS,
             Code.UNKNOWN,
@@ -445,7 +456,11 @@ class Store:
             )
             reject(terminal["resultPresence"] != presence(terminal["result"]), Code.UNKNOWN)
             sequence = terminal["sequence"]
-            reject(type(sequence) is not int or not retired < sequence <= settled, Code.UNKNOWN)
+            reject(
+                (not isinstance(sequence, int) or isinstance(sequence, bool))
+                or not retired < sequence <= settled,
+                Code.UNKNOWN,
+            )
             sequences.append(sequence)
         reject(sequences != list(range(retired + 1, settled + 1)), Code.UNKNOWN)
         reject(any(not validate_owned(owned) for owned in slot["cleanup"]), Code.UNKNOWN)
@@ -453,7 +468,7 @@ class Store:
         if active is not None:
             reject(not isinstance(active, dict) or active.keys() != RECEIPT_FIELDS, Code.UNKNOWN)
             reject(
-                type(active["sequence"]) is not int
+                (not isinstance(active["sequence"], int) or isinstance(active["sequence"], bool))
                 or active["sequence"] != settled + 1
                 or not valid_identifier(active["operationId"])
                 or not valid_identifier(active["requestId"])

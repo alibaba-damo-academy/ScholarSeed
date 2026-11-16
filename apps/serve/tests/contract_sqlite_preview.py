@@ -176,7 +176,12 @@ ROW_READERS = {
 }
 OWNERS = tuple(
     SchemaOwner(
-        owner.__name__, owner.inspect_connection, owner.initialize_schema, ROW_READERS.get(owner)
+        owner.__name__,
+        owner.inspect_connection,
+        owner.initialize_schema,
+        ROW_READERS.get(owner),
+        triggers=ProductEventStore.preview_triggers if owner is ProductEventStore else None,
+        inspect_layout=SessionCatalogStore.inspect_layout if owner is SessionCatalogStore else None,
     )
     for owner in STORES
 )
@@ -1125,6 +1130,38 @@ class SqlitePreviewContracts(unittest.TestCase):
         )
         self.assertFalse(self.database.parent.exists())
 
+    def test_candidate_future_revision_requires_rows_and_is_rejected(self):
+        with projected_database(self.database, "sessions", self.owners) as (
+            source,
+            connection,
+            deadline,
+        ):
+            connection.execute("PRAGMA query_only=OFF")
+            connection.execute("UPDATE session_catalog_schema_revision SET revision=2")
+            connection.commit()
+            connection.execute("PRAGMA query_only=ON")
+            chunks = []
+            digest = rows_digest(connection, deadline=deadline, emit=chunks.append)
+            candidate = replace(source, rows_digest=digest)
+        with self.assertRaises(CandidateRowsRequired):
+            require_candidate_layout(candidate, source, self.owners)
+        with self.assertRaisesRegex(RuntimeError, "SCHOLARSEED_SCHEMA_UPGRADE_REQUIRED"):
+            require_candidate_layout(
+                candidate, source, self.owners, read_candidate=lambda _: iter(chunks)
+            )
+        self.assertFalse(self.database.parent.exists())
+
+    def test_equal_row_candidate_cannot_remove_revision_metadata(self):
+        source = preview_database(self.database, "sessions", self.owners)
+        candidate = replace(
+            source,
+            objects=tuple(
+                row for row in source.objects if row.name != "session_catalog_schema_revision"
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "revision metadata is missing"):
+            require_candidate_layout(candidate, source, self.owners)
+
     def test_different_candidate_rows_require_direct_source_reading(self):
         preview = preview_database(self.database, "sessions", self.owners)
         candidate = replace(preview, rows_digest="0" * 64)
@@ -1332,8 +1369,17 @@ class SqlitePreviewContracts(unittest.TestCase):
                 SchemaObject("trigger", "escape", SESSION_CATALOG_TABLE, "CREATE TRIGGER escape"),
             ),
         )
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "trigger ownership"):
             require_candidate_layout(candidate, preview, self.owners)
+        trigger = next(row for row in preview.objects if row.name == "attention_title_changed")
+        altered = replace(trigger, sql=trigger.sql.replace("revision+1", "revision+2"))
+        self.assertNotEqual(altered.sql, trigger.sql)
+        candidate = replace(
+            preview, objects=tuple(altered if row == trigger else row for row in preview.objects)
+        )
+        with self.assertRaisesRegex(ValueError, "trigger declaration"):
+            require_candidate_layout(candidate, preview, self.owners)
+        self.assertFalse(self.database.parent.exists())
 
     def test_project_receipt_trigger_is_compiled_from_the_owner_and_not_wire_authority(self):
         preview = preview_database(None, "project", PROJECT_OWNERS)

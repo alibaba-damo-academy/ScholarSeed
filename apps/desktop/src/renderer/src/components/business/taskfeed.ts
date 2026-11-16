@@ -95,10 +95,10 @@ export class TaskFeed {
   }
 
   async mutate(task: ProductTask, action: 'cancel' | 'retry'): Promise<void> {
-    const source = this.sources.find((candidate) => candidate.id === task.sourceId)
-    if (!source || !this.active) return
+    const operate = this.sources.find((candidate) => candidate.id === task.sourceId)?.[action]
+    if (!operate || !this.active) return
     const generation = this.generation
-    const updated = await source[action](task.id)
+    const updated = await operate(task.id)
     if (generation === this.generation) this.accept(updated, true)
   }
 

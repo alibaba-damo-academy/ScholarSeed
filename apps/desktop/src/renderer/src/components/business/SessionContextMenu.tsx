@@ -1,7 +1,7 @@
 import type { SessionTitleFallback } from '../../session'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Archive, Pencil, Trash2 } from 'lucide-react'
+import { Archive, GitBranch, Pencil, Trash2 } from 'lucide-react'
 
 import { useApp } from '../../store'
 import {
@@ -15,10 +15,9 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Spinner,
+  useToast,
 } from '../ui'
-
-// SessionContextMenu.tsx — 会话行右键菜单 (PRD 2.1.8 ④)。
-//   所有会话保持创建时的范围，只提供重命名和删除。
 
 const MENU_ITEM_TEXT_CLASS_NAME = 'flex-1'
 
@@ -47,14 +46,68 @@ const dropdownParts: MenuParts = {
   Separator: DropdownMenuSeparator,
 }
 
+export function SessionForkMenuItem({
+  sessionId,
+  Item,
+  onForked,
+  disabled = false,
+}: {
+  sessionId: string
+  Item: MenuParts['Item']
+  onForked: () => void
+  disabled?: boolean
+}): React.JSX.Element {
+  const { t } = useTranslation('components')
+  const { act } = useApp()
+  const { toast } = useToast()
+  const [forking, setForking] = React.useState(false)
+  const forkPending = React.useRef(false)
+
+  const handleFork = async (): Promise<void> => {
+    if (disabled || !sessionId || forkPending.current) return
+    forkPending.current = true
+    setForking(true)
+    try {
+      if (!(await act.forkSession(sessionId))) {
+        toast({ tone: 'error', title: t('stream.forkFailed') })
+      } else {
+        onForked()
+      }
+    } finally {
+      forkPending.current = false
+      setForking(false)
+    }
+  }
+
+  return (
+    <Item
+      disabled={disabled || !sessionId || forking}
+      data-testid="session-fork-menu"
+      onClick={(event) => {
+        event.preventDefault()
+        void handleFork()
+      }}
+    >
+      {forking ? <Spinner /> : <GitBranch />}
+      <span className={MENU_ITEM_TEXT_CLASS_NAME}>
+        {t(forking ? 'sessionMenu.forking' : 'sessionMenu.fork')}
+      </span>
+    </Item>
+  )
+}
+
 function SessionMenuContent({
   target,
   parts,
   layoutActions,
+  onForked,
+  forkDisabled = false,
 }: {
   parts: MenuParts
   target: SessionContextMenuTarget
   layoutActions?: React.ReactNode
+  onForked: () => void
+  forkDisabled?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { set } = useApp()
@@ -82,6 +135,12 @@ function SessionMenuContent({
 
   return (
     <Content align={layoutActions ? 'end' : undefined} data-testid="session-context-menu">
+      <SessionForkMenuItem
+        sessionId={target.sessionId}
+        Item={Item}
+        disabled={forkDisabled}
+        onForked={onForked}
+      />
       <Item disabled={!target.sessionId} data-testid="session-rename-menu" onSelect={handleRename}>
         <Pencil />
         <span className={MENU_ITEM_TEXT_CLASS_NAME}>{t('sessionMenu.rename')}</span>
@@ -119,12 +178,14 @@ function SessionMenu({
   onOpenChange,
   target,
   layoutActions,
+  forkDisabled,
 }: {
   children: React.ReactNode
   mode: 'context' | 'dropdown'
   onOpenChange?: (open: boolean) => void
   target: SessionContextMenuTarget
   layoutActions?: React.ReactNode
+  forkDisabled?: boolean
 }): React.JSX.Element {
   const [open, setOpen] = React.useState(false)
 
@@ -137,12 +198,23 @@ function SessionMenu({
     mode === 'context' ? (
       <ContextMenu open={open} onOpenChange={updateOpen}>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <SessionMenuContent parts={contextParts} target={target} />
+        <SessionMenuContent
+          parts={contextParts}
+          target={target}
+          onForked={() => updateOpen(false)}
+          forkDisabled={forkDisabled}
+        />
       </ContextMenu>
     ) : (
       <DropdownMenu open={open} onOpenChange={updateOpen}>
         <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-        <SessionMenuContent parts={dropdownParts} target={target} layoutActions={layoutActions} />
+        <SessionMenuContent
+          parts={dropdownParts}
+          target={target}
+          layoutActions={layoutActions}
+          onForked={() => updateOpen(false)}
+          forkDisabled={forkDisabled}
+        />
       </DropdownMenu>
     )
 
@@ -153,13 +225,20 @@ export function SessionContextMenu({
   children,
   onOpenChange,
   target,
+  forkDisabled,
 }: {
   children: React.ReactNode
   onOpenChange?: (open: boolean) => void
   target: SessionContextMenuTarget
+  forkDisabled?: boolean
 }): React.JSX.Element {
   return (
-    <SessionMenu mode="context" onOpenChange={onOpenChange} target={target}>
+    <SessionMenu
+      mode="context"
+      onOpenChange={onOpenChange}
+      target={target}
+      forkDisabled={forkDisabled}
+    >
       {children}
     </SessionMenu>
   )
@@ -170,11 +249,13 @@ export function SessionDropdownMenu({
   onOpenChange,
   target,
   layoutActions,
+  forkDisabled,
 }: {
   children: React.ReactNode
   onOpenChange?: (open: boolean) => void
   target: SessionContextMenuTarget
   layoutActions?: React.ReactNode
+  forkDisabled?: boolean
 }): React.JSX.Element {
   return (
     <SessionMenu
@@ -182,6 +263,7 @@ export function SessionDropdownMenu({
       onOpenChange={onOpenChange}
       target={target}
       layoutActions={layoutActions}
+      forkDisabled={forkDisabled}
     >
       {children}
     </SessionMenu>

@@ -40,11 +40,11 @@ import socket
 import subprocess
 import sys
 from urllib.parse import urlparse
-from platform_runtime import runtime_info, command_spec, discover_python
-
-MIN_PYTHON = (3, 12)
-RECOMMENDED_PYTHON = (3, 12)
+from platform_runtime import runtime_info, command_spec, discover_python, supports_python
 PROXY_PROBE_TIMEOUT_SECONDS = 30
+RUNTIME_SCOPE = 'runtime'
+FULL_SCOPE = 'full'
+CHECK_SCOPES = (RUNTIME_SCOPE, FULL_SCOPE)
 
 # (import name, pip name, required?, what breaks without it)
 #
@@ -53,6 +53,7 @@ PROXY_PROBE_TIMEOUT_SECONDS = 30
 # either any more, and a required check for an unused dependency teaches an
 # operator to install things the run does not need.
 PACKAGES = [
+    ("knowledge_layer.comprehend", "deep-rnd-l1", True, "shared L1 extraction; product supplies deep-rnd-l1==0.2.5"),
     ("openai", "openai", True, "every LLM stage; the gateway speaks the OpenAI protocol"),
     ("httpx", "httpx", True, "HTTP transport for the SDK"),
     ("socksio", "socksio", True, "SOCKS proxy transport for the bound HTTP client"),
@@ -70,6 +71,8 @@ PACKAGES = [
      "required deterministic vertical cropping and bottom-right watermarking before generated images can be published"),
     ("pysbd", "pysbd", True, "sentence segmentation in the current full-text parser"),
     ("filelock", "filelock", True, "cross-platform workspace operation locks"),
+    ("docx", "python-docx", True, "Standard DOCX export"),
+    ("markdown_it", "markdown-it-py", True, "native Markdown and DOCX publication"),
 ]
 
 PROXY_TRANSPORT_PROBE = """import asyncio
@@ -127,11 +130,10 @@ class Report:
 
 def check_python(rep: Report, workspace_python=None) -> None:
     v = sys.version_info
-    expected = _slr_paths.HOME / '.venv'
     explicit=workspace_python or os.environ.get('SCHOLARSEED_PYTHON')
     bound=(explicit is None or
            bool(explicit and pathlib.Path(explicit).absolute()==pathlib.Path(sys.executable).absolute()))
-    rep.add('runtime', 'bound Python 3.12.x', v[:2]==(3,12) and bound, True,
+    rep.add('runtime', 'bound product Python', supports_python(v) and bound, True,
             detail=f'{sys.executable}: {v.major}.{v.minor}.{v.micro}',
             hint='launch from ScholarSeed Desktop or Serve with its product Python')
 
@@ -420,8 +422,7 @@ def check_templates(rep: Report) -> None:
         status = row["status"]
         if status == "installed":
             rep.add("templates", row["id"], True, False,
-                    detail=f"installed — {row['documentclass']} "
-                           f"\\usepackage{{{row['package']}}}")
+                    detail=f"installed — {row['title']}")
         else:   # broken: shipped asset is missing
             rep.add("templates", row["id"], False, True,
                     detail=f"BROKEN — {', '.join(row['missing_files'])} is not on "
@@ -546,6 +547,8 @@ def main() -> int:
     ap.add_argument("--no-network", action="store_true",
                     help="skip endpoint reachability probes")
     ap.add_argument('--workspace',default=os.environ.get('SLR_WORKSPACE'))
+    ap.add_argument('--scope', choices=CHECK_SCOPES, default=FULL_SCOPE,
+                    help='runtime checks only the launch identity; full checks execution capabilities')
     args = ap.parse_args()
 
     profile = args.profile or _slr_paths.resolve_profile()
@@ -569,6 +572,16 @@ def main() -> int:
         except (OSError,ValueError,KeyError) as exc:
             rep.add('runtime','workspace binding',False,True,detail=str(exc))
     check_python(rep,workspace_python)
+    if args.scope == RUNTIME_SCOPE:
+        print(json.dumps({'scope': RUNTIME_SCOPE, 'ready': not rep.blocking,
+                          'pipeline_ready': None, 'runtime': environment,
+                          'capabilities': {}, 'items': rep.items,
+                          'next_action': ('Restore the reported runtime binding before continuing.' if rep.blocking else
+                              'Use runtime.cli to initialize the complete request and obtain the execution agreement. '
+                              'After approval, start the materials tracker and run doctor --scope full --no-network --json '
+                              'before execution. Runtime readiness does not establish pipeline capabilities.')},
+                         ensure_ascii=False, indent=2))
+        return 1 if rep.blocking else 0
     check_packages(rep)
     check_proxy_transport(rep)
     check_binaries(rep)

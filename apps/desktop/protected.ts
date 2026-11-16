@@ -4,13 +4,13 @@ import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { build as buildRenderer, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { build as buildPreload, version as esbuildVersion, type Plugin as EsbuildPlugin, type Loader } from 'esbuild'
-import { supportedFontSources } from './renderer.ts'
+import { RENDERER_SHARED_DEPENDENCIES, supportedFontSources } from './renderer.ts'
 import { PROTECTED_ASSETS, protectedDigest, verifyProtectedAssets, type ProtectedManifest } from './src/main/vaultipc.ts'
 import { VAULT_ERROR } from './src/vault.ts'
 
-const BUILD_FILES = ['electron.vite.config.ts', 'protected.ts', 'renderer.ts', 'endpoints.ts', 'package-lock.json', 'package.json', '../../scripts/vendor/texlive/manifest.json']
+const BUILD_FILES = ['electron.vite.config.ts', 'protected.ts', 'renderer.ts', 'endpoints.ts', 'package-lock.json', 'package.json', 'tsconfig.base.json', 'tsconfig.web.json', '../../scripts/vendor/texlive/manifest.json']
 const SCRIPT_DOMAINS = ['pre', 'dev', 'ci', 'cd', 'shared']
-const COMPILATION_DIRECTORIES = ['runtime', 'scripts', 'native', ...SCRIPT_DOMAINS.map(domain => `scripts/${domain}`)]
+const COMPILATION_DIRECTORIES = ['runtime', 'scripts', ...SCRIPT_DOMAINS.map(domain => `scripts/${domain}`)]
 const SOURCE_LOADERS: Record<string, Loader> = { '.ts': 'ts', '.tsx': 'tsx', '.js': 'js', '.jsx': 'jsx', '.cjs': 'js', '.mjs': 'js', '.json': 'json' }
 const GENERATED_CODE_QUERIES = new Set(['commonjs-proxy', 'commonjs-entry', 'commonjs-es-import'])
 const FORBIDDEN = /(?:\/src\/renderer\/src\/(?:api|store|browser|live)\.(?:ts|tsx)$|\/src\/preload\/index\.ts$|\/src\/renderer\/src\/app\/|\/vite\/.*client|(?:^|\/)@vite\/client)/
@@ -31,11 +31,12 @@ function tree(directory: string): string[] {
 }
 function sourceInventory(root: string): string[] {
   const repositoryScripts = resolve(root, '../../scripts')
-  const directories = [...COMPILATION_DIRECTORIES.map(name => join(root, name)), repositoryScripts,
+  const directories = [...COMPILATION_DIRECTORIES.map(name => join(root, name)), repositoryScripts, resolve(root, '../../packages/ui'),
     ...SCRIPT_DOMAINS.map(domain => join(repositoryScripts, domain))]
   const owned = directories.flatMap(directory => readdirSync(directory, { withFileTypes: true })
     .filter(entry => entry.isFile() && SOURCE_LOADERS[extname(entry.name)]).map(entry => join(directory, entry.name)))
-  return [...tree(join(root, 'src')), ...BUILD_FILES.map(name => join(root, name)), ...owned].sort()
+  const native = tree(join(root, 'native')).filter(filename => SOURCE_LOADERS[extname(filename)])
+  return [...tree(join(root, 'src')), ...BUILD_FILES.map(name => join(root, name)), ...owned, ...native].sort()
 }
 export interface ProtectedCompilation {
   vitePlugins(): Plugin[]
@@ -138,6 +139,7 @@ export async function buildProtected(options: { desktopRoot: string; command: 's
     process.env.NODE_ENV = mode === 'production' ? 'production' : 'development'
     mkdirSync(staging, { recursive: true })
     await buildRenderer({ configFile: false, mode, root: join(root, 'src/renderer'), base: './', publicDir: false,
+      resolve: { dedupe: RENDERER_SHARED_DEPENDENCIES },
       plugins: [...closedCompilation.vitePlugins(), react(), supportedFontSources(), inventory], logLevel: 'error',
       build: { outDir: join(staging, 'renderer'), emptyOutDir: true, watch: null, manifest: true, sourcemap: false, assetsInlineLimit: 0,
         rollupOptions: { input: join(root, 'src/renderer/vault.html') } } })

@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -41,6 +42,7 @@ from service.capabilities.service.skills import (  # noqa: E402
 )
 from service.identity.utils import LOCAL_USER_ID  # noqa: E402
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR  # noqa: E402
+from service.platform.vocabulary import INTERNAL_BASE_URL_ENV  # noqa: E402
 from service.settings.connections import ModelProfileStore, personal_model_key  # noqa: E402
 
 REDACTION_SENTINEL = "codex-secret-from-runtime"
@@ -52,11 +54,18 @@ CONVERSATION_SKILLS = {
     "precise-literature-search",
     "agentic-search",
     "plugin-create",
+    "scholarseed-product-operations",
+    "highlights-to-insights",
+    "formal-verification",
 }
 
 
 class _FailingRuntime:
-    async def cached_skill_inventory(self, **_kwargs):
+    def __init__(self):
+        self.inspections = []
+
+    async def skill_inventory(self, *, cwd, user_id, executable="", force_reload=False):
+        self.inspections.append((cwd, user_id))
         raise RuntimeError(REDACTION_SENTINEL)
 
 
@@ -79,7 +88,8 @@ def main() -> int:
         "---\nname: demo-skill\ndescription: ScholarSeed contract skill\n---\n",
         encoding="utf-8",
     )
-    app = create_app(workspace, auth=False)
+    with patch.dict(os.environ, {INTERNAL_BASE_URL_ENV: "http://127.0.0.1"}):
+        app = create_app(workspace, auth=False)
     with TestClient(app) as client:
         profile = ModelProfileStore().upsert(
             {
@@ -116,7 +126,7 @@ def main() -> int:
         )
         assert conversation_skills["research-idea-partner"]["descriptions"]["zh"]
         assert conversation_skills["design-research-validation"]["descriptions"]["zh"]
-        for name in ("research-idea-partner", "design-research-validation"):
+        for name in ("research-idea-partner", "design-research-validation", "formal-verification"):
             assert conversation_skills[name]["requires_login"] is True
             assert conversation_skills[name]["unavailable_reason"] == "login_required"
             assert conversation_skills[name]["active"] is False
@@ -222,11 +232,17 @@ def main() -> int:
         }
         assert restored["demo-skill"]["runtime_enabled"] is None
 
-        app.state.runtime_service = _FailingRuntime()
+        failing = _FailingRuntime()
+        app.state.runtime_service = failing
         unavailable = client.get("/api/capabilities/skills")
         assert unavailable.status_code == 200, unavailable.text
         assert any(row["name"] == "demo-skill" for row in unavailable.json()["skills"])
         assert REDACTION_SENTINEL not in unavailable.text
+        assert failing.inspections == []
+        unavailable_toggle = client.post("/api/capabilities/skills/demo-skill/activate")
+        assert unavailable_toggle.status_code == 503, unavailable_toggle.text
+        assert REDACTION_SENTINEL not in unavailable_toggle.text
+        assert failing.inspections == [(workspace.resolve(), LOCAL_USER_ID)]
         print("PASS: ScholarSeed skill catalogue + activation")
         return 0
 

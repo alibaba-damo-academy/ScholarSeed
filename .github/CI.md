@@ -1,5 +1,7 @@
 # GitHub CI and Packaging
 
+English | [简体中文](CI_zh.md)
+
 ## Workflows
 
 | Workflow | Trigger | Artifacts and verification |

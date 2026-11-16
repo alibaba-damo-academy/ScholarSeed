@@ -3,45 +3,37 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { catalogue } from './catalog.ts'
+import type { LiteratureSummary } from '../../contracts/literature'
 
-test('download batch navigation clears stale state and preserves its scope while refining', () => {
+test('reader updates shared rows without clearing project projections or triggering detail reloads', () => {
+  const original = {
+    id: 'reader-paper',
+    title: 'Original',
+    version: 1,
+    project_collections: [{ id: 'local-collection' }],
+  } as LiteratureSummary
+  const updated = { ...original, title: 'Updated', version: 2, project_collections: [] }
+  catalogue.scope('reader-project')
+  catalogue.items([original])
   catalogue.scope(null)
-  catalogue.query({ q: 'old search' })
-  catalogue.focus('old-paper')
-  catalogue.select('old-paper', true)
-  catalogue.downloads('session', 'run', null, ['shown'])
-  assert.equal(catalogue.getSnapshot().query.q, undefined)
-  assert.equal(catalogue.getSnapshot().focusedId, null)
-  assert.deepEqual(catalogue.getSnapshot().selected, [])
-  assert.deepEqual(catalogue.getSnapshot().items, [])
-  assert.equal(catalogue.getSnapshot().itemsReady, false)
-  catalogue.query({ q: 'Transformer', sort: 'title' })
-  assert.equal(catalogue.getSnapshot().query.download_run, 'run')
-  assert.deepEqual(catalogue.getSnapshot().query.exclude_paper_id, ['shown'])
-  catalogue.navigate({ recent: true })
-  assert.equal(catalogue.getSnapshot().query.download_session_id, undefined)
-  assert.equal(catalogue.getSnapshot().query.recent, true)
+  catalogue.items([{ ...original, project_collections: [] }])
+  const before = catalogue.getSnapshot().reload
+  catalogue.updateItem(updated)
+  assert.equal(catalogue.getSnapshot().items[0].title, 'Updated')
+  assert.equal(catalogue.getSnapshot().reload, before)
+  assert.equal(catalogue.itemsFresh(), false)
+  catalogue.scope('reader-project')
+  assert.equal(catalogue.getSnapshot().items[0].title, 'Updated')
+  assert.deepEqual(
+    catalogue.getSnapshot().items[0].project_collections,
+    original.project_collections
+  )
+  catalogue.updateItem(original)
+  assert.equal(catalogue.getSnapshot().items[0].version, 2)
+  catalogue.scope(null)
 })
 
-test('switching download batches replaces project, exclusions, and selection', () => {
-  catalogue.downloads('session-a', 'run-a', 'project-a', ['shown-a'])
-  catalogue.select('batch-a-paper', true)
-  catalogue.downloads('session-b', 'run-b', 'project-b', ['shown-b'])
-  assert.equal(catalogue.getSnapshot().projectId, 'project-b')
-  assert.equal(catalogue.getSnapshot().query.project_id, 'project-b')
-  assert.equal(catalogue.getSnapshot().query.download_session_id, 'session-b')
-  assert.equal(catalogue.getSnapshot().query.download_run, 'run-b')
-  assert.deepEqual(catalogue.getSnapshot().query.exclude_paper_id, ['shown-b'])
-  assert.deepEqual(catalogue.getSnapshot().selected, [])
-  catalogue.scope(null)
-  catalogue.navigate()
-})
-
-test('fulltext admission invalidates the visible catalogue, not only the legacy store', () => {
-  const source = readFileSync(new URL('./Card.tsx', import.meta.url), 'utf8')
-  const delivery = readFileSync(new URL('./Delivery.tsx', import.meta.url), 'utf8')
-  assert.match(delivery, /const result = await ports\.save\(/)
-  assert.match(source, /saveDelivery\([\s\S]*?if \(reply\.ok\) \{\s*catalogue\.reload\(\)/)
+test('catalogue reload invalidates rows while retaining active filters', () => {
   for (const projectId of [null, 'delivery-project']) {
     catalogue.scope(projectId)
     catalogue.query({ q: 'retained filter' })

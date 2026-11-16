@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "browser-navigation",
+  "revision": "1",
+  "name": "浏览器导航合成输入",
+  "description": "仅供网页导航和查找准备的静态合成输入；不包含服务或产品运行结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic pages for browser evaluation.",
+    "rights": "Repository synthetic inputs; repository license applies."
+  },
+  "files": [
+    {
+      "id": "alpha",
+      "source": "files/index.html",
+      "target": "index.html",
+      "mediaType": "text/html",
+      "size": 313,
+      "sha256": "90bc4a72d5f627898e369c1377913f2e6c83df721be7e0b491dbca8c869a4086"
+    },
+    {
+      "id": "beta",
+      "source": "files/second.html",
+      "target": "second.html",
+      "mediaType": "text/html",
+      "size": 275,
+      "sha256": "eeabd5acfe296110e950f60d4a8a2dcdc215da25df527d4b6416a92acf7fd9b2"
+    }
+  ]
+}

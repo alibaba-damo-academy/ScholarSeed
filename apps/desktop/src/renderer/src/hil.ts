@@ -1,7 +1,14 @@
 import type { ProductHilData } from './api'
+import { OPENUI_LIMITS, OPENUI_SLOT } from '../../../../../packages/ui/document.ts'
+import {
+  isPublicComponentFingerprint,
+  PUBLIC_COMPONENT_PLUGIN,
+  PUBLIC_QUESTION_SLOT,
+} from '../../plugins.ts'
 import type { TFunction } from 'i18next'
 import type {
   ConvItem,
+  HilQuestionAnswer,
   HilOption,
   HilQuestion,
   HilPermissionScope,
@@ -11,6 +18,121 @@ import type {
 } from './model'
 
 export type HilItem = Extract<ConvItem, { kind: 'hil' }>
+
+export function submittedPluginValues(
+  question: HilQuestion,
+  answer: string | undefined
+): Record<string, unknown> | undefined {
+  if (!question.component || question.component.plugin === PUBLIC_COMPONENT_PLUGIN || !answer)
+    return undefined
+  try {
+    const parsed: unknown = JSON.parse(answer)
+    if (!parsed || typeof parsed !== 'object' || !('action' in parsed) || !('values' in parsed))
+      return undefined
+    const { action, values } = parsed
+    if (
+      typeof action !== 'string' ||
+      !action ||
+      action === 'cancel' ||
+      !values ||
+      typeof values !== 'object' ||
+      Array.isArray(values)
+    )
+      return undefined
+    return values as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
+export function declarativeAnswer(
+  question: HilQuestion,
+  answer: string,
+  labels: { submitted: string; cancelled: string }
+): string | undefined {
+  const component = question.component
+  if (
+    component?.plugin !== PUBLIC_COMPONENT_PLUGIN ||
+    !isPublicComponentFingerprint(component.fingerprint) ||
+    component.component !== OPENUI_SLOT
+  )
+    return undefined
+  try {
+    const parsed = JSON.parse(answer) as Record<string, unknown>
+    if (parsed.action === 'cancel') return labels.cancelled
+    if (
+      parsed.action !== 'choose' ||
+      !parsed.values ||
+      typeof parsed.values !== 'object' ||
+      Array.isArray(parsed.values)
+    )
+      return undefined
+    const values: string[] = []
+    const pending: { value: unknown; depth: number }[] = [{ value: parsed.values, depth: 0 }]
+    let visited = 0
+    while (pending.length) {
+      const current = pending.pop()!
+      if (++visited > OPENUI_LIMITS.items || current.depth > OPENUI_LIMITS.depth) return undefined
+      if (
+        typeof current.value === 'string' ||
+        typeof current.value === 'number' ||
+        typeof current.value === 'boolean'
+      ) {
+        if (String(current.value).trim()) values.push(String(current.value))
+      } else if (current.value && typeof current.value === 'object') {
+        const object = current.value as Record<string, unknown>
+        const children = Object.hasOwn(object, 'value') ? [object.value] : Object.values(object)
+        for (const child of children.reverse())
+          pending.push({ value: child, depth: current.depth + 1 })
+      }
+    }
+    return values.join('\n') || labels.submitted
+  } catch {
+    return undefined
+  }
+}
+
+export function reviseHilCard(previous: HilItem, data: ProductHilData): HilItem {
+  if (previous.hilState && TERMINAL_HIL_STATES.has(previous.hilState)) return previous
+  let changed = false
+  const questions = previous.questions?.map((question) => {
+    const next = data.questions?.find((candidate) => candidate.id === question.id)
+    if (
+      !question.component?.binding ||
+      next?.component?.binding !== question.component.binding ||
+      !next.component_data ||
+      (next.component_revision ?? 0) <= (question.componentRevision ?? 0)
+    )
+      return question
+    changed = true
+    return {
+      ...question,
+      componentData: next.component_data,
+      componentRevision: next.component_revision,
+    }
+  })
+  return changed ? { ...previous, questions } : previous
+}
+
+export function hasHostQuestions(questions: readonly HilQuestion[] = []): boolean {
+  return questions.some((question) =>
+    Boolean(
+      question.component ||
+      question.installation ||
+      question.requiresUserConfirmation ||
+      question.requiresHostResponse
+    )
+  )
+}
+
+export function canReplayQuestionForm(question: HilQuestion): boolean {
+  return (
+    !question.installation &&
+    (!question.component ||
+      (question.component.plugin === PUBLIC_COMPONENT_PLUGIN &&
+        question.component.component === PUBLIC_QUESTION_SLOT))
+  )
+}
 
 export function componentOptionAnswers(
   question: HilQuestion,
@@ -42,6 +164,106 @@ const HISTORY_OFFSET_MAX = 1_000
 const HISTORY_LIMIT_MAX = 20
 const HISTORY_INTENT_MAX_LENGTH = 512
 const HISTORY_DIGEST = /^[a-f0-9]{64}$/
+const RECOMMENDED_OPTION = /\s*[（(](?:recommended|推荐)[）)]\s*$/i
+export const QUESTION_FIELDS_PRESENTATION = 'question-fields'
+
+export function clarificationOption(label: string): { label: string; recommended: boolean } {
+  return {
+    label: label.replace(RECOMMENDED_OPTION, ''),
+    recommended: RECOMMENDED_OPTION.test(label),
+  }
+}
+
+export function questionDraft(questions: readonly HilQuestion[]): Record<number, number[]> {
+  return Object.fromEntries(
+    questions.map((question, index) => {
+      if (
+        question.presentation?.kind === QUESTION_FIELDS_PRESENTATION &&
+        !question.multiSelect &&
+        question.options.length === 1
+      ) {
+        return [index, [0]]
+      }
+      const recommended = question.options.flatMap((option, position) =>
+        RECOMMENDED_OPTION.test(option.label) ? [position] : []
+      )
+      return [index, question.multiSelect ? recommended : recommended.slice(0, 1)]
+    })
+  )
+}
+
+export function questionAnswer(question: HilQuestion, detail: HilQuestionAnswer): string {
+  return [
+    detail.option_indices.map((index) => question.options[index]?.label).join(', '),
+    detail.text,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+export function replayQuestionAnswer(
+  question: HilQuestion,
+  answer = '',
+  detail?: HilQuestionAnswer
+): HilQuestionAnswer {
+  const fallback = { option_indices: [], text: answer }
+  if (detail !== undefined) {
+    return detail &&
+      typeof detail.text === 'string' &&
+      Array.isArray(detail.option_indices) &&
+      (question.multiSelect || detail.option_indices.length <= 1) &&
+      new Set(detail.option_indices).size === detail.option_indices.length &&
+      detail.option_indices.every((index) => Number.isInteger(index) && question.options[index]) &&
+      questionAnswer(question, detail) === answer
+      ? detail
+      : fallback
+  }
+  if (!answer || !question.options.length) return fallback
+  const labels = question.options.map((option) => option.label)
+  if (
+    labels.some((label) => label.includes('\n') || (question.multiSelect && label.includes(', ')))
+  )
+    return fallback
+  const [first, ...supplement] = answer.split('\n')
+  const selected = question.multiSelect ? first.split(', ') : [first]
+  const indices = selected.map((label) => labels.indexOf(label))
+  if (
+    indices.some((index, position) => index < 0 || index !== labels.lastIndexOf(selected[position]))
+  )
+    return fallback
+  if (new Set(indices).size !== indices.length) return fallback
+  return { option_indices: indices, text: supplement.join('\n') }
+}
+
+export function questionScrollTarget(
+  offset: number,
+  scrollHeight: number,
+  clientHeight: number
+): number {
+  return Math.max(0, Math.min(offset, scrollHeight - clientHeight))
+}
+
+export function questionAtScroll(
+  offsets: readonly number[],
+  scrollTop: number,
+  atEnd = false,
+  navigationIndex?: number
+): number {
+  if (navigationIndex !== undefined) return navigationIndex
+  if (atEnd) return Math.max(0, offsets.length - 1)
+  return offsets.reduce((current, offset, index) => (offset <= scrollTop ? index : current), 0)
+}
+
+export function directQuestionTarget(items: ConvItem[], requestId?: string | null): HilItem | null {
+  const pending = pendingQuestionItems(items)
+  const target =
+    (requestId
+      ? pending.find((item) => item.requestId === requestId)
+      : pending.length === 1
+        ? pending[0]
+        : null) ?? null
+  return target?.hilState === 'submitting' ? null : target
+}
 
 export function hilTimestamp(timestamp: number): number {
   return timestamp < EPOCH_MILLISECONDS_THRESHOLD ? timestamp * MILLISECONDS_PER_SECOND : timestamp
@@ -308,6 +530,8 @@ export function projectHilCard(
     title: data.title,
     body: data.body,
     questions: (data.questions ?? []).map((question) => ({
+      ...(question.requires_user_confirmation ? { requiresUserConfirmation: true } : {}),
+      ...(question.requires_host_response ? { requiresHostResponse: true } : {}),
       ...(question.presentation ? { presentation: question.presentation } : {}),
       id: question.id,
       header: question.name ?? question.header,
@@ -317,14 +541,28 @@ export function projectHilCard(
       papers: question.papers,
       component: question.component,
       componentData: question.component_data,
+      componentRevision: question.component_revision,
       installation: question.plugin_installation,
+      resultCardId: question.result_card_id,
     })),
     options: data.options,
     allowFreeText: data.allow_free_text,
+    cancelTimeoutOnEdit:
+      data.cancel_timeout_on_edit ??
+      data.questions?.some((question) => question.cancel_timeout_on_edit === true),
+    timeoutAt:
+      typeof data.timeout_seconds === 'number' &&
+      Number.isFinite(data.timeout_seconds) &&
+      data.timeout_seconds > 0
+        ? hilTimestamp(data.created_at ?? data.requested_at ?? timestamp) +
+          data.timeout_seconds * MILLISECONDS_PER_SECOND
+        : undefined,
+    timeoutCancelled: data.timeout_cancelled,
     command: data.command,
     workdir: data.cwd,
     path: data.path,
     diff: data.diff,
+    changes: data.changes,
     networkTarget: data.network_target,
     permissions: data.permissions,
     safetyTags: data.safety_tags,
@@ -332,7 +570,15 @@ export function projectHilCard(
     suggestedPrefix: data.suggested_prefix,
     prefixKind: data.prefix_kind,
     requestedAt: hilTimestamp(data.requested_at ?? timestamp),
-    hilState: 'pending',
+    hilState: data.state ?? 'pending',
+    ...(data.state === 'resolved'
+      ? {
+          answers: data.answers ?? {},
+          answerDetails: data.answer_details,
+          selectedPaperIds: data.selected_paper_ids,
+          decisionSource: data.decision_source,
+        }
+      : {}),
     turnId,
     itemId,
     eventSeq,
@@ -387,7 +633,10 @@ export function hilRequestedRunState(
   if (data.blocking === false) return { running: thread.running, status: thread.status }
   return {
     running: data.lifetime === 'session' ? thread.running : true,
-    status: data.lifetime === 'session' && !thread.running ? thread.status : 'waiting',
+    status:
+      data.state === 'resolved' || (data.lifetime === 'session' && !thread.running)
+        ? thread.status
+        : 'waiting',
   }
 }
 
@@ -420,20 +669,24 @@ export function transcriptPresentationItems(items: ConvItem[]): ConvItem[] {
     if (item.hilKind === 'browser_approval' || item.hilKind === 'browser_history_approval')
       return isTerminalHil(item) ? [item] : []
     if (isQuestionHil(item)) {
-      if (item.hilState === 'resolved' && Object.keys(item.answers ?? {}).length > 0) {
+      if (item.hilState === 'resolved') {
         return [
           {
             kind: 'interaction_reply',
             requestId: item.requestId,
             questions: item.questions ?? [],
             answers: item.answers ?? {},
+            ...(item.answerDetails ? { answerDetails: item.answerDetails } : {}),
+            ...(item.decisionSource ? { decisionSource: item.decisionSource } : {}),
+            ...(item.selectedPaperIds ? { selectedPaperIds: item.selectedPaperIds } : {}),
+            ...(item.freeText ? { freeText: item.freeText } : {}),
+            ...(item.timedOut ? { timedOut: true } : {}),
             turnId: item.turnId,
             itemId: item.itemId,
             eventSeq: item.eventSeq,
           },
         ]
       }
-      if (item.hilState === 'resolved') return []
       if (!isTerminalHil(item)) return []
       return [item]
     }
@@ -449,6 +702,45 @@ function isAllowOnceOption(option: HilOption): boolean {
   return (
     ALLOW_ONCE_OPTION_IDS.has(option.id.toLowerCase()) || ALLOW_ONCE_OPTION_LABEL.test(option.label)
   )
+}
+
+export function approvalDetails(item: HilItem): {
+  kind: 'file' | 'command' | 'permission'
+  paths: string[]
+} {
+  const kind = item.hilKind === 'file_approval' ? 'file' : item.command ? 'command' : 'permission'
+  const paths =
+    kind === 'file'
+      ? [
+          ...new Set(
+            [
+              item.path,
+              ...(item.changes ?? []).flatMap((change) => {
+                const kind = change.kind
+                const moved =
+                  typeof kind === 'object' && kind !== null && 'move_path' in kind
+                    ? kind.move_path
+                    : undefined
+                return [change.path, moved]
+              }),
+            ].filter((path): path is string => typeof path === 'string' && path.length > 0)
+          ),
+        ]
+      : []
+  return { kind, paths }
+}
+
+export function fileApprovalOperation(item: HilItem): 'create' | 'update' | 'delete' | 'changes' {
+  const operations = (item.changes ?? []).map((change) => {
+    const kind = change.kind
+    if (typeof kind === 'object' && kind !== null && 'move_path' in kind && kind.move_path)
+      return 'move'
+    return typeof kind === 'object' && kind !== null && 'type' in kind ? kind.type : kind
+  })
+  if (operations.length && operations.every((operation) => operation === 'add')) return 'create'
+  if (operations.length && operations.every((operation) => operation === 'update')) return 'update'
+  if (operations.length && operations.every((operation) => operation === 'delete')) return 'delete'
+  return 'changes'
 }
 
 export function permissionDecisionOptions(item: HilItem): {

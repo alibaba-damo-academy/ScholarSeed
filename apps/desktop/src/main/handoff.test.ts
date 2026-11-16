@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { get } from 'node:http'
 import { mock, test } from 'node:test'
 import { AuthenticationOwner } from './authentication.ts'
 
@@ -10,6 +12,7 @@ import {
   CONFIRMATION_TIMEOUT_MS,
 } from './handoff.ts'
 import type { DeliveryResult, HandoffLocalCoordinator, RenewResult } from './handoff-local.ts'
+import { listenForLoginCallback } from './loopback.ts'
 import {
   DESKTOP_AUTH_CALLBACK_PREFIX,
   findCallbackUrl,
@@ -352,12 +355,13 @@ interface HarnessOptions {
   onLoginStarted?: () => void
   defaultHandler?: boolean
   local?: ReturnType<typeof fakeLocal>
+  loopback?: typeof listenForLoginCallback
   adopt?: (token: string, refreshToken: string, isCurrent: () => boolean) => Promise<boolean>
 }
 
 /** 状态机固件：注入全部依赖 + 一个可编程的 fetch 替身，返回观测到的相位序列。 */
 function harness(
-  exchange: (attempt: number) => Promise<Response>,
+  exchange: (attempt: number, ...request: Parameters<typeof fetch>) => Promise<Response>,
   options: HarnessOptions = {}
 ): {
   handoff: DesktopHandoff
@@ -376,9 +380,9 @@ function harness(
   const local = options.local ?? fakeLocal()
   let attempt = 0
   const originalFetch = globalThis.fetch
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (input, init) => {
     attempt += 1
-    return await exchange(attempt)
+    return await exchange(attempt, input, init)
   }) as typeof globalThis.fetch
   const handoff = new DesktopHandoff({
     onLoginStarted: options.onLoginStarted ?? (() => {}),
@@ -395,6 +399,7 @@ function harness(
       await options.open?.(url)
     },
     local: local.coordinator,
+    loopback: options.loopback,
     reportOutcome: async (state, outcome, token, isCurrent) => {
       reports.push({ state, outcome, token })
       await options.report?.(isCurrent)
@@ -424,6 +429,76 @@ function callback(state: string, code = 'c'): string {
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+
+function callbackStatus(port: string, target: string, host?: string): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    get(
+      { hostname: '127.0.0.1', port, path: target, headers: host ? { host } : undefined },
+      (response) => {
+        response.resume()
+        resolve(response.statusCode)
+      }
+    ).on('error', reject)
+  })
+}
+
+test('loopback login keeps each attempt on its own port and sends the verifier only in exchange', async () => {
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = []
+  const exchanged = deferred<void>()
+  const h = harness(
+    async (_attempt, input, init) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body)) })
+      exchanged.resolve()
+      return tokenResponse()
+    },
+    { loopback: listenForLoginCallback }
+  )
+  try {
+    assert.equal((await h.handoff.start('en')).ok, true)
+    const opened = new URL(h.openedUrls[0])
+    const port = opened.searchParams.get('redirect_port') ?? ''
+    const challenge = opened.searchParams.get('code_challenge') ?? ''
+    const state = stateOf(opened.href)
+    assert.equal(opened.searchParams.get('desktop'), '2')
+    assert.match(challenge, /^[A-Za-z0-9_-]{43}$/)
+    assert.equal(opened.searchParams.has('code_verifier'), false)
+    assert.equal(h.local.calls.claim.length, 0)
+    await h.handoff.handleCallback(callback(state, 'ignored-legacy-code'))
+    assert.equal(requests.length, 0)
+    const target = `/auth/callback?state=${state}&code=${'a'.repeat(43)}`
+    assert.equal(await callbackStatus(port, target, `example.test:${port}`), 404)
+    assert.equal(await callbackStatus(port, target.replace(state, 'wrong')), 404)
+    assert.equal(await callbackStatus(port, `${target}&state=${state}`), 404)
+    assert.equal(await callbackStatus(port, target), 204)
+    await exchanged.promise
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].url, ACCOUNT_BASE + '/api/desktop/loopback/token')
+    assert.equal(requests[0].body.redirect_port, Number(port))
+    assert.equal(
+      createHash('sha256').update(String(requests[0].body.code_verifier)).digest('base64url'),
+      challenge
+    )
+    assert.doesNotMatch(h.logs.join(''), new RegExp(String(requests[0].body.code_verifier)))
+  } finally {
+    h.restore()
+  }
+})
+
+test('separate loopback listeners reject each other and cancellation closes the port', async () => {
+  const first = await listenForLoginCallback(() => false)
+  const second = await listenForLoginCallback(() => true)
+  try {
+    assert.notEqual(first.port, second.port)
+    const target = `/auth/callback?state=${'s'.repeat(43)}&code=${'c'.repeat(43)}`
+    assert.equal(await callbackStatus(String(first.port), target), 404)
+    assert.equal(await callbackStatus(String(second.port), target), 204)
+    first.close()
+    await assert.rejects(callbackStatus(String(first.port), target), { code: 'ECONNREFUSED' })
+  } finally {
+    first.close()
+    second.close()
+  }
+})
 
 test('desktop login URL carries the selected interface language', async () => {
   const h = harness(async () => tokenResponse())

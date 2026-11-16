@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "image-secondary",
+  "revision": "1",
+  "name": "第二张合成图片输入",
+  "description": "用于区分草稿图片引用的合成原始图片，不包含产品状态或操作结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored geometric image generated with Pillow.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "secondary-image",
+      "source": "files/secondary.png",
+      "target": "secondary.png",
+      "mediaType": "image/png",
+      "size": 1180,
+      "sha256": "2f98c21d4db76db99f98fe77623de32046572a13f4ad0e849dc82d106c23ac39"
+    }
+  ]
+}

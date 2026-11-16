@@ -1,5 +1,26 @@
-import type { AnimationEvent as ReactAnimationEvent, ButtonHTMLAttributes, HTMLAttributes, KeyboardEvent as ReactKeyboardEvent, ReactNode, RefObject } from 'react'
-import { Children, createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
+import type * as React from 'react'
+import { usePortalDocument } from './portal'
+import type {
+  AnimationEvent as ReactAnimationEvent,
+  ButtonHTMLAttributes,
+  HTMLAttributes,
+  KeyboardEvent as ReactKeyboardEvent,
+  ReactNode,
+  RefObject,
+} from 'react'
+import {
+  Children,
+  createContext,
+  forwardRef,
+  isValidElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 
 import {
   buttonClassName,
@@ -13,13 +34,13 @@ import {
   sheetPortalClassName,
   sheetStyleClassName,
   sheetTitleClassName,
-  type SheetSide
+  type SheetSide,
 } from './classes'
 import { cx } from './utils'
 import { inFocusScope, visibleContent, useFocusScope } from './focus'
 
 interface SheetContextValue {
-  contentRef: RefObject<HTMLDivElement>
+  contentRef: RefObject<HTMLDivElement | null>
   close: () => void
   descriptionId: string
   finishClose: () => void
@@ -33,12 +54,12 @@ interface SheetContextValue {
 const SheetContext = createContext<SheetContextValue | null>(null)
 
 function childOverlayHandlesEscape(content: HTMLElement, target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false
+  if (!(target instanceof content.ownerDocument.defaultView!.Element)) return false
   const activeModal = target.closest('[aria-modal="true"]')
   if (activeModal && activeModal !== content && !activeModal.contains(content)) return true
   if (!content.contains(target) && inFocusScope(content, target)) return true
   const trigger = target.closest('[aria-haspopup][aria-expanded="true"][aria-controls]')
-  return (trigger?.getAttribute('aria-controls') ?? '').split(/\s+/).some(id => {
+  return (trigger?.getAttribute('aria-controls') ?? '').split(/\s+/).some((id) => {
     const popup = content.ownerDocument.getElementById(id)
     return visibleContent(popup) && popup !== content && !popup.contains(content)
   })
@@ -77,17 +98,21 @@ export type SheetPortalProps = HTMLAttributes<HTMLDivElement>
 export type SheetTriggerProps = ButtonHTMLAttributes<HTMLButtonElement>
 export type { SheetSide }
 
-export function Sheet({ children, onOpenChange, open }: SheetProps): JSX.Element | null {
+export function Sheet({ children, onOpenChange, open }: SheetProps): React.JSX.Element | null {
+  const document = usePortalDocument()
   const generatedId = useId()
   const contentRef = useRef<HTMLDivElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
   const currentOpen = open ?? uncontrolledOpen
   const [present, setPresent] = useState(currentOpen)
-  const setOpen = useCallback((nextOpen: boolean): void => {
-    if (open === undefined) setUncontrolledOpen(nextOpen)
-    onOpenChange?.(nextOpen)
-  }, [onOpenChange, open])
+  const setOpen = useCallback(
+    (nextOpen: boolean): void => {
+      if (open === undefined) setUncontrolledOpen(nextOpen)
+      onOpenChange?.(nextOpen)
+    },
+    [onOpenChange, open]
+  )
   const context = useMemo<SheetContextValue>(
     () => ({
       contentRef,
@@ -101,7 +126,7 @@ export function Sheet({ children, onOpenChange, open }: SheetProps): JSX.Element
       present,
       restoreFocusRef,
       setOpen,
-      titleId: `${generatedId}-title`
+      titleId: `${generatedId}-title`,
     }),
     [currentOpen, generatedId, present, setOpen]
   )
@@ -134,22 +159,27 @@ export function Sheet({ children, onOpenChange, open }: SheetProps): JSX.Element
     }
     document.addEventListener('keydown', handleDocumentKeyDown)
     return () => document.removeEventListener('keydown', handleDocumentKeyDown)
-  }, [currentOpen, setOpen])
+  }, [currentOpen, setOpen, document])
 
-  const visibleChildren = currentOpen || present
-    ? children
-    : Children.map(children, (child) => (
-      isValidElement(child) && (child.type === SheetTrigger || child.type === SheetPortal) ? child : null
-    ))
+  const visibleChildren =
+    currentOpen || present
+      ? children
+      : Children.map(children, (child) =>
+          isValidElement(child) && (child.type === SheetTrigger || child.type === SheetPortal)
+            ? child
+            : null
+        )
 
   return <SheetContext.Provider value={context}>{visibleChildren}</SheetContext.Provider>
 }
 
-export const SheetPortal = forwardRef<HTMLDivElement, SheetPortalProps>(({ className, ...props }, ref) => {
-  const context = useSheetContext('SheetPortal')
-  if (!context.present) return null
-  return <div className={cx(sheetPortalClassName, className)} ref={ref} {...props} />
-})
+export const SheetPortal = forwardRef<HTMLDivElement, SheetPortalProps>(
+  ({ className, ...props }, ref) => {
+    const context = useSheetContext('SheetPortal')
+    if (!context.present) return null
+    return <div className={cx(sheetPortalClassName, className)} ref={ref} {...props} />
+  }
+)
 
 SheetPortal.displayName = 'SheetPortal'
 
@@ -172,7 +202,8 @@ export const SheetTrigger = forwardRef<HTMLButtonElement, SheetTriggerProps>(
         onClick={(event) => {
           onClick?.(event)
           if (!event.defaultPrevented) {
-            ;(context.restoreFocusRef as { current: HTMLElement | null }).current = event.currentTarget
+            ;(context.restoreFocusRef as { current: HTMLElement | null }).current =
+              event.currentTarget
             context.setOpen(true)
           }
         }}
@@ -228,7 +259,11 @@ export const SheetContent = forwardRef<HTMLDivElement, SheetContentProps>(
     const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
       onKeyDown?.(event)
       if (event.defaultPrevented || event.key !== 'Escape') return
-      if (event.target instanceof Node && !event.currentTarget.contains(event.target)) return
+      if (
+        event.target instanceof event.currentTarget.ownerDocument.defaultView!.Node &&
+        !event.currentTarget.contains(event.target)
+      )
+        return
       if (childOverlayHandlesEscape(event.currentTarget, event.target)) return
       event.preventDefault()
       context.close()
@@ -252,7 +287,7 @@ export const SheetContent = forwardRef<HTMLDivElement, SheetContentProps>(
         data-side={side}
         data-state={context.open ? 'open' : 'closed'}
         ref={(element) => {
-          (context.contentRef as { current: HTMLDivElement | null }).current = element
+          ;(context.contentRef as { current: HTMLDivElement | null }).current = element
           if (typeof ref === 'function') ref(element)
           else if (ref) ref.current = element
         }}
@@ -268,23 +303,36 @@ export const SheetContent = forwardRef<HTMLDivElement, SheetContentProps>(
 
 SheetContent.displayName = 'SheetContent'
 
-export const SheetHeader = forwardRef<HTMLDivElement, SheetHeaderProps>(({ className, ...props }, ref) => (
-  <div className={cx(sheetHeaderClassName, className)} ref={ref} {...props} />
-))
+export const SheetHeader = forwardRef<HTMLDivElement, SheetHeaderProps>(
+  ({ className, ...props }, ref) => (
+    <div className={cx(sheetHeaderClassName, className)} ref={ref} {...props} />
+  )
+)
 
 SheetHeader.displayName = 'SheetHeader'
 
-export const SheetFooter = forwardRef<HTMLDivElement, SheetFooterProps>(({ className, ...props }, ref) => (
-  <div className={cx(sheetFooterClassName, className)} ref={ref} {...props} />
-))
+export const SheetFooter = forwardRef<HTMLDivElement, SheetFooterProps>(
+  ({ className, ...props }, ref) => (
+    <div className={cx(sheetFooterClassName, className)} ref={ref} {...props} />
+  )
+)
 
 SheetFooter.displayName = 'SheetFooter'
 
-export const SheetTitle = forwardRef<HTMLHeadingElement, SheetTitleProps>(({ className, id, ...props }, ref) => {
-  const context = useSheetContext('SheetTitle')
+export const SheetTitle = forwardRef<HTMLHeadingElement, SheetTitleProps>(
+  ({ className, id, ...props }, ref) => {
+    const context = useSheetContext('SheetTitle')
 
-  return <h2 className={cx(sheetTitleClassName, className)} id={id ?? context.titleId} ref={ref} {...props} />
-})
+    return (
+      <h2
+        className={cx(sheetTitleClassName, className)}
+        id={id ?? context.titleId}
+        ref={ref}
+        {...props}
+      />
+    )
+  }
+)
 
 SheetTitle.displayName = 'SheetTitle'
 
@@ -292,7 +340,14 @@ export const SheetDescription = forwardRef<HTMLParagraphElement, SheetDescriptio
   ({ className, id, ...props }, ref) => {
     const context = useSheetContext('SheetDescription')
 
-    return <p className={cx(sheetDescriptionClassName, className)} id={id ?? context.descriptionId} ref={ref} {...props} />
+    return (
+      <p
+        className={cx(sheetDescriptionClassName, className)}
+        id={id ?? context.descriptionId}
+        ref={ref}
+        {...props}
+      />
+    )
   }
 )
 

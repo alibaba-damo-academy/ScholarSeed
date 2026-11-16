@@ -18,6 +18,7 @@ test('standalone protected generation builder exists', () => {
 
 const desktop = fileURLToPath(new URL('.', import.meta.url))
 const DEPENDENCY_DIRECTORY = 'node_modules'
+const INSPECTION_PROBE_TIMEOUT_MS = 10000
 function isolatedSource() {
   const container = mkdtempSync(join(tmpdir(), 'protected-build-'))
   const root = join(container, 'apps/desktop')
@@ -25,8 +26,11 @@ function isolatedSource() {
   cpSync(join(desktop, 'src'), join(root, 'src'), {
     recursive: true, filter: source => basename(source) !== DEPENDENCY_DIRECTORY
   })
-  for (const file of ['electron.vite.config.ts', 'protected.ts', 'renderer.ts', 'endpoints.ts', 'package-lock.json', 'package.json']) cpSync(join(desktop, file), join(root, file))
+  for (const file of ['electron.vite.config.ts', 'protected.ts', 'renderer.ts', 'endpoints.ts', 'package-lock.json', 'package.json', 'tsconfig.base.json', 'tsconfig.web.json']) cpSync(join(desktop, file), join(root, file))
   for (const owner of ['runtime', 'scripts', 'native']) cpSync(join(desktop, owner), join(root, owner), { recursive: true })
+  cpSync(join(desktop, '../../packages/ui'), join(container, 'packages/ui'), {
+    recursive: true, filter: source => basename(source) !== DEPENDENCY_DIRECTORY,
+  })
   mkdirSync(join(container, 'scripts'))
   for (const owner of ['ops-cli.cjs', 'pre', 'dev', 'ci', 'cd', 'shared']) cpSync(join(desktop, '../../scripts', owner), join(container, 'scripts', owner), {
     recursive: true, filter: source => !source.split(/[\\/]/).some(part => ['__tests__', '__pycache__'].includes(part))
@@ -62,6 +66,7 @@ test('actual standalone serve/build generation includes local fonts and minimal 
     const manifest = JSON.parse(readFileSync(join(serve.directory, 'manifest.json'), 'utf8'))
     assert.ok(manifest.sources.some((file: { path: string }) => file.path === '../../scripts/shared/python.cjs'))
     assert.ok(manifest.sources.some((file: { path: string }) => file.path === 'scripts/shared/lease.mjs'))
+    assert.ok(manifest.sources.some((file: { path: string }) => file.path === '../../packages/ui/library.tsx'))
     assert.equal(manifest.sources.some((file: { path: string }) => file.path.includes('/__tests__/')), false)
     assert.ok(manifest.files.some((file: { path: string }) => file.path.endsWith('.woff2')))
     assert.ok(manifest.files.some((file: { path: string }) => file.path.endsWith('.css')))
@@ -100,7 +105,7 @@ function compilationPlugins(bundle: Awaited<ReturnType<typeof buildProtected>>):
 }
 async function compileOwner(root: string, bundle: Awaited<ReturnType<typeof buildProtected>>, entry: string, plugins: Plugin[] = []) {
   return compile({ configFile: false, root, logLevel: 'error', plugins: [...plugins, ...compilationPlugins(bundle)],
-    build: { ssr: true, target: 'node24', write: false, rollupOptions: { input: join(root, entry), external: ['electron'], output: { format: 'cjs' } } } })
+    build: { ssr: true, target: 'node24', write: false, rolldownOptions: { input: join(root, entry), external: ['electron'], output: { format: 'cjs' } } } })
 }
 test('same snapshot freezes package metadata and rejects mutations', { timeout: 60000 }, async () => {
   const fixture = isolatedSource()
@@ -125,6 +130,63 @@ test('same snapshot freezes package metadata and rejects mutations', { timeout: 
     writeFileSync(toolchain, toolchainBytes)
   } finally { fixture.dispose() }
 })
+test('same snapshot freezes the terminal fingerprint and rejects mutations', { timeout: 60000 }, async () => {
+  const fixture = isolatedSource()
+  try {
+    const bundle = await buildProtected({ desktopRoot: fixture.root, command: 'serve', mode: 'development' })
+    const filename = join(fixture.root, 'native/shipit/fingerprint.cjs')
+    const original = readFileSync(filename)
+    const manifest = JSON.parse(readFileSync(join(bundle.directory, 'manifest.json'), 'utf8'))
+    const fingerprints = manifest.sources.filter((source: { path: string; sha256: string }) =>
+      source.path === 'native/shipit/fingerprint.cjs')
+    assert.equal(fingerprints.length, 1)
+    assert.equal(fingerprints[0].sha256, protectedDigest(original))
+    await compileOwner(fixture.root, bundle, 'native/shipit/fingerprint.cjs')
+    writeFileSync(filename, Buffer.concat([original, Buffer.from('\n')]))
+    await assert.rejects(compileOwner(fixture.root, bundle, 'native/shipit/fingerprint.cjs'), /protected_assets_unavailable/)
+    writeFileSync(filename, original)
+    await compileOwner(fixture.root, bundle, 'native/shipit/fingerprint.cjs')
+  } finally { fixture.dispose() }
+})
+
+test('native source inventory freezes nested modules and rejects edits, additions and removals', { timeout: 60000 }, async () => {
+  const fixture = isolatedSource()
+  const nested = 'native/shipit/nested/probe.ts'
+  try {
+    mkdirSync(dirname(join(fixture.root, nested)), { recursive: true })
+    writeFileSync(join(fixture.root, nested), 'export const value = 42\n')
+    const bundle = await buildProtected({ desktopRoot: fixture.root, command: 'build', mode: 'production' })
+    const manifest = JSON.parse(readFileSync(join(bundle.directory, 'manifest.json'), 'utf8'))
+    for (const name of ['native/domains.cjs', 'native/shipit/fingerprint.cjs', nested]) {
+      const filename = join(fixture.root, name)
+      const original = readFileSync(filename)
+      assert.ok(manifest.sources.some((source: { path: string; sha256: string }) =>
+        source.path === name && source.sha256 === protectedDigest(original)), name)
+      writeFileSync(filename, Buffer.concat([original, Buffer.from('\n// changed after capture\n')]))
+      await assert.rejects(compileOwner(fixture.root, bundle, nested), /protected_assets_unavailable/)
+      writeFileSync(filename, original)
+      rmSync(filename)
+      await assert.rejects(compileOwner(fixture.root, bundle, nested), /protected_assets_unavailable/)
+      writeFileSync(filename, original)
+    }
+    assert.equal(manifest.sources.some((source: { path: string }) => source.path === 'native/shipit/README.md'), false)
+    await compileOwner(fixture.root, bundle, nested)
+    const added = join(fixture.root, 'native/shipit/nested/added.cjs')
+    writeFileSync(added, 'module.exports = 1\n')
+    await assert.rejects(compileOwner(fixture.root, bundle, nested), /protected_assets_unavailable/)
+    rmSync(added)
+    await compileOwner(fixture.root, bundle, nested)
+  } finally { fixture.dispose() }
+})
+
+test('native source inventory rejects nested symbolic links', { timeout: 60000 }, async () => {
+  const fixture = isolatedSource()
+  try {
+    symlinkSync(join(fixture.root, 'src'), join(fixture.root, 'native/shipit/linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    await assert.rejects(buildProtected({ desktopRoot: fixture.root, command: 'build', mode: 'production' }), /protected_assets_unavailable/)
+  } finally { fixture.dispose() }
+})
+
 test('same snapshot rejects protocol and native bridge edits after protected return', { timeout: 60000 }, async () => {
   const fixture = isolatedSource()
   try {
@@ -222,6 +284,18 @@ test(
         'native imports and emitted assets must match in both directions'
       )
       assert.equal(nativeImports.has('notification.node'), process.platform === 'win32')
+      for (const item of built.output) {
+        if (item.type !== 'chunk') continue
+        const filename = join(fixture.root, 'out/main', item.fileName)
+        mkdirSync(dirname(filename), { recursive: true })
+        writeFileSync(filename, item.code)
+      }
+      const inspection = spawnSync(process.execPath, [join(fixture.root, 'out/main/data-inspection.js')], {
+        input: '{}\n', encoding: 'utf8', timeout: INSPECTION_PROBE_TIMEOUT_MS,
+      })
+      assert.equal(inspection.status, 2, inspection.stderr)
+      assert.equal(inspection.stdout, '')
+      assert.equal(inspection.stderr, 'desktop_inspection_failed\n')
     } finally {
       fixture.dispose()
     }
@@ -304,9 +378,13 @@ export { WebSocket, WebSocketServer, buffers, validation }
     const resolved = await resolveConfig({ root: fixture.root, configFile: join(fixture.root, 'electron.vite.config.ts') }, 'serve')
     assert.ok(resolved.config)
     assert.ok(resolved.config.main)
+    const mainOptions = resolved.config.main.build?.rolldownOptions
+    assert.ok(mainOptions)
+    assert.ok(Array.isArray(mainOptions.external))
+    assert.ok(mainOptions.external.includes('original-fs'))
     const output = await compile({ ...resolved.config.main, root: fixture.root, configFile: false, logLevel: 'error',
       build: { ...resolved.config.main.build, write: false, watch: null,
-        rollupOptions: { ...resolved.config.main.build?.rollupOptions, input: probe, output: { format: 'cjs' } } } })
+        rolldownOptions: { ...mainOptions, input: probe, output: { format: 'cjs' } } } })
     assert.ok(!Array.isArray(output) && 'output' in output)
     const chunks = output.output.filter(item => item.type === 'chunk')
     assert.equal(chunks.length, 1)

@@ -10,11 +10,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from authoring import writing_content
 import evidence as e
 import manuscript as m
 import scripted_generation as g
 from generation_errors import GenerationError
+from response import import_outline
 import test_manuscript
+from operator_cli import configure_outline
+
+from outlining import build_prompt
+from task_input import task_input
+from task_contract import configure, read_request
 
 
 CONFIG = {'provider':'qwen','model':'fixture','api_key':'never-log-this', 'max_tokens':64000,
@@ -36,6 +43,25 @@ class FakeModel:
 
 
 class EvidenceTest(unittest.TestCase):
+    def test_outline_preserves_bibliographic_authors_without_numeric_id_exposure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            configure(workspace, {'intent': 'Compare the supplied papers', 'output_scope': 'section'})
+            paper = {'paper_type': 'method', 'title': 'Actual title', 'year': 2024,
+                     'authors': [{'name': 'Actual Author'}, {'name': 'Second Author'}],
+                     'abstract': 'A supported result.', 'card': {'method': {'description': 'A supported result.'}}}
+            e.save(workspace/'03_process/paper_cards.json', {'987654321': paper})
+            e.save(workspace/'02_retrieval/selected_paper.json', {'987654321': paper})
+            e.save(workspace/'03_process/cite_keys.json', {'987654321': 'Actual2024'})
+            result = e.build(workspace, 'outline')
+            evidence = e.read(result['artifacts'][0])
+            self.assertEqual(evidence['papers'][0]['authors'], paper['authors'])
+            messages, adapter = build_prompt(task_input(workspace), read_request(workspace), evidence, 'markdown')
+            self.assertIn('Actual Author', messages[1]['content'])
+            self.assertIn('[[paper:P01]]', messages[1]['content'])
+            self.assertNotIn('987654321', messages[1]['content'])
+            self.assertEqual(adapter['papers']['P01']['paper_id'], '987654321')
+
     def test_four_types_no_truncation_no_formula_or_results_in_outline(self):
         method={'paper_type':'method','common_fields':{'tldr':'Mechanism'}, 'card':{
             'method':{'name':'M','description':'x'*1200, 'key_formulas':['FORMULA']},'experiments':{'result':'RESULT'}}}
@@ -43,7 +69,7 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(fields['Mechanism'], 'x'*1200)
         self.assertEqual(mapping['Mechanism'],'card.method.description')
         self.assertNotIn('FORMULA',json.dumps(fields));self.assertNotIn('RESULT',json.dumps(fields))
-        self.assertIn('FORMULA',json.dumps(e.writing_content(method)))
+        self.assertIn('FORMULA',json.dumps(writing_content(method)))
         benchmark={'paper_type':'benchmark','card':{'dataset':{'name':'B','description':'Design','size':1234},
             'metrics':{'evaluation_protocol':'Fixed seeds','primary_metrics':['HV']}}}
         fields,_=e.project(benchmark);self.assertEqual(fields['Protocol'],'Fixed seeds')
@@ -54,7 +80,7 @@ class EvidenceTest(unittest.TestCase):
         fields,_=e.project(theory);self.assertEqual(fields['Impact'],'Local implication')
         self.assertNotIn('BOUND',json.dumps(fields))
         self.assertEqual(e.project(theory,['card.theorem_proof.key_assumptions'])[0]['card.theorem_proof.key_assumptions'],['Compact domain'])
-        self.assertIn('BOUND',json.dumps(e.writing_content(theory)))
+        self.assertIn('BOUND',json.dumps(writing_content(theory)))
         survey={'paper_type':'survey','survey_outline_skeletons':[{'sections':[{'title':'OLD'}]}],
             'card':{'survey_outline':{'sections':[{'title':'Real','description':'Actual scope','subsections':[{'title':'Nested'}]}]}}}
         fields,mapping=e.project(survey);self.assertEqual(mapping['Survey outline'],'card.survey_outline.sections')
@@ -140,17 +166,13 @@ class ScriptedTest(unittest.TestCase):
         client=FakeModel(value)
         asyncio.run(g.generate(self.ws,'outline',cfg=CONFIG,client=client))
         protocol=client.calls[0][0]['content']
-        start=protocol.index('{"survey_title":"Review"')
+        start=protocol.index('{"section_id": "1"')
         example,_=json.JSONDecoder().raw_decode(protocol[start:])
-        parent=example['outline_tree'][0];child=parent['subsections'][0]
-        self.assertEqual(parent['language'],'default')
-        self.assertNotIn('language',child)
-        from validate_outline import validate
-        from asset_plan import plan_errors
-        from chapter_plan import compile_plan
-        self.assertEqual(validate(example,{'p1'}, {})[0],[])
-        self.assertEqual(plan_errors(example,{'p1'}),[])
-        compile_plan(example,{'p1'})
+        self.assertEqual(example['language'],'default')
+        self.assertEqual(example['role'],'analysis')
+        self.assertTrue(example['analysis_tasks'])
+        self.assertNotIn('figures',example)
+        self.assertIn('L2 inherits language and has no language key',protocol)
 
     def test_numbered_outline_caption_is_rejected_without_recall_or_raw_rewrite(self):
         from task_fixtures import planned_asset
@@ -167,6 +189,25 @@ class ScriptedTest(unittest.TestCase):
         self.assertEqual(json.loads(Path(report['candidate_path']).read_text()),value)
         self.assertFalse((self.ws/'04_outline/outline.json').exists())
 
+    def test_outline_alias_normalization_is_shared_and_keeps_candidate(self):
+        selected = e.read(self.ws/'02_retrieval/selected_paper.json')
+        selected['p1']['library_refs'] = ['literature:local-alias']
+        self.put('02_retrieval/selected_paper.json', selected)
+        value = e.read(self.ws/'04_outline/outline.json')
+        value['outline_tree'][0]['paper_ids'] = ['local-alias']
+        (self.ws/'04_outline/outline.json').unlink()
+        model_value = copy.deepcopy(value)
+        model_value['outline_tree'][0]['paper_ids'] = ['P01']
+        client = FakeModel(model_value)
+        result = asyncio.run(g.generate(self.ws, 'outline', cfg=CONFIG, client=client))
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(e.read(self.ws/'04_outline/outline.json')['outline_tree'][0]['paper_ids'], ['p1'])
+        self.assertEqual(e.read(Path(result['log_dir'])/'candidate.json')['outline_tree'][0]['paper_ids'], ['p1'])
+        result = configure_outline(self.ws, value)
+        self.assertEqual(result['status'], 'SUCCESS')
+        self.assertEqual(result['id_normalizations'][0]['to'], 'p1')
+        self.assertEqual(e.read(self.ws/'03_process/cite_keys.json'), {'p1':'First2024'})
+
     def test_invalid_outline_candidate_tells_main_to_repair_without_model_rerun(self):
         value=e.read(self.ws/'04_outline/outline.json')
         (self.ws/'04_outline/outline.json').unlink()
@@ -176,10 +217,52 @@ class ScriptedTest(unittest.TestCase):
             asyncio.run(g.generate(self.ws,'outline',cfg=CONFIG,client=client))
         report=caught.exception.report()
         self.assertEqual(len(client.calls),1)
-        self.assertTrue(Path(report['candidate_path']).is_file())
-        self.assertEqual(report['outline_recovery']['strategy'],'repair_saved_candidate')
-        self.assertIn('outline configure --request',report['next_action'])
-        self.assertIn('do not rerun outline generation',report['next_action'])
+        self.assertIn('paper aliases',report['message'])
+        self.assertIn('Do not guess original IDs',report['next_action'])
+        self.assertFalse((self.ws/'04_outline/outline.json').exists())
+        folder=next((self.ws/'_logs/llm').iterdir())
+        self.assertTrue((folder/'outline_adapter.json').is_file())
+        self.assertEqual(json.loads((folder/'attempt-1.response.txt').read_text()),value)
+
+    def test_model_aliases_restore_before_existing_validation_and_persistence(self):
+        value=e.read(self.ws/'04_outline/outline.json')
+        value['outline_tree'][0]['paper_ids']=['P01']
+        (self.ws/'04_outline/outline.json').unlink()
+        client=FakeModel(value)
+        asyncio.run(g.generate(self.ws,'outline',cfg=CONFIG,client=client))
+        folder=next((self.ws/'_logs/llm').iterdir())
+        mapping=e.read(folder/'outline_adapter.json')['papers']
+        restored=e.read(self.ws/'04_outline/outline.json')
+        self.assertEqual(restored['outline_tree'][0]['paper_ids'],[mapping['P01']['paper_id']])
+        self.assertEqual(e.read(folder/'candidate.json')['outline_tree'][0]['paper_ids'],restored['outline_tree'][0]['paper_ids'])
+        self.assertEqual(json.loads((folder/'attempt-1.response.txt').read_text()),value)
+
+    def test_alias_failure_returns_complete_request_bound_recovery(self):
+        value=e.read(self.ws/'04_outline/outline.json')
+        value['outline_tree'][0]['paper_ids']=['P01']
+        value['warnings']=['P01 has limited evidence.']
+        (self.ws/'04_outline/outline.json').unlink()
+        client=FakeModel(value)
+        with self.assertRaises(GenerationError) as caught:
+            asyncio.run(g.generate(self.ws,'outline',cfg=CONFIG,client=client))
+        report=caught.exception.report()
+        recovery=report['outline_recovery']
+        candidate=Path(recovery['request'])
+        self.assertTrue(candidate.is_absolute())
+        self.assertEqual(e.read(candidate),value)
+        self.assertEqual(recovery['command'],'outline import --request <recovery-request.json>')
+        repaired=copy.deepcopy(value)
+        repaired['warnings']=['[[paper:P01]] has limited evidence.']
+        corrected=self.ws/'corrected-outline.json'
+        e.save(corrected,repaired)
+        request={**recovery['import_request'],'response_path':str(corrected)}
+        result=import_outline(self.ws,request)
+        self.assertEqual(result['status'],'SUCCESS')
+        self.assertEqual(len(client.calls),1)
+        restored=e.read(self.ws/'04_outline/outline.json')
+        self.assertEqual(restored['outline_tree'][0]['paper_ids'],['p1'])
+        self.assertIn('First2024',restored['warnings'][0])
+        self.assertEqual(e.read(candidate),value)
 
     def test_transient_retry_counts_each_attempt_including_missing_usage(self):
         class RateLimit(Exception):status_code=429

@@ -7,6 +7,12 @@ coordination. `acquire(absoluteFile, exclusive)` returns an opaque lease;
 different permanent files: shared-to-exclusive lock conversion is not a
 transaction. Files are never unlinked by this module.
 
+Desktop and Serve resolve registry slots under a SQLite write transaction.
+macOS applies a nonblocking `flock` to each permanent `slot-<number>` file.
+Reclaiming a mapping leaves its file in place for slot reuse. The `flock:`
+binding identifies the macOS protocol and rejects an existing range-lock
+binding. Windows uses byte offsets on the bound shared file.
+
 POSIX slot creation uses `O_CREAT | O_EXCL`; only `EEXIST` permits opening the
 existing slot without `O_CREAT`. This avoids the observed concurrent ordinary
 `O_CREAT` failure on macOS without retrying `ENOENT`. If the slot disappears
@@ -201,6 +207,18 @@ Read failure poisons that domain session: no subsequent read or writer admission
 is allowed. An ordinary failure still permits ordered `close()`; native or domain
 release uncertainty instead retains qualifications until process death. This
 is the metadata-reading boundary, not JSON/schema or generation validation.
+
+After writer admission, `create(root, leaf, bytes)` creates and flushes a new
+private record through the selected root's retained pin. It revalidates all
+bindings before and after `createAt`. Publication remains the caller's atomic
+rename responsibility. This avoids inheriting sandbox-only Windows file ACLs;
+it neither repairs existing directory ACLs nor grants sandbox access to records.
+Creation failure poisons the session under the same close rules as read failure.
+
+写入者准入后，`create(root, leaf, bytes)` 通过所选目录的保留句柄创建并刷盘私有记录，
+在 `createAt` 前后重新验证全部绑定。调用方仍负责原子重命名发布。此方式避免新文件
+继承只有沙箱读取权限的 Windows ACL，不修复已有目录 ACL，也不向沙箱开放记录。
+创建失败后会话失效，关闭规则与读取失败一致。
 
 A recheck pin or other resource close failure reports `ERR_DOMAIN_RELEASE`.
 The session becomes unusable and retains later qualifications until process

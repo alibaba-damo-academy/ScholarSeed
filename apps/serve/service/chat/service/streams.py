@@ -18,12 +18,42 @@ from damoatrace.recording.redaction import Redactor
 
 LOGGER = logging.getLogger(__name__)
 DIAGNOSTIC_EVENT = "model_bridge.diagnostic"
+OUTPUT_FORMAT_TYPES = frozenset(("text", "json_object", "json_schema"))
+OUTPUT_FORMAT_UNSUPPORTED = "unsupported"
+USAGE_COUNTER_FIELDS = frozenset(
+    (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "reasoning_tokens",
+        "cached_tokens",
+        "audio_tokens",
+        "text_tokens",
+        "image_tokens",
+        "accepted_prediction_tokens",
+        "rejected_prediction_tokens",
+    )
+)
+USAGE_DETAIL_FIELDS = frozenset(
+    (
+        "input_tokens_details",
+        "output_tokens_details",
+        "prompt_tokens_details",
+        "completion_tokens_details",
+    )
+)
 SSE_BUFFER_LIMIT = 64 * 1024
 TEXT_DELTA_BATCH_CHARS = 48
 TEXT_DELTA_BATCH_SECONDS = 0.12
 TEXT_DELTA_EVENT = "response.output_text.delta"
 REASONING_TEXT_DELTA_EVENT = "response.reasoning_text.delta"
 REASONING_SUMMARY_TEXT_DELTA_EVENT = "response.reasoning_summary_text.delta"
+REASONING_SUMMARY_EVENTS = {
+    REASONING_TEXT_DELTA_EVENT: REASONING_SUMMARY_TEXT_DELTA_EVENT,
+    "response.reasoning_text.done": "response.reasoning_summary_text.done",
+}
 TEXT_DELTA_FIELDS = frozenset(
     ("type", "sequence_number", "item_id", "output_index", "content_index", "delta", "logprobs")
 )
@@ -82,6 +112,7 @@ class StreamEnd(str, Enum):
 
 @dataclass
 class NativeResponseNormalizer:
+    reasoning_summary: bool = False
     pending: bytes = b""
     event_pending: bytes = b""
     passthrough_line: bool = False
@@ -113,7 +144,11 @@ class NativeResponseNormalizer:
             line = _normalize_native_response_line(self.pending)
             self.event_pending += line
             if line in SSE_EVENT_DELIMITERS or len(self.event_pending) >= SSE_BUFFER_LIMIT:
-                output.append(self.event_pending)
+                output.append(
+                    _normalize_reasoning_summary_event(self.event_pending)
+                    if self.reasoning_summary
+                    else self.event_pending
+                )
                 self.event_pending = b""
             self.pending = b""
             remaining = remaining[newline + 1 :]
@@ -125,7 +160,7 @@ class NativeResponseNormalizer:
         pending = self.event_pending + self.pending
         self.pending = b""
         self.event_pending = b""
-        return (pending,)
+        return (_normalize_reasoning_summary_event(pending) if self.reasoning_summary else pending,)
 
 
 @dataclass
@@ -263,9 +298,21 @@ class TextDeltaBatcher:
             and payload.keys() <= fields
             and (kind != TEXT_DELTA_EVENT or payload.get("logprobs", []) == [])
             and isinstance(payload.get("item_id"), str)
-            and type(payload.get("output_index")) is int
-            and all(type(payload.get(target)) is int for target in targets[2:])
-            and ("sequence_number" not in payload or type(payload["sequence_number"]) is int)
+            and (
+                isinstance(payload.get("output_index"), int)
+                and not isinstance(payload.get("output_index"), bool)
+            )
+            and all(
+                (isinstance(payload.get(target), int) and not isinstance(payload.get(target), bool))
+                for target in targets[2:]
+            )
+            and (
+                "sequence_number" not in payload
+                or (
+                    isinstance(payload["sequence_number"], int)
+                    and not isinstance(payload["sequence_number"], bool)
+                )
+            )
         )
 
     @staticmethod
@@ -341,6 +388,42 @@ async def coalesce_text_delta_stream(
             await source.aclose()
 
 
+def _normalize_reasoning_summary_event(event: bytes) -> bytes:
+    lines = event.splitlines(keepends=True)
+    data = [line[len(SSE_DATA) :].strip() for line in lines if line.startswith(SSE_DATA)]
+    try:
+        payload = json.loads(b"\n".join(data))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return event
+    if not isinstance(payload, dict):
+        return event
+    kind = payload.get("type")
+    target = REASONING_SUMMARY_EVENTS.get(kind) if isinstance(kind, str) else None
+    if target is None:
+        return event
+    summary_index = payload.get("content_index", 0)
+    if not isinstance(summary_index, int) or isinstance(summary_index, bool) or summary_index < 0:
+        return event
+    payload = dict(payload)
+    payload["type"] = target
+    payload["summary_index"] = payload.pop("content_index", 0)
+    output: list[bytes] = []
+    emitted = False
+    for line in lines:
+        ending = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
+        if line.startswith(SSE_EVENT):
+            output.append(SSE_EVENT + b" " + target.encode() + ending)
+        elif line.startswith(SSE_DATA):
+            if not emitted:
+                output.append(
+                    SSE_DATA + b" " + json.dumps(payload, ensure_ascii=False).encode() + ending
+                )
+                emitted = True
+        else:
+            output.append(line)
+    return b"".join(output)
+
+
 def _normalize_native_response_line(line: bytes) -> bytes:
     if not line.startswith(SSE_DATA):
         return line
@@ -408,6 +491,9 @@ class StreamObservation:
     error_message: str = ""
     error_seen: bool = False
     semantic_seen: bool = False
+    usage: dict[str, Any] = field(default_factory=dict)
+    text_delta_characters: int = 0
+    reasoning_delta_characters: int = 0
 
     def feed(self, chunk: bytes) -> None:
         for index, part in enumerate(chunk.split(b"\n")):
@@ -479,6 +565,29 @@ class StreamObservation:
             self.terminal = self.last_event
         response = payload.get("response")
         source = response if isinstance(response, Mapping) else payload
+        usage = source.get("usage")
+        if isinstance(usage, Mapping):
+            for key, value in usage.items():
+                if (
+                    key in USAGE_COUNTER_FIELDS
+                    and (isinstance(value, int) and not isinstance(value, bool))
+                    and value >= 0
+                ):
+                    self.usage[key] = value
+                elif key in USAGE_DETAIL_FIELDS and isinstance(value, Mapping):
+                    self.usage[key] = {
+                        name: count
+                        for name, count in value.items()
+                        if name in USAGE_COUNTER_FIELDS
+                        and (isinstance(count, int) and not isinstance(count, bool))
+                        and count >= 0
+                    }
+        delta = payload.get("delta")
+        if isinstance(delta, str):
+            if self.last_event == TEXT_DELTA_EVENT:
+                self.text_delta_characters += len(delta)
+            elif self.last_event == REASONING_TEXT_DELTA_EVENT:
+                self.reasoning_delta_characters += len(delta)
         error = source.get("error")
         if not isinstance(error, Mapping) and self.last_event == "error":
             error = source
@@ -512,6 +621,9 @@ class StreamObservation:
             "invalid_events": self.invalid_events,
             "oversized_events": self.oversized_events,
             "pending_bytes": len(self.pending) + self.size,
+            "usage": dict(self.usage),
+            "text_delta_characters": self.text_delta_characters,
+            "reasoning_delta_characters": self.reasoning_delta_characters,
         }
 
 
@@ -590,6 +702,10 @@ class CompletionDiagnostic:
     input_shapes: list[dict[str, Any]] = field(default_factory=list)
     user_input_fingerprints: list[dict[str, Any]] = field(default_factory=list)
     tool_schema_fingerprints: list[dict[str, Any]] = field(default_factory=list)
+    output_format_type: str = ""
+    output_schema_sha256: str = ""
+    output_schema_bytes: int = 0
+    output_format_strict: bool | None = None
 
     def observe_upstream_chunk(self) -> None:
         elapsed_ms = (time.perf_counter() - self.started_at) * 1000
@@ -613,6 +729,36 @@ class CompletionDiagnostic:
                 self.first_downstream_event_ms = event_ms
             self.last_downstream_event_ms = event_ms
             self.observed_downstream_events = self.downstream.events
+
+    def observe_output_format(self, payload: Mapping[str, Any]) -> None:
+        """Fingerprint the actual upstream contract without retaining schema contents."""
+        self.output_format_type = ""
+        self.output_schema_sha256 = ""
+        self.output_schema_bytes = 0
+        self.output_format_strict = None
+        text = payload.get("text")
+        format_ = (
+            text.get("format") if isinstance(text, Mapping) else payload.get("response_format")
+        )
+        if not isinstance(format_, Mapping):
+            return
+        kind = format_.get("type")
+        self.output_format_type = (
+            kind
+            if isinstance(kind, str) and kind in OUTPUT_FORMAT_TYPES
+            else OUTPUT_FORMAT_UNSUPPORTED
+        )
+        contract = format_.get("json_schema", format_)
+        if not isinstance(contract, Mapping):
+            return
+        strict = contract.get("strict")
+        if isinstance(strict, bool):
+            self.output_format_strict = strict
+        schema = contract.get("schema")
+        if kind == "json_schema" and isinstance(schema, Mapping):
+            encoded = json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
+            self.output_schema_sha256 = sha256(encoded).hexdigest()
+            self.output_schema_bytes = len(encoded)
 
     def observe_tools(self, payload: Mapping[str, Any]) -> None:
         tools = payload.get("tools")
@@ -698,6 +844,10 @@ class CompletionDiagnostic:
             "input_shapes": list(self.input_shapes),
             "user_input_fingerprints": list(self.user_input_fingerprints),
             "tool_schema_fingerprints": list(self.tool_schema_fingerprints),
+            "output_format_type": self.output_format_type,
+            "output_schema_sha256": self.output_schema_sha256,
+            "output_schema_bytes": self.output_schema_bytes,
+            "output_format_strict": self.output_format_strict,
             "wire_protocol": self.wire_protocol,
             "phase": phase,
             "status_code": self.status_code,

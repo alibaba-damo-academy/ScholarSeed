@@ -45,6 +45,7 @@ import {
 } from './lifecycle'
 import { resourceFileIcon } from './icons'
 import { ResourceStatus } from './Indicators'
+import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
 import { loadFileVersionSettings } from './settings'
 import type { ResourceNode } from './state'
@@ -205,6 +206,7 @@ function TreeRow({
           }
           event.stopPropagation()
           writeProjectEntryDrag(event.dataTransfer, state.homeSelectedProjectId, node)
+          setFileDragPreview(event.dataTransfer, node.name, node.kind)
           if (canDrag) {
             event.dataTransfer.effectAllowed = 'copyMove'
             event.dataTransfer.setData(RESOURCE_DRAG_MIME, node.path)

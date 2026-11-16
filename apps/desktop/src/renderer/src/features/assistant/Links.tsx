@@ -13,6 +13,12 @@ import {
 import { absoluteSessionFilePath } from '../../components/markdown/links'
 import { writeClipboard } from '../../components/primitive/clipboard'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
+import { FileFormatIcon } from '../../components/primitive/FileIcon'
+import {
+  CITATION_MARKER_CLASS,
+  CitationMarker,
+  CitationMarkerTitle,
+} from '../../components/primitive/Citation'
 import {
   Button,
   ContextMenu,
@@ -32,8 +38,32 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
   IconButton,
+  Tooltip,
   useToast,
 } from '../../components/ui'
+
+export function ProjectSourceLink({
+  name,
+  onOpen,
+}: {
+  name: string
+  onOpen: () => void
+}): React.JSX.Element {
+  return (
+    <Tooltip content={name} className="max-w-full">
+      <CitationMarker
+        className={CITATION_MARKER_CLASS}
+        label={name}
+        aria-label={name}
+        data-testid="project-source-link"
+        onClick={onOpen}
+      >
+        <FileFormatIcon name={name} data-citation-icon />
+        <CitationMarkerTitle title={name} file />
+      </CitationMarker>
+    </Tooltip>
+  )
+}
 
 const MENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} text-[length:var(--vds-font-body-lv2)]`
 const SUBMENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} max-w-[var(--vds-model-menu-max-width)] overflow-y-auto text-[length:var(--vds-font-body-lv2)]`

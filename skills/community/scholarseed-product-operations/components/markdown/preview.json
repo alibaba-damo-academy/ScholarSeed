@@ -1,0 +1,31 @@
+{
+  "data": {
+    "text": "```python\nvalues = [80, 85, None]\nprint(values)\n```"
+  },
+  "responses": {
+    "continue": {
+      "state": "resolved",
+      "data": {
+        "text": "```python\nvalues = [80, 85, None]\nprint(values)\n```"
+      }
+    },
+    "cancel": {
+      "state": "cancelled",
+      "data": {
+        "text": "```python\nvalues = [80, 85, None]\nprint(values)\n```"
+      }
+    }
+  },
+  "submissions": {
+    "continue": [
+      {
+        "selected": []
+      }
+    ],
+    "cancel": [
+      {
+        "selected": []
+      }
+    ]
+  }
+}

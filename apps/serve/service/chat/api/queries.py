@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN, HTTP_413_CONTENT_TOO_LARGE
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
 
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.service.sessions import SessionService
@@ -17,7 +17,6 @@ from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import BRIDGE_REQUESTS
 from service.platform.queries import PROJECT_REQUIRED, ProjectQueryError
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
 )
 
@@ -57,13 +56,7 @@ def register_project_queries(
                     and live.turn_activity is activity
                 )
 
-            raw = bytearray()
-            async for chunk in request.stream():
-                raw.extend(chunk)
-                if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                    return JSONResponse(
-                        {"ok": False, "error": QUERY_INVALID}, HTTP_413_CONTENT_TOO_LARGE
-                    )
+            raw = await request.body()
             try:
                 command = BRIDGE_REQUESTS[key].request_type.model_validate(json.loads(raw))
             except (ValueError, ValidationError):

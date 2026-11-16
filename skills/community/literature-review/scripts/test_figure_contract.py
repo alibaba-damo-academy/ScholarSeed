@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 from figure_contract import image_prompt
 from figure_authoring import authoring_packet, PROMPT_GUIDANCE, CAPTION_GUIDANCE
+from citation_identity import authoring_view
 
 
 class FigureContractTest(unittest.TestCase):
@@ -21,12 +22,14 @@ class FigureContractTest(unittest.TestCase):
 
     def test_task_exceptions_belong_in_authoring_packet(self):
         request={'effective_requirements':'Chinese caption; English labels only in F2; cartoon style.'}
-        item={'figure_id':'F2','paper_ids':['p1'],'section_description':'Explain a conditional relation.'}
+        item={'figure_id':'F2','paper_ids':['987654321'],'section_description':'Explain a conditional relation.'}
+        item=authoring_view(item, {'987654321': 'Evidence2024'})
         packet=authoring_packet(item,request,'evidence.json','preparation')
         self.assertEqual(packet['task'],request)
         self.assertEqual(packet['prompt_guidance'],PROMPT_GUIDANCE)
         self.assertEqual(packet['caption_guidance'],CAPTION_GUIDANCE)
-        self.assertEqual(packet['evidence']['paper_ids'],['p1'])
+        self.assertEqual(packet['evidence']['cite_keys'],['Evidence2024'])
+        self.assertNotIn('987654321',str(packet))
         self.assertEqual(packet['figure']['section_description'],item['section_description'])
         self.assertNotEqual(packet['prompt_guidance'],packet['caption_guidance'])
 

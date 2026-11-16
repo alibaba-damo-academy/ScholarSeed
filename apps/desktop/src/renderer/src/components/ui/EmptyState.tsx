@@ -8,6 +8,7 @@ import type { LocalizationMetadata } from './metadata'
 export interface EmptyStateProps
   extends Omit<HTMLAttributes<HTMLDivElement>, 'title'>, LocalizationMetadata {
   icon?: ReactNode
+  iconTone?: 'default' | 'subtle'
   variant?: 'default' | 'compact' | 'panel'
   image?: Pick<ImgHTMLAttributes<HTMLImageElement>, 'alt' | 'src'> & {
     className?: string
@@ -18,7 +19,20 @@ export interface EmptyStateProps
 }
 
 export const EmptyState = forwardRef<HTMLDivElement, EmptyStateProps>(
-  ({ action, className, description, icon, image, title, variant = 'default', ...props }, ref) => {
+  (
+    {
+      action,
+      className,
+      description,
+      icon,
+      iconTone = 'default',
+      image,
+      title,
+      variant = 'default',
+      ...props
+    },
+    ref
+  ) => {
     const compact = variant === 'compact'
     const panel = variant === 'panel'
     const titleSource = import.meta.env.DEV ? props['data-i18n-title'] : undefined
@@ -51,12 +65,16 @@ export const EmptyState = forwardRef<HTMLDivElement, EmptyStateProps>(
             aria-hidden="true"
             className={cx(
               'vds-empty-state__icon grid place-items-center text-[var(--vds-text-tertiary)]',
-              panel ? 'bg-[var(--vds-surface-active)]' : 'bg-[var(--vds-surface-muted)]',
+              iconTone === 'subtle'
+                ? 'bg-[var(--vds-other-overlay-1)]'
+                : panel
+                  ? 'bg-[var(--vds-surface-active)]'
+                  : 'bg-[var(--vds-surface-muted)]',
               panel
                 ? 'size-[var(--vds-space-9)] rounded-[var(--vds-radius-4)] text-[length:var(--vds-icon-7)] leading-none [&>*]:size-[var(--vds-icon-7)] [&>*]:!text-[length:var(--vds-icon-7)]'
                 : compact
                   ? 'size-[var(--vds-space-9)] rounded-[var(--vds-radius-4)] text-[length:var(--vds-icon-8)] leading-none [&>*]:size-[var(--vds-icon-8)] [&>*]:!text-[length:var(--vds-icon-8)]'
-                  : 'size-[var(--vds-empty-state-icon-size)] rounded-[var(--vds-radius-circle)] text-[length:var(--vds-font-title)] leading-[var(--vds-lh-title)]'
+                  : 'size-[var(--vds-empty-state-icon-size)] rounded-[var(--vds-radius-4)] text-[length:var(--vds-font-title)] leading-[var(--vds-lh-title)]'
             )}
           >
             {icon}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "research",
+  "revision": "1",
+  "name": "合成资料分析示例",
+  "description": "用于资料组织、项目内搜索及阅读的隔离合成项目，不包含模型生成结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic inputs; sample.md and sample.ts retain the reviewed editor fixtures byte-for-byte from apps/desktop/eval-scenarios/exploratory/editor at 7914d7d79e55c46059345a644737d2d7125aeb6b.",
+    "rights": "Synthetic repository inputs containing no third-party research or user data; repository license applies."
+  },
+  "files": [
+    { "id": "overview", "source": "files/readme.md", "target": "readme.md", "mediaType": "text/markdown", "size": 552, "sha256": "4a287577b103d62dbc9858837e26291df54bfc142f83e1c3b40f21cfad6e1ea0" },
+    { "id": "document", "source": "files/sample.md", "target": "sample.md", "mediaType": "text/markdown", "size": 644, "sha256": "a77fec4534bce0994a47e17a2bc4f862839a295ccfa82c08555180afb55ec1e0" },
+    { "id": "code", "source": "files/sample.ts", "target": "sample.ts", "mediaType": "text/typescript", "size": 466, "sha256": "c9c2d80c1237488275599617c80a9d6f3aeb881847fa25ae6fd674d3a4dba2e8" }
+  ]
+}

@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -16,7 +17,7 @@ export function Classification({
   value,
   disabled,
   onValueChange,
-}: ClassificationProps): JSX.Element {
+}: ClassificationProps): React.JSX.Element {
   const { t } = useTranslation('skills')
   const id = useId()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -76,7 +77,7 @@ export function Classification({
         aria-label={t('classification.label')}
         variant="ghost"
         size="sm"
-        className="relative min-w-0 flex-1 flex-wrap !justify-between !gap-[var(--vds-space-3)] !border-0 !bg-transparent !p-0"
+        className="relative min-w-0 flex-1 flex-wrap !justify-start !gap-[var(--vds-space-3)] !border-0 !bg-transparent !p-0"
         data-testid="skills-classifications"
       >
         {items.map((item, index) => {
@@ -87,7 +88,7 @@ export function Classification({
               value={item.slug}
               disabled={concealed}
               aria-hidden={concealed || undefined}
-              className={`max-w-full shrink-0 truncate !font-[var(--vds-fw-regular)] !rounded-[var(--vds-radius-4)] data-[state=off]:![background:var(--vds-other-overlay-1)] ${concealed ? 'invisible absolute left-0 top-0 pointer-events-none' : ''}`}
+              className={`max-w-full shrink-0 truncate !font-[var(--vds-fw-regular)] !rounded-[var(--vds-radius-4)] data-[state=on]:!bg-[var(--vds-bg-gray-active)] data-[state=on]:!text-[var(--vds-text-primary)] data-[state=off]:![background:var(--vds-other-overlay-1)] ${concealed ? 'invisible absolute left-0 top-0 pointer-events-none' : ''}`}
               data-testid={`skills-classification-${item.slug || 'all'}`}
             >
               {item.displayName}

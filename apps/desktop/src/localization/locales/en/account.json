@@ -222,7 +222,7 @@
     "saved": "Saved",
     "save": "Save settings",
     "name": "Model name",
-    "reasoning": "Reasoning effort",
+    "reasoning": "Default reasoning effort",
     "visibility": "Visibility",
     "contextWindow": "Context window",
     "fixedReasoning": "Always on",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from io import BytesIO
 
-from PIL import Image, ImageDraw
+from PIL import ImageDraw
 
 from service.platform.citations import CitationDocument, CitationPage
 from service.platform.pdf import pdf_page_layout, render_pdf_page

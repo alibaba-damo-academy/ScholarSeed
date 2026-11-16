@@ -14,7 +14,7 @@ const INFO_PLIST_FILENAME = 'Info.plist'
 const BUNDLE_NAME_KEYS = ['CFBundleName', 'CFBundleDisplayName']
 const DEVELOPMENT_BUNDLE_PREFIX = 'com.scholarseed.desktop.dev'
 const BUNDLE_ID_HASH_LENGTH = 16
-const URL_SCHEME = 'scholarseed'
+const [NOTIFICATION_SCHEME] = desktopBuild.protocols.schemes
 const LSREGISTER_COMMAND = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 
 function registerMacDevelopmentBundle(infoPlist, platform = process.platform, runner = execFileSync) {
@@ -24,7 +24,7 @@ function registerMacDevelopmentBundle(infoPlist, platform = process.platform, ru
   const bundlePath = path.dirname(path.dirname(infoPlist))
   const suffix = createHash('sha256').update(bundlePath).digest('hex').slice(0, BUNDLE_ID_HASH_LENGTH)
   runner(PLUTIL_COMMAND, ['-replace', 'CFBundleIdentifier', '-string', `${DEVELOPMENT_BUNDLE_PREFIX}.${suffix}`, infoPlist])
-  const protocols = [{ CFBundleURLName: PRODUCT_NAME, CFBundleURLSchemes: [URL_SCHEME], CFBundleTypeRole: 'Editor' }]
+  const protocols = [{ CFBundleURLName: PRODUCT_NAME, CFBundleURLSchemes: [NOTIFICATION_SCHEME], CFBundleTypeRole: 'Editor' }]
   runner(PLUTIL_COMMAND, ['-replace', 'CFBundleURLTypes', '-json', JSON.stringify(protocols), infoPlist])
   runner(LSREGISTER_COMMAND, ['-f', bundlePath])
   return true

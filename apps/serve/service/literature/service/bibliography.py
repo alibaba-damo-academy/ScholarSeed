@@ -1,8 +1,13 @@
 """Anonymous DOI/arXiv BibTeX retrieval without provider fallback.
 
-标识符腿只保证题录本身; 摘要另有一条**可选**补充腿 (``_fetch_abstract``): arXiv 的公开
-BibTeX 根本不带 abstract, doi.org 也只有部分出版商带, 所以缺摘要时按维度再打一次
-arXiv Atom API 或 Crossref。补充腿失败只降级 (没有摘要), 不会让已经拿到题录的同步失败。
+标识符腿只保证题录本身, 且**恒不切换来源**; 摘要另有一条**可选**补充腿
+(``_resolve_abstract`` 逐个调用 ``_fetch_abstract``): arXiv 的公开 BibTeX 根本不带
+abstract, doi.org 也只有部分出版商带, 所以缺摘要时按调用方给的身份链依次补打 Crossref
+或 arXiv Atom API, 拿到第一段非空摘要就停。链由 ``service.identity.identity_chain``
+生成, 顺序是「题录维度自己 → 该标识折叠出的 arXiv → 记录上其他已知标识」。
+
+整条链共用题录腿的同一个总预算, 任何一环失败只降级 (没有摘要), 不会让已经拿到题录的
+同步失败。
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Sequence
 from html import unescape
 from typing import NamedTuple
 from urllib.parse import quote
@@ -76,6 +82,10 @@ NETWORK_FAILED = "PAPER_META_NETWORK_FAILED"
 NOT_FOUND = "PAPER_META_NOT_FOUND"
 UPSTREAM_FAILED = "PAPER_META_UPSTREAM_FAILED"
 INVALID_IDENTIFIER = "PAPER_META_IDENTIFIER_INVALID"
+ABSTRACT_LOOKUP_READY = "ready"
+ABSTRACT_LOOKUP_UNAVAILABLE = "unavailable"
+ABSTRACT_BASIS_BIBTEX = "bibtex"
+ABSTRACT_BASIS_ENDPOINT = "abstract_endpoint"
 QUOTA_EXHAUSTED = "PAPER_META_QUOTA_EXHAUSTED"
 HTTP_OK = 200
 HTTP_FORBIDDEN = 403
@@ -142,9 +152,17 @@ async def fetch_bibliography(
     *,
     timeout: float = PLAIN_TOTAL_TIMEOUT_SECONDS,
     transport: httpx.AsyncBaseTransport | None = None,
+    abstract_chain: Sequence[tuple[str, str]] = (),
+    abstract_diagnostics: dict[str, object] | None = None,
 ) -> dict:
     source = await _retrieve(
-        kind, value, timeout=timeout, transport=transport, include_abstract=True
+        kind,
+        value,
+        timeout=timeout,
+        transport=transport,
+        include_abstract=True,
+        abstract_chain=abstract_chain,
+        abstract_diagnostics=abstract_diagnostics,
     )
     try:
         records = parse_bibtex(source.text)
@@ -174,6 +192,8 @@ async def _retrieve(
     timeout: float,
     transport: httpx.AsyncBaseTransport | None,
     include_abstract: bool = False,
+    abstract_chain: Sequence[tuple[str, str]] = (),
+    abstract_diagnostics: dict[str, object] | None = None,
 ) -> BibliographySource:
     """取回上游 BibTeX 原文; 传输与状态码在这里一次性折算成稳定失败码。
 
@@ -181,7 +201,12 @@ async def _retrieve(
     ``PLAIN_TOTAL_TIMEOUT_SECONDS``, ``PAPER_META_TIMEOUT`` 可覆盖);
     connect / read 两个相位固定由 ``plain_data_timeout()`` 给, 因为 BibTeX 是普通数据。
     ``include_abstract`` 打开时, 同一个预算还要覆盖补打的那一次摘要腿 —— 截止点在进门
-    时算好, 两腿合计不超支, 不给 ``PAPER_META_TIMEOUT`` 偷偷翻倍。
+    时算好, 题录腿与整条摘要链合计不超支, 不给 ``PAPER_META_TIMEOUT`` 偷偷翻倍。
+
+    ``abstract_chain`` 是摘要腿按序尝试的规范身份链, 由调用方用
+    ``service.identity.identity_chain`` 生成, **链首必须就是题录维度自己**: 这里不再自己
+    拼一个主维度候选, 否则同一个 DOI 会因为两处归一化口径不同 (大小写) 被打两次上游。
+    传空则退回只打题录维度那一次, 与既有调用方行为一致。
 
     摘要腿只对「题录要读出来给人看」的调用方打开: 导入腿要的是原文整条, 字段准入与
     人工确认由 importer 负责, 多打一次上游换不回什么, 所以不打开。
@@ -211,14 +236,102 @@ async def _retrieve(
     if response.status_code != HTTP_OK:
         raise BibliographyError(UPSTREAM_FAILED, HTTP_BAD_GATEWAY)
     text = response.text
-    if not include_abstract or BIBTEX_ABSTRACT_FIELD.search(text):
+    has_abstract = False
+    if include_abstract and BIBTEX_ABSTRACT_FIELD.search(text):
+        try:
+            has_abstract = any(record.abstract.strip() for record in parse_bibtex(text))
+        except ValueError:
+            # The public bibliography reader reports the invalid source itself.
+            return BibliographySource(text=text)
+    if not include_abstract or has_abstract:
+        if include_abstract and abstract_diagnostics is not None:
+            abstract_diagnostics.update(
+                status=ABSTRACT_LOOKUP_READY,
+                source=kind,
+                query=identifier,
+                basis=ABSTRACT_BASIS_BIBTEX,
+            )
         return BibliographySource(text=text)
     return BibliographySource(
         text=text,
-        abstract=await _fetch_abstract(
-            kind, identifier, deadline_at=deadline_at, transport=transport
+        abstract=await _resolve_abstract(
+            abstract_chain or ((kind, identifier),),
+            deadline_at=deadline_at,
+            transport=transport,
+            **({"diagnostics": abstract_diagnostics} if abstract_diagnostics is not None else {}),
         ),
     )
+
+
+async def _resolve_abstract(
+    candidates: Sequence[tuple[str, str]],
+    *,
+    deadline_at: float,
+    transport: httpx.AsyncBaseTransport | None,
+    diagnostics: dict[str, object] | None = None,
+) -> str | None:
+    """按序尝试身份链上的摘要来源, 拿到第一段非空摘要就停。
+
+    三环防护, 缺一就会让「可选增强」反过来打死主操作:
+
+    * **预算**: 整条链共用题录腿进门时算好的 ``deadline_at``, 耗尽就放弃剩下的候选,
+      不给总超时偷偷翻倍;
+    * **不抛**: 链上的非法标识只是「这一环没有」, 记日志跳过 —— ``_identifier`` 对脏值
+      是抛 ``BibliographyError`` 的, 直接冒出去会把一次已经拿到题录的同步打成 400;
+    * **不重复**: 去重后才发请求, 同一维度同一标识不会因为链上出现两次而打两次上游。
+    """
+
+    tried: set[tuple[str, str]] = set()
+    attempts: list[dict[str, object]] = []
+    if diagnostics is not None:
+        diagnostics.update(status=ABSTRACT_LOOKUP_UNAVAILABLE, attempts=attempts)
+    for kind, value in candidates:
+        if expired(deadline_at):
+            if diagnostics is not None:
+                diagnostics["reason"] = "budget_exhausted"
+            break
+        if kind not in ABSTRACT_ENDPOINTS:
+            continue
+        try:
+            identifier = _identifier(kind, value)
+        except BibliographyError:
+            LOGGER.info("abstract leg skipped an invalid identifier: kind=%s", kind)
+            continue
+        if (kind, identifier) in tried:
+            continue
+        tried.add((kind, identifier))
+        attempt: dict[str, object] = {"source": kind, "query": identifier}
+        abstract = await _fetch_abstract(
+            kind,
+            identifier,
+            deadline_at=deadline_at,
+            transport=transport,
+            **({"diagnostics": attempt} if diagnostics is not None else {}),
+        )
+        attempts.append(attempt)
+        if abstract:
+            if diagnostics is not None:
+                diagnostics.update(
+                    status=ABSTRACT_LOOKUP_READY,
+                    source=kind,
+                    query=identifier,
+                    basis=ABSTRACT_BASIS_ENDPOINT,
+                )
+                diagnostics.pop("reason", None)
+            if len(tried) > 1:
+                LOGGER.info("abstract leg resolved by fallback: kind=%s", kind)
+            return abstract
+    if diagnostics is not None and "reason" not in diagnostics:
+        diagnostics["reason"] = next(
+            (
+                attempt["reason"]
+                for attempt in attempts
+                if attempt.get("reason")
+                in (NETWORK_FAILED, QUOTA_EXHAUSTED, UPSTREAM_FAILED, "timeout")
+            ),
+            NOT_FOUND,
+        )
+    return None
 
 
 def _abstract_request(kind: str, identifier: str) -> tuple[str, dict[str, str]]:
@@ -238,6 +351,7 @@ async def _fetch_abstract(
     *,
     deadline_at: float,
     transport: httpx.AsyncBaseTransport | None,
+    diagnostics: dict[str, object] | None = None,
 ) -> str | None:
     """按维度补一条摘要: arXiv 取 Atom 的 summary, DOI 取 Crossref 的 abstract。
 
@@ -245,9 +359,14 @@ async def _fetch_abstract(
     形状不对、编码解不开、XML/JSON 解析不了, 一律只记日志再返回 None。题录腿此时已经
     把 BibTeX 原文取到手了, 让一次可选增强把整次同步打成失败, 用户看到的是「同步元数据
     失败」却没有可行动的下一步 —— 所以这一腿的任何意外都不允许冒到 ``_retrieve`` 外面。
+    调用方可通过 diagnostics 保留失败分类和实际来源, 返回值仍沿用 str/None 契约。
     """
 
     if kind not in ABSTRACT_ENDPOINTS or expired(deadline_at):
+        if diagnostics is not None:
+            diagnostics["reason"] = (
+                "budget_exhausted" if expired(deadline_at) else INVALID_IDENTIFIER
+            )
         return None
     url, params = _abstract_request(kind, identifier)
     try:
@@ -260,12 +379,28 @@ async def _fetch_abstract(
                     url, params=params, headers={"User-Agent": ABSTRACT_USER_AGENT}
                 )
     except TimeoutError:
+        if diagnostics is not None:
+            diagnostics["reason"] = "timeout"
         LOGGER.info("abstract leg timed out: kind=%s", kind)
         return None
     except httpx.HTTPError as error:
+        if diagnostics is not None:
+            diagnostics["reason"] = NETWORK_FAILED
         LOGGER.info("abstract leg unreachable: kind=%s error=%s", kind, type(error).__name__)
         return None
+    if diagnostics is not None:
+        diagnostics["http_status"] = response.status_code
     if response.status_code != HTTP_OK:
+        if diagnostics is not None:
+            diagnostics["reason"] = (
+                QUOTA_EXHAUSTED
+                if response.status_code == HTTP_RATE_LIMITED
+                else (
+                    NOT_FOUND
+                    if response.status_code in (HTTP_NOT_FOUND, HTTP_GONE)
+                    else UPSTREAM_FAILED
+                )
+            )
         LOGGER.info("abstract leg status=%s kind=%s", response.status_code, kind)
         return None
     try:
@@ -275,6 +410,8 @@ async def _fetch_abstract(
             return _arxiv_abstract(response.content)
         return _crossref_abstract(response.text)
     except (ElementTree.ParseError, ValueError) as error:
+        if diagnostics is not None:
+            diagnostics["reason"] = UPSTREAM_FAILED
         # ParseError 是 SyntaxError 的子类; JSONDecodeError 与 UnicodeDecodeError 都是
         # ValueError 的子类, 所以这一个 except 就兜住了上游形状与编码两类意外。
         LOGGER.info("abstract leg unparsable: kind=%s error=%s", kind, type(error).__name__)

@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import {
-  PdfLifecycle,
-  SCHOLARSEED_ANNOTATIONS_ATTACHMENT
-} from './lifecycle.ts'
+import { PdfLifecycle, SCHOLARSEED_ANNOTATIONS_ATTACHMENT } from './lifecycle.ts'
 
 interface FakePage {
   pageNumber: number
@@ -26,7 +23,9 @@ function deferred<T>(): {
   resolve: (value: T) => void
 } {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((complete) => { resolve = complete })
+  const promise = new Promise<T>((complete) => {
+    resolve = complete
+  })
   return { promise, resolve }
 }
 
@@ -43,8 +42,8 @@ function document(
       getPage: async (pageNumber) => {
         requested.push(pageNumber)
         return { pageNumber }
-      }
-    }
+      },
+    },
   }
 }
 
@@ -55,9 +54,14 @@ test('ordinary PDFs publish the requested page without legacy restore or full-pa
   const lifecycle = new PdfLifecycle<Uint8Array, FakeDocument, FakePage>({
     createTask: () => ({
       promise: Promise.resolve(source.value),
-      destroy: async () => { destroyCount += 1 }
+      destroy: async () => {
+        destroyCount += 1
+      },
     }),
-    restore: async (bytes) => { restoreCount += 1; return bytes }
+    restore: async (bytes) => {
+      restoreCount += 1
+      return bytes
+    },
   })
 
   const opened = await lifecycle.open(new Uint8Array([1, 2, 3]), 42)
@@ -71,22 +75,35 @@ test('ordinary PDFs publish the requested page without legacy restore or full-pa
 
 test('legacy ScholarSeed attachments restore once and replace the probe task', async () => {
   const probe = document({
-    records: { filename: SCHOLARSEED_ANNOTATIONS_ATTACHMENT }
+    records: { filename: SCHOLARSEED_ANNOTATIONS_ATTACHMENT },
   })
   const restored = document(null, 40)
   const destroyed: string[] = []
   const created: string[] = []
   let restoreCount = 0
   const tasks: FakeTask[] = [
-    { promise: Promise.resolve(probe.value), destroy: async () => { destroyed.push('probe') } },
-    { promise: Promise.resolve(restored.value), destroy: async () => { destroyed.push('restored') } }
+    {
+      promise: Promise.resolve(probe.value),
+      destroy: async () => {
+        destroyed.push('probe')
+      },
+    },
+    {
+      promise: Promise.resolve(restored.value),
+      destroy: async () => {
+        destroyed.push('restored')
+      },
+    },
   ]
   const lifecycle = new PdfLifecycle<Uint8Array, FakeDocument, FakePage>({
     createTask: (bytes) => {
       created.push(Array.from(bytes).join(','))
       return tasks.shift()!
     },
-    restore: async () => { restoreCount += 1; return new Uint8Array([9]) }
+    restore: async () => {
+      restoreCount += 1
+      return new Uint8Array([9])
+    },
   })
 
   const opened = await lifecycle.open(new Uint8Array([1]), 1)
@@ -107,7 +124,7 @@ test('page requests share one proxy promise per active document', async () => {
   const source = document()
   const lifecycle = new PdfLifecycle<Uint8Array, FakeDocument, FakePage>({
     createTask: () => ({ promise: Promise.resolve(source.value), destroy: async () => undefined }),
-    restore: async (bytes) => bytes
+    restore: async (bytes) => bytes,
   })
   await lifecycle.open(new Uint8Array([1]), 1)
 
@@ -115,7 +132,34 @@ test('page requests share one proxy promise per active document', async () => {
 
   assert.equal(left?.pageNumber, 7)
   assert.equal(right?.pageNumber, 7)
-  assert.equal(source.requested.filter(page => page === 7).length, 1)
+  assert.equal(source.requested.filter((page) => page === 7).length, 1)
+})
+
+test('native records restore even without a ScholarSeed attachment', async () => {
+  const source = document()
+  const restored = document(null, 2)
+  const lifecycle = new PdfLifecycle<Uint8Array, FakeDocument, FakePage>({
+    createTask: (bytes) => ({
+      promise: Promise.resolve(bytes[0] === 9 ? restored.value : source.value),
+      destroy: async () => undefined,
+    }),
+    restore: async (_bytes, sources) =>
+      sources?.length ? new Uint8Array([9]) : new Uint8Array([1]),
+  })
+  const opened = await lifecycle.open(new Uint8Array([1]), 1, [
+    {
+      id: 'native',
+      page: 1,
+      subtype: '/Text',
+      name: '',
+      rect: [0, 0, 1, 1],
+      contents: 'Note',
+      author: '',
+      created: '',
+      modified: '',
+    },
+  ])
+  assert.equal(opened?.pageCount, 2)
 })
 
 test('suspend destroys a pending task and rejects its late document result', async () => {
@@ -125,9 +169,11 @@ test('suspend destroys a pending task and rejects its late document result', asy
   const lifecycle = new PdfLifecycle<Uint8Array, FakeDocument, FakePage>({
     createTask: () => ({
       promise: pending.promise,
-      destroy: async () => { destroyCount += 1 }
+      destroy: async () => {
+        destroyCount += 1
+      },
     }),
-    restore: async (bytes) => bytes
+    restore: async (bytes) => bytes,
   })
 
   const opening = lifecycle.open(new Uint8Array([1]), 1)

@@ -5,7 +5,8 @@ static NSUInteger RemoveCalls;
 static BOOL UseFixtureJobs;
 static NSArray *FixtureJobs;
 static CFArrayRef FixtureAllJobs(CFStringRef domain) {
-  if (UseFixtureJobs) return CFBridgingRetain(FixtureJobs);
+  if (UseFixtureJobs)
+    return CFBridgingRetain(CFEqual(domain, kSMDomainUserLaunchd) ? FixtureJobs : @[]);
   return SMCopyAllJobDictionaries(domain);
 }
 static Boolean FixtureRemoveJob(CFStringRef domain, CFStringRef label, AuthorizationRef authorization, Boolean wait, CFErrorRef *error) {
@@ -38,6 +39,9 @@ int main(int argc, const char **argv) {
     NSError *error = nil;
     NSDictionary *absent = SSParkingJob([@"com.scholarseed.fixture." stringByAppendingString:NSUUID.UUID.UUIDString], &error);
     assert(absent && !absent.count && !error);
+    assert(SSParkingSystemAbsent([@"com.scholarseed.fixture." stringByAppendingString:NSUUID.UUID.UUIDString], &error));
+    assert(!error);
+
     NSDictionary *config = @{@"state":state, @"source":directory, @"target":directory, @"binding":@{}};
     error = nil;
     assert(!SSParkSuccession(config, &error) && error.code == ENOENT && RemoveCalls == 0);

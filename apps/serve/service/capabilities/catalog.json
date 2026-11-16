@@ -8,7 +8,10 @@
     "design-research-validation": {"zh": "科研验证方案设计", "en": "Research Validation Designer"},
     "literature-review": {"zh": "文献综述", "en": "Literature Review"},
     "precise-literature-search": {"zh": "精确检索文献", "en": "Precise Literature Search"},
-    "agentic-search": {"zh": "分档学术检索", "en": "Tiered Academic Search"}
+    "agentic-search": {"zh": "分档学术检索", "en": "Tiered Academic Search"},
+    "formal-verification": {"zh": "形式化验证", "en": "Formal Verification"},
+    "scholarseed-product-operations": {"zh": "书深产品操作", "en": "ScholarSeed Product Operations"},
+    "highlights-to-insights": {"zh": "高光转洞察", "en": "Highlights to Insights"}
   },
   "requires_login": [
     "fast-search",
@@ -16,18 +19,22 @@
     "precise-literature-search",
     "literature-review",
     "research-idea-partner",
-    "design-research-validation"
+    "design-research-validation",
+    "formal-verification"
   ],
   "surfaces": {
     "conversation": {
       "skills": [
+        "scholarseed-product-operations",
         "plugin-create",
         "find-skill",
         "research-idea-partner",
         "design-research-validation",
         "literature-review",
         "precise-literature-search",
-        "agentic-search"
+        "agentic-search",
+        "highlights-to-insights",
+        "formal-verification"
       ],
       "sources": [
         "user"
@@ -35,13 +42,16 @@
     },
     "settings": {
       "skills": [
+        "scholarseed-product-operations",
         "plugin-create",
         "find-skill",
         "research-idea-partner",
         "design-research-validation",
         "literature-review",
         "precise-literature-search",
-        "agentic-search"
+        "agentic-search",
+        "highlights-to-insights",
+        "formal-verification"
       ],
       "sources": [
         "user"

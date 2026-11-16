@@ -11,7 +11,6 @@ from pydantic import ValidationError
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
-    HTTP_413_CONTENT_TOO_LARGE,
 )
 
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
@@ -25,7 +24,6 @@ from service.platform.bridge import (
 )
 from service.platform.context import HistoryScopeSource
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
 )
 
@@ -54,14 +52,7 @@ def register_history_routes(
         snapshot_id = live.active_assistant_snapshot_id
         turn_id = live.ledger.active_turn_id
         activity = live.turn_activity
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"},
-                    HTTP_413_CONTENT_TOO_LARGE,
-                )
+        raw = await request.body()
         try:
             query = request_type.model_validate(json.loads(raw))
         except (ValueError, ValidationError):

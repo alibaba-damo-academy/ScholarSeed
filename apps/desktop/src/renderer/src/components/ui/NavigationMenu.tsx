@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import { cloneElement, createContext, isValidElement, useContext, useId, useState, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type HTMLAttributes, type ReactElement, type ReactNode } from 'react'
 
 import { IconFont } from '../primitive/Iconfont'
@@ -33,7 +34,7 @@ function useNavigationMenuContext(component: string): NavigationMenuContextValue
   return context
 }
 
-export function NavigationMenu({ children, className, ...props }: HTMLAttributes<HTMLElement>): JSX.Element {
+export function NavigationMenu({ children, className, ...props }: HTMLAttributes<HTMLElement>): React.JSX.Element {
   const [openItem, setOpenItem] = useState('')
   return (
     <NavigationMenuContext.Provider value={{ openItem, setOpenItem }}>
@@ -42,11 +43,11 @@ export function NavigationMenu({ children, className, ...props }: HTMLAttributes
   )
 }
 
-export function NavigationMenuList({ className, ...props }: HTMLAttributes<HTMLUListElement>): JSX.Element {
+export function NavigationMenuList({ className, ...props }: HTMLAttributes<HTMLUListElement>): React.JSX.Element {
   return <ul className={cx(navigationMenuListClassName, className)} {...props} />
 }
 
-export function NavigationMenuItem({ children, className, ...props }: HTMLAttributes<HTMLLIElement>): JSX.Element {
+export function NavigationMenuItem({ children, className, ...props }: HTMLAttributes<HTMLLIElement>): React.JSX.Element {
   const value = useId()
   return (
     <NavigationMenuItemContext.Provider value={{ value }}>
@@ -55,7 +56,7 @@ export function NavigationMenuItem({ children, className, ...props }: HTMLAttrib
   )
 }
 
-export function NavigationMenuTrigger({ children, className, onClick, ...props }: ButtonHTMLAttributes<HTMLButtonElement>): JSX.Element {
+export function NavigationMenuTrigger({ children, className, onClick, ...props }: ButtonHTMLAttributes<HTMLButtonElement>): React.JSX.Element {
   const { openItem, setOpenItem } = useNavigationMenuContext('NavigationMenuTrigger')
   const item = useContext(NavigationMenuItemContext)
   const value = item?.value ?? String(children)
@@ -77,7 +78,7 @@ export function NavigationMenuTrigger({ children, className, onClick, ...props }
   )
 }
 
-export function NavigationMenuContent({ className, ...props }: HTMLAttributes<HTMLDivElement>): JSX.Element {
+export function NavigationMenuContent({ className, ...props }: HTMLAttributes<HTMLDivElement>): React.JSX.Element {
   const { openItem } = useNavigationMenuContext('NavigationMenuContent')
   const item = useContext(NavigationMenuItemContext)
   const open = item?.value ? openItem === item.value : Boolean(openItem)
@@ -89,7 +90,7 @@ export function NavigationMenuLink({
   children,
   className,
   ...props
-}: AnchorHTMLAttributes<HTMLAnchorElement> & { asChild?: boolean; children?: ReactNode }): JSX.Element {
+}: AnchorHTMLAttributes<HTMLAnchorElement> & { asChild?: boolean; children?: ReactNode }): React.JSX.Element {
   if (asChild && isValidElement(children)) {
     const child = children as ReactElement<{ className?: string }>
     return cloneElement(child, {
@@ -99,8 +100,8 @@ export function NavigationMenuLink({
   }
   return <a className={cx(navigationMenuLinkClassName, className)} {...props}>{children}</a>
 }
-export const NavigationMenuIndicator = ({ className, ...props }: HTMLAttributes<HTMLDivElement>): JSX.Element => <div className={cx(navigationMenuIndicatorClassName, className)} {...props} />
-export const NavigationMenuViewport = ({ className, ...props }: HTMLAttributes<HTMLDivElement>): JSX.Element => <div className={cx(navigationMenuViewportClassName, className)} {...props} />
+export const NavigationMenuIndicator = ({ className, ...props }: HTMLAttributes<HTMLDivElement>): React.JSX.Element => <div className={cx(navigationMenuIndicatorClassName, className)} {...props} />
+export const NavigationMenuViewport = ({ className, ...props }: HTMLAttributes<HTMLDivElement>): React.JSX.Element => <div className={cx(navigationMenuViewportClassName, className)} {...props} />
 export function navigationMenuTriggerStyle(): string {
   return navigationMenuTriggerClassName
 }

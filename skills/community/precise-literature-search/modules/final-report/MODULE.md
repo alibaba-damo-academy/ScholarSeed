@@ -29,8 +29,10 @@ or the honest zero-full-text report, before marking the run complete.
   `FINAL_REPORT_AGENT.md`; never substitute it for unreadable full text.
 - Do not cite an excluded, unreadable, metadata-only, or placeholder paper as
   full-text evidence.
-- Use numbered citations such as `[1]`, and end with `## 参考资料` or
-  `## References` containing one numbered entry for every cited paper. Separate
+- Use numbered citations such as `[1]` and end with a references section in the
+  user's language. Use `## References` in English or the exact Chinese heading
+  accepted by the final-report validator in `scripts/run_state.py`. Include one
+  numbered entry for every cited paper. Separate
   entries with blank lines or make every entry a Markdown list item.
 - Keep `[A#]` abstract alerts in their dedicated section immediately before the
   final reference list, with a blank line between entries; do not place them in

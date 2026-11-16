@@ -8,11 +8,12 @@ import ntpath
 import os
 import platform
 import re
+import shutil
 import stat
 import sys
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 from enum import Enum
@@ -93,6 +94,7 @@ DIRECTORY_PATH_INVALID = "filesystem_directory_path_invalid"
 DIRECTORY_EXISTS_ERROR = "ERR_LEASE_EXISTS"
 FILE_PUBLICATION_CONFLICT = "filesystem_publication_conflict"
 TREE_ENTRY_LIMIT = 262_144
+COPY_CHUNK_BYTES = 1024 * 1024
 FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
@@ -109,6 +111,7 @@ WRITE_DAC = 0x00040000
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 SYNCHRONIZE = 0x00100000
+DIRECTORY_ACL_READ_ACCESS = FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
 FILE_SHARE_DELETE = 0x00000004
@@ -752,11 +755,23 @@ class DirectoryHandle:
             os.close(descriptor)
             raise
 
-    def mkdir(self, name: str, mode: int = DIRECTORY_MODE) -> None:
+    def mkdir(self, name: str, mode: int = DIRECTORY_MODE, *, inherit_acl: bool = False) -> None:
+        """Windows ACL inheritance requires a parent opened with DIRECTORY_ACL_READ_ACCESS."""
         target = self.child(name)
         if self.descriptor is not None:
             os.mkdir(name, mode, dir_fd=self.descriptor)
             self.sync()
+            return
+        if inherit_acl:
+            handle = windows.open_relative(
+                self.native_handles[-1],
+                name,
+                directory=True,
+                disposition=windows.CREATE,
+                inherit_acl=True,
+                share=windows.SHARE_READ | windows.SHARE_WRITE,
+            )
+            windows.close(handle)
             return
         os.mkdir(filesystem_path(target), mode)
 
@@ -897,11 +912,16 @@ class DirectoryHandle:
         *,
         exclusive: bool = False,
         destination_directory: DirectoryHandle | None = None,
+        source_descriptor: int | None = None,
     ) -> str:
         _validate_part(source)
         _validate_part(destination)
         target = destination_directory or self
         if self.descriptor is not None:
+            if source_descriptor is not None:
+                opened, current = os.fstat(source_descriptor), self.stat(source)
+                if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                    raise OSError(errno.ESTALE, "private source changed before publication")
             if exclusive:
                 if _RENAME_EXCLUSIVE is None or _RENAME_SPEC is None:
                     raise OSError(errno.ENOTSUP, "exclusive rename unavailable")
@@ -925,6 +945,14 @@ class DirectoryHandle:
             if target is not self:
                 target.sync()
             return NAMESPACE_SYNCED
+        if source_descriptor is not None:
+            windows.rename(
+                _borrowed_handle(source_descriptor),
+                target.native_handles[-1],
+                destination,
+                not exclusive,
+            )
+            return FILE_FLUSHED
         descriptor = self.open_private(source, os.O_RDWR)
         try:
             windows.rename(
@@ -1420,7 +1448,12 @@ def open_directory(
     create: bool = False,
     final_access: int = FILE_READ_ATTRIBUTES | SYNCHRONIZE,
 ) -> DirectoryHandle:
-    """Open every ancestor without following a symlink or Windows reparse point."""
+    """Open every ancestor without following a symlink or Windows reparse point.
+
+    final_access applies only to the final Windows directory.
+    Callers creating ACL-inheriting children must request DIRECTORY_ACL_READ_ACCESS
+    so GetSecurityInfo can read that parent's DACL. Ordinary pins stay metadata-only.
+    """
     if not root.is_absolute():
         raise ValueError(DIRECTORY_PATH_INVALID)
     steps = tuple((part, False) for part in root.parts[1:]) + tuple(
@@ -1504,18 +1537,83 @@ def protect_windows_path(path: Path, descriptor: int | None = None) -> None:
         parent.close()
 
 
+def copy_tree(source: Path, target: Path, *, excluded: frozenset[str] = frozenset()) -> None:
+    if target == source or target.is_relative_to(source) or source.is_relative_to(target):
+        raise ValueError(DIRECTORY_PATH_INVALID)
+    target_identity = None
+    try:
+        with (
+            closing(open_directory(source, ())) as origin,
+            closing(
+                open_directory(Path(target.anchor), target.parts[1:], create=True)
+            ) as destination,
+        ):
+            if any(destination.path.iterdir()):
+                raise FileExistsError(str(target))
+            target_identity = destination.identity()
+            _copy_directory(origin, destination, excluded)
+    except BaseException:
+        if target_identity is not None:
+            remove_tree(target.parent, (target.name,), expected=target_identity)
+        raise
+
+
+def _copy_directory(
+    source: DirectoryHandle, target: DirectoryHandle, excluded: frozenset[str]
+) -> None:
+    names = sorted(name for name in os.listdir(source.path) if name not in excluded)
+    for name in names:
+        identity = source.stat(name)
+        if stat.S_ISDIR(identity.st_mode):
+            target.mkdir(name)
+            with (
+                closing(source.directory(name)) as origin,
+                closing(target.directory(name)) as destination,
+            ):
+                _copy_directory(origin, destination, excluded)
+        elif stat.S_ISREG(identity.st_mode):
+            with (
+                os.fdopen(source.open_regular(name), "rb") as origin,
+                os.fdopen(
+                    target.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE_FILE_MODE), "wb"
+                ) as destination,
+            ):
+                before = os.fstat(origin.fileno())
+                if before.st_nlink != 1:
+                    raise OSError(errno.EINVAL, "linked source file")
+                shutil.copyfileobj(origin, destination, COPY_CHUNK_BYTES)
+                destination.flush()
+                preserve_mode(destination.fileno(), stat.S_IMODE(before.st_mode))
+                os.fsync(destination.fileno())
+                after = os.fstat(origin.fileno())
+                current = source.stat(name)
+                if any(
+                    (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+                    != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                    for item in (identity, after, current)
+                ):
+                    raise OSError(errno.ESTALE, "source changed during copy")
+        else:
+            raise OSError(errno.EINVAL, "unsupported source file")
+    if names != sorted(name for name in os.listdir(source.path) if name not in excluded):
+        raise OSError(errno.ESTALE, "source directory changed during copy")
+    target.sync()
+
+
 def is_regular(identity: os.stat_result) -> bool:
     return stat.S_ISREG(identity.st_mode)
 
 
 __all__ = [
     "DIRECTORY",
+    "DIRECTORY_ACL_READ_ACCESS",
     "NOFOLLOW",
     "NONBLOCK",
     "DirectoryHandle",
     "DirectoryRole",
     "account_directory",
     "canonical_root",
+    "copy_tree",
     "filesystem_path",
     "grant_current_user_directory_access",
     "marker",
@@ -1651,6 +1749,14 @@ _DARWIN_ACL_INHERIT_ONLY = 1 << 8
 _DARWIN_ACL_WRITES = tuple(1 << bit for bit in (2, 4, 5, 6, 8, 10, 12, 13))
 _DARWIN_GETPATH = 50
 _DARWIN_GETPATH_NOFIRMLINK = 102
+_MAX_LEASE_OFFSET = (1 << 32) - 1
+
+
+def _validate_lease_offset(offset: int | None) -> None:
+    if offset is not None and (type(offset) is not int or not 0 <= offset <= _MAX_LEASE_OFFSET):
+        raise LeaseError("ERR_LEASE_ARGUMENT")
+
+
 _LEASE_PATH_BYTES = 4096
 _LEASE_DEPTH = 256
 _LEASE_METADATA_LIMIT = 1024 * 1024
@@ -2344,22 +2450,40 @@ class _PosixDirectoryNative(_LeaseOwner):
             raise LeaseError("ERR_LEASE_FILE")
         return info
 
-    def acquire_at(self, pin: object, name: str, exclusive: bool) -> object:
+    def acquire_at(
+        self,
+        pin: object,
+        name: str,
+        exclusive: bool,
+        offset: int | None = None,
+        identity: str | None = None,
+    ) -> object:
         with self._operation():
             if not isinstance(exclusive, bool):
                 raise LeaseError("ERR_LEASE_ARGUMENT")
+            _validate_lease_offset(offset)
+            if identity is not None and (offset is None or not isinstance(identity, str)):
+                raise LeaseError("ERR_LEASE_ARGUMENT")
+            if offset is not None and (sys.platform != "darwin" or offset != 0):
+                raise LeaseError("ERR_LEASE_UNSUPPORTED")
             parent = self._pin(pin)
-            descriptor = self._file(parent, name, os.O_RDWR | os.O_CREAT)
+            descriptor = self._file(
+                parent, name, os.O_RDWR | (os.O_CREAT if identity is None else 0)
+            )
             try:
-                self._regular(descriptor)
+                observed = self._regular(descriptor)
+                if identity is not None and _lease_identity(observed) != identity:
+                    raise LeaseError("ERR_LEASE_CHANGED")
                 try:
                     self._fcntl.flock(
                         descriptor,
                         self._fcntl.LOCK_NB
                         | (self._fcntl.LOCK_EX if exclusive else self._fcntl.LOCK_SH),
                     )
-                except BlockingIOError as error:
-                    raise LeaseError("ERR_LEASE_BUSY", error.errno or 0) from error
+                except OSError as error:
+                    if isinstance(error, BlockingIOError):
+                        raise LeaseError("ERR_LEASE_BUSY", error.errno or 0) from error
+                    raise
                 handle = _LeaseLock(descriptor, parent)
                 self._handles.add(handle)
                 parent.children += 1
@@ -2453,8 +2577,28 @@ class _PosixDirectoryNative(_LeaseOwner):
 class DarwinDirectoryNative(_PosixDirectoryNative):
     """Process-owned strict directory capabilities for Darwin domain admission."""
 
+    def file_identity_at(self, pin: object, name: str) -> str:
+        with self._operation():
+            parent = self._pin(pin)
+            descriptor = self._file(parent, name, os.O_RDWR)
+            with self._temporary([descriptor]):
+                return _lease_identity(self._regular(descriptor))
+
     def __init__(self) -> None:
         super().__init__(_DarwinSecurity())
+
+    def duplicate_lease(self, handle: object) -> int:
+        """Duplicate the open file description while retaining native ownership."""
+        with self._operation():
+            if not isinstance(handle, _LeaseLock) or handle not in self._handles:
+                raise LeaseError("ERR_LEASE_ARGUMENT")
+            return os.dup(handle.descriptor)
+
+    def lock_identity(self, handle: object) -> str:
+        with self._operation():
+            if not isinstance(handle, _LeaseLock) or handle not in self._handles:
+                raise LeaseError("ERR_LEASE_ARGUMENT")
+            return _lease_identity(self._regular(handle.descriptor))
 
     def _descriptor_path(self, descriptor: int) -> str:
         raw = self._fcntl.fcntl(descriptor, _DARWIN_GETPATH_NOFIRMLINK, bytes(1024))
@@ -3109,6 +3253,24 @@ class WindowsDirectoryNative(_LeaseOwner):
         self._api = _WindowsLeaseApi()
         super().__init__(self._api.close)
 
+    def lock_identity(self, handle: object) -> str:
+        with self._operation():
+            if not isinstance(handle, _LeaseLock) or handle not in self._handles:
+                raise LeaseError("ERR_LEASE_ARGUMENT")
+            return self._api.identity(handle.descriptor)
+
+    def file_identity_at(self, pin: object, name: str) -> str:
+        with self._operation():
+            self._name(name)
+            descriptor = self._api.relative(
+                self._pin(pin).leaf, name, directory=False, create=False, lock_probe=True
+            )
+            try:
+                self._api.validate(descriptor, False)
+                return self._api.identity(descriptor)
+            finally:
+                self._close([descriptor])
+
     def _pin(self, handle: object, *, read_only: bool = False) -> _LeasePin:
         pin = super()._pin(handle)
         if isinstance(pin, _InstallationPin):
@@ -3388,16 +3550,35 @@ class WindowsDirectoryNative(_LeaseOwner):
                     continue
                 self._record_name(names, name, max_entries, records=records)
 
-    def acquire_at(self, pin: object, name: str, exclusive: bool) -> object:
+    def acquire_at(
+        self,
+        pin: object,
+        name: str,
+        exclusive: bool,
+        offset: int | None = None,
+        identity: str | None = None,
+    ) -> object:
         with self._operation():
             parent = self._pin(pin)
             self._name(name)
             if not isinstance(exclusive, bool):
                 raise LeaseError("ERR_LEASE_ARGUMENT")
-            descriptor = self._api.relative(parent.leaf, name, directory=False, create=True)
+            _validate_lease_offset(offset)
+            if identity is not None and (offset is None or not isinstance(identity, str)):
+                raise LeaseError("ERR_LEASE_ARGUMENT")
+            descriptor = self._api.relative(
+                parent.leaf,
+                name,
+                directory=False,
+                create=identity is None,
+                lock_probe=identity is not None,
+            )
             try:
                 self._api.validate(descriptor, False)
+                if identity is not None and self._api.identity(descriptor) != identity:
+                    raise LeaseError("ERR_LEASE_CHANGED")
                 overlap = _WinOverlap()
+                overlap.offset = offset or 0
                 flags = _WIN_LOCK_FAIL_IMMEDIATELY | (_WIN_LOCK_EXCLUSIVE if exclusive else 0)
                 if not self._api.kernel.LockFileEx(
                     descriptor, flags, 0, 1, 0, ctypes.byref(overlap)

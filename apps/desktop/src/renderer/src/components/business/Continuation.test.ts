@@ -221,7 +221,7 @@ async function createHarness(language = 'zh') {
 }
 
 function find(element: React.ReactNode, testId: string): React.ReactElement<any> | undefined {
-  if (!React.isValidElement<any>(element)) return undefined
+  if (!React.isValidElement<{ open?: boolean; children?: React.ReactNode; 'data-testid'?: string }>(element)) return undefined
   if (element.type === 'Dialog' && !element.props.open) return undefined
   if (element.props['data-testid'] === testId) return element
   for (const child of React.Children.toArray(element.props.children)) {

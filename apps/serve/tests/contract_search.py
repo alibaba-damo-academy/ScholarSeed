@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -14,6 +15,9 @@ from fastapi.testclient import TestClient
 
 from scholarseed_runtime.contract import PermissionIntent, RuntimePermissionMode
 from service.chat.api.search import register_conversation_search_routes
+from service.chat.persistence.events import ProductEventRecord
+from service.chat.service.events import EventService
+from service.chat.service.retry import RecoveryState, recover_search, search_recovery_command
 from service.chat.service.search import (
     SEARCH_ARTIFACT,
     SEARCH_BEGIN,
@@ -72,9 +76,225 @@ def terminal() -> dict:
 
 
 class SearchContract(unittest.IsolatedAsyncioTestCase):
+    def test_candidate_search_survives_history_projection_without_trust_upgrade(self):
+        record = ProductEventRecord(
+            event_id=1,
+            session_id="session",
+            runtime_id="runtime",
+            vendor_thread_id="thread",
+            vendor_turn_id="turn",
+            vendor_item_id="tool",
+            kind="source_candidates",
+            payload={
+                "search_id": INVOCATION_ID,
+                "purpose": "Find the specification",
+                "query": "query",
+                "results": [{"url": URL, "title": "Page"}],
+            },
+            schema_version=2,
+            product_seq=1,
+            idempotency_key="source",
+            created_at=1.0,
+        )
+        events = Mock()
+        events.replay.return_value = [record]
+        snapshot = EventService({}, events, Mock()).activity_snapshot("session")
+        self.assertEqual(len(snapshot), 1)
+        self.assertEqual(snapshot[0]["type"], "source_candidates")
+        self.assertEqual(snapshot[0]["data"], record.payload)
+
     def test_profile_artifacts_match_the_loaded_skill_entrypoints(self):
         self.assertEqual(SEARCH_PROFILES["official"].artifact, "web-search-official-result.json")
         self.assertEqual(SEARCH_PROFILES["browser"].artifact, "web-search-browser-result.json")
+
+    async def test_recovery_is_idempotent_and_unknown_attempts_are_not_reexecuted(self) -> None:
+        source = ProductEventRecord(
+            event_id=1,
+            session_id="session",
+            runtime_id="runtime",
+            vendor_thread_id="thread",
+            vendor_turn_id="turn",
+            vendor_item_id="tool",
+            kind="tool_started",
+            payload={
+                "tool_id": "tool",
+                "name": "scholarseed_bridge",
+                "input": {
+                    "capability": "search",
+                    "operation": "run",
+                    "request": {"query": "original query"},
+                },
+            },
+            schema_version=2,
+            product_seq=1,
+            idempotency_key="source",
+            created_at=1.0,
+        )
+        records = [
+            source,
+            replace(source, kind="tool_completed", payload={"tool_id": "tool", "success": False}),
+        ]
+
+        async def publish(kind, data, **options):
+            records.append(
+                replace(
+                    source,
+                    kind=kind,
+                    payload=dict(data),
+                    idempotency_key=options["idempotency_key"],
+                )
+            )
+
+        live = SimpleNamespace(
+            id="session",
+            catalog=Mock(get=Mock(return_value=SimpleNamespace(principal_id=OWNER))),
+            user_id=USER,
+            applied_permission_mode=RuntimePermissionMode.ASK.value,
+            permission_intent=lambda _: PermissionIntent(),
+            publish=publish,
+        )
+        events = SimpleNamespace(
+            turn_records=Mock(side_effect=lambda *args, **kwargs: tuple(records))
+        )
+        searches = SimpleNamespace(
+            run=AsyncMock(return_value={"ok": False, "error": "unavailable"})
+        )
+        activities = Activities()
+        with activities.enter(ActivityDomain.TURN, root=True):
+            with self.assertRaisesRegex(ValueError, "tool_recovery_stale"):
+                await recover_search(
+                    live,
+                    events,
+                    searches,
+                    activities,
+                    turn_id="turn",
+                    tool_id="tool",
+                    request_id="stale-request",
+                    current=lambda: False,
+                )
+            events.turn_records.assert_not_called()
+            searches.run.assert_not_awaited()
+            self.assertEqual(len(records), 2)
+            first = await recover_search(
+                live,
+                events,
+                searches,
+                activities,
+                turn_id="turn",
+                tool_id="tool",
+                request_id="request",
+                current=lambda: True,
+            )
+            repeated = await recover_search(
+                live,
+                events,
+                searches,
+                activities,
+                turn_id="turn",
+                tool_id="tool",
+                request_id="request",
+                current=lambda: True,
+            )
+            self.assertEqual(first, repeated)
+            self.assertEqual(first["status"], RecoveryState.FAILED)
+            searches.run.assert_awaited_once()
+            self.assertEqual(searches.run.call_args.args[0].query, "original query")
+            self.assertEqual(searches.run.call_args.kwargs["owner_id"], OWNER)
+            self.assertEqual(searches.run.call_args.kwargs["user_id"], USER)
+            self.assertEqual(records[0].payload["tool_id"], "tool")
+            completed_attempt = records.pop()
+            searches.run.reset_mock()
+            unknown = await recover_search(
+                live,
+                events,
+                searches,
+                activities,
+                turn_id="turn",
+                tool_id="tool",
+                request_id="different-request",
+                current=lambda: True,
+            )
+            self.assertEqual(unknown["status"], RecoveryState.UNKNOWN)
+            searches.run.assert_not_awaited()
+            records.append(completed_attempt)
+
+            async def successful_search(command, **options):
+                result = {
+                    "ok": True,
+                    "search_id": "recovered-search",
+                    "candidates": [{"url": URL, "title": "Recovered page"}],
+                }
+                await options["publish"](result)
+                return result
+
+            searches.run.side_effect = successful_search
+            succeeded = await recover_search(
+                live,
+                events,
+                searches,
+                activities,
+                turn_id="turn",
+                tool_id="tool",
+                request_id="successful-request",
+                current=lambda: True,
+            )
+            cached = await recover_search(
+                live,
+                events,
+                searches,
+                activities,
+                turn_id="turn",
+                tool_id="tool",
+                request_id="another-request",
+                current=lambda: True,
+            )
+            self.assertEqual(succeeded["status"], RecoveryState.COMPLETED)
+            self.assertEqual(cached, succeeded)
+            searches.run.assert_awaited_once()
+            self.assertTrue(any(record.kind == "web_search_completed" for record in records))
+            self.assertIs(records[0], source)
+
+    def test_recovery_uses_only_the_recorded_failed_search_request(self) -> None:
+        def record(kind, payload):
+            return ProductEventRecord(
+                event_id=1,
+                session_id="session",
+                runtime_id="runtime",
+                vendor_thread_id="thread",
+                vendor_turn_id="turn",
+                vendor_item_id="tool",
+                kind=kind,
+                payload=payload,
+                schema_version=2,
+                product_seq=1,
+                idempotency_key=kind,
+                created_at=1.0,
+            )
+
+        started = record(
+            "tool_started",
+            {
+                "tool_id": "tool",
+                "name": "scholarseed_bridge",
+                "input": {
+                    "capability": "search",
+                    "operation": "run",
+                    "request": {"query": "original query", "profile": "native"},
+                },
+            },
+        )
+        failed = record("tool_completed", {"tool_id": "tool", "success": False})
+        command = search_recovery_command((started, failed), "tool")
+        self.assertEqual(command.query, "original query")
+        self.assertEqual(command.profile, "native")
+        with self.assertRaises(ValueError):
+            search_recovery_command((started,), "tool")
+        with self.assertRaises(ValueError):
+            search_recovery_command(
+                (started, record("tool_completed", {"tool_id": "tool", "success": True})), "tool"
+            )
+        with self.assertRaises(ValueError):
+            search_recovery_command((started, failed), "different-tool")
 
     def service(self, events: list[dict]) -> tuple[SearchService, SimpleNamespace]:
         async def stream(prepared):
@@ -319,6 +539,56 @@ class SearchContract(unittest.IsolatedAsyncioTestCase):
 
 
 class SearchRouteContract(unittest.TestCase):
+    def test_recovery_requires_approval_and_rejects_client_supplied_tool_arguments(self):
+        self.sessions.require_access = Mock()
+        self.sessions.is_readonly = Mock(return_value=False)
+        self.sessions.align_metering_identity = AsyncMock()
+        self.sessions.retry_tool = AsyncMock(
+            return_value={"ok": True, "status": "completed", "tool_id": "retry"}
+        )
+        route = "/api/serve/sessions/session/tools/recovery"
+        command = {"turn_id": "turn", "tool_id": "tool", "request_id": "request"}
+        self.assertEqual(self.client.post(route, json=command).status_code, 403)
+        self.sessions.retry_tool.assert_not_awaited()
+        self.assertEqual(
+            self.client.post(
+                route, json={**command, "approved": True, "arguments": {"query": "changed"}}
+            ).status_code,
+            400,
+        )
+        self.sessions.retry_tool.assert_not_awaited()
+        self.assertEqual(
+            self.client.post(route, json={**command, "approved": True}).status_code, 200
+        )
+        self.sessions.retry_tool.assert_awaited_once()
+
+    def test_recovery_aligns_metering_identity_before_retry(self):
+        order = []
+
+        async def alignIdentity(sessionId, actor):
+            order.append("aligned")
+
+        async def retryTool(*arguments, **options):
+            self.assertEqual(order, ["aligned"])
+            return {"ok": True}
+
+        self.sessions.require_access = Mock()
+        self.sessions.is_readonly = Mock(return_value=False)
+        self.sessions.align_metering_identity = AsyncMock(side_effect=alignIdentity)
+        self.sessions.retry_tool = AsyncMock(side_effect=retryTool)
+        with patch("service.chat.api.search.request_user_id", return_value=USER):
+            response = self.client.post(
+                "/api/serve/sessions/session/tools/recovery",
+                json={
+                    "turn_id": "turn",
+                    "tool_id": "tool",
+                    "request_id": "request",
+                    "approved": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.sessions.align_metering_identity.assert_awaited_once_with("session", USER)
+
     def setUp(self):
         self.activities = Activities()
         self.turn_activity = self.activities.enter(ActivityDomain.RUNTIME)
@@ -334,15 +604,24 @@ class SearchRouteContract(unittest.TestCase):
             applied_permission_mode=RuntimePermissionMode.ASK.value,
             permission_intent=Mock(return_value=PermissionIntent(mode=RuntimePermissionMode.ASK)),
             publish=AsyncMock(),
+            interactions=SimpleNamespace(
+                request_product_input=AsyncMock(return_value={"cancelled": True})
+            ),
         )
         self.sessions = SimpleNamespace(bridge_caller=Mock(return_value=self.live))
         self.service = SimpleNamespace(run=AsyncMock(return_value={"ok": False}))
         self.allowed = True
         self.can_search = Mock(side_effect=lambda *_: self.allowed)
+        self.admit_search = Mock()
         app = FastAPI()
         app.state.auth_enabled = False
         register_conversation_search_routes(
-            app, self.sessions, self.service, self.can_search, activities=self.activities
+            app,
+            self.sessions,
+            self.service,
+            self.can_search,
+            activities=self.activities,
+            admit_search=self.admit_search,
         )
         self.client = TestClient(app)
         self.headers = {
@@ -352,6 +631,15 @@ class SearchRouteContract(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
+
+    def test_plan_admission_failure_never_starts_search(self):
+        self.admit_search.side_effect = ValueError("Confirm the execution plan first")
+        result = self.client.post(
+            SEARCH_ROUTE, json={"query": "papers", "profile": "official"}, headers=self.headers
+        )
+        self.assertEqual(result.status_code, 403)
+        self.assertEqual(result.json()["error"], "search_plan_required")
+        self.service.run.assert_not_called()
         self.turn_activity.close()
 
     def test_expired_turn_cannot_start_search(self):
@@ -359,6 +647,61 @@ class SearchRouteContract(unittest.TestCase):
         response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
         self.assertEqual(response.status_code, 503)
         self.service.run.assert_not_awaited()
+
+    def test_unconfirmed_execution_never_offers_reexecution(self):
+        for failure in (
+            {"error": "search_timeout"},
+            {"terminal": "invocation.unknown", "error": "agent_runtime_failed"},
+            {"error": "search_action_required", "invocation_id": "child"},
+        ):
+            with self.subTest(failure=failure):
+                result = {"ok": False, "status": "failed", **failure}
+                self.service.run.return_value = result
+                response = self.client.post(
+                    SEARCH_ROUTE, headers=self.headers, json={"query": "query"}
+                )
+                self.assertEqual(response.json(), result)
+                self.live.interactions.request_product_input.assert_not_awaited()
+
+    def test_failed_search_returns_evidence_without_requesting_a_card_or_retry(self):
+        failed = {
+            "ok": False,
+            "status": "failed",
+            "error": "search_provider_failed",
+            "invocation_id": INVOCATION_ID,
+            "search_id": "failed-search",
+        }
+        self.service.run.return_value = failed
+        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), failed)
+        self.service.run.assert_awaited_once()
+        self.live.interactions.request_product_input.assert_not_awaited()
+
+    def test_unavailable_search_returns_without_a_hidden_user_wait(self):
+        failed = {"ok": False, "status": "unavailable", "error": "search_provider_unavailable"}
+        self.service.run.return_value = failed
+        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
+        self.assertEqual(response.json(), failed)
+        self.service.run.assert_awaited_once()
+        self.live.interactions.request_product_input.assert_not_awaited()
+
+    def test_search_interruption_does_not_request_recovery(self):
+        async def run(*args, **kwargs):
+            self.live.publication_turn_id = "another-turn"
+            return await kwargs["publish"]({})
+
+        self.service.run.side_effect = run
+        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
+        self.assertEqual(response.json()["status"], "interrupted")
+        self.service.run.assert_awaited_once()
+        self.live.interactions.request_product_input.assert_not_awaited()
+
+    def test_zero_results_do_not_request_recovery(self):
+        self.service.run.return_value = {"ok": True, "status": "empty", "candidates": []}
+        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
+        self.assertTrue(response.json()["ok"])
+        self.live.interactions.request_product_input.assert_not_awaited()
 
     def test_search_holds_bridge_until_response_after_parent_turn_ends(self):
         self.activities.begin()
@@ -482,8 +825,13 @@ class SearchRouteContract(unittest.TestCase):
             return result
 
         self.service.run.side_effect = run
-        response = self.client.post(SEARCH_ROUTE, headers=self.headers, json={"query": "query"})
+        response = self.client.post(
+            SEARCH_ROUTE,
+            headers=self.headers,
+            json={"query": "query", "purpose": "  Find the specification  "},
+        )
         self.assertTrue(response.json()["ok"])
+        self.assertEqual(self.live.publish.call_args.args[1]["purpose"], "Find the specification")
         self.assertEqual(self.live.publish.call_args.kwargs["turn_id"], "turn")
         self.assertEqual(self.live.publish.call_args.args[0], "source_candidates")
         self.assertEqual(self.service.run.call_args.kwargs["user_id"], USER)

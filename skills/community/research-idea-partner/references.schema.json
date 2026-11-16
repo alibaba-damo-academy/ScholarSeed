@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "research-idea-partner/references.schema.json",
   "title": "research-idea-partner cited-references payload v1",
-  "description": "Machine-readable companion to literature_report.md. Lists only papers the generated ideas actually cite so ScholarSeed can render them in the conversation.",
+  "description": "Machine-readable companion to literature_report.md. Lists only papers the generated ideas actually cite for the shared literature result view, separately from search candidates and full-text grants.",
   "type": "object",
   "additionalProperties": true,
   "required": [

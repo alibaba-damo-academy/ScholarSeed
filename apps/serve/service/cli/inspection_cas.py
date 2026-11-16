@@ -6,7 +6,7 @@ import base64
 import json
 import re
 from dataclasses import asdict
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, Mapping
 
 from service.cli.inspection_rows import MAX_CHUNK_FRAME, _send, _unique
 from service.persistence.rows import ROW_CHUNK_BYTES
@@ -21,6 +21,21 @@ from service.resources.persistence.inspection import (
 )
 
 
+def publication_reader(
+    publications: Mapping[str, tuple[CasPublication, ...]],
+) -> Callable[[str], tuple[CasPublication, ...]]:
+    """Read a shallow batch snapshot; unknown database names are errors."""
+    snapshot = dict(publications)
+
+    def read(name: str) -> tuple[CasPublication, ...]:
+        try:
+            return snapshot[name]
+        except KeyError:
+            raise ValueError("unknown CAS publication database") from None
+
+    return read
+
+
 def publication_preview(value: object) -> CasPublicationPreview:
     if not isinstance(value, dict) or set(value) != {"object_id", "files", "size", "digest"}:
         raise ValueError("invalid CAS publication preview")
@@ -30,9 +45,9 @@ def publication_preview(value: object) -> CasPublicationPreview:
     ):
         raise ValueError("invalid CAS publication identity")
     if (
-        type(value["files"]) is not int
+        (not isinstance(value["files"], int) or isinstance(value["files"], bool))
         or not 2 <= value["files"] <= 2 * MAX_OBJECTS + 2
-        or type(value["size"]) is not int
+        or (not isinstance(value["size"], int) or isinstance(value["size"], bool))
         or not 0 < value["size"] <= MAX_TOTAL_BYTES
     ):
         raise ValueError("invalid CAS publication bounds")
@@ -219,11 +234,11 @@ def read_candidate_publication(
         if (
             not isinstance(value, dict)
             or set(value) != {"version", "event", "database", "object_id", "sequence"} | extra
-            or type(value.get("version")) is not int
+            or (not isinstance(value.get("version"), int) or isinstance(value.get("version"), bool))
             or value["version"] != 1
             or value["database"] != database
             or value["object_id"] != preview.object_id
-            or type(value["sequence"]) is not int
+            or (not isinstance(value["sequence"], int) or isinstance(value["sequence"], bool))
             or value["sequence"] != sequence
         ):
             raise ValueError("CAS publication frame identity changed")
@@ -257,7 +272,11 @@ def read_candidate_publication(
             else CHUNK_MAX_BYTES if header["kind"] == "chunks" else MAX_WHOLE_BYTES
         )
         size = header["size"]
-        if type(size) is not int or not 0 <= size <= limit or total + size > preview.size:
+        if (
+            (not isinstance(size, int) or isinstance(size, bool))
+            or not 0 <= size <= limit
+            or total + size > preview.size
+        ):
             raise ValueError("CAS publication exceeds declared size")
         data = bytearray()
         while len(data) < size:

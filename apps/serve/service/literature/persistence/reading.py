@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from service.literature.persistence.store import chunk_ids, connect
+from service.literature.persistence.store import chunk_ids, connect, read
 from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.records import (
     EMPTY_RECORDS,
@@ -20,6 +20,7 @@ from service.platform.records import (
     encode_records,
     project_anchors,
     record_revision,
+    retain_native_sources,
 )
 
 RECORDS_TABLE = "literature_attachment_records"
@@ -133,6 +134,21 @@ class AttachmentRecordCatalog:
             raise RuntimeError("attachment record insert did not produce a row")
         return self._snapshot(target, source_revision, self._row(row))
 
+    def peek(self, target: RecordTarget, source_revision: str) -> PdfRecordSnapshot | None:
+        with read(self.database) as connection:
+            self._owner(connection, target)
+            if (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (RECORDS_TABLE,)
+                ).fetchone()
+                is None
+            ):
+                return None
+            row = connection.execute(
+                f"SELECT * FROM {RECORDS_TABLE} WHERE attachment_id=?", (target.subject_id,)
+            ).fetchone()
+        return self._snapshot(target, source_revision, self._row(row)) if row is not None else None
+
     def commit(
         self,
         target: RecordTarget,
@@ -141,12 +157,19 @@ class AttachmentRecordCatalog:
         expected_record_revision: str,
     ) -> PdfRecordSnapshot:
         normalized = decode_records(records)
-        payload = encode_records(normalized)
-        revision = record_revision(source_revision, normalized)
         with closing(connect(self.database)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             self._schema(connection)
             self._owner(connection, target)
+            previous = connection.execute(
+                f"SELECT * FROM {RECORDS_TABLE} WHERE attachment_id=? AND record_revision=?",
+                (target.subject_id, expected_record_revision),
+            ).fetchone()
+            if previous is None:
+                raise AttachmentRecordConflict
+            normalized = retain_native_sources(normalized, self._row(previous).records())
+            payload = encode_records(normalized)
+            revision = record_revision(source_revision, normalized)
             cursor = connection.execute(
                 f"UPDATE {RECORDS_TABLE} SET record_revision=?,source_revision=?,payload=?,"
                 "updated_at=? WHERE attachment_id=? AND record_revision=?",

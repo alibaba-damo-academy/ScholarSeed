@@ -9,18 +9,49 @@ from service.literature.domain.delivery import (
 from service.literature.persistence.delivery import DeliveryStore
 from service.literature.persistence.files import (
     SERVICE_LITERATURE_FILES_DIR,
+    is_available_attachment,
     payload_revision,
     read_attachment,
 )
+from service.literature.persistence.store import LiteratureRepository
 from service.platform.citations import (
     MANAGED_STORAGE_SCOPE,
     CitationDocument,
     CitationSourceChanged,
 )
+from service.platform.content import ContentPort
 from service.platform.context import FulltextBindingScope, FulltextTaskContext
 
 PAPER_REF_PREFIX = "paper:"
 MANAGED_FULLTEXT_SOURCE_KIND = "managed_fulltext"
+
+
+def task_documents(
+    content: ContentPort, repository: LiteratureRepository, session_id: str, project_path: str
+) -> tuple[dict, ...]:
+    project = next(
+        (project for project in content.projects() if project.root == project_path), None
+    )
+    if project is None:
+        return ()
+    documents = {}
+    for delivery in DeliveryStore().for_session(session_id, project.id):
+        for paper in delivery["papers"]:
+            name = paper.get("object_name")
+            if not name or not is_available_attachment(str(SERVICE_LITERATURE_FILES_DIR / name)):
+                continue
+            literature_id = paper.get("literature_id") or ""
+            attachment = repository.primary_attachment(literature_id) if literature_id else None
+            if attachment is None:
+                attachment = repository.project_attachment_revision(project.id, paper["revision"])
+                literature_id = attachment.literature_id if attachment else ""
+            documents[paper["paper_id"]] = {
+                "id": paper["paper_id"],
+                "title": paper["title"],
+                "literature_id": literature_id,
+                "attachment_id": attachment.id if attachment else None,
+            }
+    return tuple(documents.values())
 
 
 class ManagedFulltexts:

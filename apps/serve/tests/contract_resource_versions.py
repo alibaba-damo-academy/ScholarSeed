@@ -38,6 +38,7 @@ from service.workbench.api.routes import register_workbench_routes
 from service.workbench.domain.model import WorkbenchFormatPolicy
 from service.workbench.service.records import PdfRecordStore
 
+from .pdf import PageFixture, build_pdf
 from .records import pdf_records
 
 PASS = 0
@@ -498,9 +499,10 @@ def main() -> int:
             params={"project": project.id, "base_version_id": second.version.id},
         )
         check(
-            "text version API returns a server-side line diff",
+            "text version API keeps its historical-to-comparison direction",
             diff_response.status_code == 200
-            and any("external v2" in line for line in diff_response.json().get("lines", [])),
+            and diff_response.json().get("lines", [])[:2] == ["--- v1", "+++ v2"]
+            and "+external v2\n" in diff_response.json().get("lines", []),
             diff_response.text,
         )
 
@@ -714,7 +716,8 @@ def main() -> int:
         settings.mode = VersionPolicyMode.WHITELIST.value
         settings.ignores = ()
         pdf = Path(project.root) / "resources" / "paper.pdf"
-        pdf.write_bytes(b"%PDF-1.4\nunchanged source\n")
+        pdf_original = build_pdf(PageFixture(), PageFixture(), title="unchanged source")
+        pdf.write_bytes(pdf_original)
         empty_annotations = annotations.snapshot(project.id, "resources/paper.pdf")
         annotations.commit(
             project.id,
@@ -774,7 +777,7 @@ def main() -> int:
             pdf_restored.version.annotation_object_id is None
             and annotations.snapshot(project.id, "resources/paper.pdf").records["comments"]
             == pdf_records(1, "second")["comments"]
-            and pdf.read_bytes() == b"%PDF-1.4\nunchanged source\n",
+            and pdf.read_bytes() == pdf_original,
         )
 
         linked_root = root / "linked-history"

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ArrowRight, CircleHelp, Ellipsis, Plus, RotateCw } from 'lucide-react'
+import { Ellipsis, ExternalLink, Globe, RotateCw } from 'lucide-react'
 import {
   BROWSER_CDP_STATUS,
   BROWSER_ERROR,
+  MAX_HISTORY_SEARCH_CHARS,
   PAGE_ZOOM_DEFAULT,
   PAGE_ZOOM_FACTORS,
   pageZoomSteps,
@@ -17,22 +18,21 @@ import type {
   BrowserVisit,
 } from '../../../../browser'
 import type { BrowserOverlayModel } from '../../../../overlay'
+import { reportBrowserFailure } from '../../../../browserdiagnostics'
+import { BrowserToolbar } from '../../components/business/BrowserToolbar'
 import {
-  Button,
-  Card,
-  CardDescription,
-  CardTitle,
+  Alert,
+  EmptyState,
   IconButton,
   Input,
-  NavigationTabs,
-  Page,
-  PageBody,
-  PageHeader,
+  Spinner,
   Tooltip,
+  useToast,
 } from '../../components/ui'
 import { useBrowserViewport, useChromiumFrame } from './viewport'
 import { createSuggestions } from './presenter'
 import { SEARCH_ITEM_ID, SuggestionsPanel } from './Suggestions'
+import { BROWSER_DOWNLOAD_KEYS } from './messages'
 import { MENU_ACTION } from '../../../../menu'
 import type { BrowserSettingsSection } from '../../../../navigation'
 import {
@@ -46,21 +46,6 @@ const EMPTY_SNAPSHOT: BrowserSnapshot = {
   automation: { enabled: false, port: null },
 }
 const BLANK_PAGE = 'about:blank'
-const START_TAB_ID = 'browser-start'
-const START_GUIDES = [
-  {
-    id: 'navigation',
-    titleKey: 'start.navigation.title',
-    descriptionKey: 'start.navigation.description',
-  },
-  { id: 'tabs', titleKey: 'start.tabs.title', descriptionKey: 'start.tabs.description' },
-  {
-    id: 'devtools',
-    titleKey: 'start.devtools.title',
-    descriptionKey: 'start.devtools.description',
-  },
-  { id: 'cdp', titleKey: 'start.cdp.title', descriptionKey: 'start.cdp.description' },
-] as const
 const ERROR_MESSAGES = {
   invalid_url: 'errors.invalid_url',
   invalid_command: 'errors.invalid_command',
@@ -82,7 +67,6 @@ const ERROR_MESSAGES = {
   browser_policy_invalid: 'errors.browser_policy_invalid',
   browser_history_delivery_pending: 'errors.browser_history_delivery_pending',
 } as const satisfies Record<BrowserErrorCode, string>
-const TAB_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End'])
 const HISTORY_SUGGESTION_LIMIT = 8
 const HISTORY_QUERY_DELAY_MS = 150
 const WEB_SEARCH_QUERY_LIMIT = 512
@@ -90,30 +74,53 @@ const GOOGLE_SEARCH_URL = 'https://www.google.com/search?q='
 const PRIORITY_SURFACES = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]'
 const PRIORITY_ATTRIBUTES = ['class', 'style', 'hidden', 'open', 'aria-hidden', 'data-state']
 const MENU_SETTINGS_SEPARATOR_ID = 'browser.menu.settings.separator'
+const MENU_PAGE_SEPARATOR_ID = 'browser.menu.page.separator'
 
 export function Browser({
   onSettings,
-}: { onSettings?: (section: BrowserSettingsSection) => void } = {}): React.JSX.Element {
+  pageId,
+  initialSnapshot = EMPTY_SNAPSHOT,
+  selected = true,
+}: {
+  onSettings?: (section: BrowserSettingsSection) => void
+  pageId?: string
+  initialSnapshot?: BrowserSnapshot
+  selected?: boolean
+} = {}): React.JSX.Element {
   const { t, i18n } = useTranslation('browser')
-  const [snapshot, setSnapshot] = useState<BrowserSnapshot>(EMPTY_SNAPSHOT)
-  const [tabOrder, setTabOrder] = useState<string[]>([])
-  const orderedTabs = useMemo(() => {
-    const rank = new Map(tabOrder.map((id, index) => [id, index]))
-    return [...snapshot.tabs].sort(
-      (first, second) =>
-        (rank.get(first.tabId) ?? tabOrder.length) - (rank.get(second.tabId) ?? tabOrder.length)
-    )
-  }, [snapshot.tabs, tabOrder])
+  const { dismiss, toast } = useToast()
+  useEffect(() => {
+    if (!selected) return
+    return window.scholarseed.browser.subscribeDownloads?.(({ id, status }) => {
+      if (status === 'cancelled') {
+        dismiss(id)
+        return
+      }
+      toast({
+        id,
+        title: t(BROWSER_DOWNLOAD_KEYS[status]),
+        tone: status === 'saved' ? 'success' : status === 'started' ? 'info' : 'error',
+      })
+    })
+  }, [dismiss, selected, t, toast])
+  const [snapshot, setSnapshot] = useState(initialSnapshot)
+  const latestSnapshot = useRef(snapshot)
+  latestSnapshot.current = snapshot
   const [error, setError] = useState<BrowserErrorCode | null>(null)
-  const [address, setAddress] = useState('')
+  const [address, setAddress] = useState(() => {
+    const url = initialSnapshot.tabs.find(
+      (tab) => tab.tabId === (pageId ?? initialSnapshot.activeTabId)
+    )?.url
+    return url === BLANK_PAGE ? '' : (url ?? '')
+  })
   const [suggestions, setSuggestions] = useState<BrowserVisit[]>([])
   const [suggestionsOpen, setSuggestionsOpen] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(false)
   const [pending, setPending] = useState(false)
+  const [externalOpening, setExternalOpening] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const suggestionsProbe = useRef<HTMLDivElement>(null)
-  const helpControl = useRef<HTMLButtonElement>(null)
   const feedbackId = useId()
   const moreControl = useRef<HTMLButtonElement>(null)
   const [menu] = useState(() =>
@@ -142,8 +149,6 @@ export function Browser({
   const addressTab = useRef<string | null>(null)
   const openingAddress = useRef<{ value: string; editRevision: number } | null>(null)
   const sequence = useRef(0)
-  const workspace = useRef<HTMLElement>(null)
-  const focusTab = useRef(false)
   const composing = useRef(false)
   const compositionStarted = useRef(false)
   const discardCompositionEnd = useRef(false)
@@ -154,10 +159,46 @@ export function Browser({
     >()
   )
   const inputTab = useRef<string | null>(null)
-  const active = snapshot.tabs.find((tab) => tab.tabId === snapshot.activeTabId)
+  const active = snapshot.tabs.find((tab) => tab.tabId === (pageId ?? snapshot.activeTabId))
+  useEffect(() => {
+    if (!pageId || !selected) return
+    void window.scholarseed.browser
+      .dispatch({ kind: 'select', tabId: pageId })
+      .then((reply) => {
+        if (!reply.ok)
+          reportBrowserFailure(
+            { source: 'command', operation: 'select', phase: 'reply', tabId: pageId },
+            reply.error
+          )
+        if (!reply.ok) setError(reply.error)
+      })
+      .catch((error) => {
+        reportBrowserFailure({ source: 'command', operation: 'select', tabId: pageId }, error)
+        setError(BROWSER_ERROR.operationFailed)
+      })
+  }, [pageId, selected])
+  const failure = error ?? active?.navigationError
+  const pageFailure =
+    failure === BROWSER_ERROR.navigationFailed || failure === BROWSER_ERROR.invalidUrl
+  const failedHost = active?.url && URL.canParse(active.url) ? new URL(active.url).hostname : ''
   const startPage = !active?.url || active.url === BLANK_PAGE
   const activeTab = useRef(active?.tabId)
   activeTab.current = active?.tabId
+  const failMenu = useCallback(
+    (
+      operation: string,
+      failure: unknown,
+      source: 'menu' | 'find-menu' = 'menu',
+      tabId?: string
+    ) => {
+      reportBrowserFailure(
+        { source, operation, tabId, phase: failure instanceof Error ? 'exception' : 'event' },
+        failure
+      )
+      setMenuFailure(true)
+    },
+    []
+  )
   const openFind = useCallback(
     async (target: BrowserPageTarget, origin: 'page' | 'menu'): Promise<void> => {
       if (!findMenu || !moreControl.current || activeTab.current !== target.tabId) return
@@ -167,7 +208,7 @@ export function Browser({
           sessionId: current.sessionId,
           revision: current.revision,
         })
-        if (!reply?.ok) setMenuFailure(true)
+        if (!reply?.ok) failMenu('refocus', reply?.error, 'find-menu', target.tabId)
         return
       }
       findOrigin.current = origin
@@ -185,13 +226,24 @@ export function Browser({
         }
       )
     },
-    [findMenu, i18n.resolvedLanguage]
+    [findMenu, i18n.resolvedLanguage, failMenu]
   )
   const requestFind = useCallback(async (): Promise<void> => {
     const tabId = activeTab.current
     const expected = pageOperation.current
     if (!tabId || !window.scholarseed.browser.page) return
     const reply = await window.scholarseed.browser.page({ kind: 'target', tabId })
+    if (!reply.ok)
+      reportBrowserFailure(
+        {
+          source: 'find-menu',
+          operation: 'find',
+          phase: 'reply',
+          tabId,
+          stale: expected !== pageOperation.current || !mounted.current,
+        },
+        reply.error
+      )
     if (expected !== pageOperation.current || !mounted.current) return
     if (reply.ok) await openFind(reply.target, 'page')
     else if (reply.error !== BROWSER_ERROR.targetClosed) setError(reply.error)
@@ -221,6 +273,16 @@ export function Browser({
           actionId: MENU_ACTION.print,
           label: t('print'),
           disabled: !active || !nativePage,
+          checked: false,
+          value: { kind: 'none' },
+        },
+        { kind: 'separator', id: MENU_PAGE_SEPARATOR_ID },
+        {
+          kind: 'action',
+          id: MENU_ACTION.browserCopy,
+          actionId: MENU_ACTION.browserCopy,
+          label: t('copyAddress'),
+          disabled: !active?.url || startPage,
           checked: false,
           value: { kind: 'none' },
         },
@@ -273,7 +335,16 @@ export function Browser({
           kind: 'action',
           id: MENU_ACTION.browserHistory,
           actionId: MENU_ACTION.browserHistory,
-          label: t('settings.historyPageTitle'),
+          label: t('settings.historyMenuTitle'),
+          disabled: false,
+          checked: false,
+          value: { kind: 'none' },
+        },
+        {
+          kind: 'action',
+          id: MENU_ACTION.browserData,
+          actionId: MENU_ACTION.browserData,
+          label: t('clearBrowsingData'),
           disabled: false,
           checked: false,
           value: { kind: 'none' },
@@ -291,6 +362,8 @@ export function Browser({
     }),
     [
       active?.tabId,
+      active?.url,
+      startPage,
       active?.devtoolsOpen,
       zoomFactor,
       lowerZoom,
@@ -314,7 +387,8 @@ export function Browser({
     const unsubscribe = menu.subscribe((model, reason) => {
       setMenuShown(Boolean(model))
       if (reason === 'escape') moreControl.current?.focus({ preventScroll: true })
-      if (reason === 'invalid' || reason === 'crash' || reason === 'timeout') setMenuFailure(true)
+      if (reason === 'invalid' || reason === 'crash' || reason === 'timeout')
+        failMenu(reason, 'menu_failed')
     })
     const unsubscribeAction = menu.subscribeAction((event, approved) => {
       if (event.actionId === MENU_ACTION.browserSettings) {
@@ -325,19 +399,58 @@ export function Browser({
         onSettings?.('history')
         return
       }
+      if (event.actionId === MENU_ACTION.browserData) {
+        onSettings?.('data')
+        return
+      }
       if (approved.target.kind !== 'browser') return
       const target = {
         tabId: approved.target.tabId,
         instanceId: approved.target.instanceId,
         navigationId: approved.target.navigationId,
       }
+      if (event.actionId === MENU_ACTION.browserCopy) {
+        const tab = latestSnapshot.current.tabs.find((tab) => tab.tabId === target.tabId)
+        if (!tab?.url || tab.url === BLANK_PAGE) return
+        void window.scholarseed
+          .writeClipboard(tab.url)
+          .then((reply) => {
+            if (!mounted.current) return
+            if (!reply.ok) failMenu('copy', reply.error, 'menu', target.tabId)
+            else toast({ tone: 'success', title: t('copySucceeded') })
+          })
+          .catch((error) => {
+            reportBrowserFailure(
+              { source: 'menu', operation: 'copy', tabId: target.tabId, stale: !mounted.current },
+              error
+            )
+            if (mounted.current) setMenuFailure(true)
+          })
+        return
+      }
       if (event.actionId === MENU_ACTION.find)
-        void openFind(target, 'menu').catch(() => setMenuFailure(true))
+        void openFind(target, 'menu').catch((error) =>
+          failMenu('find', error, 'find-menu', target.tabId)
+        )
       if (event.actionId === MENU_ACTION.print && window.scholarseed.browser.page) {
         const expected = pageOperation.current
         void window.scholarseed.browser
           .page({ kind: 'print', target })
           .then((reply) => {
+            if (!reply.ok || reply.print?.status === 'failed')
+              reportBrowserFailure(
+                {
+                  source: 'menu',
+                  operation: 'print',
+                  phase: 'reply',
+                  tabId: target.tabId,
+                  stale:
+                    !mounted.current ||
+                    expected !== pageOperation.current ||
+                    activeTab.current !== target.tabId,
+                },
+                reply.ok ? BROWSER_ERROR.operationFailed : reply.error
+              )
             if (
               !mounted.current ||
               expected !== pageOperation.current ||
@@ -348,45 +461,69 @@ export function Browser({
               if (reply.error !== BROWSER_ERROR.targetClosed) setError(reply.error)
             } else if (reply.print?.status === 'failed') setError(BROWSER_ERROR.operationFailed)
           })
-          .catch(() => {
+          .catch((error) => {
+            reportBrowserFailure(
+              {
+                source: 'menu',
+                operation: 'print',
+                tabId: target.tabId,
+                stale: !mounted.current || expected !== pageOperation.current,
+              },
+              error
+            )
             if (mounted.current && expected === pageOperation.current)
               setError(BROWSER_ERROR.operationFailed)
           })
       }
     })
     const unsubscribeResult = menu.subscribeResult((result) => {
-      if (result.outcome === 'failed') setMenuFailure(true)
+      if (result.outcome === 'failed') {
+        reportBrowserFailure(
+          {
+            source: 'menu',
+            operation: result.actionId.replace('browser.', ''),
+            phase: 'event',
+            revision: result.revision,
+          },
+          'menu_failed'
+        )
+        setMenuFailure(true)
+      }
     })
     return () => {
       unsubscribe()
       unsubscribeAction()
       unsubscribeResult()
     }
-  }, [menu, onSettings, openFind])
+  }, [menu, onSettings, openFind, t, toast, failMenu])
   useEffect(() => {
     const remove = findMenu?.subscribe((_model, reason) => {
       if (reason === 'escape' && findOrigin.current === 'menu')
         moreControl.current?.focus({ preventScroll: true })
-      if (reason === 'invalid' || reason === 'timeout' || reason === 'crash') setMenuFailure(true)
+      if (reason === 'invalid' || reason === 'timeout' || reason === 'crash')
+        failMenu(reason, 'menu_failed', 'find-menu')
     })
     const removeShortcut = window.scholarseed.browser.subscribeFind?.((target) => {
-      void openFind(target, 'page').catch(() => setMenuFailure(true))
+      void openFind(target, 'page').catch((error) =>
+        failMenu('find', error, 'find-menu', target.tabId)
+      )
     })
     return () => {
       remove?.()
       removeShortcut?.()
     }
-  }, [findMenu, openFind])
+  }, [findMenu, openFind, failMenu])
   useEffect(() => () => findMenu?.dispose(), [findMenu])
   useEffect(() => () => menu?.dispose(), [menu])
   useLayoutEffect(() => {
     pageOperation.current += 1
-    void menu?.dismiss('target').catch(() => setMenuFailure(true))
-    void findMenu?.dismiss('target').catch(() => setMenuFailure(true))
-  }, [menu, findMenu, active?.tabId, active?.url])
+    void menu?.dismiss('target').catch((error) => failMenu('dismiss', error))
+    void findMenu?.dismiss('target').catch((error) => failMenu('dismiss', error, 'find-menu'))
+  }, [menu, findMenu, active?.tabId, active?.url, failMenu])
   useEffect(() => {
     const update = (): void => {
-      if (menu?.current()) void menu.update(currentMenuData()).catch(() => setMenuFailure(true))
+      if (menu?.current())
+        void menu.update(currentMenuData()).catch((error) => failMenu('update', error))
       const current = findMenu?.current()
       if (current?.target.kind === 'browser')
         void findMenu
@@ -405,7 +542,7 @@ export function Browser({
             theme: currentMenuData().theme,
             language: menuData.language,
           })
-          .catch(() => setMenuFailure(true))
+          .catch((error) => failMenu('update', error, 'find-menu'))
     }
     update()
     const observer = new MutationObserver(update)
@@ -414,9 +551,10 @@ export function Browser({
       attributeFilter: ['data-theme'],
     })
     return () => observer.disconnect()
-  }, [menu, findMenu, currentMenuData, menuData.language])
+  }, [menu, findMenu, currentMenuData, menuData.language, failMenu])
   const sidecar = snapshot.engine === 'chromium-sidecar'
-  const viewportTabId = startPage ? undefined : active?.tabId
+  const initialLoading = Boolean(active?.loading && active.documentReady === false && !pageFailure)
+  const viewportTabId = startPage || pageFailure || initialLoading ? undefined : active?.tabId
   const viewport = useBrowserViewport(
     viewportTabId,
     setError,
@@ -429,7 +567,8 @@ export function Browser({
     setSuggestionsOpen(false)
     try {
       overlay?.dismissSync()
-    } catch {
+    } catch (error) {
+      reportBrowserFailure({ source: 'suggestions', operation: 'dismiss-sync' }, error)
       setError(BROWSER_ERROR.operationFailed)
     }
   }, [overlay])
@@ -441,7 +580,7 @@ export function Browser({
       targets.set(id, visit.url)
       return { id, title: visit.title || visit.url, detail: visit.url }
     })
-    if (!historyLoading && query && query.length <= WEB_SEARCH_QUERY_LIMIT) {
+    if (query && query.length <= WEB_SEARCH_QUERY_LIMIT) {
       targets.set(SEARCH_ITEM_ID, `${GOOGLE_SEARCH_URL}${encodeURIComponent(query)}`)
       items.push({ id: SEARCH_ITEM_ID, title: t('searchWeb', { query }), detail: '' })
     }
@@ -502,7 +641,11 @@ export function Browser({
       const serialized = JSON.stringify(next)
       if (signature === serialized && overlay.current()) return
       signature = serialized
-      void overlay.publish(next, targets).catch(() => {
+      void overlay.publish(next, targets).catch((error) => {
+        reportBrowserFailure(
+          { source: 'suggestions', operation: 'publish', stale: !mounted.current },
+          error
+        )
         if (mounted.current) {
           closeSuggestions()
           setError(BROWSER_ERROR.operationFailed)
@@ -637,11 +780,20 @@ export function Browser({
     void bridge
       .snapshot()
       .then((reply) => {
+        if (!reply.ok)
+          reportBrowserFailure(
+            { source: 'snapshot', operation: 'snapshot', phase: 'reply', stale: !mounted.current },
+            reply.error
+          )
         if (!mounted.current) return
         if (!reply.ok) setError(reply.error)
         else if (sequence.current === revision) setSnapshot(reply.snapshot)
       })
-      .catch(() => {
+      .catch((error) => {
+        reportBrowserFailure(
+          { source: 'snapshot', operation: 'snapshot', stale: !mounted.current },
+          error
+        )
         if (mounted.current) setError(BROWSER_ERROR.operationFailed)
       })
     return () => {
@@ -669,7 +821,7 @@ export function Browser({
   }, [active?.tabId, active?.url])
   useEffect(() => {
     const query = address.trim()
-    if (!suggestionsOpen || !query) {
+    if (!suggestionsOpen || !query || query.length > MAX_HISTORY_SEARCH_CHARS) {
       setSuggestions([])
       setHistoryLoading(false)
       setHistoryError(false)
@@ -687,6 +839,10 @@ export function Browser({
         .then((reply) => {
           if (cancelled) return
           if (!reply.ok || !reply.page) {
+            reportBrowserFailure(
+              { source: 'suggestions', operation: 'query', phase: 'reply' },
+              reply.ok ? BROWSER_ERROR.operationFailed : reply.error
+            )
             setHistoryError(true)
             setSuggestions([])
             return
@@ -700,7 +856,11 @@ export function Browser({
             })
           )
         })
-        .catch(() => {
+        .catch((error) => {
+          reportBrowserFailure(
+            { source: 'suggestions', operation: 'query', stale: cancelled },
+            error
+          )
           if (!cancelled) {
             setHistoryError(true)
             setSuggestions([])
@@ -715,13 +875,20 @@ export function Browser({
       window.clearTimeout(timer)
     }
   }, [address, suggestionsOpen])
-  useEffect(() => {
-    if (!focusTab.current) return
-    focusTab.current = false
-    workspace.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus()
-  }, [snapshot.activeTabId])
 
   const dispatch = useCallback(async (command: BrowserCommand) => {
+    if (command.kind === 'stop-loading') {
+      try {
+        const reply = await window.scholarseed.browser.dispatch(command)
+        if (!reply.ok) throw new Error(reply.error)
+      } catch (error) {
+        reportBrowserFailure(
+          { source: 'command', operation: command.kind, tabId: command.tabId },
+          error
+        )
+      }
+      return
+    }
     if (busy.current && command.kind !== 'navigate') return
     const currentOperation = ++operation.current
     const currentEditRevision = editRevision.current
@@ -731,6 +898,18 @@ export function Browser({
     const revision = sequence.current
     try {
       const reply = await window.scholarseed.browser.dispatch(command)
+      if (!reply.ok)
+        reportBrowserFailure(
+          {
+            source: 'command',
+            operation: command.kind,
+            phase: 'reply',
+            tabId: 'tabId' in command ? command.tabId : undefined,
+            revision: currentOperation,
+            stale: !mounted.current || currentOperation !== operation.current,
+          },
+          reply.error
+        )
       if (!mounted.current || currentOperation !== operation.current) return
       if (!reply.ok) {
         setError(reply.error)
@@ -746,7 +925,17 @@ export function Browser({
         setAddress(current?.url === BLANK_PAGE ? '' : (current?.url ?? ''))
       }
       if (command.kind === 'open' || command.kind === 'close') input.current?.focus()
-    } catch {
+    } catch (error) {
+      reportBrowserFailure(
+        {
+          source: 'command',
+          operation: command.kind,
+          tabId: 'tabId' in command ? command.tabId : undefined,
+          revision: currentOperation,
+          stale: !mounted.current || currentOperation !== operation.current,
+        },
+        error
+      )
       if (mounted.current && currentOperation === operation.current)
         setError(BROWSER_ERROR.operationFailed)
     } finally {
@@ -758,14 +947,16 @@ export function Browser({
     }
   }, [])
 
-  const failure = error ?? active?.navigationError
+  useEffect(() => {
+    if (failure === BROWSER_ERROR.operationFailed || menuFailure)
+      toast({ tone: 'error', title: t('errors.operation_failed') })
+  }, [failure, menuFailure, t, toast])
   const feedback = [
-    failure ? t(ERROR_MESSAGES[failure]) : null,
-    menuFailure ? t('errors.operation_failed') : null,
+    failure && failure !== BROWSER_ERROR.operationFailed ? t(ERROR_MESSAGES[failure]) : null,
     active?.cdpStatus === BROWSER_CDP_STATUS.connected ? t('connected') : null,
     active?.cdpStatus === BROWSER_CDP_STATUS.conflict ? t('errors.devtools_conflict') : null,
   ].filter(Boolean)
-  const help = [...new Set(feedback)].join(' ') || t('help.description')
+  const feedbackText = [...new Set(feedback)].join(' ')
   const unavailable = error === BROWSER_ERROR.desktopBridgeUnavailable
   const navigate = (target: string): void => {
     openingAddress.current = active ? null : { value: target, editRevision: editRevision.current }
@@ -794,14 +985,13 @@ export function Browser({
       if (event.kind === 'focus-return') {
         restoreAddressFocus.current = true
         if (event.target === 'address') input.current?.focus()
-        else helpControl.current?.focus()
+        else moreControl.current?.focus()
         restoreAddressFocus.current = false
       }
     })
   }, [overlay])
   return (
     <section
-      ref={workspace}
       aria-label={t('title')}
       aria-busy={pending}
       data-testid="browser-workspace"
@@ -819,7 +1009,7 @@ export function Browser({
           nativePage
         ) {
           event.preventDefault()
-          void requestFind().catch(() => setMenuFailure(true))
+          void requestFind().catch((error) => failMenu('find', error, 'find-menu'))
         }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
           event.preventDefault()
@@ -828,109 +1018,30 @@ export function Browser({
         }
       }}
     >
-      <fieldset
-        disabled={pending || unavailable}
-        aria-label={t('tabs')}
-        className="m-0 flex min-w-0 shrink-0 items-center border-0 p-0"
-      >
-        <NavigationTabs
-          aria-label={t('tabs')}
-          onReorder={pending || unavailable ? undefined : setTabOrder}
-          showOverview={false}
-          value={snapshot.activeTabId ?? START_TAB_ID}
-          trailing={
-            <Tooltip content={t('newTabAction')} side="bottom">
-              <IconButton
-                label={t('newTabAction')}
-                title={undefined}
-                variant="ghost"
-                className="shrink-0 !rounded-[var(--vds-radius-circle)]"
-                icon={<Plus />}
-                disabled={pending || unavailable}
-                onClick={() => {
-                  void dispatch({ kind: 'open' })
-                }}
-              />
-            </Tooltip>
-          }
-          getTabProps={() => ({
-            'aria-disabled': pending || unavailable,
-            className: 'aria-disabled:cursor-not-allowed',
-          })}
-          onKeyDown={(event) => {
-            if (
-              !TAB_KEYS.has(event.key) ||
-              (event.target as HTMLElement).getAttribute('role') !== 'tab' ||
-              pending ||
-              !snapshot.tabs.length
-            )
-              return
-            event.preventDefault()
-            const index = orderedTabs.findIndex((tab) => tab.tabId === snapshot.activeTabId)
-            const next =
-              event.key === 'Home'
-                ? 0
-                : event.key === 'End'
-                  ? snapshot.tabs.length - 1
-                  : (index + (event.key === 'ArrowRight' ? 1 : -1) + snapshot.tabs.length) %
-                    snapshot.tabs.length
-            if (next === index) return
-            focusTab.current = true
-            void dispatch({ kind: 'select', tabId: orderedTabs[next].tabId })
-          }}
-          tabs={
-            snapshot.tabs.length
-              ? orderedTabs.map((tab) => ({
-                  id: tab.tabId,
-                  label: tab.url === BLANK_PAGE ? t('newTab') : tab.title || t('newTab'),
-                }))
-              : [{ id: START_TAB_ID, label: t('start.tab'), closable: false }]
-          }
-          onValueChange={(tabId) => {
-            if (snapshot.tabs.length) void dispatch({ kind: 'select', tabId })
-          }}
-          onClose={(tabId) => {
-            void dispatch({ kind: 'close', tabId })
-          }}
-        />
-      </fieldset>
-      <form
-        aria-label={t('navigation')}
-        className="flex shrink-0 flex-wrap items-start gap-[var(--vds-layout-control-gap)] p-[var(--vds-space-2)]"
-        onSubmit={(event) => {
-          event.preventDefault()
+      <BrowserToolbar
+        onSubmit={() => {
           if (address.trim()) navigate(address)
         }}
+        backDisabled={pending || !active?.canGoBack}
+        forwardDisabled={pending || !active?.canGoForward}
+        reloadDisabled={pending || !active}
+        stopLoading={
+          active?.loading
+            ? () => void dispatch({ kind: 'stop-loading', tabId: active.tabId })
+            : undefined
+        }
+        back={() => {
+          if (active) void dispatch({ kind: 'back', tabId: active.tabId })
+        }}
+        forward={() => {
+          if (active) void dispatch({ kind: 'forward', tabId: active.tabId })
+        }}
+        reload={() => {
+          if (active) void dispatch({ kind: 'reload', tabId: active.tabId })
+        }}
       >
-        <IconButton
-          label={t('back')}
-          variant="ghost"
-          icon={<ArrowLeft />}
-          disabled={pending || !active?.canGoBack}
-          onClick={() => {
-            if (active) void dispatch({ kind: 'back', tabId: active.tabId })
-          }}
-        />
-        <IconButton
-          label={t('forward')}
-          variant="ghost"
-          icon={<ArrowRight />}
-          disabled={pending || !active?.canGoForward}
-          onClick={() => {
-            if (active) void dispatch({ kind: 'forward', tabId: active.tabId })
-          }}
-        />
-        <IconButton
-          label={t('reload')}
-          variant="ghost"
-          icon={<RotateCw />}
-          disabled={pending || !active || active.loading}
-          onClick={() => {
-            if (active) void dispatch({ kind: 'reload', tabId: active.tabId })
-          }}
-        />
         <div
-          className="min-w-0 flex-1"
+          className="relative min-w-0 flex-1"
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return
             if (event.key === 'Escape' && suggestionsOpen) {
@@ -942,10 +1053,16 @@ export function Browser({
             }
           }}
         >
+          <Globe
+            aria-hidden="true"
+            data-testid="browser-address-icon"
+            className="pointer-events-none absolute left-[var(--vds-space-3)] top-1/2 z-[var(--vds-z-local-control)] size-[var(--vds-icon-7)] -translate-y-1/2 text-[var(--vds-text-tertiary)]"
+          />
           <Input
+            className="min-w-0 truncate pl-[var(--vds-space-8)] !font-[var(--vds-fw-regular)] focus:text-clip"
             ref={input}
             aria-label={t('address')}
-            aria-describedby={feedbackId}
+            aria-describedby={feedbackText ? feedbackId : undefined}
             aria-invalid={Boolean(failure)}
             placeholder={t('addressPlaceholder')}
             value={address}
@@ -958,7 +1075,8 @@ export function Browser({
             onChange={(event) => {
               try {
                 overlay?.dismissSync()
-              } catch {
+              } catch (error) {
+                reportBrowserFailure({ source: 'suggestions', operation: 'dismiss-sync' }, error)
                 setError(BROWSER_ERROR.operationFailed)
               }
               editing.current = true
@@ -984,7 +1102,10 @@ export function Browser({
                 suggestionData.model.items.length
               ) {
                 event.preventDefault()
-                void overlay?.focus().catch(() => setError(BROWSER_ERROR.operationFailed))
+                void overlay?.focus().catch((error) => {
+                  reportBrowserFailure({ source: 'suggestions', operation: 'focus' }, error)
+                  setError(BROWSER_ERROR.operationFailed)
+                })
               }
             }}
           />
@@ -996,28 +1117,35 @@ export function Browser({
             <SuggestionsPanel model={suggestionData.model} />
           </div>
         </div>
-        <Tooltip content={help} side="top" portalled disabled={menuShown || menuPending}>
+        <Tooltip content={t('openExternal')} portalled disabled={menuShown || menuPending}>
           <IconButton
-            ref={helpControl}
-            label={t('help.label')}
+            label={t('openExternal')}
             title={undefined}
-            aria-describedby={feedbackId}
             variant="ghost"
-            icon={<CircleHelp />}
+            icon={<ExternalLink />}
             type="button"
+            disabled={startPage || externalOpening || unavailable}
+            onClick={() => {
+              if (!active?.url || externalOpening) return
+              closeSuggestions()
+              setExternalOpening(true)
+              void window.scholarseed
+                .openExternal(active.url)
+                .catch((error) => {
+                  reportBrowserFailure(
+                    { source: 'external-open', operation: 'external-open', tabId: active.tabId },
+                    error
+                  )
+                  setError(BROWSER_ERROR.operationFailed)
+                })
+                .finally(() => setExternalOpening(false))
+            }}
           />
         </Tooltip>
-        <span
-          id={feedbackId}
-          role={failure || menuFailure ? 'alert' : 'status'}
-          aria-atomic="true"
-          className="sr-only"
-        >
-          {help}
-        </span>
         <Tooltip content={t('moreFeatures')} portalled disabled={menuShown || menuPending}>
           <IconButton
             ref={moreControl}
+            aria-pressed={menuShown || menuPending}
             label={t('moreFeatures')}
             title={undefined}
             variant="ghost"
@@ -1034,6 +1162,8 @@ export function Browser({
               setMenuPending(true)
               setMenuFailure(false)
               const bounds = moreControl.current.getBoundingClientRect()
+              const menuOperation = menu.current() ? 'dismiss' : 'open'
+              const targetTabId = activeTab.current
               void (
                 menu.current()
                   ? menu.dismiss('replaced')
@@ -1043,7 +1173,16 @@ export function Browser({
                       currentMenuData()
                     )
               )
-                .catch(() => {
+                .catch((error) => {
+                  reportBrowserFailure(
+                    {
+                      source: 'menu',
+                      operation: menuOperation,
+                      tabId: targetTabId,
+                      stale: !mounted.current,
+                    },
+                    error
+                  )
                   if (mounted.current) setMenuFailure(true)
                 })
                 .finally(() => {
@@ -1053,7 +1192,17 @@ export function Browser({
             }}
           />
         </Tooltip>
-      </form>
+      </BrowserToolbar>
+      {feedbackText && !pageFailure && (
+        <Alert
+          id={feedbackId}
+          aria-atomic="true"
+          tone={failure || menuFailure ? 'error' : 'info'}
+          className="shrink-0"
+        >
+          {feedbackText}
+        </Alert>
+      )}
       <div
         ref={viewport}
         data-browser-viewport=""
@@ -1161,7 +1310,16 @@ export function Browser({
             : undefined
         }
       >
-        {sidecar && !startPage && visibleFrame && (
+        {initialLoading && (
+          <div
+            role="status"
+            className="absolute inset-0 flex items-center justify-center gap-[var(--vds-space-2)]"
+          >
+            <Spinner aria-label={t('loading')} />
+            <span>{t('loading')}</span>
+          </div>
+        )}
+        {sidecar && !startPage && !pageFailure && visibleFrame && (
           <img
             key={`${visibleFrame.tabId}:${visibleFrame.sequence}`}
             src={`data:image/${visibleFrame.format};base64,${visibleFrame.data}`}
@@ -1170,12 +1328,22 @@ export function Browser({
             className="pointer-events-none absolute inset-0 h-full w-full"
             onLoad={() => chromium.acknowledge(visibleFrame.sequence)}
             onError={() => {
+              reportBrowserFailure(
+                {
+                  source: 'frame',
+                  operation: 'decode',
+                  tabId: visibleFrame.tabId,
+                  revision: visibleFrame.sequence,
+                  phase: 'event',
+                },
+                BROWSER_ERROR.operationFailed
+              )
               setError(BROWSER_ERROR.operationFailed)
               chromium.acknowledge(visibleFrame.sequence)
             }}
           />
         )}
-        {sidecar && active && !startPage && (
+        {sidecar && active && !startPage && !pageFailure && (
           <div
             contentEditable
             suppressContentEditableWarning
@@ -1185,32 +1353,63 @@ export function Browser({
             className="absolute inset-0 cursor-default text-transparent caret-transparent outline-none"
           />
         )}
-        {startPage && (
-          <Page width="reading" data-testid="browser-start-page" className="h-full overflow-y-auto">
-            <PageHeader
-              title={t('start.title')}
-              description={t('start.description')}
-              actions={
-                <Button disabled={pending || unavailable} onClick={() => input.current?.focus()}>
-                  {t('start.browse')}
-                </Button>
+        {pageFailure && (
+          <div
+            role="alert"
+            aria-atomic="true"
+            data-testid="browser-error-page"
+            className="flex h-full items-center justify-center overflow-y-auto"
+          >
+            <EmptyState
+              variant="panel"
+              title={
+                <span id={feedbackId}>
+                  {failure === BROWSER_ERROR.navigationFailed
+                    ? t('errors.navigation_failed')
+                    : feedbackText}
+                </span>
+              }
+              description={
+                failure === BROWSER_ERROR.navigationFailed
+                  ? failedHost
+                    ? t('loadFailure.checkAddress', { host: failedHost })
+                    : t('loadFailure.checkConnection')
+                  : undefined
+              }
+              action={
+                <IconButton
+                  label={
+                    failure === BROWSER_ERROR.navigationFailed
+                      ? t('loadFailure.reload')
+                      : t('reload')
+                  }
+                  icon={<RotateCw />}
+                  variant="ghost"
+                  disabled={pending || unavailable || Boolean(active?.loading)}
+                  onClick={() => {
+                    if (active && failure === BROWSER_ERROR.navigationFailed) {
+                      void dispatch({ kind: 'reload', tabId: active.tabId })
+                    } else if (address.trim()) {
+                      navigate(address)
+                    }
+                  }}
+                />
               }
             />
-            <PageBody>
-              <div className="grid min-w-0 gap-[var(--vds-layout-section-gap)] md:grid-cols-2">
-                {START_GUIDES.map((guide) => (
-                  <Card
-                    key={guide.id}
-                    className="grid content-start gap-[var(--vds-layout-control-gap)]"
-                  >
-                    <CardTitle>{t(guide.titleKey)}</CardTitle>
-                    <CardDescription>{t(guide.descriptionKey)}</CardDescription>
-                  </Card>
-                ))}
-              </div>
-              <p className="m-0 text-[var(--vds-text-tertiary)]">{t('start.privacy')}</p>
-            </PageBody>
-          </Page>
+          </div>
+        )}
+        {startPage && (!pageId || active) && !pageFailure && !initialLoading && (
+          <div
+            data-testid="browser-start-page"
+            className="flex h-full items-center justify-center overflow-y-auto"
+          >
+            <EmptyState
+              variant="panel"
+              iconTone="subtle"
+              icon={<Globe />}
+              title={t('start.prompt')}
+            />
+          </div>
         )}
       </div>
     </section>

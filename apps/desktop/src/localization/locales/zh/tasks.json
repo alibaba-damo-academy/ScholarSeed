@@ -44,10 +44,25 @@
   "title": {
     "copy": "复制资料到项目",
     "link": "关联本地资料",
+    "literatureJoin": "批量加入文献",
     "sources_other": "{{name}} 等 {{count}} 项",
     "withSource": "{{operation}} · {{source}}"
   },
   "failure": "{{name}}：{{reason}}",
+  "literatureJoin": {
+    "library": "我的文献库",
+    "project": "项目文献库",
+    "metadata": "仅元信息",
+    "fulltext": "元信息和全文",
+    "destination": "{{method}} · 目标：{{target}}",
+    "paperList": "论文清单（{{count}} 篇）",
+    "admitting": "正在保存文献元信息",
+    "admitted": "已加入 {{completed}}/{{total}} 篇",
+    "progress": "已处理全文 {{completed}}/{{total}} 篇",
+    "acquired": "其中 {{succeeded}} 篇含全文，{{failed}} 篇未附上",
+    "admissionUnconfirmed": "无法确认本次入库结果，请先到文献库核对。",
+    "fulltextFailed": "未能附上已下载全文"
+  },
   "resourceImport": {
     "progressItems": "{{completed}}/{{total}} 项",
     "summary": {

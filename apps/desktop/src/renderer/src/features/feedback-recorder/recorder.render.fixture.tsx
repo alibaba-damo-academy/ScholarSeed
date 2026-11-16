@@ -53,7 +53,7 @@ function Preview(): React.JSX.Element {
   const [page, setPage] = React.useState('项目总览')
   const started = React.useRef(Date.now())
   const floating = useFloatingSurface('recording')
-  const latest = React.useRef<RecordedStep>()
+  const latest = React.useRef<RecordedStep | undefined>(undefined)
   const { toast } = useToast()
   React.useEffect(() => {
     const step = createInitialPageStep(started.current)

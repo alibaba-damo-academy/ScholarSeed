@@ -9,6 +9,7 @@ import {
   searchSessionTitles,
   appendSessionChildren,
   serveSessionNode,
+  projectSessionNodes,
 } from './tree.ts'
 import type { SessionNode } from './model.ts'
 import type { ServeSession } from './api'
@@ -39,6 +40,52 @@ function makeNode(overrides: Partial<SessionNode> & { id: string }): SessionNode
     ...overrides,
   }
 }
+
+describe('display session groups', () => {
+  it('groups siblings under their display parent without changing input order', () => {
+    const rows = [
+      makeNode({ id: 'd', displayParentSessionId: 'p' }),
+      makeNode({ id: 'p' }),
+      makeNode({ id: 'c', displayParentSessionId: 'p' }),
+      makeNode({ id: 'independent' }),
+    ]
+    const groups = projectSessionNodes(rows)
+    assert.deepEqual(
+      groups.map((node) => node.id),
+      ['p', 'independent']
+    )
+    assert.deepEqual(
+      groups[0].children?.map((node) => node.id),
+      ['d', 'c']
+    )
+    assert.ok(groups[0].children?.every((node) => !node.children?.length))
+    assert.equal(rows[1].children, undefined)
+  })
+
+  it('keeps visible sessions when the display parent is outside the catalog slice', () => {
+    const rows = [makeNode({ id: 'c', displayParentSessionId: 'missing' })]
+    assert.deepEqual(projectSessionNodes(rows), rows)
+  })
+
+  it('projects only the independent display relation from Serve', () => {
+    const node = serveSessionNode(
+      { session_id: 'd', display_parent_session_id: 'p' } as ServeSession,
+      {},
+      null
+    )
+    assert.equal(node.displayParentSessionId, 'p')
+    assert.equal(node.parentSessionId, undefined)
+  })
+
+  it('inserts a newly created branch beneath its existing parent', () => {
+    const rows = [makeNode({ id: 'p' })]
+    const catalog = upsertSessionNode(rows, makeNode({ id: 'c', displayParentSessionId: 'p' }))
+    const result = projectSessionNodes(catalog)
+    assert.equal(catalog.length, 2)
+    assert.equal(result.length, 1)
+    assert.equal(result[0].children?.[0].id, 'c')
+  })
+})
 
 describe('sessionTone', () => {
   it('returns tension for failed and abandon', () => {

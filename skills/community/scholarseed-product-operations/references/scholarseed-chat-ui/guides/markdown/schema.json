@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "maxLength": 65536
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "additionalProperties": false
+}

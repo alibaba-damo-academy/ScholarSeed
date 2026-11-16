@@ -68,14 +68,22 @@ from scholarseed_runtime.contract.inventory import SkillInventory
 from scholarseed_runtime.contract.permission import PERMISSION_MODE_KEY
 from scholarseed_runtime.contract.resource import ResourceReceipt
 from scholarseed_runtime.contract.session import SuspendState, ThreadReplacementTarget
-from scholarseed_runtime.gateway.driver import RuntimeDriver, RuntimeObservation, RuntimeTurnResult
-from service.capabilities.domain import COMPONENT_ANSWER_CAPABILITY
+from scholarseed_runtime.gateway.driver import (
+    RuntimeCommandError,
+    RuntimeDriver,
+    RuntimeObservation,
+    RuntimeTurnOutcome,
+    RuntimeTurnResult,
+)
+from service.capabilities.service.canvas import CanvasDocument
 from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.declarative import CANVAS_SLOT, OPENUI_SLOT, ConversationDocument
 from service.capabilities.service.delivery import INSTALLATION_FIELD, validate_receipt
 from service.capabilities.service.descriptor import validate_component_value
 from service.capabilities.service.plugins import PLUGIN_DISPLAY_PREFIX, PLUGIN_QUESTION_SLOT
 from service.capabilities.service.presentation import TurnSkillBinding
 from service.capabilities.service.skills import SkillCatalog, load_skill_state
+from service.chat.active import session_context
 from service.chat.constants import (
     AUTOMATIC_RECOVERY_MESSAGE,
     GENERIC_PROVIDER_FAILURE_CODE,
@@ -128,16 +136,21 @@ from service.chat.constants import (
     PRODUCT_SESSION_STATE_CLOSED,
     PRODUCT_SESSION_STATE_FAILED,
     PRODUCT_SESSION_STATE_IDLE,
+    PRODUCT_SESSION_STATE_INTERRUPTED,
     PRODUCT_SESSION_STATE_RUNNING,
     PRODUCT_SESSION_STATE_WAITING,
+    PRODUCT_SETTLEMENT_ACTIVITY_UNAVAILABLE,
+    PRODUCT_SETTLEMENT_FINISHED_KEY_PREFIX,
     QUEUED_DISPLAY_TEXT,
     QUEUED_REFERENCES,
     SESSION_RENAME_MAX_LENGTH,
     SESSION_TITLE_DEFAULT,
     SSE_BACKPRESSURE_EVENT,
+    TURN_INTERRUPT_USER_REQUESTED,
     USER_MESSAGE_BINDING_ADMITTED,
     USER_MESSAGE_BINDING_BOUND,
     USER_MESSAGE_BINDING_CANCELLED,
+    USER_MESSAGE_ORIGIN_AUTHORIZATION,
     USER_MESSAGE_ORIGIN_RECOVERY,
     USER_MESSAGE_ORIGIN_TURN,
     USER_MESSAGE_ORIGINS,
@@ -145,15 +158,18 @@ from service.chat.constants import (
 from service.chat.persistence.artifacts import ArtifactSource, ArtifactStatus, SessionArtifactStore
 from service.chat.persistence.catalog import (
     INITIAL_PRODUCT_SEQUENCE,
+    QUEUE_PURPOSE_AUTHORIZATION,
     QUEUE_PURPOSE_RECOVERY,
     HilStatus,
     QueuedMessageRecord,
     SessionAccessError,
     SessionCatalogStore,
+    SessionHilRecord,
     SessionStatus,
 )
 from service.chat.persistence.events import (
     MAXIMUM_REPLAY_LIMIT,
+    SESSION_FORK_KEY,
     ProductEventRecord,
     ProductEventStore,
     upcast_product_event,
@@ -190,6 +206,8 @@ from service.chat.runtime.projection import (
     COLLABORATION_CLOSURE_STATUS,
     COLLABORATION_EVENT_KINDS,
     COLLABORATION_LIFECYCLE_KINDS,
+    EXECUTION_BATCH_EVENT_KINDS,
+    EXECUTION_BATCH_FIELD,
     FILE_HASH_CHUNK_BYTES,
     INTERNAL_EVENT_KEY_PREFIX,
     PORTABLE_ASSISTANT_ROLE,
@@ -206,21 +224,30 @@ from service.chat.runtime.projection import (
     ArtifactPublishError,
     artifact_payload,
     artifact_snapshot_payload,
+    execution_batch_id,
 )
-from service.chat.runtime.tools import SERVICE_TOOL_CAPABILITIES, execute_service_tool
+from service.chat.runtime.tools import (
+    SERVICE_TOOL_CAPABILITIES,
+    execute_service_tool,
+)
 from service.chat.runtime.utils import integer, optional_integer
 from service.chat.service.cards import (
     DISPLAY_CARD_IDEMPOTENCY_PREFIX,
-    DISPLAY_CARD_MAX_BYTES_PER_TURN,
-    DISPLAY_CARD_TURN_BYTES,
     CardRegistry,
-    DisplayCardError,
     card_identity,
     normalize_card,
 )
 from service.chat.service.coverage import CitationCoverage, CoverageStatus, merge_review
-from service.chat.service.estimate import SkillDurationEstimator
-from service.chat.service.plan import SessionPlans
+from service.chat.service.plan import (
+    PLAN_FAILURE_FIELD,
+    PLAN_READ_ACTION,
+    PLAN_RECOVERY_ACTIONS,
+    PLAN_RECOVERY_REJECTIONS,
+    RESOLVED_TOOLS_FIELD,
+    SessionPlans,
+    plan_tool_receipt,
+    plan_tool_recoveries,
+)
 from service.chat.service.provenance import MESSAGE_ITEM, SEARCH_ITEM
 from service.chat.service.publication import PublicationCommand, PublicationService
 from service.chat.service.receipts import search_receipts
@@ -228,6 +255,7 @@ from service.chat.service.recording import RecordingService
 from service.chat.service.rejections import terminal_provider_failure
 from service.chat.service.sources import answer_sources
 from service.chat.service.tasks import ProductTaskLease, restore_task_binding
+from service.chat.utils import SESSION_FORK_COPIED_FIELD
 from service.content.domain.model import ContentError
 from service.inference.source import ContentSource, SourceReference
 from service.persistence.project import inspect_database
@@ -240,6 +268,7 @@ from service.platform.bridge import (
     COMPONENT_SCHEMA_DEFAULT,
     PLAN_SOURCE,
     PLUGIN_INSTALL_CAPABILITY,
+    SERVICE_PLAN_TOOL_NAME,
     ComponentInvocation,
     DisplayCardContent,
     PlanCommand,
@@ -250,6 +279,7 @@ from service.platform.context import ContextOrigin, ContextRefKind, ContextResol
 from service.platform.files import FILE_ACCESS_DENIED, file_access_code
 from service.platform.resources import AgentResourceChangeSink
 from service.platform.storage import filesystem_path
+from service.platform.vocabulary import COMPONENT_ANSWER_CAPABILITY
 
 READ_ONLY_TOOL_NAME = "read"
 PENDING_HIL_BLOCKER = "pending_hil"
@@ -326,6 +356,8 @@ class LiveSession:
             Callable[[SubmissionRetryProof], Awaitable[Callable[[], bool]]] | None
         ) = None
         self.bridge_token = secrets.token_urlsafe(BRIDGE_TOKEN_BYTES)
+        # The model bridge id the attached native runtime was last told to use; written at
+        # attach/APPLIED commit, cleared with the attachment. Empty for direct connections.
         self.held_model_bridge_id = ""
         self.browser_scope_instance = secrets.token_hex(16)
         self._browser_scope: (
@@ -397,7 +429,14 @@ class LiveSession:
         self.termination_task: asyncio.Task[Any] | None = None
         self.terminated = False
         self.last_interrupt_succeeded: bool | None = None
+        self._user_interrupt_turn_id = ""
         self.current_task: asyncio.Task[Any] | None = None
+        self.settlement_recheck = asyncio.Event()
+        self.prediction_task: asyncio.Task[Any] | None = None
+        self.prediction_turn_id = ""
+        self.prediction_result: dict[str, Any] | None = None
+        self.auxiliary_model_request_id = ""
+        self.auxiliary_model_source: ContentSource | None = None
         self.settlement_observer: Callable[[LiveSession], None] | None = None
         self.last_submission_id = ""
         self.recovery_observer: Callable[[LiveSession, RuntimeEvent], Awaitable[None]] | None = None
@@ -431,6 +470,7 @@ class LiveSession:
             broadcast=self._broadcast_product_event,
             bind_component=self.bind_component,
             finish_component=self.finish_component,
+            validate_product_answer=self.validate_component_answer,
         )
         self.plans = SessionPlans(self.id, events, catalog)
         self._events = events
@@ -446,7 +486,6 @@ class LiveSession:
         self._publication_task: asyncio.Task[None] | None = None
         self._publication_records: list[ProductEventRecord] = []
         self._publication_error: Exception | None = None
-        self._duration_estimator = SkillDurationEstimator(events)
         self._artifacts = artifacts
         self._skills = skills
         self._skill_inventory_provider = skill_inventory_provider
@@ -454,6 +493,7 @@ class LiveSession:
         self._active = False
         self._projection_lock = asyncio.Lock()
         self._service_callbacks: set[asyncio.Task[None]] = set()
+        self._plan_tool_receipts: dict[tuple[int, str, str], dict] = {}
         self._projection_recovery_lock = asyncio.Lock()
         self._local_history: list[dict[str, Any]] = []
         self._message_snapshots = MessageSnapshots()
@@ -478,7 +518,7 @@ class LiveSession:
         self._rpc_evidence: list[RuntimeRpcEvidence] = []
         self._local_input_paths: dict[str, tuple[Path, InputKind]] = {}
         self._local_input_path_ids: dict[Path, str] = {}
-        self._restore_local_input_paths()
+        self.restore_local_input_paths()
         self.ledger = SessionLedger(
             self.id,
             catalog,
@@ -536,7 +576,9 @@ class LiveSession:
         payload = self._events.turn_context(self.id, self.ledger.active_turn_id)
         self.active_assistant_snapshot_id = str(payload.get("assistant_snapshot_id") or "")
         revision = payload.get("assistant_context_revision")
-        self.active_assistant_revision = revision if type(revision) is int else None
+        self.active_assistant_revision = (
+            revision if (isinstance(revision, int) and not isinstance(revision, bool)) else None
+        )
 
     @property
     def last_seq(self) -> int:
@@ -662,10 +704,15 @@ class LiveSession:
         *,
         writable_roots: tuple[Path, ...] | None = None,
     ) -> PermissionIntent:
+        roots = self.writable_roots if writable_roots is None else writable_roots
+        origin = self._events.by_key(self.id, SESSION_FORK_KEY)
+        if origin is not None and origin.payload.get(SESSION_FORK_COPIED_FIELD):
+            source = Path(origin.payload[SESSION_FORK_COPIED_FIELD])
+            roots = tuple(root for root in roots if not source.is_relative_to(root))
         return session_permission(
             mode,
             revision=f"permission:{mode.value}",
-            writable_roots=self.writable_roots if writable_roots is None else writable_roots,
+            writable_roots=roots,
             local_socket=self.local_socket,
             network_domains=self.network_domains,
         )
@@ -726,7 +773,7 @@ class LiveSession:
         self.runtime_workdir = cwd.expanduser().resolve()
         self.project_path = project_path.expanduser().resolve() if project_path else None
         self.output_root = output_root.expanduser().resolve()
-        self._trace.relocate(self.runtime_workdir)
+        self._persistence.enqueue(self._trace.relocate, self.runtime_workdir)
         self._local_history.clear()
         self._skill_inventory = None
         self.suspend_blockers: tuple[str, ...] = ()
@@ -753,7 +800,7 @@ class LiveSession:
         )
 
     def activation_timing(self, request_id: str) -> RuntimeTimingPort:
-        return self._trace.activation(request_id)
+        return self._trace.activation(request_id, dispatch=self._persistence.enqueue)
 
     def trace_resource(
         self, action: str, receipt: ResourceReceipt | None = None, **attributes: Any
@@ -763,8 +810,12 @@ class LiveSession:
         )
         if evidence is not None:
             attributes["ownership"] = asdict(evidence)
-        self._trace.resource(
-            action, receipt, attachment_generation=self.attachment_generation, **attributes
+        self._persistence.enqueue(
+            self._trace.resource,
+            action,
+            receipt,
+            attachment_generation=self.attachment_generation,
+            **attributes,
         )
 
     async def previous_turn_blockers(self) -> tuple[str, ...]:
@@ -865,12 +916,16 @@ class LiveSession:
             if not driver.suspending:
                 activity = await driver.session.activity()
                 if not activity.idle or not activity.execution_tree_idle:
-                    self.suspend_blockers = tuple(activity.blockers)
+                    self.suspend_blockers = tuple(
+                        dict.fromkeys((*activity.blockers, *activity.execution_tree_blockers))
+                    )
                     self.trace_resource("suspend_blocked", blockers=list(self.suspend_blockers))
                     return False
 
             async def checkpoint(watermark: int) -> None:
-                self._trace.checkpoint(self.attachment_generation, watermark)
+                await self._persistence.run(
+                    self._trace.checkpoint, self.attachment_generation, watermark
+                )
 
             receipt = await driver.suspend(checkpoint)
             if receipt.state is not SuspendState.RELEASED:
@@ -901,6 +956,9 @@ class LiveSession:
     async def run_runtime(
         self, turn_input: TurnInput, *, frozen_request: TurnRequest | None = None
     ) -> RuntimeTurnResult:
+        if self.prediction_task is not None and self.prediction_task is not asyncio.current_task():
+            self.prediction_task.cancel()
+            await asyncio.gather(self.prediction_task, return_exceptions=True)
         driver = self.runtime_driver
         if driver is None:
             raise RuntimeError("runtime session driver is unavailable")
@@ -930,6 +988,22 @@ class LiveSession:
             }
             for item in turn_input.items
         )
+        if self.project_path == self.runtime_workdir:
+            record = self._catalog.get(self.id)
+            if record is None:
+                raise RuntimeError("session context is unavailable")
+            items = (
+                {
+                    "kind": InputKind.TEXT.value,
+                    "text": session_context(
+                        title=record.title if record.title_fallback is None else "",
+                        cwd=self.runtime_workdir,
+                    ),
+                    "path": "",
+                    "name": "",
+                },
+                *items,
+            )
         recovery_context = await restore_task_binding(self)
         if recovery_context:
             items = (
@@ -965,12 +1039,13 @@ class LiveSession:
             )
         )
 
-    async def steer_runtime(self, turn_input: TurnInput) -> str:
+    async def steer_runtime(self, turn_input: TurnInput, expected_turn_id: str) -> str:
         session = self.runtime_session
         if session is None:
             raise RuntimeError("runtime session is unavailable")
         # 插队消息也是一个已准入的产品轮（自己的用户消息行、自己的 client turn id），它触发的
         # 模型调用要记到它头上，而不是记到之前那一轮。
+        previous_product_turn_id = self.active_product_turn_id
         self.active_product_turn_id = turn_input.client_user_message_id
         receipt = await session.steer(
             SteerRequest(
@@ -984,12 +1059,13 @@ class LiveSession:
                     }
                     for item in turn_input.items
                 ),
-                expected_turn_id=self.ledger.active_turn_id,
+                expected_turn_id=expected_turn_id,
             )
         )
         if receipt.state is not CommandState.ACCEPTED:
-            raise RuntimeError(receipt.safe_error or "runtime steer was rejected")
-        return receipt.correlation_id or self.ledger.active_turn_id
+            self.active_product_turn_id = previous_product_turn_id
+            raise RuntimeCommandError(receipt)
+        return receipt.correlation_id or expected_turn_id
 
     async def on_runtime_observations(self, observations: tuple[RuntimeObservation, ...]) -> None:
         """Amortize consecutive progress I/O, retaining every observation identity."""
@@ -1132,7 +1208,7 @@ class LiveSession:
                 if observation.kind is CallbackKind.USER_INPUT:
                     questions = payload.get("questions")
                     if isinstance(questions, list):
-                        bound_questions = []
+                        bound_questions: list[RuntimeValue] = []
                         for index, question in enumerate(questions):
                             if not isinstance(question, Mapping):
                                 bound_questions.append(question)
@@ -1141,11 +1217,9 @@ class LiveSession:
                                 PLUGIN_QUESTION_SLOT,
                                 interaction_id=f"{observation.request_id}:{question.get('id', index)}",
                             )
-                            bound = (
-                                {**question, "component": component}
-                                if component is not None
-                                else dict(question)
-                            )
+                            bound: dict[str, RuntimeValue] = dict(question)
+                            if component is not None:
+                                bound["component"] = dict[str, RuntimeValue](component)
                             self.bind_component(bound)
                             bound_questions.append(bound)
                         payload["questions"] = bound_questions
@@ -1203,12 +1277,54 @@ class LiveSession:
                     callback_request_id=callback.request_id,
                     callback_turn_id=callback.native_turn_id,
                     tool_name=str(prompt.get("tool")),
+                    workdir=self.runtime_workdir,
                 )
             except Exception:
                 self._logger.exception("service_tool_execution_failed session_id=%s", self.id)
                 result = {"ok": False, "error": "bridge_execution_failed"}
+        observed_plan = None
+        arguments = prompt.get("arguments")
+        if (
+            prompt.get("tool") == SERVICE_PLAN_TOOL_NAME
+            and isinstance(arguments, Mapping)
+            and isinstance(arguments.get("operation"), str)
+            and arguments.get("operation") in PLAN_RECOVERY_ACTIONS
+            and arguments.get("operation") != PLAN_READ_ACTION
+            and isinstance(result.get("error"), str)
+            and result.get("error") in PLAN_RECOVERY_REJECTIONS
+            and not result.get("current")
+        ):
+            try:
+                observed_plan = await self._persistence.run(self.plans.current)
+            except Exception:
+                self._logger.warning(
+                    "plan_recovery_state_unavailable session_id=%s", self.id, exc_info=True
+                )
         if self.runtime_session is not session or self.attachment_generation != generation:
             return
+        receipt_key = (generation, callback.native_turn_id, callback.native_item_id)
+        self._plan_tool_receipts = {
+            key: value
+            for key, value in self._plan_tool_receipts.items()
+            if key[:2] == (generation, self.ledger.active_turn_id)
+        }
+        if (
+            prompt.get("tool") == SERVICE_PLAN_TOOL_NAME
+            and callback.native_item_id
+            and callback.native_turn_id == self.ledger.active_turn_id
+        ):
+            plan_receipt = plan_tool_receipt(
+                arguments,
+                result,
+                callback.native_turn_id,
+                current=(
+                    {**observed_plan, "turn_id": callback.native_turn_id}
+                    if observed_plan is not None
+                    else None
+                ),
+            )
+            if plan_receipt:
+                self._plan_tool_receipts[receipt_key] = plan_receipt
         receipt = await session.respond(
             RuntimeCallbackResponse(
                 request_id=callback.request_id,
@@ -1219,6 +1335,7 @@ class LiveSession:
             )
         )
         if receipt.state is not CommandState.APPLIED:
+            self._plan_tool_receipts.pop(receipt_key, None)
             self._logger.warning(
                 "service_tool_response_rejected session_id=%s request_id=%s",
                 self.id,
@@ -1235,7 +1352,27 @@ class LiveSession:
         except Exception:  # noqa: BLE001 - observers must not break runtime projection
             self._logger.warning("session_activity_observer_failed session_id=%s", self.id)
 
+    def _attribute_interruption(self, event: RuntimeEvent) -> RuntimeEvent:
+        if not self._user_interrupt_turn_id or event.native_turn_id != self._user_interrupt_turn_id:
+            return event
+        if event.actor_kind is not ActorKind.MAIN:
+            return event
+        if event.kind in {
+            RuntimeEventKind.TURN_COMPLETED,
+            RuntimeEventKind.TURN_FAILED,
+            RuntimeEventKind.TURN_INTERRUPTED,
+        }:
+            self._user_interrupt_turn_id = ""
+            if event.kind is RuntimeEventKind.TURN_INTERRUPTED:
+                payload = dict(event.payload) if isinstance(event.payload, Mapping) else {}
+                if not payload.get("reason"):
+                    return replace(
+                        event, payload={**payload, "reason": TURN_INTERRUPT_USER_REQUESTED}
+                    )
+        return event
+
     async def _project_runtime_event(self, event: RuntimeEvent) -> None:
+        event = self._attribute_interruption(event)
         if event.kind is RuntimeEventKind.TURN_NOT_SUBMITTED:
             await self._persistence.run(self._trace.runtime_event, event)
             return
@@ -1468,6 +1605,14 @@ class LiveSession:
         if event.kind is RuntimeEventKind.TOOL_STARTED:
             tool_name = str(payload.get("name") or "tool")
             tool_input = payload.get("input")
+            batch_records = await self._persistence.run(
+                self._events.turn_records,
+                self.id,
+                self.active_product_turn_id,
+                turn_id,
+                kinds=EXECUTION_BATCH_EVENT_KINDS,
+            )
+            batch_id = execution_batch_id(batch_records, item_id)
             if self._resource_changes is not None and tool_name != READ_ONLY_TOOL_NAME:
                 await self._resource_changes.record_tool_call(
                     self.id,
@@ -1482,6 +1627,7 @@ class LiveSession:
                     "tool_id": item_id,
                     "name": tool_name,
                     "input": tool_input,
+                    EXECUTION_BATCH_FIELD: batch_id,
                 },
                 turn_id=turn_id,
                 item_id=item_id,
@@ -1498,6 +1644,25 @@ class LiveSession:
             )
             return
         if event.kind is RuntimeEventKind.TOOL_COMPLETED:
+            plan_receipt = self._plan_tool_receipts.pop(
+                (self.attachment_generation, turn_id, item_id), {}
+            )
+            plan_projection = {}
+            if plan_receipt and payload.get("name") == SERVICE_PLAN_TOOL_NAME:
+                if payload.get("ok") and PLAN_FAILURE_FIELD not in plan_receipt:
+                    records = self._events.turn_records(
+                        self.id,
+                        self.active_product_turn_id,
+                        turn_id,
+                        kinds=(PRODUCT_EVENT_TOOL_COMPLETED,),
+                    )
+                    recovered = plan_tool_recoveries(
+                        plan_receipt, [*records, *self._publication_records], turn_id
+                    )
+                    if recovered:
+                        plan_projection[RESOLVED_TOOLS_FIELD] = recovered
+                elif not payload.get("ok") and PLAN_FAILURE_FIELD in plan_receipt:
+                    plan_projection = plan_receipt
             await self.publish(
                 PRODUCT_EVENT_TOOL_COMPLETED,
                 {
@@ -1505,9 +1670,13 @@ class LiveSession:
                     "name": str(payload.get("name") or "tool"),
                     "output": str(payload.get("output") or ""),
                     "success": bool(payload.get("ok")),
+                    **plan_projection,
                     **(
                         {"exit_code": payload["exit_code"]}
-                        if type(payload.get("exit_code")) is int
+                        if (
+                            isinstance(payload.get("exit_code"), int)
+                            and not isinstance(payload.get("exit_code"), bool)
+                        )
                         else {}
                     ),
                 },
@@ -1571,16 +1740,10 @@ class LiveSession:
                             results_truncated=native.get("truncated", False),
                         )
                 if extension.product_kind == PRODUCT_EVENT_SKILL_STARTED:
-                    estimate = self._duration_estimator.estimate(
-                        str(projected.get("skill") or ""),
-                        excluded_session_id=self.id,
-                    )
                     projected.update(
                         model_id=self.model_id,
                         reasoning_effort=self.reasoning_effort,
                     )
-                    if estimate is not None:
-                        projected["estimate"] = estimate.payload()
                 await self.publish(
                     extension.product_kind,
                     projected,
@@ -1721,6 +1884,9 @@ class LiveSession:
             RuntimeEventKind.TURN_INTERRUPTED,
             RuntimeEventKind.TURN_UNKNOWN,
         }:
+            self._plan_tool_receipts = {
+                key: value for key, value in self._plan_tool_receipts.items() if key[1] != turn_id
+            }
             settlement_event = replace(
                 event,
                 native_turn_id=(
@@ -1733,7 +1899,7 @@ class LiveSession:
             await self._persistence.run(
                 self._catalog.record_turn_settlement,
                 self.id,
-                self.active_product_turn_id,
+                self.last_submission_id or self.active_product_turn_id,
                 settlement_event,
             )
             if not self.running and self.settlement_observer is not None:
@@ -1849,6 +2015,54 @@ class LiveSession:
                 idempotency_key=key,
             )
 
+    async def set_turn_settlement_blocked(self, event: RuntimeEvent, *, blocked: bool) -> None:
+        async with self.lifecycle_lock, self._publication_lock:
+            if self.terminating or self.terminated:
+                return
+            if self._publication_error is not None:
+                raise self._publication_error
+            record = await self._persistence.run(self._set_turn_settlement_blocked, event, blocked)
+            if record is not None:
+                await self._deliver_committed(record)
+
+    def _set_turn_settlement_blocked(
+        self, event: RuntimeEvent, blocked: bool
+    ) -> ProductEventRecord | None:
+        with self._events.transaction() as connection:
+            pending = self._catalog.pending_turn_settlement(self.id, connection=connection)
+            if pending is None or pending.event != event or pending.recovery_blocked == blocked:
+                return None
+            self._catalog.mark_turn_recovery_blocked(self.id, blocked, connection=connection)
+            transition_id = uuid.uuid4().hex
+            return self._events.append(
+                session_id=self.id,
+                runtime_id=self.runtime_id,
+                vendor_thread_id=self.vendor_thread_id,
+                vendor_turn_id=pending.native_turn_id,
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_SESSION_STATE,
+                payload={
+                    "state": (
+                        PRODUCT_SESSION_STATE_FAILED if blocked else PRODUCT_SESSION_STATE_RUNNING
+                    ),
+                    "runtime_id": self.runtime_id,
+                    "recovery_pending": True,
+                    "recovery_blocked": blocked,
+                    **(
+                        {
+                            "reason": PRODUCT_SETTLEMENT_ACTIVITY_UNAVAILABLE,
+                            "incident_id": (
+                                f"{PRODUCT_RECOVERY_BLOCKED_KEY_PREFIX}:{event.event_id}:{transition_id}"
+                            ),
+                        }
+                        if blocked
+                        else {"active_turn_id": pending.native_turn_id}
+                    ),
+                },
+                idempotency_key=f"{INTERNAL_EVENT_KEY_PREFIX}:{transition_id}",
+                connection=connection,
+            )
+
     async def settle_product_turn(self, event: RuntimeEvent) -> bool:
         async with self._settlement_review_lock:
             return await self._settle_reviewed_turn(event)
@@ -1870,6 +2084,12 @@ class LiveSession:
                 return False
             if self._catalog.pending_hil(self.id):
                 return False
+            # Native history may already have resolved this observation during attach.
+            if (
+                event.kind is RuntimeEventKind.TURN_UNKNOWN
+                and self.ledger.reconciled_turn_status(event.native_turn_id) is not None
+            ):
+                return True
             if event.kind is RuntimeEventKind.TURN_COMPLETED:
                 await self.finalize_answer_model(event.native_turn_id, f"runtime:{event.event_id}")
             await self.ledger.terminal(
@@ -1878,6 +2098,57 @@ class LiveSession:
                 finish_messages=self._message_snapshots.finish_turn,
             )
             return True
+
+    async def finish_turn_settlement(
+        self, native_turn_id: str, outcome: RuntimeTurnOutcome
+    ) -> None:
+        async with self.lifecycle_lock, self._publication_lock:
+            if self._publication_error is not None:
+                raise self._publication_error
+            state = (
+                PRODUCT_SESSION_STATE_CLOSED
+                if self.terminated
+                else {
+                    RuntimeTurnOutcome.COMPLETED: PRODUCT_SESSION_STATE_IDLE,
+                    RuntimeTurnOutcome.FAILED: PRODUCT_SESSION_STATE_FAILED,
+                    RuntimeTurnOutcome.INTERRUPTED: PRODUCT_SESSION_STATE_INTERRUPTED,
+                    RuntimeTurnOutcome.UNKNOWN: PRODUCT_SESSION_STATE_FAILED,
+                }[outcome]
+            )
+            record = await self._persistence.run(
+                self._finish_turn_settlement, native_turn_id, state
+            )
+            if record is not None:
+                await self._deliver_committed(record)
+
+    def _finish_turn_settlement(self, native_turn_id: str, state: str) -> ProductEventRecord | None:
+        with self._events.transaction() as connection:
+            pending = self._catalog.pending_turn_settlement(self.id, connection=connection)
+            if pending is None or pending.native_turn_id != native_turn_id:
+                return None
+            if not self._catalog.clear_turn_settlement(
+                self.id, native_turn_id, connection=connection
+            ):
+                return None
+            return self._events.append(
+                session_id=self.id,
+                runtime_id=self.runtime_id,
+                vendor_thread_id=self.vendor_thread_id,
+                vendor_turn_id=native_turn_id,
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_SESSION_STATE,
+                payload={
+                    "state": state,
+                    "runtime_id": self.runtime_id,
+                    "recovery_pending": False,
+                    "recovery_blocked": False,
+                },
+                idempotency_key=(
+                    f"{PRODUCT_SETTLEMENT_FINISHED_KEY_PREFIX}:"
+                    f"{native_turn_id}:{pending.event.event_id}"
+                ),
+                connection=connection,
+            )
 
     async def _review_answer_sources(self, event: RuntimeEvent) -> None:
         pending = self._catalog.pending_turn_settlement(self.id)
@@ -1990,7 +2261,13 @@ class LiveSession:
                     event.native_turn_id, item_id, merge_review(fresh, result)
                 )
 
+    @property
+    def model_request_id(self) -> str:
+        return self.auxiliary_model_request_id or self.active_product_turn_id
+
     def content_source(self, client_turn_id: str) -> ContentSource | None:
+        if client_turn_id and client_turn_id == self.auxiliary_model_request_id:
+            return self.auxiliary_model_source
         record = self._events.by_key(self.id, f"{INTERNAL_EVENT_KEY_PREFIX}:user:{client_turn_id}")
         if record is None or record.payload.get("binding") != USER_MESSAGE_BINDING_ADMITTED:
             return None
@@ -2027,7 +2304,10 @@ class LiveSession:
     async def release_product_turn(self, client_turn_id: str) -> bool:
         """Release model provenance only after the native thread tree is quiescent."""
 
-        if not client_turn_id or self.active_product_turn_id != client_turn_id:
+        if not client_turn_id or (
+            self.active_product_turn_id != client_turn_id
+            and self.last_submission_id != client_turn_id
+        ):
             return False
         session = self.runtime_session
         if session is None:
@@ -2158,18 +2438,6 @@ class LiveSession:
         enriched_references: list[dict[str, Any]] = []
         for raw_reference in references:
             reference = dict(raw_reference)
-            if str(reference.get("type") or "") == PRODUCT_REFERENCE_SKILL:
-                skill = str(reference.get("id") or "").strip()
-                estimate = self._duration_estimator.estimate(
-                    skill,
-                    excluded_session_id=self.id,
-                )
-                if estimate is not None:
-                    reference.update(
-                        estimate=estimate.payload(),
-                        model_id=self.model_id,
-                        reasoning_effort=self.reasoning_effort,
-                    )
             enriched_references.append(reference)
         payload: dict[str, Any] = {
             "text": text,
@@ -2242,7 +2510,15 @@ class LiveSession:
                 "refs": references if isinstance(references, list) else [],
                 "client_turn_id": queued.queued_message_id,
                 "binding": USER_MESSAGE_BINDING_CANCELLED,
-                "origin": USER_MESSAGE_ORIGIN_RECOVERY if recovery else USER_MESSAGE_ORIGIN_TURN,
+                "origin": (
+                    USER_MESSAGE_ORIGIN_RECOVERY
+                    if recovery
+                    else (
+                        USER_MESSAGE_ORIGIN_AUTHORIZATION
+                        if queued.purpose == QUEUE_PURPOSE_AUTHORIZATION
+                        else USER_MESSAGE_ORIGIN_TURN
+                    )
+                ),
             },
             idempotency_key=f"queue:{queued.queued_message_id}:cancelled-user",
         )
@@ -2430,7 +2706,7 @@ class LiveSession:
             )
 
     def trace_completion(self, fields: Mapping[str, Any]) -> None:
-        self._trace.completion(fields)
+        self._persistence.enqueue(self._trace.completion, dict(fields))
         client_turn_id = str(fields.get("client_user_message_id") or "")
         if not (
             client_turn_id
@@ -2559,10 +2835,11 @@ class LiveSession:
         assistant_snapshot_id: str = "",
         assistant_context_revision: int | None = None,
     ) -> None:
-        self._trace.turn_input(
+        self._persistence.enqueue(
+            self._trace.turn_input,
             turn_input,
             vendor_thread_id=self.vendor_thread_id,
-            skill_versions=skill_versions,
+            skill_versions=dict(skill_versions),
             user_text=user_text,
             product_context=product_context,
             steer=steer,
@@ -2573,7 +2850,8 @@ class LiveSession:
     def trace_turn_execution_failed(
         self, *, failure_type: str, retryability: str, failure_code: str = ""
     ) -> None:
-        self._trace.turn_execution_failed(
+        self._persistence.enqueue(
+            self._trace.turn_execution_failed,
             failure_type=failure_type,
             retryability=retryability,
             failure_code=failure_code,
@@ -2589,7 +2867,8 @@ class LiveSession:
         failure_type: str = "",
         failure_detail: str = "",
     ) -> None:
-        self._trace.runtime_relocated(
+        self._persistence.enqueue(
+            self._trace.runtime_relocated,
             previous_workdir=previous_workdir,
             target_workdir=target_workdir,
             status=status,
@@ -2607,7 +2886,8 @@ class LiveSession:
         target: str = "",
         explicitly_approved: bool = False,
     ) -> None:
-        self._trace.mcp_control_started(
+        self._persistence.enqueue(
+            self._trace.mcp_control_started,
             request_id=request_id,
             vendor_thread_id=self.vendor_thread_id,
             operation=operation,
@@ -2626,7 +2906,8 @@ class LiveSession:
         success: bool,
         failure_type: str = "",
     ) -> None:
-        self._trace.mcp_control_completed(
+        self._persistence.enqueue(
+            self._trace.mcp_control_completed,
             request_id=request_id,
             vendor_thread_id=self.vendor_thread_id,
             operation=operation,
@@ -2637,6 +2918,8 @@ class LiveSession:
         )
 
     def history(self) -> list[dict[str, Any]]:
+        if self._events.by_key(self.id, SESSION_FORK_KEY) is not None:
+            return self._events.history_payload(self.id)
         history = [
             {
                 "kind": (
@@ -2760,7 +3043,7 @@ class LiveSession:
         registered = self._local_input_paths.get(reference_id or "")
         return canonical if registered is not None and registered[1] == InputKind.FILE else None
 
-    def _restore_local_input_paths(self) -> None:
+    def restore_local_input_paths(self) -> None:
         """Rehydrate sent local path references from the durable product event log."""
 
         for event in self._events.replay(self.id):
@@ -3132,7 +3415,7 @@ class LiveSession:
         expected_sha256: str = "",
         item_id: str = "",
     ) -> dict[str, Any]:
-        """Publish one existing workdir file as an explicit, content-bound artifact."""
+        """Publish an existing workdir file or directory as an immutable artifact."""
 
         candidate = Path(path)
         if candidate.is_absolute():
@@ -3141,9 +3424,12 @@ class LiveSession:
             canonical = self._canonical_artifact_path(path)
             if canonical is None:
                 raise ArtifactPublishError(ARTIFACT_PUBLISH_PATH_INVALID)
-            if not declaration_id and not canonical.is_file():
+            lexical = self.runtime_workdir / Path(path.replace("\\", "/"))
+            if ".." in Path(path.replace("\\", "/")).parts or ":" in path or "\x00" in path:
+                raise ArtifactPublishError(ARTIFACT_PUBLISH_PATH_INVALID)
+            if not declaration_id and not lexical.exists():
                 raise ArtifactPublishError(ARTIFACT_PUBLISH_FILE_NOT_FOUND)
-            relative = str(canonical.relative_to(self.runtime_workdir))
+            relative = lexical.relative_to(self.runtime_workdir).as_posix()
         except ArtifactPublishError:
             raise
         except OSError as error:
@@ -3214,6 +3500,30 @@ class LiveSession:
                 reference, dict(data if isinstance(data, Mapping) else question)
             )
 
+    def validate_component_answer(
+        self, record: SessionHilRecord, decision: Mapping[str, Any]
+    ) -> None:
+        if decision.get("cancelled"):
+            return
+        for question in record.payload.get("questions", []):
+            reference = question.get("component")
+            if not isinstance(reference, Mapping) or reference.get("component") != OPENUI_SLOT:
+                continue
+            answers = decision.get("answers")
+            if not isinstance(answers, Mapping):
+                raise ValueError("component_answer_invalid")
+            answer = json.loads(answers.get(question["id"], "null"))
+            snapshot = self.component_registry.snapshot(reference, user_id=self.user_id)
+            if (
+                not isinstance(answer, dict)
+                or (
+                    not isinstance(answer.get("content_revision"), int)
+                    or isinstance(answer.get("content_revision"), bool)
+                )
+                or answer["content_revision"] != snapshot["interaction"]["content_revision"]
+            ):
+                raise ValueError("component_content_changed")
+
     def finish_component(self, question: Mapping[str, Any]) -> None:
         reference = question.get("component")
         if isinstance(reference, Mapping):
@@ -3222,8 +3532,10 @@ class LiveSession:
     def component_catalog(self) -> list[dict[str, Any]]:
         return self.component_registry.catalog(user_id=self.user_id)
 
-    def component_ui_catalog(self) -> dict[str, Any]:
-        return self.component_registry.ui_catalog()
+    def component_ui_catalog(
+        self, mode: str = "declarative", detail: str = "prompt"
+    ) -> dict[str, Any]:
+        return self.component_registry.ui_catalog(mode, detail)
 
     def component_preflight(self, slots: list[str]) -> dict[str, Any]:
         return self.component_registry.preflight(slots)
@@ -3299,21 +3611,61 @@ class LiveSession:
         signature = sha256(encoded.encode()).hexdigest()
         request_id = card_identity(self.id, turn_id, COMPONENT_CARD_TYPE, command.request_id)
         async with self._component_lock:
+            if command.slot == CANVAS_SLOT:
+                canvas = CanvasDocument.model_validate(command.data)
+                if waiting != (canvas.interaction is not None):
+                    raise ValueError("canvas_interaction_mode_mismatch")
+            if command.slot == OPENUI_SLOT:
+                if waiting:
+                    raise ValueError("component_display_only")
+                key = f"{request_id}:{command.revision}"
+                content = {
+                    "surface_id": request_id,
+                    "revision": command.revision,
+                    "document": command.data,
+                }
+                previous = self._events.by_key(self.id, key)
+                if previous is not None:
+                    if previous.payload.get("content") != content:
+                        raise ValueError("component_request_conflict")
+                    return previous.payload
+                ConversationDocument.for_publication(command.data)
+                reference = await self.component_for(command.slot, interaction_id=request_id)
+                if reference is None:
+                    raise ValueError("plugin_component_slot_missing")
+                self.component_registry.publish_document(
+                    reference,
+                    session_id=self.id,
+                    user_id=self.user_id,
+                    data=command.data,
+                    content_revision=command.revision,
+                )
+                return self._publish_card(
+                    COMPONENT_CARD_TYPE,
+                    content,
+                    signature,
+                    len(encoded.encode()),
+                    reference,
+                    turn_id=turn_id,
+                    key=key,
+                )
+            if command.revision:
+                raise ValueError("component_content_changed")
             if waiting:
                 try:
-                    previous = self._catalog.hil(request_id)
+                    previousHil = self._catalog.hil(request_id)
                 except SessionAccessError:
-                    previous = None
-                if previous is not None:
-                    question = previous.payload["questions"][0]
+                    previousHil = None
+                if previousHil is not None:
+                    question = previousHil.payload["questions"][0]
                     if (
-                        previous.session_id != self.id
+                        previousHil.session_id != self.id
                         or question.get(COMPONENT_REQUEST_MARKER) != signature
                     ):
                         raise ValueError("component_request_conflict")
                     self.component_registry.snapshot(question["component"], user_id=self.user_id)
-                    if previous.status is HilStatus.RESOLVED:
-                        return dict(previous.decision or {})
+                    if previousHil.status is HilStatus.RESOLVED:
+                        return dict(previousHil.decision or {})
                 else:
                     question = None
             else:
@@ -3330,7 +3682,10 @@ class LiveSession:
                 reference = await self.component_for(command.slot, interaction_id=request_id)
                 if reference is None:
                     raise ValueError("plugin_component_slot_missing")
-                if reference.get("plugin") == COMPONENT_HOST_PLUGIN:
+                if reference.get("plugin") == COMPONENT_HOST_PLUGIN and command.slot not in {
+                    OPENUI_SLOT,
+                    CANVAS_SLOT,
+                }:
                     raise ValueError("component_requires_domain_publication")
                 snapshot = self.component_registry.snapshot(reference, user_id=self.user_id)
                 definition = next(
@@ -3341,6 +3696,8 @@ class LiveSession:
                 validate_component_value(
                     definition.get("input_schema", COMPONENT_SCHEMA_DEFAULT), command.data
                 )
+                if waiting and definition.get("openui") is not None:
+                    raise ValueError("component_display_only")
                 if waiting and not any(
                     action["capability"] == COMPONENT_ANSWER_CAPABILITY
                     for action in definition["actions"]
@@ -3352,8 +3709,17 @@ class LiveSession:
                     "header": command.title,
                     "question": command.prompt or command.title,
                     "options": [],
-                    "component": reference,
+                    "component": (
+                        {**reference, "workbench": True}
+                        if definition.get("workbench") is True
+                        else reference
+                    ),
                     "component_data": command.data,
+                    **(
+                        {"component_revision": command.revision}
+                        if command.slot == OPENUI_SLOT
+                        else {}
+                    ),
                     COMPONENT_REQUEST_MARKER: signature,
                 }
             if not waiting:
@@ -3441,16 +3807,6 @@ class LiveSession:
             if component is not None:
                 payload["component"] = component
             existing = self._events.by_key(self.id, idempotency_key, connection=connection)
-            if existing is None:
-                _, byte_count = self._events.turn_kind_usage(
-                    self.id,
-                    turn_id,
-                    PRODUCT_EVENT_DISPLAY_CARD,
-                    connection=connection,
-                    item_slot=item_slot,
-                )
-                if byte_count + encoded_size > DISPLAY_CARD_MAX_BYTES_PER_TURN:
-                    raise DisplayCardError(DISPLAY_CARD_TURN_BYTES)
             record = self._events.append(
                 session_id=self.id,
                 runtime_id=self.runtime_id,
@@ -3511,8 +3867,7 @@ class LiveSession:
     def pending_hil_snapshot(self, *, blocking_only: bool = True) -> list[dict[str, Any]]:
         return [
             {
-                "request_id": row.product_request_id,
-                **row.payload,
+                **interaction_snapshot(row),
                 "turn_id": row.vendor_turn_id,
                 "item_id": row.vendor_item_id,
             }
@@ -3531,7 +3886,9 @@ class LiveSession:
                 finish_messages=self._message_snapshots.finish_turn,
             )
 
-    async def interrupt(self, *, cleanup_background_processes: bool = False) -> None:
+    async def interrupt(
+        self, *, cleanup_background_processes: bool = False, user_requested: bool = False
+    ) -> None:
         await self.end_browser_scope()
         if await self.cancel_resource_wait():
             return
@@ -3546,6 +3903,8 @@ class LiveSession:
         try:
             record = self._catalog.get(self.id)
             expected_turn_id = (record.last_turn_id if record is not None else "") or ""
+            if user_requested and expected_turn_id:
+                self._user_interrupt_turn_id = expected_turn_id
             receipt = await runtime_session.interrupt(
                 InterruptRequest(
                     command_id=f"interrupt-{uuid.uuid4().hex}",
@@ -3558,6 +3917,7 @@ class LiveSession:
                 CommandState.APPLIED,
             }
             if not handled:
+                self._user_interrupt_turn_id = ""
                 raise RuntimeError("runtime did not accept the interrupt")
             interactions = getattr(self, "interactions", None)
             if interactions is not None:
@@ -3632,6 +3992,9 @@ class LiveSession:
         return True
 
     async def terminate(self) -> None:
+        if self.prediction_task is not None:
+            self.prediction_task.cancel()
+            await asyncio.gather(self.prediction_task, return_exceptions=True)
         await self.end_browser_scope()
         runtime_session = self.runtime_session
         command_id = f"terminate-{uuid.uuid4().hex}"
@@ -3815,6 +4178,8 @@ class LiveSession:
         await close(self._cancel_citation_review)
         await close(settle)
         await close(close_browser_scope)
+        if self.prediction_task is not None:
+            await cancel((self.prediction_task,))
         await cancel(tuple(self._service_callbacks))
         resource_task = self.resource_task
         if resource_task is not None and await cancel((resource_task,)):
@@ -3838,6 +4203,8 @@ class LiveSession:
         if self.runtime_driver is not None and await close(self.runtime_driver.close):
             self.runtime_driver = None
             self.runtime_session = None
+            # Clear only after the native detach succeeded: until then the process
+            # still holds the bridge URL and must stay probe-protected.
             self.held_model_bridge_id = ""
         # The observation pump could enqueue callbacks while earlier owners drained.
         await cancel(tuple(self._service_callbacks))
@@ -3845,15 +4212,19 @@ class LiveSession:
         release = self._on_release
         if release is not None:
             await close(lambda: release(self.id))
+        # Explicit release above already tore the registration down; a failed native
+        # close must not keep shielding an entry that no longer exists.
         self.held_model_bridge_id = ""
         if self._publication_task is not None:
             await close(lambda: self._publication_task)
         # An uncertain worker shutdown cannot authorize closing its Trace dependency.
         if await close(self._persistence.close):
             await close(
-                self._close_update_trace
-                if self._update_shutdown_generation is not None
-                else self._trace.close
+                lambda: asyncio.to_thread(
+                    self._close_update_trace
+                    if self._update_shutdown_generation is not None
+                    else self._trace.close
+                )
             )
         if failures:
             unique = list({id(error): error for error in failures}.values())

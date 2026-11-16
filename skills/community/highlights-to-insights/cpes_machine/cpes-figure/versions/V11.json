@@ -1,0 +1,108 @@
+{
+  "policy": "# Figure Card reading instructions\n\nInspect every attached image. Treat the packet as the complete default text context. Match the user's language; when unspecified in a Chinese conversation, write Chinese while preserving original symbols, metric names, and technical terms.\n\nReturn only the schema-conforming mutable JSON object. Do not reproduce fixed metadata or add a card title; the numbered author caption is the heading. Use the exact field names below, with no aliases. All six fields are required even when an array is empty.\n\n## Field semantics\n\n- `overview` is a string of one or two short declarative sentences. Start with a short overview of what the Figure shows and its role, not a question or a list of graphical objects.\n- `panels` is an array of objects with `panel_id`, `title`, and `visual_observations`. Explain its subfigures or multiple included assets as panels inside that card. Panel titles distinguish subfigures; use an empty title when none is appropriate. `visual_observations` is an array of strings describing directly visible structure or trends, not a single string. A single-panel figure still has one `panels` item. Use an empty `panels` array only when `visual_status` is `unavailable`.\n- `how_to_read` is an array of strings, not a single string. Explain the reading path: panel order, axes, units, legend, comparison, metric direction, and the visual pattern that matters.\n- `author_findings` is an array of objects with `claim` and a non-empty array of `evidence_ids`. Attribute a conclusion to the authors only when the caption or paper text supports it. A plausible interpretation is not an author finding. If no supplied evidence line supports a claim, omit the finding.\n- `prerequisites` is an array of strings describing notation and setup needed to read the figure.\n- `scope` is an array of strings describing datasets, models, parameters, sample sizes, domains, and statistical conditions under which the result holds.\n\n## Reading discipline\n\n- Use exact values only when legible in the figure or explicitly stated in the paper. Never estimate a precise value from pixels and present it as reported data.\n- Prefer qualitative trends to pixel-derived point estimates. Include an approximate plotted value only when it materially helps the reading and is clearly legible; never enumerate approximate curve values merely to sound complete.\n- Treat legend encoding as a mapping, not as additional plotted series. Count panels, curves, entities, arrows, or stages only after checking the entire Figure; when crowded or ambiguous, describe the visible groups without asserting a count.\n- Cite only supplied line IDs (`L1099`, or `S1:L1099` for multiple sources). Source headers declare files; caption/body/appendix/other headings declare evidence types. Read the complete caption identified by `Caption evidence` and each `Reference` window. The cited lines together must entail the whole claim. `Caption (uncitable)` has no numbered source and cannot support an evidence ID.\n- Preserve operation polarity when paraphrasing mechanisms: for example, “receives a smaller bonus” is not “is penalized,” correlation is not causation, and an absent increase is not a decrease.\n- Do not invent generic limitations. If the paper supplies no figure-relevant limitation, say so and state only evidence-based scope boundaries.\n- Avoid repeating the same fact across fields. Explain each fact fully only in its most appropriate field; other fields should add distinct information, not paraphrase that explanation.\n- Before returning JSON, silently verify: every visual statement is directly visible; every author claim is entailed by its cited lines; every count and legend mapping was checked; and no uncertainty was converted into a fact.\n",
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "overview",
+      "panels",
+      "how_to_read",
+      "author_findings",
+      "prerequisites",
+      "scope"
+    ],
+    "properties": {
+      "overview": {
+        "type": "string"
+      },
+      "panels": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "panel_id",
+            "title",
+            "visual_observations"
+          ],
+          "properties": {
+            "panel_id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "visual_observations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "how_to_read": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "author_findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "claim",
+            "evidence_ids"
+          ],
+          "properties": {
+            "claim": {
+              "type": "string"
+            },
+            "evidence_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "prerequisites": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "scope": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "provenance": {
+    "kind": "candidate_from_frozen_V5",
+    "runtime_base": "eb871ad"
+  },
+  "validation": {
+    "status": "not_run"
+  },
+  "version": "V11",
+  "scope": "figure-reader-contract",
+  "change": "Only remove evidence ID enums from the provider-facing schema; keep IDs in the unchanged compact packet and keep the full local validation schema.",
+  "policy_sha256": "05bc341171d24640699900fc6d9a0f8c5dfce1aab3f6c25e1ff36ca230bca3e0",
+  "cpes_prompt_prefix": "用中文生成完整图片解释卡片，保留原文符号和术语。\n",
+  "packet_format": "compact-lines-v2",
+  "language": "zh-CN",
+  "status": "experimental",
+  "generation": {
+    "model": "qwen3.8-max",
+    "reasoning_effort": "none"
+  },
+  "code_snapshot": "experiment/cpes-figure-v11",
+  "parent": "V5",
+  "request_schema_mode": "fixed-no-evidence-enum"
+}

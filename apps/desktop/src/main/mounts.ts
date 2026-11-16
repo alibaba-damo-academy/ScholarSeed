@@ -11,6 +11,27 @@ import { runCommandAsync, type CommandOptions } from './subprocess.ts'
 export const MACOS_HDIUTIL = '/usr/bin/hdiutil'
 const MACOS_PLUTIL = '/usr/bin/plutil'
 
+export async function withDmgCleanup<T>(
+  operation: () => Promise<T>,
+  cleanup: () => Promise<void>,
+  reportSecondaryFailure: (error: unknown) => void
+): Promise<T> {
+  let operationFailed = false
+  try {
+    return await operation()
+  } catch (error) {
+    operationFailed = true
+    throw error
+  } finally {
+    try {
+      await cleanup()
+    } catch (error) {
+      if (!operationFailed) throw error
+      reportSecondaryFailure(error)
+    }
+  }
+}
+
 /**
  * `hdiutil info -plist` 的 JSON 快照：plutil 从 stdin 吃 plist、stdout 吐 JSON，两个固定
  * 命令直连管道，不经过 shell。任一环非 0 退出或 JSON 解析失败都 reject —— 调用方把探针

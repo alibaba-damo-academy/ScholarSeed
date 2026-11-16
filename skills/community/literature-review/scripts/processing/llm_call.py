@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from typing import Any, Optional
 
 from progress import (
@@ -69,7 +70,8 @@ async def _llm_call(llm, system: str, user: str, *,
                     stop: Optional[PipelineStop] = None,
                     where: str = "?",
                     usage_out: Optional[dict] = None,
-                    timeout: Optional[float] = None) -> tuple[Any, dict]:
+                    timeout: Optional[float] = None,
+                    observer=None) -> tuple[Any, dict]:
     """1 次 LLM 调用 + 网络重试 (LLM_RETRIES 次). 返回 (parsed_or_text, usage).
     Fatal HTTP errors raise immediately. Retryable failures use one script-owned
     exponential-backoff loop; only the final exhausted result is exposed to the
@@ -86,12 +88,22 @@ async def _llm_call(llm, system: str, user: str, *,
     for attempt in range(maximum):
         if stop is not None and stop.should_stop():
             raise PipelineStoppedError(f"pipeline stopped: {stop.fatal_reason}")
+        started = time.monotonic()
+        capture = {}
+        if observer:
+            observer('request_started', attempt=attempt + 1, maximum=maximum,
+                     timeout_seconds=effective_timeout)
         try:
-            chat_coro = llm.chat(system, user, max_tokens=max_tokens, json_mode=expect_json)
+            chat_coro = llm.chat(system, user, max_tokens=max_tokens, json_mode=expect_json,
+                                 **({'_capture': capture} if getattr(llm, 'supports_processing_capture', False) else {}))
             if effective_timeout is not None:
                 text, usage = await asyncio.wait_for(chat_coro, timeout=effective_timeout)
             else:
                 text, usage = await chat_coro
+            if observer:
+                observer('response_received', attempt=attempt + 1,
+                         elapsed_seconds=time.monotonic() - started, response=text, usage=usage,
+                         finish_reason=capture.get('finish_reason'))
             if usage_out is not None:
                 _merge_usage(usage_out, usage)
             # Log cache hit stats (OpenAI-shape usage:
@@ -112,7 +124,24 @@ async def _llm_call(llm, system: str, user: str, *,
                     raise ValueError(f"JSON parse failed: {text[:200]!r}")
                 return parsed, usage
             return text.strip(), usage
+        except asyncio.CancelledError:
+            if observer:
+                if capture:
+                    observer('partial_response', attempt=attempt + 1,
+                             response=capture.get('partial_response', ''), usage=capture.get('usage'),
+                             finish_reason=capture.get('finish_reason'))
+                observer('request_cancelled', attempt=attempt + 1,
+                         elapsed_seconds=time.monotonic() - started)
+            raise
         except Exception as exc:
+            if observer:
+                if capture:
+                    observer('partial_response', attempt=attempt + 1,
+                             response=capture.get('partial_response', ''), usage=capture.get('usage'),
+                             finish_reason=capture.get('finish_reason'))
+                observer('request_failed', attempt=attempt + 1,
+                         elapsed_seconds=time.monotonic() - started,
+                         error_type=type(exc).__name__, error=str(exc))
             if getattr(llm,'uses_runtime',False) and isinstance(exc,(TimeoutError,asyncio.TimeoutError)):
                 from runtime_model_client import RuntimeModelError
                 exc=RuntimeModelError('RUNTIME_TIMEOUT','Runtime logical request exceeded the script deadline; it will not be retried through another transport.')
@@ -131,6 +160,9 @@ async def _llm_call(llm, system: str, user: str, *,
                 raise FatalLLMError(info.status_code or 0, detail) from exc
             if attempt + 1 < maximum:
                 delay = _retry_delay(attempt + 1, info.retry_after)
+                if observer:
+                    observer('retry_scheduled', attempt=attempt + 1, next_attempt=attempt + 2,
+                             delay_seconds=delay, category=info.category)
                 logging.warning(
                     f"[LLM_RETRY] {where}: attempt {attempt + 2}/{maximum}, "
                     f"sleep={delay:.2f}s, {detail}"

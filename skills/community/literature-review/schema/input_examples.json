@@ -1,4 +1,11 @@
 {
+  "progress": [{"ok":true,"turn_id":"actual-current-turn","plan":null,"items":[],"actions":{}}],
+  "writing.plan-packet": [],
+  "writing.plan-resolve": [],
+  "papers.import-selected": [],
+  "outline.import": [],
+  "writing.plan-complete": [],
+  "writing.plan-decide": [{"packet_id":"actual-packet-id","action":"proceed"}],
   "writing.configure": [
     {
       "user_requests": [
@@ -8,7 +15,7 @@
       "language": "CHINESE",
       "publication": {
         "format": "latex_pdf",
-        "template": "ctexart",
+        "template": "standard_chinese",
         "citation_style": "numeric"
       }
     },
@@ -103,42 +110,40 @@
   ],
   "writing.approve": [
     {
-      "packet_id": "<value returned by review-packet>",
-      "user_response": "确认，使用 ctexart 模板和数字引用。",
       "publication": {
-        "template": "ctexart",
+        "template": "standard_chinese",
         "citation_style": "numeric"
       }
     }
   ],
-  "writing.review-complete": [
+  "writing.review-complete": [],
+  "writing.review-start": [
     {
-      "packet_id": "<unchanged bridge confirmation.packet_id>",
-      "snapshot_id": "<unchanged bridge confirmation.snapshot_id>",
-      "request_id": "<unchanged bridge confirmation.request_id>",
-      "started_at": 1700000000,
-      "deadline_at": 1700000300,
-      "decision": {
-        "answers": {
-          "<unchanged bridge confirmation.request_id>": "<actual user answer from the bridge>"
-        }
-      }
+      "packet_id": "<current displayed packet_id>",
+      "displayed": true
     }
   ],
-  "writing.review-start": [
-    {"packet_id":"<current displayed packet_id>","displayed":true}
-  ],
   "writing.review-status": [
-    {"packet_id":"<current packet_id>"}
+    {
+      "packet_id": "<current packet_id>"
+    }
   ],
   "writing.review-wait": [
-    {"packet_id":"<current packet_id>","wait_seconds":30}
+    {
+      "packet_id": "<current packet_id>",
+      "wait_seconds": 30
+    }
   ],
   "writing.review-response": [
-    {"packet_id":"<current packet_id>","user_response":"<actual user reply, including a request to wait or revise>"}
+    {
+      "packet_id": "<current packet_id>",
+      "user_response": "<actual user reply, including a request to wait or revise>"
+    }
   ],
   "writing.review-timeout": [
-    {"packet_id":"<current packet_id>"}
+    {
+      "packet_id": "<current packet_id>"
+    }
   ],
   "outline.configure": [
     {
@@ -328,6 +333,18 @@
           ],
           "year": 2024,
           "doi": "10.example/actual-id"
+        }
+      ]
+    }
+  ],
+  "evidence.read": [
+    {
+      "requests": [
+        {
+          "paper_id": "actual-selected-id",
+          "question": "Which evaluation conditions support the comparison?",
+          "source": "saved",
+          "visual": false
         }
       ]
     }

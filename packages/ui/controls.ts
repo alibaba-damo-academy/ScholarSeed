@@ -45,3 +45,11 @@ export {
   Badge,
   Progress
 } from '../../apps/desktop/src/renderer/src/components/ui'
+export { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../apps/desktop/src/renderer/src/components/ui'
+export { Chart, ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegend, ChartLegendContent } from '../../apps/desktop/src/renderer/src/components/ui'
+export {
+  ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem,
+  ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuSeparator,
+  Menubar, MenubarMenu, MenubarTrigger, MenubarContent, MenubarItem,
+  MenubarSub, MenubarSubTrigger, MenubarSubContent, MenubarSeparator,
+} from '../../apps/desktop/src/renderer/src/components/ui'

@@ -14,7 +14,6 @@ import finalize
 import run_state
 import stage
 from io_utils import atomic_write_json, read_json
-from validate_json import ContractError
 
 SEARCH_REPORT = "search_report.md"
 READ_REPORT = "read_report.md"
@@ -79,38 +78,6 @@ class ReportNamingTests(unittest.TestCase):
             self.assertEqual(finalize.main(), 0)
         self.assertEqual(finish.call_args.kwargs["report_path"], self.root / SEARCH_REPORT)
 
-    def test_download_success_requires_native_library_admission_even_when_partial(self):
-        manifest_path = self.run / "downloads/manifest.json"
-        manifest = read_json(manifest_path)
-        manifest["papers"] = [
-            {"paper_id": "p1", "status": "downloaded"},
-            {"paper_id": "p2", "status": "action_required"},
-        ]
-        atomic_write_json(manifest_path, manifest)
-        result = stage.with_task_activation(
-            {"status": "PAID_ACTION_REQUIRED"}, self.run, download_checkpoint=True
-        )
-        self.assertEqual(
-            result["download_admission"],
-            {
-                "capability": "literature",
-                "operation": "ingest",
-                "request": {"run": self.run.relative_to(self.root).as_posix()},
-            },
-        )
-
-    def test_no_download_success_does_not_request_library_admission(self):
-        result = stage.with_task_activation({}, self.run, download_checkpoint=True)
-        self.assertNotIn("download_admission", result)
-
-    def test_download_checkpoint_rejects_invalid_manifest_structure(self):
-        for manifest, reason in INVALID_MANIFESTS:
-            with self.subTest(manifest=manifest):
-                atomic_write_json(self.run / "downloads/manifest.json", manifest)
-                with self.assertRaises(ContractError) as caught:
-                    stage.with_task_activation({}, self.run, download_checkpoint=True)
-                self.assertEqual(str(caught.exception), reason)
-
     def test_cli_invalid_manifest_returns_structured_error(self):
         state = run_state.read_state(self.run)
         state["status"] = "REPORT_REVIEW_PENDING"
@@ -163,7 +130,7 @@ class ReportNamingTests(unittest.TestCase):
                 self.assertNotIn("download_admission", result)
                 self.assertNotIn("download_admission_hint", result)
 
-    def test_cli_only_download_checkpoint_emits_admission_request(self):
+    def test_cli_download_does_not_request_library_admission(self):
         manifest_path = self.run / "downloads/manifest.json"
         manifest = read_json(manifest_path)
         manifest["papers"] = [{"paper_id": "p1", "status": "downloaded"}]
@@ -180,9 +147,10 @@ class ReportNamingTests(unittest.TestCase):
                     redirect_stdout(output),
                 ):
                     self.assertEqual(stage.main(), 0)
-                self.assertEqual('"download_admission"' in output.getvalue(), command == "download")
+                self.assertNotIn('"download_admission"', output.getvalue())
+                self.assertNotIn('"fulltext_delivery"', output.getvalue())
 
-    def test_download_error_keeps_success_admission_and_original_error(self):
+    def test_download_error_preserves_original_error(self):
         manifest_path = self.run / "downloads/manifest.json"
         manifest = read_json(manifest_path)
         manifest["papers"] = [{"paper_id": "p1", "status": "downloaded"}]
@@ -194,7 +162,7 @@ class ReportNamingTests(unittest.TestCase):
             redirect_stdout(output),
         ):
             self.assertEqual(stage.main(), 2)
-        self.assertIn('"download_admission"', output.getvalue())
+        self.assertNotIn('"download_admission"', output.getvalue())
         self.assertIn('"status": "blocked"', output.getvalue())
         self.assertIn("browser cleanup failed", output.getvalue())
 

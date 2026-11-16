@@ -8,9 +8,7 @@ store so Desktop can manage them without asking a user to edit product config.
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 import uuid
 from enum import Enum
 from pathlib import Path
@@ -18,7 +16,7 @@ from typing import Any, Mapping, Sequence
 
 from scholarseed_runtime.contract.model import ModelWireProtocol
 from service.paths import CONFIG_PATH
-from service.platform.privacy import protect_path
+from service.platform.privacy import publish_private
 from service.settings.capabilities import (
     CAPABILITY_HINT_KEY,
     CONTEXT_WINDOW_KEY,
@@ -34,7 +32,6 @@ from service.settings.capabilities import (
 from service.settings.oauth import OAUTH_PROVIDERS
 
 PROFILE_FILE_NAME = "model_profiles.json"
-PROFILE_FILE_MODE = 0o600
 ACTIVE_PROFILE_KEY = "active_profile_id"
 PROFILES_KEY = "profiles"
 PROFILE_ID_PREFIX = "personal-"
@@ -363,24 +360,7 @@ class ModelProfileStore:
     def _write(self, document: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        staged: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=self.path.parent,
-                prefix=f"{self.path.name}.",
-                delete=False,
-            ) as profile_file:
-                staged = Path(profile_file.name)
-                protect_path(staged, PROFILE_FILE_MODE, profile_file.fileno())
-                profile_file.write(payload)
-                profile_file.flush()
-                os.fsync(profile_file.fileno())
-            os.replace(staged, self.path)
-        finally:
-            if staged is not None:
-                staged.unlink(missing_ok=True)
+        publish_private(self.path, payload.encode("utf-8"))
 
     @staticmethod
     def _public(profile: Mapping[str, Any]) -> dict[str, Any]:

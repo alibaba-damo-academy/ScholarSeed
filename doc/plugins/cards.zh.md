@@ -1,5 +1,5 @@
 ---
-id: reference-plugin-cards-zh
+id: reference-plugin-cards
 title: Plugin 公共对话卡片
 doc_type: design
 category: skills
@@ -10,7 +10,7 @@ summary: 按要完成的交互选择公共业务卡片、Conversation 组件与�
 
 # Plugin 公共对话卡片
 
-[English](cards.md) · **简体中文** · [离线阅读](../plugins.zh.html#cards)
+**简体中文** · [English](cards.md) · [离线阅读](../plugins.zh.html#cards)
 
 [Plugin 概览](../plugins.zh.md)
 
@@ -22,20 +22,19 @@ summary: 按要完成的交互选择公共业务卡片、Conversation 组件与�
 | --- | --- |
 | 复用检索、文献选择、授权或保存流程 | 由所属领域工具驱动公共 slot |
 | 自己组织已有对话 UI | Conversation 组件，并接入实际 props 和回调 |
+| 在回答中组合图表、数据表、证据或产物预览 | 先使用 `scholarseed-product-operations` 的对话卡片指南及现有组合 slot |
 | 收集自己的业务选择 | 自定义 slot、数据/动作 schema 和组件代码 |
 
 ## 公共业务 slot
 
 | slot | 显示内容 | 使用方式 | 书深前端实现 |
 | --- | --- | --- | --- |
-| `interaction.question` | 问题选项与确认 | 由 AI 的原生提问流程展示并收集回答。 | [Choices.tsx](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx) |
-| `display.literature-search` | 检索摘要、进入完整结果的按钮 | 在文献检索结果流程中展示，使用本轮结果集。 | [Summary.tsx](../../apps/desktop/src/renderer/src/features/literature/Summary.tsx) |
-| `preview.literature-results` | 完整结果、筛选、分页与来源 | 从检索摘要打开详情，可选择论文、查看来源或加入文献库。 | [Details.tsx](../../apps/desktop/src/renderer/src/features/literature/Details.tsx) |
-| `literature.selection` | 论文子集选择 | 兼容已有文献流程；用户勾选后返回论文 ID 列表。 | [Choices.tsx](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx) |
-| `literature.authorization` | 全文授权涉及的论文 | 通过文献授权流程展示，用户确认后才获取全文。 | [Choices.tsx](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx) |
-| `display.literature-downloads` | 逐篇获取或入库结果 | 在获取或入库结束后展示，可打开全文或进入文献库。 | [Downloads.tsx](../../apps/desktop/src/renderer/src/features/literature/Downloads.tsx) |
-| `display.literature-delivery` | 保存位置、文件冲突与保存结果 | 通过 `literature delivery` 发起，由用户选择保存目标并确认。 | [Delivery.tsx](../../apps/desktop/src/renderer/src/features/literature/Delivery.tsx) |
-| `display.literature-references` | 引用列表与来源操作 | 展示正文引用的文献，可打开来源、入库或设置分类。 | [References.tsx](../../apps/desktop/src/renderer/src/features/literature/References.tsx) |
+| `interaction.question` | 问题选项与确认 | 由 AI 的原生提问流程展示并收集回答。 | [Choices.tsx:19](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19) |
+| `display.literature-search` | 检索摘要、进入完整结果的按钮 | 在文献检索结果流程中展示，使用本轮结果集。 | [Summary.tsx:45](../../apps/desktop/src/renderer/src/features/literature/Summary.tsx#L45) |
+| `preview.literature-results` | 完整结果、筛选、分页与来源 | 从检索摘要打开详情，可选择论文、查看来源或加入文献库。 | [Details.tsx:35](../../apps/desktop/src/renderer/src/features/literature/Details.tsx#L35) |
+| `literature.selection` | 论文子集选择 | 兼容已有文献流程；用户勾选后返回论文 ID 列表。 | [Choices.tsx:19](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19) |
+| `literature.authorization` | 全文授权涉及的论文 | 通过文献授权流程展示，用户确认后才获取全文。 | [Choices.tsx:19](../../apps/desktop/src/renderer/src/features/literature/Choices.tsx#L19) |
+| `display.literature-references` | 引用列表与来源操作 | 展示正文引用的文献，可打开来源、入库或设置分类。 | [References.tsx:131](../../apps/desktop/src/renderer/src/features/literature/References.tsx#L131) |
 
 描述符引用公共组件时设置 `public: true`，指定 slot 和场景文件，不提供 entry。实际数据和动作以[组件目录](api.zh.md#查询组件与-slot)为准。
 
@@ -54,8 +53,6 @@ summary: 按要完成的交互选择公共业务卡片、Conversation 组件与�
 const VIEWS = {
   'display.literature-search': LiteratureResults,
   'display.literature-references': LiteratureReferences,
-  'display.literature-downloads': LiteratureDownloads,
-  'display.literature-delivery': LiteratureDeliveryCard,
   'preview.literature-results': LiteratureDetails,
 };
 const CHOICES = ['interaction.question', 'literature.authorization'];
@@ -101,19 +98,31 @@ const LEGACY_SELECTION = 'literature.selection';
 
 ### 全文授权与获取结果
 
-`literature.authorization` 展示本次全文授权涉及的论文；按钮和授权结果由书深原生流程处理。`display.literature-downloads` 显示逐篇结果。示例分别来自 [literature-review/components/authorization.json](../../skills/community/literature-review/components/authorization.json) 与 [precise-literature-search/components/downloads.json](../../skills/community/precise-literature-search/components/downloads.json)。论文子集样例在同目录 `scenario.json`。
+`literature.authorization` 展示本次全文授权涉及的论文。托管获取仅用于获授权的阅读，不写入文献库或另存用户文件。
 
 ![literature.authorization 的授权范围组件预览](../assets/plugins/cards/literature.authorization.png)
 
-![display.literature-downloads 的获取结果组件预览](../assets/plugins/cards/display.literature-downloads.png)
 
 ### 保存交付与引用
 
-`display.literature-delivery` 收集保存目标和相关选择；`display.literature-references` 显示引用列表及来源操作。示例分别来自 [precise-literature-search/components/delivery.json](../../skills/community/precise-literature-search/components/delivery.json) 与 [research-idea-partner/components/references.json](../../skills/community/research-idea-partner/components/references.json)。
+科研结果保留添加到文献库、仅添加元信息和 BibTeX 导出。引用入口仍打开实际来源。
 
-![display.literature-delivery 的保存交付组件预览](../assets/plugins/cards/display.literature-delivery.png)
 
 ![display.literature-references 的引用组件预览](../assets/plugins/cards/display.literature-references.png)
+
+## 统一技能与组合 slot
+
+Agent 通过 `scholarseed-product-operations` 按需加载对话卡片指南，发现当前官方 UI，并读取三类 reference。资料位于当前仓库的 `skills/community/scholarseed-product-operations/`，入口为 `references/scholarseed-chat-ui/guides/conversation.md`。原三个独立对话技能已经并入此技能，不再分别安装。
+
+| 当前组合 slot | 用途 | 数据契约与示例 |
+| --- | --- | --- |
+| `rich-content.compose` | 图表、表格、公式、流程图、代码与正文 | `references/scholarseed-chat-ui/guides/content.md` |
+| `research-evidence.select` | 完整证据、来源定位与用户选择 | `references/scholarseed-chat-ui/guides/evidence.md` |
+| `artifacts-workbench.preview` | 文件路径、版本及已提供内容的预览 | `references/scholarseed-chat-ui/guides/workbench.md` |
+
+已有组合能表达需求时只提供符合 schema 的 JSON，不重新生成插件。组合之外的新交互由 `plugin-create` 创建、检查和发布，再由用户确认安装。公共领域 slot 仍走领域工具；不得把任意 `Conversation` 导出当作可直接调用的 slot。
+
+按“自然说明—组件卡片—结果解释”组织回答，不把十几个独立组件塞进一个插件页面。技术名称、版本和日志只用于调试。
 
 ## Conversation 组件
 
@@ -121,15 +130,33 @@ const LEGACY_SELECTION = 'literature.selection';
 
 | 类别 | 当前导出 | 开发者负责什么 |
 | --- | --- | --- |
-| 科研卡片 | `Choices`、`Results`、`Details`、`References`、`Downloads`、`Delivery`、`Review` | 真实业务数据、操作端口、授权结果；科研卡通常接收 `content` 与 `ports`，Choices 接收 `data/status/slot/submit` |
-| 正文与原文 | `Markdown`、`Message`、`Code`、`Formula`、`Tabulation` | 原始内容、复制/打开回调、引用和数学含义核对；显示代码不会执行代码 |
-| 产物 | `Artifact`、`ArtifactGroup`、`ArtifactMenuItems`、`ArtifactDestination` | 不可变文件/版本身份、保存/导入/打开操作及结果；分组只负责布局 |
-| 图片 | `ImageView`、`Images`、`ImageThumbnail` | 已授权 URL、资源身份、加载失败、选中状态与操作；组件不会读取任意本地文件 |
-| 引用与上下文 | `CitationLink`、`WebCitationLink`、`CitationSources`、`ConversationReference`、`ComposerRefChip` | 引用解析、授权预览、历史快照、分页与跳转；前端标签不是读取权限 |
-| 执行过程 | `ExecutionProcess`、`ExecutionBatch`、`ToolExecution`、`ExecutionIO`、`ExecutionStatus`、`WebSearchRecord` | 真实轮次、状态、输入输出和时间；不能把未知/中断显示为成功 |
-| 任务辅助 | `Plan`、`Failure`、`Suggestions`、`Attachments`、`FileFormatIcon` | 计划投影、恢复资格、发送、文件身份与打开操作；UI 不自动恢复任务或发送消息 |
+| 正文与富内容 | `Markdown`、`Code`、`Formula`、`Tabulation`、`Diagram`、`Canvas`、`Content` | 原始内容及受控复制/打开回调；显示代码或图形不等于执行代码；图片共享实现保留在原生宿主，Markdown 多图接入另行规划 |
+| 图表与数据表 | `Plot`、`BarChart`、`GroupedBarChart`、`StackedBarChart`、`LineChart`、`ScatterChart`、`PieChart`、`DonutChart`、`Histogram`、`BoxPlot`、`Heatmap`、`DataTable` | 明确数据列、单位、缺失值与来源；复用官方 ECharts/TanStack 能力，不传任意可执行配置 |
+| 科研结果 | `Results`、`Details`、`References`、`Downloads`、`Delivery`、`Review` | 真实业务数据与领域操作端口；通常接收 `content` 与 `ports` |
+| 引用与证据 | `CitationLink`、`CitationSources` | 完整摘录、来源定位、历史快照与跳转；前端标签不是读取权限 |
+| 产物与工作台 | `FileFormatIcon`、`Artifact`、`ArtifactGroup`、`ArtifactMenuItems`、`FileMenuItems`、`ArtifactDestination` | 不可变文件/版本身份、保存/导入/打开结果；图标、分组与菜单不是新业务卡片 |
+
+用户输入与上下文、处理过程与计划、确认与澄清、下一步建议、异常与空回答均使用书深原生 UI，不提供对应的官方 UI 导出或 iframe 入口。`interaction.question`、`literature.authorization` 保留宿主原生贡献；正文和产物共享的图片、菜单及组件自身的失败处理继续保留。
 
 输入提示见 `catalog.composition.Conversation`，精确类型见[源码与类型](api.zh.md#源码与类型)。导出组件不表示其所有书深内部回调都向普通插件开放。
+
+### 实时查看官方组件
+
+在当前仓库安装 Desktop 前端依赖后运行：
+
+```sh
+pnpm ops dev browser
+```
+
+通过渲染器的回环地址打开 [Desktop 组件预览页](http://localhost:5173/?dev=components)。
+
+Schema 规则支持种子随机数据及 JSON 编辑；随机材料只是预览数据，不能冒充真实文献、保存结果或权限。新增组件会自动发现，但仍需补齐可编辑数据契约及必要的安全交互绑定。该网页不调用真实业务，不能替代书深应用中的安装、复制或 Agent 链路验收；文档截图也不是实时预览。
+
+### 复制正文而不是界面
+
+书深的“复制消息”按本轮顺序合并自然语言与卡片文本，没有独立的卡片复制按钮。官方组件登记原始数据而不是抓取 DOM：图表与数据表保留完整数据及单位，代码保留折叠行，证据保留完整摘录、来源定位与已保存选择，产物预览保留路径、版本和已提供内容，不读取所链接文件。
+
+布局容器、图标和菜单本身没有可复制业务正文；自定义内容需要按[复制 SDK](api.zh.md#提供卡片的复制内容)补充登记。自动登记的组件使用 `mount()` 的上下文；不要再用 `setCopyContent()` 覆盖同一界面的其他组件。
 
 ## 基础控件
 

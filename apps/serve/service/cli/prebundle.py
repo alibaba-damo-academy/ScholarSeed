@@ -1,12 +1,4 @@
-"""从仓库内技能源码离线编译或校验书深技能 pack。
-
-开源版不再依赖 Skillhub：技能源码随仓库开源（``skills/community/``），因此
-``--build`` 直接从源码目录编译，无需 ``--lock`` / ``--cache``。完整性保证（exact-set
-校验、原子替换、文件权限恢复、逐字节比对）与原 Skillhub 路径同等强度。
-
-仍保留 ``--lock`` 作为**可选**的冻结输入记录：打包期把从源码生成的 lock 冻结
-下来，用于产物比对与可复现重建。
-"""
+"""离线编译书深技能 pack，或独立校验源码、安装产物与依赖。"""
 
 from __future__ import annotations
 
@@ -38,11 +30,42 @@ from service.capabilities.service.prebundle import (  # noqa: E402
 from service.capabilities.service.source import (  # noqa: E402
     COMMUNITY_SKILLS_DIR,
     compile_source_skills,
+    verify_compiled_skill,
     verify_source_pack,
 )
+from service.chat.service.contracts import bundled_contracts  # noqa: E402
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR  # noqa: E402
 
 LOG_PREFIX = "[skills]"
+OPERATIONS_SKILL = "scholarseed-product-operations"
+BRIDGE_REFERENCE = Path("references/scholarseed-bridge/contracts")
+
+
+def _bridge_reference(source: Path, *, write: bool = False) -> None:
+    skill = source / OPERATIONS_SKILL
+    if not skill.is_dir() and not write:
+        return
+    if not (skill / "SKILL.md").is_file():
+        raise SkillPackError(f"Missing operations skill: {skill}")
+    reference = skill / BRIDGE_REFERENCE
+    expected = bundled_contracts()
+    existing = {entry.name for entry in reference.iterdir()} if reference.is_dir() else set()
+    extra = sorted(existing - expected.keys())
+    if extra:
+        raise SkillPackError(f"Obsolete Bridge references in {reference}: {', '.join(extra)}")
+    if write:
+        reference.mkdir(parents=True, exist_ok=True)
+    drifted = []
+    for name, content in expected.items():
+        target = reference / name
+        if write:
+            atomic_write(target, content)
+        elif not target.is_file() or target.read_bytes() != content:
+            drifted.append(name)
+    if drifted:
+        raise SkillPackError(
+            f"Bridge reference drift: {', '.join(drifted)}; regenerate with --write-bridge-reference"
+        )
 
 
 def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -62,10 +85,21 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
         help="只读比较目标 pack 与仓库内源码的每个文件、大小及权限。",
     )
     operation.add_argument(
+        "--diagnose-local-skill",
+        type=Path,
+        metavar="DIRECTORY",
+        help="按随包构建清单只读列出一个本地预置技能的文件差异，不影响执行。",
+    )
+    operation.add_argument(
         "--provision", action="store_true", help="在当前产品 Python 安装技能声明的依赖。"
     )
     operation.add_argument(
         "--verify-installed", action="store_true", help="无需源码的安装产物及依赖验证。"
+    )
+    operation.add_argument(
+        "--write-bridge-reference",
+        action="store_true",
+        help="从当前 Bridge 注册表刷新随包操作契约。",
     )
     parser.add_argument(
         "--source",
@@ -76,7 +110,7 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--lock",
         type=Path,
-        help="把从源码生成的 skills.lock.json 冻结到此路径（供打包期比对）。",
+        help="构建时输出随包验收清单；依赖安装或离线安装态验证时读取该清单。",
     )
     parser.add_argument("--report", type=Path, help="依赖闭包与原生可选能力检查报告。")
     parser.add_argument(
@@ -96,12 +130,24 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse(argv)
     expected: frozenset[str] | None = None
+    if args.diagnose_local_skill is not None:
+        try:
+            row = verify_compiled_skill(args.diagnose_local_skill.expanduser())
+        except (OSError, ValueError) as exc:
+            print(f"{LOG_PREFIX} {exc}")
+            return 1
+        print(f"{LOG_PREFIX} {row['slug']}: local files match the build inventory")
+        return 0
+    if args.write_bridge_reference:
+        try:
+            _bridge_reference(args.source, write=True)
+        except (OSError, ValueError, SkillPackError) as exc:
+            print(f"{LOG_PREFIX} FAILED: {exc}")
+            return 1
+        return 0
     if args.provision or args.verify_installed:
         try:
             if args.provision:
-                ok, problems = verify_source_pack(args.target, args.source)
-                if not ok:
-                    raise SkillPackError("; ".join(problems))
                 result = provision_dependencies(args.lock, args.target, args.toolchain_root)
             else:
                 # The installed-product gate deliberately has no source checkout.
@@ -134,6 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if ok else 1
     if args.build:
         try:
+            _bridge_reference(args.source)
             built = compile_source_skills(args.target, args.source, lock_path=args.lock)
             if args.lock:
                 print(f"{LOG_PREFIX} lock={args.lock.expanduser().resolve()}")

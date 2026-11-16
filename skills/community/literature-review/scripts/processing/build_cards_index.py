@@ -147,9 +147,9 @@ def fulltext_flags(cards: dict, report: dict | None) -> dict[str, bool]:
 
     `has_parse_dict` on the card is the authoritative answer, because it records
     what `run_pipeline` actually fed the model. `reading_depth` is deliberately
-    NOT used as a proxy: an L3 paper is read as `metadata_only` even when its
-    full text was fetched, so that field measures the reading policy, not
-    availability. `fulltext_report.json` fills in papers with no card at all.
+    NOT used as a proxy for availability. A downloaded full text can remain
+    unused when extraction uses only the abstract. `fulltext_report.json` fills
+    in papers with no card at all.
     """
     flags: dict[str, bool] = {}
     for row in (report or {}).get("papers") or []:
@@ -235,6 +235,10 @@ def build(workspace: Path) -> tuple[dict, dict]:
             "tldr": truncate(common.get("tldr")),
             "core_contribution": truncate(common.get("core_contribution")),
         }
+        coverage = (card_entry or {}).get('source_coverage') or {}
+        if coverage.get('complete') is False:
+            row['source_coverage_complete'] = False
+            row['original_pages_to_verify'] = coverage.get('unavailable_pages', [])
         lines.append(json.dumps(row, ensure_ascii=False))
 
         years[str(year) if year else "unknown"] += 1

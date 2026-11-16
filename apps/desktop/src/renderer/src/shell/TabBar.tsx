@@ -4,9 +4,18 @@ import { documentDisplayTitle } from '../delivery'
 import React from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import { Folders, FolderTree, LayoutDashboard, LibraryBig, MessageCircle } from 'lucide-react'
+import {
+  BookOpenCheck,
+  BookOpenText,
+  Folders,
+  FolderTree,
+  LayoutDashboard,
+  LibraryBig,
+  MessageCircle,
+} from 'lucide-react'
 
 import {
+  Avatar,
   NavigationTabsMenu,
   type NavigationTabElementProps,
   type NavigationTabItem,
@@ -30,6 +39,8 @@ import { DocumentNavigationTabs } from '../features/workbench/Dragging'
 import { DocumentTabMenu, WorkbenchTabMenu } from '../features/workbench/Menu'
 import {
   activeNavigationTabId,
+  shouldRestoreDocumentFocus,
+  documentTabsVisibleInView,
   mergeNavigationTabOrder,
   reorderNavigationTabOrder,
   tabMatchesProject,
@@ -50,12 +61,15 @@ const TOPBAR_TRAILING_NAVIGATION_CLASS_NAME =
 
 /** 标签种类 → 图标，保证同类标签视觉一致。 */
 const TAB_ICONS: Record<
-  Exclude<TabKind, 'overview' | 'literature' | 'new_tab' | 'library' | 'explorer'>,
+  Exclude<
+    TabKind,
+    'overview' | 'literature' | 'new_tab' | 'library' | 'explorer' | 'literature_search'
+  >,
   React.ComponentProps<typeof Icon>['name']
 > = {
+  canvas: 'doc',
   projects: 'folder',
   browser: 'globe',
-  literature_search: 'search',
   web_search: 'globe',
   review: 'edit-square',
   version_diff: 'rewind',
@@ -121,31 +135,30 @@ export function TabBar({
         : {}
   const workspace = useWorkspaceController()
   const documents = useDocumentWorkspace()
-  const documentTabs: NavigationTabItem[] =
-    state.mainView === 'resource' || state.mainView === 'literature'
-      ? Object.values(documents.tabs).flatMap((tab) => {
-          if (tab.embedded) return []
-          const session = documents.sessions[tab.sessionId]
-          if (!session) return []
-          const ResourceIcon =
-            session.source.kind === 'literature'
-              ? fileIconForName(session.source.path)
-              : resourceFileIcon(tab.title)
-          return [
-            {
-              dirty: session.dirty,
-              icon: <ResourceIcon size={16} strokeWidth={1.8} />,
-              id: tab.id,
-              label: documentDisplayTitle(tab, conversation, workbench),
-            },
-          ]
-        })
-      : []
+  const documentTabs: NavigationTabItem[] = documentTabsVisibleInView(state.mainView)
+    ? Object.values(documents.tabs).flatMap((tab) => {
+        if (tab.embedded) return []
+        const session = documents.sessions[tab.sessionId]
+        if (!session) return []
+        const ResourceIcon =
+          session.source.kind === 'literature'
+            ? fileIconForName(session.source.path, 'file', session.source.kind)
+            : resourceFileIcon(tab.title)
+        return [
+          {
+            dirty: session.dirty,
+            icon: <ResourceIcon size={16} strokeWidth={1.8} />,
+            id: tab.id,
+            label: documentDisplayTitle(tab, conversation, workbench),
+          },
+        ]
+      })
+    : []
   const workbenchTabs: NavigationTabItem[] = state.tabs
     .filter(availabilityPolicy.tabAvailable)
 
     .filter((tab) => tabMatchesProject(tab, state.homeSelectedProjectId))
-    .filter((tab) => workbenchTabVisible(tab, state.mainView))
+    .filter((tab) => workbenchTabVisible(tab, state.mainView, state.activeSession))
     .sort(
       (first, second) =>
         tabOrderInCurrentView(first.kind, state.mainView) -
@@ -157,7 +170,13 @@ export function TabBar({
         {
           closable: tab.kind === 'literature' ? false : tab.closable,
           icon:
-            tab.kind === 'literature' ? (
+            tab.kind === 'browser' && tab.favicon ? (
+              <Avatar
+                image={tab.favicon}
+                fallback={<Icon name="globe" size={16} />}
+                className="!size-[var(--vds-icon-8)] shrink-0 !rounded-none !bg-transparent"
+              />
+            ) : tab.kind === 'literature' ? (
               state.homeSelectedProjectId ? (
                 <LibraryBig size={16} strokeWidth={1.8} />
               ) : (
@@ -169,13 +188,17 @@ export function TabBar({
               <Folders size={16} strokeWidth={1.8} />
             ) : tab.kind === 'explorer' ? (
               <FolderTree size={16} strokeWidth={1.8} />
+            ) : tab.literatureReview ? (
+              <BookOpenCheck size={16} strokeWidth={1.5} />
+            ) : tab.kind === 'literature_search' ? (
+              <BookOpenText size={16} strokeWidth={1.5} />
             ) : (
               <Icon name={TAB_ICONS[tab.kind]} size={16} />
             ),
           id: tab.id,
           label:
             tab.kind === 'browser'
-              ? browser('title')
+              ? tab.pageTitle || browser('title')
               : tab.kind === 'literature'
                 ? state.homeSelectedProjectId
                   ? t('chrome.projectLiterature')
@@ -248,9 +271,13 @@ export function TabBar({
     if (!focusedDocumentTabId) return
     if (state.mainView !== 'resource' && state.mainView !== 'literature') return
     if (
-      !documents.tabs[state.activeTab] &&
-      !workspace.tabLocation(state.activeTab) &&
-      state.activeTab !== previousFocused
+      !shouldRestoreDocumentFocus({
+        document: Boolean(documents.tabs[state.activeTab]),
+        located: Boolean(workspace.tabLocation(state.activeTab)),
+        openPage: state.tabs.some((entry) => entry.id === state.activeTab),
+        requestedId: state.activeTab,
+        previousFocusedId: previousFocused,
+      })
     )
       return
     const tab = documents.tabs[focusedDocumentTabId]
@@ -327,10 +354,10 @@ export function TabBar({
     if (!tab || tab.embedded) return null
     const session = documents.sessions[tab.sessionId]
     if (!session) return null
-    const literature = session.source.kind === 'literature'
-    const ResourceIcon = literature
-      ? fileIconForName(session.source.path)
-      : resourceFileIcon(tab.title)
+    const ResourceIcon =
+      session.source.kind === 'literature'
+        ? fileIconForName(session.source.path, 'file', session.source.kind)
+        : resourceFileIcon(tab.title)
     return {
       dirty: session.dirty,
       icon: <ResourceIcon size={16} strokeWidth={1.8} />,
@@ -353,7 +380,7 @@ export function TabBar({
         data-navigation-leaf={leaf.id}
         data-navigation-leading={leading || undefined}
       >
-        {leading && leadingAction}
+        {leading && leadingAction && <div className="shrink-0 self-center">{leadingAction}</div>}
         {content}
         {trailing && actions}
       </div>

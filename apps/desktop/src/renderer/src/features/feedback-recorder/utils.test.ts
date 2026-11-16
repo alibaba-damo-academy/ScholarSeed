@@ -8,7 +8,45 @@ import {
   screenshotLayerPlacement,
   summarizeBodyText,
   redactUrl,
+  networkTiming,
 } from './utils.ts'
+
+test('network timing never guesses a phase from missing, restricted or ambiguous entries', () => {
+  const entry = {
+    startTime: 12,
+    requestStart: 15,
+    responseStart: 21,
+    responseEnd: 23,
+    connectStart: 13,
+    connectEnd: 14,
+    fetchStart: 12,
+    domainLookupStart: 12,
+    domainLookupEnd: 13,
+    secureConnectionStart: 0,
+  } as PerformanceResourceTiming
+  assert.deepEqual(networkTiming([entry], 10, 22, 1000), {
+    state: 'available',
+    timeOrigin: 1000,
+    fetchCalledAt: 10,
+    fetchSettledAt: 22,
+    startTime: 12,
+    requestStart: 15,
+    responseStart: 21,
+    responseEnd: 23,
+    connectStart: 13,
+    connectEnd: 14,
+    fetchStart: 12,
+    domainLookupStart: 12,
+    domainLookupEnd: 13,
+    secureConnectionStart: 0,
+  })
+  assert.equal(networkTiming([], 10, 22, 1000).state, 'unavailable')
+  assert.equal(networkTiming([entry, entry], 10, 22, 1000).state, 'ambiguous')
+  const restricted = networkTiming([{ ...entry, requestStart: 0 }], 10, 22, 1000)
+  assert.equal(restricted.state, 'restricted')
+  assert.equal(restricted.requestStart, undefined)
+  assert.equal(networkTiming([entry], 13, 22, 1000).state, 'unavailable')
+})
 
 test('body summaries preserve text at the UTF-8 boundary', () => {
   assert.equal(summarizeText('a'.repeat(199)), 'a'.repeat(199))

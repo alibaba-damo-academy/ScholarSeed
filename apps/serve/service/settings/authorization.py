@@ -280,6 +280,10 @@ class BrowserAuthorization:
                 transaction.task = task
                 code = query.get("code", [""])[0]
                 if query.get("error") or not code:
+                    LOGGER.warning(
+                        "oauth_authorization_failed connection=%s code=oauth_authorization_denied",
+                        transaction.connection_id,
+                    )
                     self._finish(
                         transaction, AuthorizationState.FAILED, "oauth_authorization_denied"
                     )
@@ -311,12 +315,25 @@ class BrowserAuthorization:
                         self._finish(transaction, AuthorizationState.CONNECTED)
                         successful = True
                     except CredentialConflictError:
+                        LOGGER.warning(
+                            "oauth_authorization_failed connection=%s code=oauth_connection_changed",
+                            transaction.connection_id,
+                        )
                         self._finish(
                             transaction, AuthorizationState.FAILED, "oauth_connection_changed"
                         )
                     except OAuthFailure as error:
+                        LOGGER.warning(
+                            "oauth_authorization_failed connection=%s code=%s",
+                            transaction.connection_id,
+                            error.code,
+                        )
                         self._finish(transaction, AuthorizationState.FAILED, error.code)
                     except (OSError, sqlite3.Error):
+                        LOGGER.warning(
+                            "oauth_authorization_failed connection=%s code=oauth_storage_unavailable",
+                            transaction.connection_id,
+                        )
                         self._finish(
                             transaction, AuthorizationState.FAILED, "oauth_storage_unavailable"
                         )
@@ -332,8 +349,8 @@ class BrowserAuthorization:
                 TimeoutError,
                 asyncio.IncompleteReadError,
                 asyncio.LimitOverrunError,
-            ):
-                pass
+            ) as error:
+                LOGGER.warning("oauth_callback_rejected error_class=%s", type(error).__name__)
             finally:
                 try:
                     page = CALLBACK_SUCCESS_PAGE if successful else CALLBACK_FAILURE_PAGE

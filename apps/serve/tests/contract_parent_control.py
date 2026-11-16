@@ -978,8 +978,9 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
                 self.session_id = session_id
                 self.lease = activities.enter(ActivityDomain.TURN, root=True)
 
-            async def interrupt(self, *, cleanup_background_processes):
+            async def interrupt(self, *, cleanup_background_processes, user_requested):
                 self.assert_cleanup = cleanup_background_processes
+                self.assert_user_requested = user_requested
                 interrupted.append(self.session_id)
                 self.lease.close()
 
@@ -993,6 +994,8 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
         response = await control._command({"operation": "quiesce", "generation": None})
         self.assertEqual(set(interrupted), {"first", "second"})
         self.assertTrue(all(live.assert_cleanup for live in sessions._sessions.values()))
+        self.assertTrue(all(live.assert_user_requested for live in sessions._sessions.values()))
+        sessions._runtime.interrupt_invocations_for_update.assert_awaited_once()
         self.assertEqual(response, b"\x01" + activities.snapshot().generation.encode("ascii"))
 
     async def test_restart_waits_for_admitted_turn_to_get_native_identity(self):

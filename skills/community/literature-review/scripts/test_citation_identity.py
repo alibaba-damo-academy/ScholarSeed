@@ -7,11 +7,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'lib'), str(ROOT / 'scripts')]
 
-from citation_identity import authoring_view, normalize_citations
+from citation_identity import authoring_view, normalize_citations, require_evidence_references
 from chapter_pipeline import chapter_messages
+from chapter_plan import cards_plain
 
 
 class CitationIdentityTest(unittest.TestCase):
+    def test_reference_fields_close_over_local_evidence_and_literals_stay_literal(self):
+        keys={'1':'One2024','2':'Two2024'}
+        value={'analysis_tasks':[{'paper_ids':['2']}],'code':{'paper_ids':['1'],'text':r'\cite{Literal}'}}
+        projected=authoring_view(value,keys)
+        self.assertEqual(projected['code'],value['code'])
+        with self.assertRaisesRegex(ValueError,'outside assigned evidence'):
+            require_evidence_references(projected,{'One2024'})
+        require_evidence_references(projected,{'One2024','Two2024'})
+        with self.assertRaisesRegex(ValueError,'conflicting'):
+            authoring_view({'paper_ids':['1'],'cite_keys':['Two2024']},keys)
+
+    def test_source_identifiers_and_paths_are_not_authoring_evidence(self):
+        record={'paperId':'987654321','paperhub_id':'8877665544','year':2024,
+                'local_source':{'path':'/private/source.pdf','sha256':'source-digest'},
+                'provenance':{'request_id':'internal-request'},
+                'card':{'method':'A supported result with 3 conditions.'}}
+        result=cards_plain(['987654321'],{'987654321':record},{'987654321':'Example2024'})
+        self.assertIn('Example2024',result)
+        self.assertIn('3 conditions',result)
+        self.assertNotIn('8877665544',result)
+        self.assertNotIn('/private/source.pdf',result)
+        self.assertNotIn('internal-request',result)
+
     def test_authoring_view_keeps_internal_ids_out_of_packet(self):
         keys = {'987654321': 'Example2024'}
         packet = {'chapter_ids': ['1'], 'assigned_paper_ids': ['987654321'],

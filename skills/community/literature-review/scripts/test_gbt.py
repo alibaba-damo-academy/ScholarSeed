@@ -13,7 +13,7 @@ import slr_paths
 
 slr_paths.bootstrap(__file__)
 from citation_styles import CITATION_STYLES, style_asset
-from citation_formats import CitationResolver, parse_bib_text
+from generation.citation_formats import CitationResolver, parse_bib_text
 from task_contract import configure
 from task_fixtures import task
 from manuscript_publication import publish
@@ -28,11 +28,28 @@ author={Alice Smith},title={Conference evidence},year={2024},
 booktitle={Proceedings},address={Beijing},publisher={Press},pages={1--8}}
 @misc{Preprint,
 author={Bo Li},title={Preprint evidence},year={2025},
-eprint={2501.01234},archivePrefix={arXiv},url={https://arxiv.org/abs/2501.01234}}
+eprint={2501.01234},archivePrefix={arXiv},urldate={2025-02-03},url={https://arxiv.org/abs/2501.01234}}
 '''
 
 
 class GbtTest(unittest.TestCase):
+    def test_cited_preprint_does_not_require_or_display_consultation_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            configure(workspace, task({'publication': {'format': 'markdown', 'citation_style': STYLE}}))
+            generation = workspace / '05_generation'
+            generation.mkdir(exist_ok=True)
+            (generation / 'publication.json').write_text(json.dumps({'format': 'markdown', 'citation_style': STYLE}))
+            missing = BIB.replace('urldate={2025-02-03},', '')
+            (generation / 'citations.bib').write_text(missing)
+            source = generation / 'full_draft_v2.md'
+            source.write_text(r'A bounded finding \cite{Preprint}.')
+            result = publish(workspace)
+            self.assertEqual(result['status'], 'SUCCESS')
+            self.assertNotIn('urldate', (generation / 'citations.bib').read_text())
+            source.write_text(r'A bounded finding \cite{Journal}.')
+            self.assertEqual(publish(workspace)['status'], 'SUCCESS')
+
     @unittest.skipUnless(shutil.which('xelatex') and shutil.which('bibtex'), 'TeX unavailable')
     def test_pdf_switch_recompiles_without_changing_bib_or_prose(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -53,7 +70,8 @@ class GbtTest(unittest.TestCase):
             bbl = source.with_suffix('.bbl').read_text()
             self.assertIn('[C]', bbl)
             self.assertIn('[J]', bbl)
-            self.assertIn('[PP/OL]', bbl)
+            self.assertIn('[PP]', bbl)
+            self.assertNotIn('2025-02-03', bbl)
             self.assertIn(body, source.read_text())
             current_source = source.read_text()
             self.assertEqual(publish(workspace)['status'], 'SUCCESS')
@@ -62,7 +80,7 @@ class GbtTest(unittest.TestCase):
             self.assertEqual((generation / 'citations.bib').read_text(), BIB)
             checks = {row['id']: row for row in first['checks']}
             self.assertEqual(checks['citation_metadata']['status'], 'WARNING')
-            self.assertIn('Preprint', str(checks['citation_metadata']))
+            self.assertNotIn('Preprint', str(checks['citation_metadata']))
             configure(workspace, {'publication': {'citation_style': 'numeric'}})
             self.assertEqual(publish(workspace)['status'], 'SUCCESS')
             self.assertIn('unsrtnat_scholarseed', source.read_text())
@@ -160,12 +178,12 @@ class GbtTest(unittest.TestCase):
         self.assertEqual(*outputs)
         self.assertIn('Conference evidence[C]//Proceedings', outputs[0])
         self.assertIn('Journal evidence[J]', outputs[0])
-        self.assertIn('Preprint evidence[PP/OL]', outputs[0])
+        self.assertIn('Preprint evidence[PP]', outputs[0])
         self.assertIn('Beijing: Press, 2024: 1–8', outputs[0])
 
     def test_markdown_online_medium(self):
-        for fields, marker in (({}, '[C]'), ({'doi': '10.1000/test'}, '[C/OL]'),
-                               ({'url': 'https://example.org/test'}, '[C/OL]')):
+        for fields, marker in (({}, '[C]'), ({'doi': '10.1000/test'}, '[C]'),
+                               ({'url': 'https://example.org/test'}, '[C]')):
             with self.subTest(fields=fields):
                 entries = parse_bib_text(BIB)
                 entries['Conference'].fields.update(fields)
@@ -175,7 +193,7 @@ class GbtTest(unittest.TestCase):
                 resolver.collect(r'\cite{Conference,Preprint}')
                 rendered = '\n'.join(resolver.reference_lines())
                 self.assertIn(f'Conference evidence{marker}//Proceedings', rendered)
-                self.assertIn('Preprint evidence[PP/OL]', rendered)
+                self.assertIn('Preprint evidence[PP]', rendered)
                 self.assertNotIn('/OL/OL', rendered)
 
     def test_publish_uses_changed_task_style_without_rewriting_body(self):

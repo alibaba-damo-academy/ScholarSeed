@@ -95,9 +95,11 @@ test('document tabs stay with their pane through split resizing and workspace wi
   await page.getByTestId('tab-split-down').click()
   await expect(tabs).toHaveCount(4)
   await expectAligned(page)
+  await expect(page.locator('[data-navigation-leaf]')).toHaveCount(2)
   await expect
     .poll(async () =>
       page.locator('[data-navigation-leaf]').evaluateAll((headers) => {
+        if (!headers.length) return Number.POSITIVE_INFINITY
         return Math.max(
           ...headers.map((header) => {
             const pane = document.querySelector(

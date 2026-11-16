@@ -1,5 +1,6 @@
 ---
 name: academic-research-guidance
+version: "2026.10.24+1"
 description: >-
   Guide academic and scientific research requests: scholarly concepts, paper
   understanding, research questions, research methods, experimental design,
@@ -12,10 +13,10 @@ description_zh: >-
   学术证据分析，覆盖自然科学、工程、人文与社会科学。澄清未明确的科研意图并衔接
   专项科研技能；不用于没有科研目标的普通编程、写作、文件管理或产品操作。
 metadata:
-  version: "2026.10.8"
+  version: "2026.10.24+1"
 ---
 
-# Academic Research Guidance — 科研任务指导
+# Academic Research Guidance
 
 Apply this skill to the research portion of the current request, not unrelated
 tasks merely sharing its vocabulary or tools. Inspect relevant user-provided

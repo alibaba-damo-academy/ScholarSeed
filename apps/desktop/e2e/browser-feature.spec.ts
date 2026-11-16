@@ -7,7 +7,9 @@ import { BROWSER_COMMAND_CHANNEL, BROWSER_DATA_CHANNEL, BROWSER_DOWNLOAD_CHANNEL
 import { DesktopSession, apiBase } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
 import { ONBOARDING_GROUPS } from '../src/onboarding'
+import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from '../src/window'
 import type { Page } from '@playwright/test'
+import browserZh from '../src/localization/locales/zh/browser.json'
 import { skipQuarantined } from './fixtures/quarantine'
 
 test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
@@ -33,6 +35,63 @@ async function captureProduct(desktop: DesktopSession, page: Page, name: string)
   })))
   for (const [index, entry] of pages.entries()) writeFileSync(join(ARTIFACTS, `${name}-page-${index}.png`), Buffer.from(entry.png, 'base64'))
 }
+
+test('Browser settings keep history and downloads visible with advanced settings hidden', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const browserHome = join(runtime.home, 'browser')
+  const downloads = join(runtime.home, 'downloads')
+  mkdirSync(browserHome, { recursive: true })
+  mkdirSync(downloads, { recursive: true })
+  writeFileSync(join(browserHome, 'downloads.json'), JSON.stringify({ directoryOverride: downloads, askEveryTime: true }))
+  const policyFile = join(browserHome, 'agent-policy.json')
+  const savedPolicy = JSON.stringify({ schemaVersion: 2, revision: 7, agentBrowserUseEnabled: false, sites: {} })
+  writeFileSync(policyFile, savedPolicy)
+  const preferencesFile = join(runtime.userData, RENDERER_PREFERENCES_FILE)
+  writeFileSync(preferencesFile, JSON.stringify({ language: 'zh', onboarding: SEEN_ONBOARDING, browserAutomationEnabled: true }))
+  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
+  mkdirSync(ARTIFACTS, { recursive: true })
+  try {
+    const page = await desktop.launch()
+    const capabilities = await page.evaluate(async () => {
+      const bridge = window.scholarseed
+      const reply = await bridge.browser.snapshot()
+      return {
+        vaultExposed: 'vault' in bridge,
+        automation: reply.ok ? reply.snapshot.automation : null,
+        policy: await bridge.browser.policy({ kind: 'read' }),
+        start: await bridge.browser.dispatch({ kind: 'automation', enabled: true }),
+      }
+    })
+    expect(capabilities).toEqual({
+      vaultExposed: false,
+      automation: { enabled: false, port: null },
+      policy: { ok: false, error: 'desktop_bridge_unavailable' },
+      start: { ok: false, error: 'desktop_bridge_unavailable' },
+    })
+    const nativeWindow = await desktop.browserWindow(page)
+    for (const [variant, size] of [['default', WORKSPACE_WINDOW_SIZE], ['minimum', WORKSPACE_WINDOW_MINIMUM]] as const) {
+      await nativeWindow.evaluate((window, bounds) => window.setSize(bounds.width, bounds.height), size)
+      await openAccountSettings(page)
+      await page.getByTestId('account-settings-nav-browser').click()
+      const settings = page.getByTestId('account-settings-browser')
+      await expect(settings.getByTestId('browser-download-directory')).toHaveText(downloads)
+      await expect(settings.getByText(browserZh.settings.advanced, { exact: true })).toHaveCount(0)
+      await expect(settings.getByTestId('browser-settings-advanced')).toHaveCount(0)
+      const manage = settings.getByRole('button', { name: browserZh.settings.manageHistory, exact: true })
+      await expect(manage).toBeVisible()
+      await captureProduct(desktop, page, `advanced-hidden-${variant}`)
+      expect(existsSync(join(ARTIFACTS, `advanced-hidden-${variant}-native.png`))).toBe(true)
+      await manage.click()
+      const history = page.getByTestId('account-settings-browser-history')
+      await expect(history.getByRole('searchbox')).toBeVisible()
+      await history.getByRole('link', { name: browserZh.settings.title, exact: true }).click()
+      await expect(manage).toBeVisible()
+    }
+    expect(readFileSync(policyFile, 'utf8')).toBe(savedPolicy)
+    expect(JSON.parse(readFileSync(preferencesFile, 'utf8')).browserAutomationEnabled).toBe(true)
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
 
 test('disabled browser cannot be restored, rendered, approved or reopened through native bridges', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
@@ -96,7 +155,7 @@ test('explicit browser on retains current pages, settings and CDP; full restart 
   test.setTimeout(180_000)
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, RENDERER_PREFERENCES_FILE), JSON.stringify({ language: 'zh', browserAutomationEnabled: false, onboarding: SEEN_ONBOARDING }))
-  const enabled = new DesktopSession(runtime, testInfo, { browserEnabled: true, nativeWindowLifecycle: true, preserveRuntime: true })
+  const enabled = new DesktopSession(runtime, testInfo, { browserEnabled: true, browserAdvancedSettings: true, nativeWindowLifecycle: true, preserveRuntime: true })
   const disabled = new DesktopSession(runtime, testInfo, { browserEnabled: false, nativeWindowLifecycle: true, preserveRuntime: true })
   mkdirSync(ARTIFACTS, { recursive: true })
   let oldPort: number | null = null
@@ -126,6 +185,7 @@ test('explicit browser on retains current pages, settings and CDP; full restart 
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await expect(page.getByTestId('account-settings-browser')).toBeVisible()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     await page.getByTestId('browser-settings-cdp').getByRole('switch').click()
     await expect.poll(async () => {
       const reply = await page.evaluate(() => window.scholarseed.browser.snapshot())

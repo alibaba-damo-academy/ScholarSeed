@@ -555,3 +555,29 @@ test('a failed diagnostic observer cannot break control shutdown', async () => {
   await control.listen()
   assert.doesNotThrow(() => control.close('startup_timeout'))
 })
+
+test('preparation waits for authenticated backend rather than a listening socket', async (t) => {
+  const control = new BackendControl()
+  t.after(() => control.close())
+  const bootstrap = JSON.parse((await control.listen()).toString())
+  let preparationStarted = false
+  const preparation = control.whenAuthenticated().then(() => {
+    preparationStarted = true
+  })
+  const peer = createConnection(bootstrap.port, '127.0.0.1')
+  t.after(() => peer.destroy())
+  await once(peer, 'connect')
+  assert.equal(preparationStarted, false)
+  peer.write(JSON.stringify({ token: bootstrap.token }) + '\n')
+  await preparation
+  assert.equal(preparationStarted, true)
+})
+
+test('closing a cold backend rejects deferred preparation', async (t) => {
+  const control = new BackendControl()
+  t.after(() => control.close())
+  await control.listen()
+  const rejected = assert.rejects(control.whenAuthenticated())
+  control.close()
+  await rejected
+})

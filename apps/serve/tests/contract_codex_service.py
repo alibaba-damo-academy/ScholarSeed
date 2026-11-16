@@ -84,11 +84,14 @@ from scholarseed_runtime.contract.resource import (
     ResourceState,
 )
 from scholarseed_runtime.contract.session import (
+    RUNTIME_ACTIVITY_CHANGED,
     RuntimeActivitySnapshot,
+    RuntimeExecutionTreeBlocker,
     SuspendReceipt,
     SuspendState,
     SuspendTicket,
 )
+from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome
 from service.assistant.service.context import INTERNAL_CONTEXT_BLOCKED_ANSWER, protect_answer
 from service.capabilities.service.components import ComponentRegistry
 from service.capabilities.service.skills import SkillCatalog
@@ -134,6 +137,7 @@ from service.chat.constants import (
 )
 from service.chat.persistence import blocks
 from service.chat.persistence.artifacts import SessionArtifactStore
+from service.chat.persistence.attention import AttentionStore
 from service.chat.persistence.catalog import (
     QueuedMessageState,
     SessionBindingConflictError,
@@ -601,6 +605,97 @@ class FakeRuntimeSession:
 
 
 class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
+    async def test_cold_resume_serializes_concurrent_model_selection(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        service._sessions.clear()
+        entered, release = asyncio.Event(), asyncio.Event()
+        real_open = runtime.open
+
+        async def delayed_open(**kwargs):
+            entered.set()
+            await release.wait()
+            return await real_open(**kwargs)
+
+        readiness = RuntimeReadiness(
+            runtime_id=RUNTIME_ID, status=RuntimeStatus.READY, ready=True, executable="codex"
+        )
+        with (
+            patch.object(runtime, "open", side_effect=delayed_open),
+            patch.object(runtime, "readiness", new=AsyncMock(return_value=readiness)),
+        ):
+            resume = asyncio.create_task(
+                service.open(
+                    {"resume_session_id": PRODUCT_SESSION_ID}, OWNER, actor_id=OWNER.user_id
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 2)
+            selection = asyncio.create_task(
+                service.set_model(PRODUCT_SESSION_ID, OWNER, "target", actor_id=OWNER.user_id)
+            )
+            try:
+                await asyncio.sleep(0.05)
+                self.assertFalse(selection.done(), "selection must wait for cold resume")
+                release.set()
+                self.assertEqual((await resume)[1], 200)
+                self.assertEqual((await selection)[1], 200)
+                self.assertEqual(
+                    self.catalog.model_state(PRODUCT_SESSION_ID).selected_model_id, "target"
+                )
+                self.assertEqual(service._sessions[PRODUCT_SESSION_ID].model_id, "target")
+            finally:
+                release.set()
+                await asyncio.gather(resume, selection, return_exceptions=True)
+
+    async def test_resume_deleted_subscription_requires_model_selection_without_blocking_recovery(
+        self,
+    ) -> None:
+        runtime, provider = self.runtime_service()
+        service = self.session_service(runtime)
+        service._sessions.clear()
+        deleted = "personal-oauth-deleted:gpt-test"
+        self.catalog.set_model(PRODUCT_SESSION_ID, OWNER, deleted)
+        previous_binding = self.catalog.runtime_binding(PRODUCT_SESSION_ID)
+
+        def selected(model_id, **_kwargs):
+            if model_id == deleted:
+                raise model_module.SessionModelUnavailableError("private deleted model detail")
+            return model_id
+
+        readiness = RuntimeReadiness(
+            runtime_id=RUNTIME_ID, status=RuntimeStatus.READY, ready=True, executable="codex"
+        )
+        with (
+            patch.object(runtime._models, "selected_model_key", side_effect=selected),
+            patch.object(runtime, "readiness", new=AsyncMock(return_value=readiness)),
+            patch.object(
+                self.catalog,
+                "mark_turn_recovery_blocked",
+                wraps=self.catalog.mark_turn_recovery_blocked,
+            ) as blocked,
+        ):
+            payload, status = await service.open(
+                {"resume_session_id": PRODUCT_SESSION_ID}, OWNER, actor_id=OWNER.user_id
+            )
+            self.assertEqual(status, 409, payload)
+            self.assertEqual(payload["code"], "session_model_unavailable")
+            self.assertNotIn("private deleted model detail", json.dumps(payload))
+            self.assertEqual(
+                self.catalog.model_state(PRODUCT_SESSION_ID).selected_model_id, deleted
+            )
+            self.assertEqual(self.catalog.runtime_binding(PRODUCT_SESSION_ID), previous_binding)
+            blocked.assert_not_called()
+            self.assertEqual(provider.resumed, [])
+            selected_payload, selected_status = await service.set_model(
+                PRODUCT_SESSION_ID, OWNER, "replacement-model", actor_id=OWNER.user_id
+            )
+            self.assertEqual(selected_status, 200, selected_payload)
+            resumed, resumed_status = await service.open(
+                {"resume_session_id": PRODUCT_SESSION_ID}, OWNER, actor_id=OWNER.user_id
+            )
+            self.assertEqual(resumed_status, 200, resumed)
+            self.assertEqual(self.catalog.runtime_binding(PRODUCT_SESSION_ID), previous_binding)
+
     async def test_archive_inactive_binding_does_not_activate_or_require_environment(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
@@ -627,6 +722,52 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                     await service.set_archived(
                         PRODUCT_SESSION_ID, False, OWNER, actor_id=OWNER.user_id
                     )
+
+    async def test_archive_without_stop_consent_rejects_active_work_without_side_effects(
+        self,
+    ) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        await self.live.ledger.activate_turn("archive-consent")
+        with patch.object(service, "_stop_for_removal", new=AsyncMock()) as stop:
+            payload, status = await service.set_archived(
+                PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id, stop_running=False
+            )
+        self.assertEqual(status, 409, payload)
+        self.assertEqual(payload["error"], "session_archive_stop_required")
+        stop.assert_not_awaited()
+        self.assertFalse(self.catalog.get(PRODUCT_SESSION_ID).archived)
+        self.assertFalse(self.live.closing)
+        self.assertTrue(self.live.running)
+
+    async def test_archive_without_stop_consent_keeps_idle_runtime_and_history(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        with patch.object(service, "_stop_for_removal", new=AsyncMock()) as stop:
+            payload, status = await service.set_archived(
+                PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id, stop_running=False
+            )
+        self.assertEqual(status, 200, payload)
+        stop.assert_not_awaited()
+        self.assertTrue(self.catalog.get(PRODUCT_SESSION_ID).archived)
+        self.assertFalse(self.live.terminated)
+
+    async def test_archive_without_stop_consent_rechecks_native_queued_work(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        queued = RuntimeActivitySnapshot(
+            "fixture", 1, 1, True, blockers=("queued_submission",), execution_tree_complete=True
+        )
+        with (
+            patch.object(self.runtime_session, "activity", new=AsyncMock(return_value=queued)),
+            patch.object(service, "_stop_for_removal", new=AsyncMock()) as stop,
+        ):
+            payload, status = await service.set_archived(
+                PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id, stop_running=False
+            )
+        self.assertEqual(status, 409, payload)
+        stop.assert_not_awaited()
+        self.assertFalse(self.catalog.get(PRODUCT_SESSION_ID).archived)
 
     async def test_archive_connected_idle_task_does_not_terminate(self) -> None:
         runtime, _provider = self.runtime_service()
@@ -1248,6 +1389,15 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Reading or using a skill or tool does not change it.", prompt)
 
+    def test_session_file_links_override_cli_source_reference_formats(self) -> None:
+        prompt = " ".join(base_instructions().split())
+        self.assertIn("For clickable references to existing session files", prompt)
+        self.assertIn("override the source-reference rules", prompt)
+        self.assertIn("`[label](actual-cwd-relative/path)` rather than inline code", prompt)
+        self.assertIn("any line number in the label, never the target", prompt)
+        self.assertNotIn("Use inline code to make file paths clickable.", prompt)
+        self.assertIn(":line[:column] or #Lline[Ccolumn]", prompt)
+
     def test_tool_preamble_uses_the_users_language(self) -> None:
         prompt = base_instructions()
         self.assertIn(
@@ -1288,10 +1438,12 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`academic-research-guidance`", prompt)
         self.assertIn("stop when the task changes", prompt)
         self.assertIn(
-            "Focus replies on task results, not internal execution, unless requested.",
+            "Report results, not internal execution, unless requested.",
             prompt,
         )
-        self.assertIn("Never invent skill/tool use or results, or bypass restrictions.", prompt)
+        self.assertIn("Never invent skill or tool use.", prompt)
+        self.assertIn("Never fabricate facts, evidence, citations or success.", prompt)
+        self.assertIn("obey authorization and turn limits.", prompt)
         self.assertNotIn("briefly and naturally mention that you", prompt)
         for detail in (
             "## Research Intent Clarification & Routing",
@@ -1323,8 +1475,15 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn("loading this\nskill does not authorize external retrieval", skill)
         self.assertIn("Never route back to itself", prompt)
         self.assertIn("Quick/Grounded", prompt)
-        self.assertIn("**Direct source support**", evidence)
-        self.assertIn("**Needs verification**", evidence)
+        evidence_rules = " ".join(evidence.split())
+        self.assertIn("Use normal prose and inline citations", evidence_rules)
+        self.assertIn("unless the user requests an evidence audit", evidence_rules)
+        self.assertIn(
+            "Cite source text that supports the adjacent claim and its necessary conditions",
+            evidence_rules,
+        )
+        self.assertIn("does not require another retrieval or model call", evidence_rules)
+        self.assertNotIn("Label each key research conclusion", evidence_rules)
         self.assertIn(
             "A fully-specified request asks nothing and routes immediately.",
             " ".join(prompt.split()),
@@ -1343,12 +1502,18 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     def test_developer_prompt_stays_within_progressive_loading_budget(self) -> None:
         prompt = developer_instructions()
         skill = (PRODUCT_OPERATIONS_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        guide = (PRODUCT_OPERATIONS_ROOT / "references" / "mcp.md").read_text(encoding="utf-8")
+        bridge = (PRODUCT_OPERATIONS_ROOT / "references/scholarseed-bridge/README.md").read_text(
+            encoding="utf-8"
+        )
+        guide = (
+            PRODUCT_OPERATIONS_ROOT / "references/scholarseed-bridge/guides" / "mcp.md"
+        ).read_text(encoding="utf-8")
         self.assertLessEqual(len(prompt), MAX_DEVELOPER_INSTRUCTION_CHARS)
         self.assertIn("MCP configuration", prompt)
         self.assertIn("Read `scholarseed-product-operations`", prompt)
         self.assertIn("operation guide before acting", prompt)
-        self.assertIn("[MCP configuration](references/mcp.md)", skill)
+        self.assertIn("references/scholarseed-bridge/README.md", skill)
+        self.assertIn("[MCP configuration](guides/mcp.md)", bridge)
         self.assertNotIn("`mcp/apply`", prompt)
         for boundary in (
             "never read or write configuration files directly",
@@ -1375,12 +1540,12 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         skill = (PRODUCT_OPERATIONS_ROOT.parent / "pdf-evidence" / "SKILL.md").read_text(
             encoding="utf-8"
         )
-        retrieval = (PRODUCT_OPERATIONS_ROOT / "references" / "retrieval.md").read_text(
-            encoding="utf-8"
-        )
-        resources = (PRODUCT_OPERATIONS_ROOT / "references" / "resources.md").read_text(
-            encoding="utf-8"
-        )
+        retrieval = (
+            PRODUCT_OPERATIONS_ROOT / "references/scholarseed-bridge/guides" / "retrieval.md"
+        ).read_text(encoding="utf-8")
+        resources = (
+            PRODUCT_OPERATIONS_ROOT / "references/scholarseed-bridge/guides" / "resources.md"
+        ).read_text(encoding="utf-8")
         skill = " ".join(skill.split())
         self.assertIn("not the project library inventory", skill)
         self.assertIn('"capability":"resource","operation":"list"', skill)
@@ -1396,12 +1561,16 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     def test_stored_literature_instructions_are_loaded_from_the_skill(self) -> None:
         prompt = " ".join(
             (
-                (PRODUCT_OPERATIONS_ROOT / "references" / "resources.md").read_text(
-                    encoding="utf-8"
-                )
-                + (PRODUCT_OPERATIONS_ROOT / "references" / "retrieval.md").read_text(
-                    encoding="utf-8"
-                )
+                (
+                    PRODUCT_OPERATIONS_ROOT
+                    / "references/scholarseed-bridge/guides"
+                    / "resources.md"
+                ).read_text(encoding="utf-8")
+                + (
+                    PRODUCT_OPERATIONS_ROOT
+                    / "references/scholarseed-bridge/guides"
+                    / "retrieval.md"
+                ).read_text(encoding="utf-8")
             ).split()
         )
         self.assertEqual(prompt.count("`project-literature`"), 1)
@@ -1426,9 +1595,9 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(removed, prompt)
 
     def test_product_prompt_publishes_only_user_facing_deliverables(self) -> None:
-        prompt = (PRODUCT_OPERATIONS_ROOT / "references" / "artifacts.md").read_text(
-            encoding="utf-8"
-        )
+        prompt = (
+            PRODUCT_OPERATIONS_ROOT / "references/scholarseed-bridge/guides" / "artifacts.md"
+        ).read_text(encoding="utf-8")
         self.assertIn("tracks other new and changed files as working files", prompt)
         self.assertIn("only published\ndeliverables get conversation file cards", prompt)
         self.assertIn("`capability=artifact`, `operation=publish`", prompt)
@@ -1443,7 +1612,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         prompt = " ".join(developer_instructions().split())
         entry = " ".join((PRODUCT_OPERATIONS_ROOT / "SKILL.md").read_text(encoding="utf-8").split())
         artifacts = " ".join(
-            (PRODUCT_OPERATIONS_ROOT / "references" / "artifacts.md")
+            (PRODUCT_OPERATIONS_ROOT / "references/scholarseed-bridge/guides" / "artifacts.md")
             .read_text(encoding="utf-8")
             .split()
         )
@@ -1453,40 +1622,55 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not permission to search or import", artifacts)
         self.assertIn("Do not enumerate unrelated capabilities", artifacts)
         self.assertIn("current-turn search, network and write restrictions", artifacts)
-        self.assertIn("contract/describe", artifacts)
+        self.assertIn("contracts/artifact.jsonl", artifacts)
+        self.assertIn("only if the contract is missing or stale", artifacts)
         self.assertIn("publication receipt", artifacts)
         for specialized in ("pdf-evidence", "web-search", "project-literature"):
             self.assertIn(f"`{specialized}`", entry)
 
     def test_product_protocols_are_reachable_but_not_injected(self) -> None:
-        prompt = developer_instructions(
-            output_directory="outputs", project_context="Project context"
+        prompt = " ".join(
+            developer_instructions(
+                output_directory="outputs", project_context="Project context"
+            ).split()
         )
-        entry = (PRODUCT_OPERATIONS_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("Access project resources and stored papers,", entry)
-        self.assertIn("# Materials and Task Tools — 资料与任务工具", entry)
+        entry = " ".join((PRODUCT_OPERATIONS_ROOT / "SKILL.md").read_text(encoding="utf-8").split())
+        self.assertIn("# ScholarSeed Product Operations", entry)
+        self.assertIn("even if no card was requested", entry)
         self.assertNotIn("Operate ScholarSeed product capabilities:", entry)
         self.assertNotIn("书深产品操作：", entry)
         self.assertIn("`scholarseed-product-operations`", prompt)
         self.assertIn("## Product Capability Gate", prompt)
-        self.assertIn("Judge from the required action", prompt)
+        self.assertIn("Judge by intent:", prompt)
         self.assertIn("operation guide before acting", prompt)
-        self.assertIn("when the need emerges later in the task", prompt)
-        self.assertIn("answer directly without loading it", prompt)
-        self.assertIn("Merely discussing a feature does not require operating it", prompt)
-        self.assertIn("load neither, one, or both according to actual need", prompt)
+        self.assertIn("even when the need emerges later", prompt)
+        self.assertIn("skip it when merely discussing a feature", prompt)
+        self.assertIn("Skip for self-contained text answers", entry)
+        self.assertIn("Load only the reference needed for the next action", entry)
+        self.assertIn("load evidence/search/library guides only when needed", prompt)
         self.assertIn('relative to the working directory, is "outputs"', prompt)
         self.assertTrue(prompt.endswith("Project context"))
         self.assertNotIn("Write new reports", prompt)
         self.assertNotIn("scholarseed_bridge", prompt)
         self.assertNotIn("capability=", prompt)
-        for name in ("resources", "retrieval", "history", "artifacts", "plans"):
+        self.assertIn("conversation cards", prompt)
+        self.assertIn("Use charts/tables to clarify data", prompt)
+        self.assertIn(
+            "Picking a displayed row to continue requires a conversation component", prompt
+        )
+        self.assertIn("even without a card request", prompt)
+        self.assertIn("text for simple answers", prompt)
+        self.assertIn(
+            "Use native flows for input, progress, confirmation, clarification and recovery, not generated cards",
+            prompt,
+        )
+        for name in ("scholarseed-bridge", "scholarseed-frontend", "scholarseed-chat-ui"):
             with self.subTest(reference=name):
-                relative = f"references/{name}.md"
+                relative = f"references/{name}/README.md"
                 reference = (PRODUCT_OPERATIONS_ROOT / relative).read_text(encoding="utf-8")
                 self.assertIn(relative, entry)
                 self.assertNotIn(reference.splitlines()[0], prompt)
-                self.assertNotIn(reference, prompt)
+                self.assertNotIn(" ".join(reference.split()), prompt)
 
     async def asyncSetUp(self) -> None:
         self.root = self.enterContext(directory(prefix="codex-service-"))
@@ -1897,6 +2081,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.catalog.enqueue_message(self.live.id, "revoked-submission", {"input": []})
 
         async def blockers() -> tuple[str, ...]:
+            # The connection is torn down while settling the previous turn.
             revoked["now"] = True
             return ()
 
@@ -2551,6 +2736,56 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertIs(constructor.call_args.kwargs["on_suspend"], runtime._models.suspend_session)
         self.assertIs(constructor.call_args.kwargs["on_release"], runtime._models.release_session)
 
+    async def test_runtime_composition_drains_all_abandoned_sessions(self) -> None:
+        runtime, _provider = self.runtime_service()
+        construction_failure = RuntimeError("construction did not finish")
+        cleanup_failure = OSError("persistence did not close")
+
+        async def construct_then_fail(_domain, construct):
+            construct()
+            construct()
+            raise construction_failure
+
+        for failed_close in (None, cleanup_failure):
+            with self.subTest(failed_close=failed_close):
+                first = SimpleNamespace(
+                    persistence=SimpleNamespace(close=AsyncMock(side_effect=failed_close)),
+                    _trace=SimpleNamespace(close=Mock()),
+                )
+                second = SimpleNamespace(
+                    persistence=SimpleNamespace(close=AsyncMock()),
+                    _trace=SimpleNamespace(close=Mock()),
+                )
+                with (
+                    patch.object(runtime._activities, "to_thread", new=construct_then_fail),
+                    patch.object(runtime_module, "LiveSession", side_effect=[first, second]),
+                    self.assertRaises(
+                        BaseExceptionGroup if failed_close else RuntimeError
+                    ) as raised,
+                ):
+                    await runtime.open(
+                        session_id=self.live.id,
+                        cwd=self.workdir,
+                        project_path=None,
+                        output_root=self.output_root,
+                        resume_vendor_thread_id="",
+                        model_id="gpt-5-codex",
+                        permission_mode=RuntimePermissionMode.ASK.value,
+                        executable="codex",
+                    )
+                first.persistence.close.assert_awaited_once_with()
+                second.persistence.close.assert_awaited_once_with()
+                second._trace.close.assert_called_once_with()
+                if failed_close:
+                    first._trace.close.assert_not_called()
+                    self.assertIsInstance(raised.exception, BaseExceptionGroup)
+                    self.assertEqual(
+                        raised.exception.exceptions, (construction_failure, failed_close)
+                    )
+                else:
+                    first._trace.close.assert_called_once_with()
+                    self.assertIs(raised.exception, construction_failure)
+
     def attachment_activation(self) -> SessionActivation:
         activation = SessionActivation(
             activities=self.attachment_activities,
@@ -2873,6 +3108,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SessionActivationError) as caught:
             await service.prepare_turn(self.live, request_id="revoked-mid-turn")
         self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
+        # Caught at the pre-commit gate without a rebuild: the attachment is unchanged.
         self.assertIs(self.live.runtime_session, previous)
 
     async def test_closing_session_keeps_attachment_bridge_protection(self) -> None:
@@ -2992,6 +3228,25 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SessionActivationError) as caught:
             await runtime.wait_until_suspended(self.live, deadline=0.0)
         self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_TIMEOUT)
+
+    async def test_suspend_preserves_execution_tree_blockers_with_transient_activity(self) -> None:
+        runtime, _provider = self.runtime_service()
+        session = self.live.runtime_session
+        snapshot = RuntimeActivitySnapshot(
+            "fixture-generation",
+            0,
+            0,
+            True,
+            blockers=(RUNTIME_ACTIVITY_CHANGED,),
+            execution_tree_complete=True,
+            execution_tree_blockers=(RuntimeExecutionTreeBlocker.BACKGROUND_TASK.value,),
+        )
+        with patch.object(session, "activity", new=AsyncMock(return_value=snapshot)):
+            with self.assertRaises(SessionActivationError) as caught:
+                await runtime.wait_until_suspended(self.live, deadline=0.0)
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
+        self.assertIn(RuntimeExecutionTreeBlocker.BACKGROUND_TASK.value, self.live.suspend_blockers)
+        self.assertIs(self.live.runtime_session, session)
 
     async def test_catalog_list_stops_running_after_terminal_with_pending_cleanup(self) -> None:
         runtime, _provider = self.runtime_service()
@@ -3238,6 +3493,26 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(history["recovery_blocked"])
 
+    async def test_recovery_check_reports_activity_without_pending_settlement(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        await self.live.ledger.activate_turn("next-turn")
+        with patch.object(runtime, "ensure_active", new=AsyncMock()) as ensure_active:
+            checked, status = await service.check_recovery(
+                PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
+            )
+        ensure_active.assert_not_awaited()
+        self.assertEqual(status, 200, checked)
+        self.assertEqual(
+            checked,
+            {
+                "ok": True,
+                "recovery_blocked": False,
+                "recovery_pending": False,
+                "activity_active": True,
+            },
+        )
+
     async def test_recovery_check_requires_complete_idle_execution_tree(self) -> None:
         event = RuntimeEvent(
             schema_version=1,
@@ -3264,10 +3539,13 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(session)
         assert session is not None
         activity_state = "incomplete"
+        allow_idle = asyncio.Event()
 
         async def activity() -> RuntimeActivitySnapshot:
             if activity_state == "error":
                 raise RuntimeError("activity unavailable")
+            if activity_state == "idle":
+                await allow_idle.wait()
             return RuntimeActivitySnapshot(
                 "fixture-generation",
                 1,
@@ -3280,6 +3558,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(session, "activity", new=activity),
             patch.object(turn_module, "TURN_SETTLEMENT_POLL_SECONDS", 0.01),
+            patch("service.chat.service.sessions.RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS", 0.2),
         ):
             with patch.object(
                 runtime,
@@ -3300,16 +3579,27 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 200)
             self.assertFalse(checked["ok"])
             self.assertTrue(checked["recovery_blocked"])
-            self.assertIsNone(self.live.current_task)
+            settlement_task = self.live.current_task
+            self.assertIsNotNone(settlement_task)
+            assert settlement_task is not None
 
             activity_state = "error"
-            checked, status = await service.check_recovery(
-                PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
-            )
+            with patch.object(self.logger, "warning") as warning:
+                checked, status = await service.check_recovery(
+                    PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
+                )
+            traces = [
+                call.kwargs["exc_info"]
+                for call in warning.call_args_list
+                if call.args[0].startswith("turn_settlement_activity_unavailable ")
+            ]
+            self.assertEqual(len(traces), 1)
+            self.assertIsNotNone(traces[0][2])
+            self.assertEqual(str(traces[0][1]), "RuntimeError")
             self.assertEqual(status, 200)
             self.assertFalse(checked["ok"])
             self.assertTrue(checked["recovery_blocked"])
-            self.assertIsNone(self.live.current_task)
+            self.assertIs(self.live.current_task, settlement_task)
 
             activity_state = "active"
             checked, status = await service.check_recovery(
@@ -3321,13 +3611,33 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(checked["recovery_pending"])
             self.assertTrue(checked["activity_active"])
             self.assertIsNotNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
-            settlement_task = self.live.current_task
-            self.assertIsNotNone(settlement_task)
-            assert settlement_task is not None
+            self.assertFalse(
+                any(
+                    row.kind == "session_state" and row.payload.get("recovery_pending") is False
+                    for row in self.events.replay(PRODUCT_SESSION_ID)
+                )
+            )
+            self.assertIs(self.live.current_task, settlement_task)
 
             activity_state = "idle"
+            try:
+                checked, status = await service.check_recovery(
+                    PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
+                )
+            finally:
+                allow_idle.set()
+            self.assertEqual(status, 200, checked)
+            self.assertTrue(checked["recovery_pending"])
             await asyncio.wait_for(settlement_task, 2.0)
             self.assertIsNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
+            settled_states = [
+                row
+                for row in self.events.replay(PRODUCT_SESSION_ID)
+                if row.kind == "session_state" and row.payload.get("recovery_pending") is False
+            ]
+            self.assertEqual(len(settled_states), 1)
+            self.assertEqual(settled_states[0].payload["state"], "idle")
+            self.assertFalse(settled_states[0].payload["recovery_blocked"])
             checked, status = await service.check_recovery(
                 PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
             )
@@ -3336,6 +3646,97 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 checked, {"ok": True, "recovery_blocked": False, "recovery_pending": False}
             )
             self.assertIsNone(session.last_turn_request)
+
+    async def test_each_recovery_block_transition_has_a_distinct_reminder(self) -> None:
+        event = RuntimeEvent(
+            schema_version=1,
+            event_id="fixture:reblock",
+            runtime_id=RUNTIME_ID,
+            product_session_id=PRODUCT_SESSION_ID,
+            native_session_id=VENDOR_THREAD_ID,
+            process_generation=1,
+            sequence=1,
+            kind=RuntimeEventKind.TURN_COMPLETED,
+            delivery=DeliveryClass.MUST_PERSIST,
+            observed_at="fixture",
+            native_turn_id="native-turn",
+            correlation_id="client-turn",
+            payload={"status": "completed"},
+        )
+        self.catalog.record_turn_settlement(PRODUCT_SESSION_ID, "client-turn", event)
+        attention = AttentionStore(self.catalog)
+
+        await self.live.set_turn_settlement_blocked(event, blocked=True)
+        first = attention.snapshot(OWNER)
+        self.assertEqual(first["unread_count"], 1)
+        first_incident = first["items"][0]["incident_id"]
+        attention.read(OWNER, through_revision=first["revision"], epoch=first["epoch"])
+
+        await self.live.set_turn_settlement_blocked(event, blocked=False)
+        await self.live.set_turn_settlement_blocked(event, blocked=True)
+        await self.live.set_turn_settlement_blocked(event, blocked=True)
+        second = attention.snapshot(OWNER)
+        self.assertEqual(second["unread_count"], 1)
+        self.assertNotEqual(second["items"][0]["incident_id"], first_incident)
+        self.assertEqual(
+            self.events.recovery_snapshot(PRODUCT_SESSION_ID, event.native_turn_id)[
+                "recovery_incident_id"
+            ],
+            second["items"][0]["incident_id"],
+        )
+
+    async def test_late_recovery_check_does_not_resume_a_new_turn(self) -> None:
+        def terminal(turn_id: str) -> RuntimeEvent:
+            return RuntimeEvent(
+                schema_version=1,
+                event_id=f"fixture:{turn_id}",
+                runtime_id=RUNTIME_ID,
+                product_session_id=PRODUCT_SESSION_ID,
+                native_session_id=VENDOR_THREAD_ID,
+                process_generation=1,
+                sequence=1,
+                kind=RuntimeEventKind.TURN_COMPLETED,
+                delivery=DeliveryClass.MUST_PERSIST,
+                observed_at="fixture",
+                native_turn_id=turn_id,
+                correlation_id=turn_id,
+                payload={"status": "completed"},
+            )
+
+        self.catalog.record_turn_settlement(PRODUCT_SESSION_ID, "old-turn", terminal("old-turn"))
+        self.catalog.mark_turn_recovery_blocked(PRODUCT_SESSION_ID, True)
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        resume = Mock()
+        service.bind_settlement_resume(resume)
+        activating, activated = asyncio.Event(), asyncio.Event()
+
+        async def ensure_active(live: LiveSession) -> None:
+            self.assertIs(live, self.live)
+            activating.set()
+            await activated.wait()
+
+        with patch.object(runtime, "ensure_active", new=ensure_active):
+            async with asyncio.timeout(2.0):
+                check = asyncio.create_task(
+                    service.check_recovery(PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id)
+                )
+                await activating.wait()
+                self.catalog.clear_turn_settlement(PRODUCT_SESSION_ID, "old-turn")
+                self.catalog.record_turn_settlement(
+                    PRODUCT_SESSION_ID, "new-turn", terminal("new-turn")
+                )
+                self.catalog.mark_turn_recovery_blocked(PRODUCT_SESSION_ID, True)
+                activated.set()
+                result, status = await check
+        resume.assert_not_called()
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["recovery_blocked"])
+        pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+        self.assertIsNotNone(pending)
+        assert pending is not None
+        self.assertEqual(pending.client_turn_id, "new-turn")
+        self.assertTrue(pending.recovery_blocked)
 
     async def test_confirmed_unknown_settlement_keeps_admission_open(self) -> None:
         turn_id = "confirmed-turn"
@@ -3950,6 +4351,192 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             provider.reservations["fixture-reservation-1"].state, ResourceState.CANCELLED
         )
+
+    async def test_plan_callback_recovery_is_bound_to_the_exact_tool_and_persisted(self) -> None:
+        await self.emit(RuntimeEventKind.TURN_STARTED, sequence=1, payload={})
+        arguments = {"operation": "finish", "plan_id": "plan", "step_ids": ["deliver"]}
+        state = {
+            "turn_id": "turn-1",
+            "plan": {"plan_id": "plan", "revision": 2},
+            "items": [{"id": "deliver", "status": "pending"}],
+        }
+        responses = [
+            {"ok": False, "error": "plan_step_start_required", "current": state},
+            {
+                "ok": True,
+                **state,
+                "plan": {"plan_id": "plan", "revision": 3},
+                "items": [{"id": "deliver", "status": "completed"}],
+            },
+        ]
+        with patch(
+            "service.chat.runtime.live.execute_service_tool", new=AsyncMock(side_effect=responses)
+        ):
+            for index, tool_id in enumerate(("failed-plan", "verified-plan")):
+                self.adapter.hil_requests.add(tool_id)
+                await self.live._respond_service_callback(
+                    RuntimeCallbackRequest(
+                        schema_version=1,
+                        runtime_id=RUNTIME_ID,
+                        product_session_id=PRODUCT_SESSION_ID,
+                        native_session_id=VENDOR_THREAD_ID,
+                        native_turn_id="turn-1",
+                        native_item_id=tool_id,
+                        request_id=tool_id,
+                        audience=CallbackAudience.SERVICE,
+                        kind=CallbackKind.DYNAMIC_TOOL,
+                        blocking=True,
+                        response_contract={},
+                        observed_at="fixture",
+                        prompt={
+                            "tool": "update_plan",
+                            "arguments": {
+                                **arguments,
+                                "operation": "finish" if index == 0 else "complete",
+                            },
+                        },
+                    )
+                )
+                if index == 0:
+                    await self.live._respond_service_callback(
+                        RuntimeCallbackRequest(
+                            schema_version=1,
+                            runtime_id=RUNTIME_ID,
+                            product_session_id=PRODUCT_SESSION_ID,
+                            native_session_id=VENDOR_THREAD_ID,
+                            native_turn_id="stale-turn",
+                            native_item_id="stale-tool",
+                            request_id="stale-tool",
+                            audience=CallbackAudience.SERVICE,
+                            kind=CallbackKind.DYNAMIC_TOOL,
+                            blocking=True,
+                            response_contract={},
+                            observed_at="fixture",
+                            prompt={"tool": "update_plan", "arguments": arguments},
+                        )
+                    )
+                    self.assertIn(
+                        (self.live.attachment_generation, "turn-1", tool_id),
+                        self.live._plan_tool_receipts,
+                    )
+                await self.emit(
+                    RuntimeEventKind.TOOL_COMPLETED,
+                    sequence=index + 2,
+                    item_id=tool_id,
+                    payload={
+                        "name": "update_plan",
+                        "ok": index == 1,
+                        "output": "Original tool result",
+                    },
+                )
+        completed = [
+            record
+            for record in self.events.replay(PRODUCT_SESSION_ID)
+            if record.kind == PRODUCT_EVENT_TOOL_COMPLETED
+        ]
+        self.assertFalse(completed[0].payload["success"])
+        self.assertEqual(completed[0].payload["plan_failure"]["step_ids"], ["deliver"])
+        self.assertEqual(completed[1].payload["resolved_tool_ids"], ["failed-plan"])
+        self.assertEqual(self.live._plan_tool_receipts, {})
+
+    async def test_corrected_plan_read_persists_recovery_without_observing_mutation_state(self):
+        await self.emit(RuntimeEventKind.TURN_STARTED, sequence=1, payload={})
+        results = [
+            {"ok": False, "error": "bridge_invalid_parameters"},
+            {"ok": True, "turn_id": "turn-1", "items": [], "plan": None},
+        ]
+        with (
+            patch(
+                "service.chat.runtime.live.execute_service_tool", new=AsyncMock(side_effect=results)
+            ),
+            patch.object(self.live.plans, "current") as observation,
+        ):
+            for index, tool_id in enumerate(("invalid-read", "corrected-read")):
+                self.adapter.hil_requests.add(tool_id)
+                await self.live._respond_service_callback(
+                    RuntimeCallbackRequest(
+                        schema_version=1,
+                        runtime_id=RUNTIME_ID,
+                        product_session_id=PRODUCT_SESSION_ID,
+                        native_session_id=VENDOR_THREAD_ID,
+                        native_turn_id="turn-1",
+                        native_item_id=tool_id,
+                        request_id=tool_id,
+                        audience=CallbackAudience.SERVICE,
+                        kind=CallbackKind.DYNAMIC_TOOL,
+                        blocking=True,
+                        response_contract={},
+                        observed_at="fixture",
+                        prompt={
+                            "tool": "update_plan",
+                            "arguments": {
+                                "operation": "get",
+                                **({"plan_id": "extra"} if index == 0 else {}),
+                            },
+                        },
+                    )
+                )
+                await self.emit(
+                    RuntimeEventKind.TOOL_COMPLETED,
+                    sequence=index + 2,
+                    item_id=tool_id,
+                    payload={"name": "update_plan", "ok": index == 1, "output": "Original result"},
+                )
+            observation.assert_not_called()
+        snapshot = EventService(
+            {}, ProductEventStore(self.database), self.logger
+        ).activity_snapshot(PRODUCT_SESSION_ID)
+        completed = [
+            event["data"] for event in snapshot if event["type"] == PRODUCT_EVENT_TOOL_COMPLETED
+        ]
+        self.assertFalse(completed[0]["success"])
+        self.assertEqual(completed[0]["output"], "Original result")
+        self.assertEqual(completed[1]["resolved_tool_ids"], ["invalid-read"])
+
+    async def test_failed_recovery_observation_preserves_the_original_tool_rejection(self) -> None:
+        await self.emit(RuntimeEventKind.TURN_STARTED, sequence=1, payload={})
+        self.adapter.hil_requests.add("invalid-completion")
+        rejected = {"ok": False, "error": "bridge_invalid_parameters"}
+        with (
+            patch(
+                "service.chat.runtime.live.execute_service_tool",
+                new=AsyncMock(return_value=rejected),
+            ),
+            patch.object(
+                self.live._persistence,
+                "run",
+                new=AsyncMock(side_effect=OSError("state unavailable")),
+            ),
+            patch.object(self.adapter, "resolve_hil", wraps=self.adapter.resolve_hil) as respond,
+            patch.object(self.logger, "warning") as warning,
+        ):
+            await self.live._respond_service_callback(
+                RuntimeCallbackRequest(
+                    schema_version=1,
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=PRODUCT_SESSION_ID,
+                    native_session_id=VENDOR_THREAD_ID,
+                    native_turn_id="turn-1",
+                    native_item_id="invalid-completion",
+                    request_id="invalid-completion",
+                    audience=CallbackAudience.SERVICE,
+                    kind=CallbackKind.DYNAMIC_TOOL,
+                    blocking=True,
+                    response_contract={},
+                    observed_at="fixture",
+                    prompt={
+                        "tool": "update_plan",
+                        "arguments": {
+                            "operation": "complete",
+                            "plan_id": "plan",
+                            "step_ids": ["deliver"],
+                        },
+                    },
+                )
+            )
+        self.assertEqual(respond.call_args.args[1], rejected)
+        self.assertEqual(warning.call_args.args[0], "plan_recovery_state_unavailable session_id=%s")
+        self.assertEqual(self.live._plan_tool_receipts, {})
 
     async def test_command_exit_code_reaches_durable_product_event(self) -> None:
         await self.emit(
@@ -4608,6 +5195,12 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(
                 any(row.kind == "turn_failed" for row in self.events.replay(PRODUCT_SESSION_ID))
             )
+            self.assertFalse(
+                any(
+                    row.kind == "session_state" and row.payload.get("recovery_pending") is False
+                    for row in self.events.replay(PRODUCT_SESSION_ID)
+                )
+            )
             child_done.set()
             self.assertIsNotNone(self.live.current_task)
             assert self.live.current_task is not None
@@ -4620,29 +5213,136 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(failures), 1)
         self.assertEqual(self.catalog.get(PRODUCT_SESSION_ID).status, SessionStatus.ERROR)
+        settled_states = [
+            row
+            for row in self.events.replay(PRODUCT_SESSION_ID)
+            if row.kind == "session_state" and row.payload.get("recovery_pending") is False
+        ]
+        self.assertEqual(len(settled_states), 1)
+        self.assertGreater(settled_states[0].product_seq, failures[0].product_seq)
+        self.assertEqual(settled_states[0].payload["state"], "failed")
+        self.assertFalse(settled_states[0].payload["recovery_blocked"])
+
+    async def test_settlement_completion_commits_state_atomically_and_replays_delivery(
+        self,
+    ) -> None:
+        self.live.active_product_turn_id = "settlement-client"
+        self.live.last_submission_id = "settlement-client"
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            sequence=1,
+            payload={"status": "failed", "error_code": "service_unavailable"},
+            turn_id="settlement-turn",
+        )
+        pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+        self.assertIsNotNone(pending)
+        assert pending is not None
+        before = self.events.replay(PRODUCT_SESSION_ID)
+        await self.live.finish_turn_settlement("another-turn", RuntimeTurnOutcome.FAILED)
+        self.assertEqual(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID), pending)
+        self.assertEqual(self.events.replay(PRODUCT_SESSION_ID), before)
+
+        failure = OSError("publication unavailable")
+        self.live._publication_error = failure
+        try:
+            with self.assertRaises(OSError):
+                await self.live.finish_turn_settlement("settlement-turn", RuntimeTurnOutcome.FAILED)
+        finally:
+            self.live._publication_error = None
+        self.assertEqual(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID), pending)
+        with patch.object(self.events, "append", side_effect=failure):
+            with self.assertRaises(OSError):
+                await self.live.finish_turn_settlement("settlement-turn", RuntimeTurnOutcome.FAILED)
+        self.assertEqual(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID), pending)
+        self.assertEqual(self.events.replay(PRODUCT_SESSION_ID), before)
+
+        with patch.object(self.live, "_deliver_committed", side_effect=failure):
+            with self.assertRaises(OSError):
+                await self.live.finish_turn_settlement("settlement-turn", RuntimeTurnOutcome.FAILED)
+        self.assertIsNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
+        committed = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(committed.kind, "session_state")
+        self.assertFalse(committed.payload["recovery_pending"])
+        await self.live._deliver_committed(committed)
+        self.assertEqual(self.live._broadcast_sequence, committed.product_seq)
+        await self.live.finish_turn_settlement("settlement-turn", RuntimeTurnOutcome.FAILED)
+        self.assertEqual(self.events.replay(PRODUCT_SESSION_ID)[-1], committed)
+
+        uncertain = replace(
+            pending.event,
+            native_turn_id="unknown-turn",
+            event_id="uncertain-settlement",
+            kind=RuntimeEventKind.TURN_UNKNOWN,
+            payload={"status": "unknown"},
+        )
+        self.catalog.record_turn_settlement(PRODUCT_SESSION_ID, "settlement-client", uncertain)
+        await self.live.finish_turn_settlement("unknown-turn", RuntimeTurnOutcome.UNKNOWN)
+        unknown_state = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(unknown_state.payload["state"], "failed")
+        self.catalog.record_turn_settlement(
+            PRODUCT_SESSION_ID,
+            "settlement-client",
+            replace(
+                uncertain,
+                event_id="resolved-settlement",
+                kind=RuntimeEventKind.TURN_COMPLETED,
+                payload={"status": "completed"},
+            ),
+        )
+        await self.live.finish_turn_settlement("unknown-turn", RuntimeTurnOutcome.COMPLETED)
+        resolved_state = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(resolved_state.payload["state"], "idle")
+        self.assertNotEqual(resolved_state.idempotency_key, unknown_state.idempotency_key)
+
+        self.catalog.record_turn_settlement(
+            PRODUCT_SESSION_ID,
+            "settlement-client",
+            replace(pending.event, native_turn_id="closed-turn", event_id="closed-settlement"),
+        )
+        self.live.terminated = True
+        await self.live.finish_turn_settlement("closed-turn", RuntimeTurnOutcome.FAILED)
+        self.assertEqual(self.events.replay(PRODUCT_SESSION_ID)[-1].payload["state"], "closed")
 
     async def test_online_settlement_accepts_queue_without_starting_next_turn(self) -> None:
         inspected = asyncio.Event()
+        allow_failures = asyncio.Event()
+        tree_known = asyncio.Event()
         child_done = asyncio.Event()
+        probes: set[asyncio.Task[Any] | None] = set()
+        hil_request_id = "hil-recovery-check"
+        hil_needs_ack = False
 
         async def activity() -> RuntimeActivitySnapshot:
+            probes.add(asyncio.current_task())
             inspected.set()
+            await allow_failures.wait()
             return RuntimeActivitySnapshot(
                 "fixture-generation",
                 self.runtime_session._sequence,
                 self.runtime_session._sequence,
-                True,
-                execution_tree_complete=child_done.is_set(),
-                execution_tree_blockers=(() if child_done.is_set() else ("turn_active",)),
+                tree_known.is_set(),
+                blockers=() if tree_known.is_set() else ("native_thread_ownership_unknown",),
+                execution_tree_complete=tree_known.is_set(),
+                execution_tree_blockers=(
+                    (RuntimeExecutionTreeBlocker.TURN.value,)
+                    if tree_known.is_set() and not child_done.is_set()
+                    else ()
+                ),
             )
 
-        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger, activities=Activities())
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        turns = TurnService(service._sessions, self.logger, activities=Activities())
+        service.bind_settlement_resume(turns.resume_pending_settlement)
         with (
             patch.object(self.runtime_session, "activity", new=activity),
             patch.object(
                 self.runtime_session, "submit", wraps=self.runtime_session.submit
             ) as submit,
             patch.object(turn_module, "TURN_SETTLEMENT_POLL_SECONDS", 0.01),
+            patch.object(turn_module, "TURN_SETTLEMENT_BLOCKED_POLL_SECONDS", 60.0),
+            patch.object(turn_module, "TURN_SETTLEMENT_FAILURE_LIMIT", 2),
+            patch("service.chat.service.sessions.RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS", 0.2),
         ):
             try:
                 receipt, status = await turns.post(
@@ -4654,7 +5354,28 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(inspected.wait(), 2.0)
                 self.assertIsNotNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
                 self.assertTrue(self.live.running)
-                self.catalog.mark_turn_recovery_blocked(PRODUCT_SESSION_ID, True)
+                queued, status = await turns.post(
+                    PRODUCT_SESSION_ID,
+                    {"input": [{"type": "text", "text": "Queued follow-up"}]},
+                    side=False,
+                )
+                self.assertEqual(status, 202, queued)
+                queued_id = queued["queued_message_id"]
+                allow_failures.set()
+                await self._wait_for_blocked_settlement()
+                events = self.events.replay(PRODUCT_SESSION_ID)
+                blocked_states = [
+                    row
+                    for row in events
+                    if row.kind == PRODUCT_EVENT_SESSION_STATE
+                    and row.payload.get("recovery_blocked")
+                ]
+                self.assertEqual(len(blocked_states), 1)
+                self.assertTrue(blocked_states[0].payload["recovery_pending"])
+                self.assertFalse(any(row.kind == PRODUCT_EVENT_TURN_COMPLETED for row in events))
+                blocked_history = self.events.history_payload(PRODUCT_SESSION_ID)
+                original_answer = next(row for row in blocked_history if row["role"] == "assistant")
+                self.assertEqual(original_answer["text"], "完成")
                 blocked, status = await turns.post(
                     PRODUCT_SESSION_ID,
                     {"input": [{"type": "text", "text": "Blocked follow-up"}]},
@@ -4662,19 +5383,62 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(status, 409, blocked)
                 self.assertEqual(blocked["error"], turn_module.PREVIOUS_TURN_ACTIVITY_UNAVAILABLE)
-                self.catalog.mark_turn_recovery_blocked(PRODUCT_SESSION_ID, False)
-                queued, status = await turns.post(
-                    PRODUCT_SESSION_ID,
-                    {"input": [{"type": "text", "text": "Queued follow-up"}]},
-                    side=False,
-                )
-                self.assertEqual(status, 202, queued)
-                record = self.catalog.queued_message(
-                    PRODUCT_SESSION_ID, queued["queued_message_id"]
-                )
+                record = self.catalog.queued_message(PRODUCT_SESSION_ID, queued_id)
                 self.assertIsNotNone(record)
                 self.assertEqual(record.state, QueuedMessageState.QUEUED)
                 self.assertEqual(submit.await_count, 1)
+                pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+                assert pending is not None
+                self.catalog.record_hil(
+                    product_request_id=hil_request_id,
+                    session_id=PRODUCT_SESSION_ID,
+                    vendor_request_id=hil_request_id,
+                    vendor_turn_id=pending.native_turn_id,
+                    vendor_item_id=None,
+                    method="approval",
+                    payload={"prompt": "Approve?"},
+                )
+                hil_needs_ack = True
+                settlement = self.live.current_task
+                self.assertIsNotNone(settlement)
+                probes.clear()
+                tree_known.set()
+                child_done.set()
+                checked, status = await service.check_recovery(
+                    PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
+                )
+                self.assertEqual(status, 200, checked)
+                self.assertTrue(checked["recovery_blocked"])
+                self.assertTrue(checked["recovery_pending"])
+                self.assertIs(self.live.current_task, settlement)
+                self.assertEqual(probes, {settlement})
+                self.assertEqual(submit.await_count, 1)
+                self.assertFalse(
+                    any(
+                        row.kind == PRODUCT_EVENT_TURN_COMPLETED
+                        for row in self.events.replay(PRODUCT_SESSION_ID)
+                    )
+                )
+                child_done.clear()
+                self.catalog.acknowledge_hil(hil_request_id)
+                hil_needs_ack = False
+                checked, status = await service.check_recovery(
+                    PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
+                )
+                self.assertEqual(status, 200, checked)
+                self.assertFalse(checked["recovery_blocked"])
+                self.assertTrue(checked["activity_active"])
+                self.assertEqual(probes, {settlement})
+                self.assertEqual(submit.await_count, 1)
+                self.assertEqual(
+                    self.catalog.queued_message(PRODUCT_SESSION_ID, queued_id).state,
+                    QueuedMessageState.QUEUED,
+                )
+                resumed_state = self.events.latest_kind(
+                    PRODUCT_SESSION_ID, PRODUCT_EVENT_SESSION_STATE
+                )
+                self.assertFalse(resumed_state.payload["recovery_blocked"])
+                self.assertEqual(resumed_state.payload["state"], "running")
                 child_done.set()
                 async with asyncio.timeout(2.0):
                     while submit.await_count != 2:
@@ -4682,8 +5446,134 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(self.live.current_task)
                 await asyncio.wait_for(self.live.current_task, 2.0)
                 self.assertIsNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
+                await turns._drain_next(self.live)
+                self.assertEqual(submit.await_count, 2)
+                self.assertFalse(self.catalog.queued_messages(PRODUCT_SESSION_ID))
+                self.assertEqual(
+                    self.catalog.queued_message(PRODUCT_SESSION_ID, queued_id).state,
+                    QueuedMessageState.COMPLETED,
+                )
+                self.assertIn(original_answer, self.events.history_payload(PRODUCT_SESSION_ID))
             finally:
+                allow_failures.set()
+                tree_known.set()
                 child_done.set()
+                if hil_needs_ack:
+                    self.catalog.acknowledge_hil(hil_request_id)
+                if self.live.current_task is not None:
+                    self.live.current_task.cancel()
+                    await asyncio.gather(self.live.current_task, return_exceptions=True)
+
+    async def _wait_for_blocked_settlement(self) -> None:
+        async with asyncio.timeout(2.0):
+            while True:
+                pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+                if pending is None:
+                    self.fail("turn settled before publishing recovery blocked")
+                if pending.recovery_blocked:
+                    return
+                await asyncio.sleep(0.01)
+
+    async def test_transient_execution_tree_changes_use_a_separate_bounded_wait(self) -> None:
+        repeated = asyncio.Event()
+        proof_available = asyncio.Event()
+        probes = 0
+        original_activity = self.runtime_session.activity
+
+        async def activity() -> RuntimeActivitySnapshot:
+            nonlocal probes
+            if proof_available.is_set():
+                return await original_activity()
+            probes += 1
+            if probes == 5:
+                repeated.set()
+            return RuntimeActivitySnapshot(
+                "fixture",
+                probes,
+                probes,
+                True,
+                blockers=(RUNTIME_ACTIVITY_CHANGED,),
+                execution_tree_transient=True,
+            )
+
+        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger, activities=Activities())
+        with (
+            patch.object(self.runtime_session, "activity", new=activity),
+            patch.object(turn_module, "TURN_SETTLEMENT_FAILURE_LIMIT", 2),
+            patch.object(turn_module, "TURN_SETTLEMENT_POLL_SECONDS", 0.02),
+            patch.object(turn_module, "TURN_SETTLEMENT_BLOCKED_POLL_SECONDS", 0.01),
+            patch.object(turn_module, "TURN_SETTLEMENT_ACTIVITY_BUDGET_SECONDS", 0.04),
+            patch.object(turn_module, "TURN_SETTLEMENT_TRANSIENT_BUDGET_SECONDS", 0.5),
+        ):
+            try:
+                receipt, status = await turns.post(
+                    PRODUCT_SESSION_ID,
+                    {"input": [{"type": "text", "text": "Research topic"}]},
+                    side=False,
+                )
+                self.assertEqual(status, 202, receipt)
+                await asyncio.wait_for(repeated.wait(), 2.0)
+                pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+                self.assertIsNotNone(pending)
+                assert pending is not None
+                self.assertFalse(pending.recovery_blocked)
+                self.assertEqual(AttentionStore(self.catalog).snapshot(OWNER)["unread_count"], 0)
+                await self._wait_for_blocked_settlement()
+                self.assertEqual(AttentionStore(self.catalog).snapshot(OWNER)["unread_count"], 1)
+            finally:
+                proof_available.set()
+                self.live.settlement_recheck.set()
+                if self.live.current_task is not None:
+                    await asyncio.wait_for(self.live.current_task, 2.0)
+        self.assertIsNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
+
+    async def test_settlement_enters_recovery_when_activity_probe_stalls(self) -> None:
+        inspected = asyncio.Event()
+        proof_available = asyncio.Event()
+        original_activity = self.runtime_session.activity
+
+        async def activity() -> RuntimeActivitySnapshot:
+            inspected.set()
+            await proof_available.wait()
+            return await original_activity()
+
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        turns = TurnService(service._sessions, self.logger, activities=Activities())
+        service.bind_settlement_resume(turns.resume_pending_settlement)
+        with (
+            patch.object(self.runtime_session, "activity", new=activity),
+            patch.object(turn_module, "TURN_SETTLEMENT_ACTIVITY_BUDGET_SECONDS", 0.1),
+            patch.object(turn_module, "TURN_SETTLEMENT_BLOCKED_POLL_SECONDS", 0.01),
+            patch("service.chat.service.sessions.RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS", 0.05),
+        ):
+            try:
+                receipt, status = await turns.post(
+                    PRODUCT_SESSION_ID,
+                    {"input": [{"type": "text", "text": "Research topic"}]},
+                    side=False,
+                )
+                self.assertEqual(status, 202, receipt)
+                await asyncio.wait_for(inspected.wait(), 2.0)
+                await self._wait_for_blocked_settlement()
+                self.assertFalse(
+                    any(
+                        row.kind == PRODUCT_EVENT_TURN_COMPLETED
+                        for row in self.events.replay(PRODUCT_SESSION_ID)
+                    )
+                )
+                settlement = self.live.current_task
+                assert settlement is not None
+                async with asyncio.timeout(1.0):
+                    checked, status = await service.check_recovery(
+                        PRODUCT_SESSION_ID, OWNER, actor_id=OWNER.user_id
+                    )
+                self.assertEqual(status, 200, checked)
+                self.assertTrue(checked["recovery_blocked"])
+                self.assertIs(self.live.current_task, settlement)
+                self.assertFalse(settlement.done())
+            finally:
+                proof_available.set()
                 if self.live.current_task is not None:
                     await asyncio.wait_for(self.live.current_task, 2.0)
 
@@ -6210,21 +7100,31 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             sequence=1,
             payload={
                 "request_id": "question-1",
-                "questions": [{"id": "breakfast", "question": question, "options": []}],
+                "questions": [
+                    {
+                        "id": "breakfast",
+                        "question": question,
+                        "options": [{"label": "包子"}, {"label": "面包"}],
+                    }
+                ],
             },
         )
         self.adapter.hil_requests.add("question-1")
 
-        answers = {question: "包子配豆浆"}
-        resolved = await self.live.interactions.resolve(
-            self.live.runtime_session,
-            "question-1",
-            {"answers": answers},
-        )
+        answers = {question: "包子\n配豆浆"}
+        details = {question: {"option_indices": [0], "text": "配豆浆"}}
+        with patch.object(self.adapter, "resolve_hil", wraps=self.adapter.resolve_hil) as resolve:
+            resolved = await self.live.interactions.resolve(
+                self.live.runtime_session,
+                "question-1",
+                {"answers": answers, "answer_details": details},
+            )
+            resolve.assert_awaited_once_with("question-1", {"answers": answers})
 
         self.assertIsNotNone(resolved)
         assert resolved is not None
         self.assertEqual(resolved["answers"], answers)
+        self.assertEqual(resolved["answer_details"], details)
         await self.emit(
             RuntimeEventKind.INTERACTION_RESOLVED,
             sequence=2,
@@ -6237,6 +7137,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].payload["answers"], answers)
+        self.assertEqual(events[0].payload["answer_details"], details)
         self.assertEqual(events[0].payload["questions"][0]["question"], question)
         replay = EventService({}, self.events, self.logger).activity_snapshot(PRODUCT_SESSION_ID)
         self.assertEqual(
@@ -6488,6 +7389,47 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             self.live.history(),
         )
 
+    async def test_generation_preview_persists_and_replays_through_real_event_store(self) -> None:
+        payload = {
+            "preview_id": "generation",
+            "revision": 1,
+            "status": "streaming",
+            "verified": False,
+            "blocks": [{"id": "/parts/0/body/0", "kind": "paragraph", "text": "真实文件存储预览"}],
+        }
+        await self.live.publish(
+            "generation_preview",
+            payload,
+            turn_id="parent-turn",
+            item_id="generation",
+            idempotency_key="preview-test-1",
+        )
+        final = {**payload, "revision": 2, "status": "generated"}
+        await self.live.publish(
+            "generation_preview",
+            final,
+            turn_id="parent-turn",
+            item_id="generation",
+            idempotency_key="preview-test-2",
+        )
+        restored = ProductEventStore(self.database)
+        rows = restored.replay(PRODUCT_SESSION_ID)
+        self.assertEqual([r.kind for r in rows], ["generation_preview", "generation_preview"])
+        self.assertEqual([r.payload for r in rows], [payload, final])
+        service = EventService({}, restored, self.logger)
+        history = service.activity_snapshot(PRODUCT_SESSION_ID)
+        self.assertEqual([r["data"] for r in history], [payload, final])
+        self.assertTrue(
+            all(r["turn_id"] == "parent-turn" and r["item_id"] == "generation" for r in history)
+        )
+        stream = service.open(PRODUCT_SESSION_ID, 0)
+        try:
+            frames = [await anext(stream), await anext(stream)]
+        finally:
+            await stream.aclose()
+        self.assertTrue(all('"type":"generation_preview"' in frame for frame in frames))
+        self.assertIn('"status":"generated"', frames[-1])
+
     async def test_durable_sse_replay_uses_frozen_envelope(self) -> None:
         await self.emit(
             RuntimeEventKind.CONTENT_DELTA,
@@ -6661,7 +7603,9 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
 
     async def test_activity_snapshot_restores_interruption_identity_and_reason(self) -> None:
         records = []
-        for index, payload in enumerate(({}, {"reason": "process_exit"}), start=1):
+        for index, payload in enumerate(
+            ({}, {"reason": "process_exit"}, {"reason": "user_requested"}), start=1
+        ):
             records.append(
                 self.events.append(
                     session_id=PRODUCT_SESSION_ID,
@@ -6683,6 +7627,36 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(event["turn_id"], record.vendor_turn_id)
             self.assertEqual(event["item_id"], record.vendor_item_id)
             self.assertEqual(event["data"], record.payload)
+
+    async def test_user_interrupt_reason_survives_projection_and_reopen(self) -> None:
+        await self.live.ledger.activate_turn("native-interrupted-turn")
+        await self.live.interrupt(user_requested=True)
+        self.assertEqual(
+            self.runtime_session.interrupt_requests[-1].expected_turn_id,
+            "native-interrupted-turn",
+        )
+        self.assertFalse(
+            any(
+                event.kind == PRODUCT_EVENT_TURN_INTERRUPTED
+                for event in self.events.replay(PRODUCT_SESSION_ID)
+            )
+        )
+        await self.emit(
+            RuntimeEventKind.TURN_INTERRUPTED,
+            sequence=1,
+            payload={},
+            turn_id="native-interrupted-turn",
+        )
+        reopened = ProductEventStore(self.database)
+        snapshot = EventService({}, reopened, self.logger).activity_snapshot(PRODUCT_SESSION_ID)
+        interruptions = [
+            event for event in snapshot if event["type"] == PRODUCT_EVENT_TURN_INTERRUPTED
+        ]
+        self.assertEqual(len(interruptions), 1)
+        self.assertEqual(interruptions[0]["turn_id"], "native-interrupted-turn")
+        self.assertEqual(interruptions[0]["data"]["reason"], "user_requested")
+        self.assertEqual(self.catalog.get(PRODUCT_SESSION_ID).status, SessionStatus.INTERRUPTED)
+        self.assertEqual(self.live._user_interrupt_turn_id, "")
 
     async def test_turn_activity_snapshot_restores_duration_and_terminal_truth(self) -> None:
         client_turn_id = "client-turn-duration"
@@ -6990,6 +7964,192 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(HTTPException) as raised:
                         read(PRODUCT_SESSION_ID, path)
                     self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_project_cwd_context_reads_latest_title_without_output_path(self) -> None:
+        self.live.relocate(cwd=self.workdir, project_path=self.workdir, output_root=self.workdir)
+        driver = self.live.runtime_driver
+        assert driver is not None
+        with patch.object(driver, "submit", new=AsyncMock()) as submit:
+            await self.live.run_runtime(TurnInput(items=(), client_user_message_id="context-first"))
+            first = submit.call_args.args[0].items[0]["text"]
+            self.assertIn(SESSION_TITLE_DEFAULT, first)
+            self.catalog.rename(PRODUCT_SESSION_ID, OWNER, "更新后的标题")
+            await self.live.run_runtime(TurnInput(items=(), client_user_message_id="context-next"))
+            latest = submit.call_args.args[0].items[0]["text"]
+        self.assertIn("更新后的标题", latest)
+        self.assertNotIn('"output_directory":', latest)
+        self.assertEqual(self.live.output_root, self.workdir)
+
+    async def test_project_cwd_outputs_use_project_paths_without_sibling_files(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        output = self.workdir / "output" / "研究"
+        output.mkdir(parents=True)
+        (output / "report.md").write_text("result")
+        sibling = output.parent / "其他会话"
+        sibling.mkdir()
+        (sibling / "private.md").write_text("sibling")
+        self.live.relocate(cwd=self.workdir, project_path=self.workdir, output_root=self.workdir)
+        self.catalog.relocate(
+            PRODUCT_SESSION_ID,
+            OWNER,
+            runtime_workdir=str(self.workdir),
+            project_path=str(self.workdir),
+            output_root=str(self.workdir),
+        )
+        await self.emit(
+            RuntimeEventKind.ARTIFACT_OBSERVED,
+            sequence=1,
+            payload={"status": "completed", "changes": [{"path": "output/研究/report.md"}]},
+        )
+        listing = service.files(PRODUCT_SESSION_ID, outputs_only=True)
+        self.assertEqual(listing["root"], str(self.workdir))
+        self.assertEqual([item["name"] for item in listing["items"]], ["output/研究/report.md"])
+        self.assertEqual(
+            service.files(PRODUCT_SESSION_ID, "output/其他会话", outputs_only=True)["items"], []
+        )
+        self.assertEqual(
+            service.file_content(PRODUCT_SESSION_ID, "output/研究/report.md")["content"], "result"
+        )
+        self.catalog.rename(PRODUCT_SESSION_ID, OWNER, "新的显示标题")
+        self.assertEqual(Path(self.catalog.get(PRODUCT_SESSION_ID).output_root), self.workdir)
+        self.assertTrue((output / "report.md").is_file())
+
+    async def test_overview_directory_tracks_only_current_session_artifacts(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        output = self.workdir / "output" / "研究"
+        output.mkdir(parents=True)
+        report = output / "report.md"
+        report.write_text("result")
+        nested = output / "work" / "nested"
+        nested.mkdir(parents=True)
+        (nested / "trace.txt").write_text("process")
+        sibling = output.parent / "另一任务"
+        sibling.mkdir()
+        (sibling / "private.md").write_text("other task")
+        self.assertIsNone(service.files(PRODUCT_SESSION_ID).get("directory_path"))
+        await self.emit(
+            RuntimeEventKind.ARTIFACT_OBSERVED,
+            sequence=1,
+            payload={"status": "completed", "changes": [{"path": "output/研究/report.md"}]},
+        )
+        self.assertEqual(service.files(PRODUCT_SESSION_ID).get("directory_path"), str(output))
+        await self.live.publish_artifact("output/研究/report.md", "final", turn_id="turn-1")
+        await self.emit(
+            RuntimeEventKind.ARTIFACT_OBSERVED,
+            sequence=2,
+            payload={
+                "status": "completed",
+                "changes": [{"path": "output/研究/work/nested/trace.txt"}],
+            },
+        )
+        self.assertEqual(
+            service.files(PRODUCT_SESSION_ID, outputs_only=True).get("directory_path"), str(output)
+        )
+        await self.live.publish_artifact(
+            "output/另一任务/private.md", "supporting", turn_id="turn-1"
+        )
+        self.assertEqual(
+            service.files(PRODUCT_SESSION_ID).get("directory_path"), str(output.parent)
+        )
+        report.unlink()
+        self.assertIsNone(service.files(PRODUCT_SESSION_ID).get("directory_path"))
+
+    async def test_overview_directory_uses_common_existing_authorization(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        output = self.workdir / "output" / "研究"
+        nested = output / "work"
+        nested.mkdir(parents=True)
+        (output / "report.md").write_text("result")
+        (nested / "support.md").write_text("support")
+        await self.live.publish_artifact("output/研究/report.md", "final", turn_id="turn-1")
+        await self.live.publish_artifact(
+            "output/研究/work/support.md", "supporting", turn_id="turn-1"
+        )
+        service.bind_artifact_roots(lambda _scope: (nested, self.workdir))
+        self.assertEqual(service.files(PRODUCT_SESSION_ID).get("directory_path"), str(output))
+        records = self.artifacts.list_session(PRODUCT_SESSION_ID)
+        support = next(record for record in records if record.canonical_path.endswith("support.md"))
+        service.bind_artifact_roots(lambda _scope: (self.root,))
+        with patch.object(self.artifacts, "list_session", return_value=(support,)):
+            self.assertEqual(service.files(PRODUCT_SESSION_ID).get("directory_path"), str(output))
+        external = self.root / "external.md"
+        external.write_text("external")
+        with patch.object(
+            self.artifacts,
+            "list_session",
+            return_value=(
+                support,
+                replace(support, artifact_id="external-output", canonical_path=str(external)),
+            ),
+        ):
+            self.assertIsNone(service.files(PRODUCT_SESSION_ID).get("directory_path"))
+
+    async def test_overview_directory_accepts_directory_artifacts_and_rejects_unsafe_paths(
+        self,
+    ) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        directory = self.workdir / "output" / "研究"
+        directory.mkdir(parents=True)
+        (directory / "report.md").write_text("result")
+        await self.live.publish_artifact("output/研究", "final", turn_id="turn-1")
+        self.assertEqual(service.files(PRODUCT_SESSION_ID).get("directory_path"), str(directory))
+        record = self.artifacts.list_session(PRODUCT_SESSION_ID)[0]
+        for path in (
+            "https://example.com/result",
+            str(directory / ".." / directory.name),
+            "../private",
+        ):
+            with (
+                self.subTest(path=path),
+                patch.object(
+                    self.artifacts,
+                    "list_session",
+                    return_value=(replace(record, canonical_path=path),),
+                ),
+            ):
+                self.assertIsNone(service.files(PRODUCT_SESSION_ID).get("directory_path"))
+
+    async def test_overview_directory_keeps_external_roots_and_file_grants_separate(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        directory = self.workdir / "output" / "研究"
+        directory.mkdir(parents=True)
+        (directory / "report.md").write_text("result")
+        await self.live.publish_artifact("output/研究/report.md", "final", turn_id="turn-1")
+        record = self.artifacts.list_session(PRODUCT_SESSION_ID)[0]
+        external = self.root / "external"
+        external.mkdir()
+        report = external / "report.md"
+        report.write_text("external")
+        with patch.object(
+            self.artifacts,
+            "list_session",
+            return_value=(replace(record, canonical_path=str(report)),),
+        ):
+            self.assertIsNone(service.files(PRODUCT_SESSION_ID).get("directory_path"))
+            service.bind_artifact_roots(lambda _scope: (report,))
+            self.assertIsNone(service.files(PRODUCT_SESSION_ID).get("directory_path"))
+            service.bind_artifact_roots(lambda _scope: (external,))
+            self.assertEqual(service.files(PRODUCT_SESSION_ID).get("directory_path"), str(external))
+            service.bind_artifact_roots(lambda _scope: ())
+            self.assertIsNone(service.files(PRODUCT_SESSION_ID).get("directory_path"))
+
+    async def test_project_cwd_shell_outputs_are_explicitly_published_without_a_directory_watch(
+        self,
+    ) -> None:
+        output = self.workdir / "output" / "研究"
+        output.mkdir(parents=True)
+        report = output / "report.md"
+        report.write_text("shell result")
+        self.live.relocate(cwd=self.workdir, project_path=self.workdir, output_root=self.workdir)
+        await self.live.publish_artifact("output/研究/report.md", "final", turn_id="turn-1")
+        artifacts = self.artifacts.list_session(PRODUCT_SESSION_ID)
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].original_path, "output/研究/report.md")
 
     async def test_output_browser_excludes_inputs_without_removing_references(self) -> None:
         runtime, _provider = self.runtime_service()
@@ -7442,22 +8602,27 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                         service.session_spec(model_key)
 
     def test_product_prompt_defines_session_content_boundaries(self) -> None:
-        prompt = (PRODUCT_OPERATIONS_ROOT / "references" / "resources.md").read_text(
-            encoding="utf-8"
+        prompt = " ".join(
+            (PRODUCT_OPERATIONS_ROOT / "references/scholarseed-bridge/guides" / "resources.md")
+            .read_text(encoding="utf-8")
+            .split()
         )
         for expected in (
             "When a project is bound",
-            "`resources/` is its resource library (资料库)",
+            "`resources/` is its resource library",
             "session working directory is elsewhere",
             "`.scholarseed/` is private product state",
             "Use normal filesystem tools and the supplied Shared Resources directory",
-            "list, count, choose, read or modify library files",
-            "backend supplies its real path\nand authorized writable roots",
+            "list, count, choose or modify library files",
+            "`resource/read-text` with the discovered project-relative paths",
+            "keeps valid materials while a failed file waits for retry or removal",
+            "Do not bypass that decision with a terminal reader",
+            "backend supplies its real path and authorized writable roots",
             "optional, not the default access path or a substitute for filesystem reads or writes",
             "`capability=resource`, `operation=list`, `request={}`",
-            "contract/describe",
+            "read the bundled contract for the selected operation",
             "`capability=resource`, `operation=read`",
-            "returns bounded content without\nexposing the absolute source path",
+            "returns bounded content without exposing the absolute source path",
             "product-managed logical inventory",
             "follow `next_cursor` as needed",
             "`entries[].path` is a project-relative source identifier",
@@ -7465,14 +8630,15 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             "If `warnings` reports an unavailable linked root",
             "stored papers, annotations, or reading notes in the current Session scope",
             "read and follow the `project-literature` skill before using them",
-            "`notes/a.md` or `资料库/notes/a.md`",
+            "library files as `notes/a.md`",
             "never `resources/notes/a.md`",
             "show absolute paths only when explicitly asked",
-            "session IDs,\ndatabase IDs, internal reference IDs or provenance metadata",
+            "session IDs, database IDs, internal reference IDs or provenance metadata",
         ):
-            self.assertIn(expected, prompt)
+            with self.subTest(expected=expected):
+                self.assertIn(expected, prompt)
         self.assertNotIn("library, first run `scholarseed-bridge resource list", prompt)
-        self.assertIn("Do not substitute a guessed filesystem path for\na Bridge read", prompt)
+        self.assertIn("Do not substitute a guessed filesystem path for a Bridge read", prompt)
         self.assertNotIn("literature library (文献库) is product-managed", prompt)
 
     def test_codex_runtime_home_ignores_personal_credentials_and_configuration(self) -> None:
@@ -7653,8 +8819,13 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def test_fork_resumes_inherited_thread_before_first_child_turn(self) -> None:
         await self._assert_open_request_uses_config_baseline(RuntimePermissionMode.ASK, fork=True)
 
+    async def test_session_fork_seeds_frozen_history_without_starting_a_turn(self) -> None:
+        await self._assert_open_request_uses_config_baseline(
+            RuntimePermissionMode.ASK, fork=True, portable_fork=True
+        )
+
     async def _assert_open_request_uses_config_baseline(
-        self, mode: RuntimePermissionMode, *, fork: bool = False
+        self, mode: RuntimePermissionMode, *, fork: bool = False, portable_fork: bool = False
     ) -> None:
         service, provider = self.runtime_service()
         service._compiler_resources = CompilerResources((str(self.workdir / "fonts"),))
@@ -7672,6 +8843,20 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         )
         if fork:
             source = self.catalog.runtime_binding(self.live.id)
+            if portable_fork:
+                self.events.append(
+                    session_id=self.live.id,
+                    runtime_id=RUNTIME_ID,
+                    vendor_thread_id=source.opaque_session_ref,
+                    vendor_turn_id="source-turn",
+                    vendor_item_id="source-user",
+                    kind=PRODUCT_EVENT_USER_MESSAGE,
+                    payload={
+                        "text": "frozen question",
+                        "refs": [{"id": "submitted-ref", "title": "report.md"}],
+                    },
+                    idempotency_key="frozen-user",
+                )
             self.events.append(
                 session_id=session_id,
                 runtime_id=RUNTIME_ID,
@@ -7682,7 +8867,8 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 payload={
                     "source_session_id": self.live.id,
                     "source_thread_id": source.opaque_session_ref,
-                    "source_turn_id": "source-turn",
+                    "source_turn_id": None if portable_fork else "source-turn",
+                    "source_product_seq": self.catalog.get(self.live.id).last_product_seq,
                 },
                 idempotency_key=SESSION_FORK_KEY,
             )
@@ -7734,7 +8920,14 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(request.skill_roots, SERVICE_SKILL_ROOTS)
                 self.assertTrue(request.reservation_id)
                 if fork:
-                    self.assertIsNotNone(request.fork_source)
+                    if portable_fork:
+                        self.assertIsNone(request.fork_source)
+                        context = "\n".join(entry.text for entry in request.initial_history)
+                        self.assertIn("frozen question", context)
+                        self.assertIn("report.md", context)
+                        self.assertIsNone(opened.runtime_session.last_turn_request)
+                    else:
+                        self.assertIsNotNone(request.fork_source)
                     self.assertEqual(
                         self.catalog.activation(session_id).open_state,
                         runtime_module.OpenState.BOUND,
@@ -7807,6 +9000,118 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(provider.requests), 3)
             finally:
                 await resumed.aclose()
+
+    async def test_generation_one_shot_preserves_thinking_and_schema_without_skills(self) -> None:
+        await self._generation_one_shot_contract(minimum_reasoning=False)
+
+    async def test_generation_one_shot_minimum_reasoning_does_not_prebind_requested_effort(
+        self,
+    ) -> None:
+        await self._generation_one_shot_contract(minimum_reasoning=True)
+
+    async def _generation_one_shot_contract(self, *, minimum_reasoning: bool) -> None:
+        requested_effort = "high"
+        thinking = ModelThinking(enabled=True)
+        schema = {"type": "object", "properties": {"text": {"type": "string"}}}
+        model = SimpleNamespace(
+            key="qwen-profile:model",
+            reasoning_options=[{"kind": "effort", "values": ["low", "medium", "high"]}],
+            runtime_model=Mock(
+                return_value=(
+                    ModelIntent(
+                        model_ref="wire-model",
+                        transport=ModelTransport(endpoint="https://model.example.test/v1"),
+                    ),
+                    None,
+                )
+            ),
+        )
+        runtime_session = FakeRuntimeSession(
+            FakeAdapter(self.skill_file),
+            product_session_id="generation",
+            final_text='{"text":"ok"}',
+        )
+        provider = FakeRuntimeProvider(AsyncMock(return_value=runtime_session))
+        models = SimpleNamespace(session_spec=Mock(return_value=model), release_session=Mock())
+        service = LiveSessionService(
+            activities=Activities(),
+            catalog=self.catalog,
+            events=self.events,
+            artifacts=self.artifacts,
+            skills=self.live._skills,
+            models=models,
+            logger=self.logger,
+            gateway=SimpleNamespace(
+                default_runtime_id=RUNTIME_ID, provider=lambda name="": provider
+            ),
+        )
+        trace = Mock(activation=Mock(return_value=runtime_module.NOOP_RUNTIME_TIMING))
+        with (
+            patch.object(
+                service,
+                "readiness",
+                AsyncMock(
+                    return_value=RuntimeReadiness(
+                        runtime_id=RUNTIME_ID,
+                        status=RuntimeStatus.READY,
+                        ready=True,
+                        executable="codex",
+                    )
+                ),
+            ),
+            patch.object(runtime_module, "SessionTrace", Mock(return_value=trace)),
+            patch.object(service, "skill_configurations", AsyncMock()) as skills,
+        ):
+            result = await service.invoke_once(
+                invocation_id="generation",
+                owner_id="owner",
+                user_id="account",
+                cwd=self.workdir,
+                model_id="qwen-profile:model",
+                base_instructions="base",
+                developer_instructions="",
+                input_text="source",
+                executable="codex",
+                permission_mode=RuntimePermissionMode.READ_ONLY,
+                purpose="session_generation",
+                thinking=thinking,
+                reasoning_effort=requested_effort,
+                minimum_reasoning=minimum_reasoning,
+                output_schema=schema,
+                generation_only=True,
+                ephemeral=True,
+            )
+        self.assertEqual(result.model_key, "qwen-profile:model")
+        self.assertEqual(models.session_spec.call_args.args[0], "qwen-profile:model")
+        self.assertEqual(models.session_spec.call_args.kwargs["thinking"], thinking)
+        self.assertFalse(models.session_spec.call_args.kwargs["allow_tools"])
+        self.assertEqual(
+            models.session_spec.call_args.kwargs["reasoning_effort"],
+            None if minimum_reasoning else requested_effort,
+        )
+        self.assertEqual(
+            provider.opened[0].model.reasoning_effort,
+            "low" if minimum_reasoning else requested_effort,
+        )
+        model.runtime_model.assert_called_once_with(thinking=thinking)
+        self.assertTrue(provider.opened[0].generation_only)
+        self.assertTrue(provider.opened[0].ephemeral)
+        self.assertEqual(provider.opened[0].skill_roots, ())
+        self.assertEqual(provider.opened[0].service_tools, ())
+        pool = Mock()
+        pool.prepare_home.return_value = self.root / "generation-home"
+        native = CodexRuntimeSession(
+            CodexRuntimeProvider._open_request(provider.opened[0]), host_pool=pool
+        )
+        self.assertFalse(native._native._opened)
+        self.assertEqual(runtime_session.last_turn_request.output_schema, schema)
+        skills.assert_not_awaited()
+        models.release_session.assert_called_once_with("generation")
+        self.assertIsNone(result.timings["dispatch_to_first_assistant_delta_seconds"])
+        self.assertIsNone(result.timings["assistant_delta_stream_seconds"])
+        self.assertGreaterEqual(result.timings["dispatch_to_result_seconds"], 0)
+        self.assertGreaterEqual(result.timings["cleanup_seconds"], 0)
+        trace.invocation_timing.assert_called_once_with(result.timings)
 
     async def test_one_shot_remains_owned_until_detach_finishes_and_retains_failure(self) -> None:
         entered, release = asyncio.Event(), asyncio.Event()

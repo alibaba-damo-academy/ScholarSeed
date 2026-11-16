@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import PurePath
@@ -28,7 +29,13 @@ from service.literature.schema import (
     LiteratureItem,
 )
 from service.paths import SERVICE_LITERATURE_FILES_DIR
-from service.platform.citations import PdfIndexForgetPort
+from service.platform.activity import MaintenanceActive
+from service.platform.citations import (
+    LITERATURE_STORAGE,
+    CitationDocument,
+    PdfIndexForgetPort,
+    PdfIndexPort,
+)
 from service.platform.files import guess_media_type
 from service.platform.pdf import PdfDocumentError, pdf_document_info
 
@@ -147,11 +154,54 @@ class LiteratureAttachmentContent:
     def __init__(self, repository: LiteratureRepository | None = None) -> None:
         self._repository = repository or LiteratureRepository()
 
-    def attachment(self, literature_id: str, attachment_id: str) -> LiteratureAttachment:
-        attachment = self._repository.attachment(literature_id, attachment_id)
+    def attachment(
+        self, literature_id: str, attachment_id: str, *, read_only: bool = False
+    ) -> LiteratureAttachment:
+        attachment = self._repository.attachment(literature_id, attachment_id, read_only=read_only)
         if attachment is None:
             raise ContentError(ATTACHMENT_MISSING)
         return attachment
+
+    def prewarm(
+        self, indexes: PdfIndexPort | None, literature_id: str, attachment_id: str = ""
+    ) -> None:
+        """Attempt optional indexing without making attachment access wait for admission."""
+        if indexes is None:
+            return
+        try:
+            attachment = (
+                self.attachment(literature_id, attachment_id)
+                if attachment_id
+                else self._repository.primary_attachment(literature_id)
+            )
+            if attachment is None:
+                return
+            payload, media_type, revision = self.read_attachment(literature_id, attachment.id)
+            if media_type != PDF_MEDIA_TYPE:
+                return
+            indexes.prepare(
+                CitationDocument(
+                    "",
+                    f"{literature_id}/{attachment.id}",
+                    attachment.name,
+                    revision,
+                    payload,
+                    storage_scope=LITERATURE_STORAGE,
+                )
+            )
+        except MaintenanceActive:
+            LOGGER.debug(
+                "PDF index prewarm skipped during maintenance: literature_id=%s attachment_id=%s",
+                literature_id,
+                attachment_id,
+            )
+        except (ContentError, OSError, ValueError, sqlite3.Error):
+            LOGGER.warning(
+                "PDF index prewarm unavailable: literature_id=%s attachment_id=%s",
+                literature_id,
+                attachment_id,
+                exc_info=True,
+            )
 
     def location_attachment(self, attachment: LiteratureAttachment) -> str:
         """Return the file a row owns, refusing anything outside the literature store.
@@ -192,8 +242,10 @@ class LiteratureAttachmentContent:
         self,
         literature_id: str,
         attachment_id: str,
+        *,
+        read_only: bool = False,
     ) -> tuple[bytes, str, str]:
-        attachment = self.attachment(literature_id, attachment_id)
+        attachment = self.attachment(literature_id, attachment_id, read_only=read_only)
         if not attachment.path or not is_managed_attachment(attachment.path):
             raise ContentError(ATTACHMENT_MISSING)
         try:

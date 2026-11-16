@@ -323,6 +323,12 @@ test('button class contract includes variant, size and caller class', () => {
   assert.match(buttonStyleClassName({ size: 'xs' }), /\[&_svg\]:size-\[var\(--vds-icon-6\)\]/)
 })
 
+test('secondary buttons retain the brand border only when enabled', () => {
+  const classes = buttonStyleClassName({ variant: 'secondary' }).split(' ')
+  assert.ok(classes.includes('![border-color:var(--vds-brand-light-border)]'))
+  assert.ok(classes.includes('disabled:![border-color:transparent]'))
+})
+
 test('loading controls are disabled through the shared contract', () => {
   assert.equal(controlDisabled(false, true), true)
   assert.equal(controlDisabled(true, false), true)

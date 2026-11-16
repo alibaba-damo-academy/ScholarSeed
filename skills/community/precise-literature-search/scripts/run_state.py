@@ -34,8 +34,19 @@ def new_run_id() -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
 
 
-def initialize_run(work_dir: Path, request: str | None = None) -> Path:
-    root = canonical_path(work_dir) / RUN_ROOT_NAME / "runs"
+def initialize_run(
+    work_dir: Path, request: str | None = None, *, session_dir: Path | None = None
+) -> Path:
+    work_dir = canonical_path(work_dir)
+    base = work_dir
+    if session_dir is not None:
+        destination = work_dir / session_dir
+        destination.relative_to(work_dir)
+        base = destination
+        run_root = base / RUN_ROOT_NAME / "runs"
+        if ".." in destination.parts or canonical_path(run_root) != run_root:
+            raise ValueError("unsafe session run directory")
+    root = base / RUN_ROOT_NAME / "runs"
     while True:
         run_dir = root / new_run_id()
         try:
@@ -76,6 +87,8 @@ def initialize_run(work_dir: Path, request: str | None = None) -> Path:
         ],
         "errors": [],
     }
+    if session_dir is not None:
+        state["activation_workspace"] = run_dir.relative_to(work_dir).as_posix()
     atomic_write_json(run_dir / "state.json", state)
     atomic_write_json(run_dir / "workflow.json", {"schema_version": "2.0", "run_id": run_dir.name, "auto_delegated": False})
     return run_dir

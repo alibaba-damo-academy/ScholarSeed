@@ -161,7 +161,7 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
     language: 'zh', theme, browserAutomationEnabled: false,
     onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
   }))
-  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(runtime, testInfo, { browserEnabled: true, browserAdvancedSettings: true, nativeWindowLifecycle: true })
   const directory = resolve('../../tmp/test_snapshot/desktop/browser-overlay')
   await mkdir(directory, { recursive: true })
   try {
@@ -364,6 +364,7 @@ for (const theme of START_PAGE_THEMES) test(`native address suggestions preserve
     await expect(page.getByRole('dialog', { name: '设置' })).toBeVisible()
     await dismissed()
     await page.getByTestId('account-settings-nav-browser').click()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     await page.getByRole('switch', { name: '启用浏览器自动化', exact: true }).click()
     await page.getByRole('button', { name: '复制 CDP 地址', exact: true }).click()
     const endpoint = await desktop.app!.evaluate(({ clipboard }) => clipboard.readText())
@@ -528,7 +529,7 @@ for (const addressCase of [
 test('external Playwright process controls only pages in the real Desktop browser', async ({ browserName }, testInfo) => {
   expect(browserName).toBe('chromium')
   test.setTimeout(120_000)
-  const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { browserEnabled: true, browserAdvancedSettings: true, nativeWindowLifecycle: true })
   const privateFile = testInfo.outputPath('cdp-private-canary.html')
   await writeFile(privateFile, '<title>CDP_PRIVATE_CANARY</title>')
   let privateRequests = 0
@@ -559,6 +560,7 @@ test('external Playwright process controls only pages in the real Desktop browse
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
     await expect(page.getByTestId('account-settings-browser')).toBeVisible()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     await page.getByRole('switch', { name: '启用浏览器自动化', exact: true }).click()
     await page.getByRole('button', { name: '复制 CDP 地址', exact: true }).click()
     await expect(page.getByRole('status').filter({ hasText: 'CDP 地址已复制' })).toBeVisible()
@@ -661,6 +663,7 @@ test('external Playwright process controls only pages in the real Desktop browse
     expect(privateRequests).toBe(0)
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     await page.getByRole('switch', { name: '停用浏览器自动化', exact: true }).click()
     await page.getByRole('dialog', { name: '设置' }).getByRole('button', { name: '关闭', exact: true }).click()
     const disabled = new WebSocket(endpoint)
@@ -690,7 +693,7 @@ test('external Playwright process controls only pages in the real Desktop browse
 test('public navigation remains available after disabling browser automation', async ({ browserName }, testInfo) => {
   expect(browserName).toBe('chromium')
   test.setTimeout(120_000)
-  const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { browserEnabled: true, browserAdvancedSettings: true, nativeWindowLifecycle: true })
   try {
     const launching = desktop.launch()
     await expect.poll(() => desktop.app?.windows().find(candidate => candidate.url().startsWith('http:'))?.url(), { timeout: 45_000 }).toBeTruthy()
@@ -706,6 +709,7 @@ test('public navigation remains available after disabling browser automation', a
     const nativeWindow = await desktop.browserWindow(page)
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     await page.getByRole('switch', { name: '启用浏览器自动化', exact: true }).click()
     await page.getByRole('switch', { name: '停用浏览器自动化', exact: true }).click()
     await page.getByRole('dialog', { name: '设置' }).getByRole('button', { name: '关闭', exact: true }).click()
@@ -739,7 +743,7 @@ test('external Playwright controls a public form inside the product browser', as
   expect(browserName).toBe('chromium')
   test.setTimeout(120_000)
   const formUrl = 'https://httpbingo.org/forms/post'
-  const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { browserEnabled: true, nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(createRuntime(testInfo), testInfo, { browserEnabled: true, browserAdvancedSettings: true, nativeWindowLifecycle: true })
   try {
     const launching = desktop.launch()
     await expect.poll(() => desktop.app?.windows().find(candidate => candidate.url().startsWith('http:'))?.url(), { timeout: 45_000 }).toBeTruthy()
@@ -761,6 +765,7 @@ test('external Playwright controls a public form inside the product browser', as
     }, { timeout: 45_000 }).toEqual({ url: formUrl, loading: false, error: null })
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-browser').click()
+    await page.getByRole('button', { name: '高级设置', exact: true }).click()
     await page.getByRole('switch', { name: '启用浏览器自动化', exact: true }).click()
     await page.getByRole('button', { name: '复制 CDP 地址', exact: true }).click()
     await page.getByRole('dialog', { name: '设置' }).getByRole('button', { name: '关闭', exact: true }).click()

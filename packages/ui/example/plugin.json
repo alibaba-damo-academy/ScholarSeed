@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "host": ">=0.2.0,<0.3.0",
   "skill": "SKILL.md",
-  "ui": {"compatibility": "1.0", "exports": ["React", "mount", "Button", "Checkbox"]},
+  "ui": {"compatibility": "2.0", "exports": ["React", "mount", "Button", "Checkbox"]},
   "capabilities": ["interaction.answer"],
   "components": [
     {

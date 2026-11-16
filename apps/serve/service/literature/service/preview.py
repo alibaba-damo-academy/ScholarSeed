@@ -7,6 +7,8 @@ from typing import Any, Literal
 from pydantic import TypeAdapter, ValidationError
 
 from service.literature.service.analysis import ActionKind, AnalysisRequest
+from service.literature.service.structure import align_translation
+from service.literature.service.utils import translation_text
 
 PARTIAL_JSON_MODE: Literal["trailing-strings"] = "trailing-strings"
 PREVIEW_ACTIONS = frozenset(
@@ -51,7 +53,10 @@ def summary_preview(partial: dict) -> dict:
 
 
 def project_preview(
-    output: str, request: AnalysisRequest, completed_blocks: list[dict] | None = None
+    output: str,
+    request: AnalysisRequest,
+    completed_blocks: list[dict] | None = None,
+    structure: tuple[dict, ...] = (),
 ) -> dict:
     if request.kind not in PREVIEW_ACTIONS:
         return {}
@@ -61,10 +66,19 @@ def project_preview(
         return {}
     if request.kind == ActionKind.INTERPRETATION:
         return summary_preview(partial)
+    if request.kind == ActionKind.WORD_TRANSLATION:
+        candidates = partial.get("blocks")
+        blocks = (
+            [block for block in candidates if isinstance(block, dict)]
+            if isinstance(candidates, list)
+            else []
+        )
+        selection_text = translation_text(blocks)
+        return {"text": selection_text} if selection_text else {}
     if request.kind != ActionKind.TRANSLATION:
         text = partial.get("text")
         return {"text": text} if isinstance(text, str) and text else {}
-    blocks = list(completed_blocks or ())
+    blocks = [dict(block) for block in completed_blocks or ()]
     pages = partial.get("pages")
     for page in pages if isinstance(pages, list) else ():
         if not isinstance(page, dict) or page.get("page") != request.page:
@@ -83,6 +97,10 @@ def project_preview(
                     "located": False,
                     "paragraph_start": block.get("paragraph_start") is True,
                     "heading": block.get("heading") is True,
+                    "heading_level": block.get("heading_level"),
+                    "block_id": block.get("block_id"),
+                    "translated_spans": block.get("translated_spans"),
                 }
             )
+    align_translation(blocks, structure, partial=True)
     return {"pages": [{"page": request.page, "blocks": blocks}]} if blocks else {}

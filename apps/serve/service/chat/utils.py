@@ -10,11 +10,43 @@ from pathlib import Path
 from typing import Any
 
 from service.chat.constants import TURN_ERROR_PHASE, TURN_FAILED_CODE
+from service.content.domain.model import PROJECT_STATE_DIRNAME
+from service.platform.storage import copy_tree
 
 SESSION_LIST_CURSOR_MAX_CHARS = 2048
 SESSION_LIST_CURSOR_INVALID = "session_list_cursor_invalid"
 SESSION_LIST_CURSOR_FIELDS = 2
 SESSION_LIST_PINNED_CURSOR_FIELDS = 3
+SESSION_FORK_COPIED_FIELD = "copied_workspace"
+SESSION_FORK_EXCLUDED_NAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".codex",
+        PROJECT_STATE_DIRNAME,
+        ".env",
+        "auth.json",
+        "credentials.json",
+    }
+)
+
+
+def copy_session_files(source: Path, target: Path) -> None:
+    copy_tree(source, target, excluded=SESSION_FORK_EXCLUDED_NAMES)
+
+
+def copied_session_path(path: str, source: Path, target: Path) -> str:
+    candidate = Path(path)
+    if (
+        not candidate.is_absolute()
+        or not candidate.is_relative_to(source)
+        or ".." in candidate.parts
+    ):
+        return path
+    return str(target / candidate.relative_to(source))
 
 
 def session_list_cursor(updated_at: float, session_id: str, pinned: bool | None = None) -> str:
@@ -34,12 +66,14 @@ def parse_session_list_cursor(cursor: str) -> tuple[float, str, bool | None] | N
         if (
             not isinstance(values, list)
             or len(values) not in (SESSION_LIST_CURSOR_FIELDS, SESSION_LIST_PINNED_CURSOR_FIELDS)
-            or type(values[0]) not in (int, float)
+            or (not isinstance(values[0], (int, float)) or isinstance(values[0], bool))
             or not math.isfinite(values[0])
             or values[0] < 0
             or not isinstance(values[1], str)
             or not values[1]
-            or (len(values) == SESSION_LIST_PINNED_CURSOR_FIELDS and type(values[2]) is not bool)
+            or (
+                len(values) == SESSION_LIST_PINNED_CURSOR_FIELDS and not isinstance(values[2], bool)
+            )
         ):
             raise ValueError(SESSION_LIST_CURSOR_INVALID)
         return (

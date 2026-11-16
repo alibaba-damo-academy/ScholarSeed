@@ -9,7 +9,7 @@ const child = require('node:child_process')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const toolchain = require('../../pre/toolchain.cjs')
-const { debugPaths, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer } = require('../desktop.cjs')
+const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer } = require('../desktop.cjs')
 
 test('automatic reload reports its triggering paths before notifying the supervisor', async context => {
   const watchers = []
@@ -229,6 +229,28 @@ test('worktree identity isolates state and resolves aliases to the same workspac
   assert.notEqual(path.dirname(paths.home), path.dirname(debugPaths(second, root).home))
   assert.equal(path.dirname(paths.home), path.dirname(paths.profile))
   assert.ok(paths.home.startsWith(root + path.sep))
+})
+
+test('development children isolate Codex storage without changing caller configuration', context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'debug-environment-'))
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const environments = ['first', 'second'].map(name => {
+    const directory = path.join(root, name)
+    fs.mkdirSync(directory)
+    const paths = debugPaths(directory, root)
+    const caller = { PATH: 'caller-path', CODEX_HOME: 'caller-codex', NODE_OPTIONS: '--inspect' }
+    const environment = debugEnvironment(paths, caller)
+    assert.equal(environment.SCHOLARSEED_CODEX_HOME, path.join(paths.home, 'codex'))
+    assert.equal(environment.SCHOLARSEED_HOME, paths.home)
+    assert.equal(environment.PATH, caller.PATH)
+    assert.equal(environment.NODE_OPTIONS, undefined)
+    assert.equal(caller.NODE_OPTIONS, '--inspect')
+    assert.equal(caller.SCHOLARSEED_CODEX_HOME, undefined)
+    assert.throws(() => debugEnvironment(paths, { CODEX_SQLITE_HOME: 'shared-db' }), /shared overrides/)
+    assert.throws(() => debugEnvironment(paths, { SCHOLARSEED_CODEX_HOME: 'shared-home' }), /shared overrides/)
+    return environment
+  })
+  assert.notEqual(environments[0].SCHOLARSEED_CODEX_HOME, environments[1].SCHOLARSEED_CODEX_HOME)
 })
 
 test('exclusive launcher lock prevents duplicate startup and only owner releases it', context => {

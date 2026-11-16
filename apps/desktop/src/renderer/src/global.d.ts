@@ -1,6 +1,6 @@
 import type { SubscriptionRequest, SubscriptionReply } from '../../subscriptions'
-import type { DeliveryRequest, DeliverySaveRequest, DeliveryNativeReply } from '../../delivery'
 import type { BrowserBridge } from '../../browser'
+import type { PortalBridge, FloatingPortalBridge, ResizePortalBridge } from '../../portal'
 import type { VaultBridge, VaultViewBridge } from '../../vault'
 import type { MenuBridge, MenuViewBridge } from '../../menu'
 import type { BrowserOverlayBridge, SuggestionsBridge } from '../../overlay'
@@ -16,15 +16,16 @@ import type { TrayNavigation, TrayReply } from '../../tray'
 import type { PreferenceLanguage, RendererPreferences } from '../../preferences'
 import type { PreferenceSubmission } from '../../preference-diagnostics'
 import type { PreferenceShutdownRequest, PreferenceShutdownReply } from '../../quiescence'
-import type { SystemPermissionId, SystemPermissionsSnapshot } from '../../permissions'
+import type { SystemPermissionTarget, SystemPermissionsSnapshot } from '../../permissions'
 import type { CommitDataHomeResult, StorageConfig } from '../../storage'
-import type { OfficeImageResult, OfficeImageSource } from '../../images'
+import type { OfficeImageResult, OfficeImageSource, RemoteImageResult } from '../../images'
 import type { OfficeClipboardResult } from '../../main/clipboard'
 import type { OfficeFontCatalog, OfficeFontCache } from '../../fonts'
 import type { ClipboardContentPayload, ClipboardContentResult } from '../../clipboard'
-import type { ImportPickerTarget } from '../../picker'
+import type { ImportPickerTarget, ImportPreview } from '../../picker'
 import type { DeviceSkillRequest, DeviceSkillResponse } from '../../skills'
 import type { McpSettingsRequest, McpSettingsResponse } from '../../mcp-settings'
+import type { TranslationRequest, TranslationReply } from '../../translation'
 import type {
   FeedbackClipboardImageResult,
   FeedbackScreenshotResult,
@@ -68,6 +69,11 @@ import type { NotificationBridge } from '../../notifications'
 
 declare global {
   interface ScholarSeedBridge {
+    settingsPortal?: PortalBridge
+    updatePortal?: PortalBridge
+    conversationPortal?: FloatingPortalBridge
+    foregroundPortal?: FloatingPortalBridge
+    resizePortal?: ResizePortalBridge
     confirmUpdateWorkbenchReady?: () => Promise<boolean>
     vault?: VaultBridge
     menu?: MenuBridge
@@ -90,6 +96,7 @@ declare global {
     onPluginNavigation?: (callback: () => void) => () => void
     onPluginRevoked: (callback: (lease: string) => void) => () => void
     mcpSettings: (request: McpSettingsRequest) => Promise<McpSettingsResponse>
+    translation?: (request: TranslationRequest) => Promise<TranslationReply>
     getStartup?: () => StartupSnapshot
     onStartup?: (callback: (snapshot: StartupSnapshot) => void) => () => void
     retryStartup?: () => Promise<boolean>
@@ -105,6 +112,8 @@ declare global {
     channel: string
     developerToolsEnabled: boolean
     browserEnabled: boolean
+    browserAdvancedSettingsEnabled: boolean
+    browserAgentNavigationEnabled?: boolean
     feedbackRecorderEnabled: boolean
     preferences: RendererPreferences
     reconcilePreferences: () => Promise<RendererPreferences>
@@ -118,7 +127,7 @@ declare global {
     ) => () => void
     respondPreferenceShutdown?: (reply: PreferenceShutdownReply) => Promise<boolean>
     systemPermissions: () => Promise<SystemPermissionsSnapshot>
-    openSystemPermission: (id: SystemPermissionId) => Promise<boolean>
+    openSystemPermission: (id: SystemPermissionTarget) => Promise<boolean>
     onNotificationClick: (cb: (attentionId: string) => void) => () => void
     notifications?: NotificationBridge
     openTrash: () => Promise<{ ok: boolean; path?: string; error?: string }>
@@ -150,11 +159,9 @@ declare global {
       workspaceRoot?: string
     ) => Promise<{ ok: boolean; error?: string }>
     pickDir: () => Promise<string | null>
-    pickDeliveryDirectory: (request: DeliveryRequest) => Promise<DeliveryNativeReply>
-    saveDelivery: (request: DeliverySaveRequest) => Promise<DeliveryNativeReply>
-    openDeliveryDirectory: (request: DeliveryRequest) => Promise<DeliveryNativeReply>
     /** 写系统剪贴板。不走 navigator.clipboard（要求文档聚焦，桌面端易失焦被拒）。 */
     acquireOfficeImage: (source: OfficeImageSource) => Promise<OfficeImageResult>
+    readRemoteImage: (url: string) => Promise<RemoteImageResult>
     writeClipboard: (text: string) => Promise<{ ok: boolean; error?: string }>
     writeClipboardContent: (payload: ClipboardContentPayload) => Promise<ClipboardContentResult>
     pasteClipboard: () => Promise<boolean>
@@ -162,11 +169,19 @@ declare global {
     readOfficeClipboard: () => Promise<OfficeClipboardResult>
     /** 资料导入：按指定范围多选本地资料，取消返回空数组。 */
     pickImport: (target: ImportPickerTarget) => Promise<string[]>
+    pickImportPreview: (target: ImportPickerTarget) => Promise<ImportPreview[]>
     pickExecutable: () => Promise<string | null>
-    saveFileCopy: (payload: {
-      suggestedName: string
-      bytes: Uint8Array
-    }) => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>
+    saveFileCopy: (
+      payload:
+        | {
+            suggestedName: string
+            bytes: Uint8Array
+          }
+        | {
+            suggestedName: string
+            sourcePath: string
+          }
+    ) => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>
     requestOfficeFontAccess: () => Promise<boolean>
     listOfficeFonts: () => Promise<OfficeFontCatalog>
     readOfficeFont: (id: string) => Promise<Uint8Array>

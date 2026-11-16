@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from scholarseed_runtime.contract import RuntimePermissionMode
 from service.chat.api.bridge import scoped_bridge_admission, scoped_bridge_caller
-from service.chat.service.browserhost import BrowserHostClient
+from service.chat.service.browserhost import BrowserHostClient, BrowserScope
 from service.invocation.service.runtime import InvocationService, OneShotExecution
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
@@ -21,7 +21,6 @@ from service.platform.bridge import (
     SEARCH_BROWSER_ROUTE,
     BrowserSearchRequest,
 )
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 SEARCH_BROWSER_SKILLS = {
     "builtin:web-search": frozenset({"browser", "automatic", "fallback"}),
@@ -72,13 +71,7 @@ def register_browser_search_routes(
                 {"ok": False, "error": SEARCH_BROWSER_DENIED, "guidance": SEARCH_BROWSER_GUIDANCE},
                 status_code=403,
             )
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"}, status_code=400
-                )
+        raw = await request.body()
         try:
             command = BrowserSearchRequest.model_validate_json(raw)
         except ValidationError:
@@ -100,7 +93,7 @@ def register_browser_search_routes(
             if not current():
                 return JSONResponse({"ok": False, "error": "stale_scope"})
             execution.browser_search_generation += 1
-            scope = {
+            scope: BrowserScope = {
                 "session_id": execution.id,
                 "instance_id": execution.id,
                 "product_turn_id": turn_id,

@@ -1,9 +1,20 @@
 import { userInfo } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { beginDomains, ensureDirectories, type DomainNative } from '../../native/domains.cjs'
+import { REGISTRY_DIRECTORY } from '../../native/registry.cjs'
+import { writeRecord, type QualifiedRecordWriter } from './journal.ts'
 
 export interface DirectoryWriter {
   close(): void
+}
+
+export interface DirectoryMaintenance extends DirectoryWriter {
+  clearCache(aliases?: readonly (readonly [string, string])[]): void
+  publishCache(staged: string, name: string): void
+}
+
+export interface RecordWriter extends DirectoryMaintenance, QualifiedRecordWriter {
+  replace(name: string, bytes: Buffer): void
 }
 
 // An uncertain release must not become a fresh writer capability. Keep the
@@ -11,12 +22,21 @@ export interface DirectoryWriter {
 const retained: unknown[] = []
 let uncertain = false
 
+export function assertDirectoryOwnership(): void {
+  if (uncertain) throw new Error('Desktop directory ownership requires process exit')
+}
+
+export function retainUncertainDirectoryOwnership(...owners: unknown[]): void {
+  retained.push(...owners)
+  uncertain = true
+}
+
 export function acquireDirectoryWriter(
   native: DomainNative,
   coordinator: string,
   root: string,
   maintenance = false
-): DirectoryWriter {
+): RecordWriter {
   if (uncertain) throw new Error('Desktop directory ownership requires process exit')
   const coordinate = native.pin(coordinator, true)
   try {
@@ -64,22 +84,33 @@ export function acquireDirectoryWriter(
     }
     throw error
   }
-  return { close }
+  return {
+    close,
+    clearCache: (aliases) => domains.clearCache(root, aliases),
+    publishCache: (staged, name) => domains.publishCache(root, staged, name),
+    create: (name, bytes) => domains.create(root, name, bytes),
+    replace: (name, bytes) => domains.replace(root, name, bytes),
+  }
+}
+
+/** Publish without inheriting sandbox-only ACLs from an existing Windows directory. */
+export function writePrivateRecord(path: string, bytes: string | Uint8Array): void {
+  const writer = desktopDirectoryWriter(dirname(path))
+  try {
+    writeRecord(path, bytes, undefined, writer)
+  } finally {
+    writer.close()
+  }
 }
 
 /** Scope to the actual persistence directory, never a broad home lease. */
-export function desktopDirectoryWriter(root: string): DirectoryWriter {
+export function desktopDirectoryWriter(root: string): RecordWriter {
   const native = require('./lease.node') as DomainNative
-  return acquireDirectoryWriter(native, join(userInfo().homedir, '.scholarseed-coordination'), root)
+  return acquireDirectoryWriter(native, join(userInfo().homedir, REGISTRY_DIRECTORY), root)
 }
 
 /** Exclusive maintenance refuses active ancestors, descendants and family owners. */
-export function desktopDirectoryMaintenance(root: string): DirectoryWriter {
+export function desktopDirectoryMaintenance(root: string): DirectoryMaintenance {
   const native = require('./lease.node') as DomainNative
-  return acquireDirectoryWriter(
-    native,
-    join(userInfo().homedir, '.scholarseed-coordination'),
-    root,
-    true
-  )
+  return acquireDirectoryWriter(native, join(userInfo().homedir, REGISTRY_DIRECTORY), root, true)
 }

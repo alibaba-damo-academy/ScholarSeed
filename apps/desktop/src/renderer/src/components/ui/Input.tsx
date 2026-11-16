@@ -13,6 +13,7 @@ import {
 import { cx } from './utils'
 import { IconFont } from '../primitive/Iconfont'
 import type { LocalizationMetadata } from './metadata'
+import type { LabelVariant } from './Label'
 
 export type InputSize = ControlSize
 
@@ -23,6 +24,7 @@ export interface InputProps
   invalid?: boolean
   label?: string
   labelClassName?: string
+  labelVariant?: LabelVariant
   size?: InputSize
   unstyled?: boolean
 }
@@ -53,6 +55,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       invalid = false,
       label,
       labelClassName,
+      labelVariant,
       size = 'md',
       unstyled = false,
       ...props
@@ -75,7 +78,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       <label className={fieldClassName({})} htmlFor={inputId}>
         {label ? (
           <span
-            className={fieldLabelClassName({ className: labelClassName })}
+            className={fieldLabelClassName({ className: labelClassName, variant: labelVariant })}
             {...(labelSource ? { 'data-i18n-text': labelSource } : {})}
           >
             {label}
@@ -129,6 +132,7 @@ export const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
       invalid = false,
       label,
       labelClassName,
+      labelVariant,
       showLabel,
       size = 'md',
       toggleClassName,
@@ -153,7 +157,7 @@ export const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
       <label className={fieldClassName({})} htmlFor={inputId}>
         {label ? (
           <span
-            className={fieldLabelClassName({ className: labelClassName })}
+            className={fieldLabelClassName({ className: labelClassName, variant: labelVariant })}
             {...(labelSource ? { 'data-i18n-text': labelSource } : {})}
           >
             {label}

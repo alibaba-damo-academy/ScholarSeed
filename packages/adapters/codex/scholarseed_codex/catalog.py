@@ -75,8 +75,14 @@ class ModelCatalogSnapshot:
             return self.document == candidate.document
         current = {row["slug"]: row for row in json.loads(self.document)["models"]}
         requested = {row["slug"]: row for row in json.loads(candidate.document)["models"]}
+        current_sources = {entry.model_ref: entry.native_catalog_source for entry in self.entries}
+        requested_sources = {
+            entry.model_ref: entry.native_catalog_source for entry in candidate.entries
+        }
         return all(
-            model in current and current[model] == requested[model]
+            model in current
+            and current[model] == requested[model]
+            and current_sources.get(model, "") == requested_sources.get(model, "")
             for model in candidate.required_models
         )
 

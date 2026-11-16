@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import uuid
 import weakref
 from collections.abc import AsyncIterator, Callable
-from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from hashlib import sha256
@@ -16,6 +15,7 @@ from pathlib import Path
 from time import time
 
 from scholarseed_codex.activity import NativeActivity
+from scholarseed_codex.admission import RetiredExecutionAuthority
 from scholarseed_codex.capacity import DEFAULT_ATTACHMENT_IDLE_SECONDS, CapacityPolicy, HostRole
 from scholarseed_codex.catalog import CatalogPreflightError
 from scholarseed_codex.command import _finish
@@ -30,7 +30,6 @@ from scholarseed_codex.environment import (
 )
 from scholarseed_codex.isolation import ENVIRONMENT_NAME_PATTERN, managed_codex_launch
 from scholarseed_codex.launch import model_connection, validate_model_connection
-from scholarseed_codex.permission import WINDOWS_PLATFORM
 from scholarseed_codex.pool import CodexHostPool, HostLease, PoolReservation
 from scholarseed_codex.profile import (
     CODEX_DISPLAY_NAME,
@@ -261,7 +260,6 @@ class CodexRuntimeProvider:
         return ResourcePolicy(
             self._pool.policy.wait_seconds,
             DEFAULT_ATTACHMENT_IDLE_SECONDS,
-            refresh_before_turn=sys.platform == WINDOWS_PLATFORM,
         )
 
     @asynccontextmanager
@@ -284,6 +282,7 @@ class CodexRuntimeProvider:
                 preparation.callback(self._resource_lease().close)
             try:
                 async with self._prepare_lock:
+                    self._pool.require_unretired_scope(request.process_sharing_scope)
                     if reconfigure and not self._pool.matches_scope(request.process_sharing_scope):
                         if not await self._pool.release_idle():
                             raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
@@ -341,6 +340,8 @@ class CodexRuntimeProvider:
                 self._pool.authorize_scope(request.process_sharing_scope)
                 yield lease
             except BaseException as error:
+                if isinstance(error, RetiredExecutionAuthority):
+                    raise
                 if configuration_reset:
                     self._pool.fence_reconfiguration()
                 if identity_transferred and isinstance(error, Exception):
@@ -391,6 +392,8 @@ class CodexRuntimeProvider:
             return CommandReceipt(
                 command, CommandState.REJECTED, safe_error=MODEL_CATALOG_UNAVAILABLE
             )
+        except RetiredExecutionAuthority as error:
+            return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
         except AppServerError as error:
             if reconfigure and error.safe_error == RESOURCE_HOST_BUSY:
                 return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
@@ -480,30 +483,19 @@ class CodexRuntimeProvider:
                 preparation.callback(self._resource_lease().close)
             with timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
                 launch_environment, tool_environment = await _resolve_launch_secrets(open_request)
-            with ExitStack() as partition:
-                isolated_home = (
-                    self._pool.prepare_home(isolated=True)
-                    if request.purpose is ResourcePurpose.INVOCATION
+            session = CodexRuntimeSession(
+                open_request,
+                resume_binding=(
+                    request.session_request.binding
+                    if isinstance(request.session_request, ResumeSessionRequest)
                     else None
-                )
-                if isolated_home is not None:
-                    partition.callback(self._pool.release_home, isolated_home)
-                session = CodexRuntimeSession(
-                    open_request,
-                    resume_binding=(
-                        request.session_request.binding
-                        if isinstance(request.session_request, ResumeSessionRequest)
-                        else None
-                    ),
-                    launch_environment=launch_environment,
-                    tool_environment=tool_environment,
-                    host_pool=self._pool,
-                    isolated_home=isolated_home,
-                )
-                reservation = await session.prepare_resource(request.request_id, request.deadline)
-                receipt = self._pool.receipt(reservation)
-                if receipt.state in {ResourceState.GRANTED, ResourceState.WAITING}:
-                    partition.pop_all()
+                ),
+                launch_environment=launch_environment,
+                tool_environment=tool_environment,
+                host_pool=self._pool,
+            )
+            reservation = await session.prepare_resource(request.request_id, request.deadline)
+            receipt = self._pool.receipt(reservation)
             self._request_fingerprints[receipt.reservation_id] = fingerprint
             if receipt.state in {ResourceState.GRANTED, ResourceState.WAITING}:
                 self._prepared[receipt.reservation_id] = (request, session, reservation)
@@ -599,8 +591,20 @@ class CodexRuntimeProvider:
             ):
                 raise RuntimeError("runtime resumed a different native session")
             return session
-        except BaseException:
-            await session.detach()
+        except BaseException as error:
+            try:
+                await session.detach()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "Runtime opening and resource cleanup failed", [error, cleanup_error]
+                ) from error
+            if (
+                isinstance(request, OpenSessionRequest)
+                and isinstance(error, AppServerError)
+                and error.thread_open_not_applied
+                and reservation.slot is None
+            ):
+                raise RuntimeOpenNotAppliedError(reservation_id, error.safe_error) from error
             raise
 
     @property
@@ -740,6 +744,9 @@ class CodexRuntimeProvider:
             CommandState.APPLIED if released else CommandState.REJECTED,
             safe_error="" if released else RESOURCE_RELEASE_BUSY,
         )
+
+    def retire_execution_scope(self, scope: str) -> None:
+        self._pool.retire_execution_scope(scope)
 
     async def shutdown(self) -> CommandReceipt:
         await self._pool.aclose()

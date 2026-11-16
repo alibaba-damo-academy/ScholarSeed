@@ -72,6 +72,7 @@ export function synchronizeWorkbenchTab<State extends WorkbenchTabScope>(
  * - file: 资料文件，具体 viewer 由扩展名二次分派
  */
 export type TabKind =
+  | 'canvas'
   | 'overview'
   | 'new_tab'
   | 'library'
@@ -86,13 +87,19 @@ export type TabKind =
   | 'file'
 
 export interface WorkbenchTab {
+  literatureReview?: Record<string, unknown>
   libraryCategory?: 'materials' | 'literature' | 'outputs'
   /** 稳定标识：overview/literature/review 用种类名，file 用相对路径。 */
   id: string
   kind: TabKind
   title: string
+  pageTitle?: string
+  browserPageId?: string
+  browserPageOwned?: boolean
+  favicon?: string
   titleFallback?:
     | 'literatureResult'
+    | 'literatureReview'
     | 'newTab'
     | 'projectFiles'
     | 'projectExplorer'
@@ -103,6 +110,8 @@ export interface WorkbenchTab {
   closable: boolean
   /** 页签创建时的项目作用域；null 表示全局，未设置表示跨项目共享。 */
   projectId?: string | null
+  canvasSessionId?: string
+  restoreCanvas?: boolean
   navigationView?: 'resource' | 'literature'
 }
 
@@ -177,7 +186,7 @@ export const LITERATURE_TAB: WorkbenchTab = {
  * 反向标注类型会成环。
  */
 export const FIXED_TAB_BY_VIEW: Record<string, WorkbenchTab> = {
-  browser: { id: 'browser', kind: 'browser', title: BROWSER_TAB_TITLE, closable: false },
+  browser: { id: 'browser', kind: 'browser', title: BROWSER_TAB_TITLE, closable: true },
   projects: PROJECTS_TAB,
   literature: LITERATURE_TAB,
 }
@@ -207,7 +216,11 @@ export function openFileTab(tabs: WorkbenchTab[], path: string): WorkbenchTab[] 
 
 /** 打开一个固定种类的标签（项目/文献库）。 */
 export function openFixedTab(tabs: WorkbenchTab[], tab: WorkbenchTab): WorkbenchTab[] {
-  if (tabs.some((existing) => existing.id === tab.id)) return tabs
+  const existing = tabs.find((entry) => entry.id === tab.id)
+  if (existing)
+    return existing.closable === tab.closable
+      ? tabs
+      : tabs.map((entry) => (entry.id === tab.id ? { ...entry, closable: tab.closable } : entry))
   return [...tabs, tab]
 }
 
@@ -218,7 +231,7 @@ export function openWorkbenchTab(
   policy: AvailabilityPolicy = availabilityPolicy
 ): WorkbenchTab[] {
   if (!policy.routeAvailable(view) || !policy.tabAvailable(tab)) return tabs
-  const fixed = fixedTabForView(view, policy)
+  const fixed = tab.kind === 'browser' ? undefined : fixedTabForView(view, policy)
   return openFixedTab(fixed ? openFixedTab(tabs, fixed) : tabs, tab)
 }
 
@@ -247,6 +260,22 @@ export function activeNavigationTabId(
 
 export function tabMatchesProject(tab: WorkbenchTab, projectId: string | null): boolean {
   return tab.projectId === undefined || tab.projectId === projectId
+}
+
+export function shouldRestoreDocumentFocus({
+  document,
+  located,
+  openPage,
+  requestedId,
+  previousFocusedId,
+}: {
+  document: boolean
+  located: boolean
+  openPage: boolean
+  requestedId: string
+  previousFocusedId: string | null
+}): boolean {
+  return document || located || (!openPage && requestedId === previousFocusedId)
 }
 
 export function restoreProjectWorkbenchTab(
@@ -339,12 +368,22 @@ export function projectExplorerTab(projectId: string | null, title: string): Wor
 export function selectProjectTab(
   tabs: WorkbenchTab[],
   tabId: string,
-  kind: 'library' | 'explorer'
+  kind: 'library' | 'explorer' | 'browser'
 ): WorkbenchTab[] {
   if (!tabs.some((tab) => tab.id === tabId && tab.kind === 'new_tab')) return tabs
   return tabs.map((tab) =>
     tab.id === tabId
-      ? { ...tab, kind, titleFallback: kind === 'library' ? 'projectFiles' : 'projectExplorer' }
+      ? {
+          ...tab,
+          kind,
+          title: kind === 'browser' ? BROWSER_TAB_TITLE : tab.title,
+          titleFallback:
+            kind === 'browser'
+              ? undefined
+              : kind === 'library'
+                ? 'projectFiles'
+                : 'projectExplorer',
+        }
       : tab
   )
 }
@@ -352,18 +391,19 @@ export function selectProjectTab(
 export function resolveProjectTabSelection(
   tabs: WorkbenchTab[],
   tabId: string,
-  kind: 'library' | 'explorer',
+  kind: 'library' | 'explorer' | 'browser',
   paneTabIds?: readonly string[]
 ): { tabs: WorkbenchTab[]; activeTab: string } {
   const blank = tabs.find((tab) => tab.id === tabId && tab.kind === 'new_tab')
-  const existing = blank
-    ? tabs.find(
-        (tab) =>
-          tab.kind === kind &&
-          tabMatchesProject(tab, blank.projectId ?? null) &&
-          (!paneTabIds || paneTabIds.includes(tab.id))
-      )
-    : undefined
+  const existing =
+    blank && kind !== 'browser'
+      ? tabs.find(
+          (tab) =>
+            tab.kind === kind &&
+            tabMatchesProject(tab, blank.projectId ?? null) &&
+            (!paneTabIds || paneTabIds.includes(tab.id))
+        )
+      : undefined
   return {
     tabs: existing ? tabs : selectProjectTab(tabs, tabId, kind),
     activeTab: existing?.id ?? tabId,
@@ -532,20 +572,25 @@ export function openLiteratureSearchTabs(
  * 同一张可见性表，否则位置邻居会落在别的视图的标签上，把整个工作区带走。
  * 视图键用 string 而非 MainView：store 依赖本模块，反向标注类型会成环。
  */
+export function documentTabsVisibleInView(mainView: string): boolean {
+  return mainView === 'resource' || mainView === 'literature' || mainView === 'browser'
+}
+
 export function tabVisibleInCurrentView(
   kind: TabKind,
   mainView: string,
   policy: AvailabilityPolicy = availabilityPolicy
 ): boolean {
   if (!policy.routeAvailable(mainView) || !policy.tabAvailable({ kind, id: kind })) return false
-  if (kind === 'browser' || mainView === 'browser')
-    return kind === 'browser' && mainView === 'browser'
+  if (kind === 'browser') return mainView === 'browser' || mainView === 'resource'
+  if (mainView === 'browser') return tabVisibleInCurrentView(kind, 'resource', policy)
   if (kind === 'overview') return false
   if (mainView === 'projects') return kind === 'projects'
   if (mainView === 'literature') return kind === 'literature' || kind === 'literature_search'
   if (mainView === 'resource')
     return (
       kind === 'new_tab' ||
+      kind === 'canvas' ||
       kind === 'library' ||
       kind === 'explorer' ||
       kind === 'file' ||
@@ -556,19 +601,29 @@ export function tabVisibleInCurrentView(
   return kind !== 'projects' && kind !== 'literature' && kind !== 'literature_search'
 }
 
-export function workbenchTabVisible(tab: WorkbenchTab, mainView: string): boolean {
-  if (tab.navigationView)
+export function workbenchTabVisible(
+  tab: WorkbenchTab,
+  mainView: string,
+  sessionId: string | null = null,
+  policy: AvailabilityPolicy = availabilityPolicy
+): boolean {
+  if (tab.kind === 'canvas' && tab.canvasSessionId !== sessionId) return false
+  if (tab.navigationView) {
+    const sharedResourceView = mainView === 'browser' && tab.navigationView === 'resource'
     return (
-      availabilityPolicy.routeAvailable(mainView) &&
-      tab.navigationView === mainView &&
-      availabilityPolicy.tabAvailable(tab)
+      policy.routeAvailable(mainView) &&
+      (tab.navigationView === mainView || sharedResourceView) &&
+      policy.tabAvailable(tab)
     )
-  return tabVisibleInCurrentView(tab.kind, mainView)
+  }
+  return tabVisibleInCurrentView(tab.kind, mainView, policy)
 }
 
 export interface CloseTabContext {
+  sessionId?: string | null
   paneTabIds?: readonly string[]
   projectId?: string | null
+  policy?: AvailabilityPolicy
   /** 关闭发生时的工作区视图；接替标签必须在该视图可见。 */
   view: string
   /** 同视图没有剩余 workbench 标签时的接替 id（如当前视图文档焦点标签）；空则回视图固定标签。 */
@@ -604,7 +659,7 @@ export function closeTab(
     ]
     if (candidates.length) return { tabs: next, activeId: candidates[0] }
   }
-  const [nearest] = sameViewNeighbours(next, index, context.view, context.projectId)
+  const [nearest] = sameViewNeighbours(next, index, context)
   if (nearest !== undefined) return { tabs: next, activeId: next[nearest].id }
   if (context.viewFallbackId) return { tabs: next, activeId: context.viewFallbackId }
   const fixed = context.view === 'literature' ? LITERATURE_TAB : OVERVIEW_TAB
@@ -615,21 +670,36 @@ export function closeTab(
 function sameViewNeighbours(
   tabs: WorkbenchTab[],
   closedIndex: number,
-  view: string,
-  projectId?: string | null
+  { view, projectId, sessionId, policy }: CloseTabContext
 ): number[] {
   const ordered: number[] = []
   for (let cursor = closedIndex; cursor < tabs.length; cursor += 1) ordered.push(cursor)
   for (let cursor = closedIndex - 1; cursor >= 0; cursor -= 1) ordered.push(cursor)
   return ordered.filter(
     (cursor) =>
-      workbenchTabVisible(tabs[cursor], view) &&
+      workbenchTabVisible(tabs[cursor], view, sessionId, policy) &&
       (projectId === undefined || tabMatchesProject(tabs[cursor], projectId))
   )
 }
 
 export const LITERATURE_RESULT_PREFIX = 'literature-result:'
+
+export function isLiteratureResultTab(tabId: string): boolean {
+  return tabId.startsWith(LITERATURE_RESULT_PREFIX)
+}
+
+export function mainViewForWorkbenchTab(
+  tab: WorkbenchTab | undefined
+): 'projects' | 'browser' | 'literature' | 'resource' | null {
+  if (!tab || tab.kind === 'overview') return null
+  if (tab.navigationView) return tab.navigationView
+  if (tab.kind === 'projects') return 'projects'
+  if (tab.kind === 'browser') return 'browser'
+  if (['literature', 'literature_search'].includes(tab.kind)) return 'literature'
+  return 'resource'
+}
 export interface LiteratureResultReference {
+  review?: Record<string, unknown>
   session_id: string
   card_id: string
   title: string
@@ -641,12 +711,24 @@ export function literatureResultTab(
   return {
     id: `${LITERATURE_RESULT_PREFIX}${encodeURIComponent(result.session_id)}/${encodeURIComponent(result.card_id)}`,
     kind: 'literature_search',
+    ...(result.review ? { literatureReview: result.review } : {}),
     title: result.title,
-    titleFallback: 'literatureResult',
+    titleFallback: result.review ? 'literatureReview' : 'literatureResult',
     closable: true,
     projectId,
     navigationView: projectId ? 'resource' : 'literature',
   }
+}
+
+export function literatureResultNavigation(
+  tabs: WorkbenchTab[],
+  result: LiteratureResultReference,
+  projectId: string | null
+): { mainView: 'resource' | 'literature'; tabs: WorkbenchTab[]; activeTab: string } {
+  const tab = literatureResultTab(result, projectId)
+  const mainView = projectId ? 'resource' : 'literature'
+  const updated = tabs.map((entry) => (entry.id === tab.id ? { ...entry, ...tab } : entry))
+  return { mainView, tabs: openWorkbenchTab(updated, mainView, tab), activeTab: tab.id }
 }
 
 /** Resolve application-owned labels without rewriting stored titles or search criteria. */
@@ -655,6 +737,7 @@ export function workbenchTabTitle(
   literature: TFunction<'literature'>,
   workbench: TFunction<'workbench'>
 ): string {
+  if (tab.titleFallback === 'literatureReview') return tab.title || literature('review.receipt')
   if (tab.kind === 'projects') return workbench('tabs.projects')
   if (tab.titleFallback === 'newTab') return workbench('tabs.newTab')
   if (tab.titleFallback === 'projectFiles') return workbench('tabs.projectFiles')
@@ -667,6 +750,6 @@ export function workbenchTabTitle(
     return literature('result.aiSearchTitle', { query: tab.titleFallback.query })
   }
   return tab.titleFallback === 'literatureResult'
-    ? literature('result.tabTitle', { title: tab.title || literature('result.untitledSearch') })
+    ? tab.title || literature('result.tabTitle', { title: literature('result.untitledSearch') })
     : tab.title
 }

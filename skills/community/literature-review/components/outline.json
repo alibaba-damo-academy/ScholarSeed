@@ -1,6 +1,6 @@
 {
   "data": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "session_id": "plugin-preview",
     "workspace": "sample-review",
     "checkpoint": "outline",
@@ -44,12 +44,14 @@
     "included": 2,
     "fulltext": 1,
     "abstract_only": 1,
-    "pending_checks": 0,
-    "cited": 2,
-    "citations": [],
-    "abstract_evidence": [],
-    "checks": [],
-    "issues": [],
+    "references": {
+      "cited_count": 2,
+      "rows": []
+    },
+    "verification": {
+      "issue_count": 0,
+      "rows": []
+    },
     "warnings": [],
     "source_hashes": {},
     "artifacts": []

@@ -702,7 +702,7 @@ test('same-project resource and literature document tabs share the top navigatio
   )
   assert.match(
     tabBarSource,
-    /const documentTabs: NavigationTabItem\[\] =\s*state\.mainView === 'resource' \|\| state\.mainView === 'literature'/
+    /const documentTabs: NavigationTabItem\[\] = documentTabsVisibleInView\(state\.mainView\)/
   )
   assert.match(tabBarSource, /\? Object\.values\(documents\.tabs\)\.flatMap/)
   assert.match(
@@ -756,12 +756,12 @@ test('same-project resource and literature document tabs share the top navigatio
   assert.match(storeSource, /workspace\.focusTab\(activeTab\)/)
   assert.match(
     workbenchSource,
-    /if \(documents\.tabs\[state\.activeTab\] \|\| pageTabs\.some\(\(page\) => page\.id === state\.activeTab\)\)\s*return <DocumentDock \/>/
+    /const dockActive = Boolean\(\s*documents\.tabs\[state\.activeTab\] \|\|\s*pageTabs\.some\(\(page\) => page\.id === state\.activeTab\)[\s\S]*?\(dockActive \|\| retainDock\) && <DocumentDock hidden=\{!dockActive\} \/>/
   )
   assert.match(workbenchSource, /const viewer = featureRegistry\.viewers\.get\(kind\)/)
   assert.match(
     workbenchSource,
-    /viewer\.render\(\{ active: true, path: tab\?\.id \?\? '', tabId: tab\?\.id \}\)/
+    /viewer\.render\(\{ active: true, path: tab\.id, tabId: tab\.id \}\)/
   )
   assert.match(dockSource, /showTabs=\{false\}/)
   assert.match(dockSource, /\{showTabs &&\s*(?:\(\s*)?<TabStrip\b/)
@@ -781,7 +781,6 @@ test('literature attachment entry points share the workspace action and source-o
     './features/assistant/AiPanel.tsx',
     './features/assistant/Outputs.tsx',
     './features/onboarding/adapter.ts',
-    './features/literature/admission.ts',
   ]) {
     assert.match(
       readFileSync(new URL(path, import.meta.url), 'utf8'),
@@ -1061,7 +1060,7 @@ test('resource write feedback uses the shared toast component', () => {
 test('opening a resource is not hidden inside a React state updater', () => {
   assert.match(
     storeSource,
-    /openResourceFile: \(path, projectId, attachment\) => \{[\s\S]*?workspace\.openImported\(source, attachment\)[\s\S]*?workspace\.open\(source, previewFormat\(path\) \? 'preview' : 'edit'\)[\s\S]*?setState\(/
+    /openResourceFile: \(path, projectId, attachment, selection\) => \{[\s\S]*?workspace\.openImported\(source, attachment\)[\s\S]*?workspace\.open\(source, previewFormat\(path\) \? 'preview' : 'edit'\)[\s\S]*?setState\(/
   )
   assert.doesNotMatch(
     storeSource,
@@ -1069,7 +1068,7 @@ test('opening a resource is not hidden inside a React state updater', () => {
   )
   assert.match(
     storeSource,
-    /openResourceFile: \(path, projectId, attachment\) => \{[\s\S]*?opened\.then\(\(tabId\) => \{[\s\S]*?activeTab: tabId/
+    /openResourceFile: \(path, projectId, attachment, selection\) => \{[\s\S]*?opened\.then\(\(tabId\) => \{[\s\S]*?activeTab: tabId/
   )
 })
 
@@ -1204,7 +1203,7 @@ test('global search scopes the empty-query recent list to the active search proj
 test('successful resource opens update the persisted MRU after the document loader resolves', () => {
   assert.match(
     storeSource,
-    /openResourceFile: \(path, projectId, attachment\) => \{[\s\S]*opened\.then\(\(tabId\) => \{[\s\S]*session\?\.loadState === 'ready'[\s\S]*touchRecentFile\(current\.recentFiles/
+    /openResourceFile: \(path, projectId, attachment, selection\) => \{[\s\S]*opened\.then\(\(tabId\) => \{[\s\S]*session\?\.loadState === 'ready'[\s\S]*touchRecentFile\(current\.recentFiles/
   )
   assert.match(
     storeSource,
@@ -1269,7 +1268,7 @@ test('literature attachment tabs expose file-path actions and attach through the
     /session\.source\.kind === 'project' \|\| session\.source\.kind === 'literature'/
   )
   assert.match(documentMenuSource, /act\.copyActiveDocumentPath\(\)/)
-  assert.match(documentMenuSource, /act\.revealActiveDocument\(\)/)
+  assert.match(documentMenuSource, /act\.revealDocument\(session\.source\)/)
   assert.match(
     storeSource,
     /function activeLocatedDocument[\s\S]*state\.homeSelectedProjectId \?\? assistantProject\(state\)\.projectId/
@@ -1671,7 +1670,9 @@ test('web-search results expose the title as one accessible external action', ()
     webSearchTabSource,
     /aria-label=\{t\('webSearch\.open', \{ title: candidate\.title \}\)\}/
   )
-  assert.match(webSearchTabSource, /openExternal\(candidate\.url\)/)
+  assert.match(webSearchTabSource, /onClick=\{\(\) => void openPage\(candidate\.url\)\}/)
+  assert.match(webSearchTabSource, /React\.useContext\(WebNavigationContext\)/)
+  assert.doesNotMatch(webSearchTabSource, /window\.scholarseed\.openExternal/)
   assert.doesNotMatch(webSearchTabSource, /<IconButton[\s\S]*?ArrowUpRight/)
   assert.doesNotMatch(webSearchTabSource, />\s*打开网页\s*</)
   assert.doesNotMatch(webSearchTabSource, />\s*-\s*\{candidate\.source\}\s*</)

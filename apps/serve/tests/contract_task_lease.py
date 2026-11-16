@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -96,11 +97,14 @@ class TaskLeaseContract(unittest.TestCase):
 
         live: Any = SimpleNamespace(
             id="session",
+            project_id="",
+            project_path=None,
             bridge_token="private",
             runtime_workdir=self.root,
             active_product_turn_id="turn-1",
             product_turn_generation=1,
             current_task=RunningTask(),
+            prediction_task=None,
             interrupting=False,
             terminating=False,
             terminated=False,
@@ -141,7 +145,18 @@ class TaskLeaseContract(unittest.TestCase):
         self.activities = activities
         live.turn_activity = activities.enter(ActivityDomain.TURN)
         self.addCleanup(live.turn_activity.close)
-        register_task_routes(app, sessions, activities=activities)
+        self.prepared_inputs = []
+        self.change_project_during_prepare = False
+
+        async def prepare_inputs(session_id, workdir, lease, require_current):
+            await asyncio.sleep(0)
+            if self.change_project_during_prepare:
+                self.live.project_id = "changed-project"
+            require_current()
+            self.prepared_inputs.append((session_id, workdir, lease))
+            return {"library_candidates": {"path": "survey/02_retrieval/library_candidates.json"}}
+
+        register_task_routes(app, sessions, activities=activities, prepare_inputs=prepare_inputs)
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
         self.headers = {
@@ -170,6 +185,24 @@ class TaskLeaseContract(unittest.TestCase):
         self.assertEqual(lease.run_id, "review-run")
         self.assertEqual(self.live.active_task_type, "literature_review")
         self.assertEqual(response.json()["workspace"], "survey")
+        result = response.json()
+        saved = json.loads((self.root / result["receipt_ref"]).read_text())
+        self.assertEqual(saved["operation"], "task.activate")
+        self.assertEqual(saved["run_id"], lease.run_id)
+        self.assertEqual(
+            saved["response"], {key: value for key, value in result.items() if key != "receipt_ref"}
+        )
+        retried = self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        self.assertEqual(retried.json()["receipt_ref"], result["receipt_ref"])
+
+    def test_activation_does_not_return_success_when_receipt_cannot_be_saved(self) -> None:
+        with patch("service.chat.api.tasks.publish_receipt", side_effect=OSError("disk full")):
+            response = self.client.post(
+                TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json()["ok"])
+        self.assertNotIn("receipt_ref", response.json())
 
     def test_activation_accepts_equivalent_skill_and_binding_paths(self) -> None:
         plain = Path(str(self.skill).removeprefix("\\\\?\\"))
@@ -273,6 +306,25 @@ class TaskLeaseContract(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         self.assertEqual(response.json()["reason"], "task_skill_version_mismatch")
         self.assertIsNone(self.live.active_task_lease)
+
+    def test_project_change_during_preparation_prevents_publication(self) -> None:
+        self.change_project_during_prepare = True
+        response = self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["reason"], "task_context_stale")
+        self.assertEqual(self.prepared_inputs, [])
+
+    def test_inputs_are_prepared_only_after_valid_activation(self) -> None:
+        refused = self.client.post(
+            TASK_ACTIVATE_ROUTE, json=self.payload(skill_version="wrong"), headers=self.headers
+        )
+        self.assertNotEqual(refused.status_code, 200)
+        self.assertEqual(self.prepared_inputs, [])
+        accepted = self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(len(self.prepared_inputs), 1)
+        self.assertEqual(self.prepared_inputs[0][2], self.live.active_task_lease)
+        self.assertIn("library_candidates", accepted.json())
 
     def test_consent_identity_is_stable_but_execution_lease_is_not(self) -> None:
         self.client.post(TASK_ACTIVATE_ROUTE, json=self.payload(), headers=self.headers)
@@ -515,6 +567,7 @@ class TaskLeaseContract(unittest.TestCase):
         self.live.plans = SimpleNamespace(current=lambda: {})
         turn = TurnInput((InputItem(InputKind.TEXT, text="继续"),), client_user_message_id="turn-2")
         asyncio.run(LiveSession.run_runtime(self.live, turn))
+        self.assertIsNone(submitted[0].retry_authorizer)
         lease = cast(ProductTaskLease, self.live.active_task_lease)
         self.assertEqual(lease.turn_id, "turn-2")
         self.assertIn("activation succeeded", submitted[0].items[0]["text"])
@@ -801,6 +854,7 @@ class PreciseSearchTaskLeaseContract(unittest.TestCase):
 
         live = SimpleNamespace(
             id="session",
+            project_id="",
             bridge_token="private",
             runtime_workdir=self.root,
             publication_turn_id="turn-1",

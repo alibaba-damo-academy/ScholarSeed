@@ -1,8 +1,9 @@
 ---
 name: fast-search
+display_name_zh: 快速文献检索
 description: Low-latency academic paper discovery for search-bar queries. Infer hidden entities, use one logical batch through the installed web-search skill to resolve likely paper titles, run one bounded PaperHub keyword/title/citation graph, and return up to 20 precision-first papers in metadata.json. Use when a user or product needs the Veryfast paper-search workflow rather than iterative literature research.
 description_zh: "面向搜索框式查询的低延迟学术论文发现。推断查询背后的隐含实体，用一次经由已安装 web-search 技能的逻辑批量公网搜索解析出候选论文标题，再跑一次有预算约束的 PaperHub 关键词/标题/引用图，最终在 metadata.json 中返回至多 20 篇精准优先的论文。用于用户或产品需要 Veryfast 极速论文检索场景，而非迭代式文献研究。"
-version: "1.2.0"
+version: "1.2.3"
 metadata:
   invocation:
     permission: full-access
@@ -25,10 +26,13 @@ field and its text. Do not copy an abstract into another field.
 
 1. `SKILL_DIR` is the absolute directory containing this file. Use absolute
    paths for bundled tools.
-2. `WORK_DIR` is the user's current working directory. Write results only under
-   `WORK_DIR/fast-search-results/<short-topic>/`; append a timestamp rather
-   than overwrite existing results. The one transient structured plan may be a
-   hidden sibling under `WORK_DIR`; the runner consumes it after success.
+2. Keep cwd unchanged. Use the actual output directory selected for this session
+   (`SESSION_DIR`); do not infer its name from the title or create a second session.
+   Honor a search-bar or caller-specified result directory exactly. Otherwise,
+   for a new search deliverable use `SESSION_DIR/fast-search-results/`; for a search
+   supporting another task use `SESSION_DIR/work/fast-search-results/`. This is
+   `RESULT_DIR`; if occupied, use a fresh readable subdirectory instead of overwriting.
+   Resume a known earlier search at its original path, never by scanning for a topic. Keep the transient plan under `SESSION_DIR/work/`; the runner consumes it after success.
 3. PaperHub authentication comes only from `SCHOLARSEED_API_KEY`; configuration is
    loaded by `tools/localconf.py`.
 4. Read `SETUP.md` only when configuration is missing or a request fails. If a
@@ -175,7 +179,7 @@ Do not open web pages, use a pool-inspection tool, make another logical web
 batch, or run a model-based selection pass.
 
 Use a file-editing tool, not a shell command, to write one JSON plan at
-`WORK_DIR/.fast-search-plan-<short-topic>.json`. Do not create `RESULT_DIR`
+`SESSION_DIR/work/.fast-search-plan-<unique-search-name>.json`. Do not create `RESULT_DIR`
 yourself. Put the full user query and concepts in the plan so no user-controlled
 text needs shell quoting:
 

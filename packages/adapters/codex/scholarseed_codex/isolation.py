@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import tomllib
 from pathlib import Path
 from typing import Mapping
@@ -37,6 +38,8 @@ MCP_DISABLED_OVERRIDE = "mcp_servers={}"
 MCP_CONFIG_TABLE = "mcp_servers"
 MCP_PROJECTED_OVERRIDE_INVALID = "mcp_projected_override_invalid"
 STRICT_CONFIG_OPTION = "--strict-config"
+SHELL_SNAPSHOT_V2_CONFIG = "features.shell_snapshot_v2"
+SHELL_SNAPSHOT_V2_PLATFORMS = frozenset({"darwin"})
 SHELL_ENVIRONMENT_POLICY_CONFIG = "shell_environment_policy"
 SHELL_ENVIRONMENT_INHERIT = "inherit"
 SHELL_ENVIRONMENT_SET = "set"
@@ -55,6 +58,7 @@ MANAGED_CONFIG_VALUES = (
     MCP_DISABLED_OVERRIDE,
     # Empty maps do not disable the built-in curated marketplace startup sync.
     "features.plugins=false",
+    "features.shell_snapshot=false",
     "plugins={}",
     "marketplaces={}",
     "hooks={}",
@@ -187,6 +191,10 @@ def managed_codex_launch(
         *(
             CodexRuntimeLaunchArgument(option=CONFIG_OPTION, value=value)
             for value in MANAGED_CONFIG_VALUES
+        ),
+        CodexRuntimeLaunchArgument(
+            option=CONFIG_OPTION,
+            value=f"{SHELL_SNAPSHOT_V2_CONFIG}={json.dumps(sys.platform in SHELL_SNAPSHOT_V2_PLATFORMS)}",
         ),
         _shell_environment_argument(HOME_ENV, original_home),
         *(

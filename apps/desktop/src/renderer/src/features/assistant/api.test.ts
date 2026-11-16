@@ -17,6 +17,7 @@ import {
   citationPreviewUrl,
   CitationResolveError,
   createAnswerAnnotation,
+  enqueueAnswerAnnotation,
   deleteAnswerAnnotation,
   deleteAnswerAnnotations,
   resolveCitation,
@@ -237,12 +238,22 @@ const CONTEXT: AssistantContextSelection = {
   capabilities: [],
 }
 
+const sessionStorage: Storage = {
+  length: 0,
+  clear: () => {},
+  getItem: () => null,
+  key: () => null,
+  removeItem: () => {},
+  setItem: () => {},
+}
+
 function installBrowser(fetcher: typeof fetch): () => void {
   const originalWindow = globalThis.window
   const originalFetch = globalThis.fetch
   globalThis.window = {
+    sessionStorage,
     scholarseed: { getApiBase: () => 'http://service.test' },
-  } as Window & typeof globalThis
+  } as unknown as Window & typeof globalThis
   globalThis.fetch = fetcher
   return () => {
     globalThis.window = originalWindow
@@ -377,6 +388,25 @@ test('preserves claimed-ref rejection and its authoritative selection', async ()
     assert.equal(result.ok, false)
     assert.equal(result.error, 'assistant_claimed_refs_immutable')
     assert.deepEqual(result.latest, latest)
+  } finally {
+    restore()
+  }
+})
+
+test('existing annotation re-enqueue preserves the revision barrier and returns authoritative context', async () => {
+  const restore = installBrowser(async (input, init) => {
+    assert.equal(
+      String(input),
+      'http://service.test/api/assistant/sessions/session-1/annotations/annotation-1/context'
+    )
+    assert.equal(init?.method, 'POST')
+    assert.deepEqual(JSON.parse(String(init?.body)), { expected_context_revision: 3 })
+    return Response.json(CONTEXT)
+  })
+  try {
+    const result = await enqueueAnswerAnnotation('session-1', 'annotation-1', 3)
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.context, CONTEXT)
   } finally {
     restore()
   }

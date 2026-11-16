@@ -9,7 +9,7 @@ const CLOSED = { message: PREVIEW_ARTIFACTS.disposed, status: 410 }
 const MISSING = { message: PREVIEW_ARTIFACTS.notFound, status: 404 }
 
 test('publication captures genuine file metadata and immutable bytes independent of source edits and deletion', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const owner = new PreviewArtifacts(POLICY)
   const file = files.read('readme.md')
   const published = owner.publish('session', 'turn', file, 'final')
@@ -27,7 +27,7 @@ test('publication captures genuine file metadata and immutable bytes independent
 })
 
 test('same turn and identity stays idempotent even when source bytes change', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const owner = new PreviewArtifacts(POLICY)
   const first = owner.publish('session', 'turn', files.read('hello.py'), 'intermediate')
   files.write('hello.py', new TextEncoder().encode('revised'))
@@ -40,7 +40,7 @@ test('same turn and identity stays idempotent even when source bytes change', ()
 
 test('input, returned metadata and read buffers cannot mutate stored publications', () => {
   const owner = new PreviewArtifacts(POLICY)
-  const file = new PreviewFiles().read('sample.pdf')
+  const file = new PreviewFiles('reviewed').read('sample.pdf')
   const expected = file.bytes.slice()
   const published = owner.publish('session', 'turn', file, 'supporting')
   const id = published.artifact_id
@@ -49,13 +49,13 @@ test('input, returned metadata and read buffers cannot mutate stored publication
   const read = owner.read('session', id)
   read.bytes.fill(0)
   assert.deepEqual(owner.read('session', id).bytes, expected)
-  assert.equal(owner.publish('session', 'turn', new PreviewFiles().read('sample.pdf'), 'supporting').name, 'sample.pdf')
+  assert.equal(owner.publish('session', 'turn', new PreviewFiles('reviewed').read('sample.pdf'), 'supporting').name, 'sample.pdf')
 })
 
 test('session and owner identities never resolve foreign publications', () => {
   const owner = new PreviewArtifacts(POLICY)
   const other = new PreviewArtifacts(POLICY)
-  const file = new PreviewFiles().read('readme.md')
+  const file = new PreviewFiles('reviewed').read('readme.md')
   const first = owner.publish('session', 'turn', file, 'final')
   const second = other.publish('session', 'turn', file, 'final')
   assert.notEqual(first.artifact_id, second.artifact_id)
@@ -120,7 +120,7 @@ test('immediate cancellation and post-timer disposal reject before read receipts
 test('dispose cancels all waits and all public operations; replacement owner starts clean', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const owner = new PreviewArtifacts({ seed: 'sample', catalogRead: 'delayed', contentRead: 'delayed' })
-  const file = new PreviewFiles().read('readme.md')
+  const file = new PreviewFiles('reviewed').read('readme.md')
   const published = owner.publish('session', 'turn', file, 'final')
   const reads = [assert.rejects(owner.beforeRead('catalog'), CLOSED), assert.rejects(owner.beforeRead('content'), CLOSED)]
   owner.dispose()
@@ -138,7 +138,7 @@ test('dispose cancels all waits and all public operations; replacement owner sta
 
 test('invalid publications have fixed errors and do not capture corrupted metadata', () => {
   const owner = new PreviewArtifacts(POLICY)
-  const file = new PreviewFiles().read('readme.md')
+  const file = new PreviewFiles('reviewed').read('readme.md')
   const invalid = { message: PREVIEW_ARTIFACTS.invalid, status: 422 }
   assert.throws(() => owner.publish('', 'turn', file, 'final'), invalid)
   assert.throws(() => owner.publish('session', '', file, 'final'), invalid)
@@ -152,7 +152,7 @@ test('invalid publications have fixed errors and do not capture corrupted metada
 test('session and turn tuple identity cannot collide and policy recovery does not remove independent delay', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const owner = new PreviewArtifacts({ seed: 'sample', historyRead: 'failed', contentRead: 'delayed' })
-  const file = new PreviewFiles().read('readme.md')
+  const file = new PreviewFiles('reviewed').read('readme.md')
   const first = owner.publish('a:b', 'c', file, 'final')
   const second = owner.publish('a', 'b:c', file, 'final')
   assert.notEqual(first.artifact_id, second.artifact_id)

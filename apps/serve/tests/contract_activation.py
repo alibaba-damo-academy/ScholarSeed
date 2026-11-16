@@ -27,11 +27,16 @@ from scholarseed_runtime.contract.resource import (
     ResourceState,
 )
 from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
-from scholarseed_runtime.contract.session import RuntimeActivitySnapshot
+from scholarseed_runtime.contract.session import (
+    RUNTIME_ACTIVITY_CHANGED,
+    RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS,
+    RuntimeActivitySnapshot,
+)
 from service.chat.persistence.catalog import OpenState, SessionCatalogStore, SessionPrincipal
 from service.chat.runtime.activation import (
     RESOURCE_RESERVATION_INVALID,
     RESOURCE_WAIT_BLOCKED,
+    RESOURCE_WAIT_PENDING_HIL,
     SESSION_ACTIVATION_CLOSED,
     SESSION_OPEN_UNKNOWN,
     ActivationPlan,
@@ -42,6 +47,7 @@ from service.chat.runtime.composition import LiveSessionService, RuntimeOpening
 from service.chat.runtime.timing import ActivationStage, ActivationTiming, TimingStatus
 from service.chat.service.completions import CompletionBridge
 from service.chat.service.models import ModelService, SessionModelUnavailableError
+from service.identity.service.scope import ExecutionIdentity
 from service.platform.activity import Activities, ActivityDomain
 from service.settings.connections import ModelProfileStore, personal_model_key
 from service.settings.credentials import CredentialState
@@ -99,6 +105,7 @@ class AttachmentFixture:
 class ProductFixture:
     def __init__(self, session_id: str = "product") -> None:
         self.id = session_id
+        self.user_id = "fixture-owner"
         self.runtime_id = RUNTIME_ID
         self.project_id = "target-project"
         self.project_path = Path("/target-project")
@@ -298,6 +305,14 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
         finally:
             lease.close()
 
+    async def test_turn_reuses_dormant_attachment_without_provider_opt_in(self) -> None:
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertEqual(self.live.suspensions, 0)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.provider.requests, [])
+
     async def test_turn_refresh_releases_dormant_attachment_before_admission(self) -> None:
         self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
         previous = AttachmentFixture()
@@ -306,6 +321,32 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.live.suspensions, 1)
         self.assertIsNot(self.live.runtime_session, previous)
         self.assertEqual(len(self.provider.requests), 1)
+        self.assertIs(self.provider.requests[0].purpose, ResourcePurpose.TURN)
+
+    async def test_turn_refresh_rechecks_changed_activity_before_admission(self) -> None:
+        self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        self.live.suspend_blockers = (RUNTIME_ACTIVITY_CHANGED,)
+
+        async def settle_activity(_delay: float) -> None:
+            self.assertIs(self.live.runtime_session, previous)
+            self.assertEqual(self.live.suspensions, 0)
+            self.assertEqual(self.provider.requests, [])
+            self.live.suspend_blockers = ()
+
+        with patch(
+            "service.chat.runtime.activation.asyncio.sleep",
+            new=AsyncMock(side_effect=settle_activity),
+        ) as sleep:
+            await self.activation.ensure_active(
+                self.live, purpose=ResourcePurpose.TURN, deadline=TEST_DEADLINE
+            )
+        sleep.assert_awaited_once()
+        self.assertEqual(self.live.suspensions, 1)
+        self.assertIsNot(self.live.runtime_session, previous)
+        self.assertEqual(len(self.provider.requests), 1)
+        self.assertEqual(self.provider.requests[0].deadline, TEST_DEADLINE)
         self.assertIs(self.provider.requests[0].purpose, ResourcePurpose.TURN)
 
     async def test_host_conflict_is_explicit_and_does_not_reclaim_existing_sessions(self) -> None:
@@ -421,6 +462,25 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
                 await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
         self.assertIs(self.live.runtime_session, previous)
         self.assertEqual(self.provider.requests, [])
+
+    async def test_turn_refresh_and_reservation_share_the_original_wait_budget(self) -> None:
+        self.provider.resource_policy = ResourcePolicy(30.0, 0.0, refresh_before_turn=True)
+        self.live.runtime_session = AttachmentFixture()
+        observed_deadlines = []
+        clock = [100.0]
+
+        async def suspend(live: ProductFixture, *, deadline: float) -> None:
+            observed_deadlines.append(deadline)
+            clock[0] += 10.0
+            live.runtime_session = None
+
+        with (
+            patch("service.chat.runtime.activation.time.time", side_effect=lambda: clock[0]),
+            patch.object(self.activation, "wait_until_suspended", side_effect=suspend),
+        ):
+            await self.activation.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertEqual(observed_deadlines, [130.0])
+        self.assertEqual(self.provider.requests[0].deadline, 130.0)
 
     async def test_reclaim_cancellation_waits_for_native_suspend_cleanup(self) -> None:
         entered, release = asyncio.Event(), asyncio.Event()
@@ -591,6 +651,116 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             await self.activation.wait_until_suspended(self.live)
         self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
 
+    async def test_changed_activity_wait_preserves_deadline(self) -> None:
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        self.live.suspend_blockers = (RUNTIME_ACTIVITY_CHANGED,)
+        with patch("service.chat.runtime.activation.time.time", side_effect=[0.0, 2.0]):
+            with patch("service.chat.runtime.activation.asyncio.sleep", new=AsyncMock()) as sleep:
+                with self.assertRaises(SessionActivationError) as caught:
+                    await self.activation.wait_until_suspended(self.live, deadline=1.0)
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_TIMEOUT)
+        sleep.assert_awaited_once_with(1.0)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.live.suspensions, 0)
+
+    async def test_changed_activity_does_not_mask_other_blockers(self) -> None:
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        for blocker, error in (
+            ("pending_hil", RESOURCE_WAIT_PENDING_HIL),
+            ("native_background_terminal_active", RESOURCE_WAIT_BLOCKED),
+            ("unknown_blocker", RESOURCE_WAIT_BLOCKED),
+        ):
+            with self.subTest(blocker=blocker):
+                self.live.suspend_blockers = (RUNTIME_ACTIVITY_CHANGED, blocker)
+                with patch(
+                    "service.chat.runtime.activation.asyncio.sleep", new=AsyncMock()
+                ) as sleep:
+                    with self.assertRaises(SessionActivationError) as caught:
+                        await self.activation.wait_until_suspended(self.live)
+                self.assertEqual(caught.exception.safe_error, error)
+                sleep.assert_not_awaited()
+                self.assertIs(self.live.runtime_session, previous)
+                self.assertEqual(self.live.suspensions, 0)
+
+    async def test_changed_activity_wait_can_be_cancelled_without_releasing_attachment(
+        self,
+    ) -> None:
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        self.live.suspend_blockers = (RUNTIME_ACTIVITY_CHANGED,)
+        with patch(
+            "service.chat.runtime.activation.asyncio.sleep",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.activation.wait_until_suspended(self.live)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.live.suspensions, 0)
+
+    async def test_changed_activity_wait_stops_when_session_terminates(self) -> None:
+        previous = AttachmentFixture()
+        self.live.runtime_session = previous
+        self.live.suspend_blockers = (RUNTIME_ACTIVITY_CHANGED,)
+
+        async def terminate(_delay: float) -> None:
+            self.live.terminating = True
+
+        with patch(
+            "service.chat.runtime.activation.asyncio.sleep",
+            new=AsyncMock(side_effect=terminate),
+        ):
+            with self.assertRaises(SessionActivationError) as caught:
+                await self.activation.wait_until_suspended(self.live)
+        self.assertEqual(caught.exception.safe_error, SESSION_ACTIVATION_CLOSED)
+        self.assertIs(self.live.runtime_session, previous)
+        self.assertEqual(self.live.suspensions, 0)
+
+    async def test_quiescence_wait_rechecks_transient_blockers_without_holding_lock(self) -> None:
+        for blockers in ((blocker,) for blocker in sorted(RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS)):
+            with self.subTest(blockers=blockers):
+                self.live.runtime_session = AttachmentFixture()
+                self.live.suspend_blockers = blockers
+
+                async def stabilize(_delay: float) -> None:
+                    self.assertFalse(self.live.lifecycle_lock.locked())
+                    self.live.suspend_blockers = ()
+
+                with patch(
+                    "service.chat.runtime.activation.asyncio.sleep",
+                    new=AsyncMock(side_effect=stabilize),
+                ) as sleep:
+                    await self.activation.wait_until_suspended(self.live)
+                sleep.assert_awaited_once()
+                self.assertIsNone(self.live.runtime_session)
+
+    async def test_quiescence_transient_blockers_obey_deadline_and_cancellation(self) -> None:
+        self.live.runtime_session = AttachmentFixture()
+        self.live.suspend_blockers = tuple(RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS)
+        with patch("service.chat.runtime.activation.time.time", return_value=2.0):
+            with self.assertRaises(SessionActivationError) as caught:
+                await self.activation.wait_until_suspended(self.live, deadline=1.0)
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_TIMEOUT)
+        with patch(
+            "service.chat.runtime.activation.asyncio.sleep", side_effect=asyncio.CancelledError
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.activation.wait_until_suspended(self.live)
+        self.assertIsNotNone(self.live.runtime_session)
+
+    async def test_quiescence_mixed_blockers_are_not_treated_as_transient(self) -> None:
+        self.live.runtime_session = AttachmentFixture()
+        self.live.suspend_blockers = (
+            *RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS,
+            "native_background_terminal_active",
+        )
+        with patch("service.chat.runtime.activation.asyncio.sleep") as sleep:
+            with self.assertRaises(SessionActivationError) as caught:
+                await self.activation.wait_until_suspended(self.live)
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
+        sleep.assert_not_called()
+
     async def test_termination_owner_can_restore_binding_without_reopening_other_admission(
         self,
     ) -> None:
@@ -649,6 +819,7 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
 
     async def test_operation_pins_attachment_until_awaited_body_exits(self) -> None:
         service = object.__new__(LiveSessionService)
+        service.execution_identity = ExecutionIdentity()
         service._activities = self.activities
         service.activation = self.activation
         service._catalog = SimpleNamespace(runtime_binding=lambda _session_id: None)
@@ -659,6 +830,21 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.live.suspensions, 0)
         await self.activation._reclaim(RUNTIME_ID, pressure=True)
         self.assertEqual(self.live.suspensions, 1)
+
+    async def test_operation_refuses_a_revoked_request_before_reusing_an_attachment(self) -> None:
+        service = object.__new__(LiveSessionService)
+        service._activities = self.activities
+        service.execution_identity = ExecutionIdentity()
+        identity = service.execution_identity
+        self.live.runtime_session = AttachmentFixture()
+        with identity.project(
+            self.live.user_id, revoked=False, observed_revision=identity.revision
+        ):
+            self.assertEqual(identity.retire(self.live.user_id), self.live.user_id)
+            with self.assertRaises(SessionActivationError):
+                async with service.operation(self.live):
+                    self.fail("revoked request reused an attachment")
+        self.assertFalse(self.live.lifecycle_lock.locked())
 
     async def test_observer_failure_releases_reservation_and_preserves_identity(self) -> None:
         self.provider.waiting = True

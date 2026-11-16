@@ -1,9 +1,9 @@
 #!/usr/bin/env scholarseed-skill-python
 """Audit corpus BibTeX completeness for every supported citation style.
 
-PaperHub values are treated as authoritative.  This script checks only whether
-the fields needed to render a complete entry exist; it never second-guesses a
-title, author, year, DOI, or venue.
+This script checks field completeness, not the factual truth or source-version
+equivalence of a provider's metadata. Primary citation records and actual source
+consultation have separate provenance; present fields alone do not verify them.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import argparse
 import json
 from pathlib import Path
 
-from citation_formats import BibEntry, parse_bib_file
+from citation_formats import BibEntry, parse_bib_file, reference_requirements
 from citation_styles import CITATION_STYLES, PAPERHUB_FIELD_AVAILABILITY
 
 
@@ -74,6 +74,8 @@ def audit(workspace: Path) -> dict:
         complete = 0
         for key, entry in sorted(entries.items()):
             missing_required = [f for f in spec["required"] if not _has(entry, f)]
+            missing_required.extend(issue['field'] for issue in reference_requirements(
+                entries, sid, [key]) if issue['field'] not in missing_required)
             recommended = spec["recommended"] + spec.get("recommended_by_type", {}).get(entry.entry_type, [])
             missing_recommended = [f for f in recommended if not _has(entry, f)]
             required_ok += not missing_required

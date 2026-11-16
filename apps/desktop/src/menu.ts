@@ -18,6 +18,8 @@ export const MENU_CHANNEL = {
 export const MENU_ACTION = {
   find: 'browser.find',
   print: 'browser.print',
+  browserCopy: 'browser.copy',
+  browserData: 'browser.data',
   zoom: 'browser.zoom',
   devtools: 'browser.devtools',
   browserHistory: 'browser.history',
@@ -44,6 +46,7 @@ export const MENU_ACCOUNT_ACTIONS = [
   MENU_ACTION.language,
 ] as const
 export type AccountMenuAction = (typeof MENU_ACCOUNT_ACTIONS)[number]
+const ACCOUNT_MENU_LANGUAGE_CHOICES = ['en', 'zh-CN', SYSTEM_LANGUAGE_MODE] as const
 export interface AccountMenuView {
   alias: string | null
   avatar: string
@@ -166,7 +169,7 @@ export interface MenuViewBridge {
   subscribeFind?(callback: (state: MenuAck & FindState) => void): () => void
   subscribeRefocus?(callback: (ack: MenuAck) => void): () => void
   seed(): Promise<MenuModel | null>
-  subscribe(callback: (model: MenuModel) => void): () => void
+  subscribe(callback: (model: MenuModel | null) => void): () => void
   send(event: MenuEvent): Promise<MenuReply>
   paintReady(ack: MenuAck): Promise<MenuReply>
 }
@@ -299,6 +302,12 @@ export function parseMenuSeedRequest(value: unknown): MenuSeedRequest {
     return { surface: input.surface, identityRevision: positive(input.identityRevision) }
   }
   return invalid()
+}
+export function isAccountMenuLanguageValue(value: MenuValue): boolean {
+  return (
+    value.kind === 'choice' &&
+    ACCOUNT_MENU_LANGUAGE_CHOICES.some((choice) => choice === value.value)
+  )
 }
 export function parseMenuValue(value: unknown): MenuValue {
   const input = object(value)

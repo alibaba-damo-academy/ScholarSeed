@@ -1,15 +1,22 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import test from 'node:test'
-import { chromium, expect, type Page } from '@playwright/test'
-import react from '@vitejs/plugin-react'
+import test, { after, before, type TestContext } from 'node:test'
+import { chromium, expect, type Page, type Request } from '@playwright/test'
 import { createServer } from 'vite'
+import { renderFixture } from '../../test-helpers/render.ts'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
+const SCREENSHOTS = path.resolve(ROOT, '../../../test-results')
+const FIXTURE_STARTUP_TIMEOUT_MS = 60_000
 const INSTANCE = 'launch-instance'
 const SESSION = 'd'.repeat(32)
+const IMAGE_PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j8XkAAAAASUVORK5CYII=',
+  'base64'
+)
 const CONTINUE_TASK_PROMPT = JSON.parse(
   readFileSync(new URL('../../localization/locales/zh/components.json', import.meta.url), 'utf8')
 ).stream.continueTaskPrompt as string
@@ -21,40 +28,636 @@ const MODELS = ['model-a', 'model-b'].map((key) => ({
   reasoning_efforts: ['low', 'high'],
 }))
 
+let resources: Awaited<ReturnType<typeof renderFixture>>
+
+test('native preview failures keep selections and release loaded image URLs', async (context) => {
+  let legacyReads = 0
+  await fixture(
+    context,
+    async (page) => {
+      await page.evaluate(
+        (bytes) => {
+          Reflect.set(window, 'scholarseed', {
+            pickImport: async () => [],
+            pickImportPreview: async () => [
+              {
+                path: '/chosen/good.png',
+                imagePreview: { status: 'image', bytes: new Uint8Array(bytes) },
+              },
+              {
+                path: '/chosen/failed.png',
+                imagePreview: Reflect.get(window, 'nativePreviewRecovered')
+                  ? { status: 'image', bytes: new Uint8Array(bytes) }
+                  : { status: 'error', code: 'pixel_limit', maxPixels: 40_000_000 },
+              },
+              { path: '/chosen/notes.txt', imagePreview: { status: 'empty' } },
+              { path: '/chosen/folder', imagePreview: { status: 'empty' } },
+            ],
+          })
+          const created: string[] = []
+          const revoked: string[] = []
+          const create = URL.createObjectURL.bind(URL)
+          const revoke = URL.revokeObjectURL.bind(URL)
+          Reflect.set(window, 'nativePreviewUrls', { created, revoked })
+          URL.createObjectURL = (blob) => {
+            const url = create(blob)
+            created.push(url)
+            return url
+          }
+          URL.revokeObjectURL = (url) => {
+            revoked.push(url)
+            revoke(url)
+          }
+        },
+        [...IMAGE_PIXEL]
+      )
+      await page.getByTestId('composer-plus').click()
+      await page.getByTestId('composer-add-file').click()
+      const tray = page.getByTestId('composer-reference-tray')
+      await expect(tray.getByRole('img', { name: 'good.png', exact: true })).toBeVisible()
+      await tray.getByRole('button', { name: /查看图片 failed.png/ }).click()
+      const viewer = page.getByTestId('attachment-image-viewer')
+      await expect(viewer.getByRole('alert')).toContainText('图片加载失败')
+      await expect(viewer.locator('output')).toContainText('2 / 2')
+      await page.keyboard.press('ArrowLeft')
+      await expect(viewer.getByRole('img', { name: 'good.png', exact: true })).toBeVisible()
+      assert.equal(legacyReads, 0)
+      await page.keyboard.press('Escape')
+      await expect(tray.getByRole('button', { name: 'notes.txt', exact: true })).toBeVisible()
+      await expect(tray.getByRole('button', { name: 'folder', exact: true })).toBeVisible()
+      assert.equal(
+        await page.evaluate(() => Reflect.get(window, 'launchProbe').state.composerRefs.length),
+        4
+      )
+      const identities = await page.evaluate(() =>
+        Reflect.get(window, 'launchProbe').state.composerRefs.map((ref: { id: string }) => ref.id)
+      )
+      await page.evaluate(() => Reflect.set(window, 'nativePreviewRecovered', true))
+      await page.getByTestId('composer-plus').click()
+      await page.getByTestId('composer-add-file').click()
+      await expect(tray.getByRole('img', { name: 'failed.png', exact: true })).toBeVisible()
+      assert.deepEqual(
+        await page.evaluate(() =>
+          Reflect.get(window, 'launchProbe').state.composerRefs.map((ref: { id: string }) => ref.id)
+        ),
+        identities
+      )
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').hide())
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const urls = Reflect.get(window, 'nativePreviewUrls')
+            return (
+              urls.created.length === 3 &&
+              urls.created.every((url: string) => urls.revoked.includes(url))
+            )
+          })
+        )
+        .toBe(true)
+    },
+    async (page) => {
+      await page.route('**/api/research/workspace/file/raw?*', (route) => {
+        legacyReads++
+        return route.fulfill({ status: 404 })
+      })
+    }
+  )
+})
+
+test('native draft image previews never replace the original file registration', async (context) => {
+  await fixture(context, async (page) => {
+    const control = await preparation(page)
+    control.finish()
+    let registrations = 0
+    let uploads = 0
+    const turns: unknown[] = []
+    await page.evaluate(
+      (bytes) => {
+        Reflect.set(window, 'nativeImageSaves', [])
+        Reflect.set(window, 'scholarseed', {
+          getApiBase: () => '',
+          pickImport: async () => ['/chosen/image.jpeg'],
+          appsForFile: async () => [],
+          saveFileCopy: async (payload: unknown) => {
+            Reflect.get(window, 'nativeImageSaves').push(payload)
+            return { ok: true }
+          },
+          pickImportPreview: async () => [
+            {
+              path: '/chosen/image.jpeg',
+              imagePreview: { status: 'image', bytes: new Uint8Array(bytes) },
+            },
+          ],
+        })
+        Reflect.get(window, 'launchProbe').surface('assistant')
+      },
+      [...IMAGE_PIXEL]
+    )
+    await page.route('**/api/assistant/sessions/*/context', (route) =>
+      route.fulfill({
+        json: {
+          session_id: SESSION,
+          revision: 0,
+          project_policy: 'explicit_only',
+          search_scope: 'web',
+          refs: [],
+          capabilities: [],
+          updated_at: 0,
+        },
+      })
+    )
+    await page.route('**/api/serve/sessions/open', (route) => {
+      const response = opened()
+      return route.fulfill({
+        json: { ...response, runtime: { ...response.runtime, model_id: 'model-a' } },
+      })
+    })
+    await page.route(`**/api/serve/sessions/${SESSION}/file-references`, (route) => {
+      registrations++
+      assert.deepEqual(route.request().postDataJSON(), { paths: ['/chosen/image.jpeg'] })
+      return route.fulfill({
+        json: {
+          references: [
+            {
+              kind: 'file',
+              path: '/chosen/image.jpeg',
+              name: 'image.jpeg',
+              reference_id: 'original-reference',
+              media_type: 'image/jpeg',
+              size: 900,
+              sha256: 'original-file-sha',
+            },
+          ],
+        },
+      })
+    })
+    await page.route('**/api/serve/sessions/*/attachments', (route) => {
+      uploads++
+      return route.fulfill({ status: 500 })
+    })
+    await page.route(`**/api/serve/sessions/${SESSION}/turns`, (route) => {
+      turns.push(route.request().postDataJSON())
+      return route.fulfill({
+        json: { ok: true, accepted: true, disposition: 'direct', turn_id: 'native-attachment' },
+      })
+    })
+    await page.getByTestId('composer-plus').click()
+    await page.getByTestId('composer-add-file').click()
+    await expect(
+      page
+        .getByTestId('composer-reference-tray')
+        .getByRole('img', { name: 'image.jpeg', exact: true })
+    ).toBeVisible()
+    assert.equal(
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').state.activeSession),
+      null
+    )
+    assert.equal(registrations, 0)
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const reference = Reflect.get(window, 'launchProbe').state.composerRefs[0]
+        return {
+          path: reference.path,
+          title: reference.title,
+          mediaType: reference.mediaType,
+          size: reference.size,
+          sha256: reference.sha256,
+          hasOriginalFile: Boolean(reference.localSource.file),
+          previewType: reference.localSource.imagePreview.type,
+        }
+      }),
+      {
+        path: '/chosen/image.jpeg',
+        title: 'image.jpeg',
+        mediaType: undefined,
+        size: undefined,
+        sha256: undefined,
+        hasOriginalFile: false,
+        previewType: 'image/png',
+      }
+    )
+    await page.getByRole('button', { name: /查看图片 image.jpeg/ }).click()
+    await page.getByRole('button', { name: '图片更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '另存为…', exact: true }).click()
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, 'nativeImageSaves').length))
+      .toBe(1)
+    assert.deepEqual(await page.evaluate(() => Reflect.get(window, 'nativeImageSaves')[0]), {
+      sourcePath: '/chosen/image.jpeg',
+      suggestedName: 'image.jpeg',
+    })
+    await page.keyboard.press('Escape')
+    await page.getByTestId('composer-input').fill('Use the original image')
+    await page.getByTestId('composer-send').click()
+    await expect.poll(() => turns.length).toBe(1)
+    assert.equal(registrations, 1)
+    assert.equal(uploads, 0)
+    assert.match(JSON.stringify(turns[0]), /original-reference/)
+    assert.doesNotMatch(JSON.stringify(turns[0]), /imagePreview|blob:/)
+  })
+})
+
+test('AiPanel shows removable PDF selections before a session exists', async (context) => {
+  await fixture(
+    context,
+    async (page) => {
+      await page.evaluate(() => {
+        const probe = Reflect.get(window, 'launchProbe')
+        probe.patch({
+          aiPanel: {
+            ...probe.state.aiPanel,
+            refs: [
+              {
+                ref_id: 'pdf-selection',
+                kind: 'literature',
+                source_id: 'paper',
+                label: 'Draft paper',
+                retention: 'next_turn',
+                origin: 'explicit',
+                anchor: {
+                  document_id: 'attachment',
+                  locator: { kind: 'pdf', page: 1, rects: [] },
+                  preview_text: 'Selected PDF passage',
+                  snapshot_text: 'Selected PDF passage',
+                },
+              },
+            ],
+          },
+        })
+      })
+      const reference = page.getByTestId('ai-context-ref')
+      await expect(reference).toContainText('Draft paper')
+      await reference.hover()
+      await expect(page.getByTestId('assistant-selection-quote')).toContainText(
+        'Selected PDF passage'
+      )
+      await page.getByTestId('composer-input').click()
+      await reference.getByRole('button', { name: /移除/ }).click()
+      await expect(reference).toHaveCount(0)
+      assert.deepEqual(
+        await page.evaluate(() => {
+          const state = Reflect.get(window, 'launchProbe').state
+          return {
+            session: state.activeSession,
+            refs: state.aiPanel.refs,
+            launch: state.turnLaunch,
+          }
+        }),
+        { session: null, refs: [], launch: null }
+      )
+    },
+    async (page) => {
+      await page.addInitScript(() => Reflect.set(window, 'aiPanelFixture', true))
+    }
+  )
+})
+
+test('AiPanel keeps read-only, submitted and other-session references out of the draft', async (context) => {
+  await fixture(
+    context,
+    async (page) => {
+      await restoreSession(page)
+      for (const scenario of [
+        {
+          panelSession: SESSION,
+          activeSession: SESSION,
+          readOnly: false,
+          submitted: false,
+          visible: true,
+        },
+        {
+          panelSession: SESSION,
+          activeSession: SESSION,
+          readOnly: false,
+          submitted: true,
+          visible: false,
+        },
+        {
+          panelSession: SESSION,
+          activeSession: SESSION,
+          readOnly: true,
+          submitted: false,
+          visible: false,
+        },
+        {
+          panelSession: 'other-session',
+          activeSession: SESSION,
+          readOnly: false,
+          submitted: false,
+          visible: false,
+        },
+        {
+          panelSession: null,
+          activeSession: SESSION,
+          readOnly: false,
+          submitted: false,
+          visible: false,
+        },
+        {
+          panelSession: SESSION,
+          activeSession: null,
+          readOnly: false,
+          submitted: false,
+          visible: false,
+        },
+      ]) {
+        await page.evaluate(
+          ({ scenario, session }) => {
+            const probe = Reflect.get(window, 'launchProbe')
+            probe.patch({
+              activeSession: scenario.activeSession,
+              threads: {
+                ...probe.state.threads,
+                [session]: { ...probe.state.threads[session], readOnly: scenario.readOnly },
+              },
+              aiPanel: {
+                ...probe.state.aiPanel,
+                sessionId: scenario.panelSession,
+                submittedRefIds: scenario.submitted ? ['context-reference'] : [],
+                refs: [
+                  {
+                    ref_id: 'context-reference',
+                    kind: 'dir',
+                    source_id: 'documents',
+                    label: 'Scoped reference',
+                    retention: 'next_turn',
+                    origin: 'explicit',
+                  },
+                ],
+              },
+            })
+          },
+          { scenario, session: SESSION }
+        )
+        await expect(page.getByTestId('ai-context-ref')).toHaveCount(scenario.visible ? 1 : 0)
+      }
+    },
+    async (page) => {
+      await page.addInitScript(() => Reflect.set(window, 'aiPanelFixture', true))
+    }
+  )
+})
+
+test('AiPanel combines context and pending images with source-scoped identities', async (context) => {
+  await fixture(
+    context,
+    async (page) => {
+      await page.evaluate(() => {
+        const probe = Reflect.get(window, 'launchProbe')
+        probe.patch({
+          aiPanel: {
+            ...probe.state.aiPanel,
+            refs: [
+              {
+                ref_id: 'same',
+                kind: 'file',
+                source_id: 'context.png',
+                label: 'context.png',
+                retention: 'next_turn',
+                origin: 'explicit',
+              },
+              {
+                ref_id: 'folder',
+                kind: 'dir',
+                source_id: 'folder',
+                label: 'Context folder',
+                retention: 'next_turn',
+                origin: 'explicit',
+              },
+            ],
+          },
+        })
+      })
+      const tray = page.getByTestId('composer-reference-tray')
+      await expect(tray.getByRole('button', { name: /查看图片 context.png/ })).toBeVisible()
+      await page.evaluate(() =>
+        Reflect.get(window, 'launchProbe').patch({
+          composerRefs: [
+            { type: 'file', id: 'same', title: 'pending.png', path: '/samples/pending.png' },
+          ],
+        })
+      )
+      await tray.getByRole('button', { name: /查看图片 pending.png/ }).click()
+      const viewer = page.getByTestId('attachment-image-viewer')
+      await expect(viewer).toHaveCount(1)
+      await expect(viewer.getByRole('status')).toContainText('2 / 2')
+      await page.keyboard.press('ArrowLeft')
+      await expect(viewer.getByRole('heading')).toHaveText('context.png')
+      await page.keyboard.press('Escape')
+      const contextImage = tray.getByRole('img', { name: 'context.png', exact: true })
+      const pendingImage = tray.getByRole('img', { name: 'pending.png', exact: true })
+      await expect(contextImage).toBeVisible()
+      await expect(pendingImage).toBeVisible()
+      assert.notEqual(
+        await contextImage.getAttribute('src'),
+        await pendingImage.getAttribute('src')
+      )
+      await tray.getByRole('button', { name: '移除图片 context.png', exact: true }).click()
+      await expect(tray.getByRole('button', { name: /查看图片 context.png/ })).toHaveCount(0)
+      await expect(tray.getByRole('button', { name: /查看图片 pending.png/ })).toBeVisible()
+      assert.equal(
+        await page.evaluate(() => Reflect.get(window, 'launchProbe').state.composerRefs[0].id),
+        'same'
+      )
+      await expect(tray.getByText('Context folder', { exact: true })).toBeVisible()
+    },
+    async (page) => {
+      await page.addInitScript(() => Reflect.set(window, 'aiPanelFixture', true))
+      await page.route('**/api/research/workspace/file/raw?*', (route) =>
+        route.fulfill({ contentType: 'image/png', body: IMAGE_PIXEL })
+      )
+      await page.route('**/api/workbench/open?*', (route) =>
+        route.fulfill({
+          json: {
+            viewer: 'image',
+            capabilities: {},
+            revision: 'fixture',
+            media_type: 'image/png',
+            content_kind: 'binary',
+          },
+        })
+      )
+      await page.route('**/api/workbench/content?*', (route) =>
+        route.fulfill({ contentType: 'image/png', body: IMAGE_PIXEL })
+      )
+    }
+  )
+})
+
+test('composer shares one image gallery across ordered mixed draft references', async (context) => {
+  const reads: string[] = []
+  await fixture(
+    context,
+    async (page) => {
+      await page.evaluate(() => {
+        Reflect.get(window, 'launchProbe').patch({
+          composerRefs: ['third.png', 'notes.txt', 'sample-folder', 'first.png', 'second.png'].map(
+            (title) => ({
+              type: title === 'sample-folder' ? 'directory' : 'file',
+              id: title,
+              title,
+              path: `/samples/${title}`,
+            })
+          ),
+        })
+      })
+      const tray = page.getByTestId('composer-reference-tray')
+      await expect(tray.getByRole('button', { name: 'notes.txt', exact: true })).toBeVisible()
+      await expect(tray.getByRole('button', { name: 'sample-folder', exact: true })).toBeVisible()
+      await expect(tray.getByText('Context attachment', { exact: true })).toBeVisible()
+      await page.evaluate(() => {
+        const probe = Reflect.get(window, 'launchProbe')
+        probe.patch({ composerRefs: [...probe.state.composerRefs].reverse() })
+      })
+      await expect.poll(() => reads.length).toBe(3)
+      await tray.getByRole('button', { name: /查看图片 first.png/ }).click()
+      const viewer = page.getByTestId('attachment-image-viewer')
+      await expect(viewer).toHaveCount(1)
+      await expect(viewer.getByRole('status')).toContainText('2 / 3')
+      await expect(viewer.getByRole('heading')).toHaveText('first.png')
+      await page.keyboard.press('ArrowRight')
+      await expect(viewer.getByRole('heading')).toHaveText('second.png')
+      await viewer.getByRole('button', { name: '上一张', exact: true }).click()
+      await page.keyboard.press('ArrowLeft')
+      await expect(viewer.getByRole('heading')).toHaveText('third.png')
+      assert.equal(reads.length, 3)
+      await page.keyboard.press('Escape')
+      await tray.getByRole('button', { name: '移除图片 first.png', exact: true }).click()
+      await tray.getByRole('button', { name: /查看图片 second.png/ }).click()
+      await expect(viewer.getByRole('heading')).toHaveText('second.png')
+      await expect(viewer.getByRole('status')).toContainText('2 / 2')
+      await page.evaluate(() => {
+        const probe = Reflect.get(window, 'launchProbe')
+        probe.patch({
+          composerRefs: probe.state.composerRefs.filter(
+            (ref: { id: string }) => ref.id !== 'third.png'
+          ),
+        })
+      })
+      await expect(viewer).toHaveCount(0)
+      await tray.getByRole('button', { name: /查看图片 second.png/ }).click()
+      await expect(viewer.getByRole('status')).toContainText('1 / 1')
+      await expect(viewer.getByRole('button', { name: '下一张', exact: true })).toBeDisabled()
+      await page.keyboard.press('Escape')
+      await tray.getByRole('button', { name: '移除图片 second.png', exact: true }).click()
+      await expect(tray.getByRole('button', { name: 'notes.txt', exact: true })).toBeVisible()
+      await expect(tray.getByText('Context attachment', { exact: true })).toBeVisible()
+      await page.evaluate(() =>
+        Reflect.get(window, 'launchProbe').patch({
+          composerRefs: [
+            { type: 'skill', id: 'fixture-skill', title: 'Fixture skill', path: '/skills/fixture' },
+          ],
+        })
+      )
+      await expect(page.getByText('Fixture skill', { exact: true })).toBeVisible()
+      await expect(tray.getByText('Context attachment', { exact: true })).toBeVisible()
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').patch({ composerRefs: [] }))
+      await expect(tray.getByText('Context attachment', { exact: true })).toBeVisible()
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').hide())
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const probe = Reflect.get(window, 'imageUrls')
+            return probe.created.every((url: string) => probe.revoked.includes(url))
+          })
+        )
+        .toBe(true)
+      assert.deepEqual(reads.slice(0, 3).sort(), [
+        '/samples/first.png',
+        '/samples/second.png',
+        '/samples/third.png',
+      ])
+    },
+    async (page) => {
+      await page.addInitScript(() => {
+        Reflect.set(window, 'composerContextFixture', true)
+        const created: string[] = []
+        const revoked: string[] = []
+        const create = URL.createObjectURL.bind(URL)
+        const revoke = URL.revokeObjectURL.bind(URL)
+        Reflect.set(window, 'imageUrls', { created, revoked })
+        URL.createObjectURL = (blob) => {
+          const url = create(blob)
+          created.push(url)
+          return url
+        }
+        URL.revokeObjectURL = (url) => {
+          revoked.push(url)
+          revoke(url)
+        }
+      })
+      await page.route('**/api/research/workspace/file/raw?*', (route) => {
+        reads.push(new URL(route.request().url()).searchParams.get('path')!)
+        return route.fulfill({ contentType: 'image/png', body: IMAGE_PIXEL })
+      })
+    }
+  )
+})
+
+before(
+  async () => {
+    resources = await renderFixture(ROOT, {
+      create: (config) =>
+        createServer({
+          ...config,
+          define: { __SCHOLARSEED_WEB_VERSION__: JSON.stringify('test') },
+          server: { ...config.server, hmr: false },
+        }),
+      launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+    })
+  },
+  { timeout: FIXTURE_STARTUP_TIMEOUT_MS }
+)
+
+after(async () => {
+  await resources?.close()
+})
+
 async function fixture(
+  context: TestContext,
   run: (page: Page) => Promise<void>,
   prepare?: (page: Page) => Promise<void>
 ): Promise<void> {
-  const server = await createServer({
-    configFile: false,
-    root: ROOT,
-    plugins: [react()],
-    define: { __SCHOLARSEED_WEB_VERSION__: JSON.stringify('test') },
-    server: { host: '127.0.0.1', port: 0, hmr: false },
+  const { server } = resources
+  const page = await resources.page(context)
+  const errors: string[] = []
+  const diagnostics: string[] = []
+  const loading = new Set<Request>()
+  const documents: Request[] = []
+  const startedAt = performance.now()
+  const events: { stage: string; elapsedMs: number }[] = []
+  const record = (stage: string) => events.push({ stage, elapsedMs: performance.now() - startedAt })
+  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('request', (request) => {
+    loading.add(request)
+    if (request.isNavigationRequest()) {
+      documents.push(request)
+      record('browser-request')
+    }
   })
-  await server.listen()
-  const browser = await chromium.launch()
+  page.on('requestfinished', (request) => loading.delete(request))
+  page.on('requestfailed', (request) => {
+    loading.delete(request)
+    diagnostics.push(`${request.failure()?.errorText} ${new URL(request.url()).pathname}`)
+  })
+  page.on('response', (response) => {
+    if (response.status() >= 400)
+      diagnostics.push(`${response.status()} ${new URL(response.url()).pathname}`)
+  })
+  page.on('console', (message) => {
+    if (message.type() === 'error') diagnostics.push(message.text())
+  })
+  page.on('domcontentloaded', () => record('domcontentloaded'))
+  page.on('load', () => record('load'))
   try {
-    const page = await browser.newPage()
-    const errors: string[] = []
-    page.on('pageerror', (error) => errors.push(error.message))
     await page.route(
       (url) => url.pathname.startsWith('/api/'),
       (route) => route.fulfill({ status: 404, json: { error: 'fixture_unavailable' } })
     )
     await prepare?.(page)
+    record('goto')
     await page.goto(new URL('/launch.render.fixture.html', server.resolvedUrls!.local[0]).href)
-    await expect(page.getByTestId('composer-input'))
-      .toBeVisible()
-      .catch(async (error) => {
-        throw new Error(
-          JSON.stringify({
-            errors,
-            body: await page.locator('body').innerText(),
-            failure: String(error),
-          })
-        )
-      })
+    await expect(page.getByTestId('composer-input')).toBeVisible()
     await page.evaluate(
       ({ models, instance }) =>
         Reflect.get(window, 'launchProbe').patch({
@@ -67,27 +670,53 @@ async function fixture(
         }),
       { models: MODELS, instance: INSTANCE }
     )
-    await run(page).catch(async (error) => {
-      throw new Error(
-        JSON.stringify({
-          errors,
-          body: await page.locator('body').innerText(),
-          failure: String(error),
-        })
-      )
-    })
+    record('case')
+    await run(page)
     assert.deepEqual(errors, [])
-  } finally {
-    await browser.close()
-    await server.close()
+  } catch (error) {
+    record('failed')
+    const document = await page
+      .evaluate(() => ({
+        url: location.href,
+        body: globalThis.document.body?.innerText,
+        rootChildren: globalThis.document.getElementById('root')?.childElementCount,
+        scripts: Array.from(globalThis.document.scripts, (script) => script.src),
+        visibility: globalThis.document.visibilityState,
+        focused: globalThis.document.hasFocus(),
+        fonts: globalThis.document.fonts.status,
+      }))
+      .catch((failure) => ({ error: String(failure) }))
+    let screenshot: string
+    try {
+      await mkdir(SCREENSHOTS, { recursive: true })
+      const directory = await mkdtemp(path.join(SCREENSHOTS, 'launch-'))
+      screenshot = path.join(directory, 'failure.png')
+      await page.screenshot({ path: screenshot })
+    } catch (failure) {
+      screenshot = `capture failed: ${String(failure)}`
+    }
+    throw new Error(
+      JSON.stringify({
+        errors,
+        diagnostics,
+        document,
+        loading: [...loading].map((request) => request.url()),
+        network: documents.map((request) => ({ url: request.url(), timing: request.timing() })),
+        events,
+        screenshot,
+        failure: String(error),
+      }),
+      { cause: error }
+    )
   }
 }
 
 test(
   'terminal announcements follow language changes without changing turn outcomes',
   { timeout: 60_000 },
-  async () =>
+  async (context) =>
     fixture(
+      context,
       async (page) => {
         const announcement = page.locator('[role="status"][aria-live="polite"].sr-only')
         for (const outcome of ['running', 'unknown']) {
@@ -164,7 +793,7 @@ test(
     )
 )
 
-test('skill menu localizes generated source labels without translating custom categories', async () => {
+test('skill menu localizes generated source labels without translating custom categories', async (context) => {
   const skills = [
     { name: 'preset-skill', category: '系统预置', category_source: 'builtin' },
     { name: 'user-skill', category: '用户安装', category_source: 'user' },
@@ -179,31 +808,48 @@ test('skill menu localizes generated source labels without translating custom ca
     toggleable: true,
   }))
   await fixture(
+    context,
     async (page) => {
+      const plus = page.getByTestId('composer-plus')
+      const menu = page.getByTestId('composer-plus-menu')
+      const customSkill = page.getByTestId('composer-skill-custom-skill')
+      const openSkills = async (label: string) => {
+        await expect(plus).toHaveAccessibleName(label)
+        await expect(plus).toHaveAttribute('aria-expanded', 'false')
+        await plus.click()
+        await expect(menu).toBeVisible()
+        await page.getByTestId('composer-skills-menu').hover()
+      }
       for (const language of ['en', 'zh', 'en']) {
         await page.evaluate(
           (language) => Reflect.get(window, 'launchProbe').language(language),
           language
         )
-        await page.getByTestId('composer-plus').click()
-        await page.getByTestId('composer-skills-menu').hover()
+        await openSkills(language === 'en' ? 'Add menu' : '加号菜单')
         await expect(page.getByTestId('composer-skill-preset-skill')).toContainText(
           language === 'en' ? 'System preset' : '系统预置'
         )
         await expect(page.getByTestId('composer-skill-user-skill')).toContainText(
           language === 'en' ? 'User installed' : '用户安装'
         )
-        await expect(page.getByTestId('composer-skill-custom-skill')).toContainText('用户安装')
-        await page.keyboard.press('Escape')
-        await page.keyboard.press('Escape')
+        await expect(customSkill).toContainText('用户安装')
+        await plus.click()
+        await expect(menu).toHaveCount(0)
       }
-      await page.getByTestId('composer-plus').click()
-      await page.getByTestId('composer-skills-menu').hover()
-      await page.getByTestId('composer-skill-custom-skill').click()
-      await page.getByTestId('composer-plus').click()
-      await page.getByTestId('composer-skills-menu').hover()
-      await expect(page.getByTestId('composer-skill-custom-skill')).toBeDisabled()
-      await expect(page.getByTestId('composer-skill-custom-skill')).toContainText('Loaded')
+      await openSkills('Add menu')
+      await customSkill.click()
+      await openSkills('Add menu')
+      await customSkill.click()
+      assert.equal(
+        await page.evaluate(
+          () =>
+            Reflect.get(window, 'launchProbe').state.composerRefs.filter(
+              (reference: { type: string; id: string }) =>
+                reference.type === 'skill' && reference.id === 'custom-skill'
+            ).length
+        ),
+        1
+      )
     },
     async (page) => {
       await page.route('**/api/capabilities/skills?**', (route) =>
@@ -262,6 +908,91 @@ async function chooseAndSend(page: Page): Promise<void> {
   await page.getByTestId('composer-send').click()
 }
 
+test('new task stages local attachments without activating a session until send', async (context) => {
+  await fixture(context, async (page) => {
+    const control = await preparation(page)
+    control.finish()
+    const selectedPath = '/tmp/new-task.txt'
+    const canonicalPath = '/private/tmp/new-task.txt'
+    let opens = 0
+    let registrations = 0
+    const turns: unknown[] = []
+    await page.evaluate((selectedPath) => {
+      Reflect.set(window, 'scholarseed', {
+        getApiBase: () => '',
+        pathForFile: () => selectedPath,
+        addAuthorizedRoot: async () => true,
+      })
+      Reflect.get(window, 'launchProbe').surface('assistant')
+    }, selectedPath)
+    await page.route('**/api/assistant/sessions/*/context', (route) =>
+      route.fulfill({
+        json: {
+          session_id: SESSION,
+          revision: 0,
+          project_policy: 'explicit_only',
+          search_scope: 'web',
+          refs: [],
+          capabilities: [],
+          updated_at: 0,
+        },
+      })
+    )
+    await page.route('**/api/serve/sessions/open', (route) => {
+      opens += 1
+      const response = opened()
+      return route.fulfill({
+        json: { ...response, runtime: { ...response.runtime, model_id: 'model-a' } },
+      })
+    })
+    await page.route(`**/api/serve/sessions/${SESSION}/file-references`, (route) => {
+      registrations += 1
+      assert.deepEqual(route.request().postDataJSON(), { paths: [selectedPath] })
+      return route.fulfill({
+        json: {
+          references: [
+            {
+              kind: 'file',
+              path: canonicalPath,
+              name: 'new-task.txt',
+              reference_id: 'registered-new-task',
+              media_type: 'text/plain',
+            },
+          ],
+        },
+      })
+    })
+    await page.route(`**/api/serve/sessions/${SESSION}/turns`, (route) => {
+      turns.push(route.request().postDataJSON())
+      return route.fulfill({
+        json: { ok: true, accepted: true, disposition: 'direct', turn_id: 'attachment-turn' },
+      })
+    })
+    await page.getByTestId('composer-file-input').setInputFiles({
+      name: 'new-task.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('test attachment'),
+    })
+    await expect(page.getByRole('button', { name: 'new-task.txt', exact: true })).toBeVisible()
+    assert.equal(
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').state.activeSession),
+      null
+    )
+    assert.equal(opens, 0)
+    assert.equal(registrations, 0)
+    await page.getByTestId('composer-input').fill('Use the attached file')
+    await page.getByTestId('composer-send').click()
+    await expect.poll(() => turns.length).toBe(1)
+    assert.equal(opens, 1)
+    assert.equal(registrations, 1)
+    assert.equal(
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').state.activeSession),
+      SESSION
+    )
+    assert.match(JSON.stringify(turns[0]), /registered-new-task/)
+  })
+})
+
 async function chooseEffort(page: Page, effort: string): Promise<void> {
   await page.getByTestId('model-selector-toggle').click()
   await page.getByTestId('model-effort-row').click()
@@ -273,8 +1004,8 @@ for (const outcome of ['accepted', 'not_applied', 'preparation_rejected', 'unkno
   test(
     `plan continuation ${outcome} preserves the draft and references without duplicate submission or prompt restoration`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         const control = await preparation(page)
         control.finish()
         await restoreSession(page)
@@ -350,9 +1081,10 @@ for (const outcome of ['accepted', 'not_applied', 'preparation_rejected', 'unkno
         const input = page.getByTestId('composer-input')
         const continuation = page.getByTestId('todo-continue')
         await input.fill(draft)
+        await page.getByTestId('todo-toggle').click()
         await expect(continuation).toBeEnabled()
-        const elapsed = await page.getByTestId('todo-elapsed').innerText()
-        assert.notEqual(elapsed, '')
+        await expect(page.getByTestId('todo-toggle').getByTestId('todo-mark-stopped')).toBeVisible()
+        const pausedTiming = { startedAt: 1000, completedAt: 61000 }
         await continuation.evaluate((element) => {
           const button = element as HTMLButtonElement
           button.click()
@@ -360,7 +1092,15 @@ for (const outcome of ['accepted', 'not_applied', 'preparation_rejected', 'unkno
         })
         await expect.poll(() => Boolean(release)).toBe(true)
         await expect(continuation).toBeDisabled()
-        await expect(page.getByTestId('todo-elapsed')).toHaveText(elapsed)
+        await expect(page.getByTestId('todo-toggle').getByTestId('todo-mark-stopped')).toBeVisible()
+        assert.deepEqual(
+          await page.evaluate(
+            (session) =>
+              Reflect.get(window, 'launchProbe').state.threads[session].turnTimings['paused-plan'],
+            SESSION
+          ),
+          pausedTiming
+        )
         await expect(input).toHaveValue(draft)
         assert.deepEqual(
           await page.evaluate(() => Reflect.get(window, 'launchProbe').state.composerRefs),
@@ -413,8 +1153,8 @@ for (const { editing, outcome } of [
   test(
     `successful registration then ${outcome} keeps ${editing} edits and consumes only unchanged snapshot fields`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         const control = await preparation(page)
         control.finish()
         await restoreSession(page)
@@ -500,6 +1240,9 @@ for (const { editing, outcome } of [
         await input.press('Enter')
         await expect.poll(() => Boolean(release)).toBe(true)
         await expect(input).toHaveValue(submitted)
+        await input.press('Enter')
+        await input.press('Enter')
+        assert.equal(turns.length, 0)
         if (textEdited) {
           await expect(input).toBeEnabled()
           await input.fill('')
@@ -545,8 +1288,8 @@ for (const sameIdentity of [false, true]) {
   test(
     `postclear rejection restores consumed references without losing ${sameIdentity ? 'a replacement of the same identity' : 'a newly added reference'}`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         const control = await preparation(page)
         control.finish()
         await restoreSession(page)
@@ -611,8 +1354,8 @@ for (const failure of ['open', 'authorization', 'context', 'registration', 'inpu
   test(
     `preclear ${failure} failure preserves the exact assistant draft and references`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         const control = await preparation(page)
         control.finish()
         let opens = 0
@@ -683,11 +1426,74 @@ for (const failure of ['open', 'authorization', 'context', 'registration', 'inpu
   )
 }
 
+for (const surface of ['conversation', 'assistant'] as const) {
+  test(
+    `running ${surface} hides send while Enter still queues the draft`,
+    { timeout: 60000 },
+    async (context) => {
+      await fixture(context, async (page) => {
+        const control = await preparation(page)
+        control.finish()
+        await restoreSession(page)
+        const requests: Record<string, unknown>[] = []
+        await page.route('**/api/serve/sessions/*/turns', (route) => {
+          requests.push(route.request().postDataJSON())
+          return route.fulfill({
+            json: {
+              ok: true,
+              accepted: true,
+              disposition: 'queued',
+              queued_message_id: requests.at(-1)!.client_user_message_id,
+            },
+          })
+        })
+        await page.evaluate(
+          ({ session, surface }) => {
+            const probe = Reflect.get(window, 'launchProbe')
+            probe.surface(surface)
+            probe.patch({
+              threads: {
+                ...probe.state.threads,
+                [session]: { ...probe.state.threads[session], running: true, queuedMessages: [] },
+              },
+            })
+          },
+          { session: SESSION, surface }
+        )
+        const input = page.getByTestId('composer-input')
+        await expect(page.getByTestId('composer-stop')).toBeVisible()
+        await input.fill('queued follow-up')
+        await expect(page.getByTestId('composer-send')).toHaveCount(0)
+        await input.press('Shift+Enter')
+        await expect(input).toHaveValue('queued follow-up\n')
+        assert.equal(requests.length, 0)
+        await input.press('Enter')
+        await expect.poll(() => requests.length).toBe(1)
+        await expect(input).toHaveValue('')
+        assert.deepEqual(requests[0].input, [{ type: 'text', text: 'queued follow-up' }])
+        await expect(page.getByTestId('composer-send')).toHaveCount(0)
+        await expect(page.getByTestId('composer-stop')).toBeVisible()
+        await page.evaluate((session) => {
+          const probe = Reflect.get(window, 'launchProbe')
+          probe.patch({
+            threads: {
+              ...probe.state.threads,
+              [session]: { ...probe.state.threads[session], running: false, queuedMessages: [] },
+            },
+          })
+        }, SESSION)
+        await expect(page.getByTestId('composer-stop')).toHaveCount(0)
+        await expect(page.getByTestId('composer-send')).toBeVisible()
+      })
+    }
+  )
+}
+
 test(
   'preclear registration failure preserves edits made while a running-session send waits',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       control.finish()
       await restoreSession(page)
@@ -753,8 +1559,8 @@ for (const outcome of ['preparation_rejected', 'not_applied', 'unknown']) {
     test(
       `postclear ${outcome} ${repeated ? 'retains identical new input' : 'merges new input'} without replay`,
       { timeout: 60000 },
-      async () => {
-        await fixture(async (page) => {
+      async (context) => {
+        await fixture(context, async (page) => {
           const control = await preparation(page)
           control.finish()
           await restoreSession(page)
@@ -828,8 +1634,8 @@ for (const outcome of ['preparation_rejected', 'not_applied', 'unknown']) {
 test(
   'changing draft effort while preparation waits invalidates only the old send',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       const opens: Record<string, unknown>[] = []
       const turns: unknown[] = []
@@ -876,8 +1682,8 @@ test(
 test(
   'restored-session effort selection fences waiting sends until the selected tuple is saved',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       let selectedEffort = 'low'
       let release: (() => void) | undefined
@@ -941,8 +1747,8 @@ test(
 test(
   'first send waits before session/outbox/turn and submits once after target readiness',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       const opens: unknown[] = []
       const turns: unknown[] = []
@@ -984,8 +1790,8 @@ for (const matchingInstance of [true, false]) {
   test(
     `maintenance health 503 ${matchingInstance ? 'preserves' : 'invalidates'} first-send waiting by service identity`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         const control = await preparation(page)
         let opens = 0
         let turns = 0
@@ -1059,8 +1865,8 @@ for (const panel of [false, true]) {
   test(
     `new ${panel ? 'panel' : 'conversation'} draft invalidates a waiting first send`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         const control = await preparation(page)
         let opens = 0
         await page.route('**/api/serve/sessions/open', (route) => {
@@ -1088,8 +1894,8 @@ for (const panel of [false, true]) {
 test(
   'preparation rejection preserves text without creating a failed queue item',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       let opens = 0
       await page.route('**/api/serve/sessions/open', (route) => {
@@ -1107,10 +1913,134 @@ test(
 )
 
 test(
+  'intermediate tool failure retains evidence without a composer card or recovery request',
+  { timeout: 60000 },
+  async (context) => {
+    await fixture(context, async (page) => {
+      await restoreSession(page)
+      const recoveryRequests: string[] = []
+      page.on('request', (request) => {
+        if (new URL(request.url()).pathname.endsWith('/tools/recovery'))
+          recoveryRequests.push(request.url())
+      })
+      await page.evaluate((session) => {
+        const probe = Reflect.get(window, 'launchProbe')
+        probe.patch({
+          threads: {
+            ...probe.state.threads,
+            [session]: {
+              ...probe.state.threads[session],
+              queuedMessages: [],
+              activeTurnId: 'failed-turn',
+              conversation: [
+                {
+                  kind: 'tool',
+                  toolId: 'failed-tool',
+                  turnId: 'failed-turn',
+                  name: 'shell_command',
+                  status: 'error',
+                  result: 'permission denied',
+                },
+              ],
+            },
+          },
+        })
+      }, SESSION)
+      await expect(page.getByTestId('tool-failure-notice')).toHaveCount(0)
+      await expect(page.getByTestId('tool-retry-confirmation')).toHaveCount(0)
+      await page.getByTestId('composer-input').fill('continue after the failed tool')
+      await expect(page.getByTestId('composer-input')).toBeEnabled()
+      const evidence = await page.evaluate(
+        (session) => Reflect.get(window, 'launchProbe').state.threads[session].conversation[0],
+        SESSION
+      )
+      assert.equal(evidence.status, 'error')
+      assert.equal(evidence.result, 'permission denied')
+      assert.deepEqual(recoveryRequests, [])
+    })
+  }
+)
+
+test(
+  'confirmed restart guidance survives maintenance health failure without reopening admission',
+  { timeout: 60000 },
+  async (context) => {
+    await fixture(context, async (page) => {
+      const control = await preparation(page)
+      await chooseAndSend(page)
+      control.finish('restart_required')
+      const alert = page.getByTestId('runtime-preparation')
+      await expect(alert).toContainText('完整退出并重新启动应用')
+      await page.route('**/api/healthz/backend', (route) => route.fulfill({ status: 503 }))
+      await page.route('**/api/serve/runtime/reconfiguration', (route) =>
+        route.fulfill({ status: 503 })
+      )
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').health())
+      await page.waitForTimeout(300)
+      await expect(alert).toContainText('完整退出并重新启动应用')
+      await expect(page.getByTestId('composer-input')).toHaveValue('first prepared message')
+      assert.equal(
+        await page.evaluate(() => Reflect.get(window, 'launchProbe').state.backendReady),
+        false
+      )
+      await expect(page.getByTestId('composer-send')).toBeDisabled()
+      const submissions: string[] = []
+      page.on('request', (request) => {
+        if (
+          request.method() === 'POST' &&
+          new URL(request.url()).pathname.startsWith('/api/serve/')
+        )
+          submissions.push(new URL(request.url()).pathname)
+      })
+      await page.getByTestId('composer-input').press('Enter')
+      await page.waitForTimeout(300)
+      assert.deepEqual(submissions, [])
+      await expect(page.getByTestId('composer-input')).toHaveValue('first prepared message')
+    })
+  }
+)
+
+for (const [state, expected] of [
+  ['restart_required', 'runtimeSwitch.restartRequired'],
+  ['rejected', 'runtimePreparation.failed'],
+  ['unsupported', 'runtimeSwitch.unsupported'],
+]) {
+  test(
+    `first-send preparation ${state} preserves the draft without submission or replay`,
+    { timeout: 60000 },
+    async (context) => {
+      await fixture(context, async (page) => {
+        const control = await preparation(page)
+        let submissions = 0
+        page.on('request', (request) => {
+          if (
+            request.method() === 'POST' &&
+            /\/api\/serve\/sessions\/(open|[^/]+\/turns)$/.test(new URL(request.url()).pathname)
+          )
+            submissions += 1
+        })
+        await chooseAndSend(page)
+        control.finish(state)
+        await expect(page.getByTestId('composer-input')).toHaveValue('first prepared message')
+        await expect.poll(() => control.terminalObserved()).toBe(true)
+        await expect
+          .poll(() =>
+            page.evaluate(() => Reflect.get(window, 'launchProbe').state.foregroundError?.key)
+          )
+          .toBe(expected)
+        await page.waitForTimeout(1100)
+        assert.equal(submissions, 0)
+        await expect(page.getByTestId('composer-input')).toHaveValue('first prepared message')
+      })
+    }
+  )
+}
+
+test(
   'normal runtime preparation stays silent while terminal failures remain visible',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       await page.getByTestId('composer-input').fill('draft stays available')
       for (const state of ['accepted', 'applied', 'rejected', 'restart_required', 'unsupported']) {
         await page.evaluate(
@@ -1147,8 +2077,8 @@ test(
 test(
   'unmount during session opening cannot submit a late first message',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       let releaseOpen: (() => void) | undefined
       let turns = 0
@@ -1177,8 +2107,8 @@ test(
 test(
   'prequeue preparation rejection stays unsubmitted and an explicit retry retains target admission',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       const turns: { expected_model_id?: string }[] = []
       let opens = 0
@@ -1219,6 +2149,385 @@ test(
     })
   }
 )
+
+test('keyboard send respects context admission and retains the draft until an explicit ready retry', async (context) => {
+  await fixture(context, async (page) => {
+    const control = await preparation(page)
+    control.finish()
+    await restoreSession(page)
+    const turns: Record<string, unknown>[] = []
+    await page.route('**/api/serve/sessions/*/turns', (route) => {
+      turns.push(route.request().postDataJSON())
+      return route.fulfill({
+        json: { ok: true, accepted: true, disposition: 'direct', turn_id: 'retry-turn' },
+      })
+    })
+    const input = page.getByTestId('composer-input')
+    const draft = 'keep the restored draft'
+    await input.fill(draft)
+    for (const contextState of ['loading', 'refreshing', 'saving', 'error', 'wrong-session']) {
+      await page.evaluate(
+        ({ session, contextState }) => {
+          const probe = Reflect.get(window, 'launchProbe')
+          probe.patch({
+            foregroundError: null,
+            aiPanel: {
+              ...probe.state.aiPanel,
+              sessionId: contextState === 'wrong-session' ? 'another-session' : session,
+              contextState: contextState === 'wrong-session' ? 'ready' : contextState,
+            },
+          })
+        },
+        { session: SESSION, contextState }
+      )
+      await expect(page.getByTestId('composer-send')).toBeDisabled()
+      await input.press('Enter')
+      assert.equal(
+        await page.evaluate(() => Reflect.get(window, 'launchProbe').state.foregroundError),
+        null,
+        contextState
+      )
+      await expect(input).toHaveValue(draft)
+      assert.equal(turns.length, 0)
+    }
+    await page.evaluate((session) => {
+      const probe = Reflect.get(window, 'launchProbe')
+      probe.patch({
+        aiPanel: { ...probe.state.aiPanel, sessionId: session, contextState: 'ready' },
+      })
+    }, SESSION)
+    await expect(page.getByTestId('composer-send')).toBeEnabled()
+    await expect(input).toHaveValue(draft)
+    assert.equal(turns.length, 0)
+    await input.press('Enter')
+    await expect.poll(() => turns.length).toBe(1)
+    await expect(input).toHaveValue('')
+    assert.deepEqual(turns[0].input, [{ type: 'text', text: draft }])
+    assert.equal(
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').state.foregroundError),
+      null
+    )
+  })
+})
+
+test('queued message updates preserve editable text and the ordinary draft without duplicate submission', async (context) => {
+  await fixture(context, async (page) => {
+    const control = await preparation(page)
+    control.finish()
+    await restoreSession(page)
+    const input = page.getByTestId('composer-input')
+    await input.fill('ordinary unsent draft')
+    await page.getByTestId('queued-more-old-failure').click()
+    await page.getByRole('menuitem', { name: '编辑消息', exact: true }).click()
+    await expect(input).toHaveValue('do not replay')
+    await input.fill('updated queue message')
+    let release: (() => void) | undefined
+    const updates: unknown[] = []
+    await page.route('**/api/serve/sessions/*/queue/old-failure', async (route) => {
+      assert.equal(route.request().method(), 'PATCH')
+      updates.push(route.request().postDataJSON())
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      await route.fulfill({ status: 503, json: { error: 'test_queue_update_failed' } })
+    })
+    await input.press('Enter')
+    await expect.poll(() => Boolean(release)).toBe(true)
+    await expect(input).toBeEditable()
+    await input.fill('new edits while queue update is pending')
+    await input.press('Enter')
+    assert.deepEqual(updates, [{ text: 'updated queue message' }])
+    release!()
+    await expect(input).toBeEnabled()
+    await expect(input).toHaveValue('new edits while queue update is pending')
+    await expect(
+      page.getByText('无法修改消息，编辑文字已保留，可复制。', { exact: true })
+    ).toBeVisible()
+    await input.press('Escape')
+    await expect(input).toHaveValue('ordinary unsent draft')
+  })
+})
+
+for (const hostOwned of [true, false]) {
+  test(
+    `clarification Enter preserves the whole reply and failed draft through the ${hostOwned ? 'host' : 'HTTP'} route`,
+    { timeout: 60000 },
+    async (context) => {
+      await fixture(context, async (page) => {
+        const control = await preparation(page)
+        control.finish()
+        await restoreSession(page)
+        const requests: unknown[] = []
+        let status = 403
+        const reply =
+          '网络安全，仅公开UNSW-NB15；重构自编码器；PR-AUC并报告F1。仅确认，不检索、不下载。'
+        const body = { free_text: reply, answers: { scope: reply } }
+        const response = () => ({
+          ok: true,
+          interaction: {
+            request_id: 'clarification',
+            kind: 'question',
+            state: 'resolved',
+            ...body,
+          },
+        })
+        await page.exposeFunction('answerClarification', (request: unknown) => {
+          requests.push(request)
+          return {
+            status,
+            body: JSON.stringify(status === 200 ? response() : { detail: 'host_process_only' }),
+          }
+        })
+        await page.evaluate(() => {
+          window.scholarseed.deviceSkills = (request) =>
+            Reflect.get(window, 'answerClarification')(request)
+        })
+        await page.route('**/api/serve/sessions/*/hil/*', (route) => {
+          requests.push({ operation: 'HTTP', body: route.request().postDataJSON() })
+          return route.fulfill({
+            status,
+            json: status === 200 ? response() : { detail: 'host_process_only' },
+          })
+        })
+        await page.evaluate(
+          ({ session, hostOwned }) => {
+            const probe = Reflect.get(window, 'launchProbe')
+            probe.patch({
+              threads: {
+                [session]: {
+                  ...probe.state.threads[session],
+                  running: true,
+                  status: 'waiting',
+                  activeTurnId: 'clarification-turn',
+                  queuedMessages: ['B', 'Q'].map((text, index) => ({
+                    queuedMessageId: text,
+                    enqueueSeq: index + 1,
+                    state: 'queued',
+                    input: [{ type: 'text', text }],
+                    text,
+                    assistantReferences: [],
+                    submissionMode: 'queued',
+                  })),
+                  conversation: [
+                    {
+                      kind: 'hil',
+                      requestId: 'clarification',
+                      hilKind: 'question',
+                      hilState: 'pending',
+                      questions: ['scope', 'method', 'metric'].map((id) => ({
+                        id,
+                        question: id,
+                        options: [],
+                        ...(hostOwned ? { component: { plugin: 'host' } } : {}),
+                      })),
+                    },
+                  ],
+                },
+              },
+            })
+          },
+          { session: SESSION, hostOwned }
+        )
+        const queued = await page.evaluate(
+          (session) => Reflect.get(window, 'launchProbe').state.threads[session].queuedMessages,
+          SESSION
+        )
+        for (const message of ['B', 'Q'])
+          await expect(page.getByTestId(`queued-steer-${message}`)).toBeDisabled()
+        await expect(page.locator('[data-testid^="queued-send-"]')).toHaveCount(0)
+        const input = page.getByTestId('composer-input')
+        await input.fill(reply)
+        await input.press('Enter')
+        await expect.poll(() => requests.length).toBe(1)
+        await expect
+          .poll(() =>
+            page.evaluate(
+              (session) =>
+                Reflect.get(window, 'launchProbe').state.threads[session].conversation[0].hilState,
+              SESSION
+            )
+          )
+          .toBe('failed')
+        await expect(input).toHaveValue(reply)
+        for (const message of ['B', 'Q'])
+          await expect(page.getByTestId(`queued-steer-${message}`)).toBeDisabled()
+        status = 200
+        await input.press('Enter')
+        await expect.poll(() => requests.length).toBe(2)
+        await expect(input).toHaveValue('')
+        const expected = hostOwned
+          ? { operation: 'plugin-answer', session: SESSION, request: 'clarification', body }
+          : { operation: 'HTTP', body }
+        assert.deepEqual(requests, [expected, expected])
+        assert.deepEqual(
+          await page.evaluate((session) => {
+            const item = Reflect.get(window, 'launchProbe').state.threads[session].conversation[0]
+            return { state: item.hilState, answers: item.answers, freeText: item.freeText }
+          }, SESSION),
+          { state: 'resolved', answers: body.answers, freeText: reply }
+        )
+        assert.deepEqual(
+          await page.evaluate(
+            (session) => Reflect.get(window, 'launchProbe').state.threads[session].queuedMessages,
+            SESSION
+          ),
+          queued
+        )
+      })
+    }
+  )
+}
+
+for (const hilKind of ['permission', 'question']) {
+  test(`conversation controls keep ${hilKind} decisions card-only`, async (context) => {
+    await fixture(context, async (page) => {
+      const control = await preparation(page)
+      control.finish()
+      await restoreSession(page)
+      const requests: unknown[] = []
+      await page.route('**/api/serve/sessions/*/hil/*', async (route) => {
+        requests.push(route.request().postDataJSON())
+        await route.fulfill({ json: { ok: true } })
+      })
+      await page.exposeFunction('blockedClarification', (request: unknown) => {
+        requests.push(request)
+        return { status: 200, body: JSON.stringify({ ok: true }) }
+      })
+      await page.evaluate(
+        ({ session, hilKind }) => {
+          window.scholarseed.deviceSkills = (request) =>
+            Reflect.get(window, 'blockedClarification')(request)
+          const probe = Reflect.get(window, 'launchProbe')
+          probe.patch({
+            threads: {
+              [session]: {
+                ...probe.state.threads[session],
+                queuedMessages: [],
+                conversation: [
+                  {
+                    kind: 'hil',
+                    requestId: 'card-only',
+                    hilKind,
+                    hilState: 'pending',
+                    questions: [
+                      {
+                        id: 'file-recovery:request',
+                        header: 'file_read_failed',
+                        question: 'resources/broken.pdf',
+                        options: [{ label: 'retry_file' }, { label: 'remove_file' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          })
+        },
+        { session: SESSION, hilKind }
+      )
+      const input = page.getByTestId('composer-input')
+      await input.fill('Do not authorize this from free text')
+      await input.press('Enter')
+      await expect(page.getByTestId('composer-send')).toBeDisabled()
+      await expect(input).toHaveValue('Do not authorize this from free text')
+      assert.deepEqual(requests, [])
+    })
+  })
+}
+
+for (const surface of ['composer', 'card']) {
+  test(
+    `${surface} editing notification uses the host route without resolving the clarification`,
+    { timeout: 60000 },
+    async (context) => {
+      await fixture(
+        context,
+        async (page) => {
+          const control = await preparation(page)
+          control.finish()
+          await restoreSession(page)
+          const requests: unknown[] = []
+          await page.exposeFunction('editingClarification', (request: unknown) => {
+            requests.push(request)
+            return {
+              status: 200,
+              body: JSON.stringify({ ok: true, interaction: { timeout_cancelled: true } }),
+            }
+          })
+          await page.evaluate((session) => {
+            window.scholarseed.deviceSkills = (request) =>
+              Reflect.get(window, 'editingClarification')(request)
+            const probe = Reflect.get(window, 'launchProbe')
+            probe.patch({
+              threads: {
+                [session]: {
+                  ...probe.state.threads[session],
+                  queuedMessages: [],
+                  conversation: [
+                    {
+                      kind: 'hil',
+                      requestId: 'editing',
+                      hilKind: 'question',
+                      hilState: 'pending',
+                      cancelTimeoutOnEdit: true,
+                      questions: [
+                        {
+                          id: 'scope',
+                          question: 'Scope?',
+                          options: [],
+                          component: {
+                            plugin: 'host',
+                            component: 'question',
+                            fingerprint: 'host-v1',
+                          },
+                        },
+                        { id: 'supplement', question: 'Supplement?', options: [] },
+                      ],
+                    },
+                  ],
+                },
+              },
+            })
+          }, SESSION)
+          await page
+            .getByTestId(surface === 'composer' ? 'composer-input' : 'hil-question-text-1')
+            .fill('Revise the outline')
+          await expect.poll(() => requests.length).toBe(1)
+          assert.deepEqual(requests, [
+            {
+              operation: 'plugin-answer',
+              session: SESSION,
+              request: 'editing',
+              body: { editing: true },
+            },
+          ])
+          await expect
+            .poll(() =>
+              page.evaluate(
+                (session) =>
+                  Reflect.get(window, 'launchProbe').state.threads[session].conversation[0]
+                    .timeoutCancelled,
+                SESSION
+              )
+            )
+            .toBe(true)
+          assert.equal(
+            await page.evaluate(
+              (session) =>
+                Reflect.get(window, 'launchProbe').state.threads[session].conversation[0].hilState,
+              SESSION
+            ),
+            'pending'
+          )
+        },
+        async (page) => {
+          if (surface === 'card')
+            await page.addInitScript(() => Reflect.set(window, 'hilDockFixture', true))
+        }
+      )
+    }
+  )
+}
 
 async function restoreSession(page: Page): Promise<void> {
   await page.route('**/api/assistant/sessions/*/context', (route) =>
@@ -1299,8 +2608,8 @@ async function startupReady(page: Page): Promise<void> {
 test(
   'startup prepares only the restored session target after current-instance hydration',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       const requests: Record<string, unknown>[] = []
       const mutations: string[] = []
@@ -1416,8 +2725,8 @@ test(
 test(
   'startup new draft waits for catalogue identity and does not prepare on later navigation',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       const requests: Record<string, unknown>[] = []
       page.on('request', (request) => {
@@ -1465,8 +2774,8 @@ for (const unavailable of ['missing', 'disabled']) {
   test(
     `startup never falls back from an ${unavailable} persisted session model`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         let prepares = 0
         await preparation(page)
         page.on('request', (request) => {
@@ -1515,8 +2824,8 @@ for (const unavailable of ['missing', 'disabled']) {
 test(
   'service replacement waits for both new catalogue and new session recovery',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const requests: Record<string, unknown>[] = []
       await page.route('**/api/serve/runtime/prepare**', (route) => {
         const request = route.request().postDataJSON()
@@ -1608,8 +2917,8 @@ for (const change of ['session', 'draft', 'project']) {
   test(
     `startup hydration cannot prepare a late target after ${change} changes`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         let prepares = 0
         await preparation(page)
         page.on('request', (request) => {
@@ -1646,8 +2955,8 @@ for (const change of ['session', 'draft', 'project']) {
 test(
   'restored session prepares its own model on every explicit send without replaying failures',
   { timeout: 60000 },
-  async () => {
-    await fixture(async (page) => {
+  async (context) => {
+    await fixture(context, async (page) => {
       const control = await preparation(page)
       const turns: Record<string, unknown>[] = []
       const forbidden: string[] = []
@@ -1765,12 +3074,196 @@ test(
   }
 )
 
+for (const outcome of ['applied', 'rejected', 'session', 'unmount']) {
+  test(`conversation continuity: preparing follow-up keeps its bubble through ${outcome}`, async (context) => {
+    await fixture(
+      context,
+      async (page) => {
+        const control = await preparation(page)
+        const turns: Record<string, unknown>[] = []
+        await page.route('**/api/serve/sessions/*/turns', (route) => {
+          turns.push(route.request().postDataJSON())
+          return route.fulfill({ json: { ok: true, accepted: true, disposition: 'direct' } })
+        })
+        await restoreSession(page)
+        await page.evaluate((session) => {
+          const probe = Reflect.get(window, 'launchProbe')
+          probe.patch({
+            threads: {
+              ...probe.state.threads,
+              [session]: {
+                ...probe.state.threads[session],
+                running: false,
+                queuedMessages: [],
+                conversation: [
+                  { kind: 'user', text: '你好', itemId: 'previous-user', turnId: 'previous' },
+                ],
+              },
+            },
+          })
+        }, SESSION)
+        await page.getByTestId('composer-input').fill('你好')
+        await page.getByTestId('composer-send').click()
+        await expect
+          .poll(() =>
+            page.evaluate(() => Reflect.get(window, 'launchProbe').state.turnLaunch?.phase)
+          )
+          .toBe('preparing')
+        await expect(page.getByTestId('assistant-working')).toBeVisible()
+        await expect(page.locator('[data-message-kind="user"]')).toHaveCount(2)
+        const itemId = await page
+          .locator('[data-message-kind="user"]')
+          .last()
+          .getAttribute('data-message-item-id')
+        assert.ok(itemId)
+        assert.equal(turns.length, 0)
+        if (outcome === 'session')
+          await page.evaluate(() => Reflect.get(window, 'launchProbe').draft())
+        if (outcome === 'unmount')
+          await page.evaluate(() => Reflect.get(window, 'launchProbe').hide())
+        control.finish(outcome === 'rejected' ? 'rejected' : 'applied')
+        if (outcome === 'applied') {
+          await expect.poll(() => turns.length).toBe(1)
+          await expect(page.locator('[data-message-kind="user"]')).toHaveCount(2)
+          await expect(page.locator('[data-message-kind="user"]').last()).toHaveAttribute(
+            'data-message-item-id',
+            itemId!
+          )
+        } else {
+          await expect
+            .poll(() =>
+              page.evaluate(
+                (session) =>
+                  Reflect.get(window, 'launchProbe').state.threads[session].conversation.length,
+                SESSION
+              )
+            )
+            .toBe(1)
+          assert.equal(turns.length, 0)
+          if (outcome === 'rejected')
+            await expect(page.getByTestId('composer-input')).toHaveValue('你好')
+        }
+      },
+      async (page) => {
+        await page.addInitScript(() => Reflect.set(window, 'streamFixture', true))
+      }
+    )
+  })
+}
+
+test('conversation continuity: preparing queued work keeps queue presentation', async (context) => {
+  await fixture(
+    context,
+    async (page) => {
+      const control = await preparation(page)
+      await restoreSession(page)
+      await page.evaluate((session) => {
+        const probe = Reflect.get(window, 'launchProbe')
+        probe.patch({
+          threads: {
+            ...probe.state.threads,
+            [session]: {
+              ...probe.state.threads[session],
+              conversation: [
+                { kind: 'user', text: 'previous', itemId: 'previous-user', turnId: 'previous' },
+              ],
+            },
+          },
+        })
+      }, SESSION)
+      await page.getByTestId('composer-input').fill('queued follow-up')
+      await page.getByTestId('composer-send').click()
+      await expect
+        .poll(() => page.evaluate(() => Reflect.get(window, 'launchProbe').state.turnLaunch?.phase))
+        .toBe('preparing')
+      await expect(page.locator('[data-message-kind="user"]')).toHaveCount(1)
+      await page.evaluate(() => Reflect.get(window, 'launchProbe').draft())
+      control.finish()
+    },
+    async (page) => {
+      await page.addInitScript(() => Reflect.set(window, 'streamFixture', true))
+    }
+  )
+})
+for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+  test(`conversation continuity: first activity is open on mount with ${reducedMotion}`, async (context) => {
+    await fixture(
+      context,
+      async (page) => {
+        await page.emulateMedia({ reducedMotion })
+        await restoreSession(page)
+        await page.evaluate((session) => {
+          const probe = Reflect.get(window, 'launchProbe')
+          probe.patch({
+            threads: {
+              ...probe.state.threads,
+              [session]: {
+                ...probe.state.threads[session],
+                running: true,
+                queuedMessages: [],
+                turnOutcomes: { current: 'running' },
+                conversation: [
+                  { kind: 'user', text: '你好', itemId: 'current-user', turnId: 'current' },
+                ],
+              },
+            },
+          })
+        }, SESSION)
+        await expect(page.getByTestId('assistant-working')).toBeVisible()
+        await page.evaluate((session) => {
+          Reflect.set(window, 'activityMountCollapsed', null)
+          const observer = new MutationObserver(() => {
+            const group = document.querySelector(
+              '[data-testid="turn-activity"] > [aria-hidden="false"]'
+            )
+            const step = document.querySelector('[data-testid="thinking-activity-content"]')
+            if (!group || !step) return
+            Reflect.set(window, 'activityMountCollapsed', [
+              group.classList.contains('opacity-0'),
+              step.classList.contains('opacity-0'),
+            ])
+            observer.disconnect()
+          })
+          observer.observe(document.body, { childList: true, subtree: true })
+          const probe = Reflect.get(window, 'launchProbe')
+          probe.patch({
+            threads: {
+              ...probe.state.threads,
+              [session]: {
+                ...probe.state.threads[session],
+                conversation: [
+                  ...probe.state.threads[session].conversation,
+                  {
+                    kind: 'thinking',
+                    text: 'fixture progress',
+                    itemId: 'current-thinking',
+                    turnId: 'current',
+                  },
+                ],
+              },
+            },
+          })
+        }, SESSION)
+        await expect
+          .poll(() => page.evaluate(() => Reflect.get(window, 'activityMountCollapsed')))
+          .toEqual([false, false])
+        await expect(page.getByTestId('assistant-working')).toHaveCount(0)
+        await expect(page.getByTestId('thinking-activity-step')).toHaveCount(1)
+        await expect(page.locator('[data-message-kind="user"]')).toHaveCount(1)
+      },
+      async (page) => {
+        await page.addInitScript(() => Reflect.set(window, 'streamFixture', true))
+      }
+    )
+  })
+}
+
 for (const change of ['session', 'model', 'instance', 'context', 'unmount', 'rejection']) {
   test(
     `restored send remains unsubmitted after ${change} during preparation`,
     { timeout: 60000 },
-    async () => {
-      await fixture(async (page) => {
+    async (context) => {
+      await fixture(context, async (page) => {
         const control = await preparation(page)
         let turns = 0
         await page.route('**/api/serve/sessions/*/turns', (route) => {

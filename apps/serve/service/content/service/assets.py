@@ -125,22 +125,21 @@ def validate_name(name: str) -> str:
 def _probe_free(candidate: Path, reserved: frozenset[Path]) -> bool:
     """Whether a candidate name is unclaimed, surfacing length failures.
 
-    `Path.exists()` swallows ENOENT/ENOTDIR but re-raises ENAMETOOLONG (and the
-    Windows 206 equivalent), so an over-limit name would otherwise escape as a
-    raw OSError → 500 from callers that do not wrap the probe. Classifying it
-    here makes every `unique_path` consumer — create, rename, move, copy, import
-    — report the actionable `name_too_long` instead. Other OSErrors propagate
-    unchanged so each caller keeps its own fallback.
+    Use stat because Path.exists() suppresses every OSError on Python 3.14.
+    Only a missing entry is free; length failures remain actionable and other
+    errors propagate so each caller keeps its own fallback.
     """
 
     try:
-        exists = candidate.exists()
+        candidate.stat()
     except OSError as error:
         length_error = name_length_error(error, candidate)
         if length_error is not None:
             raise length_error from error
+        if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+            return candidate not in reserved
         raise
-    return not exists and candidate not in reserved
+    return False
 
 
 def unique_path(parent: Path, name: str, reserved: frozenset[Path] = frozenset()) -> Path:
@@ -474,7 +473,7 @@ def validate_prepared(prepared: PreparedContent) -> None:
             prepared.sha256,
         )
     ) or any(
-        type(value) is not int or value < 0
+        (not isinstance(value, int) or isinstance(value, bool)) or value < 0
         for value in (prepared.device, prepared.inode, prepared.size)
     ):
         raise ContentError(PREPARED_CONFLICT)
@@ -599,6 +598,31 @@ def publish_prepared(space: ProjectSpace, prepared: PreparedContent) -> FileAsse
             except FileExistsError:
                 pass  # Existing targets still need operation identity AND byte verification.
         return _published_asset(space, prepared, descriptor, parent)
+    except OSError as error:
+        raise ContentError(PREPARED_UNAVAILABLE) from error
+    finally:
+        if descriptor is not None:
+            descriptor.close()
+
+
+def read_prepared(space: ProjectSpace, prepared: PreparedContent) -> bytes:
+    _prepared_parent(space, prepared)
+    descriptor = None
+    try:
+        descriptor = space.open_directory(Path(prepared.path).parent.as_posix())
+        target = descriptor.open(
+            Path(prepared.staging_path).name, os.O_RDONLY | NOFOLLOW | NONBLOCK
+        )
+        with os.fdopen(target, "rb") as stream:
+            _verify_prepared(stream, prepared, staging=True)
+            stream.seek(0)
+            payload = stream.read(prepared.size + 1)
+            if (
+                len(payload) != prepared.size
+                or hashlib.sha256(payload).hexdigest() != prepared.sha256
+            ):
+                raise ContentError(PREPARED_CONFLICT)
+            return payload
     except OSError as error:
         raise ContentError(PREPARED_UNAVAILABLE) from error
     finally:

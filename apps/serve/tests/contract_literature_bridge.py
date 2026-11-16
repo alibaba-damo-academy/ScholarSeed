@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import subprocess
@@ -29,6 +30,7 @@ from service.assistant.service.authorization import (
     AuthorizationDisposition,
     FulltextAuthorizer,
 )
+from service.assistant.service.excerpts import MODEL_EXCERPT_BYTES, model_excerpt
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
 from service.chat.service.tasks import ProductTaskLease
 from service.cli.bridge import parser
@@ -36,14 +38,18 @@ from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.literature.persistence import files as literature_files
+from service.literature.persistence.analysis import AnalysisStore
 from service.literature.persistence.cards import PaperCards
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import PDF_MEDIA_TYPE, AttachmentRole, LiteratureItem
+from service.literature.service.abstracts import local_abstract
 from service.literature.service.attachment import (
     PATH_NOT_AUTHORIZED,
     LiteratureAttachmentContent,
 )
+from service.literature.service.candidates import prepare_candidates
 from service.literature.service.evidence import LiteratureEvidenceService
+from service.literature.service.knowledge import KNOWLEDGE_MAX_BYTES, project_knowledge
 from service.literature.service.records import AttachmentRecords
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities, ActivityDomain
@@ -57,6 +63,7 @@ from service.platform.bridge import (
     LITERATURE_ROUTE_PREFIX,
     PDF_ROUTE_PREFIX,
     LiteratureAnnotations,
+    LiteratureKnowledge,
     LiteratureList,
     LiteratureRead,
 )
@@ -68,6 +75,7 @@ from service.platform.citations import (
     CitationPage,
     PdfFragment,
     PdfPageContent,
+    evidence_blocks,
 )
 from service.platform.context import (
     AssistantTurnItem,
@@ -102,10 +110,8 @@ HOST_PROMPT = (
     REPO_ROOT / "apps" / "serve" / "service" / "chat" / "prompts" / "developerInstructions.md"
 )
 CITATION_IDENTITY_RULES = (
-    "A `citation_url` is an opaque, immutable identifier.",
-    "Copy the entire returned value",
-    "Never split, parse, shorten, truncate, slice, hash, summarize, or reconstruct",
-    "If the full value was not preserved, read the fragment again instead of guessing it.",
+    "Copy the complete `fragments[].citation_url` verbatim into an inline link",
+    "Never reconstruct a handle or print a raw-handle reference list.",
 )
 
 
@@ -142,6 +148,101 @@ class PageIndexFixture:
 
 
 class LiteratureBridgeContracts(unittest.TestCase):
+    def test_historical_literature_citation_preserves_excerpt_when_attachment_or_item_is_deleted(
+        self,
+    ):
+        self._reference_whole_paper()
+        prepared = self.citations.service.literature_read(
+            "session",
+            "snapshot",
+            LiteratureRead(
+                ref_id="literature:paper",
+                attachment_id=self.paper_attachment["id"],
+                start_page=1,
+                end_page=1,
+            ),
+            "turn",
+        )
+        result = self.citations.service.commit_literature_read("session", "snapshot", prepared)
+        handle = result["pages"][0]["fragments"][0]["citation_url"].split(":", 1)[1]
+        receipt = self.citations.store.get("session", "snapshot", handle)
+        original = self.citations.service.resolve_saved(receipt, "project")
+        self.assertEqual(original["state"], "exact")
+        denied = self.citations.service.resolve_saved({**receipt, "project_id": "other"}, "other")
+        self.assertEqual(denied["state"], "unavailable")
+        self.assertFalse(denied["source_missing"])
+        path = Path(self.paper_attachment["path"])
+        payload = path.read_bytes()
+        path.unlink()
+        missing_bytes = self.citations.service.resolve_saved(receipt, "project")
+        self.assertTrue(missing_bytes["source_missing"])
+        self.assertEqual(missing_bytes["quote"], original["quote"])
+        path.write_bytes(payload)
+        self.repository.delete_attachment("paper", self.paper_attachment["id"])
+        missing_attachment = self.citations.service.resolve_saved(receipt, "project")
+        self.assertTrue(missing_attachment["source_missing"])
+        self.assertEqual(missing_attachment["state"], "unavailable")
+        self.assertEqual(missing_attachment["quote"], original["quote"])
+        self.repository.delete("paper", confirm=True)
+        missing_item = self.citations.service.resolve_saved(receipt, "project")
+        self.assertTrue(missing_item["source_missing"])
+        self.assertEqual(missing_item["quote"], original["quote"])
+        self.assertFalse(missing_item["can_open_pdf"])
+
+    def test_citation_bibliography_uses_scoped_catalogue_metadata(self) -> None:
+        self.repository.save(
+            LiteratureItem(
+                id="paper",
+                title="Stored title",
+                authors="Ada; 李明",
+                year=2025,
+                journal="Stored journal",
+                url="https://example.org/paper",
+                doi="10.1000/stored",
+            ),
+            project_id="project",
+        )
+        metadata = self.evidence.metadata("project", "paper")
+        self.assertEqual(metadata["publication"], "Stored journal")
+        self.assertEqual(metadata["url"], "https://example.org/paper")
+        self.assertEqual(metadata["doi"], "10.1000/stored")
+        projected = self.citations.service._bibliography(
+            {"source_kind": "literature", "project_id": "project", "source_id": "paper"}
+        )
+        self.assertEqual(
+            projected,
+            {
+                "version": 1,
+                "title": "Stored title",
+                "authors": "Ada; 李明",
+                "year": "2025",
+                "publication": "Stored journal",
+                "url": "https://example.org/paper",
+                "doi": "10.1000/stored",
+            },
+        )
+        self.assertIsNone(
+            self.citations.service._bibliography(
+                {"source_kind": "literature", "project_id": "other", "source_id": "paper"}
+            )
+        )
+        attachment = self._stage("paper", "bibliography.pdf", self._pdf("Bibliography"))
+        self._reference_whole_paper()
+        prepared = self.citations.service.literature_read(
+            "session",
+            "snapshot",
+            LiteratureRead(
+                ref_id="literature:paper", attachment_id=attachment["id"], start_page=1, end_page=1
+            ),
+            "turn",
+        )
+        result = self.citations.service.commit_literature_read("session", "snapshot", prepared)
+        handle = result["pages"][0]["fragments"][0]["citation_url"].split(":", 1)[1]
+        receipt = self.citations.store.get("session", "snapshot", handle)
+        resolved = self.citations.service.resolve_saved(receipt, "project")
+        self.assertEqual(resolved["bibliography"], projected)
+        self.assertEqual(resolved["state"], "exact")
+
     def test_project_literature_skill_exclusively_owns_opaque_citation_urls(self) -> None:
         skill = " ".join(PROJECT_LITERATURE_SKILL.read_text(encoding="utf-8").split())
         prompt = " ".join(HOST_PROMPT.read_text(encoding="utf-8").split())
@@ -150,7 +251,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
             with self.subTest(rule=rule):
                 self.assertIn(rule, skill)
                 self.assertNotIn(rule, prompt)
-        self.assertIn('print(fragment["citation_url"], "|", preview)', skill)
+        self.assertIn("[1](scholarseed-cite:HANDLE)", skill)
         self.assertNotIn('fragment["citation_url"][:', skill)
 
     def setUp(self) -> None:
@@ -195,6 +296,8 @@ class LiteratureBridgeContracts(unittest.TestCase):
             PaperCards(self.repository.database),
             self.attachment_records,
         )
+        self.analysis = AnalysisStore(self.repository.database)
+        self.evidence._analysis = self.analysis
         self.citations.service._literature = self.evidence
 
     def tearDown(self) -> None:
@@ -407,9 +510,532 @@ class LiteratureBridgeContracts(unittest.TestCase):
             else:
                 alias.unlink()
 
+    def test_model_excerpt_preserves_citations_and_stored_geometry_without_page_duplication(self):
+        prepared = self.citations.service.literature_read(
+            "session",
+            "snapshot",
+            LiteratureRead(ref_id="literature:paper", start_page=1, end_page=2),
+            "turn",
+        )
+        full = self.citations.service.commit_literature_read("session", "snapshot", prepared)
+        before = json.dumps(full, ensure_ascii=False)
+        projected = model_excerpt(full)
+        self.assertEqual(json.dumps(full, ensure_ascii=False), before)
+        self.assertNotIn("text", projected["pages"][0])
+        for original_page, page in zip(full["pages"], projected["pages"]):
+            for original, fragment in zip(original_page["fragments"], page["fragments"]):
+                self.assertEqual(fragment["text"], original["text"])
+                self.assertEqual(fragment["citation_url"], original["citation_url"])
+                receipt = self.citations.store.get(
+                    "session", "snapshot", fragment["citation_url"].split(":", 1)[1]
+                )
+                self.assertEqual(receipt["quote"], fragment["text"])
+                self.assertEqual(receipt["fragment_ids"], original["fragment_ids"])
+                self.assertEqual(receipt["pages"][0]["page"], page["page"])
+
+    def test_model_excerpt_returns_result_evidence_and_keeps_uncited_summaries(self):
+        self.analysis.publish(self._knowledge_asset(), "saved")
+        prepared = self.citations.service.literature_knowledge(
+            "session",
+            "snapshot",
+            LiteratureKnowledge(ref_id="literature:paper", sections=["overview", "results"]),
+            "turn",
+        )
+        full = self.citations.service.commit_read("session", "snapshot", prepared)
+        projected = model_excerpt(full)
+        original = {item["path"]: item for item in full["fields"]}
+        for field in projected["fields"]:
+            if field["path"] == "card.experiments.results[0]":
+                self.assertIsNone(field["value"])
+                self.assertEqual(field["source"], "original_evidence")
+                self.assertTrue(field["source_available"])
+                self.assertEqual(
+                    original[field["path"]]["value"]["conditions"], "Only this dataset"
+                )
+            else:
+                self.assertEqual(field, original[field["path"]])
+        self.assertEqual(projected["context_evidence_ids"], full["context_evidence_ids"])
+        for original, fragment in zip(full["fragments"], projected["fragments"]):
+            self.assertEqual(fragment["fragment_ids"], original["fragment_ids"])
+            self.assertEqual(fragment["text"], original["text"])
+            self.assertEqual(fragment["citation_url"], original["citation_url"])
+            self.assertNotIn("title", fragment)
+
+    def test_model_excerpt_bounds_utf8_pages_atomically_and_marks_unreturned_pages(self):
+        pages = [
+            {
+                "page": number,
+                "text": "条件与结论" * 800,
+                "unavailable": False,
+                "omitted_regions": [],
+                "fragments": [
+                    {
+                        "text": "条件与结论" * 800,
+                        "citation_url": f"scholarseed-cite:{number:032x}",
+                        "pages": [number],
+                    }
+                ],
+            }
+            for number in range(1, 4)
+        ]
+        full = {"ok": True, "state": "ready", "pages": pages, "ref_id": "literature:paper"}
+        projected = model_excerpt(full)
+        self.assertLessEqual(
+            len(json.dumps(projected, ensure_ascii=False).encode()), MODEL_EXCERPT_BYTES
+        )
+        self.assertEqual(len(projected["pages"]), 1)
+        self.assertEqual(projected["pages"][0]["fragments"], pages[0]["fragments"])
+        self.assertEqual(projected["model_delivery"]["omitted_pages"], [2, 3])
+        self.assertEqual(projected["model_delivery"]["oversized_pages"], [])
+        self.assertEqual(len(full["pages"]), 3)
+        pages[0]["fragments"][0]["text"] *= 4
+        projected = model_excerpt(full)
+        self.assertIn(1, projected["model_delivery"]["oversized_pages"])
+        self.assertNotIn(1, [page["page"] for page in projected["pages"]])
+
+    def test_model_excerpt_bounds_l1_field_with_all_its_support_and_keeps_resume_offset(self):
+        fields = [
+            {"path": f"claims[{i}]", "value": "结论与实验条件", "evidence_ids": [f"s{i}"]}
+            for i in range(3)
+        ]
+        fragments = [
+            {
+                "fragment_ids": [f"s{i}"],
+                "text": "完整原文条件" * 800,
+                "citation_url": f"scholarseed-cite:{i:032x}",
+                "pages": [1],
+            }
+            for i in range(3)
+        ]
+        full = {
+            "ok": True,
+            "state": "ready",
+            "fields": fields,
+            "fragments": fragments,
+            "context_evidence_ids": [],
+            "next_offset": None,
+            "truncated": False,
+        }
+        projected = model_excerpt(full, offset=4)
+        self.assertLessEqual(
+            len(json.dumps(projected, ensure_ascii=False).encode()), MODEL_EXCERPT_BYTES
+        )
+        self.assertEqual(projected["fields"], fields[:1])
+        self.assertEqual(projected["fragments"], fragments[:1])
+        self.assertEqual(projected["next_offset"], 5)
+        self.assertEqual(projected["model_delivery"]["omitted_fields"], ["claims[1]", "claims[2]"])
+        self.assertEqual(full["fields"], fields)
+        self.assertIsNone(full["next_offset"])
+
+    def test_model_excerpt_prefers_mapped_evidence_over_large_additional_context(self):
+        primary = {
+            "fragment_ids": ["primary"],
+            "text": "完整实验条件及结果。",
+            "pages": [2],
+            "citation_url": "scholarseed-cite:" + "1" * 32,
+        }
+        context = {
+            "fragment_ids": ["context"],
+            "text": "额外上下文" * MODEL_EXCERPT_BYTES,
+            "pages": [2],
+            "citation_url": "scholarseed-cite:" + "2" * 32,
+        }
+        full = {
+            "ok": True,
+            "state": "ready",
+            "fields": [{"path": "result", "value": "条件及结果", "evidence_ids": ["primary"]}],
+            "fragments": [context, primary],
+            "context_evidence_ids": ["context"],
+            "next_offset": None,
+        }
+        projected = model_excerpt(full)
+        self.assertEqual(projected["fields"], full["fields"])
+        self.assertEqual(projected["fragments"], [primary])
+        self.assertEqual(projected["context_evidence_ids"], [])
+        self.assertEqual(projected["model_delivery"]["omitted_context_count"], 1)
+        self.assertEqual(projected["model_delivery"]["omitted_fields"], [])
+        self.assertIsNone(projected["next_offset"])
+        self.assertFalse(projected["truncated"])
+
+    def test_result_projection_never_repeats_inferred_configuration_or_discards_source(self):
+        quote = {
+            "fragment_ids": ["s1"],
+            "text": "On population P, the reported outcome is 72%, with 8 samples.",
+            "pages": [2],
+            "citation_url": "scholarseed-cite:" + "a" * 32,
+        }
+        full = {
+            "ok": True,
+            "state": "ready",
+            "fields": [
+                {
+                    "path": "card.experiments.results[0]",
+                    "value": {
+                        "method": "Invented configuration Z",
+                        "value": "72%",
+                        "conditions": "unreported treatment",
+                    },
+                    "evidence_ids": ["s1"],
+                },
+                {
+                    "path": "card.experiments.results[1]",
+                    "value": {"value": "99%"},
+                    "evidence_ids": [],
+                },
+                {
+                    "path": "common_fields.tldr",
+                    "value": "Useful uncited summary",
+                    "evidence_ids": [],
+                },
+            ],
+            "fragments": [quote],
+        }
+        before = json.dumps(full)
+        result = model_excerpt(full)
+        self.assertNotIn("Invented configuration", json.dumps(result))
+        self.assertNotIn("unreported treatment", json.dumps(result))
+        self.assertNotIn("99%", json.dumps(result))
+        self.assertEqual(result["fragments"], [quote])
+        self.assertFalse(result["fields"][1]["source_available"])
+        self.assertEqual(result["fields"][2], full["fields"][2])
+        self.assertEqual(json.dumps(full), before)
+
+    def test_evidence_blocks_preserve_all_text_ids_geometry_and_source_boundaries(self):
+        def fragment(number, text, quad, **extra):
+            return {
+                "fragment_id": f"s{number}",
+                "source_order": number,
+                "kind": "sentence",
+                "continuity": 0,
+                "text": text,
+                "pages": [{"page": 1, "quads": [quad]}],
+                **extra,
+            }
+
+        first = fragment(0, "The outcome is 72%.", [0.1, 0.2, 0.4, 0.22])
+        second = fragment(1, "This uses 8 samples only.", [0.405, 0.2, 0.8, 0.22])
+        grouped = evidence_blocks([second, first])
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0]["text"], first["text"] + "\n" + second["text"])
+        self.assertEqual(grouped[0]["fragment_ids"], ["s0", "s1"])
+        self.assertEqual(
+            grouped[0]["pages"][0]["quads"],
+            first["pages"][0]["quads"] + second["pages"][0]["quads"],
+        )
+        for changed in [
+            dict(second, source_order=2),
+            dict(second, continuity=1),
+            dict(second, kind="table"),
+            dict(second, kind="caption"),
+            dict(second, pages=[{"page": 2, "quads": [[0.405, 0.2, 0.8, 0.22]]}]),
+            dict(second, pages=[{"page": 1, "quads": [[0.405, 0.3, 0.8, 0.32]]}]),
+            dict(second, pages=[{"page": 1, "quads": []}]),
+        ]:
+            with self.subTest(changed=changed):
+                self.assertEqual(len(evidence_blocks([first, changed])), 2)
+
+    def test_formula_evidence_preserves_members_and_fraction_geometry(self):
+        def piece(number, text, quads, **extra):
+            return {
+                "fragment_id": f"f{number}",
+                "source_order": number,
+                "kind": "passage",
+                "continuity": 8,
+                "text": text,
+                "pages": [{"page": 4, "quads": quads}],
+                **extra,
+            }
+
+        first = piece(0, "Attention(Q,K,V) = softmax(", [[0.35, 0.59, 0.57, 0.61]])
+        fraction = piece(1, "QKT √ dk", [[0.58, 0.58, 0.61, 0.59], [0.59, 0.60, 0.61, 0.62]])
+        last = piece(2, ")V", [[0.62, 0.59, 0.64, 0.61]])
+        members = [first, fraction, last]
+        before = json.dumps(members)
+        (block,) = evidence_blocks(members)
+        self.assertEqual(block["fragment_ids"], ["f0", "f1", "f2"])
+        self.assertEqual(block["sentence_ids"], [])
+        self.assertEqual(block["text"], "\n".join(p["text"] for p in members))
+        self.assertEqual(
+            block["pages"][0]["quads"], [q for p in members for q in p["pages"][0]["quads"]]
+        )
+        self.assertEqual(json.dumps(members), before)
+        for changed in [
+            dict(fraction, source_order=3),
+            {k: v for k, v in fraction.items() if k != "continuity"},
+            dict(fraction, kind="table_text"),
+            dict(fraction, kind="caption"),
+            dict(fraction, text="x " * 20),
+            dict(fraction, pages=[{"page": 5, "quads": fraction["pages"][0]["quads"]}]),
+            dict(fraction, pages=[{"page": 4, "quads": []}]),
+            dict(fraction, pages=[{"page": 4, "quads": [[0.58, 0.7, 0.61, 0.72]]}]),
+            dict(fraction, pages=[{"page": 4, "quads": [[0.8, 0.59, 0.9, 0.61]]}]),
+        ]:
+            with self.subTest(changed=changed):
+                self.assertEqual(len(evidence_blocks([first, changed])), 2)
+        split_native = [dict(p, continuity=n) for n, p in enumerate(members)]
+        (split_block,) = evidence_blocks(split_native)
+        self.assertEqual(split_block["fragment_ids"], ["f0", "f1", "f2"])
+        self.assertEqual(split_block["pages"], block["pages"])
+        independent = [dict(first, text="x = 2"), dict(fraction, text="y = 3", continuity=9)]
+        self.assertEqual(len(evidence_blocks(independent)), 2)
+        self.assertEqual(
+            len(evidence_blocks([independent[0], dict(independent[1], continuity=8)])), 2
+        )
+        prose = [dict(p, text="Ordinary text") for p in (first, fraction)]
+        self.assertEqual(len(evidence_blocks(prose)), 2)
+        statement = piece(
+            0,
+            "Where WQ ∈ R and WO ∈ R.",
+            [[0.1, 0.2, 0.4, 0.22], [0.1, 0.23, 0.3, 0.25]],
+            kind="sentence",
+        )
+        parameter = piece(1, "∈ Rd×dk, WK", [[0.41, 0.2, 0.55, 0.22]])
+        (combined,) = evidence_blocks([statement, parameter])
+        self.assertEqual(combined["fragment_ids"], ["f0", "f1"])
+        self.assertEqual(combined["sentence_ids"], ["f0"])
+        below = piece(2, "FFN(x) = xW", [[0.2, 0.3, 0.5, 0.32]])
+        self.assertEqual(len(evidence_blocks([statement, parameter, below])), 2)
+
+    def test_equation_band_keeps_sum_limits_and_rhs_together(self):
+        # Distinct native paragraphs, and a lower limit that does not overlap
+        # the next piece vertically. No open bracket can connect the first pair.
+        layout = [
+            ("L =", [[0.389, 0.583, 0.420, 0.597]]),
+            ("1\nN", [[0.429, 0.574, 0.437, 0.587], [0.427, 0.592, 0.439, 0.604]]),
+            ("N\n∑", [[0.451, 0.570, 0.461, 0.579], [0.444, 0.576, 0.468, 0.589]]),
+            ("i=1", [[0.445, 0.601, 0.467, 0.610]]),
+            ("H(y, f(x))", [[0.471, 0.583, 0.611, 0.597]]),
+        ]
+        pieces = [
+            {
+                "fragment_id": f"s{i}",
+                "source_order": i,
+                "kind": "passage",
+                "continuity": i,
+                "text": text,
+                "pages": [{"page": 3, "quads": quads}],
+            }
+            for i, (text, quads) in enumerate(layout)
+        ]
+        before = json.dumps(pieces)
+        (block,) = evidence_blocks(pieces)
+        self.assertEqual(block["fragment_ids"], [p["fragment_id"] for p in pieces])
+        self.assertEqual(block["text"], "\n".join(p["text"] for p in pieces))
+        self.assertEqual(
+            block["pages"][0]["quads"], [q for p in pieces for q in p["pages"][0]["quads"]]
+        )
+        self.assertEqual(json.dumps(pieces), before)
+        for text, quad in [
+            ("z = 3", [0.62, 0.583, 0.70, 0.597]),  # independent equation on same line
+            ("Other results", [0.62, 0.583, 0.70, 0.597]),
+            ("H(y,f(x))", [0.80, 0.583, 0.90, 0.597]),  # another column
+            ("j=2", [0.445, 0.63, 0.467, 0.64]),  # unattached lower line
+        ]:
+            extra = dict(
+                pieces[-1],
+                fragment_id="other",
+                source_order=5,
+                continuity=6,
+                text=text,
+                pages=[{"page": 3, "quads": [quad]}],
+            )
+            with self.subTest(text=text, quad=quad):
+                self.assertEqual(len(evidence_blocks([*pieces, extra])), 2)
+        # A relation at the end is not enough to absorb nearby ordinary prose.
+        prose = dict(pieces[1], text="ordinary explanation")
+        self.assertEqual(len(evidence_blocks([pieces[0], prose])), 2)
+
+    def test_equation_region_handles_closed_terms_fractions_and_operator_scripts(self):
+        layouts = [
+            [
+                ("R(f) ≤ E", [0.10, 0.20, 0.25, 0.22]),
+                ("P[1(f(x) > t)] + O", [0.249999, 0.20, 0.50, 0.22]),
+                ("(a + b)", [0.51, 0.20, 0.60, 0.22]),
+            ],
+            [
+                ("E(f) ≤ max", [0.10, 0.20, 0.25, 0.22]),
+                ("{ a", [0.26, 0.19, 0.30, 0.21]),
+                ("a − 1", [0.26, 0.22, 0.30, 0.24]),
+                ("µ", [0.31, 0.20, 0.33, 0.22]),
+            ],
+            [
+                ("R(f) = E[ max", [0.10, 0.20, 0.28, 0.22]),
+                ("neighbor z′", [0.22, 0.225, 0.28, 0.235]),
+                ("1(f(z) != f(z′))]", [0.29, 0.20, 0.50, 0.22]),
+            ],
+            [
+                ("min\nf", [0.10, 0.20, 0.15, 0.23]),
+                ("J(f) (cid:44) a + 1\na − 1", [0.16, 0.19, 0.33, 0.24]),
+                ("L(f,h) +", [0.34, 0.20, 0.50, 0.22]),
+            ],
+        ]
+        for layout in layouts:
+            for scale, offset in [(1, 0), (0.7, 0.12)]:
+                pieces = [
+                    {
+                        "fragment_id": str(i),
+                        "source_order": i,
+                        "kind": "passage",
+                        "continuity": i,
+                        "text": text,
+                        "pages": [{"page": 2, "quads": [[x * scale + offset for x in quad]]}],
+                    }
+                    for i, (text, quad) in enumerate(layout)
+                ]
+                with self.subTest(layout=layout, scale=scale):
+                    (block,) = evidence_blocks(pieces)
+                    self.assertEqual(block["text"], "\n".join(p["text"] for p in pieces))
+                    self.assertEqual(
+                        block["pages"][0]["quads"], [p["pages"][0]["quads"][0] for p in pieces]
+                    )
+        # Ordinary neighboring prose, unrelated relations, missing native order,
+        # page changes and tables must not be pulled into the equation region.
+        first = {
+            "fragment_id": "a",
+            "source_order": 0,
+            "kind": "passage",
+            "continuity": 0,
+            "text": "f(x) = 1",
+            "pages": [{"page": 1, "quads": [[0.1, 0.2, 0.3, 0.22]]}],
+        }
+        second = {
+            **first,
+            "fragment_id": "b",
+            "source_order": 1,
+            "continuity": 1,
+            "pages": [{"page": 1, "quads": [[0.31, 0.2, 0.4, 0.22]]}],
+        }
+        for changes in [
+            {"text": "ordinary prose"},
+            {"text": "g(x) = 2"},
+            {"text": "+ 1", "source_order": 2},
+            {"text": "+ 1", "kind": "table_text"},
+            {"text": "+ 1", "pages": [{"page": 2, "quads": [[0.31, 0.2, 0.4, 0.22]]}]},
+        ]:
+            self.assertEqual(len(evidence_blocks([first, {**second, **changes}])), 2)
+
+    def test_formula_parent_and_immediate_definition_share_one_source(self):
+        def piece(n, text, quad, **extra):
+            return {
+                "fragment_id": f"f{n}",
+                "source_order": n,
+                "kind": "passage",
+                "continuity": 7,
+                "text": text,
+                "pages": [{"page": 5, "quads": [quad]}],
+                **extra,
+            }
+
+        parent = piece(0, "M(Q,K,V) = Concat(h1, h2)W", [0.3, 0.18, 0.67, 0.20])
+        definition = piece(1, "where hi = Attention(QW", [0.36, 0.205, 0.58, 0.225])
+        rest = piece(2, ", KW, VW)", [0.585, 0.205, 0.69, 0.225])
+        (block,) = evidence_blocks([parent, definition, rest])
+        self.assertEqual(block["fragment_ids"], ["f0", "f1", "f2"])
+        self.assertEqual(
+            block["pages"][0]["quads"],
+            [p["pages"][0]["quads"][0] for p in (parent, definition, rest)],
+        )
+        for changed in [
+            dict(definition, text="Another result = 2"),
+            dict(definition, text="where a separate claim holds."),
+            dict(definition, pages=[{"page": 5, "quads": [[0.36, 0.26, 0.58, 0.28]]}]),
+            dict(definition, pages=[{"page": 5, "quads": [[0.75, 0.205, 0.9, 0.225]]}]),
+            dict(definition, source_order=2),
+            dict(definition, kind="caption"),
+            dict(definition, pages=[{"page": 6, "quads": definition["pages"][0]["quads"]}]),
+        ]:
+            with self.subTest(changed=changed):
+                self.assertEqual(len(evidence_blocks([parent, changed])), 2)
+
+    def test_knowledge_question_precedes_expanded_query_without_removing_conditions(self):
+        asset = self._knowledge_asset()
+        asset["l1"]["card"]["problem"] = "问题是标注成本高。"
+        result = project_knowledge(
+            asset,
+            asset["revision"],
+            ["overview", "results"],
+            0,
+            16,
+            "90% dataset result",
+            question="要解决什么问题？",
+        )
+        self.assertEqual([item["path"] for item in result["fields"]], ["card.problem"])
+        self.assertGreater(result["selection"]["excluded_fields"], 0)
+        explicit = project_knowledge(
+            asset,
+            asset["revision"],
+            ["results"],
+            0,
+            16,
+            "nothing matches",
+            ["card.experiments.results"],
+        )
+        self.assertEqual(explicit["fields"][0]["value"]["conditions"], "Only this dataset")
+
+    def test_grouped_l1_receipt_retains_every_original_anchor_and_field_reference(self):
+        asset = self._knowledge_asset()
+        fragments = asset["source_snapshot"]["fragments"]
+        fragments["1"].update(
+            text="The measured outcome is 72%.",
+            continuity=0,
+            pages=[{"page": 1, "quads": [[0.1, 0.2, 0.4, 0.22]]}],
+        )
+        fragments["2"] = {
+            "fragment_id": "original-2",
+            "kind": "sentence",
+            "continuity": 0,
+            "text": "This applies only to population P with 8 samples.",
+            "pages": [{"page": 1, "quads": [[0.405, 0.2, 0.9, 0.22]]}],
+        }
+        asset["source_mapping"]["card_mapping"]["card.experiments.results[0]"] = [1, 2]
+        self.analysis.publish(asset, "saved")
+        prepared = self.citations.service.literature_knowledge(
+            "session",
+            "snapshot",
+            LiteratureKnowledge(ref_id="literature:paper", fields=["card.experiments.results"]),
+            "turn",
+        )
+        full = self.citations.service.commit_read("session", "snapshot", prepared)
+        projected = model_excerpt(full)
+        self.assertEqual(len(projected["fragments"]), 1)
+        quote = projected["fragments"][0]
+        self.assertEqual(quote["fragment_ids"], ["original-1", "original-2"])
+        self.assertEqual(projected["fields"][0]["evidence_ids"], quote["fragment_ids"])
+        receipt = self.citations.store.get(
+            "session", "snapshot", quote["citation_url"].split(":", 1)[1]
+        )
+        self.assertEqual(receipt["quote"], fragments["1"]["text"] + "\n" + fragments["2"]["text"])
+        self.assertEqual(
+            receipt["pages"][0]["quads"],
+            fragments["1"]["pages"][0]["quads"] + fragments["2"]["pages"][0]["quads"],
+        )
+        self.assertEqual(self.page_indexes.reads, [])
+
+    def test_knowledge_mapped_evidence_does_not_add_distant_query_hits(self):
+        asset = self._knowledge_asset()
+        asset["source_snapshot"]["fragments"]["2"] = {
+            "fragment_id": "distant",
+            "text": "Original unrelated ablation evidence.",
+            "kind": "sentence",
+            "pages": [{"page": 8, "quads": []}],
+        }
+        result = project_knowledge(
+            asset, asset["revision"], ["overview"], 0, 16, "Original ablation"
+        )
+        self.assertEqual([item["fragment_id"] for item in result["evidence"]], ["original-1"])
+
+    def test_model_excerpt_leaves_unavailable_assets_and_errors_unchanged(self):
+        for result in (
+            {"ok": False, "error": "source_changed"},
+            {"ok": True, "state": "missing", "fallback": "literature/read"},
+        ):
+            self.assertIs(model_excerpt(result), result)
+
     def test_request_schemas_are_page_based_and_exclude_scope_inputs(self) -> None:
         listed = LiteratureList.model_validate({"limit": 8})
-        self.assertEqual(listed.model_dump(), {"offset": 0, "limit": 8})
+        self.assertEqual(
+            listed.model_dump(), {"offset": 0, "limit": 8, "query": "", "view": "catalog"}
+        )
         read = LiteratureRead.model_validate(
             {
                 "ref_id": "literature:paper",
@@ -436,7 +1062,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
 
     def test_request_schemas_reject_search_scope_and_large_or_reversed_ranges(self) -> None:
         for model, payload in (
-            (LiteratureList, {"query": "transformer"}),
+            (LiteratureList, {"query": "x" * 513}),
             (LiteratureList, {"project_id": "other"}),
             (
                 LiteratureRead,
@@ -463,15 +1089,15 @@ class LiteratureBridgeContracts(unittest.TestCase):
             {
                 "list",
                 "read",
+                "knowledge",
                 "authorize",
                 ANNOTATIONS_OPERATION,
                 "result",
                 "review",
                 "acquire",
-                "delivery",
-                "ingest",
                 "import",
                 "receipt",
+                "confirm-search-start",
             }
             | set(TAXONOMY_REQUESTS),
         )
@@ -593,6 +1219,191 @@ class LiteratureBridgeContracts(unittest.TestCase):
                 LiteratureAnnotations(ref_id="literature:foreign"),
             )
 
+    def test_candidates_read_only_metadata_and_include_checkpoint_l1(self) -> None:
+        asset = self._knowledge_asset()
+        attachment = self.repository.primary_attachment("paper")
+        self.analysis.save_l1("paper", attachment.revision, attachment.id, asset, "saved")
+        self.repository.save(
+            replace(
+                self.repository.get("paper"),
+                abstract="Real abstract",
+                doi="10.1/example",
+                arxiv="2401.00001",
+            ),
+            project_id="project",
+        )
+        with (
+            patch.object(self.evidence._pdf, "describe", side_effect=AssertionError("PDF read")),
+            patch.object(self.analysis, "reading_l1", side_effect=AssertionError("full L1 read")),
+        ):
+            result = self.citations.service.literature_list(
+                "session", "snapshot", LiteratureList(view="candidates")
+            )
+        self.assertEqual(result["scope"], "project_literature")
+        self.assertEqual(len(result["sources"]), 1)
+        paper = result["sources"][0]
+        self.assertEqual(paper["knowledge_state"], "ready")
+        self.assertEqual(paper["abstract"], "Real abstract")
+        self.assertEqual(paper["doi"], "10.1/example")
+        self.assertEqual(paper["library_refs"], ["literature:paper"])
+        self.assertIsNone(paper["citation_count"])
+        self.assertNotIn("source_snapshot", paper)
+        self.assertNotIn("paperhub_id", paper)
+
+    def test_candidates_recover_local_abstract_without_paperhub_or_generation(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            for y, text in (
+                (70, "Project Paper"),
+                (100, "Abstract"),
+                (130, "We evaluate learning with fewer labels."),
+                (150, "The results depend on the evaluation protocol."),
+                (180, "1. Introduction"),
+                (210, "Body must stay private."),
+            ):
+                page.insert_text((72, y), text)
+            payload = pdf.tobytes()
+        self._stage("paper", "with-abstract.pdf", payload)
+        original = self.repository.get("paper")
+        assert original is not None
+        with patch.object(self.analysis, "reading_l1", side_effect=AssertionError("L1 read")):
+            result = self.evidence.catalog("project", 0, 20, view="candidates")
+        paper = result["sources"][0]
+        self.assertEqual(
+            paper["abstract"],
+            "We evaluate learning with fewer labels. "
+            "The results depend on the evaluation protocol.",
+        )
+        self.assertEqual(paper["paper_id"], "literature:paper")
+        self.assertNotIn("paperhub_id", paper)
+        self.assertNotIn("Body must stay private", json.dumps(paper))
+        attachment = self.repository.primary_attachment("paper")
+        assert attachment is not None
+        self.assertEqual(paper["abstract_provenance"]["attachment_id"], attachment.id)
+        self.assertEqual(paper["abstract_provenance"]["pages"], [1])
+        self.assertEqual(self.repository.get("paper"), original)
+
+    def test_candidate_missing_or_unbounded_abstract_is_not_invented(self):
+        result = self.evidence.catalog("project", 0, 20, view="candidates")
+        self.assertEqual(result["sources"][0]["abstract"], "")
+        with patch(
+            "service.literature.service.abstracts.pdf_document_text",
+            return_value=("Abstract\nUnfinished abstract",),
+        ):
+            result = self.evidence.catalog("project", 0, 20, view="candidates")
+        self.assertEqual(result["sources"][0]["abstract"], "")
+        self.assertNotIn("abstract_provenance", result["sources"][0])
+
+    def test_missing_abstract_exports_labelled_bounded_source_preview(self):
+        original = self.repository.get("paper")
+        with patch(
+            "service.literature.service.previews.pdf_document_text",
+            return_value=("Original body " * 1000,),
+        ):
+            paper = self.evidence.catalog("project", 0, 20, view="candidates")["sources"][0]
+        self.assertEqual(paper["abstract"], "")
+        preview = paper["selection_evidence"]
+        self.assertEqual(preview["kind"], "local_pdf_excerpt")
+        self.assertFalse(preview["is_abstract"])
+        self.assertEqual(len(preview["text"]), 6000)
+        self.assertTrue(preview["spans"][0]["truncated"])
+        self.assertEqual(self.repository.get("paper"), original)
+
+    def test_local_abstract_requires_revision_and_complete_bounded_section(self):
+        attachment = self.repository.primary_attachment("paper")
+        assert attachment is not None
+        payload, _, _ = self.evidence._pdf.read_attachment("paper", attachment.id)
+        with self.assertRaisesRegex(ValueError, "revision_mismatch"):
+            local_abstract(payload, "changed", attachment.id)
+        with (
+            patch(
+                "service.literature.service.abstracts.pdf_document_info",
+                return_value=SimpleNamespace(page_count=12),
+            ),
+            patch(
+                "service.literature.service.abstracts.pdf_document_text",
+                return_value=("Abstract\nFirst part", "Second part.\n1 Introduction\nBody"),
+            ) as text,
+        ):
+            abstract, provenance = local_abstract(payload, attachment.revision, attachment.id)
+        self.assertEqual(abstract, "First part Second part.")
+        self.assertEqual(provenance["pages"], [1, 2])
+        self.assertEqual(text.call_args.kwargs["page_numbers"], (1, 2))
+        for page in (
+            "Abstracting a method\nBody\n1 Introduction",
+            "Abstract\nCut…\n1 Introduction",
+            "Abstract\nOne\nAbstract\nTwo\n1 Introduction",
+        ):
+            with patch(
+                "service.literature.service.abstracts.pdf_document_text", return_value=(page,)
+            ):
+                self.assertEqual(
+                    local_abstract(payload, attachment.revision, attachment.id), ("", {})
+                )
+
+    def test_candidates_preserve_metadata_and_refuse_changed_pdf(self):
+        original = self.repository.get("paper")
+        assert original is not None
+        self.repository.save(replace(original, abstract="Existing abstract"), project_id="project")
+        with patch.object(
+            self.evidence._pdf, "read_attachment", side_effect=AssertionError("PDF read")
+        ):
+            self.assertEqual(
+                self.evidence.catalog("project", 0, 20, view="candidates")["sources"][0][
+                    "abstract"
+                ],
+                "Existing abstract",
+            )
+        self.repository.save(original, project_id="project")
+        with patch.object(
+            self.evidence._pdf,
+            "read_attachment",
+            return_value=(b"changed", PDF_MEDIA_TYPE, "sha256:other"),
+        ):
+            self.assertEqual(
+                self.evidence.catalog("project", 0, 20, view="candidates")["sources"][0][
+                    "abstract"
+                ],
+                "",
+            )
+
+    def test_candidate_export_is_scoped_frozen_and_uses_all_pages(self) -> None:
+        for index in range(3):
+            self.repository.save(
+                LiteratureItem(id=f"candidate-{index}", title=f"Candidate {index}"),
+                project_id="project",
+            )
+        with patch("service.literature.service.candidates.CATALOGUE_PAGE", 2):
+            result = prepare_candidates(
+                self.evidence, "project", self.root, "survey", "run"
+            ).publish()
+        path = self.root / result["library_candidates"]["path"]
+        original = path.read_bytes()
+        bundle = json.loads(original)
+        self.assertEqual(len(bundle["sources"]), 4)
+        self.assertNotIn("literature:foreign", str(bundle))
+        self.assertIsNone(bundle["next_offset"])
+        self.repository.save(LiteratureItem(id="later", title="Later"), project_id="project")
+        self.assertEqual(
+            prepare_candidates(self.evidence, "project", self.root, "survey", "run").publish(),
+            result,
+        )
+        self.assertEqual(path.read_bytes(), original)
+        with self.assertRaisesRegex(ValueError, "binding_mismatch"):
+            prepare_candidates(self.evidence, "other", self.root, "survey", "run")
+        empty = prepare_candidates(self.evidence, None, self.root, "empty", "run").publish()
+        self.assertEqual(empty["library_candidates"]["count"], 0)
+
+    def test_candidate_export_refuses_linked_destination(self) -> None:
+        target = self.root / "outside.json"
+        target.write_text("{}")
+        folder = self.root / "linked" / "02_retrieval"
+        folder.mkdir(parents=True)
+        (folder / "library_candidates.json").symlink_to(target)
+        with self.assertRaises((ValueError, OSError)):
+            prepare_candidates(self.evidence, "project", self.root, "linked", "run")
+        self.assertEqual(target.read_text(), "{}")
+
     def test_catalog_is_project_scoped_and_reports_total_pages(self) -> None:
         result = self.citations.service.literature_list("session", "snapshot", LiteratureList())
         self.assertEqual([source["ref_id"] for source in result["sources"]], ["literature:paper"])
@@ -612,6 +1423,364 @@ class LiteratureBridgeContracts(unittest.TestCase):
         self.assertIsNone(missing["total_pages"])
         self.assertFalse(missing["readable"])
         self.assertEqual(missing["error"], "literature_pdf_missing")
+        self.assertEqual(missing["knowledge_state"], "unavailable")
+
+    def test_catalog_filters_within_scope_and_returns_saved_l1_state(self) -> None:
+        self.analysis.publish(self._knowledge_asset(), "saved")
+        request = LiteratureList(query="Project Paper")
+        with patch.object(
+            self.evidence._pdf, "read_attachment", wraps=self.evidence._pdf.read_attachment
+        ) as read:
+            result = self.citations.service.literature_list("session", "snapshot", request)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(len(result["sources"]), 1)
+        self.assertEqual(result["sources"][0]["knowledge_state"], "ready")
+        self.assertEqual(self.page_indexes.reads, [])
+        self.assertEqual(
+            self.citations.service.literature_list(
+                "session", "snapshot", LiteratureList(query="Foreign")
+            )["sources"],
+            [],
+        )
+
+    def test_global_catalog_exposes_l1_and_missing_fallback_without_extracting(self) -> None:
+        self.citations.snapshot = replace(self.citations.snapshot, project_id=None)
+        self.citations.service._project = lambda _session: None
+        self.analysis.publish(self._knowledge_asset(), "saved")
+        result = self.citations.service.literature_list("session", "snapshot", LiteratureList())
+        states = {item["ref_id"]: item["knowledge_state"] for item in result["sources"]}
+        self.assertEqual(states, {"literature:paper": "ready", "literature:foreign": "missing"})
+        self.assertEqual(self.page_indexes.reads, [])
+
+    def test_catalog_reuses_knowledge_compatibility_and_checks_actual_pdf_revision(self) -> None:
+        asset = self._knowledge_asset()
+        asset["metadata"]["schema_version"] = "unsupported"
+        self.analysis.publish(asset, "saved")
+        self.assertEqual(
+            self.evidence.catalog("project", 0, 20)["sources"][0]["knowledge_state"], "incompatible"
+        )
+        asset["metadata"]["schema_version"] = "l1-reading/v2"
+        self.analysis.publish(asset, "saved")
+        # A changed file must not be advertised as ready using the stale attachment row.
+        Path(self.paper_attachment["path"]).write_bytes(self._pdf("Changed"))
+        self.assertEqual(
+            self.evidence.catalog("project", 0, 20)["sources"][0]["knowledge_state"], "missing"
+        )
+
+    def test_catalog_resolves_arxiv_identifier_without_web_search(self) -> None:
+        self.repository.save(
+            LiteratureItem(id="identified", title="Identified", arxiv="2001.07685"),
+            project_id="project",
+        )
+        result = self.evidence.catalog("project", 0, 20, "2001.07685")
+        self.assertEqual([item["ref_id"] for item in result["sources"]], ["literature:identified"])
+
+    def _knowledge_asset(self):
+        document = self.evidence.document("project", "paper")
+        return {
+            "literature_id": "paper",
+            "revision": document.revision.removeprefix("sha256:"),
+            "modules": {"summary": {}},
+            "metadata": {"schema_version": "l1-reading/v2"},
+            "l1": {
+                "paper_type": "method",
+                "common_fields": {
+                    "tldr": "Uncited summary",
+                    "claims": [{"claim": "Supported result", "type": "empirical"}],
+                },
+                "card": {
+                    "idea": "Idea",
+                    "experiments": {
+                        "results": [{"value": "90%", "conditions": "Only this dataset"}]
+                    },
+                },
+            },
+            "source_mapping": {
+                "card_mapping": {
+                    "card.idea": [1],
+                    "common_fields.claims[0].claim": [1],
+                    "card.experiments.results[0]": [1],
+                }
+            },
+            "source_snapshot": {
+                "source_revision": document.revision,
+                "fragments": {
+                    "1": {
+                        "fragment_id": "original-1",
+                        "text": "Original evidence.",
+                        "kind": "sentence",
+                        "pages": [{"page": 1, "quads": []}],
+                    }
+                },
+                "images": {},
+            },
+        }
+
+    def test_page_read_completes_only_saved_same_revision_native_table(self):
+        asset = self._knowledge_asset()
+        table = {
+            "fragment_id": "table_native",
+            "text": "Table 2.\nModel | labels | score\nA | 1% | 85.8",
+            "kind": "table_text",
+            "pages": [{"page": 1, "quads": [[0.1, 0.1, 0.9, 0.9]]}],
+        }
+        asset["source_snapshot"]["fragments"]["2"] = table
+        self.analysis.publish(asset, "saved")
+        caption = PdfFragment("caption", "Table 2. Results", (CitationPage(1, ()),))
+        self.page_indexes.pages = Mock(return_value=(PdfPageContent(1, (caption,)),))
+        result = self.evidence.read_pages("project", "paper", 1, 1)
+        self.assertEqual(
+            [f.fragment_id for f in result.pages[0].fragments], ["caption", "table_native"]
+        )
+        self.assertIn("labels", result.pages[0].fragments[-1].text)
+        self.page_indexes.pages = Mock(return_value=result.pages)
+        self.assertEqual(
+            len(self.evidence.read_pages("project", "paper", 1, 1).pages[0].fragments), 2
+        )
+        self.page_indexes.pages = Mock(return_value=(PdfPageContent(1, (caption,)),))
+        asset["source_snapshot"]["source_revision"] = "another-version"
+        self.analysis.publish(asset, "stale")
+        self.assertEqual(
+            len(self.evidence.read_pages("project", "paper", 1, 1).pages[0].fragments), 1
+        )
+
+    def test_saved_knowledge_preserves_uncited_summary_deduplicates_and_never_reads_pdf_pages(self):
+        asset = self._knowledge_asset()
+        self.analysis.publish(asset, "saved")
+        request = LiteratureKnowledge(ref_id="literature:paper", sections=["overview", "results"])
+        prepared = self.citations.service.literature_knowledge(
+            "session", "snapshot", request, "turn"
+        )
+        self.assertEqual(self.page_indexes.reads, [])
+        self.assertEqual(len(prepared["pending_receipts"]), 1)
+        fields = {item["path"]: item for item in prepared["fields"]}
+        self.assertEqual(fields["common_fields.tldr"]["evidence_ids"], [])
+        self.assertEqual(
+            fields["card.experiments.results[0]"]["value"]["conditions"], "Only this dataset"
+        )
+        self.assertEqual(fields["common_fields.claims[0]"]["evidence_ids"], ["original-1"])
+        result = self.citations.service.commit_read("session", "snapshot", prepared)
+        notice = model_excerpt(result)["notice"]
+        self.assertIn("Citation links may use [1](citation_url)", notice)
+        self.assertIn("copying the full returned citation_url exactly", notice)
+        self.assertIn("rather than displaying bare addresses", notice)
+        self.assertIn("In reader-facing answers and reports", notice)
+        self.assertIn("Do not expose internal source identifiers", notice)
+        self.assertIn(
+            "unless the user explicitly requests raw addresses or debugging information", notice
+        )
+        fragment = result["fragments"][0]
+        receipt = self.citations.store.get(
+            "session", "snapshot", fragment["citation_url"].split(":", 1)[1]
+        )
+        self.assertEqual(receipt["quote"], "Original evidence.")
+        self.assertEqual(receipt["attachment_id"], self.paper_attachment["id"])
+        self.assertEqual(receipt["source_turn_id"], "turn")
+
+    def test_conversation_reuses_extraction_checkpoint_before_body_is_organized(self):
+        asset = self._knowledge_asset()
+        self.analysis.save_l1(
+            "paper", asset["revision"], self.paper_attachment["id"], asset, "saved"
+        )
+        self.assertIsNone(self.analysis.summary("paper", asset["revision"]))
+        self.assertEqual(
+            self.evidence.catalog("project", 0, 20)["sources"][0]["knowledge_state"], "ready"
+        )
+        prepared = self.citations.service.literature_knowledge(
+            "session", "snapshot", LiteratureKnowledge(ref_id="literature:paper"), "turn"
+        )
+        result = self.citations.service.commit_read("session", "snapshot", prepared)
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(result["fragments"][0]["text"], "Original evidence.")
+        self.assertEqual(self.page_indexes.reads, [])
+        self.assertIsNone(self.analysis.summary("paper", asset["revision"]))
+        self.assertEqual(
+            self.analysis.reading_l1("paper", asset["revision"], self.paper_attachment["id"]), asset
+        )
+
+    def test_original_pdf_fallback_survives_saved_asset_without_snapshot_fragments(self):
+        asset = self._knowledge_asset()
+        asset["source_snapshot"].pop("fragments")
+        self.analysis.publish(asset, "saved")
+        result = self.citations.service.literature_read(
+            "session",
+            "snapshot",
+            LiteratureRead(ref_id="literature:paper", start_page=1, end_page=1),
+        )
+        result = self.citations.service.commit_literature_read("session", "snapshot", result)
+        self.assertEqual(len(result["pages"]), 1)
+        self.assertIn("Project", result["pages"][0]["text"])
+        self.assertEqual(self.page_indexes.reads, [(1, 1)])
+
+    def test_knowledge_missing_stale_and_incompatible_do_not_extract(self):
+        request = LiteratureKnowledge(ref_id="literature:paper")
+        result = self.citations.service.literature_knowledge("session", "snapshot", request)
+        self.assertEqual(result["state"], "missing")
+        asset = self._knowledge_asset()
+        asset["source_snapshot"]["source_revision"] = "different"
+        self.analysis.publish(asset, "saved")
+        self.assertEqual(
+            self.citations.service.literature_knowledge("session", "snapshot", request)["state"],
+            "stale",
+        )
+        asset.pop("l1")
+        self.analysis.publish(asset, "saved")
+        self.assertEqual(
+            self.citations.service.literature_knowledge("session", "snapshot", request)["state"],
+            "incompatible",
+        )
+        self.assertEqual(self.page_indexes.reads, [])
+
+    def test_knowledge_attachment_and_project_scope_are_not_bypassed(self):
+        for request in (
+            LiteratureKnowledge(ref_id="literature:foreign"),
+            LiteratureKnowledge(ref_id="literature:paper", attachment_id="not-authorized"),
+        ):
+            with self.assertRaises(ValueError):
+                self.citations.service.literature_knowledge("session", "snapshot", request)
+
+    def test_knowledge_core_results_precede_long_auxiliary_lists(self):
+        asset = self._knowledge_asset()
+        asset["l1"]["card"]["experiments"]["baselines"] = [f"baseline-{i}" for i in range(40)]
+        result = project_knowledge(asset, asset["revision"], ["overview", "results"], 0, 16)
+        self.assertIn("card.experiments.results[0]", [item["path"] for item in result["fields"]])
+        self.assertFalse(result["truncated"])
+        asset["source_mapping"]["card_mapping"] = None
+        asset["source_snapshot"]["fragments"] = None
+        asset["metadata"]["coverage"] = None
+        result = project_knowledge(asset, asset["revision"], ["overview"], 0, 16)
+        self.assertEqual(result["state"], "ready")
+        self.assertTrue(result["fields"])
+        self.assertEqual(result["evidence"], [])
+
+    def test_knowledge_paginates_whole_items_and_marks_oversized_fields(self):
+        asset = self._knowledge_asset()
+        revision = asset["revision"]
+        first = project_knowledge(asset, revision, ["overview", "results"], 0, 1)
+        self.assertEqual(len(first["fields"]), 1)
+        self.assertEqual(first["next_offset"], 1)
+        self.assertTrue(first["truncated"])
+        asset["l1"]["common_fields"]["tldr"] = "x" * KNOWLEDGE_MAX_BYTES
+        oversized = project_knowledge(asset, revision, ["overview"], 0, 16)
+        self.assertIn("common_fields.tldr", oversized["oversized_fields"])
+        self.assertTrue(oversized["fields"])
+
+    def test_knowledge_query_searches_saved_snapshot_without_pdf_parse(self):
+        asset = self._knowledge_asset()
+        asset["source_snapshot"]["fragments"]["2"] = {
+            "fragment_id": "original-2",
+            "text": "Teacher weights update after each training step.",
+            "pages": [{"page": 2, "quads": []}],
+            "kind": "sentence",
+        }
+        self.analysis.publish(asset, "saved")
+        prepared = self.citations.service.literature_knowledge(
+            "session",
+            "snapshot",
+            LiteratureKnowledge(ref_id="literature:paper", query="teacher weights"),
+            "turn",
+        )
+        self.assertEqual(self.page_indexes.reads, [])
+        self.assertIn("original-2", prepared["context_evidence_ids"])
+        self.assertEqual(prepared["selection"]["matched_fields"], 0)
+        self.assertTrue(prepared["fields"])
+        result = self.citations.service.commit_read("session", "snapshot", prepared)
+        hit = next(
+            fragment for fragment in result["fragments"] if "original-2" in fragment["fragment_ids"]
+        )
+        self.assertEqual(hit["pages"], [2])
+        self.assertIn("Teacher weights", hit["text"])
+        self.assertTrue(hit["citation_url"].startswith("scholarseed-cite:"))
+
+    def test_knowledge_preserves_indexed_formula_evidence_and_conditions(self):
+        asset = self._knowledge_asset()
+        asset["l1"]["card"]["method"] = {"key_formulas": ["first formula", "second formula"]}
+        asset["source_snapshot"]["fragments"]["2"] = {
+            "fragment_id": "original-2",
+            "text": "Second formula under assumption B.",
+            "pages": [{"page": 1, "quads": []}],
+        }
+        asset["source_mapping"]["card_mapping"].update(
+            {
+                "card.method.key_formulas": [1, 2],
+                "card.method.key_formulas[0]": [1],
+                "card.method.key_formulas[1]": [2],
+            }
+        )
+        result = project_knowledge(asset, asset["revision"], ["method", "results"], 0, 16)
+        fields = {field["path"]: field for field in result["fields"]}
+        self.assertEqual(fields["card.method.key_formulas[0]"]["evidence_ids"], ["original-1"])
+        self.assertEqual(fields["card.method.key_formulas[1]"]["evidence_ids"], ["original-2"])
+        self.assertEqual(
+            fields["card.experiments.results[0]"]["value"]["conditions"], "Only this dataset"
+        )
+
+    def test_knowledge_query_does_not_fill_unmatched_fields_and_keeps_explicit_requests(self):
+        asset = self._knowledge_asset()
+        asset["l1"]["common_fields"]["limitations"] = ["Only when condition B holds"]
+        result = project_knowledge(
+            asset, asset["revision"], ["overview", "limitations"], 0, 16, "condition"
+        )
+        self.assertEqual(result["fields"][0]["path"], "common_fields.limitations")
+        self.assertEqual(
+            [field["path"] for field in result["fields"]], ["common_fields.limitations"]
+        )
+        self.assertIsNone(result["next_offset"])
+        self.assertEqual(result["selection"]["matched_fields"], 1)
+        self.analysis.publish(asset, "saved")
+        filtered = self.citations.service.literature_knowledge(
+            "session",
+            "snapshot",
+            LiteratureKnowledge(ref_id="literature:paper", fields=["common_fields.limitations"]),
+            "turn",
+        )
+        self.assertEqual(
+            [field["path"] for field in filtered["fields"]], ["common_fields.limitations"]
+        )
+
+    def test_knowledge_context_stays_on_same_page_and_does_not_become_mapped_support(self):
+        asset = self._knowledge_asset()
+        for number, page in [(2, 1), (3, 2)]:
+            asset["source_snapshot"]["fragments"][str(number)] = {
+                "fragment_id": f"original-{number}",
+                "text": f"Context {number}.",
+                "pages": [{"page": page, "quads": []}],
+            }
+        result = project_knowledge(asset, asset["revision"], ["overview"], 0, 16)
+        idea = next(field for field in result["fields"] if field["path"] == "card.idea")
+        self.assertEqual(idea["evidence_ids"], ["original-1"])
+        self.assertEqual(result["context_evidence_ids"], ["original-2"])
+        self.assertNotIn("original-3", [entry["fragment_id"] for entry in result["evidence"]])
+
+    def test_knowledge_query_rejects_paths_and_unbounded_inputs(self):
+        for values in ({"fields": ["../../secret"]}, {"fields": ["card.*"]}, {"query": "x" * 513}):
+            with self.subTest(values=values), self.assertRaises(ValidationError):
+                LiteratureKnowledge(ref_id="literature:paper", **values)
+
+    def test_knowledge_context_budget_preserves_primary_evidence_and_public_response(self):
+        asset = self._knowledge_asset()
+        self.repository.save(LiteratureItem(id="paper", title="长标题" * 100), project_id="project")
+        for number in range(2, 18):
+            asset["source_snapshot"]["fragments"][str(number)] = {
+                "fragment_id": f"original-{number}",
+                "text": "原文上下文" * 500,
+                "pages": [{"page": 1, "quads": []}],
+            }
+        self.analysis.publish(asset, "saved")
+        prepared = self.citations.service.literature_knowledge(
+            "session",
+            "snapshot",
+            LiteratureKnowledge(ref_id="literature:paper", query="原文"),
+            "turn",
+        )
+        self.assertTrue(prepared["context_truncated"])
+        result = self.citations.service.commit_read("session", "snapshot", prepared)
+        self.assertIn(
+            "original-1",
+            [identity for fragment in result["fragments"] for identity in fragment["fragment_ids"]],
+        )
+        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), KNOWLEDGE_MAX_BYTES)
+        self.assertEqual(self.page_indexes.reads, [])
 
     def test_read_returns_only_requested_pages_and_commits_fragment_receipts(self) -> None:
         request = LiteratureRead(ref_id="literature:paper", start_page=2, end_page=3)
@@ -759,6 +1928,17 @@ class LiteratureBridgeContracts(unittest.TestCase):
             )
             self.assertEqual(read.status_code, 200, read.text)
             self.assertEqual(read.json()["pages"][0]["page"], 1)
+            page = read.json()["pages"][0]
+            self.assertNotIn("text", page)
+            self.assertNotIn("sentence_ids", page["fragments"][0])
+            self.assertTrue(page["fragments"][0]["citation_url"].startswith("scholarseed-cite:"))
+            knowledge = client.post(
+                LITERATURE_ROUTE_PREFIX + "knowledge",
+                json={"ref_id": "literature:paper"},
+                headers=headers,
+            )
+            self.assertEqual(knowledge.status_code, 200, knowledge.text)
+            self.assertEqual(knowledge.json()["state"], "missing")
             annotations = client.post(
                 LITERATURE_ROUTE_PREFIX + ANNOTATIONS_OPERATION,
                 json={"ref_id": "literature:paper"},
@@ -766,7 +1946,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
             )
             self.assertEqual(annotations.status_code, 200, annotations.text)
             self.assertEqual(annotations.json()["authority"], "user_feedback")
-        self.assertEqual(live.publish.await_count, 3)
+        self.assertEqual(live.publish.await_count, 4)
 
     def test_authorization_waits_for_product_decision_and_rechecks_task(self) -> None:
         async def exercise(outcome: str) -> None:
@@ -792,7 +1972,11 @@ class LiteratureBridgeContracts(unittest.TestCase):
             requested, release = asyncio.Event(), asyncio.Event()
             questions: list[dict] = []
 
-            async def request_product_input(question, *, turn_id, activity=None):
+            async def request_product_input(
+                question, *, turn_id, activity=None, automatic_decision=None
+            ):
+                self.assertIsNone(automatic_decision)
+                self.assertTrue(question["requires_user_confirmation"])
                 questions.append(question)
                 requested.set()
                 await release.wait()
@@ -812,6 +1996,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
                     method="item/tool/requestUserInput",
                     payload={"questions": [question]},
                 )
+                decision["decision_source"] = "user_explicit"
                 catalog.resolve_hil(question["id"], decision)
                 return decision
 
@@ -1085,6 +2270,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
                                 "end_page": 1,
                             },
                         ),
+                        (LITERATURE_ROUTE_PREFIX + "knowledge", {"ref_id": "literature:paper"}),
                         (PDF_ROUTE_PREFIX + "read", {"ref_id": "ref"}),
                         (PDF_ROUTE_PREFIX + "search", {"ref_id": "ref", "query": "Project"}),
                         (PDF_ROUTE_PREFIX + "prepare", {"ref_id": "ref"}),
@@ -1106,7 +2292,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
                                 denied.json()["error"], "fulltext_authorization_required"
                             )
                     self.assertEqual(self.page_indexes.reads, before)
-                self.assertEqual(authorizer.require.call_count, 8)
+                self.assertEqual(authorizer.require.call_count, 9)
                 authorizer.prepare.assert_called_once()
 
     def test_research_idea_literature_read_requires_durable_matching_hil_grant(self) -> None:
@@ -1126,7 +2312,11 @@ class LiteratureBridgeContracts(unittest.TestCase):
         catalog = SessionCatalogStore(database)
         authorizer = FulltextAuthorizer(database, catalog)
 
-        async def request_product_input(question, *, turn_id, activity=None):
+        async def request_product_input(
+            question, *, turn_id, activity=None, automatic_decision=None
+        ):
+            self.assertIsNone(automatic_decision)
+            self.assertTrue(question["requires_user_confirmation"])
             catalog.record_hil(
                 product_request_id=question["id"],
                 session_id=live.id,
@@ -1137,6 +2327,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
                 payload={"questions": [question]},
             )
             decision = {"answers": {question["id"]: "一键授权"}}
+            decision["decision_source"] = "user_explicit"
             catalog.resolve_hil(question["id"], decision)
             return decision
 

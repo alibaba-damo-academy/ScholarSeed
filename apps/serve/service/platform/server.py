@@ -40,6 +40,7 @@ class ProductServer(uvicorn.Server):
         activities: Activities,
         *,
         domains: Domains | DomainOwner,
+        compiler_cache_domain: Domains | None = None,
         parent_stdin: bool = False,
         parent_control: ParentControl | None = None,
         shutdown_seconds: float = DEFAULT_SHUTDOWN_SECONDS,
@@ -57,6 +58,7 @@ class ProductServer(uvicorn.Server):
         self._parent_control = parent_control
         self._parent_stdin = parent_stdin
         self._domains = domains
+        self._compiler_cache_domain = compiler_cache_domain
         self._storage_released = False
         self._shutdown = Shutdown(shutdown_seconds)
         cast(FastAPI, config.app).state.shutdown = self._shutdown
@@ -208,4 +210,6 @@ class ProductServer(uvicorn.Server):
         # process death rather than allowing a replacement writer to overlap.
         with self._shutdown.stage(ShutdownStage.STORAGE):
             self._domains.close()
+            if self._compiler_cache_domain is not None:
+                self._compiler_cache_domain.close()
             self._storage_released = True

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +23,7 @@ from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING
 from scholarseed_runtime.contract.inventory import SkillAvailability, SkillInventory, SkillView
 from service.capabilities.service import source as source_compiler
 from service.capabilities.service.dependencies import (
+    _python,
     provision_dependencies,
     verify_dependencies,
 )
@@ -54,6 +55,92 @@ from .contract_skill_prebundle import _inputs
 
 
 class SkillRuntimeContracts(unittest.TestCase):
+    def test_dependency_probe_loads_product_libraries_without_relaxing_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            libraries = root / "product libraries 产品"
+            libraries.mkdir()
+            package = libraries / "packaged_probe"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                "import sys\n"
+                "assert sys.flags.isolated and sys.flags.ignore_environment\n"
+                "assert sys.flags.no_user_site and sys.dont_write_bytecode\n",
+                encoding="utf-8",
+            )
+            (package / "__main__.py").write_text(
+                "import sys\nassert sys.argv[1:] == ['--help']\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"SCHOLARSEED_PRODUCT_LIBS": str(libraries)}):
+                _python(["-c", "import packaged_probe"])
+                _python(["-m", "packaged_probe", "--help"])
+
+    def test_dependency_probe_does_not_accept_ambient_pythonpath(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            libraries = root / "pylibs"
+            libraries.mkdir()
+            (root / "ambient_dependency.py").write_text("VALUE = True\n", encoding="utf-8")
+            for product_root in ("", str(libraries)):
+                with (
+                    self.subTest(product_root=product_root),
+                    patch.dict(
+                        os.environ,
+                        {"SCHOLARSEED_PRODUCT_LIBS": product_root, "PYTHONPATH": str(root)},
+                    ),
+                    self.assertRaises(PackageError),
+                ):
+                    _python(["-c", "import ambient_dependency"])
+
+    def test_dependency_probe_keeps_installed_libraries_ahead_of_product_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            libraries = Path(directory)
+            (libraries / "packaging.py").write_text(
+                "raise RuntimeError('product path shadowed installed dependency')\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"SCHOLARSEED_PRODUCT_LIBS": str(libraries)}):
+                _python(["-c", "import packaging.requirements"])
+
+    def test_dependency_probe_rejects_invalid_product_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for product_root in ("relative/pylibs", str(Path(directory) / "missing")):
+                with (
+                    self.subTest(product_root=product_root),
+                    patch.dict(os.environ, {"SCHOLARSEED_PRODUCT_LIBS": product_root}),
+                    self.assertRaisesRegex(PackageError, "product library directory"),
+                ):
+                    _python(["-c", "import sys"])
+
+    def test_dependency_probe_checks_product_distribution_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            libraries = Path(directory)
+            metadata = libraries / "probe_product-1.0.dist-info"
+            metadata.mkdir()
+            (metadata / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: probe-product\nVersion: 1.0\n"
+                "Requires-Dist: scholarseed-missing-probe-dependency==1.0\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(os.environ, {"SCHOLARSEED_PRODUCT_LIBS": str(libraries)}),
+                self.assertRaises(PackageError),
+            ):
+                _python(["-m", "pip", "check"])
+
+    def test_dependency_probe_still_rejects_broken_product_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            libraries = Path(directory)
+            (libraries / "broken_product.py").write_text(
+                "raise RuntimeError('broken product module')\n", encoding="utf-8"
+            )
+            with (
+                patch.dict(os.environ, {"SCHOLARSEED_PRODUCT_LIBS": str(libraries)}),
+                self.assertRaises(PackageError),
+            ):
+                _python(["-c", "import broken_product"])
+
     def test_category_provenance_marks_only_generated_defaults(self) -> None:
         cases = (
             ("builtin", {}, "系统预置", "builtin"),
@@ -112,6 +199,7 @@ class SkillRuntimeContracts(unittest.TestCase):
             manifest.parent.mkdir(parents=True)
             original = "---\nname: example\ndescription: Example\nversion: 1.0.0\n---\n"
             manifest.write_text(original)
+            (root / "registry.json").write_text('{"dependencies":{"example":{}}}')
             pack = root / "source-pack"
             compile_source_skills(pack, source)
             metadata = json.loads((pack / "example/.scholarseed.json").read_bytes())
@@ -458,13 +546,21 @@ class SkillRuntimeContracts(unittest.TestCase):
             root = Path(directory)
             skill = root / "source" / "example"
             skill.mkdir(parents=True)
-            (skill / "SKILL.md").write_text("source\n", encoding="utf-8")
+            (skill / "SKILL.md").write_bytes(
+                b"---\nname: example\ndescription: Example skill\n---\n"
+            )
+            (root / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
             conflicting = root / "defaults" / "example" / "SKILL.md"
             conflicting.parent.mkdir(parents=True)
             conflicting.write_text("default\n", encoding="utf-8")
 
             with self.assertRaises(SkillPackError):
                 source_compiler._effective_files(skill, "example", root / "defaults")
+            with (
+                patch.object(source_compiler, "PRODUCT_DEFAULTS_DIR", root / "defaults"),
+                self.assertRaisesRegex(SkillPackError, "产品默认文件不得覆盖技能源码"),
+            ):
+                compile_source_skills(root / "pack", skill.parent)
 
     def test_provision_requires_locked_pins_and_never_resolves_dependencies(self) -> None:
         lock = {
@@ -552,6 +648,39 @@ class SkillRuntimeContracts(unittest.TestCase):
                     provision_dependencies(lock, pack)
                 command.assert_not_called()
 
+    def test_compiler_records_copied_bytes_for_installed_and_runtime_verifiers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            skill = source / "example"
+            skill.mkdir(parents=True)
+            (root / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
+            (skill / "SKILL.md").write_bytes(
+                b"---\nname: example\ndescription: Example skill\n---\n"
+            )
+            payload = skill / "data.txt"
+            payload.write_bytes(b"before copy")
+            pack = root / "pack"
+            installed_inventory = root / "installed.json"
+            copy_payload = source_compiler._copy_payload
+
+            def edit_then_copy(origin, destination, *arguments):
+                if origin.name == skill.name:
+                    payload.write_bytes(b"bytes actually copied")
+                copy_payload(origin, destination, *arguments)
+
+            with patch.object(source_compiler, "_copy_payload", side_effect=edit_then_copy):
+                compile_source_skills(pack, source, lock_path=installed_inventory)
+
+            installed_skill = pack / skill.name
+            self.assertEqual(
+                (installed_skill / payload.name).read_bytes(), b"bytes actually copied"
+            )
+            self.assertTrue(source_compiler.verify_source_locked_pack(installed_inventory, pack).ok)
+            self.assertEqual(
+                source_compiler.verify_compiled_skill(installed_skill)["slug"], skill.name
+            )
+
     def test_source_edit_regenerates_package_manifest_without_updating_reviewed_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -590,6 +719,35 @@ class SkillRuntimeContracts(unittest.TestCase):
             self.assertFalse(source_compiler.verify_source_pack(pack, source)[0])
             with self.assertRaisesRegex(SkillPackError, "integrity mismatch"):
                 source_compiler.verify_compiled_skill(pack / "example")
+
+    def test_local_skill_diagnostics_report_added_missing_and_changed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            skill = source / "example"
+            skill.mkdir(parents=True)
+            (root / "registry.json").write_bytes(json_bytes({"dependencies": {"example": {}}}))
+            (skill / "SKILL.md").write_bytes(
+                b"---\nname: example\ndescription: Example skill\n---\n"
+            )
+            (skill / "original.py").write_bytes(b"print(1)\n")
+            pack = root / "pack"
+            compile_source_skills(pack, source)
+            installed = pack / "example"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(prebundle_main(["--diagnose-local-skill", str(installed)]), 0)
+            self.assertIn("local files match the build inventory", output.getvalue())
+            (installed / "original.py").unlink()
+            (installed / "added.py").write_bytes(b"print(2)\n")
+            (installed / "SKILL.md").write_bytes(b"customized\n")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(prebundle_main(["--diagnose-local-skill", str(installed)]), 1)
+            self.assertIn(
+                "SKILL.md (changed), added.py (added), original.py (missing)", output.getvalue()
+            )
+            self.assertEqual((installed / "SKILL.md").read_bytes(), b"customized\n")
 
     def test_dependencies_are_reviewed_pins_and_safe_module_paths(self) -> None:
         self.assertEqual(
@@ -659,6 +817,34 @@ class SkillRuntimeContracts(unittest.TestCase):
                 verify_locked_pack(lock, link)
             (pack / "example/.scholarseed.json").write_text("{}")
             self.assertFalse(verify_locked_pack(lock, pack).ok)
+
+    def test_localized_skill_copy_is_local_and_preserves_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for source in ("bundled", "skills"):
+                directory = root / source / "example"
+                directory.mkdir(parents=True)
+                manifest = directory / "SKILL.md"
+                manifest.write_text(
+                    "---\nname: example\ndescription: Read papers\n"
+                    "display_name_zh: 论文工具\ndescription_zh: 阅读论文\n"
+                    "display_name_zh_TW: 論文工具\ndisplay_name_fr: ''\n---\n",
+                    encoding="utf-8",
+                )
+                catalog = SkillCatalog(bundled_root=root / "bundled", user_root=root / "skills")
+                native = SkillView(
+                    name="example",
+                    path=manifest,
+                    description="Read papers",
+                    enabled=True,
+                    availability=SkillAvailability.AVAILABLE,
+                )
+                inventory = SkillInventory(cwd=root, skills=(native,))
+                row = catalog.payloads(inventory, SkillProductState())[0]
+                self.assertEqual(row["display_names"], {"zh": "论文工具", "zh-tw": "論文工具"})
+                self.assertEqual(row["descriptions"], {"zh": "阅读论文"})
+                self.assertEqual(row["name"], "example")
+                self.assertEqual(row["path"], str(manifest.resolve()))
 
 
 class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
@@ -1069,7 +1255,7 @@ class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
                 await service.configure_skills(cwd=workspace, state=state, user_id=USER_ID)
             saved.assert_not_called()
 
-    async def test_attachment_reads_shared_inventory_without_global_skill_configuration(
+    async def test_attachment_reads_cached_inventory_without_explicit_global_refresh(
         self,
     ) -> None:
         workspace = Path.cwd()

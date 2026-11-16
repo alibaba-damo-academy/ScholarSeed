@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const test = require('node:test')
 const workspace = require('../../../package.json')
+const { budget } = require('../smoke.json')
 const { validateManifest, selectionFor, validateCollection, validateCaseReport, validateNodeReport, smokeVerdict, resultPath, formatSmokeSummary, main } = require('../smoke.cjs')
 const { validateQualityResult } = require('../../cd/package.cjs')
 
@@ -11,7 +12,7 @@ const ENTRY = { id: 'core', owner: 'Serve', reason: 'persistence recovery', mark
   requiredCases: ['Case.test_one'], expectedCases: ['Case.test_one'], expectedCount: 1, runner: { kind: 'run-all', suite: 'contract_core' } }
 
 function manifest() {
-  return { schemaVersion: 1, profile: 'smoke', platforms: ['darwin'], requiredCoreIds: ['core'], requiredUnitIds: ['unit'],
+  return { schemaVersion: 1, profile: 'smoke', platforms: ['darwin'], budget: { targetMs: 150000 }, requiredCoreIds: ['core'], requiredUnitIds: ['unit'],
     entries: [structuredClone(ENTRY), { ...structuredClone(ENTRY), id: 'unit', markers: ['smoke-unit'],
       runner: { kind: 'run-all', suite: 'contract_unit' } }] }
 }
@@ -22,6 +23,7 @@ function report() {
 }
 
 test('smoke manifest rejects missing required markers and duplicate identities', () => {
+  assert.doesNotThrow(() => validateManifest(require('../smoke.json')))
   assert.equal(validateManifest(manifest()).entries.length, 2)
   const legacy = manifest()
   legacy.profile = 'quick'
@@ -262,4 +264,59 @@ test('smoke summary explains report rejection even when observed cases passed', 
   const output = formatSmokeSummary(quality, { destination: 'quality.json', exitCode: 1, durationMs: 1 })
   assert.match(output, /通过 1.*失败 0/)
   assert.match(output, /python-run-all observationError: smoke collection mismatch: runner-lifecycle/)
+})
+
+test('smoke total budget includes execution, publication and lock cleanup without publishing after release', () => {
+  assert.equal(budget.targetMs, 900_000)
+  const maximum = manifest()
+  maximum.budget.targetMs = 900_000
+  assert.doesNotThrow(() => validateManifest(maximum))
+  for (const targetMs of [undefined, null, 0, -1, 1.5, '900000', 900001]) {
+    const invalid = manifest()
+    invalid.budget.targetMs = targetMs
+    assert.throws(() => validateManifest(invalid), /invalid smoke total budget/)
+  }
+  const missing = manifest()
+  delete missing.budget
+  assert.throws(() => validateManifest(missing), /invalid smoke total budget/)
+  const configured = require('../smoke.json').budget
+  const originalTargetMs = configured.targetMs
+  try {
+    configured.targetMs = 900001
+    assert.throws(() => main([], {
+      filesystem: { mkdirSync() { assert.fail('invalid budget must not acquire a lock') } },
+      execute() { assert.fail('invalid budget must not execute cases') },
+    }), /invalid smoke total budget/)
+  } finally {
+    configured.targetMs = originalTargetMs
+  }
+  for (const delayed of ['execute', 'closeSync', 'unlinkSync']) {
+    for (const durationMs of [361_474, budget.targetMs - 1, budget.targetMs, budget.targetMs + 1]) {
+      let elapsed = 0
+      let released = false
+      let summary
+      const output = []
+      const filesystem = {
+        mkdirSync() {}, openSync() { return 1 }, writeFileSync() {},
+        closeSync() { if (delayed === 'closeSync') elapsed = durationMs },
+        unlinkSync() { released = true; if (delayed === 'unlinkSync') elapsed = durationMs },
+        readFileSync() { return JSON.stringify(summary) },
+      }
+      const options = {
+        filesystem, clock: () => elapsed, log() {}, output: value => output.push(value),
+        writeJSON(destination, value) { assert.equal(released, false); summary = value },
+        execute() {
+          summary = { verdict: 'pass', failures: [], expected: ['case'], stages: [{ cases: [{ id: 'case', status: 'passed' }] }] }
+          if (delayed === 'execute') elapsed = durationMs
+          return 0
+        },
+      }
+      const exceeded = durationMs > budget.targetMs
+      assert.equal(main([], options), exceeded ? 1 : 0, `${delayed}: ${durationMs}`)
+      assert.equal(released, true)
+      assert.equal(JSON.parse(output.at(-1)).verdict, exceeded ? 'fail' : 'pass')
+      assert.equal(JSON.parse(output.at(-1)).durationMs, durationMs)
+      if (delayed !== 'unlinkSync' || !exceeded) assert.equal(summary.verdict, exceeded ? 'fail' : 'pass')
+    }
+  }
 })

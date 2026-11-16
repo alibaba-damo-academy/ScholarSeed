@@ -1,18 +1,21 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "react": ["node_modules/@types/react/index.d.ts"],
+      "react/*": ["node_modules/@types/react/*"],
+      "react-dom": ["node_modules/@types/react-dom/index.d.ts"],
+      "react-dom/*": ["node_modules/@types/react-dom/*"],
+      "react-i18next": ["node_modules/react-i18next"],
+      "@openuidev/*": ["node_modules/@openuidev/*"],
+      "zod/*": ["node_modules/zod/*"]
+    },
     "target": "ES2020",
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
-    "lib": [
-      "ES2020",
-      "ES2022.Intl",
-      "DOM",
-      "DOM.Iterable"
-    ],
-    "types": [
-      "node"
-    ]
+    "lib": ["ES2020", "ES2022.Intl", "DOM", "DOM.Iterable"],
+    "types": ["node"]
   },
   "exclude": [
     "preview/*.test.ts",
@@ -20,17 +23,28 @@
     "preview/plugin.ts",
     "preview/service.ts",
     "preview/verify.ts",
-    "preview/report.ts",
-    "preview/playwright.config.ts",
-    "preview/testing.ts",
-    "preview/capture.ts"
+    "preview/report.ts"
   ],
   "include": [
+    "src/markdown/**/*",
+    "../../packages/ui/document.ts",
+    "../../packages/ui/layout.ts",
+    "../../packages/ui/canvas.ts",
+    "../../packages/ui/canvas.worker.ts",
+    "../../packages/ui/canvases.tsx",
+    "../../packages/ui/painter.tsx",
+    "../../packages/ui/library.tsx",
+    "../../packages/ui/charts.tsx",
+    "../../packages/ui/renderer.tsx",
+    "../../packages/ui/messages.ts",
+    "../../packages/ui/validation.ts",
+    "../../packages/ui/validation.worker.ts",
     "preview/**/*",
     "renderer.ts",
     "endpoints.ts",
     "src/renderer/**/*",
     "src/browser.ts",
+    "src/browserdiagnostics.ts",
     "src/startup.ts",
     "src/fonts.ts",
     "src/pdfe.ts",
@@ -39,6 +53,8 @@
     "src/authentication.ts",
     "src/overlay.ts",
     "src/menu.ts",
+    "src/settings.ts",
+    "src/portal.ts",
     "src/taskcenter.ts",
     "src/approval.ts",
     "src/feedback.ts",
@@ -61,6 +77,7 @@
     "src/plugins.ts",
     "src/mcp-settings.ts",
     "src/reconfiguration.ts",
+    "src/translation.ts",
     "src/updates.ts",
     "src/window.ts",
     "src/tray.ts",

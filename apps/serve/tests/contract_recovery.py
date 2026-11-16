@@ -150,6 +150,8 @@ class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
         for stage, reason, system_error in (
             ("identity", "policy_rejected", 0),
             ("ancestor_profile", "policy_rejected", 0),
+            ("metadata", "policy_rejected", 0),
+            ("metadata", "access_denied", 5),
             ("elevation", "cancelled", 0),
             ("elevation", "access_denied", 5),
             ("worker_privilege", "privilege_missing", 1314),

@@ -11,16 +11,49 @@ const TEST_GLOBS = Object.freeze({
   'e2e/fixtures/*.test.ts': { directory: 'e2e/fixtures', recursive: false },
 })
 const TEST_FILES = Object.freeze([
+  '../../packages/ui/validation.test.ts',
+  '../../packages/ui/layout.test.ts',
+  '../../packages/ui/messages.test.ts',
+  '../../packages/ui/preview/native.test.cjs',
+  'src/renderer/src/components/primitive/images.render.test.cjs',
+  'src/renderer/src/features/workbench/office/local-fonts.test.cjs',
+  '../../packages/ui/build.test.cjs',
+  '../../packages/ui/catalog.test.cjs',
+  '../../packages/ui/plugins.test.cjs',
+  '../../packages/ui/preview/schema.test.mjs',
+  '../../packages/ui/preview/directory.test.mjs',
+  '../../packages/ui/preview/browser.test.cjs',
+  '../../packages/ui/render.test.cjs',
+  '../../packages/ui/research.test.cjs',
+  '../../packages/ui/scope.test.cjs',
+  '../../packages/ui/sdk.test.cjs',
+  '../../packages/ui/statistics.test.ts',
+  '../../packages/ui/templates.test.cjs',
+  'preview/quality.test.mjs',
   '../../scripts/shared/__tests__/lease.test.cjs',
   '../../scripts/dev/__tests__/desktop.test.cjs',
   '../../scripts/shared/__tests__/timing.test.cjs',
+  '../../scripts/shared/__tests__/permissions.test.cjs',
+  '../../scripts/ci/__tests__/format.test.cjs',
+  '../../scripts/pre/__tests__/cleanup.test.cjs',
+  '../../scripts/pre/__tests__/commands.test.cjs',
+  '../../scripts/pre/__tests__/symlinks.test.cjs',
   '../../scripts/pre/__tests__/toolchain-install.test.cjs',
   '../../scripts/cd/__tests__/updater-session.test.cjs',
   '../../scripts/shared/__tests__/dependencies.test.cjs',
+  '../../scripts/shared/__tests__/platform.test.cjs',
+  '../../scripts/shared/__tests__/migration.test.cjs',
   'scripts/pre/__tests__/electron.test.cjs',
   'scripts/dev/__tests__/lease.test.cjs',
+  'scripts/dev/__tests__/pdfe.test.mjs',
   'scripts/shared/__tests__/temporary-cleanup.test.cjs',
+  'scripts/shared/__tests__/utils.test.cjs',
+  'scripts/shared/__tests__/component-cache.test.cjs',
   'scripts/cd/__tests__/build.test.cjs',
+  'scripts/cd/__tests__/updater.test.cjs',
+  'native/shipit/fingerprint.test.cjs',
+  'scripts/cd/__tests__/archive_inventory.test.cjs',
+  'scripts/cd/__tests__/windows-runtime.test.cjs',
   'scripts/recovery.test.ts',
   'scripts/cd/__tests__/signer.test.cjs',
   'scripts/cd/__tests__/wheels.test.cjs',
@@ -30,8 +63,12 @@ const TEST_FILES = Object.freeze([
   'scripts/dev/__tests__/supervision.test.mjs',
   'scripts/dev/__tests__/worker.test.cjs',
   'scripts/shared/__tests__/native.test.cjs',
+  'scripts/shared/__tests__/macos.test.cjs',
+  'scripts/shared/__tests__/probe.test.cjs',
   'native/observations.test.cjs',
+  'native/storage.test.cjs',
   'scripts/shared/__tests__/styles.test.cjs',
+  'scripts/shared/__tests__/openui.test.cjs',
   'scripts/pre/__tests__/office.test.cjs',
   'scripts/ci/__tests__/reuse.test.mjs',
   'scripts/ci/__tests__/commands.test.cjs',
@@ -41,6 +78,24 @@ const TEST_FILES = Object.freeze([
   ...Object.keys(TEST_GLOBS),
 ])
 const NODE_ARGS = Object.freeze(['--experimental-transform-types', '--test'])
+const TEST_CONCURRENCY = 1
+const NATIVE_TEST_FILES = Object.freeze([
+  'src/main/sandbox.test.ts',
+  'src/preload/menu.test.ts',
+  'src/preload/menureact.test.ts',
+  'src/main/plugins.test.ts',
+  'src/main/preferences.test.ts',
+  'src/main/policy.test.ts',
+  'src/main/inspector.test.ts',
+  'src/main/binding.test.ts',
+  'src/main/chromiumrelay.test.ts',
+  'src/main/agentbrowser.test.ts',
+  'src/main/searchdom.test.ts',
+  'src/main/browser.test.ts',
+  'native/storage.test.cjs',
+  'scripts/cd/__tests__/updater.test.cjs',
+  'native/shipit/fingerprint.test.cjs',
+])
 
 function walkTestFiles(directory, relative, recursive) {
   return fs
@@ -76,8 +131,13 @@ function testFiles(directory = DESKTOP) {
   ]
 }
 
+function unitTestFiles(directory = DESKTOP) {
+  return testFiles(directory).filter((filename) => !NATIVE_TEST_FILES.includes(filename))
+}
+
 function invocation(coverage = false, forwarded = []) {
-  const args = [...NODE_ARGS, '--test-concurrency=1', ...TEST_FILES, ...forwarded]
+  const files = coverage ? unitTestFiles() : TEST_FILES
+  const args = [...NODE_ARGS, `--test-concurrency=${TEST_CONCURRENCY}`, ...files, ...forwarded]
   return {
     executable: process.execPath,
     args: coverage
@@ -104,8 +164,11 @@ module.exports = {
   TEST_FILES,
   TEST_GLOBS,
   NODE_ARGS,
+  TEST_CONCURRENCY,
+  NATIVE_TEST_FILES,
   expandTestGlob,
   testFiles,
+  unitTestFiles,
   invocation,
   main,
 }

@@ -132,6 +132,10 @@ test('visual Markdown shows only document content while source mode uses an IDE 
   }
   assert.match(monacoSource, /markdown-undo[\s\S]*createPortal\(sourceActions, toolbarHost\)/u)
   assert.match(monacoSource, /data-testid="source-document-toolbar"/u)
+  assert.match(
+    monacoSource,
+    /className="[^"]*bg-\[var\(--vds-bg-gray-default\)\][^"]*"\s+data-save-state=\{session.saveState\}\s+data-testid="source-document-toolbar"/u
+  )
   assert.match(monacoSource, /vds-code-document is-actions-external/u)
   assert.match(
     featureSource,

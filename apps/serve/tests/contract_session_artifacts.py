@@ -10,11 +10,14 @@ from dataclasses import replace
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from scholarseed_runtime.contract.artifact import ArtifactRole
+from service.chat.api.sessions import mount_session_routes
 from service.chat.persistence.artifacts import (
     ArtifactSource,
     ArtifactStatus,
@@ -33,6 +36,7 @@ from service.chat.persistence.catalog import (
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.projection import ARTIFACT_CHANGE_UPDATE, artifact_payload
 from service.chat.service.artifacts import (
+    ARTIFACT_DIRECTORY_UNSUPPORTED,
     ARTIFACT_EDIT_UNAVAILABLE,
     ARTIFACT_NOT_FOUND,
     ARTIFACT_PATH_FORBIDDEN,
@@ -53,6 +57,7 @@ from service.platform.activity import Activities
 from service.platform.content import ArtifactScopeKind
 from service.platform.files import export_file_name
 from service.platform.limits import DOCUMENT_PREVIEW_MAX_BYTES
+from service.platform.workbench import ArtifactDocumentSource
 from service.workbench.domain.model import WorkbenchFormatPolicy
 
 SESSION_ID = "product-a"
@@ -62,6 +67,234 @@ OWNER = SessionPrincipal("artifact-owner")
 
 
 class SessionArtifactContract(unittest.TestCase):
+    def test_analysis_reads_require_session_owner_and_published_artifact(self) -> None:
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        path = "outputs/report.pdf"
+        payload = b"%PDF-1.7\n"
+        (self.root / SESSION_ID / path).write_bytes(payload)
+        record = self.index(original_path=path, mime_type="application/pdf")
+        source = ArtifactDocumentSource(
+            session_id=SESSION_ID, artifact_id=artifact_identity(record)
+        )
+        self.assertEqual(reader.read_analysis_document(source, OWNER.user_id), (payload, path))
+        with self.assertRaisesRegex(ArtifactReadError, ARTIFACT_PATH_FORBIDDEN):
+            reader.read_analysis_document(source, "another-owner")
+        with self.assertRaises(ArtifactReadError):
+            reader.read_analysis_document(
+                source.model_copy(update={"artifact_id": "missing"}), OWNER.user_id
+            )
+        with self.assertRaises(ArtifactReadError):
+            reader.read_analysis_document(
+                source.model_copy(update={"session_id": "other-session"}), OWNER.user_id
+            )
+
+    def test_artifact_compatibility_preview_uses_format_port_and_preserves_revision(self) -> None:
+        payload = b"name,value\na,1\n"
+        path = "outputs/table.csv"
+        (self.root / SESSION_ID / path).write_bytes(payload)
+        record = self.index(original_path=path, mime_type="text/csv")
+        formats = WorkbenchFormatPolicy()
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, formats)
+        artifact_id = artifact_identity(record)
+        with patch.object(formats, "preview", return_value=b"compatibility bytes") as preview:
+            document = reader.preview_document(SESSION_ID, artifact_id)
+        preview.assert_called_once_with(path, payload)
+        self.assertEqual(document.body, b"compatibility bytes")
+        self.assertEqual(document.size, len(b"compatibility bytes"))
+        self.assertFalse(document.editable)
+        self.assertEqual(document.revision, "sha256:" + sha256(payload).hexdigest())
+        self.assertEqual(reader.read_raw(SESSION_ID, artifact_id)[0], payload)
+
+    def test_artifact_open_reuses_workbench_registry_instead_of_mime(self) -> None:
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        application = FastAPI()
+        sessions = Mock()
+        sessions.require_access.side_effect = self.catalog.require
+        sessions.is_readonly.return_value = False
+        mount_session_routes(
+            application,
+            sessions=sessions,
+            turns=Mock(),
+            events=Mock(),
+            artifacts=reader,
+            credentials=Mock(),
+        )
+        cases = (
+            ("proof.lean", b"theorem sample : True := by trivial\n", "code", "text"),
+            ("report.md", b"# Report\n", "markdown", "text"),
+            ("table.tsv", b"name\tvalue\na\t1\n", "table", "text"),
+            ("binary.lean", b"\x00\xff", "unsupported", "binary"),
+        )
+        with (
+            patch("service.chat.api.sessions.request_owner_id", return_value=OWNER.user_id),
+            TestClient(application) as client,
+        ):
+            for name, payload, viewer, content_kind in cases:
+                with self.subTest(name=name):
+                    path = f"outputs/{name}"
+                    (self.root / SESSION_ID / path).write_bytes(payload)
+                    record = self.index(key=name, original_path=path, mime_type="image/png")
+                    artifact_id = artifact_identity(record)
+                    route = f"/api/serve/sessions/{SESSION_ID}/artifacts/{artifact_id}/open"
+                    response = client.get(route)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    opened = response.json()
+                    expected = WorkbenchFormatPolicy().project(path, payload)
+                    self.assertEqual(opened["viewer"], viewer)
+                    self.assertEqual(opened["viewer"], expected.viewer)
+                    self.assertEqual(opened["processor"], expected.processor)
+                    self.assertEqual(opened["content_kind"], content_kind)
+                    self.assertEqual(opened["capabilities"]["can_preview"], expected.can_preview)
+                    self.assertEqual(opened["capabilities"]["can_select"], expected.can_select)
+                    self.assertEqual(
+                        opened["capabilities"]["can_edit"], reader.editable(SESSION_ID, artifact_id)
+                    )
+                    self.assertFalse(opened["capabilities"]["can_version"])
+                    self.assertFalse(opened["capabilities"]["can_annotate"])
+                    self.assertEqual(opened["revision"], "sha256:" + sha256(payload).hexdigest())
+                    self.assertEqual(
+                        client.get(route.replace(SESSION_ID, "other-session")).status_code, 404
+                    )
+
+    def test_directory_publication_reads_only_captured_members_and_refuses_file_operations(self):
+        content_catalog = ContentCatalog(self.root / "directory-content.sqlite3")
+        content = ContentService(
+            ProjectRegistry(str(self.root), content_catalog),
+            content_catalog,
+            activities=Activities(),
+        )
+        content.bind_artifact_scope(
+            ArtifactScopeKind.SESSION, SessionArtifactStorage(self.catalog, self.root).resolve
+        )
+        publications = PublicationService(content)
+        folder = self.root / SESSION_ID / "outputs" / "delivery"
+        (folder / "empty").mkdir(parents=True)
+        (folder / "report.md").write_bytes(b"old report")
+        publication = publications.publish(
+            PublicationCommand(
+                "", SESSION_ID, "turn-a", "directory", "outputs/delivery", ArtifactRole.FINAL
+            ),
+            provenance={},
+        )
+        payload, _events = publications.project(
+            publication, self.catalog.get(SESSION_ID), self.events, self.artifacts
+        )
+        self.assertEqual(payload["kind"], "directory")
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        reader.bind_content(content)
+        artifact_id = payload["artifact_id"]
+        (folder / "report.md").write_bytes(b"new report")
+        manifest = reader.directory_entries(SESSION_ID, artifact_id)
+        self.assertEqual([entry["path"] for entry in manifest["entries"]], ["empty", "report.md"])
+        self.assertEqual(manifest["total_size"], len(b"old report"))
+        document = reader.open_document(SESSION_ID, artifact_id, "report.md")
+        self.assertEqual(document.body, b"old report")
+        self.assertFalse(document.editable)
+        for member in (
+            "../report.md",
+            "/report.md",
+            "empty",
+            "report.md/../report.md",
+            "missing.md",
+        ):
+            with self.subTest(member=member), self.assertRaises(ArtifactReadError):
+                reader.open_document(SESSION_ID, artifact_id, member)
+            with self.subTest(analysis_member=member), self.assertRaises(ArtifactReadError):
+                reader.read_analysis_document(
+                    ArtifactDocumentSource(
+                        session_id=SESSION_ID, artifact_id=artifact_id, member=member
+                    ),
+                    OWNER.user_id,
+                )
+        self.assertEqual(
+            reader.read_analysis_document(
+                ArtifactDocumentSource(
+                    session_id=SESSION_ID, artifact_id=artifact_id, member="report.md"
+                ),
+                OWNER.user_id,
+            ),
+            (b"old report", "report.md"),
+        )
+        for operation in (
+            reader.read_raw,
+            reader.read_text,
+            reader.open_document,
+            reader.export_bytes,
+            reader.export_document_bytes,
+        ):
+            with (
+                self.subTest(operation=operation.__name__),
+                self.assertRaisesRegex(ArtifactReadError, ARTIFACT_DIRECTORY_UNSUPPORTED),
+            ):
+                operation(SESSION_ID, artifact_id)
+        with self.assertRaisesRegex(ArtifactReadError, ARTIFACT_DIRECTORY_UNSUPPORTED):
+            reader.write_raw(
+                SESSION_ID, artifact_id, b"wrong", "sha256:" + publication.content.sha256
+            )
+        with self.assertRaises(ArtifactReadError):
+            reader.directory_entries("other-session", artifact_id)
+        (folder / "report.md").unlink()
+        (folder / "empty").rmdir()
+        folder.rmdir()
+        self.assertEqual(
+            reader.open_document(SESSION_ID, artifact_id, "report.md").body, b"old report"
+        )
+        self.assertEqual(reader.directory_entries(SESSION_ID, artifact_id), manifest)
+        application = FastAPI()
+        sessions = Mock()
+        sessions.require_access.side_effect = self.catalog.require
+        sessions.is_readonly.return_value = False
+        mount_session_routes(
+            application,
+            sessions=sessions,
+            turns=Mock(),
+            events=Mock(),
+            artifacts=reader,
+            credentials=Mock(),
+        )
+        route = f"/api/serve/sessions/{SESSION_ID}/artifacts/{artifact_id}"
+        with (
+            patch("service.chat.api.sessions.request_owner_id", return_value=OWNER.user_id),
+            TestClient(application) as client,
+        ):
+            response = client.get(f"{route}/entries")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["entries"][0], {"path": "empty", "kind": "directory"})
+            response = client.get(f"{route}/raw", params={"member": "report.md"})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.content, b"old report")
+            self.assertEqual(response.headers["X-ScholarSeed-Artifact-Editable"], "false")
+            opened = client.get(f"{route}/open", params={"member": "report.md"})
+            self.assertEqual(opened.status_code, 200, opened.text)
+            self.assertEqual(opened.json()["viewer"], "markdown")
+            self.assertFalse(opened.json()["capabilities"]["can_edit"])
+            self.assertEqual(
+                client.get(f"{route}/open", params={"member": "../report.md"}).status_code, 404
+            )
+            self.assertEqual(
+                client.head(f"{route}/raw", params={"member": "report.md"}).headers["etag"],
+                response.headers["etag"],
+            )
+            self.assertEqual(client.get(f"{route}/raw").status_code, 400)
+            self.assertEqual(
+                client.get(f"{route}/raw", params={"member": "../report.md"}).status_code, 404
+            )
+            self.assertEqual(
+                client.put(
+                    f"{route}/raw",
+                    params={"member": "report.md"},
+                    content=b"replace",
+                    headers={"if-match": response.headers["etag"]},
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.get(
+                    f"/api/serve/sessions/other-session/artifacts/{artifact_id}/entries"
+                ).status_code,
+                404,
+            )
+
     def test_current_schema_does_not_open_writer(self) -> None:
         with patch.object(
             SessionArtifactStore,
@@ -101,6 +334,7 @@ class SessionArtifactContract(unittest.TestCase):
                 "SELECT sql FROM sqlite_master WHERE name='session_artifact_draft'"
             ).fetchone()[0]
             connection.execute("DROP TABLE session_artifact_draft")
+            connection.execute("DROP TABLE session_artifact_link")
             connection.execute("ALTER TABLE session_artifact RENAME TO artifact_before")
             definition = main_sql.replace(
                 "REFERENCES session_catalog", "REFERENCES " + session_target
@@ -401,6 +635,11 @@ class SessionArtifactContract(unittest.TestCase):
         assert not isinstance(document.body, bytes)
         self.assertEqual(document.body.read(8), b"%PDF-1.7")
         document.body.close()
+        projection = reader.document_projection(SESSION_ID, artifact_identity(artifact))
+        self.assertEqual(projection["viewer"], "pdf")
+        self.assertTrue(projection["capabilities"]["can_select"])
+        self.assertFalse(projection["capabilities"]["can_edit"])
+        self.assertEqual(projection["size"], source.stat().st_size)
 
     def test_pdf_above_preview_limit_has_stable_error(self) -> None:
         source = self.root / SESSION_ID / "outputs" / "oversized.pdf"
@@ -848,6 +1087,106 @@ class SessionArtifactContract(unittest.TestCase):
                 "sha256:baseline",
             )
 
+    def test_relative_reference_reads_only_same_turn_published_snapshots(self) -> None:
+        content_catalog = ContentCatalog(self.root / "reference-content.sqlite3")
+        content = ContentService(
+            ProjectRegistry(str(self.root), content_catalog),
+            content_catalog,
+            activities=Activities(),
+        )
+        content.bind_artifact_scope(
+            ArtifactScopeKind.SESSION, SessionArtifactStorage(self.catalog, self.root).resolve
+        )
+        publications = PublicationService(content)
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        reader.bind_content(content)
+        identities = {}
+        for filename, turn, text in (
+            ("report.md", "turn-a", "[1](references.md#ref-key)"),
+            ("references.md", "turn-a", "Real published bibliography"),
+            ("foreign.md", "turn-b", "Another turn"),
+        ):
+            source = self.root / SESSION_ID / filename
+            source.write_text(text, encoding="utf-8")
+            publication = publications.publish(
+                PublicationCommand(
+                    "", SESSION_ID, turn, filename, filename, ArtifactRole.FINAL, filename
+                ),
+                provenance={},
+            )
+            payload, _events = publications.project(
+                publication, self.catalog.get(SESSION_ID), self.events, self.artifacts
+            )
+            identities[filename] = payload["artifact_id"]
+            source.unlink()
+        report = identities["report.md"]
+        original, _media = reader.read_raw(SESSION_ID, report)
+        revision = reader._revision(original)
+        payload, target_revision = reader.read_relative_document(
+            SESSION_ID, report, revision, "references.md"
+        )
+        self.assertEqual(payload, b"Real published bibliography")
+        self.assertEqual(target_revision, reader._revision(payload))
+        records = self.artifacts.list_session(SESSION_ID)
+        for root in ("C:/published/", "C:\\published\\"):
+            windows_records = tuple(
+                replace(record, canonical_path=root + Path(record.canonical_path).name)
+                for record in records
+            )
+            with patch.object(self.artifacts, "list_session", return_value=windows_records):
+                actual, _revision = reader.read_relative_document(
+                    SESSION_ID, report, revision, "references.md"
+                )
+                self.assertEqual(actual, payload)
+        corrupted = tuple(
+            (
+                replace(record, content_sha256="invalid")
+                if artifact_identity(record) == identities["references.md"]
+                else record
+            )
+            for record in records
+        )
+        with patch.object(self.artifacts, "list_session", return_value=corrupted):
+            with self.assertRaises(ArtifactReadError):
+                reader.read_relative_document(SESSION_ID, report, revision, "references.md")
+        for relative in (
+            "foreign.md",
+            "missing.md",
+            "../references.md",
+            "/references.md",
+            "C:\\references.md",
+            "C:/references.md",
+            "file:///references.md",
+        ):
+            with self.subTest(relative=relative), self.assertRaises(ArtifactReadError):
+                reader.read_relative_document(SESSION_ID, report, revision, relative)
+        with self.assertRaises(ArtifactReadError):
+            reader.read_relative_document("foreign-session", report, revision, "references.md")
+        with self.assertRaisesRegex(ArtifactReadError, ARTIFACT_REVISION_CONFLICT):
+            reader.read_relative_document(SESSION_ID, report, "sha256:old", "references.md")
+        unpublished = self.index(key="not-published", original_path="unpublished.md")
+        with self.assertRaises(ArtifactReadError):
+            reader.read_relative_document(
+                SESSION_ID, artifact_identity(unpublished), revision, "references.md"
+            )
+        duplicate_path = self.root / SESSION_ID / "references.md"
+        duplicate_path.write_text("Second publication", encoding="utf-8")
+        duplicate = publications.publish(
+            PublicationCommand(
+                "",
+                SESSION_ID,
+                "turn-a",
+                "duplicate",
+                "references.md",
+                ArtifactRole.FINAL,
+                "Second publication",
+            ),
+            provenance={},
+        )
+        publications.project(duplicate, self.catalog.get(SESSION_ID), self.events, self.artifacts)
+        with self.assertRaisesRegex(ArtifactReadError, "session_artifact_path_ambiguous"):
+            reader.read_relative_document(SESSION_ID, report, revision, "references.md")
+
     def test_published_document_draft_is_durable_and_snapshot_is_immutable(self) -> None:
         content_catalog = ContentCatalog(self.root / "content.sqlite3")
         content = ContentService(
@@ -1046,6 +1385,78 @@ class SessionArtifactContract(unittest.TestCase):
         self.assertFalse(text["binary"])
         self.assertEqual(raw, content.encode("utf-8"))
         self.assertEqual(media_type, "text/markdown")
+
+    def test_legacy_lean_artifact_projects_text_mime_without_rewriting_history(self) -> None:
+        target = self.root / SESSION_ID / "outputs" / "stats_demo.lean"
+        source = "theorem 样例 : 1 = 1 := by rfl\n".encode("utf-8")
+        target.write_bytes(source)
+        record = self.index(
+            key="legacy-lean",
+            original_path="outputs/stats_demo.lean",
+            mime_type="application/octet-stream",
+            content_sha256=sha256(source).hexdigest(),
+            size_bytes=len(source),
+        )
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        raw, media_type = reader.read_raw(SESSION_ID, artifact_identity(record))
+        self.assertEqual(raw, source)
+        self.assertEqual(media_type, "text/plain")
+        self.assertEqual(
+            reader.open_document(SESSION_ID, artifact_identity(record)).media_type, "text/plain"
+        )
+        self.assertEqual(record.mime_type, "application/octet-stream")
+        self.assertEqual(target.read_bytes(), source)
+
+    def test_binary_lean_is_not_promoted_to_text_by_its_suffix(self) -> None:
+        target = self.root / SESSION_ID / "outputs" / "binary.lean"
+        target.write_bytes(b"\x00not Lean text")
+        record = self.index(
+            key="binary-lean",
+            original_path="outputs/binary.lean",
+            mime_type="application/octet-stream",
+        )
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        self.assertEqual(
+            reader.read_raw(SESSION_ID, artifact_identity(record))[1], "application/octet-stream"
+        )
+
+    def test_legacy_published_lean_snapshot_remains_readable_after_source_removal(self) -> None:
+        content_catalog = ContentCatalog(self.root / "legacy-content.sqlite3")
+        content = ContentService(
+            ProjectRegistry(str(self.root), content_catalog),
+            content_catalog,
+            activities=Activities(),
+        )
+        content.bind_artifact_scope(
+            ArtifactScopeKind.SESSION, SessionArtifactStorage(self.catalog, self.root).resolve
+        )
+        publications = PublicationService(content)
+        target = self.root / SESSION_ID / "outputs" / "legacy.lean"
+        source = b"theorem example : 1 = 1 := by rfl\n"
+        target.write_bytes(source)
+        with patch("service.content.service.snapshot.guess_media_type", return_value=None):
+            publication = publications.publish(
+                PublicationCommand(
+                    "",
+                    SESSION_ID,
+                    "turn-a",
+                    "legacy-lean",
+                    "outputs/legacy.lean",
+                    ArtifactRole.FINAL,
+                ),
+                provenance={},
+            )
+        payload, _events = publications.project(
+            publication, self.catalog.get(SESSION_ID), self.events, self.artifacts
+        )
+        self.assertEqual(payload["media_type"], "application/octet-stream")
+        target.unlink()
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        reader.bind_content(content)
+        raw, media_type = reader.read_raw(SESSION_ID, payload["artifact_id"])
+        self.assertEqual(raw, source)
+        self.assertEqual(media_type, "text/plain")
+        self.assertEqual(publication.content.media_type, "application/octet-stream")
 
     def test_session_artifact_reader_rejects_escape(self) -> None:
         outside = self.root / "outside.md"

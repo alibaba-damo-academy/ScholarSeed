@@ -4,7 +4,7 @@ import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
-import { chromium, type Browser, type Page } from '@playwright/test'
+import { chromium, expect, type Browser, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import type { ViteDevServer } from 'vite'
 import { renderServers } from '../../../test-helpers/render.ts'
@@ -174,6 +174,10 @@ test('ported DeepRD primitives render and expose core interactions', async () =>
     await page.getByRole('button', { name: '15' }).click()
     await assert.equal(await page.getByTestId('render-calendar-value').textContent(), '15')
 
-    await assert.equal(await page.getByTestId('render-chart').locator('svg').count(), 1)
+    const chart = page.getByTestId('render-chart').getByRole('img', { name: '图表', exact: true })
+    await expect(chart).toBeVisible()
+    await expect(chart).toHaveAccessibleDescription('A, 10; B, 20')
+    await expect(chart.getByText('A', { exact: true })).toBeVisible()
+    await expect(chart.getByText('B', { exact: true })).toBeVisible()
   })
 })

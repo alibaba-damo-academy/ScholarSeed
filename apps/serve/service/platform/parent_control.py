@@ -92,6 +92,8 @@ class ParentControl:
         self._prepare_update = prepare_update
         self._resume_update = resume_update
         self._update_preparation: asyncio.Task[None] | None = None
+        self._toolchain_complete = toolchain_complete
+        self._skill_python_complete = skill_python_complete
         self._preparations = {
             TOOLCHAIN_OPERATION: toolchain_complete,
             SKILL_PYTHON_OPERATION: skill_python_complete,
@@ -107,9 +109,9 @@ class ParentControl:
             raise ParentControlError("parent control unavailable")
         value = _decode(bootstrap, {"version", "port", "token"})
         if (
-            type(value["version"]) is not int
+            (not isinstance(value["version"], int) or isinstance(value["version"], bool))
             or value["version"] != 1
-            or type(value["port"]) is not int
+            or (not isinstance(value["port"], int) or isinstance(value["port"], bool))
             or not 0 < value["port"] < 65536
             or not isinstance(value["token"], str)
             or not _TOKEN.fullmatch(value["token"])
@@ -235,13 +237,16 @@ class ParentControl:
                     if operation == TOOLCHAIN_OPERATION
                     else {"operation", "ready"}
                 )
-                or type(command["ready"]) is not bool
+                or not isinstance(command["ready"], bool)
                 or complete is None
                 or operation in self._reported
             ):
                 raise ParentControlError("invalid toolchain preparation receipt")
             if operation == SKILL_PYTHON_OPERATION:
-                complete(command["ready"])
+                skillComplete = self._skill_python_complete
+                if skillComplete is None:
+                    raise ParentControlError("invalid toolchain preparation receipt")
+                skillComplete(command["ready"])
                 self._reported.add(operation)
                 return b"\x01"
             try:
@@ -254,7 +259,10 @@ class ParentControl:
                     raise ValueError()
             except ValueError:
                 raise ParentControlError("invalid toolchain preparation receipt") from None
-            complete(command["ready"], resources)
+            toolchainComplete = self._toolchain_complete
+            if toolchainComplete is None:
+                raise ParentControlError("invalid toolchain preparation receipt")
+            toolchainComplete(command["ready"], resources)
             self._reported.add(operation)
             _LOGGER.info(
                 "parent_control_preparation_receipt pid=%s operation=%s ready=%s",
@@ -325,11 +333,12 @@ class ParentControl:
             if self._generation is not None:
                 raise ParentControlError("maintenance already owned")
             idle_only = operation == IDLE_QUIESCE_OPERATION
-            generation = (
+            idleGeneration = (
                 self._activities.begin_if_idle() if idle_only else self._activities.begin_restart()
             )
-            if generation is None:
+            if idleGeneration is None:
                 raise ParentControlError("maintenance requires idle workbench")
+            generation = idleGeneration
             self._generation = generation
             stage = MaintenanceStage.INTERRUPT
             try:
@@ -411,9 +420,13 @@ class ParentControl:
                     "parent_control_preparation_missing pid=%s operation=%s", os.getpid(), operation
                 )
                 if operation == TOOLCHAIN_OPERATION:
-                    complete(False, None)
+                    toolchainComplete = self._toolchain_complete
+                    if toolchainComplete is not None:
+                        toolchainComplete(False, None)
                 else:
-                    complete(False)
+                    skillComplete = self._skill_python_complete
+                    if skillComplete is not None:
+                        skillComplete(False)
                 self._reported.add(operation)
 
     async def aclose(self) -> None:

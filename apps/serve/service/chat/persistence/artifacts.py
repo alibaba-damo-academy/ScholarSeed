@@ -6,7 +6,7 @@ import json
 import sqlite3
 import time
 from contextlib import closing, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
@@ -16,10 +16,12 @@ from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
     SQLITE_TIMEOUT_SECONDS,
     SessionBindingConflictError,
+    SessionCatalogStore,
     SessionStateConflictError,
 )
-from service.chat.persistence.events import PRODUCT_EVENT_TABLE, ProductEventStore
+from service.chat.persistence.events import PRODUCT_EVENT_TABLE, SESSION_FORK_KEY, ProductEventStore
 from service.chat.persistence.utils import validate_transaction
+from service.chat.utils import SESSION_FORK_COPIED_FIELD, copied_session_path
 from service.paths import SESSION_CATALOG_DB
 from service.persistence.notifications import NotificationConnection
 from service.persistence.project import (
@@ -36,6 +38,7 @@ from service.persistence.project import (
 SESSION_ARTIFACT_SOURCE_TABLE = "session_artifact_source"
 SESSION_ARTIFACT_TABLE = "session_artifact"
 SESSION_ARTIFACT_DRAFT_TABLE = "session_artifact_draft"
+SESSION_ARTIFACT_LINK_TABLE = "session_artifact_link"
 SESSION_ARTIFACT_SAVED_TO_COLUMN = "saved_to"
 PRODUCT_ARTIFACT_ID_ENCODING = "utf-8"
 ARTIFACT_CHANGE_DELETE = "delete"
@@ -81,6 +84,7 @@ class SessionArtifactRecord:
     metadata: dict[str, Any]
     idempotency_key: str
     created_at: float
+    display_product_seq: int | None = None
 
 
 def product_artifact_id(session_id: str, canonical_path: str) -> str:
@@ -109,7 +113,10 @@ def current_artifact_records(
     return tuple(
         sorted(
             (*current.values(), *publications.values()),
-            key=lambda record: (record.source_product_seq, record.artifact_id),
+            key=lambda record: (
+                record.display_product_seq or record.source_product_seq,
+                record.artifact_id,
+            ),
         )
     )
 
@@ -139,6 +146,7 @@ class ArtifactSchema:
 
 
 _LEGACY_FOREIGN_TARGETS = {
+    SESSION_ARTIFACT_LINK_TABLE: {},
     SESSION_ARTIFACT_SOURCE_TABLE: {},
     SESSION_ARTIFACT_TABLE: {
         SESSION_CATALOG_TABLE + "_migration": SESSION_CATALOG_TABLE,
@@ -177,6 +185,7 @@ class SessionArtifactStore:
                 cls._backfill_sources(connection)
             cls._create_table(connection)
             cls._create_draft_table(connection)
+            cls._create_link_table(connection)
             if schema.add_saved_to:
                 connection.execute(
                     f"ALTER TABLE {SESSION_ARTIFACT_TABLE} ADD COLUMN {SESSION_ARTIFACT_SAVED_TO_COLUMN} TEXT"
@@ -220,6 +229,7 @@ class SessionArtifactStore:
             cls._create_source_table(reference)
             cls._create_table(reference)
             cls._create_draft_table(reference)
+            cls._create_link_table(reference)
             cls._create_indexes(reference)
             for table, definition in reference.execute(
                 "SELECT name,sql FROM sqlite_master WHERE type='table'"
@@ -835,16 +845,127 @@ class SessionArtifactStore:
             raise ValueError("artifact does not exist")
         return self._record(row)
 
+    @staticmethod
+    def _create_link_table(connection: sqlite3.Connection) -> None:
+        connection.execute(f"""
+            CREATE TABLE IF NOT EXISTS {SESSION_ARTIFACT_LINK_TABLE} (
+                session_id TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                source_product_seq INTEGER NOT NULL CHECK(source_product_seq > 0),
+                PRIMARY KEY(session_id, artifact_id),
+                FOREIGN KEY(session_id) REFERENCES {SESSION_CATALOG_TABLE}(session_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(artifact_id) REFERENCES {SESSION_ARTIFACT_TABLE}(artifact_id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+    def inherit_history(
+        self,
+        source_session_id: str,
+        target_session_id: str,
+        through_seq: int,
+        *,
+        copied_workdir: Path | None = None,
+        connection: sqlite3.Connection,
+    ) -> None:
+        validate_transaction(connection, self._database)
+        events = ProductEventStore(self._database)
+        catalog = SessionCatalogStore(self._database)
+        source = catalog.get(source_session_id)
+        request = events.by_key(target_session_id, SESSION_FORK_KEY, connection=connection)
+        if source is None:
+            raise SessionStateConflictError("fork source missing")
+        source_workdir = (
+            Path(str(request.payload.get(SESSION_FORK_COPIED_FIELD) or source.runtime_workdir))
+            if request is not None
+            else Path(source.runtime_workdir)
+        )
+        rows = connection.execute(
+            f"""
+            SELECT artifact_id, source_product_seq FROM {SESSION_ARTIFACT_TABLE}
+            WHERE session_id = ? AND source_product_seq <= ?
+            UNION
+            SELECT artifact_id, source_product_seq FROM {SESSION_ARTIFACT_LINK_TABLE}
+            WHERE session_id = ? AND source_product_seq <= ?
+        """,
+            (source_session_id, through_seq, source_session_id, through_seq),
+        ).fetchall()
+        for row in rows:
+            inherited = events.by_key(
+                target_session_id,
+                f"{SESSION_FORK_KEY}:{row['source_product_seq']}",
+                connection=connection,
+            )
+            if inherited is None:
+                raise SessionStateConflictError("inherited artifact source event missing")
+            original_row = connection.execute(
+                f"SELECT * FROM {SESSION_ARTIFACT_TABLE} WHERE artifact_id = ?",
+                (row["artifact_id"],),
+            ).fetchone()
+            original = self._record(original_row)
+            copied_path = (
+                copied_session_path(original.canonical_path, source_workdir, copied_workdir)
+                if copied_workdir is not None
+                else original.canonical_path
+            )
+            if (
+                copied_workdir is not None
+                and copied_path != original.canonical_path
+                and original.status is not ArtifactStatus.PUBLISHED
+            ):
+                self.index(
+                    session_id=target_session_id,
+                    runtime_id=inherited.runtime_id,
+                    vendor_thread_id=inherited.vendor_thread_id,
+                    vendor_turn_id=inherited.vendor_turn_id,
+                    vendor_item_id=inherited.vendor_item_id,
+                    source_kind=original.source_kind,
+                    source_product_seq=inherited.product_seq,
+                    original_path=copied_session_path(
+                        original.original_path, source_workdir, copied_workdir
+                    ),
+                    canonical_path=copied_path,
+                    role=original.role,
+                    status=original.status,
+                    mime_type=original.mime_type,
+                    content_sha256=original.content_sha256,
+                    size_bytes=original.size_bytes,
+                    metadata=dict(original.metadata),
+                    idempotency_key=f"{SESSION_FORK_KEY}:{original.artifact_id}",
+                    created_at=original.created_at,
+                    connection=connection,
+                )
+                continue
+            connection.execute(
+                f"""
+                INSERT OR IGNORE INTO {SESSION_ARTIFACT_LINK_TABLE}
+                    (session_id, artifact_id, source_product_seq) VALUES (?, ?, ?)
+            """,
+                (target_session_id, row["artifact_id"], inherited.product_seq),
+            )
+
     def list_session(self, session_id: str) -> tuple[SessionArtifactRecord, ...]:
         with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 f"""
-                SELECT * FROM {SESSION_ARTIFACT_TABLE}
-                WHERE session_id = ? ORDER BY source_product_seq, artifact_id
+                SELECT artifact.*, artifact.source_product_seq AS display_seq, 0 AS inherited
+                FROM {SESSION_ARTIFACT_TABLE} artifact WHERE artifact.session_id = ?
+                UNION ALL
+                SELECT artifact.*, link.source_product_seq AS display_seq, 1 AS inherited
+                FROM {SESSION_ARTIFACT_LINK_TABLE} link
+                JOIN {SESSION_ARTIFACT_TABLE} artifact USING (artifact_id)
+                WHERE link.session_id = ? ORDER BY display_seq, artifact_id
                 """,
-                (session_id,),
+                (session_id, session_id),
             ).fetchall()
-        return tuple(self._record(row) for row in rows)
+        return tuple(
+            replace(
+                self._record(row),
+                display_product_seq=int(row["display_seq"]) if row["inherited"] else None,
+            )
+            for row in rows
+        )
 
     def get_by_key(self, session_id: str, idempotency_key: str) -> SessionArtifactRecord | None:
         """Read an immutable published artifact without resnapshotting current disk."""

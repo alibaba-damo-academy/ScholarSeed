@@ -1,8 +1,9 @@
 // Squirrel/launchd 不保留 argv 或环境变量；只交接存储选择和显式本机 CDP 端口。
 import { createHash } from 'node:crypto'
-import { realpathSync, rmSync } from 'node:fs'
+import { opendirSync, realpathSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { DomainNative } from '../../native/domains.cjs'
+import { beginDomains, type DomainNative } from '../../native/domains.cjs'
+import { uncertainRelease } from '../../native/reclamation.cjs'
 import { acquireDirectoryWriter } from './writer.ts'
 import { isValidAbsoluteRoot } from './storage-record.ts'
 import { writeJson, writeRecord } from './journal.ts'
@@ -21,6 +22,7 @@ const PERSISTENT_IDENTITY = /^darwin:[a-f0-9]{32}:[a-f0-9]{16}:[a-f0-9]{16}:[a-f
 const MAX_BYTES = 16 * 1024
 const PROFILE_SWITCH = '--user-data-dir'
 const CONTEXT_LOCK = 'context-write'
+const CONTEXT_BUCKET = /^[a-f0-9]{64}$/
 const KEYS = [
   'schema',
   'uid',
@@ -76,6 +78,57 @@ export function updateLaunchDirectory(coordinator: string, application: string):
 export function updateLaunchContextPath(coordinator: string, application: string): string {
   return join(updateLaunchDirectory(coordinator, application), CONTEXT_FILE)
 }
+
+/** Retire empty per-installation namespaces after workbench readiness. */
+export function pruneUpdateLaunchDirectories(
+  native: DomainNative,
+  coordinator: string,
+  report: (error: unknown) => void
+): number {
+  if (!native.pruneLockOnlyAt) return 0
+  const root = join(dirname(coordinator), CONTEXT_DIRECTORY)
+  let entries
+  try {
+    entries = opendirSync(root)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
+    throw error
+  }
+  let removed = 0
+  try {
+    for (let entry = entries.readSync(); entry; entry = entries.readSync()) {
+      if (!entry.isDirectory() || !CONTEXT_BUCKET.test(entry.name)) continue
+      const directory = join(root, entry.name)
+      try {
+        const domains = beginDomains(native, coordinator, [directory], true)
+        let pin: unknown
+        let uncertain = false
+        try {
+          domains.occupy()
+          pin = native.pin(directory, false)
+          domains.checkWritable()
+          if (native.pruneLockOnlyAt(pin, CONTEXT_LOCK)) removed++
+        } catch (error) {
+          uncertain = uncertainRelease(error)
+          throw error
+        } finally {
+          if (!uncertain) {
+            if (pin !== undefined) native.release(pin)
+            domains.close()
+          }
+        }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (uncertainRelease(error)) throw error
+        if (code !== 'ERR_LEASE_BUSY' && code !== 'ERR_LEASE_MISSING') report(error)
+      }
+    }
+  } finally {
+    entries.closeSync()
+  }
+  return removed
+}
+
 export function acquireUpdateLaunchRecordLock(native: DomainNative, pin: unknown): unknown {
   return native.acquireAt(pin, CONTEXT_LOCK, true)
 }

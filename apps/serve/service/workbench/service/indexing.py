@@ -430,14 +430,18 @@ class PdfIndexService:
     def _run_parser(
         self, payload: bytes, arguments: tuple[str, ...], timeout: int
     ) -> tuple[int, bytes]:
+        lastResult: tuple[int, bytes] | None = None
         for attempt in range(PDF_WORKER_MAXIMUM_ATTEMPTS):
-            returncode, output = self._run_parser_once(payload, arguments, timeout)
+            lastResult = self._run_parser_once(payload, arguments, timeout)
+            returncode, output = lastResult
             if not pdf_worker_crashed(returncode):
                 return returncode, output
             LOGGER.warning(
                 "PDF index worker crashed: attempt=%s returncode=%s", attempt + 1, returncode
             )
-        return returncode, output
+        if lastResult is None:
+            raise ValueError(PARSER_FAILED)
+        return lastResult
 
     def _run_parser_once(
         self, payload: bytes, arguments: tuple[str, ...], timeout: int

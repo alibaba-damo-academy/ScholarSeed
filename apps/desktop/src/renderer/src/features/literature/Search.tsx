@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
+import { WebNavigationContext } from '../../contracts/navigation'
 import type { LiteratureSearchEvent, LiteratureSearchTask } from '../../contracts/literature'
 import { useApp } from '../../store'
 import { EmptyState, Spinner } from '../../components/ui'
-import { JoinLibraryMenu } from './JoinMenu'
+import { JoinLibraryBatch, JoinLibraryMenu } from './JoinMenu'
 import { SearchSurface, type LiteratureSearchViewProps } from './Matches'
+import { saveBibtex } from './export'
 import { useJoinedPapers } from './joinState'
+import { useLibraryStatusRevision } from './status'
 import {
   LiteratureApiError,
   listLiteratureSearches,
@@ -168,6 +171,7 @@ function ScopedLiteratureSearchTab({
   }, [task?.id])
 
   const resultPapers = task?.result?.papers
+  const libraryRevision = useLibraryStatusRevision(projectId ?? '')
   // AI 检索页只认推荐理由, 摘要在投影里就被丢掉, 展示与入库都不会再读到它。
   const papers = useMemo(() => searchResultPapers(resultPapers ?? []), [resultPapers])
   const running = task?.status === 'pending' || task?.status === 'running'
@@ -180,7 +184,7 @@ function ScopedLiteratureSearchTab({
     return () => {
       active = false
     }
-  }, [papers, running, projectId])
+  }, [papers, running, projectId, libraryRevision])
   useEffect(() => {
     if (!running) return
     setNow(Date.now())
@@ -219,6 +223,7 @@ function ScopedLiteratureSearchTab({
 
 export function LiteratureSearchView(props: LiteratureSearchViewProps): React.JSX.Element {
   const { state } = useApp()
+  const openWebPage = React.useContext(WebNavigationContext)
   const receipts = useJoinedPapers()
   return (
     <SearchSurface
@@ -227,8 +232,10 @@ export function LiteratureSearchView(props: LiteratureSearchViewProps): React.JS
         projectId: state.homeSelectedProjectId ?? undefined,
         receipts,
         Join: JoinLibraryMenu,
+        Batch: JoinLibraryBatch,
+        saveBibtex: (bibtex) => saveBibtex(bibtex, window.scholarseed),
         openSource: async (_paper, url) => {
-          await window.scholarseed.openExternal(url)
+          openWebPage(url)
         },
       }}
     />

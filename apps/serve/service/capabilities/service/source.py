@@ -1,29 +1,17 @@
-"""从仓库内技能源码离线编译技能 pack —— 开源版取代 Skillhub 的构建输入。
-
-开源后技能源码随仓库一起开源（``skills/community/``），因此构建期不再需要 Skillhub
-的版本解析、ZIP 下载与安全审计证据。本模块提供与原 Skillhub 路径**同等强度**的
-完整性保证：
-
-- ``skills.lock.json`` 由仓库内源码**生成**（记录 slug/version/逐文件 sha256 与
-  mode），而不是记录 Hub 版本与扫描结果；
-- 编译走临时目录 + 原子替换，失败回滚；
-- exact-set 校验：产出集合必须与源码目录声明的一致，不多不少；
-- 恢复文件权限（普通 0644 / 可执行 0755）；
-- 生成 ``.scholarseed.json`` 产品元数据；
-- 全程离线：不联网、不读缓存 ZIP、不回退到任何外部来源。
-"""
+"""Compile repository skills offline and record the installed payload for verification."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import stat
 import sys
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -65,14 +53,13 @@ from service.capabilities.service.skills import (
     SKILL_PRODUCT_METADATA_FILE,
     SKILL_SOURCE_BUILTIN,
 )
-from service.platform.storage import filesystem_path
+from service.platform.storage import filesystem_path, open_directory
 
 # 开源仓库内技能源码根：<repo>/skills/community。
 # service/capabilities/service/source.py -> service/capabilities/service
 #   -> service/capabilities -> service -> apps/serve -> apps -> <repo root>
 REPO_ROOT = Path(__file__).resolve().parents[5]
 COMMUNITY_SKILLS_DIR = REPO_ROOT / "skills" / "community"
-SKILLS_LOCK_FILE = REPO_ROOT / "skills" / "skills.lock.json"
 PRODUCT_DEFAULTS_DIR = Path(__file__).resolve().parents[1] / "defaults"
 
 WINDOWS_PLATFORM = "win32"
@@ -121,8 +108,18 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _installed_mode(mode: int) -> int:
+    if sys.platform == WINDOWS_PLATFORM:
+        return FILE_MODE
+    return mode
+
+
 def _portable_mode(path: Path) -> int:
-    return EXECUTABLE_MODE if path.stat().st_mode & stat.S_IXUSR else FILE_MODE
+    return _payload_mode(path.stat().st_mode)
+
+
+def _payload_mode(mode: int) -> int:
+    return _installed_mode(EXECUTABLE_MODE if mode & stat.S_IXUSR else FILE_MODE)
 
 
 def _included(path: Path, root: Path) -> bool:
@@ -133,6 +130,16 @@ def _included(path: Path, root: Path) -> bool:
         return False
     # 产品元数据由编译器生成，源码不得自带（否则会被静默覆盖而无人察觉）。
     return path.relative_to(root).as_posix() != SKILL_PRODUCT_METADATA_FILE
+
+
+def _payload_paths(root: Path) -> Iterator[Path]:
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        if path.is_symlink() or path.is_junction():
+            raise SkillPackError(f"技能源码不得包含符号链接: {path.relative_to(root)}")
+        if not path.is_file() and not path.is_dir():
+            raise SkillPackError(f"技能源码不得包含特殊文件: {path.relative_to(root)}")
+        if path.is_file() and _included(path, root):
+            yield path
 
 
 def skill_source_files(
@@ -146,15 +153,12 @@ def skill_source_files(
 
     root = filesystem_path(directory).resolve()
     rows: list[SkillSourceFile] = []
-    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        if path.is_symlink() or path.is_junction():
-            raise SkillPackError(f"技能源码不得包含符号链接: {path.relative_to(root)}")
-        if not path.is_file() and not path.is_dir():
-            raise SkillPackError(f"技能源码不得包含特殊文件: {path.relative_to(root)}")
-        if not path.is_file() or not _included(path, root):
-            continue
+    for path in _payload_paths(root):
         mode = _portable_mode(path) if file_modes is None else file_modes.get(path)
-        if type(mode) is not int or mode not in {FILE_MODE, EXECUTABLE_MODE}:
+        if (not isinstance(mode, int) or isinstance(mode, bool)) or mode not in {
+            FILE_MODE,
+            EXECUTABLE_MODE,
+        }:
             raise SkillPackError(f"missing or invalid frozen source mode: {path}")
         rows.append(
             SkillSourceFile(
@@ -319,21 +323,31 @@ def _payload_digest(files: list[dict[str, Any]], dependencies: Mapping[str, Any]
 def source_lock(
     source: Path = COMMUNITY_SKILLS_DIR, *, file_modes: Mapping[Path, int] | None = None
 ) -> dict[str, Any]:
-    """由仓库内技能源码生成 lock —— 开源版构建输入的权威记录。
-
-    与 Skillhub 版 lock 的区别：``source`` 为 ``repository``，不含 Hub 版本 id、
-    ZIP 摘要与安全扫描证据；改为记录逐文件 sha256/size/mode，用于打包期冻结校验
-    与产物比对。
+    """按当前仓库源码生成供独立源码验证或公开投影使用的记录。
 
     `file_modes` 须覆盖技能源码和产品默认文件两棵树中纳入清单的文件，
     键为 `filesystem_path(...).resolve()` 得到的绝对路径。
     """
 
     root = filesystem_path(source.expanduser()).resolve()
-    registry = json.loads((root.parent / SKILL_REGISTRY_FILE).read_bytes())
+    return _inventory(root, _dependency_policies(root), file_modes=file_modes)
+
+
+def _dependency_policies(source: Path) -> dict[str, Any]:
+    registry = json.loads((source.parent / SKILL_REGISTRY_FILE).read_bytes())
     policies = registry.get(SKILL_DEPENDENCIES_KEY) if isinstance(registry, dict) else None
     if not isinstance(policies, dict):
         raise SkillPackError(f"{SKILL_REGISTRY_FILE} must declare skill dependencies")
+    return policies
+
+
+def _inventory(
+    root: Path,
+    policies: Mapping[str, Any],
+    *,
+    staged: bool = False,
+    file_modes: Mapping[Path, int] | None = None,
+) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for name in discover_source_skills(root):
         directory = root / name
@@ -346,6 +360,11 @@ def source_lock(
         if name not in policies:
             raise SkillPackError(f"{name}: missing dependency policy in {SKILL_REGISTRY_FILE}")
         dependencies = declaration(policies[name])
+        payload = (
+            skill_source_files(directory)
+            if staged
+            else _effective_files(directory, name, file_modes=file_modes)
+        )
         files = [
             {
                 "path": row.relative,
@@ -353,7 +372,7 @@ def source_lock(
                 "sha256": row.sha256,
                 "mode": EXECUTABLE_MODE if row.executable else FILE_MODE,
             }
-            for row in _effective_files(directory, name, file_modes=file_modes)
+            for row in payload
         ]
         rows.append(
             {
@@ -445,12 +464,12 @@ def load_source_lock(path: Path) -> dict[str, Any]:
 
 
 def write_source_lock(
-    destination: Path = SKILLS_LOCK_FILE,
+    destination: Path,
     source: Path = COMMUNITY_SKILLS_DIR,
     *,
     file_modes: Mapping[Path, int] | None = None,
 ) -> Path:
-    """把源码 lock 原子写入磁盘，供打包期冻结与产物比对使用。"""
+    """将当前源码记录写入显式路径，供离线验证使用。"""
 
     destination = filesystem_path(destination.expanduser())
     atomic_write(destination, json_bytes(source_lock(source, file_modes=file_modes)))
@@ -483,7 +502,7 @@ def product_metadata_from_source(directory: Path, row: Mapping[str, Any]) -> byt
 
 
 def verify_compiled_skill(directory: Path) -> Mapping[str, Any]:
-    """Authorize exact compiled bytes against their build-frozen source inventory."""
+    """Compare a local skill with its build inventory for support diagnostics."""
     directory = filesystem_path(directory)
     if directory.is_symlink() or directory.is_junction():
         raise SkillPackError("bundled skill directory cannot be a link")
@@ -501,29 +520,44 @@ def verify_compiled_skill(directory: Path) -> Mapping[str, Any]:
         or row["payload_sha256"] != metadata.get("payload_sha256")
     ):
         raise SkillPackError("bundled skill inventory identity differs")
-    expected = [(item["path"], item["size"], item["sha256"]) for item in _pack_file_records(row)]
-    actual = [(item.relative, item.size, item.sha256) for item in skill_source_files(directory)]
-    if actual != expected:
-        raise SkillPackError("bundled skill integrity mismatch")
+    expected = {item["path"]: (item["size"], item["sha256"]) for item in _pack_file_records(row)}
+    actual = {item.relative: (item.size, item.sha256) for item in skill_source_files(directory)}
+    differences = [
+        f"{path} ({'added' if path not in expected else 'missing' if path not in actual else 'changed'})"
+        for path in sorted(expected.keys() | actual.keys())
+        if expected.get(path) != actual.get(path)
+    ]
+    if differences:
+        raise SkillPackError(f"bundled skill integrity mismatch: {', '.join(differences)}")
     return row
 
 
-def _copy_payload(origin: Path, destination: Path, files: tuple[SkillSourceFile, ...]) -> None:
-    for row in files:
-        target = destination / row.relative
+def _copy_payload(origin: Path, destination: Path) -> None:
+    for path in _payload_paths(origin):
+        relative = path.relative_to(origin)
+        target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes((origin / row.relative).read_bytes())
-        target.chmod(EXECUTABLE_MODE if row.executable else FILE_MODE)
+        try:
+            with (
+                closing(open_directory(origin, relative.parts[:-1])) as directory,
+                os.fdopen(directory.open_regular(relative.name), "rb") as source,
+                target.open("xb") as output,
+            ):
+                shutil.copyfileobj(source, output)
+                mode = _payload_mode(os.fstat(source.fileno()).st_mode)
+        except FileExistsError as exc:
+            raise SkillPackError(f"产品默认文件不得覆盖技能源码: {relative.as_posix()}") from exc
+        target.chmod(mode)
     for path in sorted(destination.rglob("*")):
         if path.is_dir():
             path.chmod(DIRECTORY_MODE)
 
 
 def _copy_product_defaults(name: str, destination: Path) -> None:
-    origin = filesystem_path(PRODUCT_DEFAULTS_DIR.expanduser()) / name
+    origin = filesystem_path(PRODUCT_DEFAULTS_DIR.expanduser()).resolve() / name
     if not origin.is_dir():
         return
-    _copy_payload(origin, destination, skill_source_files(origin))
+    _copy_payload(origin, destination)
 
 
 @contextmanager
@@ -536,12 +570,12 @@ def _pack_staging(parent: Path) -> Iterator[Path]:
     # rename preserves that ACL on descendants, and chmod cannot restore it.
     # This build staging contains public skill assets: inherit the destination
     # parent's policy at creation, without changing any existing object's ACL.
-    temporary = parent / f"{PACK_STAGING_PREFIX}{uuid4().hex}"
-    temporary.mkdir(mode=DIRECTORY_MODE)
+    staging = parent / f"{PACK_STAGING_PREFIX}{uuid4().hex}"
+    staging.mkdir(mode=DIRECTORY_MODE)
     try:
-        yield temporary
+        yield staging
     finally:
-        shutil.rmtree(temporary)
+        shutil.rmtree(staging)
 
 
 def compile_source_skills(
@@ -567,7 +601,7 @@ def compile_source_skills(
             for child in target_root.iterdir()
         ):
             raise SkillPackError("拒绝替换含非技能数据的目标目录")
-    lock = source_lock(root)
+    policies = _dependency_policies(root)
     if lock_path is not None:
         lock_path = filesystem_path(lock_path.expanduser())
         lock_destination = lock_path.resolve()
@@ -579,25 +613,26 @@ def compile_source_skills(
             or lock_destination == root.parent / SKILL_REGISTRY_FILE
         ):
             raise SkillPackError("技能 lock 输出不得覆盖源码、依赖政策或技能 pack")
-    names = frozenset(row["slug"] for row in lock["skills"])
+    names = discover_source_skills(root)
     target_root.parent.mkdir(parents=True, exist_ok=True)
     with _pack_staging(target_root.parent) as temporary:
         pack = temporary / target_root.name
         pack.mkdir()
-        for row in lock["skills"]:
-            origin = root / row["slug"]
-            directory = pack / row["slug"]
+        for name in names:
+            directory = pack / name
             directory.mkdir()
-            files = skill_source_files(origin)
-            _copy_payload(origin, directory, files)
-            _copy_product_defaults(row["slug"], directory)
+            _copy_payload(root / name, directory)
+            _copy_product_defaults(name, directory)
+        inventory = _inventory(pack, policies, staged=True)
+        for row in inventory["skills"]:
+            directory = pack / row["slug"]
             manifest_path = directory / PACKAGE_MANIFEST
             manifest_path.write_bytes(_bundled_manifest(row))
             manifest_path.chmod(FILE_MODE)
             metadata_path = directory / SKILL_PRODUCT_METADATA_FILE
-            metadata_path.write_bytes(product_metadata_from_source(origin, row))
+            metadata_path.write_bytes(product_metadata_from_source(directory, row))
             metadata_path.chmod(FILE_MODE)
-        validation = _verify_pack(lock, pack)
+        validation = validate_bundled_skills(pack, expected=frozenset(names))
         if not validation.ok:
             raise SkillPackError(str(dict(validation.errors)))
         previous = temporary / "previous"
@@ -610,12 +645,12 @@ def compile_source_skills(
                 previous.rename(target_root)
             raise
     if lock_path is not None:
-        atomic_write(lock_path, json_bytes(lock))
+        atomic_write(lock_path, json_bytes(inventory))
     return SkillPackBuild(
         packages=tuple(
-            f"{row['namespace']}/{row['slug']}@{row['version']}" for row in lock["skills"]
+            f"{row['namespace']}/{row['slug']}@{row['version']}" for row in inventory["skills"]
         ),
-        skills=tuple(sorted(names)),
+        skills=names,
     )
 
 
@@ -667,7 +702,7 @@ def _verify_pack(lock: Mapping[str, Any], target: Path) -> SkillPackValidation:
             expected[f"{row['slug']}/{item['path']}"] = (
                 item["sha256"],
                 item["size"],
-                item["mode"],
+                _installed_mode(item["mode"]),
             )
         directory = root / row["slug"]
         if (directory / SKILL_MANIFEST_NAME).is_file():
@@ -708,7 +743,6 @@ def _verify_pack(lock: Mapping[str, Any], target: Path) -> SkillPackValidation:
 
 __all__ = [
     "COMMUNITY_SKILLS_DIR",
-    "SKILLS_LOCK_FILE",
     "SkillSourceFile",
     "compile_source_skills",
     "discover_source_skills",

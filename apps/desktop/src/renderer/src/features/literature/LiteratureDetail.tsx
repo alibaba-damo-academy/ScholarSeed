@@ -1,9 +1,11 @@
-import { FileText, Info, Paperclip, SquarePen, StickyNote, Trash } from 'lucide-react'
+import { FileText, Info, Paperclip, StickyNote, Trash } from 'lucide-react'
 import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
+import { createPortal } from 'react-dom'
 
 import { createFormatters } from '../../../../localization/format'
 import { FileFormatIcon } from '../../components/primitive'
+import { focusComposer } from '../../reference'
 import type { LiteratureDetail as Detail } from '../../contracts/literature'
 import {
   isAttachmentAvailable,
@@ -33,20 +35,17 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  semanticTagColor,
-  semanticTagColorFor,
   SheetContent,
   Spinner,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
-  Tag,
-  Textarea,
   Tooltip,
   useToast,
 } from '../../components/ui'
 import { Icon } from '../../icons'
+import { Reading } from '../../components/business/Reading'
 import { useApp } from '../../store'
 import {
   LiteratureApiError,
@@ -82,36 +81,19 @@ import {
   type PaperMetaPayload,
 } from './metadata'
 import { LiteratureNotes } from './Notes'
-import { TagPicker } from './Tags'
+import { Information } from './Information'
 import { beginDetailRead } from './detail'
 import { AttachmentImportDialog } from './Import'
-import { latestLiteratureSummary, literatureCollections } from './projection'
+import { latestLiteratureSummary } from './projection'
 import { literatureTasks } from './tasks'
-import { loadPdfRecords, subscribePdfRecords, type PdfRecordSnapshot } from '../workbench/api'
+import { subscribePdfRecords, type PdfRecordSnapshot } from '../workbench/api'
 import type { LiteratureDocumentSource } from '../../contracts/workbench'
 
-const BIBLIOGRAPHY_TYPES = [
-  'article',
-  'inproceedings',
-  'book',
-  'incollection',
-  'techreport',
-  'phdthesis',
-  'mastersthesis',
-  'proceedings',
-  'inbook',
-  'manual',
-  'unpublished',
-  'booklet',
-  'misc',
-]
 const DETAIL_SHEET_CLASS = [
   '!absolute !m-0 !w-[min(var(--vds-sheet-side-width),100%)] !min-w-0 flex-none flex flex-col text-[var(--vds-text-primary)]',
   '!gap-0 !overflow-hidden !rounded-none !border-0 !bg-[var(--vds-bg-gray-default)] !p-0',
   '!shadow-[var(--vds-shadow-3-left)]',
 ].join(' ')
-const DETAIL_VALUE_TEXT_CLASS =
-  'min-w-0 overflow-hidden whitespace-normal break-words text-[length:var(--vds-font-body-lv2)] font-normal leading-[22px] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]'
 const DETAIL_VALUE_ROW_CLASS =
   'flex items-start gap-[var(--vds-library-detail-value-gap)] border-b border-[var(--vds-border-default)] py-[var(--vds-library-detail-value-padding-block)] text-[length:var(--vds-font-body-lv2)]'
 const DETAIL_VALUE_LABEL_CLASS =
@@ -122,8 +104,6 @@ const DETAIL_SECTION_CLASS =
   'mx-[var(--vds-library-detail-section-margin-inline)] border-b border-[var(--vds-border-default)] px-[var(--vds-library-detail-section-padding-inline)] py-[var(--vds-library-detail-section-padding-block)]'
 const DETAIL_SECTION_HEADING_CLASS =
   'mb-[var(--vds-library-detail-section-heading-margin-bottom)] mt-0 text-[length:var(--vds-font-body-lv2)]'
-const DETAIL_SECTION_CONTENT_CLASS =
-  'flex flex-wrap gap-[var(--vds-library-detail-section-content-gap)]'
 const DETAIL_HEADER_CLASS =
   'flex items-start gap-[var(--vds-space-2)] border-b border-[var(--vds-border-default)] px-[var(--vds-library-detail-header-padding-inline)] pt-[var(--vds-library-detail-header-padding-top)] pb-[var(--vds-library-detail-header-padding-bottom)]'
 const DETAIL_HEADER_CONTENT_CLASS =
@@ -135,51 +115,11 @@ const DETAIL_LOADING_CLASS =
   'grid min-h-0 place-items-center p-[var(--vds-library-detail-loading-padding)]'
 const DETAIL_BODY_CLASS =
   'overflow-auto px-[var(--vds-library-detail-body-padding-inline)] pt-[var(--vds-library-detail-body-padding-top)] pb-[var(--vds-space-6)]'
-type EditableField = keyof Pick<
-  Detail,
-  | 'citation_key'
-  | 'item_type'
-  | 'title'
-  | 'subtitle'
-  | 'creators_display'
-  | 'publication_display'
-  | 'year'
-  | 'published_date'
-  | 'abstract'
-  | 'doi'
-  | 'arxiv'
-  | 'isbn'
-  | 'url'
-  | 'volume'
-  | 'number'
-  | 'pages'
-  | 'publisher'
-  | 'address'
->
-const API_FIELDS: Record<EditableField, string> = {
-  citation_key: 'citation_key',
-  item_type: 'item_type',
-  title: 'title',
-  subtitle: 'subtitle',
-  creators_display: 'authors',
-  publication_display: 'publication',
-  year: 'year',
-  published_date: 'published_date',
-  abstract: 'abstract',
-  doi: 'doi',
-  arxiv: 'arxiv',
-  isbn: 'isbn',
-  url: 'url',
-  volume: 'volume',
-  number: 'number',
-  pages: 'pages',
-  publisher: 'publisher',
-  address: 'address',
-}
 const DETAIL_TAB = {
   info: 'info',
   attachments: 'attachments',
   notes: 'notes',
+  reading: 'reading',
 } as const
 type DetailTab = (typeof DETAIL_TAB)[keyof typeof DETAIL_TAB]
 /**
@@ -188,7 +128,7 @@ type DetailTab = (typeof DETAIL_TAB)[keyof typeof DETAIL_TAB]
  * nonce 让「面板已经开着同一条文献」时也能重新触发 —— 那时 id 不变, 只有 nonce 变。
  */
 export interface LiteratureDetailIntent {
-  action: 'attachment' | 'note'
+  action: 'attachment' | 'note' | 'reading'
   nonce: number
 }
 type DetailFailureKind = 'fulltext' | 'upload'
@@ -459,19 +399,18 @@ function AttachmentMarks({
   }
   useEffect(() => {
     let active = true
-    const unsubscribe = subscribePdfRecords(source, (records) => {
-      if (active) {
-        setSnapshot(records)
-        setLoaded(true)
-      }
-    })
-    void loadPdfRecords(source)
-      .then((records) => {
-        if (active) setSnapshot(records)
-      })
-      .finally(() => {
+    const unsubscribe = subscribePdfRecords(
+      source,
+      (records) => {
+        if (active) {
+          setSnapshot(records)
+          setLoaded(true)
+        }
+      },
+      () => {
         if (active) setLoaded(true)
-      })
+      }
+    )
     return () => {
       active = false
       unsubscribe()
@@ -569,96 +508,6 @@ function AttachmentMarks({
         })
       ) : (
         <small className={DETAIL_MUTED_CLASS}>{literature('attachment.noMarks')}</small>
-      )}
-    </div>
-  )
-}
-
-function EditableValue({
-  field,
-  item,
-  label,
-  multiline = false,
-  focusNonce = 0,
-  trailing,
-  onSave,
-}: {
-  field: EditableField
-  item: Detail
-  label: string
-  multiline?: boolean
-  focusNonce?: number
-  trailing?: React.ReactNode
-  onSave: (update: LiteratureUpdate) => Promise<void>
-}): React.JSX.Element {
-  const { t: literature } = useTranslation('literature')
-  const original = item[field]
-  const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState(String(original ?? ''))
-  const wrapper = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!editing) setValue(String(original ?? ''))
-  }, [editing, original])
-  // 补充标识入口要把用户带到对应编辑区: 进入编辑态 (输入框自带 autoFocus),
-  // 滚动到可视区, 但不额外加外层高亮框。
-  useEffect(() => {
-    if (!focusNonce) return
-    setEditing(true)
-    wrapper.current?.scrollIntoView({ block: 'center' })
-  }, [focusNonce])
-  const commit = async (): Promise<void> => {
-    if (!editing) return
-    setEditing(false)
-    const normalized = field === 'year' ? (value.trim() ? Number(value) : null) : value.trim()
-    if (normalized === original || (normalized === '' && original == null)) return
-    await onSave({ fields: { [API_FIELDS[field]]: normalized } })
-  }
-  return (
-    <div ref={wrapper} className={DETAIL_VALUE_ROW_CLASS}>
-      <span
-        className={`${DETAIL_VALUE_LABEL_CLASS}${multiline ? ' max-w-[var(--vds-library-detail-label-wide-max-width)]' : ''}`}
-      >
-        {label}
-      </span>
-      {editing ? (
-        multiline ? (
-          <Textarea
-            autoFocus
-            aria-label={literature('detail.edit', { label })}
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            onBlur={() => void commit()}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') setEditing(false)
-            }}
-          />
-        ) : (
-          <Input
-            autoFocus
-            aria-label={literature('detail.edit', { label })}
-            type={field === 'year' ? 'number' : 'text'}
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            onBlur={() => void commit()}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') void commit()
-              if (event.key === 'Escape') setEditing(false)
-            }}
-          />
-        )
-      ) : (
-        <div className="flex min-w-0 w-full flex-1 items-start gap-[var(--vds-space-2)]">
-          <Button
-            variant="ghost"
-            size="content"
-            className="lit-detail-edit flex-1 w-auto min-w-0 min-h-[var(--vds-library-detail-edit-min-height)] p-[var(--vds-library-detail-edit-padding)] items-start justify-between text-left [&_svg]:mt-[var(--vds-space-1)] [&_svg]:opacity-0 hover:[&_svg]:opacity-[var(--vds-opacity-full)] focus-visible:[&_svg]:opacity-[var(--vds-opacity-full)]"
-            onClick={() => setEditing(true)}
-          >
-            <strong className={DETAIL_VALUE_TEXT_CLASS}>{String(original ?? '') || '—'}</strong>
-            <SquarePen size={12} />
-          </Button>
-          {trailing}
-        </div>
       )}
     </div>
   )
@@ -835,57 +684,6 @@ function RelationDialog({
   )
 }
 
-/**
- * 标签区块: 已关联标签以 chip 展示, × 仅解除与当前文献的关联 (不删除标签);
- * 右上角 + 打开 popover, 勾选即关联/取消, 底部输入回车创建新标签并直接关联。
- */
-function TagSection({
-  item,
-  tags,
-  onCreate,
-  onSave,
-}: {
-  item: Detail
-  tags: LiteratureFacet[]
-  onCreate: (name: string) => Promise<void>
-  onSave: (update: LiteratureUpdate) => Promise<void>
-}): React.JSX.Element {
-  const { t: literature } = useTranslation('literature')
-  const linked = new Set(item.tags.map((tag) => tag.id))
-  const toggle = (target: { id: string }): Promise<void> => {
-    const next = item.tags.filter((tag) => tag.id !== target.id).map((tag) => tag.id)
-    if (!linked.has(target.id)) next.push(target.id)
-    return onSave({ tag_ids: next })
-  }
-  return (
-    <section className={DETAIL_SECTION_CLASS}>
-      <div className="flex flex-wrap items-center justify-between gap-[var(--vds-library-detail-section-content-gap)]">
-        <h3 className={`${DETAIL_SECTION_HEADING_CLASS} !m-0`}>{literature('panel.tags')}</h3>
-        <TagPicker tags={tags} linked={linked} onToggle={toggle} onCreate={onCreate} />
-      </div>
-      <div className={DETAIL_SECTION_CONTENT_CLASS}>
-        {item.tags.length ? (
-          item.tags.map((value) => {
-            const facet = tags.find((tag) => tag.id === value.id || tag.name === value.name)
-            return (
-              <Tag
-                key={value.id}
-                closeLabel={literature('detail.removeTag')}
-                color={semanticTagColor(facet?.color) ?? semanticTagColorFor(facet?.id ?? value.id)}
-                onClose={() => toggle(value)}
-              >
-                {value.name}
-              </Tag>
-            )
-          })
-        ) : (
-          <small className={DETAIL_MUTED_CLASS}>{literature('panel.noTags')}</small>
-        )}
-      </div>
-    </section>
-  )
-}
-
 export function LiteratureDetail({
   id,
   attachmentId,
@@ -893,7 +691,11 @@ export function LiteratureDetail({
   onClose,
   onIntentConsumed,
   onItemUpdated,
+  presentation = 'detail',
+  headerActionsHost,
 }: {
+  headerActionsHost?: HTMLElement | null
+  presentation?: 'detail' | 'reader'
   id: string | null
   attachmentId: string | null
   intent?: LiteratureDetailIntent | null
@@ -904,11 +706,19 @@ export function LiteratureDetail({
 }): React.JSX.Element | null {
   const { t: literature } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
+  const { t: pdf } = useTranslation('pdf')
   const { act, state } = useApp()
   const { toast } = useToast()
   const format = createFormatters(state.lang)
-  const projectId = state.homeSelectedProjectId ?? undefined
+  const projectId =
+    presentation === 'reader' ? undefined : (state.homeSelectedProjectId ?? undefined)
   const [item, setItem] = useState<Detail | null>(null)
+  const readingAttachment =
+    item?.id === id &&
+    isAttachmentAvailable(item?.primary_attachment) &&
+    item?.primary_attachment?.media_type === 'application/pdf'
+      ? item.primary_attachment
+      : null
   const [loadRevision, setLoadRevision] = useState(0)
   const [collections, setCollections] = useState<LiteratureFacet[]>([])
   const [tags, setTags] = useState<LiteratureFacet[]>([])
@@ -959,6 +769,7 @@ export function LiteratureDetail({
     if (!id) return
     setItem(null)
     setDetailTab(DETAIL_TAB.info)
+    setRelation(null)
     setError(null)
     setArxivError(null)
     setFailureKind('fulltext')
@@ -976,7 +787,7 @@ export function LiteratureDetail({
           getLiteratureProjects(),
         ]),
       ([detail, facets, projectResult]) => {
-        setItem(detail)
+        setItem((current) => (current ? latestLiteratureSummary(current, detail) : detail))
         setCollections(facets.collections)
         setTags(facets.tags)
         setCopyProject((current) => {
@@ -1018,7 +829,7 @@ export function LiteratureDetail({
       () =>
         Promise.all([getLiterature(id, projectId), getLiteratureFacets({ project_id: projectId })]),
       ([detail, facets]) => {
-        setItem(detail)
+        setItem((current) => (current ? latestLiteratureSummary(current, detail) : detail))
         setCollections(facets.collections)
         setTags(facets.tags)
         setError(null)
@@ -1046,13 +857,24 @@ export function LiteratureDetail({
    */
   useEffect(() => {
     if (!id || !intent) return
-    setDetailTab(intent.action === 'note' ? DETAIL_TAB.notes : DETAIL_TAB.attachments)
+    setDetailTab(
+      intent.action === 'reading'
+        ? DETAIL_TAB.reading
+        : intent.action === 'note'
+          ? DETAIL_TAB.notes
+          : DETAIL_TAB.attachments
+    )
     setPendingIntent(intent)
   }, [id, intent])
   const consumeIntent = useCallback((): void => {
     setPendingIntent(null)
     onIntentConsumed?.()
   }, [onIntentConsumed])
+  useEffect(() => {
+    if (item?.id !== id || detailTab !== DETAIL_TAB.reading) return
+    if (!readingAttachment) setDetailTab(DETAIL_TAB.info)
+    if (pendingIntent?.action === 'reading') consumeIntent()
+  }, [id, pendingIntent, item, detailTab, readingAttachment, consumeIntent])
   // 附件意图要等 tab 真正挂上: 隐藏的 file input 只活在附件页里, 早一步 click 打在空 ref 上。
   useEffect(() => {
     if (pendingIntent?.action !== 'attachment' || !item) return
@@ -1067,7 +889,8 @@ export function LiteratureDetail({
    */
   useEffect(() => {
     if (!id || !item) return
-    const fulltext = literatureTasks.attach<Detail>(id, 'fulltext')
+    const fulltext =
+      presentation === 'reader' ? null : literatureTasks.attach<Detail>(id, 'fulltext')
     if (fulltext && !ownedTasks.current.has(fulltext)) {
       ownedTasks.current.add(fulltext)
       void fulltext.then(
@@ -1083,7 +906,7 @@ export function LiteratureDetail({
         (reason) => failMetadata.current(reason)
       )
     }
-  }, [id, projectId, item])
+  }, [id, projectId, item, presentation])
   if (!id) return null
   const fetchingArxiv = literatureTasks.isRunning(id, 'fulltext')
   const metadataRunning =
@@ -1108,16 +931,17 @@ export function LiteratureDetail({
   }
   const isCurrentDetail = (): boolean =>
     detailIdentity.current.id === id && detailIdentity.current.projectId === projectId
-  const save = async (update: LiteratureUpdate): Promise<void> => {
+  const save = async (update: LiteratureUpdate): Promise<boolean> => {
     try {
       setError(null)
       const updated = await queueLiteratureUpdate(update)
-      if (!updated) return
+      if (!updated) return false
       acceptUpdatedItem(updated)
       setRelation(null)
       if (updateAffectsPanel(update)) catalogue.reloadPanel()
+      return true
     } catch (reason) {
-      if (!isCurrentDetail()) return
+      if (!isCurrentDetail()) return false
       setError(
         literatureErrorMessage(
           reason instanceof LiteratureApiError ? reason.failure.code : undefined,
@@ -1125,29 +949,22 @@ export function LiteratureDetail({
           'detail.saveFailed'
         )
       )
+      return false
     }
   }
-  const editable = (field: EditableField, label: string, multiline = false): React.JSX.Element => (
-    <EditableValue
-      key={field}
-      field={field}
-      item={item as Detail}
-      label={label}
-      multiline={multiline}
-      onSave={save}
-    />
-  )
   /** 创建标签后立刻关联到当前文献; 创建是全库操作, 关联失败不影响标签本身已存在。 */
   const createTag = async (name: string): Promise<void> => {
     try {
       await createLiteratureTag(name)
       const facets = await getLiteratureFacets({ project_id: projectId })
+      if (!isCurrentDetail()) return
       setTags(facets.tags)
       const created = facets.tags.find((tag) => tag.name === name)
       if (created && item && !item.tags.some((tag) => tag.id === created.id)) {
         await save({ tag_ids: [...item.tags.map((tag) => tag.id), created.id] })
       }
     } catch (reason) {
+      if (!isCurrentDetail()) return
       setError(
         literatureErrorMessage(
           reason instanceof LiteratureApiError ? reason.failure.code : undefined,
@@ -1463,6 +1280,124 @@ export function LiteratureDetail({
       <Spinner aria-label={literature('detail.loading')} />
     </div>
   )
+  const information = item ? (
+    <Information
+      key={JSON.stringify([item.id, projectId])}
+      item={item}
+      projectId={projectId}
+      tags={tags}
+      identifierFocus={identifierFocus}
+      onRelation={setRelation}
+      onCreateTag={createTag}
+      onSave={save}
+    />
+  ) : null
+  const relationDialog = item ? (
+    <RelationDialog
+      facets={relation === 'projects' ? projects : relation === 'collections' ? collections : tags}
+      item={item}
+      kind={relation}
+      projectScoped={Boolean(projectId)}
+      onClose={() => setRelation(null)}
+      onSave={async (update) => {
+        await save(
+          projectId && update.collection_ids
+            ? { project_collection_ids: update.collection_ids }
+            : update
+        )
+      }}
+    />
+  ) : null
+  const metadataDialog = (
+    <Dialog
+      open={Boolean(syncMatch)}
+      onOpenChange={(open) => {
+        if (!open && !syncing) setSyncMatch(null)
+      }}
+    >
+      <DialogPortal>
+        <DialogContent className="max-h-[var(--vds-library-relation-dialog-max-height)] grid-rows-[auto_minmax(0,1fr)_auto]">
+          <DialogHeader>
+            <DialogTitle>{literature('detail.sync.confirmTitle')}</DialogTitle>
+            <DialogDescription>{literature('detail.sync.confirmDescription')}</DialogDescription>
+          </DialogHeader>
+          {syncMatch && item ? (
+            <div className="min-h-0 overflow-y-auto">
+              <PaperMetaDiffView
+                item={item}
+                rows={paperMetaDiff(syncMatch.fields, item)}
+                selected={syncPicked}
+                onToggle={(field, checked) =>
+                  setSyncPicked((current) => {
+                    const next = new Set(current)
+                    if (checked) next.add(field)
+                    else next.delete(field)
+                    return next
+                  })
+                }
+              />
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={syncing} onClick={() => setSyncMatch(null)}>
+              {ui('cancel')}
+            </Button>
+            <Button
+              loading={syncing}
+              disabled={syncPicked.size === 0}
+              onClick={() => {
+                if (syncMatch)
+                  void applyMetadata(
+                    paperMetaPickedFields(syncMatch.fields, syncPicked),
+                    syncMatch.bibType
+                  )
+              }}
+            >
+              {literature('detail.sync.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </DialogPortal>
+    </Dialog>
+  )
+  if (presentation === 'reader')
+    return (
+      <div
+        className="flex h-full min-h-0 min-w-0 flex-col bg-[var(--vds-bg-gray-default)]"
+        data-testid="reader-information"
+      >
+        {headerActionsHost && item
+          ? createPortal(
+              <Button
+                size="sm"
+                variant="outline"
+                loading={syncing || metadataRunning}
+                disabled={!syncQuery}
+                onClick={() => void syncMetadata()}
+              >
+                {literature('detail.sync.action')}
+              </Button>,
+              headerActionsHost
+            )
+          : null}
+        {!item ? (
+          detailStatus
+        ) : (
+          <div className={`${DETAIL_BODY_CLASS} min-h-0 flex-1 !px-[var(--vds-space-4)] !pt-0`}>
+            {error ? (
+              <Alert
+                tone="error"
+                title={literature('detail.saveFailed')}
+                description={error.detail ?? literature(error.key)}
+              />
+            ) : null}
+            {information}
+          </div>
+        )}
+        {relationDialog}
+        {metadataDialog}
+      </div>
+    )
   if (item && attachment)
     return (
       <SheetContent
@@ -1641,7 +1576,54 @@ export function LiteratureDetail({
           <TabsTrigger className={DETAIL_TAB_TRIGGER_CLASS} value={DETAIL_TAB.notes}>
             {literature('detail.tabs.notes')} {item?.note_count ?? 0}
           </TabsTrigger>
+          <TabsTrigger
+            className={DETAIL_TAB_TRIGGER_CLASS}
+            value={DETAIL_TAB.reading}
+            disabled={!readingAttachment}
+          >
+            {literature('reading.title')}
+          </TabsTrigger>
         </TabsList>
+        <TabsContent
+          className="min-h-0 overflow-hidden [&:not([hidden])]:flex flex-col"
+          value={DETAIL_TAB.reading}
+        >
+          {!item ? (
+            <Spinner aria-label={literature('detail.loading')} />
+          ) : readingAttachment ? (
+            <Reading
+              key={`${item.id}/${readingAttachment.id}`}
+              literatureId={item.id}
+              attachmentId={readingAttachment.id}
+              showSources={false}
+              onSaved={() => catalogue.reload()}
+              onChat={async (text) => {
+                const ready = await act.prepareContextConversation(
+                  {
+                    kind: 'literature',
+                    source_id: item.id,
+                    label: item.title,
+                    retention: 'next_turn',
+                    origin: 'explicit',
+                  },
+                  pdf('reading.summaryDraft', { literatureId: item.title, summary: text })
+                )
+                if (ready) requestAnimationFrame(() => focusComposer())
+                return ready
+              }}
+              onSource={(source, revision) => {
+                void act.openLiteratureAttachment(item.id, readingAttachment.id, source.page, {
+                  citation: { revision, pages: [{ page: source.page, quads: source.quads || [] }] },
+                })
+              }}
+            />
+          ) : (
+            <EmptyState
+              title={literature('reading.needsPdf')}
+              description={literature('reading.needsPdfDescription')}
+            />
+          )}
+        </TabsContent>
         <TabsContent className="min-h-0 overflow-hidden" value={DETAIL_TAB.notes}>
           {item ? (
             <LiteratureNotes
@@ -1877,187 +1859,13 @@ export function LiteratureDetail({
                   event.target.value = ''
                 }}
               />
-              <div className={DETAIL_VALUE_ROW_CLASS}>
-                <span className={DETAIL_VALUE_LABEL_CLASS}>{literature('detail.type')}</span>
-                <Select
-                  aria-label={literature('detail.type')}
-                  className="![padding-left:var(--vds-space-3)] min-w-0 flex-[1_1_auto]"
-                  value={item.bib_type}
-                  onValueChange={(value) => void save({ bib_type: value })}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder={literature('detail.chooseType')}>
-                      {item.bib_type
-                        ? literature(
-                            `detail.bibTypes.${item.bib_type}` as 'detail.bibTypes.article'
-                          )
-                        : undefined}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {BIBLIOGRAPHY_TYPES.map((type) => (
-                      <SelectItem key={type} value={type}>
-                        {literature(`detail.bibTypes.${type}` as 'detail.bibTypes.article')}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {editable('title', literature('columns.title'))}
-              {editable('subtitle', literature('columns.subtitle'))}
-              {editable('creators_display', literature('columns.creator'))}
-              {editable('publication_display', literature('columns.publication'))}
-              {editable('year', literature('columns.year'))}
-              {editable('published_date', literature('columns.published_date'))}
-              {editable('citation_key', literature('columns.citation_key'))}
-              <EditableValue
-                field="doi"
-                item={item}
-                label={literature('columns.doi')}
-                focusNonce={identifierFocus?.field === 'doi' ? identifierFocus.nonce : 0}
-                onSave={save}
-              />
-              <EditableValue
-                field="arxiv"
-                item={item}
-                label="arXiv"
-                focusNonce={identifierFocus?.field === 'arxiv' ? identifierFocus.nonce : 0}
-                onSave={save}
-              />
-              {editable('isbn', literature('columns.isbn'))}
-              {editable('url', literature('columns.url'))}
-              {editable('volume', literature('columns.volume'))}
-              {editable('number', literature('columns.number'))}
-              {editable('pages', literature('columns.pages'))}
-              {editable('publisher', literature('columns.publisher'))}
-              {editable('address', literature('columns.address'))}
-              {editable('abstract', literature('columns.abstract'), true)}
-              {!projectId ? (
-                <section className={DETAIL_SECTION_CLASS}>
-                  <h3 className={DETAIL_SECTION_HEADING_CLASS}>
-                    {literature('relations.linkedProjects')}
-                  </h3>
-                  <Button
-                    variant="ghost"
-                    className="lit-relation-trigger w-full h-auto min-h-[var(--vds-library-relation-trigger-min-height)] p-[var(--vds-space-1)] justify-between"
-                    onClick={() => setRelation('projects')}
-                  >
-                    <div className="flex-1 flex justify-start">
-                      {item.projects.length ? (
-                        item.projects.map((value) => (
-                          <Tag key={value.id} size="small">
-                            {value.name}
-                          </Tag>
-                        ))
-                      ) : (
-                        <small>{literature('relations.chooseProject')}</small>
-                      )}
-                    </div>
-                    <SquarePen size={12} />
-                  </Button>
-                </section>
-              ) : null}
-              <section className={DETAIL_SECTION_CLASS}>
-                <h3 className={DETAIL_SECTION_HEADING_CLASS}>
-                  {projectId ? literature('panel.collections') : literature('panel.custom')}
-                </h3>
-                <Button
-                  variant="ghost"
-                  className="lit-relation-trigger w-full h-auto min-h-[var(--vds-library-relation-trigger-min-height)] p-[var(--vds-space-1)] justify-between"
-                  onClick={() => setRelation('collections')}
-                >
-                  <div className="flex-1 flex justify-start">
-                    {literatureCollections(item, projectId).length ? (
-                      literatureCollections(item, projectId).map((value) => (
-                        <Tag key={value.id} size="small">
-                          {value.name}
-                        </Tag>
-                      ))
-                    ) : (
-                      <small>{literature('detail.chooseCollection')}</small>
-                    )}
-                  </div>
-                  <SquarePen size={12} />
-                </Button>
-              </section>
-              <TagSection
-                item={item}
-                tags={tags}
-                onCreate={(name) => createTag(name)}
-                onSave={save}
-              />
+              {information}
             </div>
           )}
         </TabsContent>
       </Tabs>
-      {item ? (
-        <RelationDialog
-          facets={
-            relation === 'projects' ? projects : relation === 'collections' ? collections : tags
-          }
-          item={item}
-          kind={relation}
-          projectScoped={Boolean(projectId)}
-          onClose={() => setRelation(null)}
-          onSave={(update) =>
-            save(
-              projectId && update.collection_ids
-                ? { project_collection_ids: update.collection_ids }
-                : update
-            )
-          }
-        />
-      ) : null}
-      <Dialog
-        open={Boolean(syncMatch)}
-        onOpenChange={(open) => {
-          if (!open && !syncing) setSyncMatch(null)
-        }}
-      >
-        <DialogPortal>
-          <DialogContent className="max-h-[var(--vds-library-relation-dialog-max-height)] grid-rows-[auto_minmax(0,1fr)_auto]">
-            <DialogHeader>
-              <DialogTitle>{literature('detail.sync.confirmTitle')}</DialogTitle>
-              <DialogDescription>{literature('detail.sync.confirmDescription')}</DialogDescription>
-            </DialogHeader>
-            {syncMatch && item ? (
-              <div className="min-h-0 overflow-y-auto">
-                <PaperMetaDiffView
-                  item={item}
-                  rows={paperMetaDiff(syncMatch.fields, item)}
-                  selected={syncPicked}
-                  onToggle={(field, checked) =>
-                    setSyncPicked((current) => {
-                      const next = new Set(current)
-                      if (checked) next.add(field)
-                      else next.delete(field)
-                      return next
-                    })
-                  }
-                />
-              </div>
-            ) : null}
-            <DialogFooter>
-              <Button variant="outline" disabled={syncing} onClick={() => setSyncMatch(null)}>
-                {ui('cancel')}
-              </Button>
-              <Button
-                loading={syncing}
-                disabled={syncPicked.size === 0}
-                onClick={() => {
-                  if (syncMatch)
-                    void applyMetadata(
-                      paperMetaPickedFields(syncMatch.fields, syncPicked),
-                      syncMatch.bibType
-                    )
-                }}
-              >
-                {literature('detail.sync.confirm')}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </DialogPortal>
-      </Dialog>
+      {relationDialog}
+      {metadataDialog}
     </SheetContent>
   )
 }

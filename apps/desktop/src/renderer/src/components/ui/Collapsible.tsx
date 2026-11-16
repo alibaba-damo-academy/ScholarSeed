@@ -178,7 +178,7 @@ CollapsibleTrigger.displayName = 'CollapsibleTrigger'
 export const CollapsibleContent = forwardRef<HTMLDivElement, CollapsibleContentProps>(
   ({ children, className, ...props }, ref) => {
     const context = useCollapsibleContext('CollapsibleContent')
-    const [expanded, setExpanded] = useState(false)
+    const [expanded, setExpanded] = useState(context.open)
     const contentRef = useCallback(
       (element: HTMLDivElement | null) => {
         if (element) {

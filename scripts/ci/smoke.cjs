@@ -7,6 +7,8 @@ const { atomicJSON, reportSha256, reportsIntact,
 const { judgeRun } = require('./verdict.cjs')
 const { checkNode } = require('../pre/toolchain.cjs')
 const { sourceSnapshot, sourceUnchanged } = require('../shared/source.cjs')
+const { budget } = require('./smoke.json')
+const { MAX_TOTAL_BUDGET_MS } = require('./budget.cjs')
 
 const ROOT = path.resolve(__dirname, '../..')
 const PROFILE = 'smoke'
@@ -40,10 +42,17 @@ function requireList(value, label) {
   return value
 }
 
+function validateBudget(value) {
+  if (!Number.isSafeInteger(value?.targetMs) || value.targetMs <= 0 || value.targetMs > MAX_TOTAL_BUDGET_MS) {
+    throw new Error(`invalid smoke total budget: expected an integer between 1 and ${MAX_TOTAL_BUDGET_MS}ms`)
+  }
+}
+
 function validateManifest(manifest) {
   if (manifest?.schemaVersion !== SCHEMA_VERSION || manifest.profile !== PROFILE ||
       !Array.isArray(manifest.entries) || !manifest.entries.length) throw new Error('invalid smoke manifest')
   requireList(manifest.platforms, 'platforms')
+  validateBudget(manifest.budget)
   const ids = new Set()
   const identities = new Set()
   for (const entry of manifest.entries) {
@@ -284,6 +293,10 @@ function runSmoke(argv = process.argv.slice(2)) {
   const executionStarted = Date.now()
   const prerequisitePublicationMs = executionStarted - preparationFinished
   for (const stage of planned) {
+    if (Date.now() - started > budget.targetMs) {
+      stages.push(recordBlockedStage(stage, directory, platform, commit, 'smoke_total_budget_exceeded'))
+      continue
+    }
     process.stderr.write(formatStageProgress(stage.id, 'starting'))
     let record
     let displayCases
@@ -354,15 +367,16 @@ function runSmoke(argv = process.argv.slice(2)) {
 
 function main(argv = process.argv.slice(2), { filesystem = fs, writeJSON = atomicJSON, execute = runSmoke,
   destination = resultPath(), log = message => process.stderr.write(message),
-  output = message => process.stdout.write(message) } = {}) {
-  const started = Date.now()
+  output = message => process.stdout.write(message), clock = Date.now } = {}) {
+  const started = clock()
+  validateBudget(budget)
   const lock = path.join(path.dirname(destination), LOCK_FILE)
   let descriptor
   try {
     filesystem.mkdirSync(path.dirname(destination), { recursive: true })
     descriptor = filesystem.openSync(lock, 'wx')
   } catch (error) {
-    log(formatSmokeSummary(null, { destination, exitCode: 1, durationMs: Date.now() - started }))
+    log(formatSmokeSummary(null, { destination, exitCode: 1, durationMs: clock() - started }))
     throw new Error(`smoke summary is locked by another run; inspect ${lock}: ${error.message}`)
   }
   let primary = null
@@ -371,6 +385,11 @@ function main(argv = process.argv.slice(2), { filesystem = fs, writeJSON = atomi
   let quality = null
   function snapshotSummary() {
     try { quality = JSON.parse(filesystem.readFileSync(destination, 'utf8')) } catch { quality = null }
+  }
+  function timeoutSummary(durationMs) {
+    return { ...quality, verdict: 'fail', failureCategory: FAILURE_CATEGORIES.timeout,
+      failures: [...(quality?.failures || []).filter(item => item.reason !== 'smoke_total_budget_exceeded'),
+        { reason: 'smoke_total_budget_exceeded', durationMs, targetMs: budget.targetMs }] }
   }
   function publishCleanupFailure() {
     let previous = {}
@@ -398,6 +417,11 @@ function main(argv = process.argv.slice(2), { filesystem = fs, writeJSON = atomi
       try { publishCleanupFailure() } catch (publicationError) { cleanupErrors.push(publicationError) }
     }
     snapshotSummary()
+    if (clock() - started > budget.targetMs) {
+      exitCode = 1
+      quality = timeoutSummary(clock() - started)
+      try { writeJSON(destination, quality) } catch (error) { cleanupErrors.push(error) }
+    }
     try { filesystem.unlinkSync(lock) } catch (error) {
       cleanupErrors.push(error)
       try { publishCleanupFailure() } catch (publicationError) { cleanupErrors.push(publicationError) }
@@ -407,13 +431,17 @@ function main(argv = process.argv.slice(2), { filesystem = fs, writeJSON = atomi
   if (cleanupErrors.length) {
     primary = new AggregateError([...(primary ? [primary] : []), ...cleanupErrors], 'smoke runner or cleanup failed')
   }
+  const durationMs = clock() - started
+  if (durationMs > budget.targetMs) {
+    exitCode = 1
+    quality = timeoutSummary(durationMs)
+  }
   const finalExitCode = primary ? 1 : exitCode
-  const durationMs = Date.now() - started
   log(formatStageProgress('smoke-total', `exit=${finalExitCode}`, durationMs))
   log(formatSmokeSummary(quality, { destination, exitCode: finalExitCode, durationMs }))
   output(`${JSON.stringify({ result: destination, verdict: finalExitCode === 0 ? 'pass' : 'fail', exitCode: finalExitCode, durationMs })}\n`)
   if (primary) throw primary
-  return exitCode
+  return finalExitCode
 }
 
 module.exports = { smokeJobs, validateManifest, selectionFor, validateCollection, validateCaseReport, validateNodeReport, smokeVerdict, resultPath, formatSmokeSummary, plannedStages, main }

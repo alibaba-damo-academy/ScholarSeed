@@ -17,6 +17,51 @@ export interface AppCandidate {
 
 const MAX_CANDIDATES = 10
 const HIDDEN_APPLICATION_PREFIX = '.'
+const NUMERIC_VERSION = /^\d+(?:\.\d+)*$/
+
+interface NativeCandidate extends AppCandidate {
+  readonly bundleId?: string
+  readonly bundleName?: string
+  readonly bundleDisplayName?: string
+  readonly executable?: string
+  readonly version?: string
+  readonly build?: string
+}
+
+function numericVersion(value: string | undefined): bigint[] | null {
+  return typeof value === 'string' && NUMERIC_VERSION.test(value)
+    ? value.split('.').map(BigInt)
+    : null
+}
+
+function compareVersion(left: bigint[], right: bigint[]): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const difference = (left[index] ?? 0n) - (right[index] ?? 0n)
+    if (difference !== 0n) return difference > 0n ? 1 : -1
+  }
+  return 0
+}
+
+function newestComparable(
+  candidates: NativeCandidate[],
+  field: 'version' | 'build'
+): NativeCandidate[] {
+  const versions = candidates.map((candidate) => numericVersion(candidate[field]))
+  if (versions.some((version) => version === null)) return candidates
+  const highest = versions.reduce((left, right) =>
+    compareVersion(left!, right!) >= 0 ? left : right
+  )!
+  return candidates.filter((_, index) => compareVersion(versions[index]!, highest) === 0)
+}
+
+function representative(candidates: NativeCandidate[]): NativeCandidate {
+  const preferred = candidates.find((candidate) => candidate.isDefault)
+  if (preferred) return preferred
+  const versions = newestComparable(candidates, 'version')
+  const comparable = versions.every((candidate) => numericVersion(candidate.version) !== null)
+  const finalists = comparable ? newestComparable(versions, 'build') : versions
+  return finalists.reduce((left, right) => (left.path <= right.path ? left : right))
+}
 
 // JXA 脚本: 从 argv 读文件路径 (不拼接进脚本, 防注入), 输出 {default, apps} JSON。
 // URLsForApplicationsToOpenURL / URLForApplicationToOpenURL 需要真实存在的文件路径,
@@ -44,7 +89,16 @@ function run(argv) {
     for (let i = 0; i < arr.count; i++) {
       const p = ObjC.unwrap(arr.objectAtIndex(i).path)
       const name = ObjC.unwrap($.NSFileManager.defaultManager.displayNameAtPath(p)).replace(/\\.app$/, '')
-      apps.push({ name, path: p, isDefault: p === defPath, icon: iconData(p) })
+      const bundle = $.NSBundle.bundleWithPath(p)
+      const info = bundle && !bundle.isNil() ? bundle.infoDictionary : null
+      const metadata = (key) => {
+        const value = info && !info.isNil() ? info.objectForKey(key) : null
+        return value && !value.isNil() ? ObjC.unwrap(value) : undefined
+      }
+      apps.push({ name, path: p, isDefault: p === defPath, icon: iconData(p),
+        bundleId: metadata('CFBundleIdentifier'), bundleName: metadata('CFBundleName'),
+        bundleDisplayName: metadata('CFBundleDisplayName'), executable: metadata('CFBundleExecutable'),
+        version: metadata('CFBundleShortVersionString'), build: metadata('CFBundleVersion') })
     }
   }
   return JSON.stringify({ default: defPath, apps })
@@ -53,7 +107,7 @@ function run(argv) {
 
 interface JxaResult {
   default: string | null
-  apps: AppCandidate[]
+  apps: NativeCandidate[]
 }
 
 function runJxa(filePath: string): Promise<JxaResult | null> {
@@ -78,16 +132,48 @@ export async function appsForFile(filePath: string): Promise<AppCandidate[]> {
   const result = await runJxa(filePath)
   if (!result) return []
   // 默认项置顶, 其余按名称排序; 上限 MAX_CANDIDATES。
-  const list = result.apps.filter(
-    (application) =>
-      !application.name.startsWith(HIDDEN_APPLICATION_PREFIX) &&
-      !basename(application.path).startsWith(HIDDEN_APPLICATION_PREFIX)
-  )
-  list.sort((a, b) => {
+  const list = [
+    ...new Map(
+      result.apps
+        .filter(
+          (application) =>
+            !application.name.startsWith(HIDDEN_APPLICATION_PREFIX) &&
+            !basename(application.path).startsWith(HIDDEN_APPLICATION_PREFIX)
+        )
+        .map((application) => [
+          application.path,
+          {
+            ...application,
+            isDefault: application.path === result.default,
+          },
+        ])
+    ).values(),
+  ]
+  const groups = new Map<string, NativeCandidate[]>()
+  for (const candidate of list) {
+    const identity =
+      candidate.bundleId && candidate.bundleName && candidate.executable
+        ? JSON.stringify([
+            candidate.bundleId,
+            candidate.bundleName,
+            candidate.bundleDisplayName ?? '',
+            candidate.executable,
+          ])
+        : candidate.path
+    const group = groups.get(identity) ?? []
+    group.push(candidate)
+    groups.set(identity, group)
+  }
+  const selected = [...groups.values()].map(representative)
+  selected.sort((a, b) => {
     if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1
-    return a.name.localeCompare(b.name)
+    return a.name.localeCompare(b.name) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
   })
-  return list.slice(0, MAX_CANDIDATES)
+  return selected
+    .slice(0, MAX_CANDIDATES)
+    .map(({ name, path, isDefault, icon }) =>
+      icon === undefined ? { name, path, isDefault } : { name, path, isDefault, icon }
+    )
 }
 
 // 用指定应用打开文件。shell.openPath 不支持指定 app, 故用 `open -a`。

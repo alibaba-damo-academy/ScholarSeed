@@ -1,5 +1,6 @@
 """Cross-platform workspace locks and streaming child-process execution."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 import codecs
 import ctypes as c
 from ctypes import wintypes as w
@@ -15,6 +16,58 @@ import time
 
 from platform_runtime import utf8_env
 from filelock import FileLock, Timeout
+
+CHILD_OBSERVER = ContextVar('slr_child_observer', default=None)
+CHILD_STARTING = 'starting'
+CHILD_RUNNING = 'running'
+CHILD_IDLE = 'idle'
+WINDOWS_SYNCHRONIZE = 0x00100000
+WINDOWS_INVALID_PARAMETER = 87
+WINDOWS_WAIT_TIMEOUT = 258
+STOP_GRACE_SECONDS = 3
+
+
+@contextmanager
+def observe_children(callback):
+    token = CHILD_OBSERVER.set(callback)
+    try:
+        yield
+    finally:
+        CHILD_OBSERVER.reset(token)
+
+
+def child_state(phase, pid=None):
+    observer = CHILD_OBSERVER.get()
+    if observer:
+        observer(phase, pid)
+
+
+def child_active(pid):
+    """Conservative liveness probe, never a license to kill a recorded PID."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    if os.name != 'nt':
+        try:
+            os.killpg(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return None
+    api = c.WinDLL('kernel32', use_last_error=True)
+    api.OpenProcess.restype = w.HANDLE
+    api.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+    api.WaitForSingleObject.restype = w.DWORD
+    api.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+    api.CloseHandle.argtypes = [w.HANDLE]
+    handle = api.OpenProcess(WINDOWS_SYNCHRONIZE, False, pid)
+    if not handle:
+        return False if c.get_last_error() == WINDOWS_INVALID_PARAMETER else None
+    try:
+        state = api.WaitForSingleObject(handle, 0)
+        return True if state == WINDOWS_WAIT_TIMEOUT else False if state == 0 else None
+    finally:
+        api.CloseHandle(handle)
 
 
 @contextmanager
@@ -99,7 +152,27 @@ def kill_process_tree(pid):
             pass
 
 
-def run_stream(command, cwd, log_path, env, timeout, progress=False):
+def stop_owned_process(process, job):
+    """Give nested stage owners time to stop their own process groups first."""
+    if job and job.handle:
+        job.close()
+    elif os.name != 'nt':
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=STOP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(process.pid)
+    else:
+        kill_process_tree(process.pid)
+    process.wait()
+    if os.name != 'nt' and child_active(process.pid):
+        kill_process_tree(process.pid)
+
+
+def run_stream(command, cwd, log_path, env, timeout, progress=False, stderr_to_log=False):
     """Drain pipes on a reader thread: Windows selectors cannot poll pipes."""
     chunks, pending = [], ''
     decoder = codecs.getincrementaldecoder('utf-8')('replace')
@@ -107,8 +180,17 @@ def run_stream(command, cwd, log_path, env, timeout, progress=False):
     with Path(log_path).open('a', encoding='utf-8') as log:
         log.write('\n[slr] ' + ' '.join(command) + '\n')
         log.flush()
-        process = subprocess.Popen(command, cwd=str(cwd), env=utf8_env(env),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0, **process_options())
+        child_state(CHILD_STARTING)
+        try:
+            process = subprocess.Popen(command, cwd=str(cwd), env=utf8_env(env),
+                stdout=subprocess.PIPE, stderr=log if stderr_to_log else subprocess.STDOUT,
+                bufsize=0, **process_options())
+        except OSError:
+            # Popen reports a completed launch failure (e.g. executable absent).
+            # An asynchronous interruption during launch is still uncertain.
+            child_state(CHILD_IDLE)
+            raise
+        job = None
         try:
             job = ProcessJob(process.pid)
         except OSError:
@@ -116,8 +198,21 @@ def run_stream(command, cwd, log_path, env, timeout, progress=False):
             # process must not continue without ownership in a restricted host.
             if process.poll() is None:
                 kill_process_tree(process.pid); process.wait(); process.stdout.close()
+                child_state(CHILD_IDLE)
                 raise
             job = None
+        except BaseException:
+            stop_owned_process(process, job)
+            process.stdout.close()
+            child_state(CHILD_IDLE)
+            raise
+        try:
+            child_state(CHILD_RUNNING, process.pid)
+        except BaseException:
+            stop_owned_process(process, job)
+            process.stdout.close()
+            child_state(CHILD_IDLE)
+            raise
 
         def drain():
             try:
@@ -128,14 +223,14 @@ def run_stream(command, cwd, log_path, env, timeout, progress=False):
 
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if timeout is not None else None
         try:
             while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                remaining = deadline - time.monotonic() if deadline is not None else None
+                if remaining is not None and remaining <= 0:
                     raise subprocess.TimeoutExpired(command, timeout)
                 try:
-                    data = events.get(timeout=min(remaining, .25))
+                    data = events.get(timeout=min(remaining, .25) if remaining is not None else .25)
                 except queue.Empty:
                     continue
                 if data is None:
@@ -154,21 +249,22 @@ def run_stream(command, cwd, log_path, env, timeout, progress=False):
                             continue
                         if isinstance(event, dict) and event.get('event') == 'llm_progress':
                             print(line, file=sys.stderr, flush=True)
-            process.wait(timeout=max(.01, deadline - time.monotonic()))
+            process.wait(timeout=max(.01, deadline - time.monotonic()) if deadline is not None else None)
             return process.returncode, ''.join(chunks)
         except subprocess.TimeoutExpired:
-            if job and job.handle:job.close()
-            else:kill_process_tree(process.pid)
-            process.wait()
+            stop_owned_process(process, job)
             log.write(f'\n[slr] timed out after {timeout}s\n')
             return 124, ''.join(chunks)
         except BaseException:
-            if job and job.handle:job.close()
-            else:kill_process_tree(process.pid)
-            process.wait()
+            stop_owned_process(process, job)
             raise
         finally:
             if job:job.close()
+            elif os.name != 'nt' and child_active(process.pid):
+                # Match Windows Job Object ownership on normal completion too:
+                # descendants of this invocation must not outlive its owner.
+                kill_process_tree(process.pid)
             reader.join(timeout=2)
             if not reader.is_alive():
                 process.stdout.close()
+            child_state(CHILD_IDLE)

@@ -22,10 +22,12 @@ export function projectPlanSnapshots(
     if (event.type !== 'plan_snapshot') continue
     snapshots.set(event.seq, {
       sequence: event.seq,
+      explanation: event.data.explanation,
       turnId: event.turn_id,
       timestamp: event.ts * MILLISECONDS_PER_SECOND,
       planId: event.data.plan?.plan_id,
       timingPolicy: event.data.plan?.timing_policy,
+      estimate: event.data.plan?.estimate,
       released: event.data.plan?.source === RELEASED_PLAN_SOURCE,
       items: event.data.items,
     })
@@ -49,39 +51,49 @@ function currentPlanSnapshots(thread: Thread, turnId: string | null | undefined)
   return snapshots.slice(start)
 }
 
-export function planSkillEstimate(
+function hasExecutingLeaf(snapshot: PlanSnapshotUI): boolean {
+  const parents = new Set(snapshot.items.map((item) => item.parent_id).filter(Boolean))
+  return snapshot.items.some((item) => item.status === 'in_progress' && !parents.has(item.id))
+}
+
+export function planExecutionEstimate(
   thread: Thread
 ): { turnId: string; estimate: SkillDurationEstimate } | undefined {
-  const conversation = [...thread.conversation].reverse()
-  const estimateForTurns = (turnIds: Set<string>) => {
-    const event = conversation.find(
-      (item) => item.kind === 'skill' && item.estimate && item.turnId && turnIds.has(item.turnId)
-    )
-    if (event?.kind === 'skill' && event.turnId && event.estimate)
-      return { turnId: event.turnId, estimate: event.estimate }
-    for (const item of conversation) {
-      if (item.kind !== 'user' || !item.turnId || !turnIds.has(item.turnId)) continue
-      const reference = item.refs?.find((ref) => ref.type === 'skill' && ref.estimate)
-      if (reference?.estimate) return { turnId: item.turnId, estimate: reference.estimate }
-    }
-    return undefined
-  }
-  const runningTurns = new Set(
-    Object.entries(thread.turnOutcomes ?? {})
-      .filter(([, outcome]) => outcome === 'running')
-      .map(([turnId]) => turnId)
-  )
-  const current = estimateForTurns(runningTurns)
-  if (current) return current
   const turnId = thread.todoTurnId
-  if (!turnId || !runningTurns.has(turnId)) return undefined
+  if (!turnId || thread.turnOutcomes?.[turnId] !== 'running') return undefined
   const snapshots = currentPlanSnapshots(thread, turnId)
-  if (!snapshots.length || snapshots.at(-1)?.released) return undefined
-  const planTurns = new Set(
-    snapshots.flatMap((snapshot) => (snapshot.turnId ? [snapshot.turnId] : []))
-  )
-  const previous = estimateForTurns(planTurns)
-  return previous ? { turnId, estimate: previous.estimate } : undefined
+  const latest = snapshots.at(-1)
+  if (!latest?.estimate || latest.released || !hasExecutingLeaf(latest)) return undefined
+  return {
+    turnId,
+    estimate: {
+      lowerSeconds: latest.estimate.lower_seconds,
+      upperSeconds: latest.estimate.upper_seconds,
+      sampleCount: 0,
+      confidence: 'low',
+      basis: 'execution_plan',
+    },
+  }
+}
+
+export function planEstimateElapsedMilliseconds(
+  thread: Thread,
+  turnId: string | undefined,
+  now: number
+): number {
+  const snapshots = currentPlanSnapshots(thread, turnId)
+  return snapshots.reduce((elapsed, snapshot, index) => {
+    if (!snapshot.turnId || snapshot.released || !hasExecutingLeaf(snapshot)) return elapsed
+    return (
+      elapsed +
+      executionMilliseconds(
+        thread,
+        snapshot.turnId,
+        snapshot.timestamp,
+        snapshotEnd(thread, snapshot, snapshots[index + 1], now)
+      )
+    )
+  }, 0)
 }
 
 function snapshotEnd(
@@ -207,6 +219,7 @@ export type TodoDisplayStatus =
 
 export interface TodoDisplayItem {
   kind?: 'group' | 'step'
+  reason?: string
   content: string
   activeForm?: string
   status: TodoDisplayStatus
@@ -360,6 +373,32 @@ export function displayTodos(thread: Thread): TodoDisplayItem[] {
     }
     return toItem(item, 'todo')
   })
+  const reasons = new Map<string, string>()
+  let previous = new Map<string, TodoItemUI['status']>()
+  for (const snapshot of currentPlanSnapshots(thread, thread.todoTurnId)) {
+    for (const item of snapshot.items) {
+      if (!item.id) continue
+      const affected =
+        item.status === 'failed' || item.status === 'blocked' || item.status === 'partial'
+      if (!affected) reasons.delete(item.id)
+      else if (previous.has(item.id) && previous.get(item.id) !== item.status) {
+        reasons.delete(item.id)
+        if (snapshot.explanation?.trim()) reasons.set(item.id, snapshot.explanation.trim())
+      }
+    }
+    previous = new Map(
+      snapshot.items.flatMap((item) => (item.id ? [[item.id, item.status] as const] : []))
+    )
+    for (const id of reasons.keys()) if (!previous.has(id)) reasons.delete(id)
+  }
+  for (const item of projected) {
+    if (
+      item.id &&
+      (item.status === 'failed' || item.status === 'blocked' || item.status === 'partial')
+    ) {
+      item.reason = reasons.get(item.id)
+    }
+  }
   const byId = new Map(projected.flatMap((item) => (item.id ? [[item.id, item] as const] : [])))
   const roots = projected.filter((item, index) => {
     const parentId = thread.todos?.[index].parent_id

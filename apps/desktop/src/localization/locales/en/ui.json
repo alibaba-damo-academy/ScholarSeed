@@ -1,10 +1,18 @@
 {
+  "selection": {
+    "remove": "Delete this selection"
+  },
+  "nativeConversationUnavailable": "The floating conversation is unavailable. Switched to side-by-side view.",
+  "nativeResizeUnavailable": "The resize handle is temporarily unavailable.",
+  "nativeForegroundUnavailable": "The error banner could not be displayed above the browser.",
+  "settingsUnavailable": "Settings could not be opened. Please try again.",
   "copy": {
     "idle": "Copy",
     "success": "Copied",
     "error": "Copy failed"
   },
   "loading": "Loading",
+  "loadingFallback": "Loading",
   "close": "Close",
   "search": "Search…",
   "toast": {
@@ -68,6 +76,9 @@
   },
   "optional": "Optional",
   "attachments": {
+    "file": "File",
+    "unavailable": "File unavailable",
+    "directory": "Folder",
     "remove": "Remove attachment {{title}}"
   },
   "command": {
@@ -104,21 +115,30 @@
     "openFailed": "Unable to open the link. You can try it again."
   },
   "markdown": {
-    "tableIncomplete": "The table format is incomplete. The original content is preserved without filling in values.",
+    "table": "Table",
+    "tableIncomplete": "The table format is incomplete. The original text is shown.",
     "formula": "Formula",
     "latex": "LaTeX",
-    "formulaFailed": "Formula parsing failed. The original LaTeX is preserved.",
+    "formulaFailed": "Invalid formula. Showing the original LaTeX.",
     "formulaValidation": "Successful rendering does not establish mathematical validity.",
     "code": "Code",
+    "codeFailed": "Code highlighting failed. The original text is shown.",
+    "renderFailed": "The content could not be rendered. The original text is shown.",
     "command": "Command",
     "output": "Output",
     "expandCode": "Expand all {{count}} lines",
     "collapseCode": "Collapse code",
     "taskComplete": "Completed",
     "taskIncomplete": "Not completed",
-    "image": "Image"
+    "image": "Image",
+    "imageFailed": "Image could not be loaded",
+    "previewImage": "Preview image: {{name}}",
+    "imageBlocked": "This image cannot be previewed directly",
+    "openImage": "Open original"
   },
   "floatingWindow": {
+    "collapse": "Collapse floating window",
+    "expand": "Expand floating window",
     "close": "Close {{title}}",
     "move": "Move {{title}}",
     "pin": "Pin floating window",
@@ -131,11 +151,36 @@
     "remove": "Remove badge"
   },
   "chart": {
-    "label": "Chart"
+    "category": "Category",
+    "value": "Value",
+    "series": "Series",
+    "frequency": "Frequency",
+    "label": "Chart",
+    "missingValue": "Missing",
+    "remainingRows": "; {{count}} more rows are available in the source-data table."
   },
   "icon": {
     "missing": "Missing icon",
     "missingNamed": "Missing icon: {{name}}",
     "missingMark": "?"
+  },
+  "imagePreview": {
+    "toolbar": "Image preview actions",
+    "copy": "Copy image",
+    "close": "Close image viewer",
+    "previous": "Previous image",
+    "next": "Next image",
+    "goto": "Go to image {{index}}",
+    "position": "{{index}} / {{count}} · Zoom {{zoom}}%",
+    "loadFailed": "Unable to load image",
+    "decodeFailed": "Unable to decode image",
+    "reload": "Reload image",
+    "loading": "Loading image"
+  },
+  "imageAttachments": {
+    "open": "View image {{name}} ({{index}} / {{count}})",
+    "remove": "Remove image {{name}}",
+    "scrollPrevious": "Scroll images left",
+    "scrollNext": "Scroll images right"
   }
 }

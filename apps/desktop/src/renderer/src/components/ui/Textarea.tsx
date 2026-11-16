@@ -7,31 +7,51 @@ import {
   fieldMessageClassName,
   textareaClassName,
   textareaStyleClassName,
-  type ComponentSize
+  type ComponentSize,
 } from './classes'
 import { cx } from './utils'
 import type { LocalizationMetadata } from './metadata'
+import type { LabelVariant } from './Label'
 
 export type TextareaSize = ComponentSize
 
-export interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement>, LocalizationMetadata {
+export interface TextareaProps
+  extends TextareaHTMLAttributes<HTMLTextAreaElement>, LocalizationMetadata {
   error?: string
   helperText?: string
   invalid?: boolean
   label?: string
   labelClassName?: string
+  labelVariant?: LabelVariant
   size?: TextareaSize
   unstyled?: boolean
 }
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ className, error, helperText, id, invalid = false, label, labelClassName, size = 'md', unstyled = false, ...props }, ref) => {
+  (
+    {
+      className,
+      error,
+      helperText,
+      id,
+      invalid = false,
+      label,
+      labelClassName,
+      labelVariant,
+      size = 'md',
+      unstyled = false,
+      ...props
+    },
+    ref
+  ) => {
     const generatedId = useId()
     const textareaId = id ?? generatedId
     const message = error ?? helperText
     const labelSource = import.meta.env.DEV ? props['data-i18n-label'] : undefined
     const messageSource = import.meta.env.DEV
-      ? error ? props['data-i18n-error'] : props['data-i18n-helper-text']
+      ? error
+        ? props['data-i18n-error']
+        : props['data-i18n-helper-text']
       : undefined
     const isInvalid = Boolean(error) || invalid
     const messageId = message ? `${textareaId}-message` : undefined
@@ -39,7 +59,11 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
       <textarea
         aria-describedby={messageId}
         aria-invalid={isInvalid ? true : undefined}
-        className={cx(textareaClassName({ invalid: isInvalid, size }), !unstyled && textareaStyleClassName({ invalid: isInvalid, size }), className)}
+        className={cx(
+          textareaClassName({ invalid: isInvalid, size }),
+          !unstyled && textareaStyleClassName({ invalid: isInvalid, size }),
+          className
+        )}
         id={textareaId}
         ref={ref}
         {...props}
@@ -50,10 +74,21 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
 
     return (
       <label className={fieldClassName({})} htmlFor={textareaId}>
-        {label ? <span className={fieldLabelClassName({ className: labelClassName })} {...(labelSource ? { 'data-i18n-text': labelSource } : {})}>{label}</span> : null}
+        {label ? (
+          <span
+            className={fieldLabelClassName({ className: labelClassName, variant: labelVariant })}
+            {...(labelSource ? { 'data-i18n-text': labelSource } : {})}
+          >
+            {label}
+          </span>
+        ) : null}
         {textarea}
         {message ? (
-          <span className={fieldMessageClassName({})} id={messageId} {...(messageSource ? { 'data-i18n-text': messageSource } : {})}>
+          <span
+            className={fieldMessageClassName({})}
+            id={messageId}
+            {...(messageSource ? { 'data-i18n-text': messageSource } : {})}
+          >
             {message}
           </span>
         ) : null}

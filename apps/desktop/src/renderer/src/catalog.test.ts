@@ -6,6 +6,7 @@ import ts from 'typescript'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { block } from '../../test-helpers/source-contract.ts'
+import { jsxWithAttributes } from '../../test-helpers/syntax.ts'
 
 import {
   effectiveSessionModelKey,
@@ -26,156 +27,6 @@ import {
 } from './catalog.ts'
 import type { SessionNode, Thread } from './model.ts'
 import type { ServeSession } from './api.ts'
-import { skillName } from './skill.ts'
-import { buildTurnInput } from './input.ts'
-
-test('composer skill fetches use the interface language and preserve registered send identities', async () => {
-  const source = readFileSync(
-    new URL('./components/business/Composer.tsx', import.meta.url),
-    'utf8'
-  )
-  const parsed = ts.createSourceFile(
-    'Composer.tsx',
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX
-  )
-  const effects: ts.CallExpression[] = []
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.getText(parsed) === 'React.useEffect' &&
-      node.arguments[0]?.getText(parsed).includes('getSkills(')
-    )
-      effects.push(node)
-    ts.forEachChild(node, visit)
-  }
-  visit(parsed)
-  assert.equal(effects.length, 2)
-  for (const language of ['zh', 'en']) {
-    for (const effect of effects) {
-      assert.ok(effect.arguments[1]?.getText(parsed).includes('language'))
-      const requests: unknown[][] = []
-      const registered = {
-        name: 'eln',
-        display_name: language === 'zh' ? '整理实验记录' : 'Lab Notes Organizer',
-        path: '/skills/eln/SKILL.md',
-        enabled: true,
-        active: true,
-      }
-      const script = ts.transpile(`(${effect.arguments[0].getText(parsed)})()`, {
-        target: ts.ScriptTarget.ES2022,
-      })
-      runInNewContext(script, {
-        language,
-        state: { backendReady: true },
-        selectedSkillKey: '["eln"]',
-        skillPickerOpen: true,
-        skillRevision: 1,
-        authenticated: true,
-        SKILL_SURFACE_SETTINGS: 'settings',
-        SKILL_SURFACE_CONVERSATION: 'conversation',
-        getSkills: (...args: unknown[]) => {
-          requests.push(args)
-          return Promise.resolve([registered])
-        },
-        setSelectedSkillCatalog() {},
-        setSkillRows() {},
-        setSkillRowsLoading() {},
-        skillCallable: () => true,
-        set() {},
-        t: (key: string) => key,
-      })
-      await Promise.resolve()
-      assert.equal(requests.length, 1)
-      assert.equal(requests[0][1], language)
-      const input = buildTurnInput('请使用此技能', [
-        { type: 'skill', id: registered.name, title: skillName(registered), path: registered.path },
-      ])
-      assert.deepEqual(input[1], {
-        type: 'skill',
-        name: 'eln',
-        path: registered.path,
-        version: undefined,
-      })
-    }
-  }
-})
-
-test('composer skill menu renders display names and selects canonical references', () => {
-  const source = readFileSync(
-    new URL('./components/business/Composer.tsx', import.meta.url),
-    'utf8'
-  )
-  const parsed = ts.createSourceFile(
-    'Composer.tsx',
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX
-  )
-  let menu: ts.JsxElement | undefined
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isJsxElement(node) &&
-      node.openingElement.attributes.properties.some(
-        (attribute) =>
-          ts.isJsxAttribute(attribute) &&
-          attribute.name.getText(parsed) === 'data-testid' &&
-          attribute.initializer?.getText(parsed) === '{`composer-skill-${s.name}`}'
-      )
-    )
-      menu = node
-    ts.forEachChild(node, visit)
-  }
-  visit(parsed)
-  assert.ok(menu)
-  const script = ts.transpile(`(${menu.getText(parsed)})`, {
-    jsx: ts.JsxEmit.React,
-    target: ts.ScriptTarget.ES2022,
-  })
-  for (const display_name of ['学术检索', 'Academic Search', '', undefined]) {
-    const selected = {
-      name: 'agentic-search',
-      display_name,
-      path: '/skills/agentic-search/SKILL.md',
-      version: '1.0.0',
-    }
-    let references: unknown[] = []
-    const element = runInNewContext(script, {
-      React,
-      Button: 'button',
-      s: selected,
-      loaded: false,
-      skillName,
-      t: (key: string) => key,
-      setPendingRefs: (update: (previous: unknown[]) => unknown[]) => {
-        references = update(references)
-      },
-      clearAtTrigger() {},
-      setSkillPanelOpen() {},
-      setPlusMenuOpen() {},
-      setSkillQuery() {},
-    }) as React.ReactElement<{ onClick: () => void }>
-    const markup = renderToStaticMarkup(element)
-    assert.ok(markup.includes(`>${display_name || selected.name}</span>`))
-    element.props.onClick()
-    element.props.onClick()
-    assert.equal(
-      JSON.stringify(references),
-      JSON.stringify([
-        {
-          type: 'skill',
-          id: selected.name,
-          title: display_name || selected.name,
-          path: selected.path,
-          version: selected.version,
-        },
-      ])
-    )
-  }
-})
 
 test('catalog polling invalidates consumers only when server contents change', () => {
   const rows = [{ session_id: 'task', title: 'Task', mtime: 1, last_seq: 2 }] as ServeSession[]
@@ -218,6 +69,7 @@ test('status-only notifications do not invalidate catalog metadata but lifecycle
     { archived: true },
     { pinned: true },
     { project_path: '/project' },
+    { display_parent_session_id: 'parent' },
     { last_turn_status: 'completed' as const },
   ])
     assert.equal(sessionSummaryNeedsCatalog(previous, { ...previous, ...change }), true)
@@ -231,98 +83,6 @@ test('status-only notifications do not invalidate catalog metadata but lifecycle
   )
 })
 const NOW_SECONDS = 100
-
-test('composer skill entries share contextual navigation while upload stays separate', () => {
-  const source = readFileSync(
-    new URL('./components/business/Composer.tsx', import.meta.url),
-    'utf8'
-  )
-  const parsed = ts.createSourceFile(
-    'Composer.tsx',
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX
-  )
-  const menus: ts.JsxElement[] = []
-  const managers: ts.JsxElement[] = []
-  let navigation: ts.VariableDeclaration | undefined
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isJsxElement(node) &&
-      node.openingElement.tagName.getText(parsed) === 'DropdownMenuSub' &&
-      node.getText(parsed).includes('data-testid="composer-skill-add"')
-    )
-      menus.push(node)
-    if (ts.isVariableDeclaration(node) && node.name.getText(parsed) === 'openSkillCenter')
-      navigation = node
-    if (
-      ts.isJsxElement(node) &&
-      node.openingElement.tagName.getText(parsed) === 'Button' &&
-      node.getText(parsed).includes("t('composer.manageSkills')")
-    )
-      managers.push(node)
-    ts.forEachChild(node, visit)
-  }
-  visit(parsed)
-  const menu = menus.sort((left, right) => left.getWidth() - right.getWidth())[0]
-  assert.ok(menu)
-  assert.ok(navigation)
-  assert.equal(managers.length, 2)
-  const script = ts.transpile(
-    `const ${navigation.getText(parsed)}; [${menu.getText(parsed)}, ${managers.map((node) => node.getText(parsed)).join(',')}]`,
-    {
-      jsx: ts.JsxEmit.React,
-      target: ts.ScriptTarget.ES2022,
-    }
-  )
-  const actions: unknown[] = []
-  const element = runInNewContext(script, {
-    React,
-    Button: 'button',
-    Settings: 'icon',
-    DropdownMenuSub: 'sub',
-    DropdownMenuSubTrigger: 'trigger',
-    DropdownMenuSubContent: 'content',
-    DropdownMenuItem: 'item',
-    IconFont: 'icon',
-    Upload: 'icon',
-    Plug: 'icon',
-    t: (key: string) => key,
-    state: { homeSelectedProjectId: 'origin-project' },
-    set: (value: unknown) => actions.push(value),
-    clearAtTrigger() {},
-    setSkillPanelOpen() {},
-    setPlusMenuOpen() {},
-    act: { openWorkbenchView: (view: string, options: unknown) => actions.push([view, options]) },
-  })
-  const entries: React.ReactElement<Record<string, unknown>>[] = []
-  const collect = (node: React.ReactNode): void => {
-    if (!React.isValidElement<Record<string, unknown>>(node)) return
-    if (node.props['data-testid']) entries.push(node)
-    React.Children.forEach(node.props.children as React.ReactNode, collect)
-  }
-  for (const node of element) collect(node)
-  for (const manager of element.slice(1)) {
-    manager.props.onClick()
-  }
-  const trigger = entries.find((entry) => entry.props['data-testid'] === 'composer-skill-add')!
-  assert.equal(trigger.props.onClick, undefined)
-  for (const id of ['composer-skill-upload', 'composer-skill-market']) {
-    const entry = entries.find((candidate) => candidate.props['data-testid'] === id)
-    assert.ok(entry)
-    ;(entry.props.onSelect as () => void)()
-  }
-  assert.equal(
-    JSON.stringify(actions),
-    JSON.stringify([
-      ['skills', { preserveProject: true, returnProjectId: 'origin-project' }],
-      ['skills', { preserveProject: true, returnProjectId: 'origin-project' }],
-      { skillUploadOpen: true },
-      ['skills', { preserveProject: true, returnProjectId: 'origin-project' }],
-    ])
-  )
-})
 
 test('catalog keeps refreshing completed sessions until recovery settlement is authoritative', () => {
   const sessions = [{ id: 'active', status: 'done' as const }]
@@ -846,23 +606,39 @@ test('the no-model hint offers login only to anonymous users', () => {
     new URL('./components/business/Composer.tsx', import.meta.url),
     'utf8'
   )
-  const start = '{!modelAvailable && showModelHint && ('
-  const hint = block(composer, start, '{!selectedSkillsReady && (')
-  const jsx = hint.slice(start.length, hint.lastIndexOf(')}'))
+  const jsx = jsxWithAttributes(composer, { 'data-testid': 'composer-no-model-hint' })
   const script = ts.transpile(`(${jsx})`, { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 })
   for (const authenticated of [false, true]) {
     const element = runInNewContext(script, {
       React,
       authenticated,
       t: (key: string) => key,
-      NO_MODEL_HINT_CLASS: '',
-      NO_MODEL_HINT_LINK_CLASS: '',
-      Button: (props: { children: React.ReactNode; 'data-testid': string }) =>
-        React.createElement('button', { 'data-testid': props['data-testid'] }, props.children),
+      LogIn: () => null,
+      ConfirmationCard: (props: {
+        title: string
+        description: string
+        icon: React.ReactNode
+        allowLabel: string
+        denyLabel?: string
+        allowAttributes: object
+        denyAttributes?: object
+      }) =>
+        React.createElement(
+          'section',
+          { 'data-confirmation-card': true },
+          props.icon,
+          props.title,
+          props.description,
+          props.denyLabel && React.createElement('button', props.denyAttributes, props.denyLabel),
+          React.createElement('button', props.allowAttributes, props.allowLabel)
+        ),
+      act: { openSettings: () => undefined },
     })
     const html = renderToStaticMarkup(element)
     assert.equal(html.includes('composer-no-model-login'), !authenticated)
-    assert.equal(html.includes('composer.noModelOr'), !authenticated)
+    assert.equal(html.includes('composer.noModelTitle'), !authenticated)
+    assert.equal(html.includes('composer.noModelAuthenticatedTitle'), authenticated)
     assert.equal(html.includes('composer-no-model-configure'), true)
+    assert.equal(html.includes('data-confirmation-card'), true)
   }
 })

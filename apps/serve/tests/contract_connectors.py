@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import logging
 import ssl
 import subprocess
 import sys
@@ -13,14 +14,17 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamablehttp_client
 
+from scholarseed_runtime.contract.command import CommandReceipt, CommandState
 from scholarseed_runtime.contract.mcp import McpConfigurationReceipt
 from service.chat.api.connectors import CALLBACK_ROUTE, CALLBACK_STATE_KEY, ConnectorCallbackPrivacy
+from service.chat.runtime.composition import LiveSessionService
+from service.chat.runtime.reconfiguration import HostReconfiguration
 from service.platform.activity import Activities, ActivityDomain, MaintenanceStale
 from service.platform.mcp import McpHttpServer
 from service.settings.connectors.broker import Binding, ConnectorBroker
@@ -54,6 +58,22 @@ from service.settings.mcp import McpConfigurationService, McpConfigurationStore,
 
 
 class ConnectorContracts(unittest.TestCase):
+    def test_sse_custom_secrets_are_not_revalidated_as_http(self):
+        with patch(
+            "service.settings.connectors.custom.McpHttpServer",
+            side_effect=AssertionError("SSE cannot use HTTP-specific validation"),
+        ):
+            entry = prepare(
+                {
+                    "name": "SSE connector",
+                    "transport": "sse",
+                    "url": "https://example.invalid/sse",
+                    "headers": {"Authorization": "Bearer secret"},
+                }
+            )
+        self.assertEqual(entry["config"]["transport"], "sse")
+        self.assertEqual(tuple(entry["values"].values()), ("Bearer secret",))
+
     def test_hosted_credentials_refresh_through_the_resolver_without_local_exchange(self):
         hosted = HostedOAuth("https://accounts.example", lambda owner: "account-token")
         resolver = ConnectorSecrets(None, Activities(), hosted)
@@ -1697,6 +1717,57 @@ class ConnectorTransportContracts(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(activities.seal(generation))
         activities.resume(generation)
 
+    async def test_cancelled_host_switch_joins_connector_close_and_keeps_fence(self):
+        activities = Activities()
+        broker = ConnectorBroker(None, None, activities)
+        binding = Binding(broker, McpHttpServer(id="drain", url="https://example.invalid/mcp"))
+        binding.task = asyncio.create_task(asyncio.sleep(0))
+        binding.ready.set()
+        broker.bindings["owned"] = binding
+        occupied = activities.enter(ActivityDomain.RESOURCE)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def close():
+            entered.set()
+            await release.wait()
+            occupied.close()
+
+        binding.connection.aclose = close
+        manager = HostReconfiguration(
+            activities=activities, drain=broker.drain_resources, logger=logging.getLogger(__name__)
+        )
+        apply = AsyncMock()
+        operation = manager.start(
+            request_id="88713432-0000-4000-8000-000000000002",
+            session_id=None,
+            user_id="fixture",
+            model_id="fixture",
+            wait_seconds=1,
+            validate=lambda: None,
+            apply=apply,
+        )
+        try:
+            await entered.wait()
+            for _ in range(2):
+                manager._task.cancel()
+                await asyncio.sleep(0)
+            self.assertFalse(manager._task.done())
+            self.assertEqual(activities.snapshot().counts, {"resource": 2})
+            release.set()
+            with self.assertLogs(__name__, level="ERROR"):
+                result = await manager.wait(operation["request_id"], None, "fixture")
+            self.assertEqual(result["state"], "restart_required")
+            self.assertEqual(activities.snapshot().phase.value, "draining")
+            self.assertEqual(activities.snapshot().counts, {})
+            apply.assert_not_awaited()
+            self.assertTrue(binding.task.done())
+            self.assertTrue(binding._close_task.done())
+        finally:
+            release.set()
+            await manager.aclose()
+            await broker.aclose()
+            occupied.close()
+
     async def test_broker_cancelled_close_waits_for_bindings_and_listener(self):
         for phase in ("bindings", "listener"):
             with self.subTest(phase=phase):
@@ -1984,13 +2055,10 @@ class ConnectorTransportContracts(unittest.IsolatedAsyncioTestCase):
     async def test_startup_budget_does_not_shorten_later_inventory_calls(self):
         program = "\n".join(
             [
-                "import json,sys,time",
-                "count=0",
+                "import json,sys",
                 "for line in sys.stdin:",
                 " message=json.loads(line)",
                 " if 'id' not in message: continue",
-                " if message['method']=='tools/list': count+=1",
-                " if count>1: time.sleep(1.1)",
                 " result={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'contract','version':'1'}} if message['method']=='initialize' else {'tools':[]}",
                 " print(json.dumps({'jsonrpc':'2.0','id':message['id'],'result':result}),flush=True)",
             ]
@@ -2002,7 +2070,7 @@ class ConnectorTransportContracts(unittest.IsolatedAsyncioTestCase):
                     "transport": "stdio",
                     "command": sys.executable,
                     "args": ["-c", program],
-                    "startup_timeout": 1000,
+                    "startup_timeout": 9000,
                     "timeout": 3000,
                 }
             )
@@ -2014,6 +2082,9 @@ class ConnectorTransportContracts(unittest.IsolatedAsyncioTestCase):
         connection = Connection(server, headers)
         try:
             self.assertEqual((await connection.inventory())["tools"], [])
+            # Expire the startup budget explicitly instead of requiring a child
+            # process to initialize in one second on a busy test host.
+            connection.startup_deadline = asyncio.get_running_loop().time() - 1
             self.assertEqual((await connection.inventory())["tools"], [])
         finally:
             await connection.aclose()
@@ -2237,6 +2308,47 @@ class ConnectorTransportContracts(unittest.IsolatedAsyncioTestCase):
                             (await session.call_tool("probe", {})).content[0].text,
                             "contract-result",
                         )
+                # A finished MCP call still leaves an idle transport lease. The
+                # production host replacement callback must close that owner too.
+                runtime = LiveSessionService(
+                    activities=activities,
+                    catalog=Mock(),
+                    events=Mock(),
+                    artifacts=Mock(),
+                    skills=Mock(),
+                    models=Mock(),
+                    logger=logging.getLogger(__name__),
+                    gateway=SimpleNamespace(
+                        default_runtime_id="fixture",
+                        provider=Mock(),
+                        catalog=SimpleNamespace(runtime_ids=lambda: ()),
+                    ),
+                    resource_drains=(broker.drain_resources,),
+                )
+                previous = next(iter(broker.bindings.values()))
+                self.assertEqual(activities.snapshot().counts, {"resource": 1})
+                apply = AsyncMock(return_value=CommandReceipt("fixture", CommandState.APPLIED))
+                operation = runtime.reconfiguration.start(
+                    request_id="88713432-0000-4000-8000-000000000001",
+                    session_id=None,
+                    user_id="fixture",
+                    model_id="fixture",
+                    wait_seconds=1,
+                    validate=lambda: None,
+                    apply=apply,
+                )
+                try:
+                    result = await runtime.reconfiguration.wait(
+                        operation["request_id"], None, "fixture"
+                    )
+                    self.assertEqual(result["state"], "applied")
+                    apply.assert_awaited_once()
+                    self.assertEqual(activities.snapshot().counts, {})
+                    self.assertEqual(activities.snapshot().phase.value, "open")
+                    self.assertTrue(previous.task.done())
+                    self.assertTrue(previous.connection.task.done())
+                finally:
+                    await runtime.aclose()
                 disabled = source.model_copy(update={"enabled": False})
                 store.replace((disabled,), expected_revision=1)
                 await broker.reconcile((disabled,))

@@ -10,12 +10,14 @@ export function PromptSettingsGuide({
   linkPrefix,
   prefix,
   suffix,
+  page = 'prompts',
 }: {
   className?: string
   linkLabel: string
   linkPrefix?: ReactNode
   prefix: ReactNode
   suffix?: ReactNode
+  page?: 'prompts' | 'translation'
 }): React.JSX.Element {
   const { act } = useApp()
 
@@ -31,7 +33,7 @@ export function PromptSettingsGuide({
           className="gap-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-control-label-line-height)]"
           size="content"
           variant="link"
-          onClick={() => act.openSettings('prompts')}
+          onClick={() => act.openSettings(page)}
         >
           {linkLabel}
           <Icon name="external" size={12} />

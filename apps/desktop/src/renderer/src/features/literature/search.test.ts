@@ -3,9 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
-  loadConversationSearch,
+  loadConversationLibraryStatus,
   requestConversationSearch,
-  requestDownloadCard,
   createLiteratureSearch,
   LiteratureApiError,
   streamLiteratureSearch,
@@ -19,6 +18,63 @@ import {
   visibleSearchPapers,
 } from './result.ts'
 import { literatureSearchTab, openLiteratureSearchTabs } from '../workbench/tabs.ts'
+import { saveBibtex } from './export.ts'
+import { LibraryStatusCache } from './status.ts'
+
+async function loadConversationSearch(
+  session: string,
+  card: string,
+  signal: AbortSignal,
+  projectId?: string
+) {
+  const result = await requestConversationSearch(session, card, signal)
+  return {
+    result,
+    ...(await loadConversationLibraryStatus(session, card, result, signal, projectId)),
+  }
+}
+
+test('status requests are shared across card reopens and expire only in the changed scope', async () => {
+  const cache = new LibraryStatusCache()
+  const calls: string[] = []
+  const load = (project: string) =>
+    cache.load(project, 'session/card', async () => {
+      calls.push(project)
+      return { saved: [], warning: false, libraryStatuses: {} }
+    })
+  await Promise.all([load('a'), load('a'), load('b')])
+  await load('a')
+  cache.invalidate(false, [{ topic: 'literature', subject: '' }])
+  await load('a')
+  assert.deepEqual(calls, ['a', 'b'])
+  cache.invalidate(false, [{ topic: 'literature', subject: 'membership:a' }])
+  assert.notEqual(cache.revision('a'), cache.revision('b'))
+  await Promise.all([load('b'), load('a')])
+  assert.deepEqual(calls, ['a', 'b', 'a'])
+  cache.invalidate(true, [])
+  await load('b')
+  assert.deepEqual(calls, ['a', 'b', 'a', 'b'])
+})
+
+test('a lookup started before invalidation cannot evict the fresh lookup', async () => {
+  const cache = new LibraryStatusCache()
+  const fresh = { saved: [], warning: false, libraryStatuses: {} }
+  const old = cache.load(
+    'a',
+    'card',
+    (signal) =>
+      new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
+  )
+  const rejected = assert.rejects(old, { name: 'AbortError' })
+  cache.invalidate(false, [{ topic: 'literature', subject: 'membership:a' }])
+  const next = cache.load('a', 'card', async () => fresh)
+  await rejected
+  assert.equal(
+    cache.load('a', 'card', async () => assert.fail('cache miss')),
+    next
+  )
+  assert.equal(await next, fresh)
+})
 
 const papers = [
   {
@@ -55,6 +111,28 @@ const papers = [
   },
 ]
 
+test('search BibTeX save contains exactly the selected papers and performs no library request', async (context) => {
+  const previousFetch = globalThis.fetch
+  context.after(() => {
+    globalThis.fetch = previousFetch
+  })
+  globalThis.fetch = async () => {
+    throw new Error('export must not contact the library')
+  }
+  let saved = ''
+  const result = await saveBibtex(searchPapersBibtex([papers[1]]), {
+    saveFileCopy: async ({ suggestedName, bytes }) => {
+      assert.equal(suggestedName, 'literature.bib')
+      saved = new TextDecoder().decode(bytes)
+      return { ok: true }
+    },
+  })
+  assert.equal(result.kind, 'saved')
+  assert.match(saved, /title = \{Alpha\}/)
+  assert.doesNotMatch(saved, /Zeta/)
+  assert.equal((saved.match(/@article\{/g) ?? []).length, 1)
+})
+
 test('copy loads all saved papers by exact session/card without library lookups or writes', async (context) => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const previousFetch = globalThis.fetch
@@ -88,60 +166,6 @@ test('copy loads all saved papers by exact session/card without library lookups 
     requestConversationSearch('other-session', 'saved/card'),
     /literature_result_invalid/
   )
-})
-
-test('download copy loads every scoped receipt and rejects incomplete or mismatched results', async () => {
-  const originalWindow = globalThis.window
-  const originalFetch = globalThis.fetch
-  const requests: { url: string; method?: string }[] = []
-  const saved = Array.from({ length: 5 }, (_, index) => ({
-    paper_id: `paper-${index}`,
-    literature_id: `literature-${index}`,
-    attachment_id: `attachment-${index}`,
-    title: `Paper ${index}`,
-    revision: `revision-${index}`,
-  }))
-  const card = {
-    schema_version: '1.0' as const,
-    session_id: 'session',
-    run: 'run/frozen',
-    project_id: 'project',
-    papers: saved.slice(0, 3),
-    omitted_papers: 2,
-    failures: [],
-  }
-  let payload = { ...card, papers: saved }
-  globalThis.window = {
-    scholarseed: { getApiBase: () => 'http://127.0.0.1' },
-  } as unknown as Window & typeof globalThis
-  globalThis.fetch = async (input, options) => {
-    requests.push({ url: String(input), method: options?.method })
-    return new Response(JSON.stringify(payload))
-  }
-  try {
-    const complete = await requestDownloadCard(card)
-    assert.deepEqual(complete.papers, saved)
-    assert.equal(complete.omitted_papers, 0)
-    assert.deepEqual(requests, [
-      {
-        url: 'http://127.0.0.1/api/sessions/session/literature/downloads?run=run%2Ffrozen&project_id=project',
-        method: undefined,
-      },
-    ])
-    for (const invalid of [
-      { ...card, session_id: 'other-session', papers: saved },
-      { ...card, run: 'other-run', papers: saved },
-      { ...card, project_id: 'other-project', papers: saved },
-      { ...card, papers: saved.slice(0, 3) },
-      { ...card, papers: saved.map((paper) => ({ ...paper, revision: 'changed' })) },
-    ]) {
-      payload = invalid
-      await assert.rejects(requestDownloadCard(card), /download_receipt_invalid/)
-    }
-  } finally {
-    globalThis.window = originalWindow
-    globalThis.fetch = originalFetch
-  }
 })
 
 test('search report evidence stays inside its card rather than making file cards', () => {
@@ -197,10 +221,9 @@ test('literature search content fills the available workbench width', () => {
   const source = readFileSync(new URL('./Matches.tsx', import.meta.url), 'utf8')
   assert.match(source, /className="flex min-h-0 w-full min-w-0 flex-1 flex-col/)
   assert.match(source, /aria-label=\{t\('search.selectAll'\)\}\s+checked=\{allShownSelected\}/)
-  // 正文列是推荐理由, 全文获取列与详情摘要由列集配置决定, 结果表不再读摘要
   assert.ok(source.includes("paper.reason || t('search.detailUnknown')"))
   assert.match(source, /\$\{columns\.grid\}/)
-  assert.ok(!source.includes('paper.abstract ||'))
+  assert.match(source, /columns\.abstract \? \([\s\S]*paper\.abstract/)
 })
 
 test('AI search results drop abstracts so the library import stays without one', () => {
@@ -217,7 +240,7 @@ test('AI search results drop abstracts so the library import stays without one',
   assert.ok(searchPapersBibtex(papers).includes('abstract = {A \\{test\\}}'))
 })
 
-test('submitted searches and conversation results share the query summary header', () => {
+test('submitted searches and conversation results share the result surface', () => {
   const searchSource = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
   const source = readFileSync(new URL('./Matches.tsx', import.meta.url), 'utf8')
   const resultsSource = readFileSync(new URL('./Report.tsx', import.meta.url), 'utf8')
@@ -228,19 +251,11 @@ test('submitted searches and conversation results share the query summary header
     /<ResultReport\s+View=\{LiteratureSearchView\}/
   )
   assert.match(source, /query\?: string/)
-  assert.match(source, /i18nKey="search.summary"\s+values=\{\{ query \}\}/)
-  assert.match(source, /t\('search.paperCount', \{ count: papers.length \}\)/)
-  const header = source.slice(source.indexOf('<header'), source.indexOf('</header>'))
-  assert.match(header, /SEARCH_STATUS_KEYS\[status\]/)
-  assert.match(header, /<JoinLibraryMenu papers=\{picked\}/)
-  assert.match(header, /t\('batch.selected', \{ count: picked.length \}\)/)
-  assert.match(header, /flex-wrap items-center justify-between/)
-  assert.match(header, /flex min-w-0 flex-auto items-center/)
-  assert.match(header, /min-w-0 truncate/)
-  assert.match(header, /picked\.length > 0 \? \(/)
-  assert.doesNotMatch(header, /overflow-x-auto/)
   assert.match(resultsSource, /const criteria = searchCriteria\(result, t\)/)
-  assert.match(resultsSource, /query=\{criteria\[0\]/)
+  assert.match(
+    resultsSource,
+    /query=\{cited \? t\('result\.citations'\) : criteria\[0\] \|\| t\('result\.query'\)\}/
+  )
 })
 
 test('project search keeps its scope and imports only into the current project', () => {
@@ -260,14 +275,22 @@ test('project search keeps its scope and imports only into the current project',
   assert.doesNotMatch(openSearch, /homeSelectedProjectId: null/)
 })
 
+test('conversation result viewer opts into dock placement without docking regular searches', () => {
+  const featureSource = readFileSync(new URL('./feature.tsx', import.meta.url), 'utf8')
+  assert.match(featureSource, /kind: 'literature_search',\s*dockable: isLiteratureResultTab,/)
+})
+
 test('opening a conversation literature result leaves fullscreen assistant cover', () => {
   const storeSource = readFileSync(new URL('../../store.tsx', import.meta.url), 'utf8')
   const openResult = storeSource.slice(
     storeSource.indexOf('openLiteratureResult: (result)'),
     storeSource.indexOf('openLiteratureSearch: (task)')
   )
-  assert.match(openResult, /literatureResultTab\(result, projectId\)/)
-  assert.match(openResult, /projectId \? 'resource' : 'literature'/)
+  assert.match(openResult, /literatureResultNavigation\(current.tabs, result, projectId\)/)
+  assert.match(
+    openResult,
+    /workbenchLayout:[\s\S]*open: true,[\s\S]*conversationFull: false,[\s\S]*swapped: false/
+  )
   assert.doesNotMatch(openResult, /homeSelectedProjectId: null/)
   assert.match(openResult, /aiPanel: \{ \.\.\.current\.aiPanel, cover: false \}/)
 })
@@ -677,8 +700,6 @@ test('retrieval warnings map legacy diagnostics to localized keys without exposi
 test('unrestorable searches surface as an interrupted status instead of an internal code', () => {
   // 重启后 serve 只给投影状态: 前端必须把它当终态, 既不能再订阅 SSE, 也不能退回 unknown 文案。
   const source = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
-  const presentation = readFileSync(new URL('./Matches.tsx', import.meta.url), 'utf8')
-  assert.match(presentation, /search_interrupted: 'search\.status\.search_interrupted'/)
   const terminal = source.slice(
     source.indexOf('const TERMINAL_STATUSES'),
     source.indexOf('const RESULT_SORT_LABELS')

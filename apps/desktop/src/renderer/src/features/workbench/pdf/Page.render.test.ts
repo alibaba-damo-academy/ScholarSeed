@@ -7,6 +7,7 @@ import { chromium, expect, type Browser } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { transformWithEsbuild, type Plugin } from 'vite'
 import { renderServers } from '../../../../../test-helpers/render.ts'
+import { PDF_UNDERLINE_THICKNESS } from './records.ts'
 
 const servers = renderServers({ after })
 
@@ -104,13 +105,20 @@ const modules: Record<string, string> = {
       const [visible, setVisible] = useState(true)
       const [focus, setFocus] = useState(undefined)
       const [quads, setQuads] = useState([])
+      const [marks, setMarks] = useState([
+        { id: 'highlight', style: 'highlight', color: 'yellow', quads: [[0.1, 0.2, 0.4, 0.3]], created_at: 1 },
+        { id: 'underline', style: 'underline', color: 'blue', quads: [[0.2, 0.4, 0.5, 0.5]], created_at: 2 },
+        { id: 'strike', style: 'strikethrough', color: 'red', quads: [[0.3, 0.6, 0.6, 0.7]], created_at: 3 }
+      ])
+      window.setThumbnailMarks = setMarks
       window.setPdfScale = setScale
       window.setPdfVisible = setVisible
       window.focusPdfCitation = quads => {
         setQuads(quads)
         setFocus(previous => ({ kind: 'citation', page: 5, sequence: (previous?.sequence ?? 0) + 1 }))
       }
-      if (location.search) return <div className="vds-pdf-pages" style={{ height: 300, overflow: 'auto' }}>
+      if (location.search === '?thumbnail') return <PdfPage page={pdfPage} fonts={fonts} scale={scale} annotations={marks} comments={[{mark_id:'underline',body:'Comment'}]} thumbnail />
+      if (location.search) return <div className="vds-pdf-pages" style={{ height: 200, overflow: 'auto' }}>
         <div style={{ height: 3000 }} />
         <PdfPageSlot estimatedSize={{ width: 200, height: 300 }} loadPage={loadPage}
           pageNumber={5} fonts={fonts} scale={scale} focus={focus} citationQuads={quads} />
@@ -121,6 +129,47 @@ const modules: Record<string, string> = {
   `,
 }
 const MODULE_KEYS = Object.keys(modules)
+
+test('PDF thumbnails project annotations without interactive controls and refresh after deletion', async () => {
+  const server = await servers.create({
+    configFile: false,
+    root: ROOT_DIR,
+    plugins: [probePlugin(), react()],
+    cacheKey: 'pdf-thumbnail',
+    server: { host: '127.0.0.1', port: 0 },
+  })
+  let browser: Browser | undefined
+  try {
+    await server.listen()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    const page = await browser.newPage()
+    await page.goto(new URL(`${PROBE_PATH}?thumbnail`, server.resolvedUrls!.local[0]).href)
+    const layer = page.locator('[data-pdf-thumbnail-marks]')
+    await expect(layer.locator('[data-thumbnail-mark]')).toHaveCount(3)
+    await expect(layer.locator('[data-thumbnail-comment]')).toHaveCount(1)
+    await expect(layer.locator('button, input, [tabindex]')).toHaveCount(0)
+    await expect(page.locator('.textLayer')).toHaveCount(0)
+    const highlight = layer.locator('[data-thumbnail-style="highlight"]')
+    const geometry = await highlight.evaluate((element) => ({
+      left: (element as HTMLElement).style.left,
+      top: (element as HTMLElement).style.top,
+      width: (element as HTMLElement).style.width,
+      height: (element as HTMLElement).style.height,
+    }))
+    assert.deepEqual(geometry, { left: '10%', top: '20%', width: '30%', height: '10%' })
+    await page.evaluate(() => Reflect.get(window, 'setPdfScale')(0.5))
+    await expect(layer.locator('[data-thumbnail-style="underline"]')).toHaveCSS(
+      '--pdf-mark-thickness',
+      `${PDF_UNDERLINE_THICKNESS * 0.5}px`
+    )
+    await page.evaluate(() => Reflect.get(window, 'setThumbnailMarks')([]))
+    await expect(layer.locator('[data-thumbnail-mark]')).toHaveCount(0)
+    await expect(layer.locator('[data-thumbnail-comment]')).toHaveCount(0)
+  } finally {
+    await browser?.close()
+    await server.close()
+  }
+})
 
 function moduleId(key: string): string {
   return VIRTUAL_PREFIX + MODULE_KEYS.indexOf(key) + VIRTUAL_SUFFIX
@@ -174,7 +223,7 @@ test('PDF selection rectangles measure selected glyphs instead of whole text nod
   let browser: Browser | undefined
   try {
     await server.listen()
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     const page = await browser.newPage()
     page.setDefaultTimeout(INTERACTION_TIMEOUT_MS)
     await page.goto(new URL(PROBE_PATH, server.resolvedUrls!.local[0]).href)
@@ -206,7 +255,7 @@ test('PDF text layer matches canvas language and normal font metrics', async () 
   let browser: Browser | undefined
   try {
     await server.listen()
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     for (const documentLanguage of [null, 'fr-FR']) {
       const page = await browser.newPage()
       page.setDefaultTimeout(INTERACTION_TIMEOUT_MS)
@@ -250,7 +299,7 @@ test('PDF text layers build detached and only the current completed render becom
   let browser: Browser | undefined
   try {
     await server.listen()
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     const page = await browser.newPage()
     page.setDefaultTimeout(INTERACTION_TIMEOUT_MS)
     const errors: string[] = []
@@ -317,29 +366,67 @@ test('citation focus loads an offscreen page and navigates exact and page-only t
   let browser: Browser | undefined
   try {
     await server.listen()
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     const page = await browser.newPage()
     page.setDefaultTimeout(INTERACTION_TIMEOUT_MS)
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
-    for (const quads of [[[0.1, 0.2, 0.8, 0.3]], []]) {
+    for (const quads of [[[0.1, 0.55, 0.8, 0.65]], []]) {
       await page.goto(new URL(`${PROBE_PATH}?slot`, server.resolvedUrls!.local[0]).href)
       const target = page.getByTestId('pdf-page-5')
       await expect(target).toHaveAttribute('data-rendered', 'false')
       assert.deepEqual(await page.evaluate(() => Reflect.get(window, 'loadedPages')), [])
+      await page.evaluate(() => {
+        const viewport = document.querySelector<HTMLElement>('.vds-pdf-pages')!
+        const scrollBy = viewport.scrollBy.bind(viewport)
+        const calls: { behavior?: ScrollBehavior; top?: number; start: number }[] = []
+        Reflect.set(window, 'citationScrollCalls', calls)
+        viewport.scrollBy = (options?: ScrollToOptions | number, vertical?: number) => {
+          if (typeof options === 'number') {
+            scrollBy(options, vertical ?? 0)
+          } else {
+            calls.push({
+              behavior: options?.behavior,
+              top: options?.top,
+              start: viewport.scrollTop,
+            })
+            scrollBy(options)
+          }
+        }
+      })
       await page.evaluate((quads) => Reflect.get(window, 'focusPdfCitation')(quads), quads)
       await page.waitForFunction(() => Reflect.get(window, 'loadedPages').includes(5))
       await expect(target).toBeInViewport()
       await expect(target.locator('[data-citation-highlight]')).toHaveCount(quads.length)
+      if (quads.length) {
+        const calls = await page.evaluate(() => Reflect.get(window, 'citationScrollCalls'))
+        assert.deepEqual(
+          calls.map(({ behavior }: ScrollToOptions) => behavior),
+          ['instant', 'smooth']
+        )
+        assert.equal(calls[1].start, calls[0].start + calls[0].top)
+        assert.ok(calls[1].top > 0 && calls[1].top < 300)
+        await expect(target.locator('[data-citation-highlight]')).toBeInViewport()
+      }
       await page.waitForFunction(() => Reflect.get(window, 'textLayers')?.[0]?.complete)
       await page.evaluate(() => Reflect.get(window, 'textLayers')[0].complete())
       await expect(target).toHaveAttribute('data-text-rendered', 'true')
+      await page.emulateMedia({ reducedMotion: 'reduce' })
       await page.evaluate(() => {
         document.querySelector('.vds-pdf-pages')!.scrollTop = 0
+        Reflect.get(window, 'citationScrollCalls').length = 0
       })
       await expect(target).not.toBeInViewport()
       await page.evaluate((quads) => Reflect.get(window, 'focusPdfCitation')(quads), quads)
       await expect(target).toBeInViewport()
+      if (quads.length) {
+        const calls = await page.evaluate(() => Reflect.get(window, 'citationScrollCalls'))
+        assert.deepEqual(
+          calls.map(({ behavior }: ScrollToOptions) => behavior),
+          ['instant', 'instant']
+        )
+        await expect(target.locator('[data-citation-highlight]')).toBeInViewport()
+      }
       assert.deepEqual(await page.evaluate(() => Reflect.get(window, 'loadedPages')), [5])
     }
     assert.deepEqual(errors, [])

@@ -33,6 +33,7 @@ function visit(node: ts.Node): void {
       'publishUpdateCheckResult',
       'installWindowsPreparedUpdate',
       'recoverUpdateConflict',
+      'recoverWindowsInstallationBackend',
       'finishMacUpdateHandoff',
     ].includes(node.name?.text ?? '')
   )
@@ -47,7 +48,7 @@ function visit(node: ts.Node): void {
   ts.forEachChild(node, visit)
 }
 visit(source)
-assert.equal(declarations.length, 5)
+assert.equal(declarations.length, 6)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
@@ -160,6 +161,7 @@ for (const windows of [false, true]) {
       let install!: (_event: unknown, expectedId: string) => Promise<{ ok: boolean }>
       let checks = 0,
         exits = 0
+      const window = { webContents: { session: { cookies: { flushStore: async () => {} } } } }
       const context = {
         macShutdownReady: false,
         previewPolicyChanging: false,
@@ -187,6 +189,8 @@ for (const windows of [false, true]) {
         publishUpdateProgress: () => {},
         requireDesktopWorkbench: () => {},
         preferenceQuiescence: new PreferenceQuiescence(() => {}),
+        refreshInflight: null,
+        aliveMainWindow: () => window,
         desktopWorkbenchReady: () => true,
         updatePreparation: preparation,
         updateInstallAbort: null,
@@ -287,7 +291,8 @@ const windowsHandoff = ts.transpileModule(
     .filter(
       (text) =>
         text.startsWith('async function installWindowsPreparedUpdate') ||
-        text.startsWith('async function recoverUpdateConflict')
+        text.startsWith('async function recoverUpdateConflict') ||
+        text.startsWith('async function recoverWindowsInstallationBackend')
     )
     .join('\n'),
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }
@@ -296,6 +301,7 @@ const windowsHandoff = ts.transpileModule(
 for (const failure of [
   'none',
   'preferences',
+  'cookie-flush',
   'cancel-preferences',
   'signature',
   'occupied',
@@ -325,7 +331,18 @@ for (const failure of [
   test(`Windows handoff preserves exit barrier and same-version recovery: ${failure}`, async () => {
     const events: string[] = []
     const startupState = new StartupState(() => {})
-    const window = {}
+    const window = {
+      webContents: {
+        session: {
+          cookies: {
+            flushStore: async () => {
+              events.push('cookie-flush')
+              if (failure === 'cookie-flush') throw new Error('Cookie flush failed')
+            },
+          },
+        },
+      },
+    }
     const selected = candidate('202610131000')
     let snapshot: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: selected }
     const owned = { stopping: false, port: 1234 }
@@ -366,6 +383,7 @@ for (const failure of [
     preferenceQuiescence.register()
     const context = {
       preferenceQuiescence,
+      refreshInflight: null,
       updateChecks: { invalidate: () => events.push('invalidate-check') },
       latestUpdateCandidate: selected,
       lastPreparationDeferral: null,
@@ -534,6 +552,13 @@ for (const failure of [
     if (events.includes('prepare-update')) {
       assert.ok(events.includes('preferences-saved'))
       assert.ok(events.indexOf('preferences-saved') < events.indexOf('prepare-update'))
+      assert.ok(events.includes('cookie-flush'))
+      assert.ok(events.indexOf('cookie-flush') < events.indexOf('prepare-update'))
+    }
+    if (failure === 'cookie-flush') {
+      assert.equal(events.includes('apply'), false)
+      assert.equal(events.includes('drain'), false)
+      assert.equal(context.backend, owned)
     }
     if (['preferences', 'cancel-preferences'].includes(failure)) {
       assert.equal(events.includes('prepare-update'), false)

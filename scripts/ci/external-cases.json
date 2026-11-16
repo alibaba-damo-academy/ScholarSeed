@@ -14,27 +14,12 @@
 {"project":"live","file":"live.spec.ts","title":"recoverable provider gateway failure continues once with the real upstream and preserves the draft (http-503, dark)"},
 {"project":"live","file":"live.spec.ts","title":"recoverable provider gateway failure continues once with the real upstream and preserves the draft (sse-cut, light)"},
 {"project":"live","file":"live.spec.ts","title":"recoverable provider gateway failure continues once with the real upstream and preserves the draft (sse-cut, dark)"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP auth projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP rate-limit projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP quota projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP credits projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP request projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP model-config projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP content-policy projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP overloaded projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP unavailable projects the expected failure surface"},
-{"project":"live","file":"live.spec.ts","title":"controlled integration provider HTTP unknown projects the expected failure surface"},
 {"project":"live","file":"live.spec.ts","title":"branches a completed middle turn into an independent task"},
 {"project":"live","file":"live.spec.ts","title":"feedback exports historical native roots and subagent rollouts from a real session"},
     {
       "project": "live",
       "file": "browser-agent.spec.ts",
       "title": "real Agent lists a page hosted inside the Desktop browser"
-    },
-    {
-      "project": "workbench",
-      "file": "composer-workbench.spec.ts",
-      "title": "composer pastes clipboard images through attachments without replacing its text draft"
     },
     {
       "project": "live",

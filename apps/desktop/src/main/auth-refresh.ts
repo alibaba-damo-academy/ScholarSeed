@@ -10,10 +10,11 @@
 // 错了最多是白续一次或晚续一次，服务端都会兜住）。
 
 import { safeStorage } from 'electron'
-import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { desktopDirectoryWriter } from './writer'
 import { desktopHome } from './storage'
+import { writeRecord } from './journal.ts'
 
 const REFRESH_FILE_PREFIX = 'auth-refresh'
 const REFRESH_FILE_SUFFIX = 'enc'
@@ -49,14 +50,7 @@ export function saveRefreshToken(token: string, namespace: string, log?: LogFn):
       }
       return
     }
-    const tmp = `${path}.tmp`
-    writeFileSync(tmp, safeStorage.encryptString(token), { mode: 0o600 })
-    try {
-      chmodSync(tmp, 0o600)
-    } catch {
-      // writeFile's owner-only creation mode remains the fallback.
-    }
-    renameSync(tmp, path)
+    writeRecord(path, safeStorage.encryptString(token), undefined, writer)
   } finally {
     writer.close()
   }
@@ -104,16 +98,15 @@ export async function refreshTokens(
   accountBaseUrl: string,
   refreshToken: string
 ): Promise<RefreshOutcome> {
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), REFRESH_HTTP_TIMEOUT_MS)
   try {
-    const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), REFRESH_HTTP_TIMEOUT_MS)
     const resp = await fetch(`${accountBaseUrl}/api/token/refresh`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
       signal: ctl.signal,
     })
-    clearTimeout(timer)
     const payload = (await resp.json().catch(() => ({}))) as Partial<RefreshedTokens>
     if (!resp.ok || !payload.token || !payload.refresh_token) {
       return {
@@ -125,6 +118,8 @@ export async function refreshTokens(
     return { ok: true, data: { token: payload.token, refresh_token: payload.refresh_token } }
   } catch (e) {
     return { ok: false, rejected: false, error: String(e) }
+  } finally {
+    clearTimeout(timer)
   }
 }
 

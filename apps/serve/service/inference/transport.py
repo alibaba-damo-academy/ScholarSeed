@@ -10,11 +10,18 @@ import time
 from typing import Any, Mapping
 
 import httpx
+import jsonschema
+from referencing import Registry
 
 from scholarseed_runtime.contract import ModelWireProtocol
 from service.chat.service.completions import CompletionCleanupUnknown
 from service.chat.service.models import ModelService, SessionModelUnavailableError
-from service.inference.reasoning import ThinkingParameters, minimum_parameters
+from service.inference.reasoning import (
+    ThinkingParameters,
+    minimum_parameters,
+    require_declared_effort,
+    thinking_parameters,
+)
 from service.inference.source import accepts_source, attach_source
 from service.platform.inference import (
     TOOL_FREE_UNSUPPORTED,
@@ -44,6 +51,7 @@ RESPONSE_OUTPUT_KINDS = frozenset({"message", "reasoning"})
 RESPONSE_ITEM_EVENTS = frozenset({"response.output_item.added", "response.output_item.done"})
 LOGGER = logging.getLogger(__name__)
 LITERATURE_PURPOSE_PREFIX = "literature."
+GENERATION_SCHEMA_NAME = "generation"
 JSON_OUTPUT_DIRECTIVE = "Return the result as a JSON object."
 
 
@@ -93,6 +101,16 @@ def thinking_for(
     条件），但把原因带回去记日志，否则「为什么没关掉」只能靠猜。
     """
 
+    if request.reasoning_effort or request.thinking is not None:
+        options = connection.get(REASONING_OPTIONS_KEY)
+        require_declared_effort(options, request.reasoning_effort)
+        return thinking_parameters(
+            options,
+            str(connection.get("wire_api") or ""),
+            str(connection.get("provider") or ""),
+            effort=request.reasoning_effort,
+            thinking=request.thinking,
+        )
     wants_minimum = (
         request.reasoning_policy is ReasoningPolicy.LOW_LATENCY
         or request.purpose.startswith(LITERATURE_PURPOSE_PREFIX)
@@ -125,14 +143,28 @@ def responses_body(
         "input": [{"role": "user", "content": content}],
         **(
             {"max_output_tokens": request.limits.max_output_tokens}
-            if connection.get(OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY, True)
+            if request.limits.max_output_tokens is not None
+            and connection.get(OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY, True)
             else {}
         ),
         "tools": [],
         "tool_choice": "none",
         "stream": True,
         **thinking,
-        **({"text": {"format": {"type": "json_object"}}} if request.json_output else {}),
+        **(
+            {
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": GENERATION_SCHEMA_NAME,
+                        "schema": request.output_schema,
+                        "strict": True,
+                    }
+                }
+            }
+            if request.output_schema is not None
+            else {"text": {"format": {"type": "json_object"}}} if request.json_output else {}
+        ),
     }
 
 
@@ -153,13 +185,30 @@ def chat_body(
             {"role": "system", "content": request.instructions},
             {"role": "user", "content": content},
         ],
-        "max_tokens": request.limits.max_output_tokens,
+        **(
+            {"max_tokens": request.limits.max_output_tokens}
+            if request.limits.max_output_tokens is not None
+            else {}
+        ),
         "tools": [],
         "tool_choice": "none",
         "stream": True,
         "stream_options": {"include_usage": True},
         **thinking,
-        **({"response_format": {"type": "json_object"}} if request.json_output else {}),
+        **(
+            {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": GENERATION_SCHEMA_NAME,
+                        "schema": request.output_schema,
+                        "strict": True,
+                    },
+                }
+            }
+            if request.output_schema is not None
+            else {"response_format": {"type": "json_object"}} if request.json_output else {}
+        ),
     }
 
 
@@ -289,8 +338,12 @@ class InferenceProvider:
         model_key = request.model_key
         try:
             async with self._models.inference(
-                request.model_key, user_id=request.owner_id, invocation_id=request.invocation_id
+                request.model_key,
+                user_id=request.user_id or request.owner_id,
+                invocation_id=request.invocation_id,
             ) as connection:
+                if request.exact_model and connection["key"] != request.model_key:
+                    raise SessionModelUnavailableError(TOOL_FREE_UNSUPPORTED)
                 model_key = connection["key"]
                 return await self._generate(request, connection, observer=observer)
         except asyncio.CancelledError:
@@ -299,9 +352,15 @@ class InferenceProvider:
             )
         except Exception as error:
             LOGGER.warning(
-                "pdf_inference_failed invocation_id=%s failure_type=%s",
+                "pdf_inference_failed invocation_id=%s failure_type=%s terminal_reason=%s",
                 request.invocation_id,
                 type(error).__name__,
+                (
+                    str(error)
+                    if isinstance(error, ValueError)
+                    and str(error) in ("output_incomplete", "upstream_stream_error")
+                    else "unclassified"
+                ),
             )
             return ModelInvocationResult(
                 request.invocation_id,
@@ -333,6 +392,8 @@ class InferenceProvider:
     ) -> ModelInvocationResult:
         task = asyncio.current_task()
         model_key = connection["key"]
+        if request.output_schema is not None:
+            jsonschema.Draft202012Validator.check_schema(request.output_schema)
         for part in request.attachments:
             capability = "pdf_input" if part.media_type == PDF_MEDIA_TYPE else "image_input"
             if not connection[capability]:
@@ -400,6 +461,10 @@ class InferenceProvider:
             text = choice["message"].get("content") or ""
         if not text.strip():
             raise ValueError("output_incomplete")
+        if request.output_schema is not None:
+            jsonschema.Draft202012Validator(request.output_schema, registry=Registry()).validate(
+                json.loads(text)
+            )
         if observer:
             await observer(
                 ModelInvocationEvent(

@@ -79,7 +79,7 @@ def planned_project_id(now: float, attempt: str, root: str) -> str:
     from the catalog; renames and later attempts never recompute it from a path.
     """
     if (
-        type(now) not in (int, float)
+        (not isinstance(now, (int, float)) or isinstance(now, bool))
         or not math.isfinite(now)
         or not 0 < now < (2**48) / 1000
         or not isinstance(attempt, str)

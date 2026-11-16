@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import socket
 import struct
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import uvicorn
 from fastapi import FastAPI
@@ -52,6 +53,15 @@ class TransportContracts(unittest.TestCase):
         sock.close.assert_called_once()
         server._detach.assert_called_once()
 
+    def test_missing_socket_still_detaches_server_once(self):
+        transport = self.transport()
+        transport._sock = None
+        server = transport._server
+        transport._call_connection_lost(None)
+        transport._call_connection_lost(None)
+        server._detach.assert_called_once()
+        transport._protocol.connection_lost.assert_called_once_with(None)
+
     def test_protocol_failure_still_releases_socket(self):
         transport = self.transport(protocol_error=RuntimeError("protocol failed"))
         sock, server = transport._sock, transport._server
@@ -59,6 +69,29 @@ class TransportContracts(unittest.TestCase):
             transport._call_connection_lost(None)
         sock.close.assert_called_once()
         server._detach.assert_called_once()
+
+    def test_protocol_clearing_owned_resources_still_releases_them_once(self):
+        for failing in (False, True):
+            with self.subTest(failing=failing):
+                transport = self.transport()
+                sock, server = transport._sock, transport._server
+
+                def disconnected(_error):
+                    transport._sock = None
+                    transport._server = None
+                    if failing:
+                        raise RuntimeError("protocol failed")
+
+                transport._protocol.connection_lost.side_effect = disconnected
+                if failing:
+                    with self.assertRaisesRegex(RuntimeError, "protocol failed"):
+                        transport._call_connection_lost(None)
+                else:
+                    transport._call_connection_lost(None)
+                transport._call_connection_lost(None)
+                sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+                sock.close.assert_called_once()
+                server._detach.assert_called_once()
 
     def test_close_failure_does_not_certify_server_release(self):
         transport = self.transport()
@@ -69,6 +102,50 @@ class TransportContracts(unittest.TestCase):
         server._detach.assert_not_called()
         self.assertFalse(transport._called_connection_lost)
         transport._sock = None  # test mock owns no OS socket
+
+    def test_server_detach_callback_signatures_are_preserved(self):
+        for takes_transport in (False, True):
+            with self.subTest(takes_transport=takes_transport):
+                transport = self.transport()
+                detached = []
+                if takes_transport:
+
+                    def detach(current):
+                        detached.append(current)
+
+                else:
+
+                    def detach():
+                        detached.append(None)
+
+                transport._server._detach = detach
+                with patch(
+                    "service.platform.transport.SERVER_DETACH_WITH_TRANSPORT",
+                    takes_transport,
+                    create=True,
+                ):
+                    transport._call_connection_lost(None)
+                self.assertEqual(detached, [transport if takes_transport else None])
+
+    def test_actual_asyncio_server_releases_transport_attachment(self):
+        async def check():
+            loop = asyncio.get_running_loop()
+            server = await loop.create_server(asyncio.Protocol, "127.0.0.1", 0)
+            transport = self.transport(ConnectionResetError(10054, "peer reset"))
+            transport._server = server
+            if "transport" in inspect.signature(server._attach).parameters:
+                server._attach(transport)
+            else:
+                server._attach()
+            server.close()
+            try:
+                transport._call_connection_lost(None)
+                await asyncio.wait_for(server.wait_closed(), 2)
+            finally:
+                server.close()
+
+        with asyncio.Runner(loop_factory=create_loop) as runner:
+            runner.run(check())
 
     def test_native_tcp_peer_disconnects_release_listener(self):
         async def check():

@@ -12,7 +12,6 @@ from service.literature.persistence.files import read_scoped_file, scoped_parent
 from service.literature.service.result import (
     AGENTIC_SEARCH_ORIGIN,
     SEARCH_AUTHORS,
-    SEARCH_CARD_PAPERS,
     SEARCH_FILE_BYTES,
     SEARCH_MAX_PAPERS,
     SEARCH_SHORT,
@@ -50,7 +49,9 @@ def _text(value: Any, limit: int | None = SEARCH_TEXT) -> str:
 
 
 def _count(value: Any) -> int | None:
-    return value if type(value) is int and value >= 0 else None
+    return (
+        value if (isinstance(value, int) and not isinstance(value, bool)) and value >= 0 else None
+    )
 
 
 def _access(value: Any) -> Literal["yes", "no", "unknown"]:
@@ -100,6 +101,7 @@ def project_agentic_papers(metadata: object, *, complete: bool = False) -> list[
                 year=_count(raw.get("year")),
                 venue=_text(raw.get("venue"), text_limit) or None,
                 doi=_text(raw.get("doi"), short_limit) or None,
+                arxiv_id=_text(raw.get("arxiv_id"), short_limit) or None,
                 url=raw.get("url") if complete else None,
                 abstract=_text(raw.get("abstract"), text_limit) or None,
                 reasons=[reason] if reason else [],
@@ -149,7 +151,7 @@ def prepare_agentic_search(workdir: Path, metadata_path: str) -> PreparedAgentic
         candidates=len(papers),
         deduplicated=_count(summary.get("pool_size")),
         retained=len(papers),
-        papers=papers[:SEARCH_CARD_PAPERS],
+        papers=papers,
         warnings=[],
         origin=AGENTIC_SEARCH_ORIGIN,
     )

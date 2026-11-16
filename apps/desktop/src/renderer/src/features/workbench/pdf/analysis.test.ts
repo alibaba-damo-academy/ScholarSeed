@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-
 import { ASSISTANT_TRANSLATION_TARGETS } from '../../../contracts/assistant.ts'
 import {
   invokeFigure,
   loadPdfVisualRegionImage,
   pdfAiApi,
+  pdfCitationSource,
   PdfAiRequestError,
   pdfResponseLanguage,
   recoverPdfAiTask,
@@ -32,6 +32,57 @@ const request: PdfAiRequest = {
   instruction: '解释趋势',
   response_language: 'zh',
 }
+
+test('PDF translation retains answer, saved and artifact citation identities', () => {
+  const source = { kind: 'session-file' as const, sessionId: 'session', path: 'not-a-library-id' }
+  assert.deepEqual(
+    pdfCitationSource({
+      ...source,
+      citation: { answerId: 'answer', answerRevision: 'answer-sha', handle: 'one' },
+    }),
+    {
+      kind: 'answer',
+      session_id: 'session',
+      answer_id: 'answer',
+      answer_revision: 'answer-sha',
+      handle: 'one',
+    }
+  )
+  assert.deepEqual(
+    pdfCitationSource({
+      ...source,
+      savedCitation: { project_id: 'project', path: 'report.md', handle: 'two' },
+    }),
+    { kind: 'saved', project_id: 'project', path: 'report.md', handle: 'two' }
+  )
+  assert.deepEqual(
+    pdfCitationSource({
+      ...source,
+      artifactCitation: {
+        session_id: 'origin',
+        artifact_id: 'report',
+        revision: 'report-sha',
+        handle: 'three',
+      },
+    }),
+    {
+      kind: 'artifact',
+      session_id: 'origin',
+      artifact_id: 'report',
+      revision: 'report-sha',
+      handle: 'three',
+    }
+  )
+  assert.equal(pdfCitationSource(source), undefined)
+  assert.equal(
+    pdfCitationSource({
+      ...source,
+      citation: { answerId: 'answer', answerRevision: 'sha', handle: 'one' },
+      savedCitation: { project_id: 'project', path: 'report.md', handle: 'two' },
+    }),
+    undefined
+  )
+})
 
 function installFetch(fetch: typeof globalThis.fetch): () => void {
   const originalWindow = globalThis.window
@@ -147,22 +198,6 @@ test('task subscription renders fragmented UTF-8 previews before its authoritati
   }
 })
 
-for (const status of ['completed', 'failed', 'cancelled']) {
-  test(`task subscription accepts an initial ${status} snapshot and ignores later frames`, async () => {
-    const terminal = { task_id: 'task', status }
-    const restore = installFetch(async () =>
-      stream(terminal, { task_id: 'task', status: 'running' })
-    )
-    try {
-      const observed: PdfAiTask[] = []
-      await subscribePdfAiTask('task', new AbortController().signal, (task) => observed.push(task))
-      assert.deepEqual(observed, [terminal])
-    } finally {
-      restore()
-    }
-  })
-}
-
 for (const response of [
   () => stream({ task_id: 'task', status: 'running', preview: { text: 'Incomplete' } }),
   () => stream({ task_id: 'other', status: 'completed' }),
@@ -249,6 +284,27 @@ test('unknown tasks are queried finitely and never resubmitted', async () => {
       PdfAiRequestError
     )
     assert.equal(calls, 3)
+  } finally {
+    restore()
+  }
+})
+
+test('artifact selection tasks preserve publication and member identity without a project path', async () => {
+  const artifactRequest: PdfAiRequest = {
+    ...request,
+    kind: 'selection_explanation',
+    literature_id: '',
+    artifact: { session_id: 'origin', artifact_id: 'publication', member: 'report.pdf' },
+    revision: 'sha256:publication',
+    text: 'Selected publication text',
+  }
+  const restore = installFetch(async (_url, init) => {
+    assert.deepEqual(JSON.parse(String(init?.body)), artifactRequest)
+    return Response.json({ task_id: request.client_attempt_id, status: 'pending' })
+  })
+  try {
+    const task = await submitPdfAiTask(artifactRequest, new AbortController().signal, [0])
+    assert.equal(task.task_id, request.client_attempt_id)
   } finally {
     restore()
   }
@@ -396,6 +452,18 @@ test('PDF translation exposes only the supported target languages', () => {
   assert.deepEqual(PDF_TRANSLATION_TARGETS, ASSISTANT_TRANSLATION_TARGETS)
 })
 
+test('PDF document direction uses document text, independently of the current selection', () => {
+  const reading = readFileSync(new URL('./Reading.tsx', import.meta.url), 'utf8')
+  const viewer = readFileSync(new URL('../PdfDocument.tsx', import.meta.url), 'utf8')
+  assert.match(reading, /kind === 'document_translation'\s*\? documentText\s*:\s*selection\.map/)
+  assert.match(viewer, /documentText,\s*selection: selections/)
+  assert.match(viewer, /textCache\.current\.set\(1, text\)/)
+  assert.match(
+    reading,
+    /translationResultForTarget\(\s*results\.document_translation,\s*translationTarget\s*\)/
+  )
+})
+
 test('PDF translation only exposes a searchable target-language control', () => {
   const control = readFileSync(new URL('./Translation.tsx', import.meta.url), 'utf8')
   const reading = readFileSync(new URL('./Reading.tsx', import.meta.url), 'utf8')
@@ -404,3 +472,19 @@ test('PDF translation only exposes a searchable target-language control', () => 
   assert.doesNotMatch(control, /translation\.auto|translation\.toEnglish|translation\.toChinese/)
   assert.doesNotMatch(reading, /\?\? 'auto'|selected !== 'auto'/)
 })
+
+for (const status of ['completed', 'failed', 'cancelled', 'unknown']) {
+  test(`task subscription accepts an initial ${status} snapshot and ignores later frames`, async () => {
+    const terminal = { task_id: 'task', status }
+    const restore = installFetch(async () =>
+      stream(terminal, { task_id: 'task', status: 'running' })
+    )
+    try {
+      const observed: PdfAiTask[] = []
+      await subscribePdfAiTask('task', new AbortController().signal, (task) => observed.push(task))
+      assert.deepEqual(observed, [terminal])
+    } finally {
+      restore()
+    }
+  })
+}

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable, Mapping, Protocol, runtime_checkable
 
+from scholarseed_runtime.contract import ModelThinking
+
 TOOL_FREE_UNSUPPORTED = "tool_free_generation_unsupported"
 
 
@@ -61,7 +63,7 @@ class ModelInvocationLimits:
     """Input admission bound and requested output budget (runtime support varies)."""
 
     max_input_chars: int
-    max_output_tokens: int
+    max_output_tokens: int | None
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,11 @@ class ModelInvocationRequest:
     json_output: bool = False
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.DEFAULT
     require_tool_free: bool = False
+    user_id: str = ""
+    output_schema: dict | None = None
+    reasoning_effort: str = ""
+    thinking: ModelThinking | None = None
+    exact_model: bool = False
 
 
 @dataclass(frozen=True)

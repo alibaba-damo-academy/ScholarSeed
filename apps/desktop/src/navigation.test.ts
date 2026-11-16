@@ -39,6 +39,15 @@ test('registered document identities survive serialization without importing ren
     { kind: 'project', project: 'project-a', path: 'a.md' },
     { kind: 'session-file', sessionId: 'session-a', path: 'a.md' },
     { kind: 'session-artifact', sessionId: 'session-a', artifactId: 'artifact-a', path: 'a.md' },
+    {
+      kind: 'session-artifact',
+      sessionId: 'session-a',
+      artifactId: 'directory-a',
+      path: 'nested/中文 #1.pdf',
+      memberPath: 'nested/中文 #1.pdf',
+      revision: 'member-revision',
+      mediaType: 'application/pdf',
+    },
     { kind: 'runtime-file', path: 'C:\\research\\note.md' },
     { kind: 'builtin', id: 'guide', path: 'guide.md' },
     {
@@ -66,6 +75,21 @@ test('registered document identities survive serialization without importing ren
   ]
   for (const source of sources) {
     assert.deepEqual(sanitizeNavigationDocument(JSON.parse(JSON.stringify(source))), source)
+  }
+})
+
+test('invalid directory member identities cannot fall back to the parent artifact', () => {
+  for (const memberPath of ['', '  ', null, 42]) {
+    assert.equal(
+      sanitizeNavigationDocument({
+        kind: 'session-artifact',
+        sessionId: 'session',
+        artifactId: 'directory',
+        path: 'member.pdf',
+        memberPath,
+      }),
+      null
+    )
   }
 })
 
@@ -97,8 +121,8 @@ test('browser view and settings page survive navigation restoration', () => {
   assert.equal(restored?.settingsPage, 'browser')
 })
 
-test('only overview and history sections survive browser settings restoration', () => {
-  for (const browserSettingsSection of ['overview', 'history']) {
+test('overview history and data sections survive browser settings restoration', () => {
+  for (const browserSettingsSection of ['overview', 'history', 'data']) {
     assert.equal(
       sanitizeNavigationLocation({
         view: 'browser',
@@ -108,7 +132,7 @@ test('only overview and history sections survive browser settings restoration', 
       browserSettingsSection
     )
   }
-  for (const browserSettingsSection of [undefined, 'data', 'downloads', 'unknown']) {
+  for (const browserSettingsSection of [undefined, 'downloads', 'unknown']) {
     assert.equal(
       sanitizeNavigationLocation({ view: 'home', settingsPage: 'browser', browserSettingsSection })
         ?.browserSettingsSection,

@@ -2,6 +2,7 @@ const { CommandError } = require('./execution.cjs')
 
 const TYPES = ['smoke', 'unit', 'integration', 'api', 'e2e', 'visual']
 const SCOPES = ['desktop', 'serve', 'runtime', 'trace', 'tooling']
+const PROJECT_API_SUITES = ['contract_projects', 'contract_project_queries', 'contract_resource_listing']
 const BUILD_VALUES = ['--result', '--platform', '--arch', '--version', '--build-number', '--update-base-url',
   '--team-id', '--windows-publisher', '--activation-public-keys', '--payload-public-keys',
   '--payload-activation-public-keys', '--payload-private-key', '--payload-key-id', '--payload-compatibility',
@@ -20,11 +21,12 @@ const INTERFACES = {
   'ci check lint': { usage: 'ci check lint python|desktop [--fix]', ci: 'Python check only' },
   'ci check docs': { usage: 'ci check docs workspace|desktop [--mode full|structure|report] [--write] [--strict] [--record PATH]', defaults: { mode: 'full' } },
   'ci check i18n': { usage: 'ci check i18n [--mode check|gaps] [--generate] [--base REF]', defaults: { mode: 'check' }, ci: 'check only' },
-  'ci check skills': { usage: 'ci check skills product|host [--mode source|manifest|links]' },
+  'ci check skills': { usage: 'ci check skills product|host [--mode source|links]', ci: 'host links only' },
   'ci check preview-report': { usage: 'ci check preview-report FILE|-', stdin: 'only explicit -' },
   'ci format': { usage: 'ci format [PATH...] [--check|--write]', defaults: { write: false }, ci: 'original Python format recipe' },
   'ci test': { usage: 'ci test [TYPE] --scope SCOPE [--suite SUITE] | ci test --profile quality | ci test --affected', ci: 'Desktop coverage or tooling localization only' },
   'ci test unit': { usage: 'ci test unit --scope desktop --suite literature-search|native' },
+  'ci test api': { usage: 'ci test api --scope serve --suite projects' },
   'ci test integration': { usage: 'ci test integration --scope desktop --suite native-contract|preview-contract|preview-ui; tooling --suite i18n', ci: 'tooling i18n only' },
   'ci test e2e': { usage: 'ci test e2e --scope desktop [--suite mr|live|update|model-probe] [-- <controlled selection>]' },
   'cd build local': { usage: 'cd build local [--target TARGET] [--stage app|dir|installer] [--workflow direct|package-acceptance]', defaults: { target: 'desktop', stage: 'installer', workflow: 'direct' }, ci: 'app compilation or Python skills/wheels only' },
@@ -62,7 +64,7 @@ const COMMANDS = [
 ].map(([command, description, owner, effects]) => ({ command, description, owner, effects,
   json: command === 'dev status', contexts: INTERFACES[command]?.ci ? ['local', 'ci'] : ['local'],
   platforms: ['darwin', 'win32'], ...(INTERFACES[command]?.ci ? { ciPlatforms: ['linux', 'darwin', 'win32'] } : {}),
-  status: ['ci test api', 'ci test visual'].includes(command) ? 'planned' : 'available', ...INTERFACES[command] }))
+  status: command === 'ci test visual' ? 'planned' : 'available', ...INTERFACES[command] }))
 
 function invalid(message) { throw new CommandError('INVALID_ARGUMENT', message, 2) }
 function unsupported(message) { throw new CommandError('UNSUPPORTED', message) }
@@ -241,9 +243,19 @@ function check(argv) {
     const args = options(flags, { '--mode': String })
     const mode = args['--mode'] || (scope === 'host' ? 'links' : 'source')
     if (scope === 'product' && mode === 'source') return task('ci check skills product', [workspace('skillsVerify')])
-    if (scope === 'product' && mode === 'manifest') return task('ci check skills product', [node('scripts/shared/skills.cjs')])
     if (scope === 'host' && mode === 'links') return task('ci check skills host', [node('.agents/skills/knowledge-governance/scripts/skill-links.mjs', ['--root', '.']),
-      node('.agents/skills/knowledge-governance/scripts/migration.test.mjs', [], { test: true })])
+      node('.agents/skills/knowledge-governance/scripts/migration.test.mjs', [], { test: true }),
+      node('.agents/skills/llm-evaluation-run/scripts/capture.test.mjs', [], { test: true }),
+      node('scripts/shared/__tests__/record.test.cjs', [], { test: true }),
+      node('.agents/skills/llm-evaluation-run/scripts/contract.test.mjs', [], { test: true }),
+      node('.agents/skills/skillhub-evaluation/scripts/*.test.cjs', [], { test: true }),
+      node('.agents/skills/deep-research/scripts/route.test.mjs', [], { test: true }),
+      node('.agents/skills/design-solution/scripts/route.test.mjs', [], { test: true }),
+      node('.agents/skills/knowledge-governance/scripts/check.test.mjs', [], { test: true }),
+      node('.agents/skills/knowledge-governance/scripts/skill-links.test.mjs', [], { test: true }),
+      node('.agents/skills/task-retrospective/scripts/inventory.test.mjs', [], { test: true }),
+      node('.agents/skills/windows-remote/scripts/generate.test.mjs', [], { test: true }),
+      node('scripts/ci/docs/__tests__/structure.test.mjs', [], { test: true })], { contexts: ['local', 'ci'] })
     unsupported('Unsupported Skill owner/mode')
   }
   if (target === 'ui' && !rest.length) return task('ci check ui', [node('apps/desktop/scripts/ci/reuse.mjs')])
@@ -288,7 +300,13 @@ function tests(argv) {
   }
   if (args['--archive'] && (type || scope !== 'desktop' || suite !== 'updater')) invalid('--archive only applies to the Desktop updater suite')
   if (scope === 'desktop' && suite === 'updater' && !args['--archive']) invalid('Updater testing requires --archive <reviewed Go archive>')
-  if (type === 'api' || type === 'visual') unsupported(`${type}/${scope} is planned, not an executable collection`)
+  if (type === 'visual') unsupported(`${type}/${scope} is planned, not an executable collection`)
+  if (type === 'api' && scope === 'serve' && suite === 'projects') {
+    if (Object.keys(args).some(key => !['positional', '--scope', '--suite'].includes(key))) {
+      invalid('The registered project API suite does not accept selection overrides')
+    }
+    return task('ci test api --scope serve', [workspace('serveTests', [PROJECT_API_SUITES.flatMap(name => ['--only-suite', name])])])
+  }
   if (scope === 'desktop') {
     if (type === 'e2e' && suite === 'smoke') {
       if (separator >= 0 || Object.keys(args).some(key => !['positional', '--scope', '--suite'].includes(key)) || args.positional.length) {

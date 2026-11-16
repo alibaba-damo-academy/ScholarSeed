@@ -4,12 +4,22 @@ import hashlib
 import json
 import re
 import shutil
-import unicodedata
 
 import pypdfium2
 from pypdf import PasswordType, PdfReader
+from strategy import PROVIDED_ONLY, policy, QUICK
+from materials import validate_abstract, LOCAL_MANIFEST
+from prepared import validate_record as validate_prepared, partition as partition_preparation, expanded_refs
+from search_metadata_eligibility import same_paper
+from planning import refresh_local_metadata
 
 LOCAL_FILE_FIELDS = {'path','title','authors','year','doi','abstract'}
+METADATA_PREVIEW_CHARACTERS = 8000
+METADATA_PREVIEW_PAGE = 1
+METADATA_PREVIEW_FIELDS = ('title','authors','year')
+METADATA_PREVIEW_BUDGET_EXHAUSTED = 'metadata_preview_budget_exhausted'
+METADATA_PREVIEW_TEXT_UNAVAILABLE = 'metadata_preview_text_unavailable'
+METADATA_PREVIEW_EXTRACTION_FAILED = 'metadata_preview_extraction_failed'
 
 def validate_files(files):
     if not isinstance(files,list):raise ValueError('local_pdfs must be an array of paths or metadata objects')
@@ -27,6 +37,17 @@ def validate_files(files):
 
 
 def sizing(local_count,request):
+    if request.get('sources',{}).get('policy') == PROVIDED_ONLY:
+        if not local_count:
+            raise ValueError('provided_only requires supplied papers; import the authorized materials before continuing')
+        return {'local_count':local_count,'search_target':0,'combined_target':local_count,
+                'combined_ceiling':local_count,'policy':PROVIDED_ONLY}
+    if 'execution' in request:
+        target=request['retrieval']['corpus_size'].get('target',policy(request)['papers'])
+        supplement=max(0,target-local_count)
+        return {'local_count':local_count,'search_target':supplement,'combined_target':local_count+supplement,
+                'combined_ceiling':max(local_count,request['retrieval']['corpus_size'].get('max',target)),
+                'policy':'configured_supplement'}
     if local_count:
         supplement=10*((max(0,40-local_count)+9)//10)
         return {'local_count':local_count,'search_target':supplement,'combined_target':local_count+supplement,
@@ -52,6 +73,8 @@ def source_directory(workspace,pid):
 def import_pdfs(workspace,request=None):
     from task_contract import read_request,configure,atomic_json,digest
     ws=Path(workspace).resolve();task=read_request(ws);request=request or {}
+    if task.get('execution',{}).get('mode') == QUICK:
+        raise ValueError('Quick needs supplied abstracts; use Standard for local PDFs')
     if not isinstance(request,dict) or set(request)-{'files'}:raise ValueError('import-local request accepts files only; repeated imports append or update paths')
     supplied=validate_files(request.get('files',[]))
     expanded={}
@@ -64,6 +87,7 @@ def import_pdfs(workspace,request=None):
         for source in paths:expanded[str(source)]={**expanded.get(str(source),{}),**entry,'path':str(source)}
     if not expanded:raise ValueError('no local PDFs specified; supply files or configure local_pdfs first')
     records={};copies=[];duplicates=[];new_copies=0;reused_copies=0
+    previews=[];preview_characters=0
     for entry in expanded.values():
         source=Path(entry['path'])
         if source.suffix.lower()!='.pdf' or not source.is_file():raise ValueError('local PDF is missing or not a PDF path: '+str(source))
@@ -97,6 +121,24 @@ def import_pdfs(workspace,request=None):
             'source':'local_pdf','user_supplied':True,'metadata_provenance':{'title':title_origin,'authors':'user' if entry.get('authors') else 'pdf_metadata' if authors else 'missing','year':'user' if entry.get('year') else 'missing'},
             'local_source':{'path':str(target),'sha256':sha,'original_paths':[str(source)]}}
         copies.append((source,target,sha))
+        missing=[field for field in METADATA_PREVIEW_FIELDS
+                 if records[pid]['metadata_provenance'][field] in ('missing','filename_unverified')]
+        if missing:
+            preview={'paper_id':pid,'path':str(source),'page':METADATA_PREVIEW_PAGE,
+                     'missing_fields':missing,'text':'','truncated':False,'error':None}
+            available=METADATA_PREVIEW_CHARACTERS-preview_characters
+            if available<=0:
+                preview.update(truncated=True,error=METADATA_PREVIEW_BUDGET_EXHAUSTED)
+            else:
+                try:
+                    text=reader.pages[METADATA_PREVIEW_PAGE-1].extract_text() or ''
+                    preview.update(text=text[:available],truncated=len(text)>available,
+                                   error=None if text.strip() else METADATA_PREVIEW_TEXT_UNAVAILABLE)
+                    preview_characters+=len(preview['text'])
+                except Exception as error:
+                    preview['error']=METADATA_PREVIEW_EXTRACTION_FAILED+':'+type(error).__name__
+                    preview['message']=str(error)
+            previews.append(preview)
     # Validate every input first. Only immutable cache objects precede the manifest commit.
     for source,target,sha in copies:
         target.parent.mkdir(parents=True,exist_ok=True)
@@ -109,45 +151,89 @@ def import_pdfs(workspace,request=None):
         atomic_json(target.parent/'local_import.json',{'source':'local_pdf','sha256':sha,'original_path':str(source)})
     configured=list(expanded.values());configure(ws,{'local_pdfs':configured})
     manifest={'version':1,'input_sha256':digest(configured),'papers':records,'duplicate_files':duplicates}
-    atomic_json(ws/'02_retrieval/local_papers.json',manifest)
-    plan=budget(ws)
+    atomic_json(ws/LOCAL_MANIFEST,manifest)
+    plan_current=refresh_local_metadata(ws)
+    selected_refs=read_request(ws).get('sources',{}).get('refs',[])
+    plan={} if selected_refs else budget(ws)
+    next_action=('Consume the selected-source preparation from task activation, create or confirm the execution plan, then run papers budget. Local import alone does not establish corpus readiness.'
+                 if selected_refs else
+                 'Search for search_target additional distinct papers, import-search, then run retrieval_adapt.' if plan['search_target'] else
+                 'Skip search and run retrieval_adapt, fulltext and processing.')
+    if 'execution' in read_request(ws):
+        next_action=('Continue using the current approved execution plan without another question; consume any current selected-source preparation, then run papers budget.'
+                     if plan_current else 'Consume the selected-source preparation and confirm the execution plan before discovery or evidence processing; then run papers budget.')
     return {'status':'SUCCESS','imported_count':len(records),'new_snapshot_count':new_copies,
             'reused_snapshot_count':reused_copies,'duplicate_count':len(duplicates),
-            'manifest':str(ws/'02_retrieval/local_papers.json'),**plan,
+            'manifest':str(ws/LOCAL_MANIFEST),**plan,
+            'metadata_preview':{'purpose':'bibliography_preparation_only',
+                                'character_limit':METADATA_PREVIEW_CHARACTERS,
+                                'characters':preview_characters,'items':previews,
+                                'notice':'First-page excerpts from explicitly supplied local PDFs only. Missing, failed or truncated previews are incomplete. These excerpts are not abstracts, full-text evidence or authorization. Preserve unknown metadata and the complete PDF snapshots.'},
             'metadata_gaps':[{'paper_id':pid,'fields':[key for key in ('title','authors','year') if p['metadata_provenance'][key] in ('missing','filename_unverified')]} for pid,p in records.items() if any(v in ('missing','filename_unverified') for v in p['metadata_provenance'].values())],
-            'next_action':'Search for search_target additional distinct papers, import-search, then run retrieval_adapt.' if plan['search_target'] else 'Skip search and run retrieval_adapt, fulltext and processing.'}
+            'next_action':next_action}
 
 
 def load_local(workspace):
     from task_contract import read_request,digest
     ws=Path(workspace);entries=read_request(ws).get('local_pdfs',[])
-    if not entries:return {}
-    path=ws/'02_retrieval/local_papers.json'
+    material_path=ws/'02_retrieval/material_papers.json'
+    materials=json.loads(material_path.read_text()) if material_path.exists() else {}
+    refs=read_request(ws).get('sources',{}).get('refs',[])
+    expected_refs=refs
+    if set(materials.get('refs',[]))!=set(refs):raise ValueError('selected references must be imported before retrieval')
+    material_records=materials.get('papers',{})
+    observed=set()
+    for paper in material_records.values():
+        if 'preparation_source' in paper:
+            observed.update(validate_prepared(paper))
+            continue
+        if 'abstract_source' in paper:
+            observed.add(validate_abstract(paper))
+            continue
+        local=paper['local_source']
+        observed.update(local.get('refs',[]))
+        if file_hash(Path(local['path']))!=local['sha256']:raise ValueError('selected material snapshot changed')
+    if materials.get('preparation'):
+        receipt=materials['preparation'];source=(ws/receipt['relative_path']).resolve()
+        if not source.is_relative_to(ws.resolve()) or file_hash(source)!=receipt['sha256']:
+            raise ValueError('selected preparation snapshot changed')
+        manifest=json.loads(source.read_text())
+        if partition_preparation(manifest,refs)!=material_records:
+            raise ValueError('selected preparation records changed')
+        expected_refs=expanded_refs(manifest,refs)
+        observed.update(manifest['pending'])
+        observed.update(manifest['duplicates'])
+    if observed!=set(expected_refs):raise ValueError('selected material records must preserve every selected reference')
+    if not entries:return material_records
+    path=ws/LOCAL_MANIFEST
     if not path.exists():raise ValueError('configured local PDFs must be imported with papers import-local before retrieval')
     manifest=json.loads(path.read_text())
     if manifest.get('input_sha256')!=digest(entries):raise ValueError('local PDF configuration changed; rerun papers import-local')
     for paper in manifest['papers'].values():
         local=paper['local_source'];source=Path(local['path'])
         if not source.is_file() or file_hash(source)!=local['sha256']:raise ValueError('local PDF snapshot missing or changed; rerun papers import-local')
-    return manifest['papers']
+    return {**manifest['papers'],**material_records}
 
 
 def budget(workspace):
     from task_contract import read_request
     papers=load_local(workspace)
-    return {**sizing(len(papers),read_request(workspace)),
+    manifest=json.loads((Path(workspace)/'02_retrieval/material_papers.json').read_text()) if (Path(workspace)/'02_retrieval/material_papers.json').exists() else {}
+    request=read_request(workspace)
+    if not papers and manifest.get('preparation') and request.get('sources',{}).get('policy')==PROVIDED_ONLY:
+        return {'state':'waiting_materials','local_count':0,'search_target':0,'combined_target':0,
+                'combined_ceiling':0,'policy':PROVIDED_ONLY,'pending_count':len(manifest.get('pending',[])),
+                'exclude_from_search':[]}
+    return {**sizing(len(papers),request),'pending_count':len(manifest.get('pending',[])),
             'exclude_from_search':[{'paper_id':pid,'title':p['title'],'doi':p.get('doi'),'title_verified':p['metadata_provenance']['title']!='filename_unverified'} for pid,p in papers.items()]}
 
 
 def merge_local(remote,local):
     """Prefer supplied bytes; match exact DOI or an actual supplied/embedded title."""
-    def title(value):return ''.join(c for c in unicodedata.normalize('NFKC',value).casefold() if c.isalnum())
-    def doi(value):return str(value or '').casefold().removeprefix('https://doi.org/').removeprefix('doi:').strip()
     result={pid:dict(p) for pid,p in local.items()};remaining={};duplicates=[]
     for rid,paper in remote.items():
-        matches=[pid for pid,p in result.items() if
-            (doi(p.get('doi')) and doi(p.get('doi'))==doi(paper.get('doi'))) or
-            (p['metadata_provenance']['title']!='filename_unverified' and title(p['title']) and title(p['title'])==title(paper.get('title','')))]
+        matches=[pid for pid,p in result.items() if same_paper(
+            {**p, 'title': ''} if p['metadata_provenance']['title']=='filename_unverified' else p, paper)]
         if len(matches)!=1:remaining[rid]=paper;continue
         local_record=result[matches[0]]
         local_record['metadata_provenance']=dict(local_record['metadata_provenance'])

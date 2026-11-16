@@ -45,8 +45,13 @@ class LiteratureQueries:
     def search(self, project_id: str, command: LiteratureSearch) -> LiteratureSearchResult:
         if not project_id:
             raise ProjectQueryError(PROJECT_REQUIRED)
+        if command.collection_ids:
+            known = {entry["id"] for entry in self._repository.collections(project_id)}
+            if set(command.collection_ids) - known:
+                raise ProjectQueryError("literature_collection_scope_invalid")
         items = self._repository.list(
             project_id=project_id,
+            collection_ids=tuple(command.collection_ids),
             q=command.query,
             offset=command.offset,
             limit=command.limit + 1,

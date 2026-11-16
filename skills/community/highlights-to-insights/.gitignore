@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.DS_Store
+hint-output/
+
+# Generated Python artifacts
+.ruff_cache/

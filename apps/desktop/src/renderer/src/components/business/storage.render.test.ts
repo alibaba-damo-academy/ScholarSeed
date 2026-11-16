@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const WORKSPACE_PATH = '/api/serve/workspace-root'
@@ -29,7 +32,8 @@ test(
   'storage reads fail independently, retry safely and settle picker/save failures under StrictMode',
   { timeout: 120_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'storage',
       configFile: false,
       root: ROOT,
       plugins: [
@@ -99,18 +103,18 @@ test(
           .href
       )
       await (await initialWorkspaceRead).finished()
-      await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
+      await expect(page.getByTestId('storage-container-root-value')).toHaveValue(WORKSPACE.root)
       await home(page, false)
       await expect(page.getByTestId('storage-data-home-error')).toBeVisible()
       await page.screenshot({
         path: path.join(tmpdir(), 'storage-render-home-error.png'),
         fullPage: true,
       })
-      await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
+      await expect(page.getByTestId('storage-container-root-value')).toHaveValue(WORKSPACE.root)
       await page.getByTestId('storage-data-home-retry').click()
       await expect(page.getByTestId('storage-data-home-loading')).toBeVisible()
       await home(page, true)
-      await expect(page.getByTestId('storage-data-home-value')).toHaveText('/fixture/home')
+      await expect(page.getByTestId('storage-data-home-value')).toHaveValue('/fixture/home')
       holdRead = true
       await page.getByTestId('fixture-toggle').click()
       await page.getByTestId('fixture-toggle').click()
@@ -122,7 +126,7 @@ test(
       holdRead = false
       await page.getByTestId('fixture-toggle').click()
       await home(page, true)
-      await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
+      await expect(page.getByTestId('storage-container-root-value')).toHaveValue(WORKSPACE.root)
       const oldReplies = page.waitForResponse(
         (response) =>
           response.url().endsWith(WORKSPACE_PATH) &&
@@ -137,7 +141,7 @@ test(
             requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
           )
       )
-      await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
+      await expect(page.getByTestId('storage-container-root-value')).toHaveValue(WORKSPACE.root)
       await page.evaluate(() =>
         (window as unknown as { storageFixture: Fixture }).storageFixture.picker('pending')
       )
@@ -154,11 +158,11 @@ test(
       await page.getByTestId('fixture-toggle').click()
       await home(page, true)
       await expect(page.getByTestId('storage-container-root-error')).toBeVisible()
-      await expect(page.getByTestId('storage-data-home-value')).toHaveText('/fixture/home')
+      await expect(page.getByTestId('storage-data-home-value')).toHaveValue('/fixture/home')
       await expect(page.getByTestId('storage-container-root-change')).toBeDisabled()
       readFailure = false
       await page.getByTestId('storage-container-root-retry').click()
-      await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
+      await expect(page.getByTestId('storage-container-root-value')).toHaveValue(WORKSPACE.root)
       await page.evaluate(() =>
         (window as unknown as { storageFixture: Fixture }).storageFixture.picker('reject')
       )
@@ -173,14 +177,14 @@ test(
       await page.getByTestId('storage-container-root-change').click()
       await expect.poll(() => writes).toBe(1)
       await expect(page.getByTestId('storage-container-root-change')).toBeEnabled()
-      await expect(page.getByTestId('storage-container-root-value')).toHaveText(WORKSPACE.root)
+      await expect(page.getByTestId('storage-container-root-value')).toHaveValue(WORKSPACE.root)
       failWrite = false
       holdWrite = true
       await page.getByTestId('storage-container-root-change').click()
       await expect.poll(() => writes).toBe(2)
       await expect(page.getByTestId('storage-container-root-change')).toBeDisabled()
       releaseWrite!()
-      await expect(page.getByTestId('storage-container-root-value')).toHaveText('/fixture/chosen')
+      await expect(page.getByTestId('storage-container-root-value')).toHaveValue('/fixture/chosen')
       await expect(page.getByTestId('storage-container-root-restart')).toBeVisible()
       await expect(page.getByTestId('storage-container-root-change')).toBeEnabled()
       await page.getByTestId('fixture-english').click()

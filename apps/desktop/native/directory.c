@@ -54,6 +54,7 @@ struct directory {
 static void failure(struct directory_error *error, const char *code, uint32_t system) {
   error->code = code;
   error->system = system;
+  error->native_status = 0;
   error->permission_reason = NULL;
   error->permission_mask = 0;
   error->permission_index = -1;
@@ -319,6 +320,277 @@ static bool check_object(HANDLE handle, bool is_directory, struct directory_erro
   return true;
 }
 
+enum { CACHE_MEMBER_LIMIT = 4096, CACHE_DEPTH_LIMIT = 64, CACHE_NAME_UNITS = 255,
+       CACHE_CLEAR_TIMEOUT_MS = 10000 };
+typedef NTSTATUS (NTAPI *cache_query_directory)(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK,
+                                                PVOID, ULONG, FILE_INFORMATION_CLASS, BOOLEAN,
+                                                PUNICODE_STRING, BOOLEAN);
+struct cache_members {
+  cache_query_directory query;
+  HANDLE files[CACHE_MEMBER_LIMIT];
+  size_t count;
+  ULONGLONG deadline;
+};
+
+static bool cache_children(struct cache_members *members, HANDLE parent, unsigned depth,
+                           struct directory_error *error) {
+  enum { names_header = 12, names_information = 12 };
+  _Alignas(8) unsigned char buffer[names_header + CACHE_NAME_UNITS * sizeof(wchar_t)];
+  BOOLEAN restart = TRUE;
+  for (;;) {
+    if (GetTickCount64() >= members->deadline) {
+      failure(error, "ERR_LEASE_NATIVE", ERROR_TIMEOUT); return false;
+    }
+    IO_STATUS_BLOCK status = {0};
+    NTSTATUS result = members->query(parent, NULL, NULL, NULL, &status, buffer, sizeof(buffer),
+                                      (FILE_INFORMATION_CLASS)names_information, TRUE, NULL, restart);
+    restart = FALSE;
+    if ((uint32_t)result == UINT32_C(0x80000006)) return true;
+    if (result != 0) { failure(error, "ERR_LEASE_NATIVE", RtlNtStatusToDosError(result)); return false; }
+    if (status.Information < names_header || status.Information > sizeof(buffer)) {
+      failure(error, "ERR_LEASE_CHANGED", 0); return false;
+    }
+    uint32_t next, length;
+    memcpy(&next, buffer, sizeof(next));
+    memcpy(&length, buffer + 8, sizeof(length));
+    if (next || !length || length % sizeof(wchar_t) || length > status.Information - names_header) {
+      failure(error, "ERR_LEASE_CHANGED", 0); return false;
+    }
+    wchar_t name[CACHE_NAME_UNITS + 1] = {0};
+    memcpy(name, buffer + names_header, length);
+    if (!wcscmp(name, L".") || !wcscmp(name, L"..")) continue;
+    if (wcslen(name) != length / sizeof(wchar_t) || wcspbrk(name, L"\\/:") ||
+        depth >= CACHE_DEPTH_LIMIT || members->count == CACHE_MEMBER_LIMIT) {
+      failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+    }
+    UNICODE_STRING relative = {(USHORT)length, (USHORT)(length + sizeof(wchar_t)), name};
+    OBJECT_ATTRIBUTES attributes = {
+      .Length = sizeof(attributes), .RootDirectory = parent, .ObjectName = &relative,
+    };
+    HANDLE child = INVALID_FILE;
+    result = NtCreateFile(&child, DELETE | FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                          &attributes, &status, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OPEN,
+                          FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+    if (result < 0) { failure(error, "ERR_LEASE_NATIVE", RtlNtStatusToDosError(result)); return false; }
+    members->files[members->count++] = child;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(child, &info)) {
+      failure(error, "ERR_LEASE_NATIVE", GetLastError()); return false;
+    }
+    bool directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (GetFileType(child) != FILE_TYPE_DISK ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_READONLY)) ||
+        (!directory && info.nNumberOfLinks != 1)) {
+      failure(error, "ERR_LEASE_DIRECTORY", 0); return false;
+    }
+    if (directory && !cache_children(members, child, depth + 1, error)) return false;
+  }
+}
+
+bool directory_clear_cache(struct directory *directory, struct directory_error *error) {
+  if (directory->role != DIRECTORY_PRIVATE) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+  }
+  struct cache_members members = {
+    .query = (cache_query_directory)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFile"),
+    .deadline = GetTickCount64() + CACHE_CLEAR_TIMEOUT_MS,
+  };
+  if (!members.query) { failure(error, "ERR_LEASE_NATIVE", GetLastError()); return false; }
+  // Keep the domain's root pinned. Reserve every descendant before deleting
+  // anything and delete only through the exact handles that were inspected.
+  bool valid = cache_children(&members, directory->handles[directory->count - 1], 0, error);
+  for (size_t i = members.count; i > 0; i--) {
+    HANDLE member = members.files[i - 1];
+    if (valid && GetTickCount64() >= members.deadline) {
+      failure(error, "ERR_LEASE_NATIVE", ERROR_TIMEOUT); valid = false;
+    }
+    if (valid) {
+      FILE_DISPOSITION_INFO disposition = {.DeleteFile = TRUE};
+      if (!SetFileInformationByHandle(member, FileDispositionInfo, &disposition, sizeof(disposition))) {
+        failure(error, "ERR_LEASE_NATIVE", GetLastError()); valid = false;
+      }
+    }
+    uint32_t closed = close_handle(member);
+    if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); valid = false; }
+  }
+  return valid;
+}
+
+static HANDLE cache_file(HANDLE parent, const char *name, DWORD access, DWORD share,
+                         struct directory_error *error) {
+  size_t source_length = strlen(name);
+  wchar_t source[LEAF_BYTES + 1] = {0};
+  for (size_t i = 0; i < source_length; i++) source[i] = (wchar_t)name[i];
+  UNICODE_STRING relative = {(USHORT)(source_length * sizeof(wchar_t)),
+                             (USHORT)((source_length + 1) * sizeof(wchar_t)), source};
+  OBJECT_ATTRIBUTES attributes = {
+    .Length = sizeof(attributes), .RootDirectory = parent, .ObjectName = &relative,
+  };
+  HANDLE file = INVALID_FILE;
+  IO_STATUS_BLOCK status = {0};
+  NTSTATUS opened = NtCreateFile(&file, access | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                                 &attributes, &status, NULL, FILE_ATTRIBUTE_NORMAL, share, FILE_OPEN,
+                                 FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                                 NULL, 0);
+  if (opened < 0) {
+    failure(error, "ERR_LEASE_NATIVE", RtlNtStatusToDosError(opened)); return INVALID_FILE;
+  }
+  return file;
+}
+
+bool directory_publish_cache(struct directory *directory, const char *staged, const char *name,
+                             struct directory_error *error) {
+  if (directory->role != DIRECTORY_PRIVATE || !leaf_name(staged) || !leaf_name(name)) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+  }
+  HANDLE parent = directory->handles[directory->count - 1];
+  HANDLE file = cache_file(parent, staged, DELETE, 0, error);
+  if (file == INVALID_FILE) return false;
+  bool valid = false;
+  if (check_object(file, false, error)) {
+    typedef NTSTATUS (NTAPI *set_information)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG,
+                                              FILE_INFORMATION_CLASS);
+    set_information set = (set_information)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile");
+    enum { rename_information = 10 };
+    size_t length = strlen(name);
+    DWORD bytes = (DWORD)(sizeof(FILE_RENAME_INFO) + length * sizeof(wchar_t));
+    FILE_RENAME_INFO *rename = calloc(1, bytes);
+    if (!set) {
+      failure(error, "ERR_LEASE_NATIVE", ERROR_PROC_NOT_FOUND);
+    } else if (!rename) {
+      failure(error, "ERR_LEASE_ALLOCATION", 0);
+    } else {
+      rename->RootDirectory = parent;
+      rename->FileNameLength = (DWORD)(length * sizeof(wchar_t));
+      for (size_t i = 0; i < length; i++) rename->FileName[i] = (wchar_t)name[i];
+      IO_STATUS_BLOCK status = {0};
+      NTSTATUS result = set(file, &status, rename, bytes, (FILE_INFORMATION_CLASS)rename_information);
+      valid = result == 0;
+      if (!valid) {
+        DWORD code = RtlNtStatusToDosError(result);
+        failure(error, code == ERROR_FILE_EXISTS || code == ERROR_ALREADY_EXISTS ?
+                       "ERR_LEASE_EXISTS" : "ERR_LEASE_NATIVE", code);
+      }
+    }
+    free(rename);
+  }
+  uint32_t closed = close_handle(file);
+  if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); return false; }
+  return valid;
+}
+
+bool directory_replace(struct directory *directory, const char *name, const unsigned char *buffer,
+                       size_t length, struct directory_error *error) {
+  if (directory->role != DIRECTORY_PRIVATE || !leaf_name(name) || !length ||
+      length > DIRECTORY_READ_LIMIT || !strcmp(name, DIRECTORY_REPLACE_STAGED)) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+  }
+  HANDLE parent = directory->handles[directory->count - 1];
+  if (!directory_create(directory, DIRECTORY_REPLACE_STAGED, buffer, length, error)) {
+    if (strcmp(error->code, "ERR_LEASE_EXISTS")) return false;
+    // Under the caller's exclusive record lock a staged record is a crashed
+    // writer's orphan. Dispose it by handle, never by pathname.
+    HANDLE orphan = cache_file(parent, DIRECTORY_REPLACE_STAGED, DELETE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, error);
+    if (orphan == INVALID_FILE) return false;
+    FILE_DISPOSITION_INFO orphan_disposition = {.DeleteFile = TRUE};
+    bool removed = SetFileInformationByHandle(orphan, FileDispositionInfo, &orphan_disposition,
+                                              sizeof(orphan_disposition)) != 0;
+    if (!removed) failure(error, "ERR_LEASE_NATIVE", GetLastError());
+    uint32_t orphan_closed = close_handle(orphan);
+    if (orphan_closed) { failure(error, "ERR_LEASE_RELEASE", orphan_closed); return false; }
+    if (!removed) return false;
+    if (!directory_create(directory, DIRECTORY_REPLACE_STAGED, buffer, length, error)) return false;
+  }
+  HANDLE file = cache_file(parent, DIRECTORY_REPLACE_STAGED, DELETE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, error);
+  if (file == INVALID_FILE) return false;
+  bool published = false;
+  typedef NTSTATUS (NTAPI *set_information)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG,
+                                            FILE_INFORMATION_CLASS);
+  set_information set = (set_information)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile");
+  enum { rename_information = 10 };
+  size_t name_length = strlen(name);
+  DWORD bytes = (DWORD)(sizeof(FILE_RENAME_INFO) + name_length * sizeof(wchar_t));
+  FILE_RENAME_INFO *rename = calloc(1, bytes);
+  if (!set) {
+    failure(error, "ERR_LEASE_NATIVE", ERROR_PROC_NOT_FOUND);
+  } else if (!rename) {
+    failure(error, "ERR_LEASE_ALLOCATION", 0);
+  } else {
+    rename->ReplaceIfExists = TRUE;
+    rename->RootDirectory = parent;
+    rename->FileNameLength = (DWORD)(name_length * sizeof(wchar_t));
+    for (size_t i = 0; i < name_length; i++) rename->FileName[i] = (wchar_t)name[i];
+    IO_STATUS_BLOCK status = {0};
+    NTSTATUS result = set(file, &status, rename, bytes, (FILE_INFORMATION_CLASS)rename_information);
+    published = result == 0;
+    // External occupancy and permission denial can both report ACCESS_DENIED.
+    // Preserve both codes for diagnostics without classifying the cause here.
+    if (!published) {
+      failure(error, "ERR_LEASE_NATIVE", RtlNtStatusToDosError(result));
+      error->native_status = (int32_t)result;
+    }
+  }
+  free(rename);
+  if (!published) {
+    FILE_DISPOSITION_INFO disposition = {.DeleteFile = TRUE};
+    if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition)))
+      failure(error, "ERR_LEASE_NATIVE", GetLastError());
+  }
+  uint32_t closed = close_handle(file);
+  if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); return false; }
+  // Once published, no pathname deletion or overwrite follows.
+  return published;
+}
+
+bool directory_discard_cache_alias(struct directory *directory, const char *staged, const char *name,
+                                   struct directory_error *error) {
+  if (directory->role != DIRECTORY_PRIVATE || !leaf_name(staged) || !leaf_name(name) ||
+      !strcmp(staged, name)) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+  }
+  HANDLE parent = directory->handles[directory->count - 1];
+  HANDLE file = cache_file(parent, staged, DELETE | FILE_READ_DATA, 0, error);
+  if (file == INVALID_FILE) return error->system == ERROR_FILE_NOT_FOUND;
+  HANDLE published = INVALID_FILE;
+  BY_HANDLE_FILE_INFORMATION staged_info, published_info;
+  bool valid = false;
+  if (!GetFileInformationByHandle(file, &staged_info)) {
+    failure(error, "ERR_LEASE_NATIVE", GetLastError()); goto done;
+  }
+  valid = true;
+  DWORD forbidden = FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY;
+  if ((staged_info.dwFileAttributes & forbidden) || staged_info.nNumberOfLinks != 2) goto done;
+  // Read only metadata on the second name so the first handle continues to
+  // deny data opens. Exactly two names on the same object excludes third links.
+  published = cache_file(parent, name, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, error);
+  if (published == INVALID_FILE) {
+    valid = error->system == ERROR_FILE_NOT_FOUND;
+    goto done;
+  }
+  if (!GetFileInformationByHandle(published, &published_info)) {
+    failure(error, "ERR_LEASE_NATIVE", GetLastError()); valid = false; goto done;
+  }
+  if ((published_info.dwFileAttributes & forbidden) || published_info.nNumberOfLinks != 2 ||
+      staged_info.dwVolumeSerialNumber != published_info.dwVolumeSerialNumber ||
+      staged_info.nFileIndexHigh != published_info.nFileIndexHigh ||
+      staged_info.nFileIndexLow != published_info.nFileIndexLow) goto done;
+  FILE_DISPOSITION_INFO disposition = {.DeleteFile = TRUE};
+  if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition))) {
+    failure(error, "ERR_LEASE_NATIVE", GetLastError()); valid = false;
+  }
+done:
+  {
+    uint32_t other_closed = published == INVALID_FILE ? 0 : close_handle(published);
+    uint32_t closed = close_handle(file);
+    if (other_closed || closed) {
+      failure(error, "ERR_LEASE_RELEASE", other_closed ? other_closed : closed); return false;
+    }
+  }
+  return valid;
+}
+
 static bool object_identity(HANDLE handle, char *encoded, struct directory_error *error) {
   FILE_ID_INFO identity;
   if (!GetFileInformationByHandleEx(handle, FileIdInfo, &identity, sizeof(identity))) {
@@ -328,6 +600,10 @@ static bool object_identity(HANDLE handle, char *encoded, struct directory_error
   for (size_t i = 0; i < sizeof(identity.FileId.Identifier); i++)
     snprintf(encoded + offset + i * 2, IDENTITY_BYTES - (size_t)offset - i * 2, "%02x", identity.FileId.Identifier[i]);
   return true;
+}
+
+bool directory_file_identity(file_handle file, char *identity, struct directory_error *error) {
+  return object_identity(file, identity, error);
 }
 
 bool directory_child(struct directory *directory, const char *name, char *identity, struct directory_error *error) {
@@ -478,7 +754,7 @@ failed:
   return NULL;
 }
 
-enum record_access { RECORD_READ, RECORD_LOCK, RECORD_CREATE };
+enum record_access { RECORD_READ, RECORD_LOCK, RECORD_LOCK_EXISTING, RECORD_CREATE };
 
 static file_handle open_relative_file(struct directory *directory, const char *name,
                                      enum record_access access, struct directory_error *error) {
@@ -500,7 +776,7 @@ static file_handle open_relative_file(struct directory *directory, const char *n
                                 (directory->role == DIRECTORY_INSTALLATION || (directory->role == DIRECTORY_PROJECT && access != RECORD_READ) ? READ_CONTROL : 0) |
                                 (access != RECORD_READ ? GENERIC_WRITE : 0),
                                 &attributes, &status, NULL, FILE_ATTRIBUTE_NORMAL,
-                                FILE_SHARE_READ | (access == RECORD_LOCK ? FILE_SHARE_WRITE : 0),
+                                FILE_SHARE_READ | ((access == RECORD_LOCK || access == RECORD_LOCK_EXISTING) ? FILE_SHARE_WRITE : 0),
                                 access == RECORD_CREATE ? FILE_CREATE : access == RECORD_LOCK ? FILE_OPEN_IF : FILE_OPEN,
                                 FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT |
                                 (access == RECORD_CREATE ? FILE_WRITE_THROUGH : 0),
@@ -523,6 +799,27 @@ static file_handle open_relative_file(struct directory *directory, const char *n
 
 file_handle directory_file(struct directory *directory, const char *name, struct directory_error *error) {
   return open_relative_file(directory, name, RECORD_LOCK, error);
+}
+
+file_handle directory_bound_file(struct directory *directory, const char *name,
+                                 const char *identity, struct directory_error *error) {
+  HANDLE file = open_relative_file(directory, name, RECORD_LOCK_EXISTING, error);
+  if (file == INVALID_FILE) return file;
+  if (!identity) return file;
+  char observed[IDENTITY_BYTES];
+  if (object_identity(file, observed, error)) {
+    if (!strcmp(identity, observed)) return file;
+    failure(error, "ERR_LEASE_CHANGED", 0);
+  }
+  uint32_t closed = close_handle(file);
+  if (closed) failure(error, "ERR_LEASE_RELEASE", closed);
+  return INVALID_FILE;
+}
+
+file_handle directory_lock_self(struct directory *directory, struct directory_error *error) {
+  (void)directory;
+  failure(error, "ERR_LEASE_PLATFORM", 0);
+  return INVALID_FILE;
 }
 
 bool directory_create(struct directory *directory, const char *name, const unsigned char *buffer,
@@ -779,15 +1076,38 @@ struct directory *directory_pin_child(struct directory *parent, const char *name
   return NULL;
 }
 
-file_handle directory_file(struct directory *directory, const char *name, struct directory_error *error) {
+file_handle directory_lock_self(struct directory *directory, struct directory_error *error) {
+  int parent = directory->handles[directory->count - 1];
+  /* Reopen "." against the held handle: a fresh open file description on the same
+     inode. dup() would share the pin's description, so closing it would neither
+     release flock nor contend with a legacy writer's independently opened fd. */
+  int file = openat(parent, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (file < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); return INVALID_FILE; }
+  return file;
+}
+
+bool directory_file_identity(file_handle file, char *identity, struct directory_error *error) {
+  struct stat info;
+  if (fstat(file, &info)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  snprintf(identity, IDENTITY_BYTES, "posix:%016" PRIx64 ":%016" PRIx64,
+           (uint64_t)info.st_dev, (uint64_t)info.st_ino);
+  return true;
+}
+
+static file_handle open_lock_file(struct directory *directory, const char *name, bool create,
+                                  const char *expected, struct directory_error *error) {
   if (!leaf_name(name)) { failure(error, "ERR_LEASE_ARGUMENT", 0); return INVALID_FILE; }
   int parent = directory->handles[directory->count - 1];
   int flags = O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
   /* Separate creation from opening an existing permanent slot. Concurrent
      Darwin O_CREAT opens can return ENOENT. Only EEXIST permits another open;
      a slot removed in between must fail rather than be recreated. */
-  int file = openat(parent, name, flags | O_CREAT | O_EXCL, 0600);
-  if (file < 0 && errno == EEXIST) file = openat(parent, name, flags);
+  int file = !create ? openat(parent, name, flags) :
+    openat(parent, name, flags | O_CREAT | O_EXCL, 0600);
+  if (create && file < 0 && errno == EEXIST) file = openat(parent, name, flags);
   if (file < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); return INVALID_FILE; }
   struct stat identity;
   if (fstat(file, &identity) || !S_ISREG(identity.st_mode) || identity.st_nlink != 1) {
@@ -801,7 +1121,27 @@ file_handle directory_file(struct directory *directory, const char *name, struct
     if (closed) failure(error, "ERR_LEASE_RELEASE", closed);
     return INVALID_FILE;
   }
+  if (expected) {
+    char observed[IDENTITY_BYTES];
+    snprintf(observed, sizeof(observed), "posix:%016" PRIx64 ":%016" PRIx64,
+             (uint64_t)identity.st_dev, (uint64_t)identity.st_ino);
+    if (strcmp(expected, observed)) {
+      failure(error, "ERR_LEASE_CHANGED", 0);
+      uint32_t closed = close_handle(file);
+      if (closed) failure(error, "ERR_LEASE_RELEASE", closed);
+      return INVALID_FILE;
+    }
+  }
   return file;
+}
+
+file_handle directory_file(struct directory *directory, const char *name, struct directory_error *error) {
+  return open_lock_file(directory, name, true, NULL, error);
+}
+
+file_handle directory_bound_file(struct directory *directory, const char *name,
+                                 const char *identity, struct directory_error *error) {
+  return open_lock_file(directory, name, false, identity, error);
 }
 
 bool directory_create(struct directory *directory, const char *name, const unsigned char *buffer,
@@ -842,6 +1182,65 @@ done:
     if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); return false; }
   }
   return valid;
+}
+
+bool directory_replace(struct directory *directory, const char *name, const unsigned char *buffer,
+                       size_t length, struct directory_error *error) {
+  if (!leaf_name(name) || !length || length > DIRECTORY_READ_LIMIT ||
+      !strcmp(name, DIRECTORY_REPLACE_STAGED)) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0); return false;
+  }
+  int parent = directory->handles[directory->count - 1];
+  int flags = O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW;
+  int file = openat(parent, DIRECTORY_REPLACE_STAGED, flags, 0600);
+  if (file < 0 && errno == EEXIST) {
+    if (unlinkat(parent, DIRECTORY_REPLACE_STAGED, 0)) {
+      failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); return false;
+    }
+    file = openat(parent, DIRECTORY_REPLACE_STAGED, flags, 0600);
+  }
+  if (file < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); return false; }
+  bool staged = false;
+  struct stat identity;
+  size_t offset = 0;
+  if (fstat(file, &identity)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto cleanup; }
+  if (!S_ISREG(identity.st_mode) || identity.st_nlink != 1) {
+    failure(error, "ERR_LEASE_FILE", 0); goto cleanup;
+  }
+  if (!permissions(file, false, error)) goto cleanup;
+  while (offset < length) {
+    ssize_t written = write(file, buffer + offset, length - offset);
+    if (written < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto cleanup; }
+    if (!written) { failure(error, "ERR_LEASE_NATIVE", EIO); goto cleanup; }
+    offset += (size_t)written;
+  }
+  if (fstat(file, &identity)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto cleanup; }
+  if (!S_ISREG(identity.st_mode) || identity.st_nlink != 1) {
+    failure(error, "ERR_LEASE_FILE", 0); goto cleanup;
+  }
+  if (!permissions(file, false, error)) goto cleanup;
+  if (fsync(file)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto cleanup; }
+  staged = true;
+cleanup:
+  {
+    uint32_t closed = close_handle(file);
+    if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); return false; }
+  }
+  if (!staged) {
+    if (unlinkat(parent, DIRECTORY_REPLACE_STAGED, 0) && errno != ENOENT)
+      failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  if (renameat(parent, DIRECTORY_REPLACE_STAGED, parent, name)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    if (unlinkat(parent, DIRECTORY_REPLACE_STAGED, 0) && errno != ENOENT)
+      failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  // The rename landed. Never delete or overwrite by pathname again: an uncertain
+  // directory sync must leave the published record intact for the caller to reject.
+  if (fsync(parent)) { failure(error, "ERR_LEASE_SYNC", (uint32_t)errno); return false; }
+  return true;
 }
 
 bool directory_read(struct directory *directory, const char *name, unsigned char *buffer,
@@ -916,6 +1315,81 @@ static bool consume_same_record(const struct stat *before, const struct stat *af
     before->st_mtimespec.tv_nsec == after->st_mtimespec.tv_nsec &&
     before->st_ctimespec.tv_sec == after->st_ctimespec.tv_sec &&
     before->st_ctimespec.tv_nsec == after->st_ctimespec.tv_nsec;
+}
+
+/* Caller holds exclusive domain admission and occupancy. Use the pinned
+   directory and parent for mutation. The optional lock must be idle and empty. */
+bool directory_prune_lock_only(struct directory *directory, const char *name, bool *removed,
+                               struct directory_error *error) {
+  *removed = false;
+  if (directory->role != DIRECTORY_PRIVATE || directory->count < 2 || !leaf_name(name)) {
+    failure(error, "ERR_LEASE_ARGUMENT", 0);
+    return false;
+  }
+  if (!consume_namespace(directory, error)) return false;
+  int child = directory->handles[directory->count - 1];
+  int parent = directory->handles[directory->count - 2];
+  const char *leaf = strrchr(directory->path, '/') + 1;
+  int scan = openat(child, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (scan < 0) { failure(error, "ERR_LEASE_NATIVE", errno); return false; }
+  DIR *entries = fdopendir(scan);
+  if (!entries) {
+    failure(error, "ERR_LEASE_NATIVE", errno);
+    uint32_t closed = close_handle(scan);
+    if (closed) failure(error, "ERR_LEASE_RELEASE", closed);
+    return false;
+  }
+  bool has_lock = false, retain = false;
+  struct dirent *entry;
+  errno = 0;
+  while ((entry = readdir(entries))) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    if (strcmp(entry->d_name, name)) { retain = true; break; }
+    has_lock = true;
+  }
+  int read_error = errno;
+  if (closedir(entries)) { failure(error, "ERR_LEASE_RELEASE", errno); return false; }
+  if (read_error) { failure(error, "ERR_LEASE_NATIVE", read_error); return false; }
+  if (retain) return true;
+
+  int lock = -1;
+  bool valid = false;
+  if (has_lock) {
+    lock = openat(child, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (lock < 0) { failure(error, "ERR_LEASE_NATIVE", errno); return false; }
+    if (flock(lock, LOCK_EX | LOCK_NB)) {
+      if (errno == EWOULDBLOCK) valid = true;
+      else failure(error, "ERR_LEASE_NATIVE", errno);
+      goto done;
+    }
+    struct stat held, located;
+    if (fstat(lock, &held) || fstatat(child, name, &located, AT_SYMLINK_NOFOLLOW)) {
+      failure(error, "ERR_LEASE_NATIVE", errno);
+      goto done;
+    }
+    if (!S_ISREG(held.st_mode) || held.st_size || held.st_uid != geteuid() ||
+        !consume_same_record(&held, &located)) {
+      failure(error, "ERR_LEASE_CHANGED", 0);
+      goto done;
+    }
+    if (!permissions(lock, false, error) || !consume_namespace(directory, error)) goto done;
+    if (unlinkat(child, name, 0)) { failure(error, "ERR_LEASE_NATIVE", errno); goto done; }
+  }
+  if (!consume_namespace(directory, error)) goto done;
+  if (unlinkat(parent, leaf, AT_REMOVEDIR)) {
+    if (errno == ENOTEMPTY) valid = true;
+    else failure(error, "ERR_LEASE_NATIVE", errno);
+    goto done;
+  }
+  *removed = true;
+  if (fsync(parent)) { failure(error, "ERR_LEASE_SYNC", errno); goto done; }
+  valid = true;
+done:
+  if (lock >= 0) {
+    uint32_t closed = close_handle(lock);
+    if (closed) { failure(error, "ERR_LEASE_RELEASE", closed); return false; }
+  }
+  return valid;
 }
 #endif
 

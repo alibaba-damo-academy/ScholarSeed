@@ -4,6 +4,9 @@
 #include <assert.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <limits.h>
+#include <stdlib.h>
+
 
 static CFPropertyListRef FixtureRollback;
 static CFPropertyListRef FixtureCopyPreference(CFStringRef key, CFStringRef application, CFStringRef user, CFStringRef host) {
@@ -68,7 +71,9 @@ int main(int argc, const char **argv) {
   @autoreleasepool {
     assert(argc == 2 && geteuid() != 0);
     Manager = NSFileManager.defaultManager;
-    Root = Directory(@(argv[1])).stringByResolvingSymlinksInPath;
+    char canonical[PATH_MAX];
+    assert(realpath(Directory(@(argv[1])).fileSystemRepresentation, canonical));
+    Root = @(canonical);
     TrustRefusals();
     for (NSString *name in @[@"machine", @"repair-resume", @"source-live", @"candidate-live", @"source-link", @"candidate-link", @"signature", @"target-race", @"journal-race", @"ownership", @"archive-link", @"archive-corrupt", @"save", @"same-binding", @"different-target", @"new-protocol", @"partial-archive"]) {
       NSString *fixture = Directory([Root stringByAppendingPathComponent:name]);

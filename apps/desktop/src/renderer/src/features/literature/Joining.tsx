@@ -46,6 +46,7 @@ export function JoinedLabel(): React.JSX.Element {
 export function Joining({
   ports,
   papers,
+  selection,
   onJoined,
   className,
   size = 'sm',
@@ -53,6 +54,7 @@ export function Joining({
 }: {
   ports: JoinPorts
   papers: LiteratureSearchPaper[]
+  selection?: { count: number; total: number }
   onJoined?: (papers: LiteratureSearchPaper[], destination: JoinDestination) => void
   className?: string
   size?: ButtonSize
@@ -177,7 +179,7 @@ export function Joining({
   }
   const selectedReceipt =
     papers.length === 1 ? receipts.get(paperJoinKey(papers[0], projectId)) : undefined
-  if (selectedReceipt) return <JoinedLabel />
+  if (selectedReceipt && !selection) return <JoinedLabel />
   return (
     <>
       <DropdownMenu
@@ -202,6 +204,7 @@ export function Joining({
             data-testid="join-library-trigger"
           >
             {t('join.button')}
+            {selection ? ` (${selection.count}/${selection.total})` : null}
             <ChevronDown size="1em" aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>

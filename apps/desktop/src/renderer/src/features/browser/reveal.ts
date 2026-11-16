@@ -4,17 +4,30 @@ import type { BrowserBridge } from '../../../../browser.ts'
 export function subscribeBrowserReveal(
   bridge: Pick<BrowserBridge, 'subscribeReveal' | 'page'>,
   currentSession: () => string | null,
-  reveal: () => void,
+  reveal: (tabId: string) => void
 ): () => void {
   let active = true
   let generation = 0
-  const unsubscribe = bridge.subscribeReveal?.(request => {
+  const unsubscribe = bridge.subscribeReveal?.((request) => {
     const captured = ++generation
     if (!bridge.page || request.sessionId !== currentSession()) return
-    void bridge.page({ kind: 'target', tabId: request.target.tabId }).then(reply => {
-      if (active && captured === generation && request.sessionId === currentSession()
-        && reply.ok && samePageTarget(reply.target, request.target)) reveal()
-    }).catch(error => console.error('Browser reveal failed', error))
+    void bridge
+      .page({ kind: 'target', tabId: request.target.tabId })
+      .then((reply) => {
+        if (
+          active &&
+          captured === generation &&
+          request.sessionId === currentSession() &&
+          reply.ok &&
+          samePageTarget(reply.target, request.target)
+        )
+          reveal(request.target.tabId)
+      })
+      .catch((error) => console.error('Browser reveal failed', error))
   })
-  return () => { active = false; generation += 1; unsubscribe?.() }
+  return () => {
+    active = false
+    generation += 1
+    unsubscribe?.()
+  }
 }

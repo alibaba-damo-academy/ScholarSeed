@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,22 +15,14 @@ from fastapi.testclient import TestClient
 
 from service.chat.service.projects import summarize_project
 from service.content.api.routes import register_content_routes
-from service.content.persistence.catalog import ContentCatalog
+from service.content.persistence.catalog import ContentCatalog, ProjectRow
 from service.content.service.port import ContentService, ProjectRegistry
 from service.platform.activity import Activities
 
-PASS = 0
-FAIL = 0
-
 
 def check(name: str, condition: bool, detail: str = "") -> None:
-    global PASS, FAIL
-    if condition:
-        PASS += 1
-        print(f"  PASS {name}")
-    else:
-        FAIL += 1
-        print(f"  FAIL {name}: {detail}")
+    if not condition:
+        raise AssertionError(f"{name}: {detail}")
 
 
 def scenario(root: Path) -> None:
@@ -268,7 +261,11 @@ def creation_order(root: Path) -> None:
     register_content_routes(app)
     client = TestClient(app)
 
-    listed = client.get("/api/content/projects").json()["projects"]
+    payload = client.get("/api/content/projects").json()
+    listed = payload["projects"]
+    check(
+        "current stays the workspace project, not the newest row", payload["current"] == seeded.id
+    )
     check(
         "列表按创建时间倒序",
         [entry["id"] for entry in listed] == [second.id, first.id, seeded.id],
@@ -287,6 +284,18 @@ def creation_order(root: Path) -> None:
         [entry["id"] for entry in archived_view] == [second.id, first.id, seeded.id],
         str([entry["name"] for entry in archived_view]),
     )
+    for identity in ("tie-a", "tie-z"):
+        directory = root / identity
+        directory.mkdir()
+        catalog.insert_project(
+            ProjectRow(identity, identity, str(directory), seeded.layout, 2_500_000_000.0)
+        )
+    tied = client.get("/api/content/projects").json()
+    check(
+        "equal creation times use descending identity independently of insertion order",
+        [entry["id"] for entry in tied["projects"][:2]] == ["tie-z", "tie-a"],
+    )
+    check("tie ordering does not change current identity", tied["current"] == seeded.id)
 
 
 def metadata_roundtrip(root: Path) -> None:
@@ -346,27 +355,38 @@ def metadata_roundtrip(root: Path) -> None:
     )
 
 
-def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="project-directory-metadata-") as tmp:
-        directory_metadata(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-names-") as tmp:
-        generated_project_names(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-tree-") as tmp:
-        project_tree(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-explorer-") as tmp:
-        project_explorer(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-metadata-") as tmp:
-        metadata_roundtrip(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-summary-") as tmp:
-        scenario(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-routes-") as tmp:
-        legacy_route_is_retired(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-archive-") as tmp:
-        archive_routes(Path(tmp).resolve())
-    with tempfile.TemporaryDirectory(prefix="project-order-") as tmp:
-        creation_order(Path(tmp).resolve())
-    print(f"\n{PASS} passed, {FAIL} failed")
-    return 1 if FAIL else 0
+class ProjectContracts(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="project-contract-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def test_directory_metadata(self) -> None:
+        directory_metadata(self.root)
+
+    def test_generated_project_names(self) -> None:
+        generated_project_names(self.root)
+
+    def test_project_tree(self) -> None:
+        project_tree(self.root)
+
+    def test_project_explorer(self) -> None:
+        project_explorer(self.root)
+
+    def test_metadata_roundtrip(self) -> None:
+        metadata_roundtrip(self.root)
+
+    def test_project_summary(self) -> None:
+        scenario(self.root)
+
+    def test_legacy_route_is_retired(self) -> None:
+        legacy_route_is_retired(self.root)
+
+    def test_archive_routes(self) -> None:
+        archive_routes(self.root)
+
+    def test_creation_order(self) -> None:
+        creation_order(self.root)
 
 
 def directory_metadata(root: Path) -> None:
@@ -382,9 +402,16 @@ def directory_metadata(root: Path) -> None:
         if birthtime is not None:
             metadata.st_birthtime = birthtime
 
-        def inspected(path: Path, *, follow_symlinks: bool = True) -> object:
+        def inspected(
+            path: Path,
+            *,
+            follow_symlinks: bool = True,
+            current_metadata: SimpleNamespace = metadata,
+        ) -> object:
             return (
-                metadata if path == root else original_stat(path, follow_symlinks=follow_symlinks)
+                current_metadata
+                if path == root
+                else original_stat(path, follow_symlinks=follow_symlinks)
             )
 
         with patch.object(Path, "stat", inspected):
@@ -398,9 +425,11 @@ def directory_metadata(root: Path) -> None:
 
     for error in (FileNotFoundError(), PermissionError()):
 
-        def unavailable(path: Path, *, follow_symlinks: bool = True) -> object:
+        def unavailable(
+            path: Path, *, follow_symlinks: bool = True, current_error: OSError = error
+        ) -> object:
             if path == root:
-                raise error
+                raise current_error
             return original_stat(path, follow_symlinks=follow_symlinks)
 
         with patch.object(Path, "stat", unavailable):
@@ -595,4 +624,4 @@ def project_explorer(root: Path) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    unittest.main()

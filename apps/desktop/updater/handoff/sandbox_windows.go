@@ -90,6 +90,10 @@ func sandboxToken(parent processWaiter) (syscall.Token, string, string, error) {
 }
 
 func sandboxSnapshot(handle syscall.Handle) (sandboxSecurity, error) {
+	return sandboxObjectSnapshot(handle, true)
+}
+
+func sandboxObjectSnapshot(handle syscall.Handle, directory bool) (sandboxSecurity, error) {
 	var owner, acl, descriptor unsafe.Pointer
 	status, _, _ := security.NewProc("GetSecurityInfo").Call(uintptr(handle), toolFileObject, toolOwnerInformation|toolDACLInformation, uintptr(unsafe.Pointer(&owner)), 0, uintptr(unsafe.Pointer(&acl)), 0, uintptr(unsafe.Pointer(&descriptor)))
 	if status != 0 {
@@ -118,10 +122,14 @@ func sandboxSnapshot(handle syscall.Handle) (sandboxSecurity, error) {
 	if ok == 0 {
 		return sandboxSecurity{}, callErr
 	}
-	identity, err := toolDirectoryIdentity(handle)
-	if err != nil {
+	var info syscall.ByHandleFileInformation
+	if err := syscall.GetFileInformationByHandle(handle, &info); err != nil {
 		return sandboxSecurity{}, err
 	}
+	if info.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 || (info.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY != 0) != directory || (!directory && info.NumberOfLinks != 1) {
+		return sandboxSecurity{}, errors.New("sandbox object type or link count changed")
+	}
+	identity := fmt.Sprintf("%08x:%08x%08x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow)
 	return sandboxSecurity{ownerSID, bytes.Clone(unsafe.Slice((*byte)(acl), size)), control, identity}, nil
 }
 
@@ -239,7 +247,11 @@ func sandboxOpen(path string, access uint32) (syscall.Handle, error) {
 	if err != nil {
 		return 0, err
 	}
-	handle, err := syscall.CreateFile(name, access|sandboxAttributes, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	requested := access | sandboxAttributes
+	if access == sandboxMaximumAllowed {
+		requested = access
+	}
+	handle, err := syscall.CreateFile(name, requested, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -318,6 +330,15 @@ func sandboxOwnerRestored(before, after sandboxSecurity, user string) bool {
 }
 
 func sandboxRestorePrivilege() error {
+	return sandboxEnablePrivilege("SeRestorePrivilege")
+}
+
+// Used only by an authenticated cross-user worker to inspect directory metadata.
+func sandboxReadPrivilege() error {
+	return sandboxEnablePrivilege("SeBackupPrivilege")
+}
+
+func sandboxEnablePrivilege(privilegeName string) error {
 	var token syscall.Token
 	process, err := syscall.GetCurrentProcess()
 	if err != nil {
@@ -327,7 +348,7 @@ func sandboxRestorePrivilege() error {
 		return err
 	}
 	defer token.Close()
-	name, _ := syscall.UTF16PtrFromString("SeRestorePrivilege")
+	name, _ := syscall.UTF16PtrFromString(privilegeName)
 	var privilege struct {
 		Count      uint32
 		Low        uint32
@@ -396,7 +417,21 @@ func sandboxPreparation(target string, before sandboxSecurity, user string, crea
 		}
 		return SandboxResult{sandboxPrepared}, nil
 	}
-	return SandboxResult{sandboxPreparationEvent(before.owner, user, accessErr == nil)}, nil
+	event := sandboxPreparationEvent(before.owner, user, accessErr == nil)
+	if event == sandboxUnchanged {
+		probe, err := sandboxOpen(target, toolReadControl|sandboxDeleteChild)
+		if err == nil {
+			syscall.CloseHandle(probe)
+		} else if errors.Is(err, syscall.ERROR_ACCESS_DENIED) {
+			event = sandboxDeleteRequired
+		} else {
+			return SandboxResult{}, err
+		}
+	}
+	if event == sandboxUnchanged && !sandboxAdminCanResetACL(before) {
+		event = sandboxDeleteRequired
+	}
+	return SandboxResult{event}, nil
 }
 
 func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32, expected string) (result SandboxResult, failure error) {
@@ -539,6 +574,47 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 	}
 	defer closeFiles(parents)
 	stage = sandboxStageTarget
+	if !worker || strings.HasPrefix(expected, sandboxBinSnapshotPrefix) {
+		readers, readErr := sandboxLogonReaders(token)
+		if readErr != nil {
+			return result, readErr
+		}
+		group, groupErr := resolveToolPrincipal()
+		if groupErr != nil {
+			return result, groupErr
+		}
+		if worker {
+			if err := sandboxBinOwnerWorker(home, user, group, strings.TrimPrefix(expected, sandboxBinSnapshotPrefix), parent, readers...); err != nil {
+				return result, err
+			}
+			return SandboxResult{sandboxRepaired}, nil
+		}
+		stage = sandboxStageMetadata
+		if err := sandboxPrepareMetadata(home, user, group, readers...); err != nil {
+			return result, err
+		}
+		stage = sandboxStageTarget
+		if err := sandboxEnsureBinOwner(home, user, group, func(fingerprint string) error {
+			stage = sandboxStageElevation
+			child, startErr := startWorker(self, []string{sandboxHomeFlag, home, sandboxVersionFlag, version, sandboxRuntimeFlag, executable, sandboxParentFlag, fmt.Sprint(parentID), sandboxSnapshotFlag, sandboxBinSnapshotPrefix + fingerprint}, true)
+			if startErr != nil {
+				return startErr
+			}
+			defer child.Close()
+			stage = sandboxStageWorker
+			code, waitErr := child.Wait(sandboxWorkerWait)
+			if waitErr != nil {
+				return waitErr
+			}
+			if code != 0 {
+				return sandboxWorkerFailure(code)
+			}
+			return nil
+		}, readers...); err != nil {
+			return result, err
+		}
+	}
+	stage = sandboxStageTarget
 	target := filepath.Join(home, sandboxSecrets)
 	created := false
 	handle, err := sandboxOpen(target, toolReadControl)
@@ -552,7 +628,11 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 	if err != nil {
 		return result, err
 	}
-	defer syscall.CloseHandle(handle)
+	defer func() {
+		if handle != 0 {
+			syscall.CloseHandle(handle)
+		}
+	}()
 	targetPins, err := pinLineage(target)
 	if err != nil {
 		return result, err
@@ -577,7 +657,7 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 		if preparationErr != nil {
 			return result, preparationErr
 		}
-		if preparation.Event != sandboxRepairRequired {
+		if preparation.Event != sandboxRepairRequired && preparation.Event != sandboxDeleteRequired {
 			return preparation, nil
 		}
 	}
@@ -591,6 +671,11 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 	}
 	if user == group {
 		return result, errors.New("sandbox account cannot request owner recovery")
+	}
+	if worker {
+		if err = sandboxReadPrivilege(); err != nil {
+			return result, err
+		}
 	}
 	for _, ancestor := range []struct{ path, stage string }{
 		{profile, sandboxStageProfile}, {filepath.Dir(home), sandboxStageProduct}, {home, sandboxStageHome},
@@ -612,6 +697,25 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 	stage = sandboxStageTarget
 	if err = validateSandboxACL(before, user, group, sandboxRepairACL, readers...); err != nil {
 		return result, err
+	}
+	finishMaintenance := func(snapshot sandboxSecurity) error {
+		// Release only target pins, retaining the Home/ancestor pins. MAXIMUM_ALLOWED
+		// must be the sole target open: its DELETE access conflicts with no-delete
+		// sharing. Both writers recheck object identity before any mutation.
+		closeFiles(targetPins)
+		syscall.CloseHandle(handle)
+		handle = 0
+		if err := sandboxEnsureDeleteChild(target, snapshot, user, group, readers...); err != nil {
+			return err
+		}
+		return sandboxEnsureSetupWriter(target, user, group, snapshot.identity, readers...)
+	}
+	if !worker && before.owner == user {
+		stage = sandboxStageVerification
+		if err = finishMaintenance(before); err != nil {
+			return result, err
+		}
+		return SandboxResult{sandboxRepaired}, nil
 	}
 	if worker {
 		if !parent.Alive() {
@@ -660,5 +764,8 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 		return result, err
 	}
 	syscall.CloseHandle(probe)
+	if err = finishMaintenance(after); err != nil {
+		return result, err
+	}
 	return SandboxResult{sandboxRepaired}, nil
 }

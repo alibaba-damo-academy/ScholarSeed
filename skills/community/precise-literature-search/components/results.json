@@ -6,6 +6,7 @@
     "criteria": [
       "样例：长上下文方法对比"
     ],
+    "criteria_details": [],
     "status": "success",
     "sources": [],
     "candidates": 6,
@@ -86,6 +87,17 @@
     }
   },
   "responses": {
+    "open-source": {
+      "state": "resolved",
+      "data": {
+        "result": null,
+        "view": {
+          "title": "样例原文",
+          "body": "样例文献：长上下文方法对比\n\n摘要\n本样例展示当前结果集中所选文献的查看交互。\n\n方法\n比较证据位于输入开头、中间和结尾时的回答表现。\n\n返回后可继续查看其他结果。本内容为虚构预览样例，不代表真实论文或研究结论。",
+          "identifier": { "$input": "refId" }
+        }
+      }
+    },
     "open-results": {
       "state": "resolved",
       "data": {

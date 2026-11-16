@@ -15,7 +15,12 @@ import httpx
 
 from service.platform.activity import Activities
 from service.settings.authorization import BrowserAuthorization
-from service.settings.credentials import CredentialState, ModelCredentialStore, OAuthTokens
+from service.settings.credentials import (
+    CredentialConflictError,
+    CredentialState,
+    ModelCredentialStore,
+    OAuthTokens,
+)
 from service.settings.oauth import CHATGPT_PROVIDER, PLAN_SCOPE, OAuthFailure, OAuthProtocol
 from tests.siwc import CLIENT, ISSUER, JWK, NONCE, SUBJECT, identity
 
@@ -131,6 +136,74 @@ class SiwcContract(unittest.IsolatedAsyncioTestCase):
             with self.subTest(token_kind="untrusted identity"):
                 with self.assertRaisesRegex(OAuthFailure, "oauth_identity_invalid"):
                     protocol._validate_id(token, CLIENT, NONCE, signing_keys)
+
+    async def test_revocation_retries_transient_failures_but_not_client_errors(self):
+        tokens = OAuthTokens("access", "refresh", time.time() + 3600, SUBJECT, client_id=CLIENT)
+        for statuses, expected in [([503, 200], 2), ([400], 1), ([503, 503], 2)]:
+            calls = []
+
+            def handle(request):
+                if request.url.path.endswith("openid-configuration"):
+                    return httpx.Response(
+                        200, json={"issuer": ISSUER, "revocation_endpoint": ISSUER + "/revoke"}
+                    )
+                calls.append(request)
+                return httpx.Response(statuses[len(calls) - 1])
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+                protocol = OAuthProtocol(CHATGPT_PROVIDER, client)
+                if statuses[-1] == 200:
+                    await protocol.revoke(tokens)
+                else:
+                    with self.assertRaisesRegex(OAuthFailure, "oauth_revocation_unconfirmed"):
+                        await protocol.revoke(tokens)
+            self.assertEqual(len(calls), expected)
+            self.assertTrue(
+                all(
+                    parse_qs(request.content.decode())["client_id"] == [CLIENT] for request in calls
+                )
+            )
+
+    def test_saved_registration_claim_is_atomic_and_owner_scoped(self):
+        tokens = OAuthTokens(
+            "access", "refresh", time.time() + 3600, SUBJECT, "same@example.com", CLIENT
+        )
+        self.store.replace("owner", "deleted", tokens, expected_generation=0)
+        self.assertEqual(self.store.registrations("owner", excluded=set()), [])
+        self.store.revoke("owner", "deleted")
+        host = self.store.host_id()
+        self.assertEqual(self.store.registrations("other", excluded=set()), [])
+        self.assertEqual(self.store.registrations("owner", excluded={"deleted"}), [])
+        self.assertEqual(
+            self.store.registrations("owner", excluded=set())[0]["label"], "same@example.com"
+        )
+        with self.assertRaises(CredentialConflictError):
+            self.store.claim_registration("other", "new", "deleted")
+        old_generation = self.store.read("owner", "deleted").generation
+        self.store.claim_registration("owner", "new", "deleted")
+        reopened = ModelCredentialStore(self.store.path, self.store.lock_directory)
+        record = reopened.read("owner", "new")
+        self.assertEqual((record.client_id, record.subject, record.tokens), (CLIENT, SUBJECT, None))
+        self.assertEqual(reopened.host_id(), host)
+        with self.assertRaises(CredentialConflictError):
+            self.store.claim_registration("owner", "second", "deleted")
+        with self.assertRaises(CredentialConflictError):
+            self.store.replace("owner", "deleted", tokens, expected_generation=old_generation)
+        with self.assertRaises(CredentialConflictError):
+            self.store.replace("owner", "new", tokens, expected_generation=0)
+
+    def test_shared_registration_claim_preserves_machine_ownership(self):
+        tokens = OAuthTokens("access", "refresh", time.time() + 3600, SUBJECT, client_id=CLIENT)
+        self.store.replace("creator", "deleted", tokens, expected_generation=0)
+        shared = ModelCredentialStore(
+            self.store.path, self.store.lock_directory, shared_ownership=True
+        )
+        shared.revoke("local", "deleted")
+        self.assertEqual(len(shared.registrations("local", excluded=set())), 1)
+        shared.claim_registration("local", "new", "deleted", target_owner_id="creator")
+        self.assertEqual(shared.read("another-user", "new").client_id, CLIENT)
+        self.assertEqual(self.store.read("creator", "new").client_id, CLIENT)
+        self.assertEqual(self.store.read("local", "new").client_id, "")
 
     async def test_revocation_uses_discovery_and_issued_registration(self):
         protocol = self.protocol()

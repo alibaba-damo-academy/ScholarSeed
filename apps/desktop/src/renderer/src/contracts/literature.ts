@@ -1,25 +1,6 @@
 /** Public renderer contract for the global literature catalogue. */
 import type { RecordTarget } from './records'
 
-export interface LiteratureDownloadPaper {
-  paper_id: string
-  literature_id: string
-  attachment_id: string
-  title: string
-  revision: string
-  operation_id?: string
-}
-export interface LiteratureDownloadCard {
-  schema_version: '1.0'
-  session_id: string
-  run: string
-  project_id: string
-  papers: LiteratureDownloadPaper[]
-  failures: Array<{ paper_id: string; code: string }>
-  omitted_papers?: number
-  omitted_failures?: number
-}
-
 /** `attachment` 不是文献字段，而是「有没有附件」的派生排序键（有=0，无=1）。 */
 export type LiteratureSort =
   | 'attachment'
@@ -85,6 +66,7 @@ export const isAttachmentAvailable = (
 ): boolean => attachment != null && attachment.availability !== ATTACHMENT_MISSING
 export interface LiteratureSummary {
   id: string
+  has_reading?: boolean
   item_type: string
   bib_type: string
   title: string
@@ -117,7 +99,44 @@ export interface LiteratureSummary {
   projects: LiteratureFacet[]
   version: number
 }
+export interface NoteSource {
+  record_target: { owner: 'literature_attachment'; scope_id: string; subject_id: string }
+  source_revision: string
+  mark_id: string
+  comment_id: string | null
+  kind: 'text' | 'user_comment' | 'location'
+  page: number
+  text: string
+  attachment_name: string
+}
+export interface NotePaperSource {
+  id: string
+  record_target: NoteSource['record_target']
+  source_revision: string
+  attachment_name: string
+  page: number
+  text: string
+}
+export interface NoteProvenance {
+  version: 1
+  status?: 'unverified' | 'indexed'
+  paragraphs: {
+    id: string
+    text: string
+    display_text?: string
+    sources: NoteSource[]
+    paper_sources?: NotePaperSource[]
+    source_ids?: string[]
+  }[]
+  unreferenced_sources?: NoteSource[]
+  unresolved_source_ids?: string[]
+  skipped_paragraphs?: number
+  note_sha256?: string
+  document_sha256?: string
+}
+
 export interface LiteratureNote {
+  provenance?: NoteProvenance | null
   id: string
   title: string
   text: string
@@ -153,9 +172,6 @@ export interface LiteratureUpdate {
   project_collection_ids?: string[]
 }
 export interface LiteratureQuery {
-  download_session_id?: string
-  download_run?: string
-  exclude_paper_id?: string[]
   q?: string
   collection_id?: string[]
   without_collection?: boolean
@@ -316,6 +332,7 @@ export interface ConversationSearchPaper {
   year: number | null
   venue: string | null
   doi: string | null
+  arxiv_id?: string | null
   url: string | null
   abstract: string | null
   reasons: string[]
@@ -348,9 +365,18 @@ export interface ConversationSearchResult {
   warnings: string[]
   metadata: { artifact_id: string }
   report: { artifact_id: string; path: string; name: string; media_type: string; size: number }
-  origin?: 'precise-search' | 'literature-review' | 'slr-codex' | 'agentic-search'
+  origin?:
+    | 'precise-search'
+    | 'literature-review'
+    | 'slr-codex'
+    | 'agentic-search'
+    | 'research-idea-citations'
   selection?: { artifact_id?: string }
   fulltext?: { artifact_id?: string }
+  fulltext_authorization?: {
+    disposition: 'not_required'
+    evidence_kind: 'abstract'
+  } | null
 }
 export interface ReviewArtifact {
   artifact_id: string
@@ -370,12 +396,42 @@ export interface ReviewSection {
   comparison_tables: string[]
 }
 export interface ReviewCheck {
+  id: string
   title: string
   verdict: 'PASS' | 'WARN' | 'FAIL' | 'NOT_CHECKED' | 'NOT_APPLICABLE'
   reason: string
 }
+export interface ReviewCitation {
+  number: number | null
+  title: string
+  authors: string
+  year: number | null
+  venue: string
+}
+export interface ReviewEvidence {
+  reason: string
+  reason_code?: string
+  basis: 'fulltext' | 'abstract' | 'unknown'
+  extracted_chars: number | null
+}
+export type ReviewReferenceTarget =
+  { kind: 'library'; item_id: string } | { kind: 'web'; url: string }
+export interface ReviewReference {
+  citation_key: string
+  paper_id: string | null
+  citation: ReviewCitation
+  evidence: ReviewEvidence | null
+  target: ReviewReferenceTarget | null
+}
+export interface ReviewIssue {
+  title: string
+  detail: string
+  paper_ids: string[]
+  affected_content: string
+  priority: 'urgent' | 'attention' | 'low' | null
+}
 export interface LiteratureReview {
-  schema_version: '1.1'
+  schema_version: '1.2'
   workspace: string
   session_id: string
   checkpoint: 'outline' | 'result'
@@ -384,7 +440,7 @@ export interface LiteratureReview {
   status: 'outline' | 'generated' | 'partial' | 'incomplete' | 'failed'
   generation_status?: 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED' | null
   scope: {
-    topic: string
+    topic: string | null
     time_range: string
     focus: string[]
     requested_materials: string[]
@@ -392,69 +448,150 @@ export interface LiteratureReview {
     external_materials: number | null
   }
   output: {
-    format: 'latex_pdf' | 'markdown' | null
+    format: 'latex_pdf' | 'markdown' | 'docx' | null
     citation_style: 'numeric' | 'author_year' | 'ieee' | 'acm' | 'gbt7714_2025' | null
     decided_by: 'user' | 'default' | null
   }
   included: number | null
   fulltext: number | null
   abstract_only: number | null
-  pending_checks: number | null
-  cited: number | null
   section_count: number
   sections: ReviewSection[]
-  checks: ReviewCheck[]
-  citations: Array<{ title: string; authors: string; year: number | null; venue: string }>
-  abstract_evidence: Array<{
-    paper_id: string
-    title: string
-    reason: string
-    reason_code?: string
-  }>
-  issues: Array<{ title: string; detail: string; paper_ids: string[]; affected_content: string }>
-  issue_count?: number | null
+  references: {
+    cited_count: number | null
+    fulltext_cited_count: number | null
+    abstract_cited_count: number | null
+    rows: ReviewReference[]
+  }
+  verification: {
+    issue_count: number | null
+    rows: { check: ReviewCheck | null; issue: ReviewIssue | null }[]
+  }
   warnings: string[]
   source_hashes: Record<string, string>
   artifacts: ReviewArtifact[]
 }
-export interface LiteratureDeliveryPaper {
-  paper_id: string
-  title: string
-  revision: string
-  saved: 'pending' | 'saved' | 'failed' | 'skipped'
-  library: 'pending' | 'saved' | 'failed' | 'skipped'
-  resource_path: string
-  literature_id: string
-  error: string
-  library_error: string
-  save_reused?: boolean
-  library_reused?: boolean
-  versions?: string[]
+/** One saved reading asset shared by the PDF reader and literature catalogue. */
+export interface ReadingEvidence {
+  page: number
+  quote: string
+  kind?: 'text' | 'table_text' | 'image'
+  fragment_id?: string
+  region_id?: string
+  label?: string
+  quads?: number[][]
 }
-
-export interface LiteratureDeliveryChoice {
-  target: 'project' | 'directory'
-  project_id?: string
-  parent: string
-  ticket: string
-  add_to_library: boolean
-  collection_id: string
-  directory?: string
-  versions?: Record<string, 'keep_both' | 'skip'>
+export interface PdfAiContent {
+  text: string
+  uncertain?: boolean
+  evidence?: ReadingEvidence[]
+  source_warning?: boolean
+  origin?: 'l1' | 'missing'
+  citations?: { marker: string; evidence: ReadingEvidence[] }[]
 }
-
-export interface LiteratureDeliveryAttempt {
-  attempt_id: string
-  state: 'acquiring' | 'pending' | 'saving' | 'saved' | 'partial' | 'canceled'
-  choice: LiteratureDeliveryChoice | null
-  papers: LiteratureDeliveryPaper[]
+export interface ReadingSection {
+  key: 'problem' | 'method' | 'results' | 'limitations'
+  items: (PdfAiContent & { path?: string })[]
 }
-
-export interface LiteratureDeliveryBatch extends LiteratureDeliveryAttempt {
+export interface ReadingSummary extends PdfAiContent {
+  organized?: boolean
+  organization?: 'complete' | 'partial' | 'fallback' | 'abstract'
+  paper_type: string
+  contribution: PdfAiContent
+  claims: PdfAiContent[]
+  method: PdfAiContent
+  limitations: PdfAiContent
+  overview?: PdfAiContent
+  sections?: ReadingSection[]
+}
+export interface ReadingKnowledge {
+  reading_depth: 'full' | 'partial' | 'metadata_only'
+  completeness: { complete: boolean; missing: string[] }
+  extraction_quality: { status: 'READY' | 'DEGRADED'; errors: string[]; attempts: number }
+}
+export interface ReadingTiming {
+  first_seconds?: number
+  reading_seconds?: number
+  total_seconds?: number
+}
+export interface ReadingInvocation {
   id: string
-  session_id: string
-  project_id: string
-  prompted: boolean
-  history: LiteratureDeliveryAttempt[]
-  failures: Array<{ paper_id: string; code: string; reason: string }>
+  model_key?: string
+  prompt_version?: string
+  status?: string
+  input_tokens?: number | null
+  output_tokens?: number | null
+  elapsed_seconds?: number
+  start_seconds?: number
 }
+export interface ReadingMetadata {
+  task_id?: string
+  prompt_version?: string
+  reading_version?: string
+  l1_status?: string
+  l1_reused?: boolean
+  l1_retries?: number
+  citation_retries?: number
+  reading_retries?: number
+  l1_diagnostic?: string
+  citation_diagnostic?: string
+  l1_retry_mode?: string
+  l1_retry_includes_original?: boolean
+  preparation_seconds?: number
+  reading_seconds?: number
+  first_item_seconds?: number
+  request_seconds?: number | null
+  index_cache_hit?: boolean | null
+  ui_timing?: ReadingTiming
+  invocations?: ReadingInvocation[]
+  schema_version: string
+  generated_at?: string
+  model_key?: string
+  input_mode?: 'text_only' | 'text_images'
+  image_count?: number
+  image_policy?: { version?: string; skipped?: string[] }
+  coverage: {
+    complete: boolean
+    total_pages: number
+    included_pages: number[]
+    unavailable_pages: number[]
+    omissions: unknown[]
+  }
+  elapsed_seconds: number
+  usage: { input_tokens: number | null; output_tokens: number | null; calls: number }
+}
+export interface ReadingAsset {
+  modules?: Record<string, ReadingSummary>
+  content?: PdfAiContent
+  l1?: ReadingKnowledge
+  metadata?: ReadingMetadata
+  model_key: string
+  revision: string
+  response_language?: 'zh' | 'en'
+}
+export interface ReadingTask {
+  task_id: string
+  status: string
+  model_key?: string
+  result?: ReadingAsset
+  reading_complete?: boolean
+  preview?: ReadingSummary
+  error_code?: string
+  error_detail?: string
+  progress?: { phase: string }
+}
+export interface ReadingState {
+  revision: string
+  attachment_id: string
+  results: Record<string, ReadingAsset>
+  task: ReadingTask | null
+}
+export const LITERATURE_AUTHORIZATION_ACTIONS = {
+  select: 'select',
+  authorize: 'authorize',
+  reject: 'reject',
+} as const
+export const LITERATURE_AUTHORIZATION_SLOTS = {
+  fixed: 'literature.authorization',
+  selectable: 'literature.selection',
+} as const

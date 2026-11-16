@@ -3,10 +3,7 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Composer } from '../components/business/Composer'
-import {
-  ConversationControls,
-  Stream
-} from '../components/business/Stream'
+import { ConversationControls, Stream } from '../components/business/Stream'
 import { TaskMonitor } from '../components/business/TaskMonitor'
 import { WorkspaceFiles } from '../components/business/WorkspaceFiles'
 import { Progress } from '../components/primitive/Progress'
@@ -28,29 +25,48 @@ const RUNTIME_ACTION_KEYS = {
   retry: 'preflight.actions.retry',
 } as const
 const HEADER_TITLE_MAX_CHARS = 15
-const CONVERSATION_COLUMN_CLASS_NAME = 'relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--paper)]'
-const CONVERSATION_DRAG_STRIP_CLASS_NAME = 'absolute left-[var(--vds-space-0)] right-[var(--vds-space-0)] top-[var(--vds-space-0)] z-[var(--vds-z-local-control)] h-[15px] [-webkit-app-region:drag]'
-const CONVERSATION_CONTENT_CLASS_NAME = 'flex h-full min-h-0 min-w-0 flex-[1_1_auto] overflow-hidden'
+const CONVERSATION_COLUMN_CLASS_NAME =
+  'relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--paper)]'
+const CONVERSATION_DRAG_STRIP_CLASS_NAME =
+  'absolute left-[var(--vds-space-0)] right-[var(--vds-space-0)] top-[var(--vds-space-0)] z-[var(--vds-z-local-control)] h-[15px] [-webkit-app-region:drag]'
+const CONVERSATION_CONTENT_CLASS_NAME =
+  'flex h-full min-h-0 min-w-0 flex-[1_1_auto] overflow-hidden'
 const CONVERSATION_WITH_MONITOR_CLASS_NAME = 'flex-row gap-[var(--vds-space-0)]'
-const CONVERSATION_MAIN_CLASS_NAME = 'flex h-full min-h-0 min-w-0 flex-[1_1_auto] flex-col overflow-hidden'
-const CONVERSATION_FILE_PREVIEW_CLASS_NAME = 'flex-[0_0_clamp(var(--conversation-split-min-width),34%,620px)] border-r border-[var(--border-soft)]'
-const CONVERSATION_HEADER_CLASS_NAME = 'relative z-[var(--vds-z-sticky-header)] flex h-[58px] flex-none items-center border-b border-[var(--border-soft)] bg-[var(--paper)] px-[20px] [-webkit-app-region:drag] [.vds-app-shell.is-sidebar-collapsed_&]:pl-[174px] [.vds-app-shell.is-sidebar-collapsed_&]:[-webkit-app-region:no-drag]'
-const CONVERSATION_HEADER_IDENTITY_CLASS_NAME = 'relative top-[-3px] flex min-w-0 flex-[1_1_auto] items-center gap-[var(--vds-space-2)] overflow-hidden whitespace-nowrap'
-const CONVERSATION_HEADER_DOT_CLASS_NAME = 'size-[6px] flex-none rounded-[var(--vds-radius-circle)] bg-[var(--accent)]'
-const CONVERSATION_HEADER_BUSY_DOT_CLASS_NAME = 'animate-[progress-beacon_1.35s_ease-out_infinite] shadow-[0_0_0_0_color-mix(in_oklch,var(--accent)_48%,transparent)]'
-const CONVERSATION_HEADER_TITLE_CLASS_NAME = 'min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[12px] leading-[var(--vds-lh-body-lv1)] text-[var(--text)] [-webkit-app-region:no-drag]'
-const CONVERSATION_HEADER_META_CLASS_NAME = 'flex-none overflow-hidden text-ellipsis whitespace-nowrap text-[9.5px] leading-[var(--vds-lh-caption)] text-[var(--text-3)]'
+const CONVERSATION_MAIN_CLASS_NAME =
+  'flex h-full min-h-0 min-w-0 flex-[1_1_auto] flex-col overflow-hidden'
+const CONVERSATION_FILE_PREVIEW_CLASS_NAME =
+  'flex-[0_0_clamp(var(--conversation-split-min-width),34%,620px)] border-r border-[var(--border-soft)]'
+const CONVERSATION_HEADER_CLASS_NAME =
+  'relative z-[var(--vds-z-sticky-header)] flex h-[58px] flex-none items-center border-b border-[var(--border-soft)] bg-[var(--paper)] px-[20px] [-webkit-app-region:drag] [.vds-app-shell.is-sidebar-collapsed_&]:pl-[174px] [.vds-app-shell.is-sidebar-collapsed_&]:[-webkit-app-region:no-drag]'
+const CONVERSATION_HEADER_IDENTITY_CLASS_NAME =
+  'relative top-[-3px] flex min-w-0 flex-[1_1_auto] items-center gap-[var(--vds-space-2)] overflow-hidden whitespace-nowrap'
+const CONVERSATION_HEADER_DOT_CLASS_NAME =
+  'size-[6px] flex-none rounded-[var(--vds-radius-circle)] bg-[var(--accent)]'
+const CONVERSATION_HEADER_BUSY_DOT_CLASS_NAME =
+  'animate-[progress-beacon_1.35s_ease-out_infinite] shadow-[0_0_0_0_color-mix(in_oklch,var(--accent)_48%,transparent)]'
+const CONVERSATION_HEADER_TITLE_CLASS_NAME =
+  'min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[12px] leading-[var(--vds-lh-body-lv1)] text-[var(--text)] [-webkit-app-region:no-drag]'
+const CONVERSATION_HEADER_META_CLASS_NAME =
+  'flex-none overflow-hidden text-ellipsis whitespace-nowrap text-[9.5px] leading-[var(--vds-lh-caption)] text-[var(--text-3)]'
 const CONVERSATION_HEADER_SESSION_CLASS_NAME = 'font-[var(--font-mono)]'
 const CONVERSATION_HEADER_ICON_CLASS_NAME = 'no-drag'
-const CONVERSATION_MAIN_BODY_CLASS_NAME = 'flex min-h-0 min-w-0 flex-[1_1_auto] flex-col overflow-hidden'
-const RUNTIME_PREFLIGHT_CLASS_NAME = 'absolute inset-[var(--vds-space-0)] z-[var(--vds-z-surface-gate)] grid place-items-center bg-[color-mix(in_oklch,var(--bg)_88%,transparent)] p-[24px]'
-const RUNTIME_PREFLIGHT_CARD_CLASS_NAME = 'w-[min(430px,92%)] rounded-[14px] border border-[var(--border)] bg-[var(--surface)] px-[24px] py-[22px] shadow-[0_18px_48px_rgb(0_0_0_/_18%)]'
+const CONVERSATION_MAIN_BODY_CLASS_NAME =
+  'flex min-h-0 min-w-0 flex-[1_1_auto] flex-col overflow-hidden'
+const RUNTIME_PREFLIGHT_CLASS_NAME =
+  'absolute inset-[var(--vds-space-0)] z-[var(--vds-z-surface-gate)] grid place-items-center bg-[color-mix(in_oklch,var(--bg)_88%,transparent)] p-[24px]'
+const RUNTIME_PREFLIGHT_CARD_CLASS_NAME =
+  'w-[min(430px,92%)] rounded-[14px] border border-[var(--border)] bg-[var(--surface)] px-[24px] py-[22px] shadow-[0_18px_48px_rgb(0_0_0_/_18%)]'
 const RUNTIME_PREFLIGHT_TITLE_ROW_CLASS_NAME = 'mb-[10px] flex items-center gap-[9px]'
-const RUNTIME_PREFLIGHT_DOT_CLASS_NAME = 'size-[9px] rounded-[var(--vds-radius-circle)] bg-[var(--c-tension)]'
-const RUNTIME_PREFLIGHT_TITLE_CLASS_NAME = 'text-[14px] font-[var(--vds-fw-semibold)] text-[var(--text)]'
-const RUNTIME_PREFLIGHT_CODE_CLASS_NAME = 'mb-[6px] text-[10px] leading-[var(--vds-lh-caption)] text-[var(--text-3)]'
-const RUNTIME_PREFLIGHT_MESSAGE_CLASS_NAME = 'mb-[var(--vds-space-2)] text-[12px] leading-[1.55] text-[var(--text-2)]'
-const RUNTIME_PREFLIGHT_ACTION_CLASS_NAME = 'mb-[var(--vds-space-4)] text-[11px] leading-[1.5] text-[var(--text-3)]'
+const RUNTIME_PREFLIGHT_DOT_CLASS_NAME =
+  'size-[9px] rounded-[var(--vds-radius-circle)] bg-[var(--c-tension)]'
+const RUNTIME_PREFLIGHT_TITLE_CLASS_NAME =
+  'text-[14px] font-[var(--vds-fw-semibold)] text-[var(--text)]'
+const RUNTIME_PREFLIGHT_CODE_CLASS_NAME =
+  'mb-[6px] text-[10px] leading-[var(--vds-lh-caption)] text-[var(--text-3)]'
+const RUNTIME_PREFLIGHT_MESSAGE_CLASS_NAME =
+  'mb-[var(--vds-space-2)] text-[12px] leading-[1.55] text-[var(--text-2)]'
+const RUNTIME_PREFLIGHT_ACTION_CLASS_NAME =
+  'mb-[var(--vds-space-4)] text-[11px] leading-[1.5] text-[var(--text-3)]'
 
 function displayHeaderTitle(title: string): string {
   const chars = Array.from(title)
@@ -87,7 +103,7 @@ export function Conversation(): React.JSX.Element {
       path: member.workspacePath,
       title: member.title,
       ...(member.titleFallback ? { titleFallback: 'untitledArtifact' as const } : {}),
-      mediaType: member.mediaType
+      mediaType: member.mediaType,
     })
   }
   const homeSurface = state.turnLaunch ? (
@@ -101,17 +117,43 @@ export function Conversation(): React.JSX.Element {
     <div className={CONVERSATION_COLUMN_CLASS_NAME}>
       {/* 顶部窗口拖动带: 侧栏那一行原本是全窗唯一能拖动的地方。 */}
       <div className={CONVERSATION_DRAG_STRIP_CLASS_NAME} aria-hidden />
-      {home ? homeSurface : (
+      {home ? (
+        homeSurface
+      ) : (
         <>
-          <div className={cx(CONVERSATION_CONTENT_CLASS_NAME, CONVERSATION_WITH_MONITOR_CLASS_NAME)}>
-            <div className={cx(CONVERSATION_MAIN_CLASS_NAME, documentOpen && CONVERSATION_FILE_PREVIEW_CLASS_NAME)}>
+          <div
+            className={cx(CONVERSATION_CONTENT_CLASS_NAME, CONVERSATION_WITH_MONITOR_CLASS_NAME)}
+          >
+            <div
+              className={cx(
+                CONVERSATION_MAIN_CLASS_NAME,
+                documentOpen && CONVERSATION_FILE_PREVIEW_CLASS_NAME
+              )}
+            >
               <header className={CONVERSATION_HEADER_CLASS_NAME}>
                 <div className={CONVERSATION_HEADER_IDENTITY_CLASS_NAME}>
-                  <span className={cx(CONVERSATION_HEADER_DOT_CLASS_NAME, resuming && CONVERSATION_HEADER_BUSY_DOT_CLASS_NAME)} />
-                  <span className={CONVERSATION_HEADER_TITLE_CLASS_NAME} title={sessionDisplayTitle(thread, assistantText)}>{displayHeaderTitle(sessionDisplayTitle(thread, assistantText))}</span>
-                  <span className={CONVERSATION_HEADER_META_CLASS_NAME}>· {threadProject || t('header.recent')}</span>
+                  <span
+                    className={cx(
+                      CONVERSATION_HEADER_DOT_CLASS_NAME,
+                      resuming && CONVERSATION_HEADER_BUSY_DOT_CLASS_NAME
+                    )}
+                  />
+                  <span
+                    className={CONVERSATION_HEADER_TITLE_CLASS_NAME}
+                    title={sessionDisplayTitle(thread, assistantText)}
+                  >
+                    {displayHeaderTitle(sessionDisplayTitle(thread, assistantText))}
+                  </span>
+                  <span className={CONVERSATION_HEADER_META_CLASS_NAME}>
+                    · {threadProject || t('header.recent')}
+                  </span>
                   {thread.sessionId && (
-                    <span className={cx(CONVERSATION_HEADER_META_CLASS_NAME, CONVERSATION_HEADER_SESSION_CLASS_NAME)}>
+                    <span
+                      className={cx(
+                        CONVERSATION_HEADER_META_CLASS_NAME,
+                        CONVERSATION_HEADER_SESSION_CLASS_NAME
+                      )}
+                    >
                       {t('header.session', { id: thread.sessionId.slice(0, 8) })}
                     </span>
                   )}
@@ -145,9 +187,13 @@ export function Conversation(): React.JSX.Element {
                   <Progress
                     surface="conversation"
                     title={t('resume.title')}
-                    detail={thread.resumeMessage?.key === 'resume.retry'
-                      ? t('resume.retry', thread.resumeMessage)
-                      : thread.resumeMessage ? t(thread.resumeMessage.key) : t('resume.codex')}
+                    detail={
+                      thread.resumeMessage?.key === 'resume.retry'
+                        ? t('resume.retry', thread.resumeMessage)
+                        : thread.resumeMessage
+                          ? t(thread.resumeMessage.key)
+                          : t('resume.codex')
+                    }
                   />
                 ) : (
                   <>
@@ -159,9 +205,12 @@ export function Conversation(): React.JSX.Element {
                 )}
               </div>
             </div>
-            {documentOpen
-              ? <DocumentDock />
-              : taskMonitorOpen && !resuming && <TaskMonitor onToggle={() => setTaskMonitorOpen(false)} />}
+            {documentOpen ? (
+              <DocumentDock />
+            ) : (
+              taskMonitorOpen &&
+              !resuming && <TaskMonitor onToggle={() => setTaskMonitorOpen(false)} />
+            )}
           </div>
         </>
       )}
@@ -182,11 +231,18 @@ export function Conversation(): React.JSX.Element {
             <div className={RUNTIME_PREFLIGHT_CODE_CLASS_NAME} data-testid="runtime-preflight-code">
               {blockedReadiness.code || 'runtime_not_ready'}
             </div>
-            <div className={RUNTIME_PREFLIGHT_MESSAGE_CLASS_NAME} data-testid="runtime-preflight-message">
+            <div
+              className={RUNTIME_PREFLIGHT_MESSAGE_CLASS_NAME}
+              data-testid="runtime-preflight-message"
+            >
               {blockedReadiness.message || t('preflight.message')}
             </div>
-            <div className={RUNTIME_PREFLIGHT_ACTION_CLASS_NAME} data-testid={`runtime-preflight-action-${blockedReadiness.action || 'retry'}`}>
-              {blockedReadiness.action && Object.prototype.hasOwnProperty.call(RUNTIME_ACTION_KEYS, blockedReadiness.action)
+            <div
+              className={RUNTIME_PREFLIGHT_ACTION_CLASS_NAME}
+              data-testid={`runtime-preflight-action-${blockedReadiness.action || 'retry'}`}
+            >
+              {blockedReadiness.action &&
+              Object.prototype.hasOwnProperty.call(RUNTIME_ACTION_KEYS, blockedReadiness.action)
                 ? t(RUNTIME_ACTION_KEYS[blockedReadiness.action])
                 : t('preflight.actions.retry')}
             </div>

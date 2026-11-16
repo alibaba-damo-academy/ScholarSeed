@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from scholarseed_runtime.contract.inventory import SkillInventory
 from service.capabilities.domain import (
@@ -84,6 +84,11 @@ BRIDGE_CALLBACK_REQUEST_HEADER = "X-ScholarSeed-Callback-Request"
 BRIDGE_CALLBACK_TURN_HEADER = "X-ScholarSeed-Callback-Turn"
 BRIDGE_CALLBACK_REQUEST_CHARS = 128
 BRIDGE_CALLBACK_REQUEST_PATTERN = re.compile(r"[A-Za-z0-9._:-]+\Z")
+GENERATION_CAPABILITY = "generation"
+GENERATION_RUN_OPERATION = "run"
+GENERATION_ROUTE = BRIDGE_ROUTE_PREFIX + GENERATION_CAPABILITY + "/run"
+GENERATION_DEFAULT_TIMEOUT_SECONDS = 300
+GENERATION_MAX_TIMEOUT_SECONDS = 1800
 MCP_BRIDGE_CAPABILITY = "mcp"
 MCP_BRIDGE_STATUS_OPERATION = "status"
 MCP_BRIDGE_PLAN_OPERATION = "plan"
@@ -93,6 +98,7 @@ MCP_BRIDGE_SCOPE = "current_conversation_product_configuration"
 MCP_PLAN_EFFECT = "prepare"
 MCP_APPLY_EFFECT = "configure"
 TASK_ACTIVATE_ROUTE = BRIDGE_ROUTE_PREFIX + "task/activate"
+CONFIRM_SEARCH_START_OPERATION = "confirm-search-start"
 HISTORY_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "history/"
 ARTIFACT_PUBLISH_ROUTE = BRIDGE_ROUTE_PREFIX + "artifact/publish"
 DISPLAY_CARD_ROUTE = BRIDGE_ROUTE_PREFIX + "display-card"
@@ -116,18 +122,22 @@ BLOCKING_OPERATIONS = frozenset(
         (COMPONENT_CAPABILITY, COMPONENT_REQUEST_OPERATION),
         ("literature", "import"),
         ("resource", "import"),
+        ("resource", "read-text"),
+        ("resource", "read-external"),
         ("literature", "acquire"),
-        ("literature", "ingest"),
         ("literature", "fulltext"),
         ("literature", "authorize"),
+        ("literature", CONFIRM_SEARCH_START_OPERATION),
         ("literature", "import-identifier"),
         ("search", "run"),
+        (GENERATION_CAPABILITY, GENERATION_RUN_OPERATION),
         ("search", "browser"),
+        ("task", "activate"),
     }
 )
 BROWSER_BRIDGE_TIMEOUT_SECONDS = 130
 BLOCKING_CHECKPOINTS = {
-    ("literature", "review"): frozenset(("retrieval", "outline")),
+    ("literature", "review"): frozenset(("plan", "retrieval", "outline")),
     ("literature", "result"): frozenset(("selection", "candidates")),
 }
 BRIDGE_TOKEN_BYTES = 32
@@ -170,6 +180,7 @@ SEARCH_RUN_GUIDANCE = (
     'In a conversation, use search/run with request={"query":"...","profile":"browser","limit":20} '
     "for browser-backed candidate collection. Product search Invocations use the managed embedded "
     "browser through the scoped native callback. Other searches follow the configured provider order. "
+    "Use purpose (why), query (actual terms). "
     "search/browser is an internal callback for an eligible active search Invocation, not a conversation entry. "
     "Preserve parent permissions; never bypass a refusal through another entry."
 )
@@ -187,6 +198,11 @@ class WebSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     query: str = Field(min_length=1, max_length=SEARCH_QUERY_CHARS)
+    purpose: str = Field(
+        default="",
+        max_length=SEARCH_QUERY_CHARS,
+        description="Brief purpose shown in the search record; query remains the actual search terms.",
+    )
     profile: str = "official"
     limit: int = Field(default=SEARCH_RESULT_LIMIT, ge=1, le=SEARCH_RESULT_LIMIT)
 
@@ -381,6 +397,82 @@ class ResourceRead(BaseModel):
     encoding: Literal["text", "base64"] = RESOURCE_READ_ENCODING_TEXT
 
 
+class ResourceExternalRead(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            CONTRACT_GUIDANCE_KEY: (
+                "Read one external local file by absolute path through task-scoped product approval. "
+                "Use this instead of resource/read for unlinked external files. Ask mode waits for "
+                "the user's decision; safe_auto can approve explicitly requested ordinary documents. "
+                "No directory, write or permanent access is granted. Denial is final for this task; "
+                "do not bypass it with terminal tools. Offsets reuse the same file-generation grant."
+            )
+        },
+    )
+
+    path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=RESOURCE_READ_DEFAULT_LIMIT, ge=1, le=RESOURCE_READ_MAX_LIMIT)
+    encoding: Literal["text", "base64"] = RESOURCE_READ_ENCODING_TEXT
+
+
+class ResourceExternalReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    ok: Literal[True] = True
+    scope: Literal["task_external_file"] = "task_external_file"
+    path: str
+    offset: int
+    size: int
+    media_type: str
+    revision: str
+    encoding: Literal["text", "base64"]
+    content: str
+    eof: bool
+
+
+RESOURCE_TEXT_MAX_FILES = 20
+RESOURCE_TEXT_MAX_CHARS = 24_000
+RESOURCE_TEXT_GUIDANCE = (
+    "Read and decode project-relative PDF, DOCX, spreadsheet or text files through the product. "
+    "Unreadable files wait for the user's retry/remove decision; valid materials are retained. "
+    "Removal excludes only the failed file from this read operation, never deletes files or history. "
+    "Report removed/failed files honestly and do not bypass the decision through terminal reads."
+)
+
+
+class ResourceTextRead(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={CONTRACT_GUIDANCE_KEY: RESOURCE_TEXT_GUIDANCE},
+    )
+
+    paths: list[str] = Field(min_length=1, max_length=RESOURCE_TEXT_MAX_FILES)
+
+    @field_validator("paths")
+    @classmethod
+    def relative_paths(cls, paths: list[str]) -> list[str]:
+        for path in paths:
+            parsed = PurePosixPath(path)
+            if (
+                not path
+                or len(path) > ARTIFACT_PATH_CHARS
+                or parsed.is_absolute()
+                or ".." in parsed.parts
+                or "\\" in path
+                or ":" in path
+                or not parsed.parts
+                or str(parsed) != path
+            ):
+                raise ValueError("resource_relative_path_required")
+        if len(set(paths)) != len(paths):
+            raise ValueError("resource_duplicate_path")
+        return paths
+
+
 class ResourceReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -402,7 +494,11 @@ class ResourceReadResult(BaseModel):
 class ArtifactPublish(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+    path: str = Field(
+        min_length=1,
+        max_length=ARTIFACT_PATH_CHARS,
+        description="Existing execution-relative file, or an existing directory in a Desktop session; never an absolute path.",
+    )
     role: Literal["final", "intermediate", "supporting"] = ARTIFACT_DEFAULT_ROLE
 
 
@@ -439,6 +535,9 @@ class ComponentCatalog(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     include_ui: bool = False
+    ui_mode: Literal["declarative", "canvas", "sandbox"] = "declarative"
+    ui_detail: Literal["prompt", "schema"] = "prompt"
+    slot: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ComponentPreflight(BaseModel):
@@ -457,6 +556,7 @@ class ComponentInvocation(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     request_id: str = Field(min_length=1, max_length=BRIDGE_CALLBACK_REQUEST_CHARS)
+    revision: int = Field(default=0, ge=0)
     slot: str = Field(min_length=1, max_length=DISPLAY_CARD_TYPE_CHARS)
     data: dict[str, JsonValue]
     title: str = Field(min_length=1, max_length=HISTORY_LABEL_CHARS)
@@ -466,8 +566,11 @@ class ComponentInvocation(BaseModel):
 class BridgeCaller(Protocol):
     """Identity shared by all active product bridge capabilities."""
 
-    id: str
-    bridge_token: str
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def bridge_token(self) -> str: ...
 
     @property
     def bridge_activity(self) -> ActivityLease | None: ...
@@ -516,11 +619,14 @@ ANNOTATION_MAX_LIMIT = 20
 
 
 PDF_EVIDENCE_GUIDANCE = (
-    "First call pdf/list with request={} to obtain an authorized ref_id. "
-    "Use that ref_id for pdf/read or pdf/search. The offset indexes evidence fragments, "
+    "For session PDFs, call pdf/list with request={} to obtain an authorized ref_id. "
+    "For task-managed full text, use the paper:<id> ref returned by literature/acquire "
+    "or literature/receipt unchanged with pdf/read or pdf/search; it need not appear in pdf/list. "
+    "Do not replace its prefix with literature: or import it merely to read it. "
+    "Every read still requires this turn's task activation and the source's product authorization. "
+    "The offset indexes evidence fragments, "
     "not PDF page numbers."
 )
-PDF_EVIDENCE_PREREQUISITES: list[JsonValue] = [{"capability": "pdf", "operation": "list"}]
 
 
 class PdfQuery(BaseModel):
@@ -531,10 +637,6 @@ class PdfQuery(BaseModel):
             CONTRACT_GUIDANCE_KEY: {
                 "read": PDF_EVIDENCE_GUIDANCE,
                 "search": PDF_EVIDENCE_GUIDANCE,
-            },
-            CONTRACT_PREREQUISITES_KEY: {
-                "read": PDF_EVIDENCE_PREREQUISITES,
-                "search": PDF_EVIDENCE_PREREQUISITES,
             },
         },
     )
@@ -587,6 +689,7 @@ LITERATURE_LIST_GUIDANCE = (
     "literature/read using the owning ref_id and attachment_id; do not search project files "
     "for a literature-owned attachment."
 )
+LITERATURE_QUERY_CHARS = 512
 
 
 class LiteratureList(BaseModel):
@@ -598,6 +701,66 @@ class LiteratureList(BaseModel):
 
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=LITERATURE_DEFAULT_LIMIT, ge=1, le=LITERATURE_MAX_LIMIT)
+    view: Literal["catalog", "candidates"] = "catalog"
+    query: str = Field(
+        default="",
+        max_length=LITERATURE_QUERY_CHARS,
+        description="Optional paper title, author or identifier substring in the current scope. Returns PDF availability and saved L1 state; no external search or extraction.",
+    )
+
+
+KNOWLEDGE_OPERATION = "knowledge"
+KNOWLEDGE_DEFAULT_LIMIT = 16
+KNOWLEDGE_MAX_LIMIT = 32
+KNOWLEDGE_QUERY_CHARS = 512
+KNOWLEDGE_MAX_FIELDS = 12
+KnowledgeSection = Literal["overview", "method", "results", "limitations"]
+
+
+def default_knowledge_sections() -> list[KnowledgeSection]:
+    return ["overview"]
+
+
+class LiteratureKnowledge(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            CONTRACT_GUIDANCE_KEY: (
+                "Read saved same-source L1 and original evidence only; never generate or refresh. "
+                "Reuse sufficient evidence already returned. query orders fields locally; fields narrows "
+                "known saved paths. A query without sections considers all groups. Citation authority "
+                "comes from original fragments, not derived values or lexical matches. For missing, "
+                "stale or incompatible assets, use literature/read for the specific evidence gap. "
+                "Uses the same scope, attachment and task authorization as literature/read."
+            )
+        },
+    )
+
+    ref_id: str = Field(
+        min_length=1, max_length=HISTORY_LABEL_CHARS, pattern=LITERATURE_REF_PATTERN
+    )
+    attachment_id: str | None = Field(default=None, min_length=1, max_length=HISTORY_LABEL_CHARS)
+    sections: list[KnowledgeSection] = Field(
+        default_factory=default_knowledge_sections, min_length=1, max_length=4
+    )
+    query: str = Field(default="", max_length=KNOWLEDGE_QUERY_CHARS)
+    fields: list[str] = Field(default_factory=list, max_length=KNOWLEDGE_MAX_FIELDS)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=KNOWLEDGE_DEFAULT_LIMIT, ge=1, le=KNOWLEDGE_MAX_LIMIT)
+
+    @field_validator("fields")
+    @classmethod
+    def validate_fields(cls, values: list[str]) -> list[str]:
+        if any(
+            len(value) > HISTORY_LABEL_CHARS
+            or not re.fullmatch(
+                r"(?:card|common_fields)(?:\.[a-zA-Z_][a-zA-Z_0-9]*(?:\[\d+\])?)+", value
+            )
+            for value in values
+        ):
+            raise ValueError("knowledge_field_path_invalid")
+        return list(dict.fromkeys(values))
 
 
 class LiteratureRead(BaseModel):
@@ -646,10 +809,14 @@ class LiteratureAuthorize(BaseModel):
             CONTRACT_GUIDANCE_KEY: (
                 "Requires an activated product task and its exact authorization_type. "
                 "Publishes the product-owned fulltext question and waits for the durable decision. "
+                "Full-text consent requires real manual confirmation in every permission mode. "
                 "Do not relay a question, call request_user_input, poll or retry while waiting. "
                 "ok=true is not permission: read only returned granted_refs when disposition=authorized. "
                 "Rejected or cancelled decisions do not grant fulltext access. "
-                "For a literature-review workflow use its literature/review retrieval checkpoint instead."
+                "Literature-review prepares original abstracts at task activation. Its retrieval "
+                "checkpoint authorizes the frozen corpus in one batch, retaining the actual library, "
+                "paper and artifact refs as distinct scoped grants. Use that checkpoint before "
+                "Standard full-text acquisition or saved-reading export."
             )
         },
     )
@@ -688,9 +855,6 @@ PDF_REQUESTS[ANNOTATIONS_OPERATION] = PdfAnnotations
 class ArtifactPublisher(BridgeCaller, Protocol):
     """Active execution scope allowed to register a workspace artifact."""
 
-    id: str
-    bridge_token: str
-
     @property
     def publication_turn_id(self) -> str: ...
 
@@ -709,7 +873,9 @@ class DisplayCardPublisher(BridgeCaller, Protocol):
 
     def component_catalog(self) -> list[dict[str, Any]]: ...
 
-    def component_ui_catalog(self) -> dict[str, Any]: ...
+    def component_ui_catalog(
+        self, mode: str = "declarative", detail: str = "prompt"
+    ) -> dict[str, Any]: ...
 
     def component_preflight(self, slots: list[str]) -> dict[str, Any]: ...
 
@@ -738,6 +904,8 @@ HISTORY_REQUESTS: dict[str, type[HistoryList | HistorySearch | HistoryRead]] = {
 RESOURCE_REQUESTS: dict[str, type[BaseModel]] = {
     "list": ResourceList,
     "read": ResourceRead,
+    "read-text": ResourceTextRead,
+    "read-external": ResourceExternalRead,
 }
 BROWSER_REQUESTS: dict[str, type[BaseModel]] = {
     "list": BrowserList,
@@ -786,14 +954,19 @@ BRIDGE_REQUESTS[("artifact", "publish")] = BridgeOperation(
     ArtifactPublish,
     ARTIFACT_PUBLISH_ROUTE,
     guidance=(
-        "Publish only files explicitly delivered for the user's goal. Use final for result "
+        "Publish only files or Desktop-session directories explicitly delivered for the user's goal. Use final for result "
         "deliveries, intermediate for stage deliveries with independent reading or usage value, "
         "and supporting for additional result deliveries. Intermediate deliveries appear in "
         "artifact lists, not conversation file cards. Never publish internal scripts, tool "
         "parameters or responses, conversion intermediates, caches, logs, or source inputs "
         "merely because they exist or were read. User-requested code or datasets can be "
         "deliveries regardless of file extension. Publication captures an immutable revision; "
-        "check the successful receipt before claiming delivery."
+        "check the successful receipt before claiming delivery. Desktop directory publication captures "
+        "a sorted immutable member manifest and file bytes, including empty directories. Links, "
+        "junctions, reparse points, special files, concurrent changes, or member/depth/byte limits "
+        "reject the whole directory publication. Directory cards browse captured members read-only; "
+        "they do not support exporting a folder, saving/importing it, or opening its mutable source "
+        "through a file operation. One-shot invocations still publish regular files only."
     ),
 )
 BRIDGE_REQUESTS[("search", "run")] = BridgeOperation(
@@ -820,7 +993,7 @@ BRIDGE_REQUESTS[(COMPONENT_CAPABILITY, COMPONENT_CATALOG_OPERATION)] = BridgeOpe
     ComponentCatalog,
     COMPONENT_ROUTE_PREFIX + COMPONENT_CATALOG_OPERATION,
     "List enabled conversation components and their input, output and action contracts.",
-    guidance="Set include_ui=true to discover the active official UI package exports and composition guidance. Discovery does not grant permissions or change existing card versions.",
+    guidance="List component summaries; pass slot for its full contract. Set include_ui=true for the display-only conversation.ui OpenUI prompt. Task canvases use slot='canvas.ui' with ui_mode='canvas'; omit interaction and display, or declare interaction and request to wait for a decision. Use ui_detail='schema' only for full JSON Schema. Executable plugin authoring uses ui_mode='sandbox'. Discovery grants no permissions.",
     effect=READ_EFFECT,
     approval=NO_APPROVAL,
     requires_turn_context=True,
@@ -837,11 +1010,24 @@ for component_operation in (COMPONENT_REQUEST_OPERATION, COMPONENT_DISPLAY_OPERA
     BRIDGE_REQUESTS[(COMPONENT_CAPABILITY, component_operation)] = BridgeOperation(
         ComponentInvocation,
         COMPONENT_ROUTE_PREFIX + component_operation,
-        "Publish a custom component; request waits for a validated user result. Reuse request_id only for identical retries.",
+        "Publish a registered display-only conversation.ui surface or an isolated custom component; native product flows own confirmation and clarification.",
         requires_turn_context=True,
-        guidance="Public host components must be triggered through their owning business tools; this operation is for custom slots.",
+        guidance="Discover include_ui=true for the current declarative schema and prompt. For conversation.ui pass data={format:'openui-lang',version:1,source:program}. For an installed custom slot with a fixed openui layout, use display and pass only business JSON matching its input_schema; never pass layout or source. Display never waits; only conversation.ui uses the same request_id with sequential revision updates. conversation.ui supports display only: do not generate forms, input, execution progress, confirmations, clarification or error recovery; use existing native product flows instead. Retry with identical parameters. Other public host slots require their owning business tools. Generated descriptions do not authorize network, files, MCP or native actions.",
     )
-BRIDGE_REQUESTS[("task", "activate")] = BridgeOperation(TaskActivate, TASK_ACTIVATE_ROUTE)
+BRIDGE_REQUESTS[("task", "activate")] = BridgeOperation(
+    TaskActivate,
+    TASK_ACTIVATE_ROUTE,
+    guidance=(
+        "Activate the exact skill/workspace binding for this turn. Literature-review activation "
+        "prepares its exact sources.refs in one bounded product job and returns selected_sources "
+        "with a manifest path, digest, ready/pending counts and diagnostics. Preserve actual "
+        "literature_collection:<id> locators: the product snapshots recursive project members "
+        "without main-agent enumeration. The product saves the original activation response "
+        "before returning receipt_ref; pass that reference to writing plan-packet --receipt. "
+        "Do not reconstruct or save the response in the agent. The preparation "
+        "contains bibliography/original abstracts and is separate from full-text authorization."
+    ),
+)
 BRIDGE_REQUESTS[(SKILL_CAPABILITY, SKILL_ADMISSION_OPERATION)] = BridgeOperation(
     SkillAdmission,
     SKILL_ADMISSION_ROUTE,
@@ -900,23 +1086,32 @@ BRIDGE_REQUESTS.update(
 
 LITERATURE_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "literature/"
 LITERATURE_RESULT_ROUTE = LITERATURE_ROUTE_PREFIX + "result"
+CONFIRM_SEARCH_START_ROUTE = LITERATURE_ROUTE_PREFIX + CONFIRM_SEARCH_START_OPERATION
 LITERATURE_REVIEW_ROUTE = LITERATURE_ROUTE_PREFIX + "review"
 LITERATURE_ACQUIRE_ROUTE = LITERATURE_ROUTE_PREFIX + "acquire"
-LITERATURE_INGEST_ROUTE = LITERATURE_ROUTE_PREFIX + "ingest"
 LITERATURE_RECEIPT_ROUTE = LITERATURE_ROUTE_PREFIX + "receipt"
-LITERATURE_DELIVERY_ROUTE = LITERATURE_ROUTE_PREFIX + "delivery"
 ACQUIRE_MAX_PAPERS = 5
-DOWNLOAD_CURSOR_CHARS = 128
 ACQUIRE_PAPER_ID_CHARS = 128
 ACQUIRE_IDENTIFIER_CHARS = 512
 ACQUIRE_TITLE_CHARS = 512
+
+
+class LiteratureSearchStart(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class LiteratureSearchStartResult(BaseModel):
+    ok: Literal[True]
+    disposition: Literal["start", "defer"]
 
 
 class LiteratureResultPublish(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
-    checkpoint: Literal["search", "selection", "candidates", "final", "metadata"] = "search"
+    checkpoint: Literal["search", "selection", "candidates", "final", "metadata", "citations"] = (
+        "search"
+    )
     skill: str = Field(default="", max_length=TASK_NAME_CHARS)
 
 
@@ -924,7 +1119,7 @@ class LiteratureReviewPublish(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     workspace: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
-    checkpoint: Literal["retrieval", "outline", "result"]
+    checkpoint: Literal["plan", "retrieval", "outline", "result"]
     run_id: str | None = Field(default=None, min_length=1, max_length=RUN_ID_CHARS)
     manifest: str | None = Field(default=None, min_length=1, max_length=ARTIFACT_PATH_CHARS)
     manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -940,7 +1135,20 @@ class LiteratureAcquirePaper(BaseModel):
 
 
 class LiteratureAcquire(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            CONTRACT_GUIDANCE_KEY: (
+                "Requires the current task activation and product full-text authorization. "
+                "Read acquired task-managed full text through pdf/read using papers[].ref "
+                "unchanged (paper:<id>), starting at offset=0 and following next_offset. "
+                "Do not convert it to a literature: catalogue ref. "
+                "No catalogue import is required to read it. "
+                "Acquired bytes and permission to read them do not mean they were saved to the library."
+            )
+        },
+    )
 
     run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
     papers: list[LiteratureAcquirePaper] = Field(min_length=1, max_length=ACQUIRE_MAX_PAPERS)
@@ -952,13 +1160,6 @@ class LiteratureReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
-
-
-class LiteratureIngest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
-    cursor: str | None = Field(default=None, min_length=1, max_length=DOWNLOAD_CURSOR_CHARS)
 
 
 LITERATURE_IMPORT_OPERATION = "import"
@@ -1005,6 +1206,9 @@ class LiteratureImport(PublicationImport):
 
 RESOURCE_IMPORT_ROUTE = RESOURCE_ROUTE_PREFIX + "import"
 RESOURCE_IMPORT_GUIDANCE = (
+    "For recoverable saves pass artifact_id, its expected_sha256, a stable idempotency_key, "
+    "and explicit location. On permission failure the product waits for retry/cancel; do not "
+    "copy through terminal or save elsewhere to bypass the user's decision. "
     "On explicit user request, import a published session file into the session project's "
     "resource library through this operation, not filesystem copying, to retain its conversation "
     "association. Publish first if needed; clarify ambiguous files or destinations. No approval "
@@ -1074,39 +1278,33 @@ class LiteratureImportResult(BaseModel):
 LITERATURE_READING_REQUESTS: dict[str, type[BaseModel]] = {
     "list": LiteratureList,
     "read": LiteratureRead,
+    KNOWLEDGE_OPERATION: LiteratureKnowledge,
     "authorize": LiteratureAuthorize,
     ANNOTATIONS_OPERATION: LiteratureAnnotations,
 }
-
-
-class LiteratureDelivery(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
 
 
 LITERATURE_REQUESTS: dict[str, type[BaseModel]] = {
     LITERATURE_IMPORT_OPERATION: LiteratureImport,
     **LITERATURE_READING_REQUESTS,
     "result": LiteratureResultPublish,
+    CONFIRM_SEARCH_START_OPERATION: LiteratureSearchStart,
     "review": LiteratureReviewPublish,
     "acquire": LiteratureAcquire,
-    "ingest": LiteratureIngest,
     "receipt": LiteratureReceipt,
-    "delivery": LiteratureDelivery,
 }
 LITERATURE_ROUTES = {
     LITERATURE_IMPORT_OPERATION: LITERATURE_IMPORT_ROUTE,
     "list": LITERATURE_ROUTE_PREFIX + "list",
     "read": LITERATURE_ROUTE_PREFIX + "read",
+    KNOWLEDGE_OPERATION: LITERATURE_ROUTE_PREFIX + KNOWLEDGE_OPERATION,
     "authorize": LITERATURE_ROUTE_PREFIX + "authorize",
     ANNOTATIONS_OPERATION: LITERATURE_ROUTE_PREFIX + ANNOTATIONS_OPERATION,
     "result": LITERATURE_RESULT_ROUTE,
+    CONFIRM_SEARCH_START_OPERATION: CONFIRM_SEARCH_START_ROUTE,
     "review": LITERATURE_REVIEW_ROUTE,
     "acquire": LITERATURE_ACQUIRE_ROUTE,
-    "ingest": LITERATURE_INGEST_ROUTE,
     "receipt": LITERATURE_RECEIPT_ROUTE,
-    "delivery": LITERATURE_DELIVERY_ROUTE,
 }
 BRIDGE_REQUESTS.update(
     {
@@ -1122,6 +1320,19 @@ BRIDGE_REQUESTS[("literature", LITERATURE_IMPORT_OPERATION)] = BridgeOperation(
     effect=PUBLICATION_IMPORT_EFFECT,
     approval=NO_APPROVAL,
     response_type=LiteratureImportResult,
+)
+BRIDGE_REQUESTS[("literature", CONFIRM_SEARCH_START_OPERATION)] = BridgeOperation(
+    LiteratureSearchStart,
+    CONFIRM_SEARCH_START_ROUTE,
+    summary="Show the product-owned precise literature search start confirmation.",
+    guidance=(
+        "Call with an empty request before initializing a precise literature search run. "
+        "Wait for the current turn's decision; do not relay or recreate the card. "
+        "Only disposition=start permits initialization. This does not confirm search scope "
+        "or grant full-text access."
+    ),
+    approval=USER_CONFIRM,
+    response_type=LiteratureSearchStartResult,
 )
 
 TAXONOMY_GLOBAL_SCOPE = "global_literature_tags"
@@ -1260,7 +1471,7 @@ class LiteratureNoteAdd(BaseModel):
 
     literature_id: str = Field(min_length=1, max_length=CURATION_ID_CHARS)
     title: str = Field(default="", max_length=CURATION_TITLE_CHARS)
-    text: str = Field(min_length=1, max_length=CURATION_TEXT_CHARS)
+    text: str = Field(max_length=CURATION_TEXT_CHARS)
     client_op_id: str = Field(min_length=CLIENT_OP_ID_MIN_CHARS, max_length=CLIENT_OP_ID_CHARS)
 
 
@@ -1270,7 +1481,9 @@ class LiteratureNoteUpdate(BaseModel):
         strict=True,
         json_schema_extra={
             CONTRACT_GUIDANCE_KEY: (
-                "expected_version comes from the note read (literature/notes); on "
+                "Omit title to preserve the existing title; empty title or text clears it. "
+                "expected_version comes from "
+                "the note read (literature/notes); on "
                 "revision_conflict reread notes and retry. " + CLIENT_OP_ID_GUIDANCE
             ),
             CONTRACT_PREREQUISITES_KEY: [{"capability": "literature", "operation": "notes"}],
@@ -1279,8 +1492,8 @@ class LiteratureNoteUpdate(BaseModel):
 
     literature_id: str = Field(min_length=1, max_length=CURATION_ID_CHARS)
     note_id: str = Field(min_length=1, max_length=CURATION_ID_CHARS)
-    title: str = Field(default="", max_length=CURATION_TITLE_CHARS)
-    text: str = Field(min_length=1, max_length=CURATION_TEXT_CHARS)
+    title: str | None = Field(default=None, max_length=CURATION_TITLE_CHARS)
+    text: str = Field(max_length=CURATION_TEXT_CHARS)
     expected_version: int = Field(ge=1)
     client_op_id: str = Field(min_length=CLIENT_OP_ID_MIN_CHARS, max_length=CLIENT_OP_ID_CHARS)
 
@@ -1445,9 +1658,12 @@ class LiteratureFulltext(BaseModel):
         json_schema_extra={
             CONTRACT_GUIDANCE_KEY: (
                 "Derives the arXiv id (from the arxiv field or an arXiv-shaped DOI) and "
-                "downloads the primary PDF; conflicts when a usable primary attachment "
-                "already exists. Reading the bytes afterwards still needs the normal "
-                "authorize/receipt chain. " + CLIENT_OP_ID_GUIDANCE
+                "requests independent manual full-text authorization before downloading and "
+                "saving the primary PDF, in every permission mode. A suggestion or user message "
+                "is not that confirmation. Wait for the product question; do not poll or retry. "
+                "Conflicts when a usable primary attachment already exists. Reading the bytes "
+                "afterwards still needs the normal authorize/receipt chain. "
+                + CLIENT_OP_ID_GUIDANCE
             ),
             CONTRACT_PREREQUISITES_KEY: [{"capability": "literature", "operation": "detail"}],
         },
@@ -1460,7 +1676,7 @@ class LiteratureFulltext(BaseModel):
 class LiteratureFulltextAttach(PublicationImport):
     """把一份已发布的会话 PDF 挂成这条文献的主附件 (= 它的全文)。
 
-    字节不走 bridge (请求体上限 ``BRIDGE_MAX_REQUEST_BYTES``), 所以这里只交指针:
+    文件内容保存在产物仓库，这里只传递版本指针:
     ``artifact_id`` 或会话工作区内的相对 ``path``, 与 ``literature/import`` 同一套准入
     (拒绝绝对路径 / 盘符 / ``..``, 且必须已发布)。挂载与不变式由附件域 owner
     ``service.literature.service.attachment.attach_primary_pdf`` 持有, 与产品上传腿
@@ -1611,7 +1827,11 @@ BRIDGE_REQUESTS.update(
                     )
                 )
             ),
-            (NO_APPROVAL if name not in LITERATURE_CURATION_DESTRUCTIVE else USER_CONFIRM),
+            (
+                USER_CONFIRM
+                if name in LITERATURE_CURATION_DESTRUCTIVE or name == "fulltext"
+                else NO_APPROVAL
+            ),
             None,
         )
         for name, request in LITERATURE_CURATION_REQUESTS.items()
@@ -1619,6 +1839,8 @@ BRIDGE_REQUESTS.update(
 )
 
 PLAN_MAX_ITEMS = 200
+SERVICE_PLAN_TOOL_NAME = "update_plan"
+PLAN_INITIAL_REVISION = 0
 PLAN_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "plan/"
 PLAN_SOURCE = "structured"
 PLAN_GROUP = "group"
@@ -1629,6 +1851,8 @@ PLAN_RELEASED_SOURCE = "released"
 PLAN_TIMING_POLICY = "leaf-execution-v1"
 PLAN_STEP = "step"
 PLAN_RECONCILE_ACTION = "reconcile"
+PLAN_COMPLETE_ACTION = "complete"
+PLAN_COMPLETION_REASON_REQUIRED = "plan_completion_reason_required"
 
 
 class PlanRead(BaseModel):
@@ -1656,6 +1880,28 @@ class PlanItem(BaseModel):
     kind: Literal["group", "step"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+
+
+class PlanEstimate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    lower_seconds: int = Field(ge=0)
+    upper_seconds: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def ordered_range(self) -> PlanEstimate:
+        if self.lower_seconds > self.upper_seconds:
+            raise ValueError("plan_estimate_range_invalid")
+        return self
+
+
+PLAN_ESTIMATE_GUIDANCE = (
+    "Optional total processing-time range for the agreed execution plan, excluding user waits. "
+    "Submit only after the execution agreement is resolved; never estimate from skill selection. "
+    "The host displays it only after a step starts. Omit to preserve on update; null clears it. "
+    "Create and revise without an estimate clear it. On revise provide a new total for the whole "
+    "plan including work already performed, not remaining time."
+)
 
 
 class PlanWrite(BaseModel):
@@ -1688,6 +1934,7 @@ class PlanWrite(BaseModel):
         },
     )
 
+    estimate: PlanEstimate | None = Field(default=None, description=PLAN_ESTIMATE_GUIDANCE)
     operation: Literal["create", "update", "revise", "release"] = Field(
         description="request.operation is the plan mutation, not action; outer operation is always write."
     )
@@ -1695,7 +1942,15 @@ class PlanWrite(BaseModel):
     expected_revision: int = Field(ge=0)
     request_id: str = Field(min_length=1, max_length=PLAN_ID_CHARS)
     turn_id: str = Field(min_length=1, max_length=PLAN_ID_CHARS)
-    items: list[PlanItem] = Field(min_length=1, max_length=PLAN_MAX_ITEMS)
+    items: list[PlanItem] = Field(
+        min_length=1,
+        max_length=PLAN_MAX_ITEMS,
+        description=(
+            "Complete snapshot of every current root and step, including unchanged items; "
+            "never send only the changed step. For progress updates preserve all ids, "
+            "root content and parent links, changing only intended statuses."
+        ),
+    )
     reason: str = Field(default="", max_length=PLAN_TEXT_CHARS)
 
 
@@ -1707,6 +1962,7 @@ PLAN_ACTION_STATUSES: dict[str, PlanStatus] = {
     "fail": "failed",
     "partial": "partial",
     PLAN_RECONCILE_ACTION: "completed",
+    PLAN_COMPLETE_ACTION: "completed",
 }
 
 
@@ -1739,6 +1995,7 @@ class PlanStructure(PlanMutation):
         }
     )
 
+    estimate: PlanEstimate | None = Field(default=None, description=PLAN_ESTIMATE_GUIDANCE)
     operation: Literal["create", "update", "revise", "release"]
     items: list[PlanNode] = Field(min_length=1, max_length=PLAN_MAX_ITEMS)
 
@@ -1746,15 +2003,30 @@ class PlanStructure(PlanMutation):
 class PlanAction(PlanMutation):
     model_config = ConfigDict(
         json_schema_extra={
-            CONTRACT_GUIDANCE_KEY: "Read plan/get and choose from actions for the stable step IDs. Start before work, finish after actual work, pause for a checkpoint and start before handling its result. If work already completed without a start, verify its result and use reconcile with a reason stating the observed completion evidence. Reconcile records completion without a start or execution time; never fabricate a bookkeeping start/finish. Block only for an actual obstacle. These actions preserve the entire tree and real timing rules.",
+            CONTRACT_GUIDANCE_KEY: "Read plan/get and choose from actions for the stable step IDs. Start before work. After verifying actual results, prefer complete with a nonempty reason citing observed completion evidence. Complete atomically handles started and unstarted leaves together without inventing starts or execution time. Finish remains strict and requires recorded starts; reconcile accepts only unstarted leaves. Pause for a checkpoint and start before handling its result. Never fabricate bookkeeping start/finish. Block only for an actual obstacle. These actions preserve the entire tree and real timing rules.",
             CONTRACT_PREREQUISITES_KEY: [{"capability": "plan", "operation": "get"}],
+            "allOf": [
+                {
+                    "if": {"properties": {"action": {"const": PLAN_COMPLETE_ACTION}}},
+                    "then": {
+                        "required": ["reason"],
+                        "properties": {"reason": {"minLength": 1, "pattern": r"\S"}},
+                    },
+                }
+            ],
         }
     )
 
-    action: Literal["start", "finish", "pause", "block", "fail", "partial", "reconcile"]
+    action: Literal["start", "finish", "pause", "block", "fail", "partial", "reconcile", "complete"]
     step_ids: list[Annotated[str, Field(min_length=1, max_length=PLAN_ID_CHARS)]] = Field(
         min_length=1, max_length=PLAN_MAX_ITEMS
     )
+
+    @model_validator(mode="after")
+    def completion_evidence(self) -> PlanAction:
+        if self.action == PLAN_COMPLETE_ACTION and not self.reason.strip():
+            raise ValueError(PLAN_COMPLETION_REASON_REQUIRED)
+        return self
 
 
 PlanCommand = PlanWrite | PlanStructure | PlanAction
@@ -1853,7 +2125,8 @@ BRIDGE_REQUESTS.update(
         ("resource", "diff"): BridgeOperation(
             ResourceDiff,
             RESOURCE_ROUTE_PREFIX + "diff",
-            "Compare two versions of one file; offset/limit count characters.",
+            "Compare base_version_id (---) to version_id (+++) for one file; "
+            "offset/limit count characters.",
             PROJECT_SCOPE,
             READ_EFFECT,
             NO_APPROVAL,
@@ -1878,4 +2151,40 @@ BRIDGE_REQUESTS.update(
             LiteratureDetailResult,
         ),
     }
+)
+
+
+class GenerationRun(BaseModel):
+    """Run one isolated generation with the active conversation's resolved model."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    request_id: str = Field(min_length=1, max_length=BRIDGE_CALLBACK_REQUEST_CHARS)
+    input_path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+    output_path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+    timeout_seconds: int = Field(
+        default=GENERATION_DEFAULT_TIMEOUT_SECONDS,
+        ge=1,
+        le=GENERATION_MAX_TIMEOUT_SECONDS,
+        description="Maximum execution time before cancellation and confirmed cleanup; no automatic retry.",
+    )
+
+
+BRIDGE_REQUESTS[(GENERATION_CAPABILITY, GENERATION_RUN_OPERATION)] = BridgeOperation(
+    GenerationRun,
+    GENERATION_ROUTE,
+    "Generate once using the current conversation model and connection; no silent fallback.",
+    scope="current_conversation",
+    effect=EXTERNAL_EFFECT,
+    approval=NO_APPROVAL,
+    requires_turn_context=True,
+    guidance=(
+        "Prepare a UTF-8 JSON input file inside this session workspace with prompt and either schema "
+        "for structured generation, or output_format: markdown without schema for plain Markdown. "
+        "Optional images are objects with path. Pass input_path, a new output_path in an "
+        "existing workspace directory, and a unique request_id. The output file contains "
+        "output_text and usage. Model, provider and credentials are bound by the host; "
+        "input metadata cannot override them. No tools or parent conversation history are "
+        "available to the isolated generator. Failure does not authorize automatic retry."
+    ),
 )

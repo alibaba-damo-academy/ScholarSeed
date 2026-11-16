@@ -24,9 +24,9 @@ from service.literature.domain.model import (
     IMPORT_COLLECTION_UNAVAILABLE,
     LIBRARY_INVALID,
     LIBRARY_UNAVAILABLE,
+    LITERATURE_VERSION_CONFLICT,
     NOTE_BODY_REQUIRED,
     NOTE_NOT_FOUND,
-    NOTE_TITLE_REQUIRED,
     NOTE_VERSION_CONFLICT,
     TAXONOMY_CONFLICT,
     TAXONOMY_ITEM_UNAVAILABLE,
@@ -65,6 +65,9 @@ from service.platform.notifications import ChangeHub, ChangeTopic
 
 LITERATURE_DB = SERVICE_LITERATURE_DATABASE
 NOTIFICATION_TABLES = ("literature_items", "literature_attachments", "literature_notes")
+MEMBERSHIP_SUBJECT = "membership:"
+MATCH_IDENTITY_SUBJECT = "match-identity"
+MATCH_IDENTITY_COLUMNS = ("doi", "title", "year")
 # 一行 = 一份文献独占的文件: path 恒为托管目录里的副本, revision 是这批字节的
 # 内容修订号 (全文索引缓存的键)。没有 asset_id / project_id —— 附件不指向项目
 # 里的文件, 因此文献删除就一定连文件一起删, 不存在"文件还挂在别处"的状态。
@@ -91,7 +94,7 @@ DDL = (
     "CREATE TABLE IF NOT EXISTS literature_tags(id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,color TEXT NOT NULL DEFAULT '',created_at REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS literature_item_tags(literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,tag_id TEXT REFERENCES literature_tags(id) ON DELETE CASCADE,PRIMARY KEY(literature_id,tag_id))",
     "CREATE TABLE IF NOT EXISTS literature_projects(project_id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,created_at REAL NOT NULL,PRIMARY KEY(project_id,literature_id))",
-    "CREATE TABLE IF NOT EXISTS literature_notes(id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,text TEXT NOT NULL,created_at REAL NOT NULL,title TEXT NOT NULL DEFAULT '',updated_at REAL NOT NULL DEFAULT 0,version INTEGER NOT NULL DEFAULT 1,position INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(literature_id,id))",
+    "CREATE TABLE IF NOT EXISTS literature_notes(id TEXT,literature_id TEXT REFERENCES literature_items(id) ON DELETE CASCADE,text TEXT NOT NULL,created_at REAL NOT NULL,title TEXT NOT NULL DEFAULT '',updated_at REAL NOT NULL DEFAULT 0,version INTEGER NOT NULL DEFAULT 1,position INTEGER NOT NULL DEFAULT 0,provenance TEXT,PRIMARY KEY(literature_id,id))",
     ATTACHMENT_DDL,
 )
 
@@ -107,6 +110,7 @@ NOTE_MIGRATION_COLUMNS = {
     "updated_at": "REAL NOT NULL DEFAULT 0",
     "version": "INTEGER NOT NULL DEFAULT 1",
     "position": "INTEGER NOT NULL DEFAULT 0",
+    "provenance": "TEXT",
 }
 
 SORT_ASCENDING = "ASC"
@@ -234,12 +238,13 @@ def _note(payload: dict[str, Any]) -> LiteratureNote:
         updated_at=_finite(payload.get("updated_at", payload.get("created_at", 0))),
         version=int(payload.get("version", 1)),
         position=int(payload.get("position", 0)),
+        provenance=payload.get("provenance"),
     )
 
 
 def _item_from_payload(payload: dict[str, Any]) -> LiteratureItem:
     year = payload.get("year")
-    if year is not None and type(year) is not int:
+    if year is not None and (not isinstance(year, int) or isinstance(year, bool)):
         raise LiteratureError(LIBRARY_INVALID)
     values = dict(payload)
     values["fulltext"] = FulltextStatus(str(values.get("fulltext", FulltextStatus.NONE.value)))
@@ -532,6 +537,18 @@ def _repair_tables(connection: sqlite3.Connection, tables: tuple[str, ...]) -> N
             )
 
 
+@contextmanager
+def read(database: Path | str = LITERATURE_DB) -> Iterator[sqlite3.Connection]:
+    with database_files(Path(database), stable_sidecars=False) as present:
+        if not present:
+            raise LiteratureError(LIBRARY_UNAVAILABLE)
+        with reader(database) as connection:
+            connection.execute("BEGIN")
+            if classify_schema(connection).needs_write:
+                raise LiteratureError(LIBRARY_INVALID)
+            yield connection
+
+
 def connect(
     database: Path | str = LITERATURE_DB, changes: ChangeHub | None = None
 ) -> sqlite3.Connection:
@@ -553,9 +570,39 @@ def connect(
             conn.observe(
                 changes.publish,
                 (
-                    NotificationRule(table, operation, ChangeTopic.LITERATURE)
-                    for table in NOTIFICATION_TABLES
-                    for operation in ("INSERT", "UPDATE", "DELETE")
+                    *(
+                        NotificationRule(table, operation, ChangeTopic.LITERATURE)
+                        for table in NOTIFICATION_TABLES
+                        for operation in ("INSERT", "UPDATE", "DELETE")
+                    ),
+                    *(
+                        NotificationRule(
+                            "literature_projects",
+                            operation,
+                            ChangeTopic.LITERATURE,
+                            subject=f"'{MEMBERSHIP_SUBJECT}' || {row}.project_id",
+                            predicate=f"{row}.project_id IS NOT NULL",
+                        )
+                        for operation, row in (("INSERT", "NEW"), ("DELETE", "OLD"))
+                    ),
+                    *(
+                        NotificationRule(
+                            "literature_items",
+                            operation,
+                            ChangeTopic.LITERATURE,
+                            subject=f"'{MEMBERSHIP_SUBJECT}'",
+                        )
+                        for operation in ("INSERT", "DELETE")
+                    ),
+                    NotificationRule(
+                        "literature_items",
+                        "UPDATE",
+                        ChangeTopic.LITERATURE,
+                        subject=f"'{MATCH_IDENTITY_SUBJECT}'",
+                        predicate=" OR ".join(
+                            f"NEW.{column} IS NOT OLD.{column}" for column in MATCH_IDENTITY_COLUMNS
+                        ),
+                    ),
                 ),
             )
     except BaseException:
@@ -613,6 +660,8 @@ def _migrate_notes(conn: sqlite3.Connection) -> None:
         if "position" in added:
             assignments.append("position=?")
             values.append(position)
+        if not assignments:
+            continue
         values.append(int(row["rowid"]))
         conn.execute(
             f"UPDATE literature_notes SET {','.join(assignments)} WHERE rowid=?",
@@ -1027,15 +1076,20 @@ class LiteratureRepository:
         if q:
             where.append(
                 "(i.title LIKE ? OR i.authors LIKE ? OR i.publication LIKE ? "
-                "OR i.doi LIKE ? OR CAST(i.year AS TEXT) LIKE ?)"
+                "OR i.doi LIKE ? OR i.arxiv LIKE ? OR CAST(i.year AS TEXT) LIKE ?)"
             )
-            args.extend((f"%{q}%",) * 5)
+            args.extend((f"%{q}%",) * 6)
         if where:
             sql += " WHERE " + " AND ".join(where)
         return sql, args
 
-    def get(self, key: str) -> LiteratureItem | None:
-        with closing(connect(self.database, self.changes)) as c, c:
+    def get(self, key: str, *, read_only: bool = False) -> LiteratureItem | None:
+        with (
+            (
+                read(self.database) if read_only else closing(connect(self.database, self.changes))
+            ) as c,
+            c,
+        ):
             row = c.execute("SELECT * FROM literature_items WHERE id=?", (key,)).fetchone()
             return self._item(c, row, "") if row else None
 
@@ -1140,9 +1194,11 @@ class LiteratureRepository:
                 return None
             return self._notes(connection, literature_id)
 
-    def create_note(self, literature_id: str, text: str, title: str = "") -> LiteratureNote:
+    def create_note(
+        self, literature_id: str, text: str, title: str = "", *, provenance: dict | None = None
+    ) -> LiteratureNote:
         body = text.strip()
-        if not body:
+        if not body and not title.strip():
             raise LiteratureError(NOTE_BODY_REQUIRED)
         with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1180,11 +1236,12 @@ class LiteratureRepository:
                 updated_at=now,
                 version=1,
                 position=position,
+                provenance=provenance,
             )
             connection.execute(
                 "INSERT INTO literature_notes"
-                "(id,literature_id,text,created_at,title,updated_at,version,position) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "(id,literature_id,text,created_at,title,updated_at,version,position,provenance) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     note.id,
                     literature_id,
@@ -1194,6 +1251,11 @@ class LiteratureRepository:
                     note.updated_at,
                     note.version,
                     note.position,
+                    (
+                        json.dumps(note.provenance, ensure_ascii=False)
+                        if note.provenance is not None
+                        else None
+                    ),
                 ),
             )
             connection.execute(
@@ -1207,16 +1269,12 @@ class LiteratureRepository:
         literature_id: str,
         note_id: str,
         *,
-        title: str,
+        title: str | None,
         text: str,
         expected_version: int,
     ) -> LiteratureNote:
-        resolved_title = title.strip()
+        resolved_title = title.strip() if title is not None else None
         body = text.strip()
-        if not resolved_title:
-            raise LiteratureError(NOTE_TITLE_REQUIRED)
-        if not body:
-            raise LiteratureError(NOTE_BODY_REQUIRED)
         with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -1227,6 +1285,8 @@ class LiteratureRepository:
                 raise LiteratureError(NOTE_NOT_FOUND)
             if int(row["version"]) != expected_version:
                 raise LiteratureError(NOTE_VERSION_CONFLICT)
+            if resolved_title is None:
+                resolved_title = str(row["title"])
             now = time.time()
             version = expected_version + 1
             connection.execute(
@@ -1246,6 +1306,38 @@ class LiteratureRepository:
                 updated_at=now,
                 version=version,
                 position=int(row["position"]),
+                provenance=json.loads(row["provenance"]) if row["provenance"] is not None else None,
+            )
+
+    def index_note(
+        self, literature_id: str, note_id: str, provenance: dict, *, expected_version: int
+    ) -> LiteratureNote:
+        """Atomically attach an index without changing the saved Markdown."""
+        with closing(connect(self.database, self.changes)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM literature_notes WHERE literature_id=? AND id=?",
+                (literature_id, note_id),
+            ).fetchone()
+            if row is None:
+                raise LiteratureError(NOTE_NOT_FOUND)
+            if int(row["version"]) != expected_version:
+                raise LiteratureError(NOTE_VERSION_CONFLICT)
+            now = time.time()
+            connection.execute(
+                "UPDATE literature_notes SET provenance=?,updated_at=?,version=version+1 "
+                "WHERE literature_id=? AND id=?",
+                (json.dumps(provenance, ensure_ascii=False), now, literature_id, note_id),
+            )
+            connection.execute(
+                "UPDATE literature_items SET updated_at=?,version=version+1 WHERE id=?",
+                (now, literature_id),
+            )
+            return self._note_row(
+                connection.execute(
+                    "SELECT * FROM literature_notes WHERE literature_id=? AND id=?",
+                    (literature_id, note_id),
+                ).fetchone()
             )
 
     def delete_note(self, literature_id: str, note_id: str) -> bool:
@@ -1270,6 +1362,9 @@ class LiteratureRepository:
         fields: dict[str, Any],
         collection_ids: tuple[str, ...] | None = None,
         tag_ids: tuple[str, ...] | None = None,
+        *,
+        expected_version: int | None = None,
+        project_id: str | None = None,
     ) -> LiteratureItem | None:
         """Update editable metadata and global organization in one transaction."""
 
@@ -1298,8 +1393,19 @@ class LiteratureRepository:
             raise LiteratureError(LIBRARY_INVALID)
         with closing(connect(self.database, self.changes)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT version FROM literature_items WHERE id=?", (key,)
+            ).fetchone()
+            if current is None:
+                return None
+            if expected_version is not None and current["version"] != expected_version:
+                raise LiteratureError(LITERATURE_VERSION_CONFLICT)
             if (
-                connection.execute("SELECT 1 FROM literature_items WHERE id=?", (key,)).fetchone()
+                project_id is not None
+                and connection.execute(
+                    "SELECT 1 FROM literature_projects WHERE literature_id=? AND project_id=?",
+                    (key, project_id),
+                ).fetchone()
                 is None
             ):
                 return None
@@ -1375,8 +1481,15 @@ class LiteratureRepository:
         with closing(connect(self.database, self.changes)) as c, c:
             return int(c.execute("SELECT count(*) FROM literature_items").fetchone()[0])
 
-    def attachments(self, literature_id: str) -> builtins.list[dict[str, Any]]:
-        with closing(connect(self.database, self.changes)) as connection, connection:
+    def attachments(
+        self, literature_id: str, *, read_only: bool = False
+    ) -> builtins.list[dict[str, Any]]:
+        with (
+            (
+                read(self.database) if read_only else closing(connect(self.database, self.changes))
+            ) as connection,
+            connection,
+        ):
             return [
                 dict(row)
                 for row in connection.execute(
@@ -1386,8 +1499,15 @@ class LiteratureRepository:
                 )
             ]
 
-    def attachment(self, literature_id: str, attachment_id: str) -> LiteratureAttachment | None:
-        with closing(connect(self.database, self.changes)) as connection, connection:
+    def attachment(
+        self, literature_id: str, attachment_id: str, *, read_only: bool = False
+    ) -> LiteratureAttachment | None:
+        with (
+            (
+                read(self.database) if read_only else closing(connect(self.database, self.changes))
+            ) as connection,
+            connection,
+        ):
             row = connection.execute(
                 "SELECT * FROM literature_attachments WHERE id=? AND literature_id=?",
                 (attachment_id, literature_id),
@@ -1835,8 +1955,8 @@ class LiteratureRepository:
         if old is None:
             c.executemany(
                 "INSERT INTO literature_notes"
-                "(id,literature_id,text,created_at,title,updated_at,version,position) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "(id,literature_id,text,created_at,title,updated_at,version,position,provenance) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     (
                         note.id,
@@ -1847,6 +1967,11 @@ class LiteratureRepository:
                         note.updated_at or note.created_at,
                         max(note.version, 1),
                         note.position or index,
+                        (
+                            json.dumps(note.provenance, ensure_ascii=False)
+                            if note.provenance is not None
+                            else None
+                        ),
                     )
                     for index, note in enumerate(item.notes, start=1)
                 ),
@@ -1881,6 +2006,29 @@ class LiteratureRepository:
                     (_collection_scope(project_id),),
                 )
             ]
+
+    def collection_members(
+        self, project_id: str, collection_ids: tuple[str, ...], limit: int
+    ) -> dict[str, tuple[str, ...]]:
+        """Read all selected recursive project memberships in one activation snapshot."""
+        with closing(connect(self.database, self.changes)) as c, c:
+            c.execute("BEGIN")
+            result = {}
+            for collection_id in collection_ids:
+                known = c.execute(
+                    "SELECT id FROM literature_collections WHERE id=? AND project_id=?",
+                    (collection_id, project_id),
+                ).fetchone()
+                if not project_id or known is None:
+                    raise ValueError("literature_collection_scope_invalid")
+                sql, args = self._selection("", project_id, (collection_id,), (), False)
+                rows = c.execute(
+                    f"SELECT DISTINCT i.id {sql} ORDER BY i.id LIMIT ?", [*args, limit + 1]
+                ).fetchall()
+                if len(rows) > limit:
+                    raise ValueError("literature_collection_too_large")
+                result[collection_id] = tuple(row["id"] for row in rows)
+            return result
 
     def drop_project_links(self, project_id: str) -> int:
         """永久删除项目时物理清理它在全库面的关联, 返回摘掉的行数总和。
@@ -2318,14 +2466,26 @@ class LiteratureRepository:
                 is None
             ):
                 raise LiteratureError(LIBRARY_INVALID)
-            connection.execute(
-                "DELETE FROM literature_projects WHERE literature_id=?", (literature_id,)
+            previous = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT project_id FROM literature_projects WHERE literature_id=?",
+                    (literature_id,),
+                )
+            }
+            connection.executemany(
+                "DELETE FROM literature_projects WHERE literature_id=? AND project_id=?",
+                ((literature_id, project_id) for project_id in previous.difference(unique_ids)),
             )
             linked_at = time.time()
             connection.executemany(
                 "INSERT INTO literature_projects(project_id,literature_id,created_at) "
                 "VALUES(?,?,?)",
-                ((project_id, literature_id, linked_at) for project_id in unique_ids),
+                (
+                    (project_id, literature_id, linked_at)
+                    for project_id in unique_ids
+                    if project_id not in previous
+                ),
             )
 
     def associate(
@@ -2678,6 +2838,7 @@ class LiteratureRepository:
             updated_at=float(row["updated_at"]),
             version=int(row["version"]),
             position=int(row["position"]),
+            provenance=json.loads(row["provenance"]) if row["provenance"] is not None else None,
         )
 
     @staticmethod

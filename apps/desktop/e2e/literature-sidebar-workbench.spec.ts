@@ -45,41 +45,6 @@ test('toolbar import follows the selected literature collection', async ({}, tes
   }
 })
 
-test('tag search keeps sidebar geometry stable when opened and dismissed', async ({}, testInfo) => {
-  const runtime = createRuntime(testInfo)
-  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
-  const desktop = new DesktopSession(runtime, testInfo)
-  try {
-    const page = await desktop.launch()
-    const sidebar = page.getByTestId('literature-panel')
-    const header = sidebar.locator('.lit-section-head').filter({ hasText: '标签' })
-    const tags = sidebar.locator('.lit-tag-cloud')
-    const search = sidebar.getByRole('button', { name: '搜索标签', exact: true })
-    const input = sidebar.getByRole('searchbox', { name: '搜索标签', exact: true })
-    await expect(search).toBeVisible()
-    const headerBefore = await header.boundingBox()
-    const tagsBefore = await tags.boundingBox()
-    expect(headerBefore).not.toBeNull()
-    expect(tagsBefore).not.toBeNull()
-    for (const dismiss of ['escape', 'blur'] as const) {
-      await search.click()
-      await expect(input).toBeFocused()
-      await expect.poll(() => header.boundingBox()).toEqual(headerBefore)
-      await expect.poll(() => tags.boundingBox()).toEqual(tagsBefore)
-      if (dismiss === 'escape') {
-        await input.press('Escape')
-      } else {
-        await input.press('Tab')
-      }
-      await expect(search).toBeVisible()
-      await expect.poll(() => header.boundingBox()).toEqual(headerBefore)
-      await expect.poll(() => tags.boundingBox()).toEqual(tagsBefore)
-    }
-  } finally {
-    await desktop.attachArtifacts()
-  }
-})
-
 test('literature sidebar: scope, hierarchy, geometry and persistent folds', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))

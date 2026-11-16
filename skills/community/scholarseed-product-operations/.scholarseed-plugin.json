@@ -1,0 +1,604 @@
+{
+  "schema": 2,
+  "id": "scholarseed-product-operations",
+  "version": "2026.11.13+1",
+  "host": "==0.3.2",
+  "skill": "SKILL.md",
+  "ui": {
+    "compatibility": "2.0",
+    "exports": [
+      "React",
+      "mount",
+      "Conversation",
+      "Button",
+      "Alert",
+      "AlertDescription",
+      "useTranslation",
+      "useCopyContent"
+    ]
+  },
+  "capabilities": [
+    "interaction.answer",
+    "navigation.open",
+    "literature.read",
+    "literature.write"
+  ],
+  "components": [
+    {
+      "id": "plot",
+      "slot": "plot.view",
+      "entry": "components/plot/cards.js",
+      "preview": "components/plot/preview.json",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "bar",
+                  "grouped-bar",
+                  "stacked-bar",
+                  "line",
+                  "scatter",
+                  "pie",
+                  "donut",
+                  "histogram",
+                  "boxplot",
+                  "heatmap"
+                ]
+              },
+              "dataset": {
+                "type": "object",
+                "properties": {
+                  "columns": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "minItems": 1
+                  },
+                  "rows": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "values": {
+                          "type": "array",
+                          "items": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "values"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "columns",
+                  "rows"
+                ],
+                "additionalProperties": false
+              },
+              "x": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "y": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "value": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "bins": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "kind",
+              "dataset",
+              "x",
+              "y"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "heatmap"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "value"
+                  ],
+                  "properties": {
+                    "y": {
+                      "minItems": 1,
+                      "maxItems": 1
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "maxItems": 64
+          },
+          "script": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "selected"
+        ],
+        "additionalProperties": false
+      },
+      "actions": [
+        {
+          "id": "continue",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "id": "cancel",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "table",
+      "slot": "table.view",
+      "entry": "components/table/cards.js",
+      "preview": "components/table/preview.json",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dataset": {
+            "type": "object",
+            "properties": {
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "values": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "number",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "values"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "columns",
+              "rows"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "dataset"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "selected"
+        ],
+        "additionalProperties": false
+      },
+      "actions": [
+        {
+          "id": "continue",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "id": "cancel",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "formula",
+      "slot": "formula.view",
+      "entry": "components/formula/cards.js",
+      "preview": "components/formula/preview.json",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "caption": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "selected"
+        ],
+        "additionalProperties": false
+      },
+      "actions": [
+        {
+          "id": "continue",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "id": "cancel",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "markdown",
+      "slot": "markdown.view",
+      "entry": "components/markdown/cards.js",
+      "preview": "components/markdown/preview.json",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "selected"
+        ],
+        "additionalProperties": false
+      },
+      "actions": [
+        {
+          "id": "continue",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "id": "cancel",
+          "capability": "interaction.answer",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "selected": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "selected"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "results",
+      "slot": "display.literature-search",
+      "preview": "components/results.json",
+      "actions": [
+        {
+          "id": "open-source",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "open-results",
+          "capability": "navigation.open"
+        }
+      ],
+      "public": true
+    },
+    {
+      "id": "details",
+      "slot": "preview.literature-results",
+      "preview": "components/details.json",
+      "actions": [
+        {
+          "id": "open-source",
+          "capability": "navigation.open"
+        },
+        {
+          "id": "add-reference",
+          "capability": "literature.write"
+        },
+        {
+          "id": "collections",
+          "capability": "literature.read"
+        },
+        {
+          "id": "create-collection",
+          "capability": "literature.write"
+        }
+      ],
+      "public": true
+    }
+  ]
+}
