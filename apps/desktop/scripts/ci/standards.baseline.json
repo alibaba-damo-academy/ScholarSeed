@@ -1,0 +1,108 @@
+{
+  "$comment": "由 standards.mjs 生成的样式债务棘轮；不得手改或用重写掩盖新增债务。",
+  "src/renderer/src/components/business/AccountPanel.tsx": {
+    "rawColor": 1,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/components/business/Feedback.tsx": {
+    "rawColor": 1,
+    "fixedTailwindColor": 1,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/components/business/Sidebar.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 4
+  },
+  "src/renderer/src/components/business/StatusStrip.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 2
+  },
+  "src/renderer/src/components/business/Stream.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 73
+  },
+  "src/renderer/src/components/primitive/Iconfont/index.tsx": {
+    "rawColor": 1,
+    "fixedTailwindColor": 1,
+    "visualInlineStyle": 1
+  },
+  "src/renderer/src/components/primitive/Markdown.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 18
+  },
+  "src/renderer/src/components/primitive/Progress.tsx": {
+    "rawColor": 1,
+    "fixedTailwindColor": 1,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/components/ui/Chart.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 1
+  },
+  "src/renderer/src/components/ui/classes.ts": {
+    "rawColor": 3,
+    "fixedTailwindColor": 3,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/features/literature/state.ts": {
+    "rawColor": 7,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/features/resources/ResourcePanel.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 2
+  },
+  "src/renderer/src/features/workbench/PdfDocument.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 1
+  },
+  "src/renderer/src/features/workbench/office/frame.ts": {
+    "rawColor": 1,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/features/workbench/pdf/Page.tsx": {
+    "rawColor": 1,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 1
+  },
+  "src/renderer/src/features/workbench/pdf/pdf.css": {
+    "rawColor": 2,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/features/workbench/pdf/records.ts": {
+    "rawColor": 8,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/shell/Pending.tsx": {
+    "rawColor": 0,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 7
+  },
+  "src/renderer/src/shell/layout.ts": {
+    "rawColor": 1,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/shell/workbench.css": {
+    "rawColor": 26,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  },
+  "src/renderer/src/styles.css": {
+    "rawColor": 58,
+    "fixedTailwindColor": 0,
+    "visualInlineStyle": 0
+  }
+}

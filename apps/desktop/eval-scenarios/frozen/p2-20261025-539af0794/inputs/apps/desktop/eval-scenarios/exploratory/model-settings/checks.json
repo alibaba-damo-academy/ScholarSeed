@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "directionId": "MODEL-01",
+  "checks": [
+    {
+      "id": "MODEL-SAVE-SELECT",
+      "pointIds": [
+        "MODEL-CONFIG-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "MODEL-KEY-REDACTION",
+      "pointIds": [
+        "MODEL-CONFIG-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "MODEL-CATALOG",
+      "pointIds": [
+        "MODEL-CATALOG-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "MODEL-REASONING",
+      "pointIds": [
+        "MODEL-REASONING-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "MODEL-CONTEXT",
+      "pointIds": [
+        "MODEL-CONTEXT-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

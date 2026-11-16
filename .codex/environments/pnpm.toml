@@ -1,0 +1,7 @@
+version = 1
+name = "ScholarSeed pnpm"
+
+[setup]
+script = '''
+node scripts/pre/toolchain.cjs check && pnpm install --frozen-lockfile && pnpm ops pre repair links && pnpm ops pre doctor --scope links && pnpm ops pre install python
+'''

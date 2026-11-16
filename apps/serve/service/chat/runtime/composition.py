@@ -52,7 +52,6 @@ from scholarseed_runtime.contract.command import (
     SkillConfigurationRequest,
     ThreadReplacementProof,
 )
-from scholarseed_runtime.contract.resource import ResourceLease
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.contract.input import TurnAdmission as RuntimeTurnAdmission
@@ -72,6 +71,7 @@ from scholarseed_runtime.contract.resource import (
     RESOURCE_HOST_CONFIGURATION_CONFLICT,
     RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
     RESOURCE_HOST_CONTEXT_REQUIRED,
+    ResourceLease,
     ResourcePurpose,
     ResourceRequest,
 )

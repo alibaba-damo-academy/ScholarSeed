@@ -69,7 +69,7 @@ The installer copies defaults to the user location without overwriting existing 
 }
 ```
 
-Custom endpoints are retained as configured. Remove the official domain from legacy extra_no_proxy where it would bypass a host-restricted proxy. Official-domain HTTP settings, including an explicit PAPERHUB_URL, are upgraded to HTTPS; localhost tunnels and custom/internal URLs are not rewritten by that rule.
+Known legacy defaults `http://114.55.135.28:8000` and `http://120.26.184.97/papersearch/` are normalized at runtime; update old user configuration explicitly as well. Remove the official domain from legacy extra_no_proxy where it would bypass a host-restricted proxy. Official-domain HTTP settings, including an explicit PAPERHUB_URL, are upgraded to HTTPS; localhost tunnels and custom/internal URLs are not rewritten by that rule.
 
 PaperHub credentials are optional and environment-only:
 

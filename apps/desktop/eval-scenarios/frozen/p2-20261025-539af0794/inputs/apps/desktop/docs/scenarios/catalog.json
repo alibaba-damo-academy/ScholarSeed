@@ -1,0 +1,4134 @@
+{
+  "schemaVersion": 1,
+  "points": [
+    {
+      "id": "RES-DOCX-01",
+      "revision": 1,
+      "directionIds": ["RES-01"],
+      "domain": "资料库",
+      "goal": "导入、打开并使用 DOCX 资料回答问题",
+      "entry": "资料库导入本地资料",
+      "preconditions": ["隔离项目中有可核对的 DOCX 测试资料"],
+      "observableOutcome": "DOCX 可打开并显示与原件一致的内容，回答能引用该资料中的事实",
+      "priority": "P0",
+      "priorityReason": "四种资料格式均为本轮构建包核心承诺，不能以其他格式代替 DOCX",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "RES-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/library-formats/README.md", "apps/desktop/eval-scenarios/exploratory/library-formats/driver.md", "apps/desktop/eval-scenarios/exploratory/library-formats/judge.md"]
+    },
+    {
+      "id": "RES-XLSX-01",
+      "revision": 1,
+      "directionIds": ["RES-01"],
+      "domain": "资料库",
+      "goal": "导入、打开并使用 XLSX 资料回答问题",
+      "entry": "资料库导入本地资料",
+      "preconditions": ["隔离项目中有可核对的 XLSX 测试资料"],
+      "observableOutcome": "XLSX 可打开并显示与原件一致的表格内容，回答能引用该资料中的事实",
+      "priority": "P0",
+      "priorityReason": "四种资料格式均为本轮构建包核心承诺，不能以其他格式代替 XLSX",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "RES-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/library-formats/README.md", "apps/desktop/eval-scenarios/exploratory/library-formats/driver.md", "apps/desktop/eval-scenarios/exploratory/library-formats/judge.md"]
+    },
+    {
+      "id": "RES-MD-01",
+      "revision": 1,
+      "directionIds": ["RES-01"],
+      "domain": "资料库",
+      "goal": "导入、打开并使用 Markdown 资料回答问题",
+      "entry": "资料库导入本地资料",
+      "preconditions": ["隔离项目中有可核对的 MD 测试资料"],
+      "observableOutcome": "MD 可打开并显示与原件一致的内容，回答能引用该资料中的事实",
+      "priority": "P0",
+      "priorityReason": "四种资料格式均为本轮构建包核心承诺，不能以其他格式代替 MD",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "RES-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/library-formats/README.md", "apps/desktop/eval-scenarios/exploratory/library-formats/driver.md", "apps/desktop/eval-scenarios/exploratory/library-formats/judge.md"]
+    },
+    {
+      "id": "RES-PDF-01",
+      "revision": 1,
+      "directionIds": ["RES-01"],
+      "domain": "资料库",
+      "goal": "导入、打开并使用资料库 PDF 回答问题",
+      "entry": "资料库导入本地资料",
+      "preconditions": ["隔离项目中有可核对的 PDF 测试资料"],
+      "observableOutcome": "资料库 PDF 可打开并显示与原件一致的内容，回答能引用该资料中的事实",
+      "priority": "P0",
+      "priorityReason": "资料库 PDF 与文献附件 PDF 是不同入口，均需独立覆盖",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "RES-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/library-formats/README.md", "apps/desktop/eval-scenarios/exploratory/library-formats/driver.md", "apps/desktop/eval-scenarios/exploratory/library-formats/judge.md"]
+    },
+    {
+      "id": "LIT-PDF-OPEN-01",
+      "revision": 1,
+      "directionIds": ["LIT-01"],
+      "domain": "文献全览",
+      "goal": "打开文献附件 PDF 并阅读可选中文字",
+      "entry": "文献全览的文献附件",
+      "preconditions": ["本次文献条目已有可核对的本地 PDF 附件"],
+      "observableOutcome": "正确附件在阅读器打开，目标页与文字层可见且来源身份一致",
+      "priority": "P0",
+      "priorityReason": "文献附件打开是解释与翻译的必要前提，资料库 PDF 不可替代",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "LIT-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/README.md", "apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/driver.md", "apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/judge.md"]
+    },
+    {
+      "id": "LIT-PDF-EXPLAIN-01",
+      "revision": 1,
+      "directionIds": ["LIT-01"],
+      "domain": "文献全览",
+      "goal": "对文献 PDF 的指定选区执行 AI 解释",
+      "entry": "文献附件 PDF 的选区解释",
+      "preconditions": ["同一附件已打开且目标段落可选中"],
+      "observableOutcome": "解释针对该附件与选区，语义贴合原文并保留可追溯来源",
+      "priority": "P0",
+      "priorityReason": "选区解释是文献阅读的核心 AI 动作，不能以打开 PDF 代替",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "LIT-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/README.md", "apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/driver.md", "apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/judge.md"]
+    },
+    {
+      "id": "LIT-PDF-TRANSLATE-01",
+      "revision": 1,
+      "directionIds": ["LIT-01"],
+      "domain": "文献全览",
+      "goal": "对文献 PDF 的指定选区执行中文翻译",
+      "entry": "文献附件 PDF 的选区翻译",
+      "preconditions": ["同一附件已打开且目标段落可选中"],
+      "observableOutcome": "翻译针对该附件与选区，目标语言为中文且忠实原文",
+      "priority": "P0",
+      "priorityReason": "选区翻译是独立核心 AI 动作，不能以解释结果代替",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "LIT-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/README.md", "apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/driver.md", "apps/desktop/eval-scenarios/exploratory/literature-pdf-ai/judge.md"]
+    },
+    {
+      "id": "CHAT-TURN-01",
+      "revision": 1,
+      "directionIds": ["CHAT-01"],
+      "domain": "对话",
+      "goal": "完成一轮真实模型对话并给出切题回答",
+      "entry": "AI 对话输入框",
+      "preconditions": ["本次隔离实例已配置获准模型与会话环境"],
+      "observableOutcome": "用户消息进入真实回合并到达终态，回复完整、可用且贴合请求",
+      "priority": "P0",
+      "priorityReason": "真实对话是客户端最小核心业务闭环",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "CHAT-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/conversation-flow/README.md", "apps/desktop/eval-scenarios/exploratory/conversation-flow/driver.md", "apps/desktop/eval-scenarios/exploratory/conversation-flow/judge.md"]
+    },
+    {
+      "id": "DISC-NEW-PAPER-01",
+      "revision": 1,
+      "directionIds": ["DISC-01"],
+      "domain": "文献全览",
+      "goal": "通过 AI 对话检索发现可核实的新文献",
+      "entry": "文献全览中的 AI 对话检索",
+      "preconditions": ["已读回本次检索前文献库快照", "本次只授权公开文献元数据检索"],
+      "observableOutcome": "至少一篇相对检索前库为新的题录可见、来源可核实且与问题相关",
+      "priority": "P0",
+      "priorityReason": "发现新文献是已固定的核心业务方向，列表筛选不能替代",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [{ "kind": "direction_row", "id": "DISC-01", "revision": "1", "locator": "apps/desktop/eval-scenarios/README.md" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/literature-ai-discovery/README.md", "apps/desktop/eval-scenarios/exploratory/literature-ai-discovery/driver.md", "apps/desktop/eval-scenarios/exploratory/literature-ai-discovery/judge.md"]
+    },
+    {
+      "id": "PROJ-CREATE-01",
+      "revision": 4,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "新建可进入的项目",
+      "entry": "项目总览的新建项目",
+      "preconditions": [
+        "隔离环境允许创建项目",
+        "输入合法项目名称"
+      ],
+      "observableOutcome": "项目卡片出现且可进入对应项目工作台",
+      "priority": "P1",
+      "priorityReason": "核心项目生命周期操作；首档业务用例创建项目的耗时仍计入窗口，独立创建与项目管理放在第二档核验",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ProjectForm.create",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/ProjectForm.tsx:100"
+        },
+        {
+          "kind": "direction_row",
+          "id": "PROJ-01",
+          "revision": "3",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-domains-20261023",
+          "revision": "20261023T003940133157Z-43ef6e720a58",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md#six-project"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-incremental-20261024",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-mapping"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/project-flow/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json"
+      ],
+      "reviewReason": "既有探索点资产声明保留；新增202610241139局部观察或前提变体待审，不代表原主链/所有格式已验证，不改变默认P0。",
+      "directionPreparation": {
+        "id": "p2-direction-20261025",
+        "previous": {
+          "revision": 3
+        },
+        "scope": "direction source revision only; priority, goal, existing Check and readiness unchanged"
+      }
+    },
+    {
+      "id": "PROJ-ADOPT-01",
+      "revision": 3,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "新建项目时接入已有目录",
+      "entry": "新建项目表单的选择目录",
+      "preconditions": [
+        "存在可读且获准接入的本地目录"
+      ],
+      "observableOutcome": "确认后项目关联所选目录；取消时不创建项目",
+      "priority": "P2",
+      "priorityReason": "项目创建的可选路径，低于默认创建与进入工作台",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ProjectForm.adopt",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/ProjectForm.tsx:110"
+        },
+        {
+          "kind": "direction_row",
+          "id": "PROJ-01",
+          "revision": "3",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-domains-20261023",
+          "revision": "20261023T003940133157Z-43ef6e720a58",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md#six-project"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/project-flow/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json"
+      ],
+      "directionPreparation": {
+        "id": "p2-direction-20261025",
+        "previous": {
+          "revision": 2
+        },
+        "scope": "direction source revision only; priority, goal, existing Check and readiness unchanged"
+      }
+    },
+    {
+      "id": "PROJ-SWITCH-01",
+      "revision": 3,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "切换项目并隔离工作台资料范围",
+      "entry": "项目总览中的项目卡片",
+      "preconditions": [
+        "已有两个内容不同且可用的项目"
+      ],
+      "observableOutcome": "进入所选项目后工作台与资料范围对应所选项目，不显示另一项目的资料",
+      "priority": "P1",
+      "priorityReason": "跨项目范围错误会影响资料与对话可信度，但首档可固定单项目",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ProjectCards.select",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/project/ProjectCards.tsx:35"
+        },
+        {
+          "kind": "direction_row",
+          "id": "PROJ-01",
+          "revision": "3",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-domains-20261023",
+          "revision": "20261023T003940133157Z-43ef6e720a58",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md#six-project"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/project-flow/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json"
+      ],
+      "directionPreparation": {
+        "id": "p2-direction-20261025",
+        "previous": {
+          "revision": 2
+        },
+        "scope": "direction source revision only; priority, goal, existing Check and readiness unchanged"
+      }
+    },
+    {
+      "id": "RES-COPY-DIR-01",
+      "revision": 3,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "复制导入目录并保留层级与文件内容",
+      "entry": "资料库导入本地资料的复制选项",
+      "preconditions": [
+        "隔离项目和含嵌套文件的可读目录"
+      ],
+      "observableOutcome": "项目内副本保留目录层级和文件字节，原目录不被修改",
+      "priority": "P1",
+      "priorityReason": "批量资料导入是核心资料准备路径，区别于单格式打开",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ImportDialog.copy",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx:34"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "RES-LINK-DIR-01",
+      "revision": 3,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "关联外部目录而不复制或删除原件",
+      "entry": "资料库导入本地资料的关联选项",
+      "preconditions": [
+        "隔离项目和已明确授权的外部可读目录"
+      ],
+      "observableOutcome": "资料库可读取挂载目录内容，外部原件与目录范围保持不变",
+      "priority": "P2",
+      "priorityReason": "资料接入的另一种模式，需独立覆盖原件保护但不是首选核心导入路径",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；权限与原件保护判据、执行资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ImportDialog.link",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx:36"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-CONFLICT-RENAME-01",
+      "revision": 4,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "同名导入时通过重命名保留新旧文件",
+      "entry": "资料导入冲突弹窗的重命名导入",
+      "preconditions": [
+        "目标目录已有同名文件且新文件内容不同"
+      ],
+      "observableOutcome": "新文件以不同名称落地，原文件内容保持不变，两份均可读回",
+      "priority": "P1",
+      "priorityReason": "同名冲突保留双方是防覆盖的数据保护核心分支。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ImportDialog.renameConflict",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx:215"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "RES-CONFLICT-REPLACE-01",
+      "revision": 4,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "同名导入时版本化替换并追溯旧版",
+      "entry": "资料导入冲突弹窗的替换导入",
+      "preconditions": [
+        "目标已有同名文件且冲突项均允许版本化替换",
+        "文件版本管理可用"
+      ],
+      "observableOutcome": "替换后新内容成为当前版本，旧内容可从版本记录读回",
+      "priority": "P1",
+      "priorityReason": "替换导入必须可追溯旧版，涉及资料恢复与数据损失。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ImportDialog.replaceConflict",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/ImportDialog.tsx:223"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "RES-CREATE-FOLDER-01",
+      "revision": 3,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "在资料树中新建文件夹",
+      "entry": "资料树新增菜单的新建文件夹",
+      "preconditions": [
+        "已选择可写项目与目标目录"
+      ],
+      "observableOutcome": "目标目录出现可展开的新文件夹，刷新后仍在",
+      "priority": "P2",
+      "priorityReason": "基础资料组织能力，可在核心资料读写闭环后覆盖",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；刷新后读回资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ResourcePanel.createFolder",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/ResourcePanel.tsx:940"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-CREATE-MD-01",
+      "revision": 4,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "在资料树中新建 Markdown 文档",
+      "entry": "资料树新增菜单的新建文档",
+      "preconditions": [
+        "已选择可写项目与目标目录"
+      ],
+      "observableOutcome": "新文档可打开和编辑，刷新后仍在；不以导入 Markdown 代替",
+      "priority": "P2",
+      "priorityReason": "资料创建是基础管理能力，独立于既有 MD 导入 P0 点",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；文档格式及保存读回资产、双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失；新增202610241139局部观察或前提变体待审，不代表原主链/所有格式已验证，不改变默认P0。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ResourcePanel.createDocument",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/ResourcePanel.tsx:930"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-incremental-20261024",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-mapping"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-RENAME-01",
+      "revision": 4,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "重命名资料节点而不丢失内容",
+      "entry": "资料节点右键菜单的重命名",
+      "preconditions": [
+        "项目中有可写且非关联根的文件"
+      ],
+      "observableOutcome": "节点名称与路径更新，内容不变且重新打开仍可读",
+      "priority": "P2",
+      "priorityReason": "基础文件管理能力，需独立保护内容不丢失",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "本轮只补BROAD-RES-RENAME局部来源；已观察结果；仅补观察来源，不改既有等级或重跑导入。原资产partial不自动升级。Windows、正式判据与独立执行资产仍缺，不能自动计覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "NodeMenu.rename",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/NodeMenu.tsx:66"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-RES-RENAME",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-rename"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-MOVE-01",
+      "revision": 4,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "将资料文件移动到目标目录",
+      "entry": "资料树移动操作（历史拖拽线索，当前真实提交入口待核）",
+      "preconditions": [
+        "项目中有可移动文件和合法目标目录"
+      ],
+      "observableOutcome": "文件在新路径可见且内容不变，原路径不再出现",
+      "priority": "P2",
+      "priorityReason": "基础目录管理能力，需验证路径与内容一致性",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "本轮只补BROAD-RES-MOVE局部来源；仅线索，入口路径待补；不据两个菜单缺少选项判产品不支持，不用文件系统mv替代真实UI；保留资产/操作路径缺口。Windows、正式判据与独立执行资产仍缺，不能自动计覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ResourcePanel.move",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/ResourcePanel.tsx:975"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-RES-MOVE",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-move"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-LIST-FILTER-01",
+      "revision": 3,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "按名称、类型或来源筛选资料列表",
+      "entry": "资料列表的搜索与筛选控件",
+      "preconditions": [
+        "资料列表中有名称、类型或来源不同的文件"
+      ],
+      "observableOutcome": "筛选结果与条件一致，清除条件后恢复原列表；不使用当前隐藏的侧栏资料搜索",
+      "priority": "P2",
+      "priorityReason": "资料管理效率功能，不能冒充核心资料打开和使用",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按列表源码建立探索点；当前可见导航、执行资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ResourceListing.filter",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/Listing.tsx:100"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-CHAT-REF-01",
+      "revision": 4,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库管理",
+      "goal": "将已有项目资料作为对话上下文引用",
+      "entry": "项目资料节点加入当前任务，或AI对话加号菜单引用资料库（按当前构建核入口）",
+      "preconditions": [
+        "当前项目中有可读资料和可用模型"
+      ],
+      "observableOutcome": "引用进入当前会话，下一回合回答依据该资料且不串入其他项目内容",
+      "priority": "P1",
+      "priorityReason": "显式资料引用连接资料与对话核心业务，区别于临时本地附件",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "NodeMenu.addAiContextRef",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/resources/NodeMenu.tsx:54"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-RES-REF",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-ref"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "LIT-IMPORT-PDF-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "导入本地 PDF 为文献条目",
+      "entry": "文献全览导入本地 PDF",
+      "preconditions": [
+        "有可读取且元数据可核对的 PDF 文件"
+      ],
+      "observableOutcome": "文献条目入库并在全览可见，题名等可核字段与测试资料一致",
+      "priority": "P1",
+      "priorityReason": "文献阅读核心前置入库路径，区别于已入库附件打开",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureList.importPdfFiles",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteratureList.tsx:1599"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "LIT-IMPORT-ID-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "通过 DOI 或 arXiv ID 导入文献",
+      "entry": "文献全览的 DOI/arXiv 标识导入",
+      "preconditions": [
+        "有可核对的公开 DOI 或 arXiv ID",
+        "本次允许公开元数据访问"
+      ],
+      "observableOutcome": "对应标识的题录在文献库可见且核心元数据与公开来源一致",
+      "priority": "P2",
+      "priorityReason": "重要补充导入方式，依赖外部元数据服务且不占首两档预算",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；DOI 与 arXiv 的独立判据、执行资产及双平台实机结果待核，不宣称自动去重；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "IdentifierImport.submit",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/IdentifierImport.tsx:53"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-IMPORT-BIB-01",
+      "revision": 4,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "导入 BibTeX 或 RIS 书目文件",
+      "entry": "文献全览的书目文件导入",
+      "preconditions": [
+        "有合法的 .bib/.bibtex 或 .ris 测试文件"
+      ],
+      "observableOutcome": "所选格式中的题录字段导入并可核对，失败时错误对应该文件；两种格式须分别判定",
+      "priority": "P2",
+      "priorityReason": "书目批量导入是基础扩展能力，格式不互相替代",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；BibTeX/RIS 分格式判据、执行资产及双平台实机结果待核，后续可拆点；本次补四域用例链接，原有缺口不因编写用例消失；新增202610241139局部观察或前提变体待审，不代表原主链/所有格式已验证，不改变默认P0。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureList.bibliographyInput",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteratureList.tsx:1741"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-incremental-20261024",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-mapping"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-LIST-SEARCH-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "在已有文献列表中筛选目标条目",
+      "entry": "文献全览列表搜索框",
+      "preconditions": [
+        "当前范围已有不同题名的文献条目"
+      ],
+      "observableOutcome": "列表只显示匹配已有题录，清空搜索后恢复；不把筛选当作发现新文献",
+      "priority": "P2",
+      "priorityReason": "文献浏览效率功能，不能替代 AI 检索发现 P0 点",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；已有题录与筛选判据、执行资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureList.search",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteratureList.tsx:2108"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-CREATE-COLLECTION-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "创建文献分类",
+      "entry": "文献全览侧栏的新建分类",
+      "preconditions": [
+        "进入文献全览并明确全局或项目分类范围"
+      ],
+      "observableOutcome": "新分类在对应范围侧栏可见且可选，刷新后仍存在",
+      "priority": "P2",
+      "priorityReason": "基础文献组织能力，低于导入与阅读闭环",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；全局/项目范围判据、执行资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteraturePanel.createCollection",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteraturePanel.tsx:924"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-JOIN-COLLECTION-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "将已有文献条目加入分类",
+      "entry": "文献详情的分类关联操作",
+      "preconditions": [
+        "文献条目与目标分类已存在"
+      ],
+      "observableOutcome": "条目在目标分类中可见，其他分类归属不被错误改写",
+      "priority": "P2",
+      "priorityReason": "分类归属是基础文献组织动作，结果独立于项目归属",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；分类归属判据、资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureDetail.collectionRelation",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx:927"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-JOIN-PROJECT-01",
+      "revision": 5,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "将已有文献条目加入项目",
+      "entry": "文献详情的项目关联操作",
+      "preconditions": [
+        "文献条目与目标项目已存在"
+      ],
+      "observableOutcome": "条目在目标项目中可见，其他项目的归属不被错误改写",
+      "priority": "P1",
+      "priorityReason": "文献归属决定项目可用依据与检索范围，提升为核心工作范围验证。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureDetail.projectRelation",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx:915"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-incremental-20261024",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-mapping"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-LIT-PROJECT",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-project"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 4,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "LIT-EDIT-META-01",
+      "revision": 4,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "编辑并保存文献元数据",
+      "entry": "文献详情中的元数据字段",
+      "preconditions": [
+        "有可编辑的文献条目与明确的字段新值"
+      ],
+      "observableOutcome": "保存后的字段与新值一致，关闭并重开仍一致",
+      "priority": "P2",
+      "priorityReason": "基础题录维护能力，独立于导入与阅读",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "本轮只补BROAD-LIT-META局部来源；已观察结果；候选修订为精确对象、字段及重开读回；不是整条元数据字段全覆盖。Windows、正式判据与独立执行资产仍缺，不能自动计覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureDetail.queueLiteratureUpdate",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx:1245"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-LIT-META",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-meta"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-ADD-ATTACHMENT-01",
+      "revision": 4,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "为已有文献条目添加附件",
+      "entry": "文献详情的添加附件",
+      "preconditions": [
+        "已有文献条目和可读取的本地附件"
+      ],
+      "observableOutcome": "附件关联目标条目，重新打开详情后可见且可打开",
+      "priority": "P1",
+      "priorityReason": "题录绑定全文附件连接文献元数据与实际阅读，属于核心输入链路。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureDetail.uploadAttachment",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/LiteratureDetail.tsx:1582"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "LIT-NOTE-01",
+      "revision": 4,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "创建并保存文献笔记",
+      "entry": "文献详情的新增笔记",
+      "preconditions": [
+        "已有文献条目"
+      ],
+      "observableOutcome": "输入的笔记标题与正文保存，重新打开仍在对应条目下",
+      "priority": "P2",
+      "priorityReason": "基础阅读产出能力，需验证持久化但不是第二档核心路径",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "本轮只补BROAD-LIT-NOTE局部来源；已观察结果；补保存/重开证据。未导出、未删除、未核跨文献串写。Windows、正式判据与独立执行资产仍缺，不能自动计覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Notes.requestNew",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/Notes.tsx:226"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-LIT-NOTE",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-note"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-PDF-OUTLINE-01",
+      "revision": 4,
+      "directionIds": [
+        "LIT-READ-01"
+      ],
+      "domain": "文献 PDF 阅读",
+      "goal": "通过 PDF 大纲定位章节",
+      "entry": "文献 PDF 阅读器的大纲",
+      "preconditions": [
+        "PDF 有可核对的大纲和目标章节"
+      ],
+      "observableOutcome": "选择大纲条目后跳转至对应页面与章节",
+      "priority": "P2",
+      "priorityReason": "长PDF按大纲定位是基本阅读能力，不应仅归全量便利项。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；带大纲 PDF 与跳页资产、双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失 2026-10-25经用户授权按业务风险重分级，不因资产或运行成败调整；正式覆盖仍待批准。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "PdfOutline.navigate",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/workbench/pdf/Outline.tsx:34"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-PDF-ANNOTATE-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-READ-01"
+      ],
+      "domain": "文献 PDF 阅读",
+      "goal": "对选中文字创建高亮标注",
+      "entry": "文献 PDF 选区工具的高亮",
+      "preconditions": [
+        "文献 PDF 已打开且目标文字可选中"
+      ],
+      "observableOutcome": "高亮覆盖目标文字并在标注记录中可读回",
+      "priority": "P2",
+      "priorityReason": "基础阅读笔记行为，独立于 PDF AI 解释与翻译",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；文字选区、持久化标注资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "PdfTools.highlight",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/workbench/pdf/Tools.tsx:50"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-PDF-ANNOTATION-LOCATE-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-READ-01"
+      ],
+      "domain": "文献 PDF 阅读",
+      "goal": "从标注记录回到 PDF 原文",
+      "entry": "文献 PDF 标注记录的查看原文",
+      "preconditions": [
+        "目标文献已有可核对的标注"
+      ],
+      "observableOutcome": "从记录跳转到对应页与原文位置，来源仍是该文献附件",
+      "priority": "P2",
+      "priorityReason": "标注可追溯是阅读基础行为，但以已有标注为前提",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；带标注 PDF 与定位判据、双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "PdfAnnotations.focus",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/workbench/pdf/Annotations.tsx:123"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-PDF-DOCUMENT-TRANSLATE-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-READ-01"
+      ],
+      "domain": "文献 PDF 阅读",
+      "goal": "对文献 PDF 执行文档逐页翻译",
+      "entry": "文献 PDF 阅读器的文档翻译",
+      "preconditions": [
+        "文献 PDF 正文可读取且已配置获准模型",
+        "指定目标语言和可核对页面"
+      ],
+      "observableOutcome": "所选页面译文与原文对应且目标语言正确，自动继续时后续页面各有对应译文",
+      "priority": "P1",
+      "priorityReason": "独立于选区翻译的文献深度阅读核心 AI 路径",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Reading.runTranslationPage",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx:329"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "LIT-PDF-SUMMARY-01",
+      "revision": 3,
+      "directionIds": [
+        "LIT-READ-01"
+      ],
+      "domain": "文献 PDF 阅读",
+      "goal": "对文献 PDF 生成可追溯 AI 解读",
+      "entry": "文献 PDF 阅读器的 AI 解读",
+      "preconditions": [
+        "文献 PDF 正文可读取且已配置获准模型"
+      ],
+      "observableOutcome": "解读覆盖主要贡献与主张，语义贴合正文且证据可定位，不以选区解释代替",
+      "priority": "P1",
+      "priorityReason": "文献全文理解是核心 AI 阅读能力，区别于选区解释",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Reading.generateSummary",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/workbench/pdf/Reading.tsx:693"
+        },
+        {
+          "kind": "source_code",
+          "id": "Summary.claims",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/workbench/pdf/Summary.tsx:14"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-reading/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "LIT-SEARCH-SAVE-01",
+      "revision": 4,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "将 AI 检索结果中的题录加入文献库",
+      "entry": "文献 AI 检索结果的加入文献库",
+      "preconditions": [
+        "已有可核对且未加入目标库的公开题录"
+      ],
+      "observableOutcome": "该题录加入目标文献库并可读回，重复加入入口受正确约束",
+      "priority": "P1",
+      "priorityReason": "新文献发现到可持久使用的入库闭环属于核心业务。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "LiteratureSearchView.join",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/literature/Search.tsx:830"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-NEW-01",
+      "revision": 3,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话管理",
+      "goal": "从新对话入口建立独立会话",
+      "entry": "侧栏的新对话",
+      "preconditions": [
+        "隔离环境有可用模型与项目"
+      ],
+      "observableOutcome": "首次发送后建立新的会话身份，与已有会话消息分离",
+      "priority": "P1",
+      "priorityReason": "对话核心使用路径，但首档真实回合可复用准备好的会话",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Sidebar.newChat",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Sidebar.tsx:411"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-HISTORY-01",
+      "revision": 3,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话管理",
+      "goal": "重新打开历史会话并读回消息",
+      "entry": "侧栏历史会话列表",
+      "preconditions": [
+        "已有完成且可重新打开的会话"
+      ],
+      "observableOutcome": "打开正确会话，原用户消息、回复与终态可读回",
+      "priority": "P1",
+      "priorityReason": "对话持久性直接影响核心业务连续使用",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Sidebar.openSession",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Sidebar.tsx:142"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-SEARCH-01",
+      "revision": 4,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话管理",
+      "goal": "按标题搜索并打开历史会话",
+      "entry": "侧栏会话搜索",
+      "preconditions": [
+        "已有多个标题不同的会话"
+      ],
+      "observableOutcome": "搜索命中目标标题并打开对应会话，不误开同名近似结果",
+      "priority": "P2",
+      "priorityReason": "找回已有研究任务是基本历史使用能力，不仅是展示便利。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；多会话匹配资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失 2026-10-25经用户授权按业务风险重分级，不因资产或运行成败调整；正式覆盖仍待批准。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Sidebar.searchSessionTitles",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Sidebar.tsx:308"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "CHAT-RENAME-01",
+      "revision": 2,
+      "directionIds": ["CHAT-FLOW-01"],
+      "domain": "对话管理",
+      "goal": "重命名历史会话并保持标题",
+      "entry": "侧栏会话操作的重命名",
+      "preconditions": ["已有可操作的会话"],
+      "observableOutcome": "新标题保存，关闭并重新打开后仍对应原会话",
+      "priority": "P3",
+      "priorityReason": "会话整理便利功能，不影响核心回答和历史读回",
+      "platforms": ["macos", "windows"],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；重命名读回资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [{ "kind": "source_code", "id": "Sidebar.sessionRename", "revision": "1b3dbe61c037f56173421dc39191a0969d201cef", "locator": "apps/desktop/src/renderer/src/components/business/Sidebar.tsx:131" }],
+      "assetRefs": ["apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json","apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"]
+    },
+    {
+      "id": "CHAT-FOLLOWUP-01",
+      "revision": 3,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话",
+      "goal": "在同会话追问并按要求修订回答",
+      "entry": "已有会话的对话输入框",
+      "preconditions": [
+        "同一会话首轮已完成且有可核对的上下文",
+        "已配置获准模型"
+      ],
+      "observableOutcome": "第二轮回答正确承接首轮上下文并执行修订请求；不要求 CORE-01 的项目资料依据链",
+      "priority": "P1",
+      "priorityReason": "多轮上下文是核心对话质量，但不增加首档 30 分钟默认点位",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Composer.submitOnce",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Composer.tsx:1373"
+        },
+        {
+          "kind": "direction_row",
+          "id": "CORE-01",
+          "revision": "2",
+          "locator": "apps/desktop/eval-scenarios/README.md:27"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-STOP-01",
+      "revision": 4,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话",
+      "goal": "停止正在运行的模型回合",
+      "entry": "对话运行中的停止按钮",
+      "preconditions": [
+        "当前模型回合正在运行"
+      ],
+      "observableOutcome": "当前回合进入停止终态，停止后不继续新增该回合输出",
+      "priority": "P1",
+      "priorityReason": "失控回合的用户控制能力直接影响核心对话可用性与费用",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Composer.stop",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Composer.tsx:1872"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-CHAT-STOP",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-stop"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-QUEUE-01",
+      "revision": 4,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话",
+      "goal": "运行中再次发送并按序处理队列消息",
+      "entry": "对话运行中的输入框发送",
+      "preconditions": [
+        "已有运行中的会话回合且运行时允许持久队列"
+      ],
+      "observableOutcome": "新消息以可见队列项保留，在前一回合结束后按序处理，不被静默丢弃",
+      "priority": "P2",
+      "priorityReason": "复杂并发交互重要，但比单回合和停止控制更后置",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "本轮只补BROAD-CHAT-QUEUE局部来源；已交互但结果未知；没有有效排队证据，不能判排队通过或产品队列失败。保留需在真实运行中提交并关联排队身份的缺口；无自动模型重试。Windows、正式判据与独立执行资产仍缺，不能自动计覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Composer.runtimeAdmission",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Composer.tsx:822"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-CHAT-QUEUE",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-queue"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "CHAT-MODEL-SWITCH-01",
+      "revision": 3,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话",
+      "goal": "切换当前会话所用模型",
+      "entry": "对话输入区的模型选择器",
+      "preconditions": [
+        "已有两个可用且获准调用的模型",
+        "当前会话允许模型切换"
+      ],
+      "observableOutcome": "下一个模型回合使用目标模型，界面与真实会话模型身份一致",
+      "priority": "P1",
+      "priorityReason": "模型选择是核心对话控制能力，需以真实下轮身份核验",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "ModelMenu.selectModel",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/ModelMenu.tsx:302"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-LOCAL-FILE-01",
+      "revision": 3,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "对话",
+      "goal": "向当前对话添加本地文件并依据其内容回答",
+      "entry": "对话输入区加号菜单的添加文件",
+      "preconditions": [
+        "可用模型与获准读取的本地测试文件"
+      ],
+      "observableOutcome": "附件在本轮输入中可见，模型回答针对文件中的可核事实；不与资料库引用混同",
+      "priority": "P1",
+      "priorityReason": "文件辅助问答是核心对话入口，与项目资料引用语义不同",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Composer.addLocal",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Composer.tsx:3094"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "SEARCH-GLOBAL-01",
+      "revision": 4,
+      "directionIds": [
+        "SEARCH-01"
+      ],
+      "domain": "全局搜索",
+      "goal": "跨资料、文献和会话搜索并定位正确对象",
+      "entry": "全局搜索面板",
+      "preconditions": [
+        "当前范围有可核对的资料、文献和会话"
+      ],
+      "observableOutcome": "结果按业务域呈现且命中正确，点击后打开对应对象与范围",
+      "priority": "P2",
+      "priorityReason": "跨域效率能力，需守住跳转身份与项目范围",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "本轮只补BROAD-SEARCH-CROSS局部来源；已观察结果：补原缺跨项目空对照及资源身份。此轮未逐一点击文献/任务搜索命中；原历史引用保留但不算本轮执行，不把局部补证说成完整用例通过。Windows、正式判据与独立执行资产仍缺，不能自动计覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "GlobalSearch.openHit",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/features/search/GlobalSearch.tsx:153"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-incremental-20261024",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-mapping"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SEARCH-CROSS",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-search-cross"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/global-search/README.md",
+        "apps/desktop/eval-scenarios/exploratory/global-search/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/global-search/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/global-search/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "SKILL-BROWSE-01",
+      "revision": 4,
+      "directionIds": [
+        "SKILL-01"
+      ],
+      "domain": "技能",
+      "goal": "浏览并检索可用技能说明",
+      "entry": "客户端技能页",
+      "preconditions": [
+        "当前技能目录含至少两个不同分组的可见技能"
+      ],
+      "observableOutcome": "按组或关键词找到目标技能，详情显示其对应说明",
+      "priority": "P2",
+      "priorityReason": "浏览并理解技能说明是基本可发现性，区别于具体搜索数据变体。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "按源码建立探索点；技能目录样例、执行资产及双平台实机结果待核；本次补四域用例链接，原有缺口不因编写用例消失 2026-10-25经用户授权按业务风险重分级，不因资产或运行成败调整；正式覆盖仍待批准。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "Skills.visible",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/Skills.tsx:116"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/skill-center/README.md",
+        "apps/desktop/eval-scenarios/exploratory/skill-center/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/skill-center/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/skill-center/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "MODEL-CONFIG-01",
+      "revision": 5,
+      "directionIds": [
+        "MODEL-01"
+      ],
+      "domain": "模型配置",
+      "goal": "配置获准模型服务并在客户端选择",
+      "entry": "头像菜单的设置 → 模型服务配置",
+      "preconditions": [
+        "有获准的模型端点与临时密钥",
+        "允许本次真实连接探测"
+      ],
+      "observableOutcome": "配置保存且目标模型进入可选目录，密钥不以明文回显",
+      "priority": "P1",
+      "priorityReason": "模型可用性是核心对话前提，但密钥和外部调用须单独授权",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "AccountPanel.saveModelEndpoint",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/AccountPanel.tsx:2956"
+        },
+        {
+          "kind": "direction_row",
+          "id": "MODEL-01",
+          "revision": "3",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-domains-20261023",
+          "revision": "20261023T003940133157Z-43ef6e720a58",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md#six-settings"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-incremental-20261024",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-mapping"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/model-settings/README.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 3,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      },
+      "directionPreparation": {
+        "id": "p2-direction-20261025",
+        "previous": {
+          "revision": 4
+        },
+        "scope": "direction source revision only; priority, goal, existing Check and readiness unchanged"
+      }
+    },
+    {
+      "id": "ACCOUNT-LOGIN-01",
+      "revision": 3,
+      "directionIds": [
+        "ACCOUNT-01"
+      ],
+      "domain": "账户",
+      "goal": "登录并在客户端恢复账户状态",
+      "entry": "客户端账户入口的应用内登录交接（具体未登录入口待核）",
+      "preconditions": [
+        "处于未登录态",
+        "有授权的专用测试账户及登录环境"
+      ],
+      "observableOutcome": "完成登录后客户端账户入口显示正确已登录身份，在本次明确的重新打开范围内保持有效状态；面板重开不替代进程重开",
+      "priority": "P1",
+      "priorityReason": "账户服务影响模型与付费能力使用，需专用测试身份独立验证",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "source_code",
+          "id": "AccountPage.onLogin",
+          "revision": "1b3dbe61c037f56173421dc39191a0969d201cef",
+          "locator": "apps/desktop/src/renderer/src/components/business/AccountPanel.tsx:2019"
+        },
+        {
+          "kind": "direction_row",
+          "id": "ACCOUNT-01",
+          "revision": "2",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-domains-20261023",
+          "revision": "20261023T003940133157Z-43ef6e720a58",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md#six-settings"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/account-state/README.md",
+        "apps/desktop/eval-scenarios/exploratory/account-state/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/account-state/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "SKILL-INVOKE-01",
+      "revision": 2,
+      "directionIds": [
+        "SKILL-01"
+      ],
+      "domain": "技能",
+      "goal": "从技能中心显式选择内置技能并完成获准的只读任务",
+      "entry": "技能中心内置技能详情 → 使用技能 → 新任务的技能引用",
+      "preconditions": [
+        "已登录且目标内置技能active、可调用",
+        "本次只读技能任务与模型预算已授权",
+        "在隔离项目使用design-research-validation"
+      ],
+      "observableOutcome": "真实请求携带稳定技能身份及版本，执行关联该技能并交付完整对话结果，未发生未授权检索、下载、写入或实验",
+      "priority": "P0",
+      "priorityReason": "技能中心是用户指定的第四核心业务域；只浏览不能证明技能主链可用，单次只读调用是最小构建验证",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "direction_row",
+          "id": "SKILL-01",
+          "revision": "3",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "manual_input",
+          "id": "four-domains-20261022",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations.md"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/skill-center/README.md",
+        "apps/desktop/eval-scenarios/exploratory/skill-center/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/skill-center/judge.md"
+      ],
+      "directionPreparation": {
+        "id": "p2-direction-20261025",
+        "previous": {
+          "revision": 1
+        },
+        "scope": "direction source revision only; priority, goal, existing Check and readiness unchanged"
+      }
+    },
+    {
+      "id": "MODEL-CATALOG-01",
+      "revision": 2,
+      "directionIds": [
+        "MODEL-01"
+      ],
+      "domain": "模型配置",
+      "goal": "只读查看模型服务和内置模型目录",
+      "entry": "头像菜单设置中的模型服务与模型配置",
+      "preconditions": [
+        "可进入本轮隔离客户端的设置",
+        "不输入密钥或提交服务配置"
+      ],
+      "observableOutcome": "两页可呈现当前厂商、模型及实际控件状态；仅查看不被当作完成模型配置或可调用性证明",
+      "priority": "P2",
+      "priorityReason": "只读目录与状态是配置辅助入口，不替代P1真实配置或核心模型回合",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "direction_row",
+          "id": "MODEL-01",
+          "revision": "3",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-domains-20261023",
+          "revision": "20261023T003940133157Z-43ef6e720a58",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md#six-settings"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/model-settings/README.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/judge.md"
+      ],
+      "directionPreparation": {
+        "id": "p2-direction-20261025",
+        "previous": {
+          "revision": 1
+        },
+        "scope": "direction source revision only; priority, goal, existing Check and readiness unchanged"
+      }
+    },
+    {
+      "id": "ACCOUNT-STATE-01",
+      "revision": 1,
+      "directionIds": [
+        "ACCOUNT-01"
+      ],
+      "domain": "账户",
+      "goal": "只读查看当前客户端的账户显示状态",
+      "entry": "模块导航头像菜单",
+      "preconditions": [
+        "本轮账户状态已知且允许只读查看",
+        "不登录、退出或切换真实账号"
+      ],
+      "observableOutcome": "头像菜单呈现当前已登录或明确未登录状态及对应入口，敏感身份按界面策略遮挡；不把已有状态视为本轮登录或恢复成功",
+      "priority": "P2",
+      "priorityReason": "已有账户状态的只读展示属于辅助状态核验；真实登录与恢复仍独立P1",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "current",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "direction_row",
+          "id": "ACCOUNT-01",
+          "revision": "2",
+          "locator": "apps/desktop/eval-scenarios/README.md"
+        },
+        {
+          "kind": "ui_observation",
+          "id": "desktop-six-domains-20261023",
+          "revision": "20261023T003940133157Z-43ef6e720a58",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-six.md#six-settings"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/account-state/README.md",
+        "apps/desktop/eval-scenarios/exploratory/account-state/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/account-state/judge.md"
+      ]
+    },
+    {
+      "id": "PROJ-EDIT-01",
+      "revision": 3,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "编辑项目元数据后保持原资料与任务归属",
+      "entry": "项目卡片操作 → 编辑项目 → project-edit-name / project-save",
+      "preconditions": [
+        "任务项目已有合成资料及任务，允许修改名称和描述。"
+      ],
+      "observableOutcome": "更新正确项目的名称与描述，原资料和任务仍归属同一项目；不把根路径未改作为强制产品规则。",
+      "priority": "P2",
+      "priorityReason": "名称与描述编辑是基本管理，不影响创建切换主链；数据归属仍必须验证。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；缺独立Check、重启及跨平台证据；未测路径迁移。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。 2026-10-25经用户授权按业务风险重分级，不因资产或运行成败调整；正式覆盖仍待批准。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-PROJ-EDIT",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-proj-edit"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 2,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "PROJ-ARCHIVE-01",
+      "revision": 2,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "归档项目后默认列表隐藏且归档管理保留对象",
+      "entry": "项目卡片操作 → 归档项目 → home-archive-confirm → 设置归档管理",
+      "preconditions": [
+        "本轮项目存在且没有运行中任务，归档已获准。"
+      ],
+      "observableOutcome": "默认列表隐藏该项目，归档管理保留同身份可恢复对象；归档不等于永久删除。",
+      "priority": "P1",
+      "priorityReason": "项目生命周期及保留数据边界，建议P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-PROJ-ARCHIVE",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-proj-archive"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "PROJ-RESTORE-01",
+      "revision": 2,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "恢复归档项目后读回原资料与任务",
+      "entry": "设置 → 归档管理 → account-archived-restore-ID",
+      "preconditions": [
+        "同一自建项目已归档，恢复已获准。"
+      ],
+      "observableOutcome": "恢复正确项目及其原资料任务，不以toast或卡片名称单独判断。",
+      "priority": "P1",
+      "priorityReason": "项目恢复是独立终态，不能由归档成功替代，建议P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-PROJ-RESTORE",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-proj-restore"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CONNECTOR-VALIDATE-01",
+      "revision": 2,
+      "directionIds": [
+        "CONNECTOR-01"
+      ],
+      "domain": "连接器",
+      "goal": "连接器无效URL配置被拒绝并可修正",
+      "entry": "技能中心 → 连接器 → 添加连接器 → custom-connector-dialog → 预览配置",
+      "preconditions": [
+        "只允许未保存的合成配置草稿，不触发STDIO或真实连接。"
+      ],
+      "observableOutcome": "无效配置收到明确校验且可纠正，不凭校验结果判断真实MCP服务可用。",
+      "priority": "P2",
+      "priorityReason": "无效URL输入反馈是可恢复配置异常，真实认证和消费另按P1覆盖。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；表外CONNECTOR-01待方向审查；缺独立Check、持久化对照及专用服务。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。 2026-10-25经用户授权按业务风险重分级，不因资产或运行成败调整；正式覆盖仍待批准。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-CONN-VALIDATE",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-conn-validate"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/skills.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "CONNECTOR-PREVIEW-01",
+      "revision": 1,
+      "directionIds": [
+        "CONNECTOR-01"
+      ],
+      "domain": "连接器",
+      "goal": "批量连接器配置预览身份正确且取消不安装",
+      "entry": "技能中心 → 连接器 → 添加连接器 → JSON → 预览配置 / 我的",
+      "preconditions": [
+        "两项HTTP/SSE合成配置；example.com只作地址格式样本，不是可用服务。"
+      ],
+      "observableOutcome": "预览逐项对应输入，未确认保存不形成已安装连接器；不声称JSON/表单双向往返正确。",
+      "priority": "P2",
+      "priorityReason": "批量配置可审阅性与取消边界，建议P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；表外CONNECTOR-01待方向审查；缺持久化对照、独立Check和真实服务资产。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-CONN-PREVIEW",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-conn-preview"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/skills.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "SKILL-INSTALL-LOCAL-01",
+      "revision": 1,
+      "directionIds": [
+        "SKILL-MGMT-01"
+      ],
+      "domain": "技能管理",
+      "goal": "本地合成技能预览安装后读回来源与版本",
+      "entry": "技能中心 → skills-add → 本地上传 → skill-install → skills-tab-user → 详情",
+      "preconditions": [
+        "本轮自编无脚本SKILL.md、明确文件摘要；只允许安装该本地合成技能。"
+      ],
+      "observableOutcome": "安装对象与所选说明一致，来源和版本可核对；不把local版本字符串当作文件SHA摘要。",
+      "priority": "P1",
+      "priorityReason": "用户技能供给关键链路，建议P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；表外SKILL-MGMT-01待方向审查；缺可复用合成包、独立Check与跨平台证据；未覆盖ZIP或卸载。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-SKILL-UPLOAD",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-skill-upload"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/skills.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "CHAT-BRANCH-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "会话管理",
+      "goal": "从指定回复创建任务分支并保留原任务",
+      "entry": "目标回复 → message-fork-task",
+      "preconditions": [
+        "自建任务已有可核对的完成回合，允许派生任务。"
+      ],
+      "observableOutcome": "分支对应指定回复，原任务不被改写；单轮观察不能证明多轮截断和后续模型回合正确。",
+      "priority": "P2",
+      "priorityReason": "可选任务谱系能力，建议P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；缺精确派生身份、原请求和独立Check，不猜分支ID。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-CHAT-BRANCH",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-chat-branch"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "CHAT-ARCHIVE-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "会话管理",
+      "goal": "已完成任务归档后历史可读且输入只读",
+      "entry": "workspace-conversation-menu → 归档任务 → task-archive-submit",
+      "preconditions": [
+        "只操作本轮已完成任务；归档已获准，不含运行中或排队任务。"
+      ],
+      "observableOutcome": "任务从活动列表移出，归档历史可读且继续发送受限制；不证明运行中任务安全停止。",
+      "priority": "P1",
+      "priorityReason": "任务生命周期及防误继续执行，建议P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-CHAT-ARCHIVE",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-chat-archive"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-RESTORE-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "会话管理",
+      "goal": "恢复归档任务后原消息保留并可编辑",
+      "entry": "project-archive-toggle → 悬停目标归档行 → 恢复任务",
+      "preconditions": [
+        "本轮任务已归档，恢复已获准。"
+      ],
+      "observableOutcome": "恢复同一任务与历史，输入可编辑；不把输入状态当作后续模型执行成功。",
+      "priority": "P1",
+      "priorityReason": "独立可恢复性终态，建议P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-CHAT-RESTORE",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-chat-restore"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "LIT-TAG-FILTER-01",
+      "revision": 2,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献全览管理",
+      "goal": "文献标签关联与筛选命中正确对象",
+      "entry": "文献标签区 → 新建标签 → 添加到标签 → 选择标签",
+      "preconditions": [
+        "两条身份可核对的合成题录；仅允许创建任务标签并关联一条。"
+      ],
+      "observableOutcome": "标签只关联目标文献且筛选范围正确；标签与分类分别记录，不把本地题录操作当在线发现。",
+      "priority": "P2",
+      "priorityReason": "文献组织与筛选一致性，建议P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；缺独立Check及复用题录资产；未测移除、删除、同名冲突或跨平台。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-LIT-TAG",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-lit-tag"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/literature.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "MODEL-REASONING-01",
+      "revision": 2,
+      "directionIds": [
+        "MODEL-01"
+      ],
+      "domain": "模型配置",
+      "goal": "模型思考强度保存重开及新任务显示一致",
+      "entry": "设置 → 模型服务 → 模型配置 → 目标模型combobox → 新任务模型标签",
+      "preconditions": [
+        "隔离Home内可配置目标模型，允许修改任务配置；UI消费观察不要求额外发送模型请求。"
+      ],
+      "observableOutcome": "保存的目标参数在设置和新任务显示一致且不串改其他模型；不由UI推定供应商接受该参数。",
+      "priority": "P2",
+      "priorityReason": "模型配置连续性，非最小构建可用性，建议P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；缺独立Check、可复用参数资产及上游身份取证；观察范围仅UI保存和消费。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "INC-MODEL-REASONING",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-model-reasoning"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/README.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "SKILL-ENABLE-01",
+      "revision": 2,
+      "directionIds": [
+        "SKILL-MGMT-01"
+      ],
+      "domain": "技能管理",
+      "goal": "技能停用与启用后选择器状态一致",
+      "entry": "技能详情 → 启用/停用 → 新任务slash技能选择器",
+      "preconditions": [
+        "获准隔离状态中的内置技能或本轮自建本地技能；每种来源分别观察，不能互相替代。"
+      ],
+      "observableOutcome": "停用后消费者不误报可选择，恢复后同一技能可选；详情使用按钮可见不能证明可调用。",
+      "priority": "P1",
+      "priorityReason": "停用技能后不得误报可调用，涉及用户执行意愿与准入一致性。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权登记探索点；表外SKILL-MGMT-01待方向审查；缺独立Check；本轮仅本地来源，内置来源及模型执行边界未验证。 仅有macOS局部观察，无获批PRD或判据，不自动扩展方向基线。 2026-10-25经用户授权按业务风险重分级，不因资产或运行成败调整；正式覆盖仍待批准。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "D4-SKILL-007-local-evidence",
+          "revision": "20261024T112333061Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#incremental-amendments"
+        },
+        {
+          "kind": "manual_review",
+          "id": "priority-review-20261025",
+          "revision": "1",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#priority-review"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/skills.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "PROJ-PIN-01",
+      "revision": 1,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "置顶项目后顺序与对象身份保持一致",
+      "entry": "项目首页卡片操作 → 置顶",
+      "preconditions": [
+        "两个可区分的任务项目；仅允许调整任务项目元数据。"
+      ],
+      "observableOutcome": "置顶标记和排序对应所选项目，不改变资料或任务归属。",
+      "priority": "P3",
+      "priorityReason": "组织偏好，不影响项目创建、切换或资料可用，按全量便利性分支定P3。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-PROJ-PIN",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-proj-pin"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "PROJ-FILTER-01",
+      "revision": 2,
+      "directionIds": [
+        "PROJ-01"
+      ],
+      "domain": "项目",
+      "goal": "按项目名称筛选并恢复项目列表",
+      "entry": "项目首页 → 搜索项目",
+      "preconditions": [
+        "两个名称可区分的合成项目。"
+      ],
+      "observableOutcome": "项目筛选准确且可清空恢复；任务卡是否联动不能从当前表现追认为批准规则。",
+      "priority": "P2",
+      "priorityReason": "常用项目定位能力，属于基本业务P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-PROJ-FILTER",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-proj-filter"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/project.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/README.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/project-flow/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-VERSION-RESTORE-01",
+      "revision": 2,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库",
+      "goal": "查看并恢复合成资料的指定历史版本",
+      "entry": "Markdown编辑器 → 版本历史 → 查看版本/恢复",
+      "preconditions": [
+        "独立合成MD有可区分内容的两个版本，允许恢复本轮文件。"
+      ],
+      "observableOutcome": "恢复所选版本且当前正文、文件内容及恢复历史一致，旧版仍可追溯。",
+      "priority": "P1",
+      "priorityReason": "资料误改恢复与数据保护属于核心可靠性P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-RES-HISTORY",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-history"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/library.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "RES-DUPLICATE-01",
+      "revision": 2,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库",
+      "goal": "创建资料副本并保留原件",
+      "entry": "资料文件更多操作 → 创建副本",
+      "preconditions": [
+        "任务项目内有一份已知内容的合成MD。"
+      ],
+      "observableOutcome": "创建新身份的副本，不覆盖或误改原件。",
+      "priority": "P2",
+      "priorityReason": "基本资料管理P2，区别于导入同名冲突。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-RES-DUPLICATE",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-duplicate"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/library.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-VIEW-MODE-01",
+      "revision": 2,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库",
+      "goal": "Markdown查看方式切换保持同一资料正文",
+      "entry": "Markdown编辑器 → Markdown查看方式",
+      "preconditions": [
+        "合成MD已打开；先核菜单真实提供哪些模式，不预设预览入口。"
+      ],
+      "observableOutcome": "可用查看方式切换不丢失正文、不串到其他文件；具体模式须先确认。",
+      "priority": "P2",
+      "priorityReason": "基本阅读与编辑状态切换P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-RES-VIEW",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-res-view"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/library.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "LIT-COLUMNS-01",
+      "revision": 1,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献",
+      "goal": "文献列表显示列配置与重开状态一致",
+      "entry": "文献中心 → 设置显示列",
+      "preconditions": [
+        "两条可区分的合成题录；获准调整任务界面偏好。"
+      ],
+      "observableOutcome": "列选择与实际显示一致；跨重启持久性另核，不改变题录元数据。",
+      "priority": "P3",
+      "priorityReason": "列表展示偏好不影响文献读取或检索，调整为P3。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-LIT-COLUMNS",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-columns"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/literature.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "LIT-IMPORT-ZOTERO-01",
+      "revision": 2,
+      "directionIds": [
+        "LIT-MGMT-01"
+      ],
+      "domain": "文献",
+      "goal": "从专用Zotero资料源导入所选题录",
+      "entry": "文献中心 → 导入文献 → 从Zotero导入",
+      "preconditions": [
+        "专用合成Zotero库、可核源身份和独立连接授权；没有这些前提不读取个人库。"
+      ],
+      "observableOutcome": "仅导入明确选定的题录并保留可核来源，不混入未知个人文献。",
+      "priority": "P1",
+      "priorityReason": "外部文献迁入是核心输入链路P1，非构建最小路径。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-LIT-ZOTERO",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-lit-zotero"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/literature.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/literature-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-ARTIFACT-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "AI对话",
+      "goal": "真实对话交付可从多个入口打开的文件产物",
+      "entry": "AI对话文件交付 → 产物卡/任务概览/项目任务产物",
+      "preconditions": [
+        "获准模型预算及合成资料，只允许在任务目录生成产物。"
+      ],
+      "observableOutcome": "发布与文件身份一致且真实可打开；事实、来源及语义质量独立判定。",
+      "priority": "P1",
+      "priorityReason": "用户获得模型成果的核心交付链路P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-CHAT-ARTIFACT",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-artifact"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-ARTIFACT-IMPORT-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "AI对话",
+      "goal": "将已发布任务产物保存为资料库副本",
+      "entry": "对话产物卡 → 导入资料库 → 保存到资料库",
+      "preconditions": [
+        "本轮已发布的合成产物及可写任务资料目录。"
+      ],
+      "observableOutcome": "原产物保留，资料副本可打开且正文与来源转换可解释；不预设逐字节相同。",
+      "priority": "P1",
+      "priorityReason": "模型成果进入后续资料工作流的核心闭环P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-CHAT-ARTIFACT-IMPORT",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-artifact-import"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-TASK-REF-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "AI对话",
+      "goal": "新任务引用指定历史任务并据其回答",
+      "entry": "AI对话加号菜单 → 引用任务",
+      "preconditions": [
+        "本轮合成历史任务含可区分事实；获准读取历史及模型预算。"
+      ],
+      "observableOutcome": "回答依据明确引用的任务，并如实区分历史事实与未知；质量由独立Judge判断。",
+      "priority": "P1",
+      "priorityReason": "跨任务承接知识及来源正确性属于核心P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "B",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-CHAT-REFERENCE-TASK",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-reference-task"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-LIT-REF-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "AI对话",
+      "goal": "引用指定文献题录并区分摘要与全文依据",
+      "entry": "AI对话加号菜单 → 引用文献库",
+      "preconditions": [
+        "项目已关联合成题录，摘要含可核事实；全文有无分别记录。"
+      ],
+      "observableOutcome": "不混用其他文献，并明确题录、摘要和全文的证据边界。",
+      "priority": "P1",
+      "priorityReason": "研究回答来源身份和依据边界属于核心P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "B",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-CHAT-REFERENCE-LIT",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-chat-reference-lit"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "CHAT-WORKSPACE-TABS-01",
+      "revision": 2,
+      "directionIds": [
+        "CHAT-FLOW-01"
+      ],
+      "domain": "AI对话",
+      "goal": "工作区多标签切换保持资料对象与状态",
+      "entry": "项目工作区 → 新标签页及已打开资料标签",
+      "preconditions": [
+        "两个可区分的本轮资料或产物已打开。"
+      ],
+      "observableOutcome": "切换时标签与对象对应，不丢失已保存内容；关闭和重开边界独立确认。",
+      "priority": "P2",
+      "priorityReason": "多文档基本工作流P2，不与全局搜索合并。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-WORKSPACE-TABS",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-workspace-tabs"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/conversation.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/conversation-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "CONNECTOR-AUTH-01",
+      "revision": 1,
+      "directionIds": [
+        "CONNECTOR-01"
+      ],
+      "domain": "技能中心",
+      "goal": "获准连接器认证连通后进入可见工具并被任务消费",
+      "entry": "技能中心连接器详情或设置MCP服务入口",
+      "preconditions": [
+        "专用合成服务、认证授权和隔离配置已核；API/OAuth/STDIO分别保留前提变体。"
+      ],
+      "observableOutcome": "认证、连通、工具可见和任务消费分别成立，不泄露凭据或越权访问。",
+      "priority": "P1",
+      "priorityReason": "外部工具接入的核心链路P1；校验和预览不能替代真实接入。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "mixed",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。 模型语义未经独立Judge。 该方向尚为表外候选，须baseline另审，不能自动进入默认范围。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-CONNECTOR-AUTH",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-connector-auth"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/skills.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "MODEL-CONTEXT-01",
+      "revision": 2,
+      "directionIds": [
+        "MODEL-01"
+      ],
+      "domain": "模型与账户设置",
+      "goal": "模型上下文窗口选择保存后读回一致",
+      "entry": "设置 → 模型服务 → 模型配置 → 上下文窗口",
+      "preconditions": [
+        "确认任务配置隔离，记录当前模型与原值；不得读取真实密钥。"
+      ],
+      "observableOutcome": "选择、保存和重开值一致；控件输入值与产品接收状态分别取证，不把现有0当期望。",
+      "priority": "P2",
+      "priorityReason": "高级模型参数一致性P2，不由操作受阻降级。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SET-CONTEXT",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-context"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/README.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/model-settings/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "RES-AUTOSAVE-01",
+      "revision": 2,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库",
+      "goal": "资料自动保存策略与实际落盘行为一致",
+      "entry": "设置 → 资料库文件 → 文件自动保存",
+      "preconditions": [
+        "可恢复合成MD及已核任务配置隔离；开关动作获准。"
+      ],
+      "observableOutcome": "已确认保存策略与真实落盘、重开内容一致，不丢失用户已保存内容。",
+      "priority": "P1",
+      "priorityReason": "用户资料落盘可靠性属于核心P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "候选需求与原平台/结果证据仍待确认；本次仅补齐人工执行资产和Check映射，现场账号、模型、权限等前提另核，不计正式覆盖。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SET-AUTOSAVE",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-autosave"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/library.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/p1-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p1-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual execution inputs only; runtime prerequisites and real platform evidence not established"
+      }
+    },
+    {
+      "id": "RES-VERSION-POLICY-01",
+      "revision": 2,
+      "directionIds": [
+        "RES-MGMT-01"
+      ],
+      "domain": "资料库",
+      "goal": "历史版本数量及最大文件阈值按声明策略生效",
+      "entry": "设置 → 资料库文件 → 版本数量/最大文件大小",
+      "preconditions": [
+        "专用可恢复样本、阈值策略来源及涉及清理时的精确授权；50MB不是历史总容量。"
+      ],
+      "observableOutcome": "保留策略符合已确认数量和单文件阈值语义，不破坏当前文件；未获批准不固化默认数值。",
+      "priority": "P2",
+      "priorityReason": "历史容量边界与高级资料管理P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。",
+      "coverageEligibility": "exploratory",
+      "readiness": "manual_ready",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SET-VERSION-POLICY",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-version-policy"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/library.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/README.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/driver.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/judge.md",
+        "apps/desktop/eval-scenarios/exploratory/library-management/checks.json",
+        "apps/desktop/eval-scenarios/exploratory/p2-assets/README.md"
+      ],
+      "assetPreparation": {
+        "id": "p2-assets-20261025",
+        "previous": {
+          "revision": 1,
+          "readiness": "partial"
+        },
+        "scope": "manual inputs only; runtime authorization, policy approval and platform evidence remain separate"
+      }
+    },
+    {
+      "id": "MODEL-PROMPTS-01",
+      "revision": 1,
+      "directionIds": [
+        "APP-SET-01"
+      ],
+      "domain": "模型与账户设置",
+      "goal": "任务级AI提示词配置仅作用于对应动作",
+      "entry": "设置 → AI提示词 → 解读/翻译/润色/图表解释",
+      "preconditions": [
+        "仅在独立准备阶段获得配置与模型授权，按类型保留变体；评测执行不改提示词。"
+      ],
+      "observableOutcome": "获准模板的作用域与用户选择对应，不把修改模板作为评测变绿手段。",
+      "priority": "P2",
+      "priorityReason": "可配置AI能力的作用域属于扩展P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "B",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。 模型语义未经独立Judge。 该方向尚为表外候选，须baseline另审，不能自动进入默认范围。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SET-PROMPTS",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-prompts"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "NOTIFICATION-01",
+      "revision": 1,
+      "directionIds": [
+        "APP-SET-01"
+      ],
+      "domain": "模型与账户设置",
+      "goal": "任务提醒与真实状态一致且标已读不改变任务",
+      "entry": "设置 → 通知及消息中心",
+      "preconditions": [
+        "专用合成任务和现有系统权限已核；不代用户授权OS。"
+      ],
+      "observableOutcome": "提醒与目标任务状态相符，已读操作不改变业务结果。",
+      "priority": "P2",
+      "priorityReason": "后台任务可感知性与基本客户端体验P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。 该方向尚为表外候选，须baseline另审，不能自动进入默认范围。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SET-NOTIFICATION",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-notification"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "STORAGE-CONFIG-01",
+      "revision": 1,
+      "directionIds": [
+        "APP-SET-01"
+      ],
+      "domain": "模型与账户设置",
+      "goal": "数据路径配置按声明生效并保留原资料",
+      "entry": "设置 → 数据存储 → 项目根目录",
+      "preconditions": [
+        "任务Home/profile与两个专用目录，备份、恢复及重启授权明确；不改真实用户路径。"
+      ],
+      "observableOutcome": "路径变更遵循已确认生效边界，不丢失或越权迁移既有资料。",
+      "priority": "P1",
+      "priorityReason": "持久数据路径和潜在数据损失属于核心P1。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。 该方向尚为表外候选，须baseline另审，不能自动进入默认范围。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SET-STORAGE",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-storage"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    },
+    {
+      "id": "BROWSER-HISTORY-01",
+      "revision": 1,
+      "directionIds": [
+        "APP-SET-01"
+      ],
+      "domain": "模型与账户设置",
+      "goal": "按时间或站点检索和管理客户端浏览历史",
+      "entry": "设置 → 浏览器 → 浏览历史",
+      "preconditions": [
+        "仅含本轮公开合成页面历史；清理动作须单独核可恢复性和授权。"
+      ],
+      "observableOutcome": "历史对应真实导航且筛选准确，清理不越界；不把下载位置设置合并为本点。",
+      "priority": "P2",
+      "priorityReason": "历史可追溯与基本浏览器管理P2。",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "evaluationType": "A",
+      "status": "active",
+      "reviewState": "pending",
+      "reviewReason": "用户授权纳入探索目录；仅macOS局部观察，无获批需求/Check、完整执行资产或Windows实机证据。 该方向尚为表外候选，须baseline另审，不能自动进入默认范围。",
+      "coverageEligibility": "exploratory",
+      "readiness": "partial",
+      "sourceRefs": [
+        {
+          "kind": "ui_observation",
+          "id": "BROAD-SET-BROWSER-DATA",
+          "revision": "20261024T131248Z-105872aa",
+          "locator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-set-browser-data"
+        }
+      ],
+      "assetRefs": [
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/cases/settings.json",
+        "apps/desktop/eval-scenarios/exploratory/desktop-business/README.md"
+      ]
+    }
+  ]
+}

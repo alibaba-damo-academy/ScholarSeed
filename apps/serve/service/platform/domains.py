@@ -1466,11 +1466,16 @@ class DomainOwner:
                 with domains._operation():
                     # Startup can warm the runtime while the shared writer
                     # still holds admission. Transfer only occupancy leases.
-                    if domains._maintenance or domains._state not in (_State.OCCUPIED, _State.ADMITTED):
+                    if domains._maintenance or domains._state not in (
+                        _State.OCCUPIED,
+                        _State.ADMITTED,
+                    ):
                         raise DomainReleaseError("runtime launch requires shared storage occupancy")
                     duplicate_lease = getattr(domains._native, "duplicate_lease", None)
                     if duplicate_lease is None:
-                        raise DomainReleaseError("runtime descriptor transfer requires Darwin storage")
+                        raise DomainReleaseError(
+                            "runtime descriptor transfer requires Darwin storage"
+                        )
                     for handle in domains._occupancy:
                         descriptor = duplicate_lease(handle)
                         copies.callback(os.close, descriptor)

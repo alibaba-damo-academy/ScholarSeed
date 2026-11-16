@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "directionId": "SKILL-01",
+  "checks": [
+    {
+      "id": "SKILL-SELECT",
+      "pointIds": [
+        "SKILL-INVOKE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "SKILL-RESULT",
+      "pointIds": [
+        "SKILL-INVOKE-01"
+      ],
+      "required": true,
+      "evaluationType": "B"
+    },
+    {
+      "id": "SKILL-BOUNDARY",
+      "pointIds": [
+        "SKILL-INVOKE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "SKILL-BROWSE",
+      "pointIds": [
+        "SKILL-BROWSE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

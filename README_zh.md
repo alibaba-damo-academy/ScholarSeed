@@ -164,7 +164,7 @@ Windows 遇到 [Electron 下载停滞](CONTRIBUTING_zh.md#windows-下载排查)�
 
 在书深中，开发者可以先编写 Skill（科研流程规则），在 `SKILL.md` 文件中说明研究步骤、需要的材料和结果要求；再按需要加入对话卡片，让研究者在关键步骤作出选择，继续分析并整理文献。
 
-插件目前为开发者预览，开发与安装方式见[插件文档](doc/plugins.md)。
+插件目前为开发者预览，开发与安装方式见[插件文档](developer-docs/plugins.zh.md)。
 
 科研技能源码位于 `skills/community/`。通过 `pnpm ops cd build local --target skills` 构建技能包，通过 `pnpm ops ci check skills product --mode source` 检查与源码的一致性。
 
@@ -176,7 +176,7 @@ Skill 可通过 `scholarseed-bridge`（书深提供的应用操作接口）调�
 - **整理文献：** 导入论文、保存或修改笔记、批量添加标签，调整分类与项目归属。
 - **推进任务：** 查看获准的历史对话、更新任务计划，展示卡片并根据研究者的选择继续。
 
-这些操作由 AI 按 Skill 调用，再由书深检查当前项目范围和权限；卡片本身不拥有全部操作权限，也不能自动批准敏感操作。可用操作见[插件 API 文档](doc/plugins/api.md)。
+这些操作由 AI 按 Skill 调用，再由书深检查当前项目范围和权限；卡片本身不拥有全部操作权限，也不能自动批准敏感操作。可用操作见[插件 API 文档](developer-docs/plugins/api.zh.md)。
 
 ### 与 Codex 桌面端、Zotero AI 插件的区别
 

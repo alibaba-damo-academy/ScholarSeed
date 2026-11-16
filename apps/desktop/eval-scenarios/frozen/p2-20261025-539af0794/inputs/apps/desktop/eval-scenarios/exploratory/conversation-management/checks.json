@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "directionId": "CHAT-FLOW-01",
+  "checks": [
+    {
+      "id": "CHAT-NEW",
+      "pointIds": [
+        "CHAT-NEW-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-HISTORY",
+      "pointIds": [
+        "CHAT-HISTORY-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-REVISION",
+      "pointIds": [
+        "CHAT-FOLLOWUP-01"
+      ],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "CHAT-STOP",
+      "pointIds": [
+        "CHAT-STOP-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-MODEL-SWITCH",
+      "pointIds": [
+        "CHAT-MODEL-SWITCH-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-LOCAL-FILE",
+      "pointIds": [
+        "CHAT-LOCAL-FILE-01"
+      ],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "CHAT-ARCHIVE",
+      "pointIds": [
+        "CHAT-ARCHIVE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-RESTORE",
+      "pointIds": [
+        "CHAT-RESTORE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-ARTIFACT",
+      "pointIds": [
+        "CHAT-ARTIFACT-01"
+      ],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "CHAT-ARTIFACT-IMPORT",
+      "pointIds": [
+        "CHAT-ARTIFACT-IMPORT-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-TASK-REF",
+      "pointIds": [
+        "CHAT-TASK-REF-01"
+      ],
+      "required": true,
+      "evaluationType": "B"
+    },
+    {
+      "id": "CHAT-LIT-REF",
+      "pointIds": [
+        "CHAT-LIT-REF-01"
+      ],
+      "required": true,
+      "evaluationType": "B"
+    },
+    {
+      "id": "CHAT-SEARCH",
+      "pointIds": [
+        "CHAT-SEARCH-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-QUEUE",
+      "pointIds": [
+        "CHAT-QUEUE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-BRANCH",
+      "pointIds": [
+        "CHAT-BRANCH-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-WORKSPACE-TABS",
+      "pointIds": [
+        "CHAT-WORKSPACE-TABS-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

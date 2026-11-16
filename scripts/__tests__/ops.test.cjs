@@ -556,11 +556,12 @@ test('existing localization, updater and focused CSP test inputs retain closed a
 })
 
 test('registered execution selects the most specific Owner', () => {
-  assert.throws(() => resolveCommand(['ci', 'check', 'docs', 'workspace']), /private development repository/)
+  assert.equal(resolveCommand(['ci', 'check', 'docs', 'workspace']).owner, 'documentation')
   assert.equal(resolveCommand(['ci', 'check', 'i18n']).owner, 'localization')
   assert.equal(resolveCommand(['ci', 'format']).owner, 'formatter')
-  assert.throws(() => resolveCommand(['ci', 'check', 'skills', 'host', '--mode', 'links']), /private development repository/)
+  assert.throws(() => resolveCommand(['ci', 'check', 'skills', 'host', '--mode', 'links']), /private documentation repository/)
   assert.deepEqual(resolveCommand(['ci', 'check', 'skills', 'product', '--mode', 'source']).contexts, ['local'])
+  assert.throws(() => resolveCommand(['ci', 'check', 'skills', 'product', '--mode', 'manifest']), /Unsupported Skill owner\/mode/)
 })
 
 test('tooling debug preserves one Node test invocation and its original file order', () => {

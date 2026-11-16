@@ -1,0 +1,24 @@
+{
+  "id": "global-search",
+  "config": {
+    "language": "zh"
+  },
+  "drive": "cmd.jsonl",
+  "project": {
+    "name": "P2 global-search",
+    "files": [
+      {
+        "path": "p2-inputs/P2-SEARCH-TOKEN.md",
+        "contentFrom": "../p2-assets/fixtures/P2-SEARCH-TOKEN.md"
+      },
+      {
+        "path": "p2-inputs/P2-SEARCH-CONTROL.md",
+        "contentFrom": "../p2-assets/fixtures/P2-SEARCH-CONTROL.md"
+      },
+      {
+        "path": "p2-inputs/bibliography.bib",
+        "contentFrom": "../p2-assets/fixtures/bibliography.bib"
+      }
+    ]
+  }
+}

@@ -50,7 +50,9 @@ codex --search -s workspace-write \
 }
 ```
 
-其他自定义 URL 和显式 `PAPERHUB_URL` 不会被自动改写。
+旧安装中若 URL 仍是仓库曾提供的 `http://114.55.135.28:8000` 或
+`http://120.26.184.97/papersearch/`，运行时会自动迁移到新 endpoint；仍建议把用户配置
+手动更新为上面的值。其他自定义 URL 和显式 `PAPERHUB_URL` 不会被自动改写。
 
 PaperHub Bearer token 只从环境变量读取。必须在启动 Codex 的同一个 shell 中设置：
 

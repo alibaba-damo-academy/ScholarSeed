@@ -1,0 +1,274 @@
+# 跨包回归门禁 (开源方案阶段一)。
+#
+# 为什么需要它: 本仓库是独立包组成的 uv workspace（apps/serve、packages/runtime、
+# packages/damoatrace、packages/adapters/{codex,dsh}），成员真源为 pyproject.toml。改一个包可能静默
+# 弄坏另一个 —— 这类失效不报错, 只是行为变了。CI 是唯一能每次提交都发现它的地方。
+#
+# 旧容器 job 跑不需要凭据的约束层；下方两个原生 job 跑完整自动化和安装包验收。
+#   - 需要 runtime 二进制 (codex app-server) 的套件用 --no-runtime-binary 排除;
+#   - 旧容器 job 不跑需要真 LLM 的验收；新的原生 job 从受保护 file 变量注入
+#     独立模型凭据，运行 live 与安装后主流程；
+#   - 打包期产物 (apps/desktop/resources/defaults/) 不生成, 依赖它的断言会显式 SKIP。
+#
+# 原生 runner 必须预装锁定工具链、图形会话和模型凭据；缺项时门禁失败。
+# 受保护的 SCHOLARSEED_CI_MODEL_CONFIG_FILE、SCHOLARSEED_CI_MODEL_PROFILES_FILE
+# 是 GitLab file 变量，提供显式远程模型连接；无需原生 Codex 凭据。
+# 各 runner 还须设置不同的
+# SCHOLARSEED_ACTION_MODEL / SCHOLARSEED_ALTERNATE_MODEL、受控 Office corpus 路径
+# SCHOLARSEED_OFFICE_CORPUS，以及与该资料版本配套的独立 JSON 清单路径
+# SCHOLARSEED_OFFICE_CORPUS_MANIFEST（schemaVersion 1、version、必需文件的 SHA-256）。
+# macOS SkillHub 验收还需 SCHOLARSEED_CI_SKILLHUB_{CONFIG,URL,READ_TOKEN_FILE,
+# PUBLISH_TOKEN_FILE,PACKAGES,MANIFEST,NAMESPACE}；manifest 固定 CI namespace 与全部
+# ZIP SHA-256，两个 token 文件必须分离且仅所有者可读，缓存由本次 ci:test 创建。
+# 脚本只复制到本次 tmp 运行目录，质量工件只上传 JSON，不上传凭据。
+
+stages:
+  - verify
+
+default:
+  image: python:3.12-slim
+  interruptible: true
+  tags:
+    - docker
+
+variables:
+  # uv 把包缓存在项目内, 便于 GitLab 缓存命中。
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  GIT_DEPTH: "0"
+  # pip/uv 的包索引。与 pyproject 的 [[tool.uv.index]] 保持一致; runner 若有自己的
+  # 内网索引, 在项目 CI/CD 变量里覆盖这一项即可, 不必改本文件。
+  PIP_INDEX_URL: "https://mirrors.aliyun.com/pypi/simple/"
+
+cache:
+  key:
+    prefix: "${CI_RUNNER_ID}-${PYTHON}"
+    files:
+      - uv.lock
+  paths:
+    - .uv-cache
+    - .venv
+
+.python_setup: &python_setup
+  image: "python:${PYTHON}-slim"
+  variables:
+    # Container contracts use a system interpreter; native Desktop jobs must use the bundled runtime.
+    PYTHON: "3.12"
+  before_script:
+    # Debian 官方源在部分网络环境下极慢 —— 实测容器内 `apt-get update` 卡 10 分钟
+    # 无输出 (HTTP 探测却是 200, 所以不是不可达, 是抓取慢)。换 aliyun 镜像后同样的
+    # 命令 <30s 完成。`|| true` 保证换源失败也不阻断 (runner 可能已配好自己的源)。
+    - sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
+    # 安装 npm 作为根 workspace script 入口；公开投影测试还在容器内创建Git/LFS fixture。
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git git-lfs nodejs npm
+    # uv 走 pip 装而不是 `curl | sh`: slim 镜像没有 curl, 且 astral.sh 在容器内
+    # 实测 HTTPError。pip 走 PIP_INDEX_URL 指定的镜像, 与其余依赖同一条链路。
+    - pip install -q "$(python -c 'import tomllib; print("uv" + tomllib.load(open("pyproject.toml", "rb"))["tool"]["uv"]["required-version"])')"
+    # 走产品自己的安装入口, 而不是在 CI 里另写一套 pip 命令 ——
+    # 否则 CI 通过不代表用户的 node scripts/ops-cli.cjs --package-manager npm --context ci pre install python 通过。
+    #
+    # Explicit Python selects the non-Desktop library/CI environment. Desktop's
+    # default install uses the vendored macOS/Windows runtime and needs Node.
+    # These Linux contracts do not substitute for native Desktop acceptance.
+    - node scripts/ops-cli.cjs --package-manager npm --context ci pre install python
+    - node scripts/ops-cli.cjs --package-manager npm --context ci cd build local --target skills
+
+# ── 1. 格式与 import 位置 (阻塞) ──
+# 已经全绿, 所以设为硬门禁: 任何格式回归都必须当场拦住。
+format:
+  stage: verify
+  <<: *python_setup
+  script:
+    - node scripts/ops-cli.cjs --package-manager npm --context ci ci format
+
+# ── 2. lint 与类型检查 (暂不阻塞, 但必须可见) ──
+# lint 与 typecheck 独立运行，避免前者失败后漏跑后者。
+# 既有技术债以对应提交的实际检查输出为准，不在这里固定历史告警数量。
+#
+# 这里刻意不设成阻塞, 也刻意不降低检查标准去"调绿" —— 两者都会让门禁失去意义。
+# allow_failure 让每次流水线都把真实数字暴露在 UI 上; 待 owner 清完债后, 把这个
+# job 与上面的 format 合并成一个硬门禁, 并删掉 allow_failure。
+lint:
+  stage: verify
+  <<: *python_setup
+  allow_failure: true
+  script:
+    - node scripts/ops-cli.cjs --package-manager npm --context ci ci check lint python
+
+typecheck:
+  stage: verify
+  <<: *python_setup
+  allow_failure: true
+  script:
+    - node scripts/ops-cli.cjs --package-manager npm --context ci ci check types python
+
+# ── 3. 跨包契约门禁 ──
+# 这是这个 CI 存在的核心理由: 它同时覆盖 serve 域契约与仓库根的跨包
+# integration/release gate (两个同名 tests 包由 run_all 按归属隔离)。
+contract-gate:
+  stage: verify
+  <<: *python_setup
+  parallel:
+    matrix:
+      - PYTHON: ["3.12", "3.14"]
+  script:
+    # 固定 recipe 保留原 apps/serve cwd、PYTHONPATH 与 --fast/--no-runtime-binary 选择。
+    - node scripts/ops-cli.cjs --package-manager npm --context ci ci test integration --scope serve --suite gitlab-contract
+    - .venv/bin/python -m pytest -q scripts/ci/docs/__tests__/test_check.py developer-docs/plugins/test.py
+    - PYTHONPATH=skills/community/highlights-to-insights/scripts:skills/community/highlights-to-insights/tests:$PYTHONPATH .venv/bin/python -m pytest -q skills/community/highlights-to-insights
+    - .venv/bin/python -m pytest -q -o "python_files=test_*.py contract_*.py e2e_*.py" packages/damoatrace/damoatrace/tests
+
+# ── 4. 依赖包可独立构建 ──
+# 方案要求两个依赖包各自仍是独立可构建的发行包。wheel 构建失败通常意味着
+# package data 或 pyproject 声明被改坏了, 而这在源码检查里看不出来。
+dependency-wheels:
+  stage: verify
+  <<: *python_setup
+  parallel:
+    matrix:
+      - PYTHON: ["3.12", "3.14"]
+  script:
+    - node scripts/ops-cli.cjs --package-manager npm --context ci cd build local --target wheels
+  artifacts:
+    expire_in: 1 week
+    paths:
+      # 输出目录由 npm workspace scripts 的输出目录决定 (dist/runtime、dist/damoatrace、
+      # dist/adapters), 不是各包目录下的 dist/。
+      - dist/
+
+# Surface package.json and package-lock.json drift independently of other Desktop jobs.
+desktop-lockfile:
+  stage: verify
+  image: node:24.16.0
+  allow_failure: false
+  script:
+    - npm install --global "$(node -p "require('./apps/desktop/package.json').packageManager")"
+    - npm --prefix apps/desktop ci --dry-run --ignore-scripts --no-audit --no-fund
+
+# Desktop message resources, interpolation contracts and incremental source debt.
+desktop-localization:
+  stage: verify
+  image: node:24.16.0
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - node --test scripts/__tests__/ownership.test.cjs
+    - npm install --global "$(node -p "require('./apps/desktop/package.json').packageManager")"
+    - node scripts/pre/toolchain.cjs frontend
+    - cd apps/desktop
+    - npm ci --ignore-scripts --no-audit --no-fund
+    - |
+      if [ -n "$CI_MERGE_REQUEST_DIFF_BASE_SHA" ]; then
+        export I18N_BASE_REF="$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+      elif [ -n "$CI_COMMIT_BEFORE_SHA" ] && [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+        export I18N_BASE_REF="$CI_COMMIT_BEFORE_SHA"
+      else
+        export I18N_BASE_REF="$(git merge-base HEAD "origin/$CI_DEFAULT_BRANCH")"
+        test -n "$I18N_BASE_REF"
+      fi
+    - node ../../scripts/ops-cli.cjs --package-manager npm --context ci ci test integration --scope tooling --suite i18n
+    - node ../../scripts/ops-cli.cjs --package-manager npm --context ci ci check i18n
+    - node ../../scripts/ops-cli.cjs --package-manager npm --context ci ci check types desktop
+
+# Desktop unit-test suites under c8 coverage. The cobertura report drives the
+# MR coverage visualization; the full coverage/ dir (HTML + XML) is kept as an
+# artifact so failures remain inspectable (when: always).
+desktop-unit-test:
+  stage: verify
+  image: node:24.16.0
+  timeout: 10m
+  script:
+    - cd apps/desktop
+    - npm ci --ignore-scripts
+    - node ../../scripts/ops-cli.cjs --package-manager npm --context ci ci test --scope desktop --coverage
+  artifacts:
+    when: always
+    paths:
+      - apps/desktop/coverage/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: apps/desktop/coverage/cobertura-coverage.xml
+
+# Desktop E2E smoke tests. Validates Electron startup, security settings,
+# model configuration, skill management, and window lifecycle without
+# requiring a real LLM connection. Requires xvfb for headless Electron.
+desktop-e2e-smoke:
+  stage: verify
+  image: node:24.16.0
+  timeout: 15m
+  variables:
+    DISPLAY: ":99"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb libgtk-3-0 libnotify4 libnss3 libxss1 libasound2t64 libxtst6 xauth python3 libgbm1 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libpango-1.0-0 libcairo2
+    - Xvfb :99 -screen 0 1280x720x24 &
+  script:
+    - cd apps/desktop
+    - npm ci --no-audit --no-fund
+    - npx playwright install-deps chromium
+    - node ../../scripts/ops-cli.cjs --package-manager npm --context ci cd build local --stage app
+    - node ../../scripts/ops-cli.cjs --package-manager npm --context ci ci test e2e --scope desktop --suite smoke
+  artifacts:
+    when: always
+    paths:
+      - apps/desktop/test-results/
+      - apps/desktop/playwright-report/
+    expire_in: 1 week
+
+ci-package-macos:
+  stage: verify
+  image: null
+  tags:
+    - scholarseed-macos
+  variables:
+    GIT_DEPTH: "0"
+  timeout: 4h
+  before_script:
+    - npm ci --no-audit --no-fund
+    - node scripts/ops-cli.cjs --package-manager npm pre repair links
+    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope links
+    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope toolchain
+    - node scripts/ops-cli.cjs --package-manager npm pre install python
+    - node scripts/ops-cli.cjs --package-manager npm ci check docs workspace
+    - node scripts/ops-cli.cjs --package-manager npm ci check docs desktop
+  script:
+    - node scripts/ops-cli.cjs --package-manager npm cd build local --workflow package-acceptance
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - tmp/ci-package-*/*.json
+      - tmp/ci-package-*/build.*.log
+      - tmp/ci-smoke/quality.json
+      - tmp/ci-smoke-*/*.json
+      - tmp/ci-test-*/*.json
+      - apps/desktop/test-results/
+
+ci-package-windows:
+  stage: verify
+  image: null
+  tags:
+    - scholarseed-windows
+  variables:
+    GIT_DEPTH: "0"
+  timeout: 4h
+  before_script:
+    - npm ci --no-audit --no-fund
+    - node scripts/ops-cli.cjs --package-manager npm pre repair links
+    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope links
+    - node scripts/ops-cli.cjs --package-manager npm pre doctor --scope toolchain
+    - node scripts/ops-cli.cjs --package-manager npm pre install python
+    - node scripts/ops-cli.cjs --package-manager npm ci check docs workspace
+    - node scripts/ops-cli.cjs --package-manager npm ci check docs desktop
+  script:
+    - node scripts/ops-cli.cjs --package-manager npm cd build local --workflow package-acceptance
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - tmp/ci-package-*/*.json
+      - tmp/ci-package-*/build.*.log
+      - tmp/ci-smoke/quality.json
+      - tmp/ci-smoke-*/*.json
+      - tmp/ci-test-*/*.json
+      - apps/desktop/test-results/

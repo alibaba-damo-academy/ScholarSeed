@@ -1,0 +1,10 @@
+{
+  "id": "literature-ai-discovery",
+  "config": {
+    "language": "zh"
+  },
+  "drive": "cmd.jsonl",
+  "expected": {
+    "minTurns": 1
+  }
+}

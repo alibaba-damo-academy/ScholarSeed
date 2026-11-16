@@ -335,10 +335,10 @@ class EndpointMigrationTest(unittest.TestCase):
         from endpoint_defaults import model_base,PAPERHUB_BASE
         from paperhub_download import download_url
         with patch.dict(os.environ,{'PAPERHUB_URL':'','PAPER_HUB_URL':''}):
-            for old in (None,PAPERHUB_BASE,PAPERHUB_BASE+'/papersearch',PAPERHUB_BASE+'/paperdownload'):
+            for old in (None,'http://120.26.184.97/papersearch/','https://pre-pub-gateway-scholarseed.alibaba-inc.com/papersearch/',PAPERHUB_BASE,PAPERHUB_BASE+'/papersearch',PAPERHUB_BASE+'/paperdownload'):
                 self.assertEqual(download_url(old),PAPERHUB_BASE+'/paperdownload')
             self.assertEqual(download_url('https://custom.test/prefix/papersearch/'),'https://custom.test/prefix/paperdownload/')
-        self.assertEqual(model_base(None),None)
+        self.assertEqual(model_base('https://pre-pub-gateway-scholarseed.alibaba-inc.com/v1/'),'https://scholarseed.damo.alibaba.com/v1/')
         self.assertEqual(model_base('https://custom.test/v1'),'https://custom.test/v1')
 
 if __name__=='__main__':unittest.main()

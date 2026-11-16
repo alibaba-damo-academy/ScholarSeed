@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "directionId": "MODEL-01",
+  "checks": [
+    { "id": "MODEL-SAVE-SELECT", "pointIds": ["MODEL-CONFIG-01"], "required": true, "evaluationType": "A" },
+    { "id": "MODEL-KEY-REDACTION", "pointIds": ["MODEL-CONFIG-01"], "required": true, "evaluationType": "A" },
+    { "id": "MODEL-CATALOG", "pointIds": ["MODEL-CATALOG-01"], "required": true, "evaluationType": "A" }
+  ]
+}

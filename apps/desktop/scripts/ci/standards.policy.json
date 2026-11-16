@@ -1,0 +1,22 @@
+{
+  "$comment": "Desktop 局部规范门禁。exclude 只覆盖定义/资产/测试面；消费域新债务额度默认为 0。",
+  "sourceRoot": "src/renderer/src",
+  "sourceExtensions": [".ts", ".tsx", ".css"],
+  "styleExcludes": [
+    "/design/",
+    "/assets/",
+    "/components/primitive/Iconfont/download/",
+    "/components/examples/",
+    ".test.",
+    ".fixture."
+  ],
+  "visualInlineProperties": [
+    "background", "backgroundColor", "border", "borderColor", "borderRadius",
+    "boxShadow", "color", "fontFamily", "fontSize", "fontWeight", "lineHeight",
+    "margin", "marginBottom", "marginLeft", "marginRight", "marginTop",
+    "opacity", "padding", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"
+  ],
+  "uiForbiddenDependencies": [
+    "/app/", "/shell/", "/features/", "/components/business/", "/api", "/store"
+  ]
+}
