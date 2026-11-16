@@ -8,7 +8,7 @@ const leases = require('../shared/lease.cjs')
 const DEFAULT_PATHS = [
   'apps/serve/service', 'apps/serve/tests', 'packages/runtime/scholarseed_runtime',
   'packages/damoatrace/damoatrace', 'packages/adapters/codex/scholarseed_codex',
-  'tests', 'scripts'
+  'packages/adapters/dsh/scholarseed_dsh', 'tests', 'scripts'
 ]
 const DEFAULT_VENV = '.venv'
 const MODULES = ['isort', 'black']

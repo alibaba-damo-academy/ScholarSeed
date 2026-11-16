@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "directionId": "SEARCH-01",
+  "checks": [
+    {
+      "id": "SEARCH-RESOURCE",
+      "pointIds": [
+        "SEARCH-GLOBAL-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "SEARCH-LITERATURE",
+      "pointIds": [
+        "SEARCH-GLOBAL-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "SEARCH-SESSION",
+      "pointIds": [
+        "SEARCH-GLOBAL-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

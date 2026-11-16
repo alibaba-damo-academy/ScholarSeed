@@ -1,0 +1,527 @@
+[
+  {
+    "id": "D6-PROJ-001",
+    "caseRevision": 3,
+    "name": "新建项目并进入对应工作台",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例。已核对本轮隔离 Desktop、Home/profile/workspace 与目标构建；已明确允许在任务拥有的目录创建项目，提供合法且唯一的合成项目名称。创建会持久化项目及其目录，不使用真实用户项目，不发送模型请求。",
+    "steps": [
+      "从真实项目中心打开新建项目表单，记录创建前的项目列表和本轮唯一名称。",
+      "输入获准名称及本轮允许的非敏感字段，通过可见控件确认创建；等待实际界面结果，不以点击回执或固定等待作为创建完成。",
+      "在项目中心核对新增卡片，再进入该卡片对应的工作台，记录实际项目身份、根路径及截图。"
+    ],
+    "expected": [
+      "创建的项目卡片与输入名称一致，进入后工作台属于同一项目；身份或根路径不明时保留证据缺口，不只凭成功提示判断。"
+    ],
+    "tag": "探索用例；候选预期；稳定点主用例",
+    "description": "复用 PROJ-CREATE-01@3。本轮经正常新建流程创建六域探索A并进入工作台，项目菜单显示同名项目及默认根路径；项目文件夹为只读字段，尝试填写被拒后未绕过。该事实不等于已有目录接入或资料范围隔离已验证，也不是候选判据通过报告。",
+    "businessPointId": "PROJ-CREATE-01",
+    "revision": 4,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#PROJ-CREATE-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "独立项目生命周期保留 P1，不因扩展业务域晋升；P0 运行如需新建项目，仍从该业务动作计时，不把创建前移为免费准备。",
+    "checkIds": [
+      "PROJ-CREATE"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/008-project-create.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/009-project-created.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/010-project-menu.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/005-project-a.png"
+    ]
+  },
+  {
+    "id": "D6-PROJ-002",
+    "name": "切换项目后资料范围对应所选项目",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例。已有两个本轮获准使用、身份与根路径可区分的隔离项目，各自具有不同的无敏感资料标记；标记准备通过已获准的产品路径完成并留证。只允许切换和读取，不改动其他项目，不发送模型请求。",
+    "steps": [
+      "在项目中心记录两个目标项目的名称、身份及各自应有的资料标记。",
+      "进入项目 A，打开其资料库并记录项目身份、可见资料及标记正文。",
+      "返回项目中心进入项目 B，记录其身份与资料标记；再切回 A，核对实际显示范围。"
+    ],
+    "expected": [
+      "每次进入后的工作台与资料范围均对应所选项目，不把另一项目的资料当作当前资料；只有项目标题变化而无资料身份或正文证据时不能证明隔离。"
+    ],
+    "tag": "探索用例；候选预期；稳定点主用例",
+    "description": "复用 PROJ-SWITCH-01@2。本轮进入六域接入B后资料列表仅见 safe.txt，并实际打开其合成正文；随后切回六域探索A，截图重新展开 resources/library 的四格式文件，与 B 的资料范围不同。031 AX 冻结时目录仍收起，四文件展开由同次 021 截图补证；这不代表回切后已逐个重新打开 A 的全部正文，也不作候选判据通过结论。",
+    "businessPointId": "PROJ-SWITCH-01",
+    "revision": 3,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#PROJ-SWITCH-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "跨项目资料范围是关键状态，保持 P1，不增加默认短评测范围。",
+    "checkIds": [
+      "PROJ-SWITCH-SCOPE"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/028-project-b-library.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/029-project-b-safe-open.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/031-project-a-return.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/020-project-b-safe.png",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/021-project-a-return-library.png"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D6-PROJ-003",
+    "name": "新建项目时确认接入已有合成目录",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例。已明确允许接入本轮任务拥有的已有目录及产品所需的项目元数据写入；目录只含获准无秘密文本，已有规范路径、文件清单和摘要。原生目录选择的宿主能力及操作已获准且能绑定唯一任务实例；不接入真实用户目录。",
+    "steps": [
+      "从真实新建项目表单进入选择已有目录的可见入口。",
+      "按 desktop-control 的原生选择器流程选择本轮获准目录，核对原生位置、所选目录 URL 与可提交状态，再确认。",
+      "回到表单核对目录与名称后提交，通过项目卡片进入工作台，核对关联根路径及目录内合成资料身份。"
+    ],
+    "expected": [
+      "确认后项目关联获准的同一目录，其既有合成资料仍可识别；不能用另一默认目录、复制导入或选择器关闭来替代接入结果。"
+    ],
+    "tag": "探索用例；候选预期；稳定点主用例",
+    "description": "复用 PROJ-ADOPT-01@2 的确认分支。本轮第二次通过正常原生选择器定位任务 staging/project 目录，面板显示 safe.txt 与启用的打开按钮；按本次已获准范围信任并创建后进入六域接入B，资料列表及实际正文均见 safe.txt。保留路径、原生提交状态和真实工作台证据；精确注册身份与目录关联仍由 Observer 核对，不从早先含 created 的文件名或选择器关闭推断成功，也不作判据通过结论。",
+    "businessPointId": "PROJ-ADOPT-01",
+    "revision": 3,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#PROJ-ADOPT-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "已有目录接入是项目创建的可选路径，保持 P2。",
+    "checkIds": [
+      "PROJ-ADOPT"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/native-005-project-b2-path.txt",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/native-006-project-b2-ready.txt",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/028-project-b-library.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/029-project-b-safe-open.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/018-project-b2-go-path.png",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/019-project-b2-ready.png",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/020-project-b-safe.png"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D6-PROJ-004",
+    "name": "取消已有目录接入后不创建项目",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例。允许打开并取消本轮隔离实例的新建项目与原生目录选择面板；有本轮唯一候选名称和创建前项目列表。仅取消，不提交创建、不删除已有项目，不改变原目录。",
+    "steps": [
+      "记录创建前的项目列表，打开新建项目表单并填写本轮唯一候选名称。",
+      "打开已有目录选择入口，通过当前宿主公开控件取消选择；再取消整个新建项目表单，不触发创建提交。",
+      "返回项目中心重新查看列表，核对本轮候选名称未形成新项目；记录取消前后的可见状态。"
+    ],
+    "expected": [
+      "取消整次新建流程后没有新增该候选项目，既有项目不受影响；只关闭原生面板而仍保留表单时不宣称整个创建已取消。"
+    ],
+    "tag": "探索用例；候选预期；既有点取消分支",
+    "description": "复用 PROJ-ADOPT-01@2 的取消分支。早先 B 接入取消不作为完整证据；本轮另建唯一名称六域取消探针-0116，真实取消原生面板后再取消整个表单。Observer batch-0011 比对前后项目数3→3、ID集合及完整registry不变，唯一名称均不存在。现有collector未捕获该时段原创建POST，保留采集覆盖缺口，不将请求缺失当作独立未发送证明，也不作判据通过结论。",
+    "businessPointId": "PROJ-ADOPT-01",
+    "revision": 3,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "catalog_business_point",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#PROJ-ADOPT-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "接入流程的取消恢复分支，保持 P2，不提高原稳定点等级。",
+    "checkIds": [
+      "PROJ-ADOPT-CANCEL"
+    ],
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/094-project-cancel-form.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/095-native-cancel-before.txt",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/096-native-cancel-after.txt",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/097-project-cancel-returned.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/evidence/098-project-cancel-after.yaml",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/observer/batch-0011/index.json",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/053-native-cancel-before.png",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/054-native-cancel-after.png",
+      "tmp/llm-evaluation-explore/desktop-six-domains/20261023T003940133157Z-43ef6e720a58/screenshots/055-project-cancel-after.png"
+    ],
+    "caseRevision": 2
+  },
+  {
+    "id": "D6-PROJ-005",
+    "name": "空名称创建被拒绝并可修正后继续",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。名称为空；允许使用唯一合成名称进行一次合法创建对照。",
+    "steps": [
+      "打开新建项目表单，保留空名称并点击创建。",
+      "读取名称字段校验及表单状态，再输入获准合成名称提交。",
+      "核对纠正后项目身份及可进入结果；另记录拒绝阶段注册表前后对照。"
+    ],
+    "expected": [
+      "空名称收到可理解的校验，纠正后可继续；无错误项目。文案仅语义比较，不用未采到请求证明没有写入。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "名称字段 invalid，显示请填写项目名，表单仍在；纠正后创建项目A。未保存拒绝阶段注册表前后对照。 缺拒绝阶段注册表对照及独立Check。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "PROJ-CREATE-01",
+    "revision": 4,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#PROJ-CREATE-01@4",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "空名称的可恢复表单校验属于基本异常分支，不替代创建成功的P1主路径。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/011-project-empty-name.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/008-project-empty-name.png"
+    ],
+    "caseRevision": 3,
+    "candidateLocalId": "INC-PROJ-EMPTY",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "仅创建本轮合成项目；不发送模型请求。",
+    "assetGaps": [
+      "缺拒绝阶段注册表对照及独立Check。",
+      "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+    ],
+    "variantOf": "D6-PROJ-001",
+    "variantScope": "仅覆盖本条声明的来源/前提变体，不替代原主用例；既有点位P0及原Check不变。",
+    "priorityReview": {
+      "previousPriority": "P1",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "空名称的可恢复表单校验属于基本异常分支，不替代创建成功的P1主路径。"
+    }
+  },
+  {
+    "id": "D6-PROJ-006",
+    "name": "编辑项目元数据后保持原资料与任务归属",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。任务项目已有合成资料及任务，允许修改名称和描述。",
+    "steps": [
+      "记录项目稳定ID、根路径及原资料和任务身份。",
+      "通过编辑项目修改名称与描述并保存。",
+      "重新进入同一项目，读回资料正文及任务归属。"
+    ],
+    "expected": [
+      "更新正确项目的名称与描述，原资料和任务仍归属同一项目；不把根路径未改作为强制产品规则。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "同一项目ID 01m5pv1r0w9d23ykv94afqh96a 显示新名和描述，原根路径保留；后续可读原MD及任务。 缺独立Check、重启及跨平台证据；未测路径迁移。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "PROJ-EDIT-01",
+    "revision": 3,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#PROJ-EDIT-01@3",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "名称与描述编辑是基本管理，不影响创建切换主链；数据归属仍必须验证。",
+    "checkIds": [
+      "PROJ-EDIT"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/034-project-edited.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/043-disabled-skill-slash.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/048-local-skill-result.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/022-project-edited.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/030-local-skill-result-project-restored.png"
+    ],
+    "caseRevision": 3,
+    "candidateLocalId": "INC-PROJ-EDIT",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "写本轮项目元数据。",
+    "assetGaps": [],
+    "priorityReview": {
+      "previousPriority": "P1",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "名称与描述编辑是基本管理，不影响创建切换主链；数据归属仍必须验证。"
+    },
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 2,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、重启及跨平台证据；未测路径迁移。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  },
+  {
+    "id": "D6-PROJ-007",
+    "name": "归档项目后默认列表隐藏且归档管理保留对象",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。本轮项目存在且没有运行中任务，归档已获准。",
+    "steps": [
+      "记录本轮项目身份、根路径及任务。",
+      "阅读确认后归档该项目。",
+      "核对首页默认项目和我的任务列表，再在归档管理核对同一对象。"
+    ],
+    "expected": [
+      "默认列表隐藏该项目，归档管理保留同身份可恢复对象；归档不等于永久删除。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "首页不再显示项目A及其我的任务；归档管理显示同名项目和原根路径，未点击永久删除。 缺归档期间完整数据审计及独立Check；不覆盖运行中归档或取消分支。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "PROJ-ARCHIVE-01",
+    "revision": 2,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-proj-archive",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "项目生命周期及保留数据边界，建议P1。",
+    "checkIds": [
+      "PROJ-ARCHIVE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/035-project-archive-confirmation.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/036-project-archived-home.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/037-project-archive-management.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/023-project-archived-home.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/024-project-archive-management.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-PROJ-ARCHIVE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "仅写自建项目归档状态，不删除文件。",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺归档期间完整数据审计及独立Check；不覆盖运行中归档或取消分支。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-PROJ-008",
+    "name": "恢复归档项目后读回原资料与任务",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P1",
+    "precondition": "候选探索用例；执行前重新核对目标构建、平台、隔离实例与本次授权。同一自建项目已归档，恢复已获准。",
+    "steps": [
+      "在归档管理按项目稳定ID核对目标。",
+      "取消归档后从首页进入同一项目。",
+      "核对原根路径、原任务及合成资料正文。"
+    ],
+    "expected": [
+      "恢复正确项目及其原资料任务，不以toast或卡片名称单独判断。"
+    ],
+    "tag": "探索用例；候选预期；增量入库；执行资产未就绪",
+    "description": "项目和两原任务重新出现，原MD仍含17；后续新任务位于同项目。首次过期ref尝试未被当作产品失败。 缺独立Check及进程重开后的恢复证据。 本次仅维护资产，不是评测通过报告。",
+    "businessPointId": "PROJ-RESTORE-01",
+    "revision": 2,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/observations-incremental.md#inc-proj-restore",
+    "observationStatus": "observed",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "项目恢复是独立终态，不能由归档成功替代，建议P1。",
+    "checkIds": [
+      "PROJ-RESTORE"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/038-project-unarchived-settings.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/043-disabled-skill-slash.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/evidence/048-local-skill-result.txt",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/022-project-edited.png",
+      "tmp/llm-evaluation-explore/desktop-six-incremental/20261024T112333061Z-105872aa/screenshots/030-local-skill-result-project-restored.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "INC-PROJ-RESTORE",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "仅恢复本轮归档对象。",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p1-assets-20261025",
+      "previous": {
+        "revision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check及进程重开后的恢复证据。",
+          "正式评测前按选定范围准备、校验并冻结；执行时不得边测边补。"
+        ],
+        "caseRevision": 1
+      },
+      "scope": "primary P1 manual execution assets prepared; observation/authorization unchanged"
+    }
+  },
+  {
+    "id": "D6-PROJ-009",
+    "name": "置顶项目后顺序与对象身份保持一致",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P3",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。两个可区分的任务项目；仅允许调整任务项目元数据。",
+    "steps": [
+      "记录两项目初始排序和路径身份。",
+      "从指定项目菜单置顶，离开首页后返回。",
+      "核对置顶标记、顺序和项目身份；取消置顶另列未覆盖。"
+    ],
+    "expected": [
+      "置顶标记和排序对应所选项目，不改变资料或任务归属。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-PROJ-PIN，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "PROJ-PIN-01",
+    "revision": 1,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/eval-scenarios/exploratory/desktop-business/intake.md#broad-proj-pin",
+    "observationStatus": "observed",
+    "observationScope": "E148–150：默认项目原在 BETA 后，置顶后到首位并显示图标；E224/S25 跨页面返回仍保留。已观察结果",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "组织偏好，不影响项目创建、切换或资料可用，按全量便利性分支定P3。",
+    "checkIds": [],
+    "readiness": "partial",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/148-project-home-again-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/149-default-pin-menu-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/150-default-pin-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/224-pin-retained-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/025-project-pin-retained.png"
+    ],
+    "caseRevision": 1,
+    "candidateLocalId": "BROAD-PROJ-PIN",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；仅改任务项目元数据；取消置顶、重启后排序未做；G0+排序/持久性边界",
+    "assetGaps": [
+      "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+      "仅改任务项目元数据；取消置顶、重启后排序未做；G0+排序/持久性边界"
+    ],
+    "priorityReview": {
+      "previousPriority": "P2",
+      "source": "user_authorized_risk_review",
+      "date": "2026-10-25",
+      "reason": "组织偏好，不影响项目创建、切换或资料可用，按全量便利性分支定P3。"
+    }
+  },
+  {
+    "id": "D6-PROJ-010",
+    "name": "按项目名称筛选并恢复项目列表",
+    "folder": "Desktop六业务域/项目",
+    "author": "评测维护",
+    "priority": "P2",
+    "precondition": "探索候选；须重新核本次构建、平台、隔离和操作授权。两个名称可区分的合成项目。",
+    "steps": [
+      "记录项目卡片及任务卡片范围。",
+      "输入目标项目名称并核对命中。",
+      "清空搜索，核对项目列表恢复且对象未改变。"
+    ],
+    "expected": [
+      "项目筛选准确且可清空恢复；任务卡是否联动不能从当前表现追认为批准规则。"
+    ],
+    "tag": "探索用例；候选期望；资产partial；非评测通过",
+    "description": "复用冻结观察BROAD-PROJ-FILTER，预期仍待确认；不把当前实现或局部结果当批准要求。",
+    "businessPointId": "PROJ-FILTER-01",
+    "revision": 2,
+    "directionIds": [
+      "PROJ-01"
+    ],
+    "sourceKind": "runtime_ui_observation",
+    "sourceLocator": "apps/desktop/docs/scenarios/catalog.json#PROJ-FILTER-01@2",
+    "observationStatus": "observed",
+    "observationScope": "E151–153/S18：输入 BETA 后只余 BETA 卡，任务卡仍在；清空后恢复两项目。已观察结果",
+    "resultEvidenceStatus": "partial",
+    "expectedStatus": "candidate_unapproved",
+    "priorityReason": "常用项目定位能力，属于基本业务P2。",
+    "checkIds": [
+      "PROJ-FILTER"
+    ],
+    "readiness": "manual_ready",
+    "evidenceRefs": [
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/inventory.md",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/151-project-filter-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/152-project-filter-result-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/evidence/153-filter-clear-receipt.txt",
+      "tmp/llm-evaluation-explore/desktop-six-breadth/20261024T131248Z-105872aa/screenshots/018-project-filter.png"
+    ],
+    "caseRevision": 2,
+    "candidateLocalId": "BROAD-PROJ-FILTER",
+    "sourceBuild": "202610241139",
+    "observedPlatform": "macos-arm64",
+    "observedLanguage": "zh",
+    "evaluationType": "A",
+    "permissionsAndSideEffects": "未来执行须逐次核本次授权与预算；只读筛选；模糊匹配、分页边界未做；G0+匹配策略",
+    "assetGaps": [],
+    "assetPreparation": {
+      "id": "p2-assets-20261025",
+      "previous": {
+        "caseRevision": 1,
+        "readiness": "partial",
+        "checkIds": [],
+        "assetGaps": [
+          "缺独立Check、批准判据、冻结的输入/操作/采证资产；正式评测前独立准备、校验并冻结，执行时不补资产或改判据。",
+          "只读筛选；模糊匹配、分页边界未做；G0+匹配策略"
+        ]
+      },
+      "scope": "candidate criteria and manual input preparation; not observed results"
+    }
+  }
+]

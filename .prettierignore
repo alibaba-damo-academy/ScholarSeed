@@ -1,0 +1,19 @@
+# Prettier 会破坏知识文档中的字面量，且这些文档不由 Prettier 把关。
+#
+# 已实测的破坏（wiki/proposal/09-memory-implementation.md）：
+#   - 反引号内的 | 被当成表格列分隔符：`service/tests/*memory*|*kit*|*recall*`
+#     被拆成 3 列，`/recommend|apply|feedback` 同样被拆列；
+#   - 反引号内外的 * 被当成强调标记：`recall.*/graph.*/task.*` 变成
+#     `recall._/graph._/task.\*`，路径通配符语义丢失。
+#
+# 旧 Wiki 目录不参与格式化；当前知识文档由 docs:check 负责门禁。
+wiki/
+
+# AI 入口指南含大量代码路径与反引号字面量，由文档门禁检查，不交给 Prettier 改写。
+AGENTS.md
+
+# 本地 AI 协作产物（.gitignore 已忽略，此处防止本地编辑时被改写）
+.ai/
+
+apps/desktop/src/localization/types.d.ts
+apps/desktop/src/localization/resources.ts

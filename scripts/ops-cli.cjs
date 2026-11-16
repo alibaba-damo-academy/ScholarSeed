@@ -66,7 +66,6 @@ function help(command = '') {
     'Formatting: ci format [PATH...] [--check|--write]. Tests: ci test [smoke|unit|integration|api|e2e|visual] [--scope desktop|serve|runtime|trace|tooling] [--suite NAME].',
     'Mixed collections: ci test --scope desktop [--coverage]; ci test --scope serve [--list|--suite NAME]; ci test --scope trace [--with-format-check]; ci test --profile quality [--strict] [--with-external] [--result PATH]; ci test --affected [--base REF] [FILES...].',
     'Builds: cd build local|release [--target TARGET] [--stage STAGE] [--workflow WORKFLOW] [--result PATH] [--platform PLATFORM] [--arch ARCH].',
-    'Public snapshot: private docs/UI/host-skill checks, full quality and package acceptance are unavailable.',
     'Long-lived tasks block until interrupted. A running process is not product acceptance. Models, release signing and installation require their own prerequisites and authorization.',
     'JSON is supported only by help/list/version, dev status and ci test --affected. Other tasks reject it before effects.'
   ].join('\n') }

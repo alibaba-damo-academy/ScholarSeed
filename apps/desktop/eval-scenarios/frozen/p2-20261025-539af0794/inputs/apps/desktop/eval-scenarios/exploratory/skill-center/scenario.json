@@ -1,0 +1,12 @@
+{
+  "id": "skill-center",
+  "config": {
+    "language": "zh"
+  },
+  "auth": "logged-in",
+  "drive": "cmd.jsonl",
+  "expected": {
+    "minTurns": 1,
+    "maxTurns": 1
+  }
+}

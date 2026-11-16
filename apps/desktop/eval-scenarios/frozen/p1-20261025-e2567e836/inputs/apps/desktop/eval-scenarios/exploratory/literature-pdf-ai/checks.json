@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "directionId": "LIT-01",
+  "checks": [
+    {
+      "id": "LIT-OPEN",
+      "pointIds": ["LIT-PDF-OPEN-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "LIT-EXPLAIN",
+      "pointIds": ["LIT-PDF-EXPLAIN-01"],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "LIT-TRANSLATE",
+      "pointIds": ["LIT-PDF-TRANSLATE-01"],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "LIT-EVIDENCE",
+      "pointIds": ["LIT-PDF-OPEN-01", "LIT-PDF-EXPLAIN-01", "LIT-PDF-TRANSLATE-01"],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

@@ -16,6 +16,7 @@ const TEST_PYTHON_PATH = [
   resolve(REPO_ROOT, 'packages', 'runtime'),
   resolve(REPO_ROOT, 'packages', 'damoatrace'),
   resolve(REPO_ROOT, 'packages', 'adapters', 'codex'),
+  resolve(REPO_ROOT, 'packages', 'adapters', 'dsh'),
   process.env.PYTHONPATH
 ].filter((entry): entry is string => Boolean(entry)).join(delimiter)
 const PRODUCT_SHELL_TEST_ID = 'workbench-shell'

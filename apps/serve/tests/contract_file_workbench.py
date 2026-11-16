@@ -41,6 +41,7 @@ from service.workbench.domain.model import WORKBENCH_PREVIEW_MAX_BYTES, Workbenc
 from service.workbench.persistence.records import PdfRecordCatalog
 from service.workbench.service.indexing import PdfIndexService
 from service.workbench.service.records import PdfRecordStore
+
 from .pdf import PageFixture, build_pdf
 
 PASS = 0
@@ -1010,7 +1011,13 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
             and revision.startswith("sha256:")
             and opened.json().get("record_target", {}).get("subject_id") == asset_id
             and opened.json().get("records")
-            == {"schema_version": 1, "marks": [], "comments": [], "notes": [], "native_annotations": []},
+            == {
+                "schema_version": 1,
+                "marks": [],
+                "comments": [],
+                "notes": [],
+                "native_annotations": [],
+            },
             f"status={opened.status_code} body={opened.text}",
         )
 
@@ -1048,7 +1055,13 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
             "PDF records ignore obsolete adjacent sidecars",
             legacy.status_code == 200
             and legacy.json().get("records")
-            == {"schema_version": 1, "marks": [], "comments": [], "notes": [], "native_annotations": []},
+            == {
+                "schema_version": 1,
+                "marks": [],
+                "comments": [],
+                "notes": [],
+                "native_annotations": [],
+            },
             f"status={legacy.status_code} body={legacy.text}",
         )
 
@@ -1287,7 +1300,9 @@ def test_pdf_records_survive_authorization_recovery() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-reauthorize-"))
     external = Path(tempfile.mkdtemp(prefix="file-workbench-external-"))
     try:
-        (external / "paper.pdf").write_bytes(build_pdf(PageFixture(), PageFixture(), title="linked"))
+        (external / "paper.pdf").write_bytes(
+            build_pdf(PageFixture(), PageFixture(), title="linked")
+        )
         client = _client(project)
         content = client.app.state.content
         project_id = content.project().id

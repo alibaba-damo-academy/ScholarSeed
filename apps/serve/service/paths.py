@@ -26,7 +26,9 @@ def global_home() -> Path:
 
 
 # Permanent OS-account namespace, never derived from relocatable product data.
-COORDINATION_DIRNAME = REGISTRY_DIRECTORY if sys.platform in {"darwin", "win32"} else LEGACY_DIRECTORY
+COORDINATION_DIRNAME = (
+    REGISTRY_DIRECTORY if sys.platform in {"darwin", "win32"} else LEGACY_DIRECTORY
+)
 
 
 def legacy_coordination_root() -> Path:

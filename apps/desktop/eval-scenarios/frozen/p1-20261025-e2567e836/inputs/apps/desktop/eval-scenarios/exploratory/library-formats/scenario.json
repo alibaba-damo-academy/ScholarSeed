@@ -1,0 +1,32 @@
+{
+  "id": "library-formats",
+  "project": {
+    "name": "Library Formats Evaluation",
+    "files": [
+      {
+        "path": "resources/library/pilot-brief.docx",
+        "contentFrom": "fixtures/pilot-brief.docx"
+      },
+      {
+        "path": "resources/library/equipment-plan.xlsx",
+        "contentFrom": "fixtures/equipment-plan.xlsx"
+      },
+      {
+        "path": "resources/library/interview-notes.md",
+        "contentFrom": "fixtures/interview-notes.md"
+      },
+      {
+        "path": "resources/library/rollout-note.pdf",
+        "contentFrom": "fixtures/rollout-note.pdf"
+      }
+    ]
+  },
+  "config": {
+    "language": "zh"
+  },
+  "drive": "cmd.jsonl",
+  "expected": {
+    "minTurns": 1,
+    "maxTurns": 1
+  }
+}

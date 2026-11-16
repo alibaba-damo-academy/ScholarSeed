@@ -75,6 +75,7 @@ members = [
     "packages/runtime",
     "packages/damoatrace",
     "packages/adapters/codex",
+    "packages/adapters/dsh",
 ]
 
 [tool.uv.sources]
@@ -82,6 +83,7 @@ deep-rnd-l1 = { path = "apps/serve/vendor/deep_rnd_l1-0.2.8-py3-none-any.whl" }
 scholarseed-runtime = { workspace = true }
 damoatrace = { workspace = true }
 scholarseed-codex = { workspace = true }
+scholarseed-dsh = { workspace = true }
 tomlkit = { index = "tomlkit-pypi" }
 aiofile = { index = "tomlkit-pypi" }
 authlib = { index = "tomlkit-pypi" }
@@ -168,6 +170,7 @@ scholarseed = { editable_mode = "compat" }
 scholarseed-runtime = { editable_mode = "compat" }
 damoatrace = { editable_mode = "compat" }
 scholarseed-codex = { editable_mode = "compat" }
+scholarseed-dsh = { editable_mode = "compat" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -206,7 +209,7 @@ explicit_package_bases = true
 # `packages.adapters.codex.scholarseed_codex.appserver` 又是 `scholarseed_codex.appserver`
 # (两个 adapter 带 py.typed 后可从已安装包解析), 报 "found twice under different
 # module names" 并中断整个检查。
-mypy_path = ["apps/serve", "packages/runtime", "packages/damoatrace", "packages/adapters/codex", "apps/serve/typings"]
+mypy_path = ["apps/serve", "packages/runtime", "packages/damoatrace", "packages/adapters/codex", "packages/adapters/dsh", "apps/serve/typings"]
 plugins = ["pydantic.mypy"]
 exclude = '''(?x)(
     ^apps/desktop/
@@ -277,6 +280,7 @@ known_first_party = [
     "scholarseed_runtime",
     "damoatrace",
     "scholarseed_codex",
+    "scholarseed_dsh",
     "service",
 ]
 skip_glob = [

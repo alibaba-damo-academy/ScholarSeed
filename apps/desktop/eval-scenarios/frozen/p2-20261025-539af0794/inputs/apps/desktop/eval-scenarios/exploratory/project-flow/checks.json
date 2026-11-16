@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "directionId": "PROJ-01",
+  "checks": [
+    {
+      "id": "PROJ-CREATE",
+      "pointIds": [
+        "PROJ-CREATE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "PROJ-SWITCH-SCOPE",
+      "pointIds": [
+        "PROJ-SWITCH-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "PROJ-ADOPT",
+      "pointIds": [
+        "PROJ-ADOPT-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "PROJ-ADOPT-CANCEL",
+      "pointIds": [
+        "PROJ-ADOPT-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "PROJ-ARCHIVE",
+      "pointIds": [
+        "PROJ-ARCHIVE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "PROJ-RESTORE",
+      "pointIds": [
+        "PROJ-RESTORE-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "PROJ-EDIT",
+      "pointIds": [
+        "PROJ-EDIT-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "PROJ-FILTER",
+      "pointIds": [
+        "PROJ-FILTER-01"
+      ],
+      "required": true,
+      "evaluationType": "A"
+    }
+  ]
+}

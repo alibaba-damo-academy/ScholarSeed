@@ -9,7 +9,7 @@ const test = require('node:test')
 const QUARANTINE = require('../quarantine.json')
 const DESKTOP_PACKAGE = require('../../../apps/desktop/package.json')
 const { TEST_FILES, TEST_GLOBS, NATIVE_TEST_FILES, testFiles, unitTestFiles, invocation } = require('../../../apps/desktop/scripts/ci/test.cjs')
-const { CONTRACT_FILES } = require('../../../apps/desktop/scripts/ci/pretest.cjs')
+const { CONTRACT_FILES, STANDARDS_ARGS } = require('../../../apps/desktop/scripts/ci/pretest.cjs')
 const { npmCommand, packageManagerCommand } = require('../../pre/toolchain.cjs')
 const { judgeRun } = require('../verdict.cjs')
 const { gitSource, expandTestGlob, planStages, stageBlockReason, summarizePlaywright, summarizeRunAll,
@@ -450,15 +450,22 @@ test('native probes and unit coverage partition the complete Desktop-owned test 
   }
 })
 
-test('public projection retains its original collection and adds the tooling consumer regression', () => {
+test('public engineering checks are owned by source in both platform and profile plans', () => {
   for (const platform of ['darwin', 'win32']) {
     for (const profile of ['full', 'offline']) {
-      const stage = planStages(platform, {}, { profile }).find(item => item.id === 'python-public-projection')
+      const stages = planStages(platform, {}, { profile })
+      const stage = stages.find(item => item.id === 'python-public-engineering')
       assert.equal(stage.reportKind, 'pytest')
       assert.deepEqual(stage.args.slice(-2), [
-        'scripts/cd/public/__tests__/test_sync.py',
-        'scripts/cd/public/__tests__/test_tooling.py'
+        'scripts/ci/docs/__tests__/test_check.py',
+        'scripts/ci/docs/__tests__/test_public.py'
       ])
+      const node = stages.find(item => item.id === 'desktop-extra-node')
+      for (const file of ['scripts/ci/docs/__tests__/commands.test.cjs', 'scripts/ci/docs/__tests__/structure.test.mjs',
+        'scripts/__tests__/ownership.test.cjs', 'apps/desktop/scripts/ci/__tests__/standards.test.mjs', 'scripts/pre/__tests__/symlinks.test.cjs']) {
+        assert.equal(node.args.filter(argument => argument === file).length, 1)
+      }
+      assert.equal(stages.some(item => (item.args || []).some(argument => argument.startsWith('scripts/cd/public/'))), false)
     }
   }
 })
@@ -471,7 +478,8 @@ test('shared example and real preparation contracts run in both platform CI plan
       for (const file of ['scripts/shared/__tests__/examples.test.cjs', 'scripts/shared/__tests__/preparation.test.cjs']) {
         assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
       }
-      for (const file of ['scripts/cd/public/__tests__/acceptance.test.cjs',
+      for (const file of ['scripts/ci/docs/__tests__/structure.test.mjs',
+        'apps/desktop/eval-scenarios/frozen/frozen.test.mjs',
         'scripts/ci/docs/__tests__/commands.test.cjs']) {
         assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
         const target = path.resolve(stage.cwd, file)
@@ -729,13 +737,13 @@ test('complete CI plans never apply smoke selection', () => {
       assert.ok(stages.find(stage => stage.id === 'desktop-extra-node').args.includes('scripts/ci/__tests__/smoke.test.cjs'))
       assert.ok(stages.find(stage => stage.id === 'desktop-extra-node').args.includes('scripts/cd/__tests__/distribution.test.cjs'))
       assert.ok(stages.every(stage => !(stage.args || []).some(argument => argument.startsWith('.agents/'))))
-      const projection = stages.filter(stage => stage.id === 'python-public-projection')
+      const projection = stages.filter(stage => stage.id === 'python-public-engineering')
       assert.equal(projection.length, 1)
       assert.equal(projection[0].kind, 'python')
       assert.equal(projection[0].reportKind, 'pytest')
       assert.deepEqual(projection[0].args, ['-m', 'pytest', '-q', '-o',
-        'python_files=test_*.py contract_*.py e2e_*.py', 'scripts/cd/public/__tests__/test_sync.py',
-        'scripts/cd/public/__tests__/test_tooling.py'])
+        'python_files=test_*.py contract_*.py e2e_*.py', 'scripts/ci/docs/__tests__/test_check.py',
+        'scripts/ci/docs/__tests__/test_public.py'])
       assert.equal(projection[0].quarantine, undefined)
     }
   }
@@ -754,10 +762,15 @@ test('Python quarantine reports preserve omissions without masking executed fail
   assert.equal(summarizeRunAll(failed, 'offline', true)[0].status, 'failed')
 })
 
-test('temporary quarantine preserves runtime and i18n tests and only excludes named blockers', () => {
+test('temporary quarantine preserves runtime, standards and i18n tests and only excludes named blockers', () => {
   for (const platform of ['darwin', 'win32']) {
     const stages = planStages(platform, {}, { profile: 'offline', quarantine: true })
-    assert.equal(stages.some(stage => stage.id === 'desktop-standards'), false)
+    const standards = stages.find(stage => stage.id === 'desktop-standards')
+    assert.equal(standards.kind, 'node')
+    assert.equal(standards.skipReason, undefined)
+    assert.equal(standards.reportKind, 'node-summary')
+    assert.deepEqual(standards.args, STANDARDS_ARGS)
+    assert.equal(QUARANTINE.stages.some(stage => stage.id === 'desktop-standards'), false)
     assert.equal(stages.find(stage => stage.id === 'desktop-extra-node').args.includes(
       'apps/desktop/scripts/ci/__tests__/visual.test.mjs'), false)
     const localization = stages.find(stage => stage.id === 'desktop-i18n-check')
@@ -964,15 +977,17 @@ test('native stage plan covers macOS Python and both supported Desktop platforms
   assert.equal(trace.args.filter(argument => argument === 'packages/damoatrace/damoatrace/tests').length, 1)
   assert.equal(mac.some(stage => stage.id === 'python-trace'), false)
   const privateFiles = ['tests/contract_gateway.py', 'tests/contract_mastergo.py',
-    'tests/contract_session.py', 'tests/contract_summary.py',
-    'scripts/ci/docs/__tests__/test_check.py', 'doc/plugins/test.py']
+    'tests/contract_session.py', 'tests/contract_summary.py']
+  const publicFiles = ['scripts/ci/docs/__tests__/test_check.py', 'developer-docs/plugins/test.py']
   const pipeline = fs.readFileSync(path.resolve(sourceDirectory, '../../.gitlab-ci.yml'), 'utf8')
   const contract = pipeline.match(/^contract-gate:\r?\n((?:[ \t].*\r?\n|#.*\r?\n|\r?\n)*)/m)
   assert.ok(contract)
-  assert.ok(contract[1].includes(`- .venv/bin/python -m pytest -q ${privateFiles.join(' ')}`))
+  assert.ok(contract[1].includes(`- .venv/bin/python -m pytest -q ${publicFiles.join(' ')}`))
   assert.ok(contract[1].includes('- PYTHONPATH=skills/community/highlights-to-insights/scripts:skills/community/highlights-to-insights/tests:$PYTHONPATH .venv/bin/python -m pytest -q skills/community/highlights-to-insights'))
   assert.ok(contract[1].includes('- .venv/bin/python -m pytest -q -o "python_files=test_*.py contract_*.py e2e_*.py" packages/damoatrace/damoatrace/tests'))
   for (const filename of privateFiles) {
+    assert.equal(pipeline.includes(filename), false)
+    assert.equal(fs.existsSync(path.resolve(sourceDirectory, '../..', filename)), false)
     assert.equal(mac.some(stage => stage.args?.includes(filename)), false)
     assert.equal(windows.some(stage => stage.args?.includes(filename)), false)
   }

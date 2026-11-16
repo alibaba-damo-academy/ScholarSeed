@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "directionId": "RES-01",
+  "checks": [
+    {
+      "id": "RES-DOCX",
+      "pointIds": ["RES-DOCX-01"],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "RES-XLSX",
+      "pointIds": ["RES-XLSX-01"],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "RES-MD",
+      "pointIds": ["RES-MD-01"],
+      "required": true,
+      "evaluationType": "mixed"
+    },
+    {
+      "id": "RES-PDF",
+      "pointIds": ["RES-PDF-01"],
+      "required": true,
+      "evaluationType": "mixed"
+    }
+  ]
+}

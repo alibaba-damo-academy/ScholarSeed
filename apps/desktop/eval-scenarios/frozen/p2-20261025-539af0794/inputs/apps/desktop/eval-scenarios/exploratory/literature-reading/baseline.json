@@ -1,0 +1,8 @@
+{
+  "scenarioId": "literature-reading",
+  "version": "2026-10-25",
+  "provisional": true,
+  "metrics": {
+    "taskCompleted": true
+  }
+}

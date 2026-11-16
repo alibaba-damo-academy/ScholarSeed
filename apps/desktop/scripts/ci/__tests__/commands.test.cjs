@@ -97,7 +97,9 @@ test('pretest preserves the ordered fail-fast check chain and Desktop cwd', () =
     [
       [pretest.TOOLCHAIN, 'check'],
       ['--test', ...pretest.CONTRACT_FILES],
+      ['--experimental-transform-types', '--test', 'scripts/ci/__tests__/standards.test.mjs'],
       [pretest.TOOLCHAIN, 'run', 'i18n:test'],
+      [pretest.TOOLCHAIN, 'run', 'i18n:check'],
     ]
   )
   const calls = []
@@ -129,7 +131,7 @@ test('pretest preserves the ordered fail-fast check chain and Desktop cwd', () =
   )
 })
 
-test('explicit pretest arguments reach only the final localization test', () => {
+test('explicit pretest arguments reach only the final localization check', () => {
   const ordinary = pretest.invocations()
   const explicit = pretest.invocations(['--base', 'with spaces'])
   assert.deepEqual(explicit.slice(0, -1), ordinary.slice(0, -1))

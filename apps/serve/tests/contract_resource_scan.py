@@ -636,7 +636,9 @@ def main() -> int:
         )
 
         moving_pdf = resources / "moving.pdf"
-        moving_pdf.write_bytes(build_pdf(PageFixture(), PageFixture(), title="move with annotations"))
+        moving_pdf.write_bytes(
+            build_pdf(PageFixture(), PageFixture(), title="move with annotations")
+        )
         empty_moving_annotations = annotation_store.snapshot(project.id, "resources/moving.pdf")
         annotation_store.commit(
             project.id,

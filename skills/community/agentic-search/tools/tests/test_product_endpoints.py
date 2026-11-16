@@ -2,7 +2,7 @@ import os
 import sys
 from pathlib import Path
 import unittest
-from unittest.mock import mock_open, patch
+from unittest.mock import patch
 
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -45,24 +45,12 @@ class ProductEndpointTests(unittest.TestCase):
             "http://localhost:18000/papersearch/",
         )
 
-    def test_custom_endpoint_is_preserved_and_environment_wins(self):
-        configured = "http://localhost:18000"
-        override = "http://localhost:18001"
-        for environment, expected in (
-            ({}, configured),
-            ({"PAPERHUB_URL": override}, override),
-        ):
-            with (
-                self.subTest(environment=environment),
-                patch.dict(os.environ, environment, clear=True),
-                patch.object(localconf, "_applied", False),
-                patch(
-                    "builtins.open",
-                    mock_open(read_data='{"paperhub_url":"' + configured + '"}'),
-                ),
-            ):
-                localconf.apply()
-                self.assertEqual(os.environ["PAPERHUB_URL"], expected)
+    def test_previous_defaults_are_migratable(self):
+        self.assertIn("http://120.26.184.97/papersearch/", localconf._LEGACY_DEFAULT_URLS)
+        self.assertEqual(
+            localconf._CURRENT_DEFAULT_URL,
+            "https://scholarseed.damo.alibaba.com/paperhub",
+        )
 
     def test_default_paperhub_route_preserves_proxy(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(
@@ -71,6 +59,21 @@ class ProductEndpointTests(unittest.TestCase):
             localconf.apply()
             self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("no_proxy", ""))
             self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("NO_PROXY", ""))
+
+    def test_legacy_url_migration_preserves_proxy(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            localconf, "config_source", return_value=localconf._BUNDLED_CFG_PATH
+        ), patch.object(localconf, "_applied", False), patch(
+            "builtins.open", create=True
+        ) as config_file:
+            config_file.return_value.__enter__.return_value.read.return_value = (
+                '{"paperhub_url": "http://120.26.184.97/papersearch/"}'
+            )
+            localconf.apply()
+            self.assertEqual(
+                os.environ["PAPERHUB_URL"], localconf._CURRENT_DEFAULT_URL
+            )
+            self.assertNotIn("scholarseed.damo.alibaba.com", os.environ.get("no_proxy", ""))
 
     def test_web_fallback_provenance_names_the_skill(self):
         paper, warning = web_fallback._normalize_paper(

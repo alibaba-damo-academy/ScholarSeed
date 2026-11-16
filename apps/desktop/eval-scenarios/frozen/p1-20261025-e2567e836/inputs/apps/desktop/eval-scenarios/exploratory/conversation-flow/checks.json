@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "directionId": "CHAT-01",
+  "checks": [
+    {
+      "id": "CHAT-TURN",
+      "pointIds": ["CHAT-TURN-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-QUALITY",
+      "pointIds": ["CHAT-TURN-01"],
+      "required": true,
+      "evaluationType": "B"
+    },
+    {
+      "id": "CHAT-BOUNDARY",
+      "pointIds": ["CHAT-TURN-01"],
+      "required": true,
+      "evaluationType": "A"
+    },
+    {
+      "id": "CHAT-FOLLOWUP",
+      "pointIds": ["CHAT-TURN-01"],
+      "required": false,
+      "evaluationType": "mixed"
+    }
+  ]
+}
