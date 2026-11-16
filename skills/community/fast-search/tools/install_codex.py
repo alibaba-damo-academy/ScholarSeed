@@ -60,19 +60,10 @@ def _install_search_config(source, target, dry_run=False):
         if target.is_file() and target.read_bytes() == source.read_bytes():
             print(f"already installed: {target}")
             return
-        current = json.loads(target.read_text())
+        json.loads(target.read_text())
     except (OSError, ValueError) as exc:
         raise FileExistsError(f"invalid existing search config {target}: {exc}") from exc
     print(f"keep existing user config: {target}")
-    if current.get("paperhub_url") in {
-        "http://114.55.135.28:8000",
-        "http://120.26.184.97",
-        "http://120.26.184.97/papersearch/",
-    }:
-        print(
-            "  legacy PaperHub URL detected; update it to "
-            "https://scholarseed.damo.alibaba.com/paperhub"
-        )
 
 
 def _install_skill(target, mode, dry_run=False):

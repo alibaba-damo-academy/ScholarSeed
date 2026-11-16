@@ -48,7 +48,7 @@ The installer copies defaults into user configuration without overwriting it. Ex
 }
 ```
 
-Known legacy defaults http://114.55.135.28:8000 and http://120.26.184.97/papersearch/ are normalized at runtime; update old user configuration explicitly as well. Other custom URLs and explicit PAPERHUB_URL overrides are retained.
+Custom URLs and explicit PAPERHUB_URL overrides are retained.
 
 Credentials are environment-only and must exist before Codex/Worker startup:
 

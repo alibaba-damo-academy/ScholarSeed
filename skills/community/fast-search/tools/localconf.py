@@ -28,17 +28,10 @@ which avoids copying a bearer token into repository-managed templates.
 
 import json
 import os
-import urllib.parse
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOCAL_CFG_PATH = os.path.join(_TOOLS_DIR, "search_config.json")
 _BUNDLED_CFG_PATH = os.path.join(_TOOLS_DIR, "search_config.default.json")
-_LEGACY_DEFAULT_URLS = {
-    "http://114.55.135.28:8000",
-    "http://120.26.184.97",
-    "http://120.26.184.97/papersearch/",
-}
-_CURRENT_DEFAULT_URL = "https://scholarseed.damo.alibaba.com/paperhub"
 _applied = False
 
 
@@ -89,13 +82,8 @@ def apply():
 
     env_url = os.environ.get("PAPERHUB_URL")
     url = env_url or cfg.get("paperhub_url")
-    migrated_legacy_url = not env_url and url in _LEGACY_DEFAULT_URLS
-    if migrated_legacy_url:
-        url = _CURRENT_DEFAULT_URL
     if url:
         os.environ["PAPERHUB_URL"] = url
-    if migrated_legacy_url:
-        _ensure_no_proxy(urllib.parse.urlparse(url).hostname)
 
     if not os.environ.get("PAPERHUB_PROXY_MODE") and cfg.get("paperhub_proxy_mode"):
         os.environ["PAPERHUB_PROXY_MODE"] = str(cfg["paperhub_proxy_mode"])

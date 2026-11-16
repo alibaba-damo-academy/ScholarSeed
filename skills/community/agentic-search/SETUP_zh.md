@@ -88,9 +88,7 @@ profile 只能配置 session 环境，不能强制 Skill 在 prompt 中选择哪
 }
 ```
 
-旧安装中若 URL 仍是仓库曾提供的 `http://114.55.135.28:8000` 或
-`http://120.26.184.97/papersearch/`，运行时会自动迁移到新 endpoint；仍建议把用户配置
-手动更新为上面的值。旧用户配置若把官方域名写入 `extra_no_proxy`，也需移除，
+其他自定义 endpoint 保留原配置。旧用户配置若把官方域名写入 `extra_no_proxy`，也需移除，
 否则 Python 可能绕过宿主的受限网络代理。对官方 `scholarseed.damo.alibaba.com` 域名，配置文件或
 显式 `PAPERHUB_URL` 中的 `http://` 会被强制升级为 `https://`；localhost 与其他
 自定义/内网 URL 不会被改写。
