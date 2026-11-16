@@ -58,7 +58,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.run_id }}
-          pattern: '*.dmg*'
+          pattern: 'signed-*'
           path: ${{ runner.temp }}/release-assets
           merge-multiple: true
 
