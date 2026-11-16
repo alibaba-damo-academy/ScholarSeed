@@ -1,133 +1,71 @@
 # scholarseed-runtime
 
-外部智能体 Harness 的中立接入协议与 Gateway。此包不实现 Agent 循环，不依赖书深后端、桌面端或任何厂商 Adapter。
+The neutral integration protocol and Gateway for external agent Harnesses. This package does not implement an Agent loop and does not depend on the ScholarSeed backend, Desktop, or any vendor Adapter.
 
-`RuntimeOpenNotAppliedError` 是首次打开的负证明：Provider 独占领取 reservation、尚未调用
-原生会话创建且自身资源清理完成后才能抛出，并携带 reservation 身份。取消、创建回执丢失、
-清理失败都不符合该契约。它是可选的加法契约；其他错误不提供安全重试保证，ABI 不变。
+`RuntimeOpenNotAppliedError` is negative proof for an initial open: it may be raised only after the Provider exclusively claims the reservation, has not called native session creation, and has completed cleanup of its own resources; it must carry the reservation identity. Cancellation, a lost creation receipt, and cleanup failure do not satisfy this contract. This is an optional additive contract; other errors provide no safe-retry guarantee, and the ABI is unchanged.
 
-`contract.incident.RUNTIME_TURN_NOT_SUBMITTED` 是 Turn 的明确负证明错误码：执行器
-证明该命令未尝试写入，或供应商明确未受理时，才能在 `TURN_FAILED` 的 `safe_error`
-与 `error_code` 中报告。`USER_RETRYABLE` 本身不是未提交证明；已尝试写入但缺少
-受理结果仍须 `TURN_UNKNOWN`。此错误码不授予自动重试权限，不改写历史未知结果，
-也不代替宿主的准入和安全检查。
-`CommandReceipt.ACCEPTED` 或产品已记录输入，不能单独作为供应商已受理 Turn 的证明。
+`contract.incident.RUNTIME_TURN_NOT_SUBMITTED` is an explicit negative-proof error code for a Turn: it may be reported in `safe_error` and `error_code` of `TURN_FAILED` only when the executor proves that it did not attempt the write, or the vendor explicitly did not accept it. `USER_RETRYABLE` by itself is not proof of non-submission; if a write was attempted but the acceptance result is missing, the status must still be `TURN_UNKNOWN`. This error code does not grant automatic retry permission, rewrite historical unknown results, or replace host admission and safety checks.
+`CommandReceipt.ACCEPTED` or product-recorded input alone cannot prove that the vendor accepted the Turn.
 
-## 代码入口
+<a id="代码入口"></a>
+## Code Entry Points
 
-- `scholarseed_runtime/contract/`：Provider、Session、命令、事件、审批回调、能力声明与会话绑定等公开数据契约。
-- `scholarseed_runtime/gateway/catalog.py`：从已安装发行包的 `scholarseed_runtime.providers` entry point 发现 Provider，检查 ABI、重复 ID 和别名。
-- `scholarseed_runtime/gateway/driver.py`：单事件消费者、绑定与序号校验、命令回执及最终结果关联。
+- `scholarseed_runtime/contract/`: Public data contracts for Providers, Sessions, commands, events, approval callbacks, capability declarations, session bindings, and related items.
+- `scholarseed_runtime/gateway/catalog.py`: Discovers Providers from the `scholarseed_runtime.providers` entry point in installed distributions and checks the ABI, duplicate IDs, and aliases.
+- `scholarseed_runtime/gateway/driver.py`: Single-event consumer, binding and sequence validation, and association of command receipts with final results.
 
-产品 manifest 的启用策略、用户认证、消息队列、SSE 和数据库不属于本包，由 `apps/serve/service/` 持有；Codex 的原生协议与进程执行由 `packages/adapters/codex/` 持有。
+Product manifest enablement policy, user authentication, message queues, SSE, and databases are outside this package and owned by `apps/serve/service/`; Codex's native protocol and process execution are owned by `packages/adapters/codex/`.
 
-`ModelCapabilities.native_web_search` 可声明模型连接能否执行服务端原生搜索；
-`None` 表示未声明，`False` 表示明确不支持。宿主经模型桥转换协议时，应传递实际上游
-的能力，不能用桥的入站协议替代。此声明不限制由宿主执行的普通函数搜索或浏览器搜索。
+`ModelCapabilities.native_web_search` can declare whether a model connection can perform server-side native search; `None` means undeclared and `False` means explicitly unsupported. When a host translates protocols through a model bridge, it should pass through the actual upstream capabilities and must not substitute the bridge's inbound protocol. This declaration does not restrict ordinary function search or browser search performed by the host.
 
-`ModelCapabilities.native_agent_messages` 声明连接是否支持原生多代理通信输入；
-`None` 保持供应商默认，`False` 要求 Adapter 使用兼容的本地工具协作协议，
-不代表禁用子任务。声明同时属于模型目录项与当前模型意图，参与冻结目录和重配置身份；
-不授权转换密文或改写已持久化的历史。
+`ModelCapabilities.native_agent_messages` declares whether the connection supports native multi-agent communication input; `None` preserves the vendor default, while `False` requires the Adapter to use a compatible local-tool collaboration protocol and does not mean that subtasks are disabled. The declaration belongs to both the model catalog entry and the current model intent, and participates in frozen-catalog and reconfiguration identity; it does not authorize transforming ciphertext or rewriting persisted history.
 
-## 接入一个 Harness
+<a id="接入一个 Harness"></a>
+<a id="接入一个-harness"></a>
+## Integrating a Harness
 
-`ResourcePolicy.refresh_before_turn` 是 Provider 显式 opt-in，不是操作系统开关。
-默认复用健康的会话附件；仅声明需要重新附着的 Provider 才在空闲 Thread 的新轮准入前请求安全挂起，
-且挂起与随后申请资源使用同一截止时间。Codex 在 macOS 与 Windows 均不启用此项。
+`ResourcePolicy.refresh_before_turn` is an explicit Provider opt-in, not an operating-system switch. Healthy session attachments are reused by default; only a Provider that declares it needs reattachment requests safe suspension before admission of a new Turn on an idle Thread, and the suspension and subsequent resource request use the same deadline. Codex does not enable this on either macOS or Windows.
 
-可选 `contract.provider.RuntimeHostRetirement` 允许宿主在撤销已验证的登录身份时，
-同步封锁旧共享域；不打断已准入操作，也不返回进程释放回执。物理释放仍由适配器安全排空确认。
+The optional `contract.provider.RuntimeHostRetirement` allows a host, when revoking a verified login identity, to synchronously fence off the old shared domain; it does not interrupt admitted operations or return a process-release receipt. The Adapter must still confirm physical release through safe draining.
 
-可选 `contract.provider.RuntimeHostReconfiguration` 与 `host_reconfiguration` 能力用于
-产品授权意图驱动的共享 Host 配置切换。宿主先封锁新根任务并排空附件与执行资源；Provider
-证明旧物理进程退出后，原子解除配置锁并初始化指定目标。普通 reserve/prewarm 与
-release_idle_resources 不自动切换；未知退出或写入继续围栏，不能伪称回滚。
-该加法协议不改变 ABI，APPLIED 不证明模型真实回合成功，也不创建 Session/Turn。
+The optional `contract.provider.RuntimeHostReconfiguration` contract and `host_reconfiguration` capability support product-authorization-intent-driven switching of shared Host configuration. The host first blocks new root tasks and drains attachments and execution resources; after the Provider proves the old physical process has exited, it atomically lifts the configuration lock and initializes the specified target. Ordinary `reserve`/`prewarm` and `release_idle_resources` do not switch configuration automatically; unknown exits or writes remain fenced and must not be misrepresented as rollback. This additive protocol does not change the ABI. `APPLIED` does not prove that a real model Turn succeeded and does not create a Session or Turn.
 
-可选 `turn_confirmation` 能力与 `contract.session.RuntimeTurnConfirmation` 提供未知提交的
-两阶段风险确认，不改变必选 SPI 或 ABI 6。精确目标包含产品/原生会话、client、incident
-及故障代次；ticket 绑定执行器实例、活动修订和观察水位。Gateway 等待该水位持久投影后
-才提交确认，消费失败则拒绝。APPLIED 仅证明该次提交的准入歧义已由执行器安全解除，
-不证明原提交已成功、失败或未执行，也不授权重放。产品决策与确认凭据由 Serve 持久化。
+The optional `turn_confirmation` capability and `contract.session.RuntimeTurnConfirmation` provide two-phase risk confirmation for an unknown submission without changing the required SPI or ABI 6. The exact target includes the product/native session, client, incident, and failure generation; the ticket is bound to the executor instance, active revision, and observation watermark. The Gateway commits the confirmation only after the watermark has been durably projected; it rejects on consumption failure. `APPLIED` proves only that the admission ambiguity for this submission was safely resolved by the executor; it does not prove that the original submission succeeded, failed, or was not executed, and does not authorize replay. Serve persists the product decision and confirmation credential.
 
-可选 `thread_replacement` 能力与 `contract.session.RuntimeThreadReplacement` 提供原生
-线程不可恢复后的两阶段封闭端口。目标包含完整 binding、产品 command、当前线程恢复
-失败 incident 和原故障代次；`ThreadReplacementProof` 保留准确缺失代次及观察水位。
-Gateway 核验身份并等待原观察水位投影，产品在提交票据前持久化替代围栏。APPLIED 仅证明
-旧附件已封闭、原执行进程已实际退出收尾，不证明旧 Turn 未提交、未执行或结果已确定。
-它与 `EmptyThreadReplacementProof` 的未提交负证明独立，不解除原未知结果，也不授权
-重放。产品负责候选创建、原子绑定切换、上下文重建及有界续作；旧能力缺失时明确拒绝。
-此可选加法契约不改变必选 SPI 或 ABI 6，真实跨平台故障恢复仍需产品验收。
+The optional `thread_replacement` capability and `contract.session.RuntimeThreadReplacement` provide a two-phase closure port after a native thread becomes unrecoverable. The target includes the complete binding, product command, the current thread-recovery failure incident, and the original failure generation; `ThreadReplacementProof` preserves the exact missing generation and observation watermark. The Gateway verifies identity and waits for projection of the original observation watermark; the product persists the replacement fence before submitting the ticket. `APPLIED` proves only that the old attachment was closed and the original execution process actually exited and finished cleanup; it does not prove that the old Turn was unsubmitted, unexecuted, or resolved. It is independent of the non-submission proof in `EmptyThreadReplacementProof`; it does not resolve the original unknown result or authorize replay. The product is responsible for candidate creation, atomic binding switch, context reconstruction, and bounded continuation; it explicitly rejects when the old capability is missing. This optional additive contract does not change the required SPI or ABI 6; real cross-platform failure recovery still requires product acceptance.
 
-可选 `contract.provider.RuntimeHostWarmup` 与 `host_warmup` 能力支持应用启动时预热
-Host；`contract.command.HostWarmupRequest` 必须显式声明共享授权域，仍使用原有模型及
-秘密端口。APPLIED 仅证明 Host 协议初始化，不创建 Session/Thread/Turn，不证明模型
-调用成功或上游认证有效。健康 Host 可独立于附件驻留，退出仍由显式排空和 shutdown
-协调。本加法协议不改变必选 Provider SPI 或 ABI 6；未声明能力时不隐式调用。
+The optional `contract.provider.RuntimeHostWarmup` contract and `host_warmup` capability support warming up a Host at application startup; `contract.command.HostWarmupRequest` must explicitly declare the shared authorization domain and still uses the existing model and secret ports. `APPLIED` proves only Host protocol initialization; it does not create a Session/Thread/Turn or prove that a model call succeeded or upstream authentication is valid. A healthy Host can remain resident independently of attachments, and exit is still coordinated through explicit draining and `shutdown`. This additive protocol does not change the required Provider SPI or ABI 6; it is not called implicitly when the capability is undeclared.
 
-`shared_host_control` 声明无 Thread 控制也复用执行 Host。盘点和技能配置请求的可选
-`host` 必须包含真实授权域与完整 `HostWarmupRequest` 启动意图，缺失时不得推断匿名
-身份或选取任意现存 Host。`RuntimeInventory.host_identity` 是用于缓存核验的非授权
-身份/代次标记；宿主每次使用缓存前仍校验完整意图，不解析或持久化兼容摘要。
-声明此能力的 Codex 不接受独立的盘点 launch_secrets；秘密只从完整 host 意图解析。
-共享配置忙时返回 `runtime_host_busy`；写入结果无法确认时保持围栏并返回
-`runtime_host_configuration_uncertain`，其他配置发布不得清除该失败。
+`shared_host_control` declares that the execution Host is reused even without Thread control. The optional `host` in inventory and skill-configuration requests must include the real authorization domain and complete `HostWarmupRequest` startup intent; if missing, an anonymous identity must not be inferred and an arbitrary existing Host must not be selected. `RuntimeInventory.host_identity` is a non-authorizing identity/generation marker for cache verification; the host still validates the complete intent before each cache use and does not parse or persist a compatibility summary. Codex declaring this capability does not accept standalone `launch_secrets` for inventory; secrets are resolved only from the complete host intent. When shared configuration is busy, return `runtime_host_busy`; when the write result cannot be confirmed, remain fenced and return `runtime_host_configuration_uncertain`. Other configuration publication must not clear this failure.
 
-`ResourceReceipt.safe_error=runtime_host_configuration_conflict` 表示请求与驻留执行
-Host 的进程上下文不兼容，Provider 拒绝准入，未授权创建另一执行进程、驱逐已有
-资源或中断其他工作。预热可返回 `RESTART_REQUIRED` 及同一安全码；此回执不是重启
-许可，宿主必须另走明确确认与完整排空。回执不携带凭据、环境或兼容摘要。
+`ResourceReceipt.safe_error=runtime_host_configuration_conflict` means that the request is incompatible with the process context of the resident execution Host. The Provider rejects admission and is not authorized to create another execution process, evict existing resources, or interrupt other work. Warmup may return `RESTART_REQUIRED` with the same safety code; this receipt is not permission to restart, and the host must separately perform explicit confirmation and complete draining. The receipt carries no credentials, environment, or compatibility summary.
 
-ABI 6 的 Provider 必须提供无副作用的 `storage_roots()`，返回不可变的
-`StorageRoot(path, create)` 元组：path 为绝对 Path，create 必须显式给出布尔值，
-只声明宿主是否可以准备缺失目录结构，不允许改写已有权限或据此读写数据。
-共享同一路径时，只有所有声明均允许创建才允许准备；否则缺失须报错。
-无持久状态时显式返回空元组。声明在配置/执行前调用，不得创建目录、
-启动进程或准备认证。Catalog 检查所选 Provider 的声明，旧 ABI 或缺少声明明确拒绝。
-`storage_roots(inspection)` 是取得根资格后的只读发现阶段；Provider 只能通过公开的
-`StorageInspection.selected/read` 读取已选择目录中的有界文件，未选择的源先返回
-目录声明，供宿主下一轮获取资格。无参数阶段不得打开持久文件。两阶段均不产生业务写入。
-Catalog 的 `inspect_storage` 同时记录读取源的路径、存在性、长度和 SHA-256，返回
-不可变 `StorageInventory`；同次发现重复读取同一文件时若内容改变则拒绝。Provider
-拿到的只读视图在同步发现调用结束后失效，宿主继续拥有底层目录资格。指纹用于发现
-快照比较，不是旧版本读取兼容证明，也不应写入公开诊断日志。
-这些路径只是清单，实际目录占用、数据格式验证和根变化后的重验仍由宿主协调；会话
-工作区由宿主单独提供，不能把目录声明视作重启许可。
+An ABI 6 Provider must provide a side-effect-free `storage_roots()` returning an immutable tuple of `StorageRoot(path, create)`: `path` is an absolute Path, and `create` must be an explicitly provided Boolean. It declares only whether the host may prepare a missing directory structure; it does not allow changing existing permissions or reading/writing data on that basis. For a shared path, preparation is allowed only if every declaration permits creation; otherwise, a missing path must cause an error. Explicitly return an empty tuple when there is no persistent state. The declaration is called before configuration/execution and must not create directories, start processes, or prepare authentication. The Catalog checks the selected Provider's declaration and explicitly rejects old ABIs or a missing declaration.
 
-当前 Provider 配置可注入物理资源租约工厂；Adapter 在创建原生资源前取得租约，
-仅在确认 OS 生命周期结束后关闭，不能以最后一个请求返回代替释放。
-`release_idle_resources` 只释放无主且确认空闲的资源，返回 APPLIED 表示本次检查无资源残留；
-它不会永久关闭 Provider，也不关闭新工作准入。调用方必须独立协调准入和其他活动，
-不能把此回执直接当成应用重启许可。最终 `shutdown` 保持独立语义。
+`storage_roots(inspection)` is the read-only discovery phase after root eligibility has been granted. The Provider may read bounded files in selected directories only through the public `StorageInspection.selected/read` API; for an unselected source, it first returns the directory declaration so the host can grant eligibility in the next round. The no-argument phase must not open persistent files. Neither phase performs business writes. The Catalog's `inspect_storage` also records each read source's path, existence, length, and SHA-256, and returns an immutable `StorageInventory`; if the same file is read repeatedly during one discovery and its contents change, the operation is rejected. The read-only view given to the Provider expires when the synchronous discovery call ends; the host retains eligibility for the underlying directories. Fingerprints are for comparing discovery snapshots, not proof of compatibility with older-version reads, and should not be written to public diagnostic logs. These paths are only an inventory; the host still coordinates actual directory occupancy, data-format validation, and revalidation after root changes. The host provides the session workspace separately; a directory declaration must not be treated as permission to restart.
 
-独立 Adapter 实现 `contract.provider.RuntimeProvider` 与 `contract.session.RuntimeSession`，并在自身 `pyproject.toml` 注册工厂：
+The current Provider configuration can inject a physical-resource lease factory. The Adapter acquires a lease before creating a native resource and closes it only after confirming that the OS lifecycle has ended; return of the last request cannot substitute for release.
+`release_idle_resources` releases only unowned resources confirmed idle. Returning `APPLIED` means that this inspection found no remaining resources; it does not permanently close the Provider or block admission of new work. The caller must coordinate admission and other activity independently and must not treat this receipt directly as permission to restart the application. Final `shutdown` retains its separate semantics.
+
+An independent Adapter implements `contract.provider.RuntimeProvider` and `contract.session.RuntimeSession`, and registers its factory in its own `pyproject.toml`:
 
 ```toml
 [project.entry-points."scholarseed_runtime.providers"]
 example = "example_adapter.provider:provider"
 ```
 
-工厂 descriptor 的 runtime ID 必须与 entry point 名一致，ABI 必须等于宿主当前版本。真实能力通过 capability 声明；不支持的能力明确返回 unsupported，不模拟实现。
+The factory descriptor's runtime ID must match the entry point name, and its ABI must equal the host's current version. Actual capabilities are declared through capability declarations; unsupported capabilities must explicitly return unsupported, not simulate an implementation.
 
-## 边界与验证
+<a id="边界与验证"></a>
+## Boundaries and Verification
 
-Open/Resume 请求的可选 `process_sharing_scope` 由可信宿主声明进程共享授权域，
-不替代 `execution_scope`、产品会话或原生会话身份。空值不授权跨 execution scope
-共享；非空也不是强制共享要求，Provider 仍须核对平台、认证与进程配置兼容性，
-不支持时保持独占。共享域不是凭据，也不能用于推导或合并权限；凭据值变化仍须
-通过原有安全端口解析并重新准入。此加法意图不要求旧 Provider 实现复用，ABI 不变。
+The optional `process_sharing_scope` in an Open/Resume request is a process-sharing authorization domain declared by the trusted host; it does not replace `execution_scope`, the product session, or native session identity. An empty value does not authorize sharing across execution scopes; a non-empty value is not a mandatory sharing requirement either. The Provider must still check platform, authentication, and process-configuration compatibility, and must remain exclusive if sharing is unsupported. The shared domain is not a credential and must not be used to infer or combine permissions; credential-value changes must still be resolved through the existing security port and admitted again. This additive intent does not require older Providers to implement reuse; the ABI is unchanged.
 
-Open/Resume 的 `execution_environment` 只承载非敏感会话工具配置（例如会话私有编译
-缓存），不改变 Host 启动环境，也不授予目录或网络权限。凭据仍通过 `launch_secrets`
-与 `secret_port` 传递。Provider 必须保留恢复时的执行配置与原有环境继承安全语义。
+`execution_environment` in Open/Resume carries only non-sensitive session-tool configuration (for example, a session-private compilation cache). It does not change the Host startup environment or grant directory or network permissions. Credentials are still passed through `launch_secrets` and `secret_port`. The Provider must preserve execution configuration during recovery and the existing security semantics for environment inheritance.
 
-`OpenSessionRequest` 区分 `required_capabilities`（不可用时拒绝）和
-`optional_capabilities`（按实际模型/供应商协商，不支持时不启用）。两者不得重叠；
-取消、凭据或进程故障不是“不支持”，仍需传播并收尾。Session binding 的能力集记录
-实际启用状态，独立的 `optional_capabilities` 保留需求强度，恢复时不得升级为 required。
+`OpenSessionRequest` distinguishes `required_capabilities` (reject if unavailable) from `optional_capabilities` (negotiate according to the actual model/vendor and do not enable if unsupported). The two must not overlap; cancellation, credential failures, and process failures are not “unsupported” and must still be propagated and cleaned up. The Session binding's capability set records the actually enabled state, while the separate `optional_capabilities` preserves the strength of the requirement; recovery must not upgrade it to required.
 
-发行名为 `scholarseed-runtime`，导入名为 `scholarseed_runtime`；没有 `damoagent` 兼容转发层，也不初始化用户路径。仓库根的 `tests/contract_runtime_gateway.py`、`tests/contract_runtime_driver.py` 检查通用机制，发布门禁检查 wheel 内容；真实产品验收仍需运行书深桌面端。
+The distribution name is `scholarseed-runtime`, and the import name is `scholarseed_runtime`; there is no `damoagent` compatibility forwarding layer, and user paths are not initialized. The repository-root `tests/contract_runtime_gateway.py` and `tests/contract_runtime_driver.py` check general mechanisms, and the release gate checks wheel contents; real product acceptance still requires running ScholarSeed Desktop.
 
-Windows 沙箱资源端口 `prepare(local_group, *, cwd)` 必须携带本次执行 cwd。
-ABI 6 不兼容旧宿主回调，Runtime/Codex 0.2.1 需成套交付；路径与 ACL 策略仍由宿主拥有。
+The Windows sandbox resource port `prepare(local_group, *, cwd)` must carry the cwd for this execution.
+ABI 6 is incompatible with old host callbacks; Runtime/Codex 0.2.1 must be delivered together. Path and ACL policies remain host-owned.
