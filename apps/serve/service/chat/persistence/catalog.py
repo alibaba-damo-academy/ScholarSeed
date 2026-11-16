@@ -3007,6 +3007,97 @@ class SessionCatalogStore:
             connection.commit()
         return self.queued_message(session_id, queued_message_id)
 
+    @classmethod
+    def local_rejection_source(
+        cls, connection: sqlite3.Connection, session_id: str, queued_message_id: str
+    ) -> tuple[RuntimeBinding, int, int, str, int] | None:
+        activation = cls._activation(
+            connection.execute(
+                f"SELECT * FROM {SESSION_ACTIVATION_TABLE} WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        )
+        binding = cls._runtime_binding(
+            connection.execute(
+                f"SELECT * FROM {SESSION_RUNTIME_BINDING_TABLE} WHERE product_session_id = ?",
+                (session_id,),
+            ).fetchone()
+        )
+        queued = connection.execute(
+            f"SELECT * FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id = ?",
+            (session_id, queued_message_id),
+        ).fetchone()
+        model = cls._model_state(
+            connection.execute(
+                f"SELECT * FROM {SESSION_MODEL_TABLE} WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        )
+        if (
+            activation is None
+            or activation.open_state is not OpenState.BOUND
+            or activation.generation != INITIAL_ATTACHMENT_GENERATION + 1
+            or binding is None
+            or model is None
+            or model.deferred
+            or queued is None
+            or queued["purpose"] != QUEUE_PURPOSE_TURN
+            or queued["state"]
+            not in (QueuedMessageState.FAILED.value, QueuedMessageState.WAITING_RESOURCES.value)
+            or queued["native_turn_id"]
+            or queued["operation_seq"] is None
+            or cls._rebuilding_blocked(
+                connection, session_id, queued_message_id, queued["operation_seq"]
+            )
+            or connection.execute(
+                f"SELECT 1 FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id != ? LIMIT 1",
+                (session_id, queued_message_id),
+            ).fetchone()
+            is not None
+        ):
+            return None
+        for table in (
+            SESSION_UNCERTAINTY_TABLE,
+            SESSION_TURN_SETTLEMENT_TABLE,
+            SESSION_PORTABLE_HISTORY_TABLE,
+            SESSION_REPLACEMENT_TABLE,
+        ):
+            if (
+                connection.execute(
+                    f"SELECT 1 FROM {table} WHERE session_id = ? LIMIT 1", (session_id,)
+                ).fetchone()
+                is not None
+            ):
+                return None
+        watermark = connection.execute(
+            f"SELECT last_product_seq FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+        return (
+            binding,
+            activation.generation,
+            queued["operation_seq"],
+            cls._replacement_configuration(connection, session_id),
+            watermark,
+        )
+
+    @classmethod
+    def restore_local_rejection(
+        cls,
+        connection: sqlite3.Connection,
+        session_id: str,
+        queued_message_id: str,
+        source: tuple[RuntimeBinding, int, int, str, int],
+    ) -> bool:
+        validate_transaction(connection, _body_database(connection))
+        if cls.local_rejection_source(connection, session_id, queued_message_id) != source:
+            return False
+        return (
+            connection.execute(
+                f"UPDATE {SESSION_ACTIVATION_TABLE} SET open_state = ? WHERE session_id = ? AND open_state = ? AND generation = ?",
+                (OpenState.UNSUBMITTED.value, session_id, OpenState.BOUND.value, source[1]),
+            ).rowcount
+            == 1
+        )
+
     def update_queued_message(
         self,
         session_id: str,

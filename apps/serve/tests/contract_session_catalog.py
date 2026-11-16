@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import logging
 import sqlite3
 import tempfile
 import time
@@ -13,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from typing import Any, Mapping, TypedDict, TypeVar
 from unittest.mock import patch
 
@@ -73,6 +75,7 @@ from service.chat.persistence.catalog import (
 )
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
 from service.chat.runtime.interaction import SessionInteractions
+from service.chat.service.turns import TurnService
 from service.platform.activity import Activities, ActivityDomain
 
 OWNER = SessionPrincipal("catalog-owner")
@@ -178,6 +181,193 @@ def register_session(
 
 
 class SessionCatalogContract(unittest.TestCase):
+    def local_rejection(self):
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "local-rejection")
+        events = ProductEventStore(self.database)
+
+        def emit(kind, payload, thread=""):
+            return events.append(
+                session_id="local-rejection",
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=thread,
+                vendor_turn_id=None,
+                vendor_item_id=None,
+                kind=kind,
+                payload=payload,
+                idempotency_key=f"{kind}:{catalog.get('local-rejection').last_product_seq}",
+            )
+
+        emit("session.workspace.bound", {})
+        catalog.enqueue_message("local-rejection", "original", {"text": "preserve"})
+        emit("message_queued", {"queued_message_id": "original", "operation_seq": None})
+        catalog.begin_open("local-rejection", "first-open")
+        binding = native_binding("local-rejection", "empty-thread")
+        catalog.bind_open("local-rejection", "first-open", binding, unsubmitted=True)
+        catalog.begin_attachment("local-rejection")
+        catalog.begin_queued_submission("local-rejection", "original")
+        emit(
+            "send_now_submitted",
+            {"queued_message_id": "original", "operation_seq": 1},
+            "empty-thread",
+        )
+        catalog.fail_queued_submission(
+            "local-rejection", "original", unknown=False, safe_error="resource_baseline_failed"
+        )
+        emit(
+            "send_now_rejected",
+            {
+                "queued_message_id": "original",
+                "operation_seq": 1,
+                "safe_error": "resource_baseline_failed",
+            },
+            "empty-thread",
+        )
+        catalog.begin_resource_wait("local-rejection", "original", purpose="turn")
+        catalog.fail_queued_submission(
+            "local-rejection", "original", unknown=False, safe_error="session_model_switch_failed"
+        )
+        emit(
+            "send_now_rejected",
+            {
+                "queued_message_id": "original",
+                "operation_seq": 1,
+                "safe_error": "session_model_switch_failed",
+            },
+            "empty-thread",
+        )
+        return SessionCatalogStore(self.database), ProductEventStore(self.database)
+
+    def test_local_rejection_restores_empty_binding_before_retry_activation(self):
+        catalog, events = self.local_rejection()
+        original = catalog.queued_message("local-rejection", "original")
+        observed = []
+
+        async def scenario():
+            live = SimpleNamespace(
+                id="local-rejection",
+                catalog=catalog,
+                lifecycle_lock=asyncio.Lock(),
+                runtime_session=None,
+                runtime_driver=None,
+                waiting_request_id="",
+                closing=False,
+                interrupting=False,
+                terminated=False,
+                pending_hil_snapshot=lambda: (),
+                ledger=SimpleNamespace(uncertainty_snapshot=lambda: ()),
+            )
+
+            async def prepare(*_args, **_kwargs):
+                observed.append(catalog.activation(live.id).open_state)
+                raise asyncio.CancelledError
+
+            turns = TurnService(
+                {live.id: live},
+                logging.getLogger(__name__),
+                activities=Activities(),
+                prepare=prepare,
+                events=events,
+            )
+            await turns._prepare_queued(live, "original")
+
+        asyncio.run(scenario())
+        self.assertEqual(observed, [OpenState.UNSUBMITTED])
+        self.assertEqual(catalog.queued_message("local-rejection", "original"), original)
+        self.assertFalse(events.restore_local_rejection("local-rejection", "original"))
+
+    def test_local_rejection_keeps_execution_and_incomplete_evidence_fenced(self):
+        changes = {
+            "unknown": "UPDATE session_message_queue SET state='outcome_unknown'",
+            "side-input": "UPDATE session_message_queue SET purpose='authorization_continuation'",
+            "archived": "UPDATE session_catalog SET archived=1",
+            "native": "UPDATE session_message_queue SET native_turn_id='accepted'",
+            "completed": "UPDATE session_message_queue SET state='completed'",
+            "generation": "UPDATE session_activation SET generation=generation+1",
+            "binding": "UPDATE session_runtime_binding SET opaque_session_ref='different'",
+            "model": "UPDATE session_model_state SET selected_model_id='different'",
+            "operation": "UPDATE session_message_queue SET operation_seq=operation_seq+1",
+            "missing": "DELETE FROM product_event WHERE kind='send_now_rejected'",
+            "crash-before-receipt": "DELETE FROM product_event WHERE kind='send_now_rejected' AND product_seq=(SELECT MIN(product_seq) FROM product_event WHERE kind='send_now_rejected')",
+            "version": "UPDATE product_event SET schema_version=999 WHERE kind='send_now_rejected'",
+            "corrupt": "UPDATE product_event SET payload_ref=NULL,payload='not-json' WHERE kind='send_now_rejected'",
+            "unconfirmed": "UPDATE product_event SET kind='send_now_outcome_unknown' WHERE kind='send_now_rejected'",
+            "fork": "UPDATE product_event SET kind='session.forked' WHERE kind='session.workspace.bound'",
+            "admitted": "UPDATE product_event SET kind='user_message' WHERE kind='send_now_rejected'",
+        }
+        for boundary in (*changes, "hil", "uncertainty", "queue"):
+            with (
+                self.subTest(boundary=boundary),
+                tempfile.TemporaryDirectory(dir=self._temporary.name) as root,
+            ):
+                self.database = Path(root) / "sessions.sqlite3"
+                catalog, events = self.local_rejection()
+                if boundary in changes:
+                    with sqlite3.connect(self.database) as connection:
+                        connection.execute(changes[boundary])
+                elif boundary == "hil":
+                    catalog.record_hil(
+                        product_request_id="approval",
+                        session_id="local-rejection",
+                        vendor_request_id="approval",
+                        vendor_turn_id=None,
+                        vendor_item_id=None,
+                        method="approval",
+                        payload={},
+                    )
+                elif boundary == "uncertainty":
+                    catalog.claim_uncertainty("local-rejection", UncertaintyKind.TURN, "unknown")
+                else:
+                    catalog.enqueue_message("local-rejection", "later", {"text": "other"})
+                try:
+                    restored = events.restore_local_rejection("local-rejection", "original")
+                except (ValueError, RuntimeError):
+                    restored = False
+                self.assertFalse(restored)
+                self.assertEqual(catalog.activation("local-rejection").open_state, OpenState.BOUND)
+
+    def test_local_rejection_cas_rechecks_configuration_binding_generation_and_watermark(self):
+        changes = (
+            "UPDATE session_model_state SET selected_model_id='different'",
+            "UPDATE session_runtime_binding SET opaque_session_ref='different'",
+            "UPDATE session_activation SET generation=generation+1",
+            "UPDATE session_message_queue SET operation_seq=operation_seq+1",
+            "UPDATE session_catalog SET last_product_seq=last_product_seq+1",
+        )
+        for change in changes:
+            with (
+                self.subTest(change=change),
+                tempfile.TemporaryDirectory(dir=self._temporary.name) as root,
+            ):
+                self.database = Path(root) / "sessions.sqlite3"
+                catalog, events = self.local_rejection()
+                with events.transaction() as connection:
+                    source = catalog.local_rejection_source(
+                        connection, "local-rejection", "original"
+                    )
+                    self.assertIsNotNone(source)
+                    connection.execute(change)
+                    self.assertFalse(
+                        catalog.restore_local_rejection(
+                            connection, "local-rejection", "original", source
+                        )
+                    )
+                self.assertEqual(catalog.activation("local-rejection").open_state, OpenState.BOUND)
+
+    def test_local_rejection_proof_transaction_excludes_concurrent_writers(self):
+        catalog, events = self.local_rejection()
+        with events.transaction() as connection:
+            source = catalog.local_rejection_source(connection, "local-rejection", "original")
+            with closing(sqlite3.connect(self.database, timeout=0)) as competing:
+                with self.assertRaises(sqlite3.OperationalError):
+                    competing.execute(
+                        "UPDATE session_catalog SET last_product_seq=last_product_seq+1"
+                    )
+            self.assertTrue(
+                catalog.restore_local_rejection(connection, "local-rejection", "original", source)
+            )
+        self.assertFalse(events.restore_local_rejection("local-rejection", "original"))
+
     def test_fork_titles_number_one_family_across_nested_forks_and_reopen(self) -> None:
         catalog = SessionCatalogStore(self.database)
         for session_id in ("source", "first", "second", "nested"):

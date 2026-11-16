@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+INTENT_SOURCE_REQUEST_CLEAR = "request_clear"
+INTENT_CONFIRMATION_SOURCES = frozenset(
+    {"user_explicit", "auto_delegated", INTENT_SOURCE_REQUEST_CLEAR}
+)
+
+
 class ContractError(ValueError):
     pass
 
@@ -85,9 +91,10 @@ def validate_intent(data: Any) -> None:
         raise ContractError("confirmed must be a boolean")
     if "confirmation_source" in obj and (
         not isinstance(obj["confirmation_source"], str)
-        or obj["confirmation_source"] not in {"user_explicit", "auto_delegated"}
+        or obj["confirmation_source"] not in INTENT_CONFIRMATION_SOURCES
     ):
-        raise ContractError("confirmation_source must be user_explicit or auto_delegated")
+        allowed = ", ".join(sorted(INTENT_CONFIRMATION_SOURCES))
+        raise ContractError(f"confirmation_source must be one of: {allowed}")
 
 
 def validate_search_request(data: Any) -> None:

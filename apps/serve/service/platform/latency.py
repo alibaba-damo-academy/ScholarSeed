@@ -304,7 +304,7 @@ class RequestLatency:
         level = (
             logging.WARNING
             if event is LatencyEvent.LOOP_LAG or slowHeaders or errorType
-            else logging.DEBUG
+            else logging.INFO if self.clientRequestId is not None else logging.DEBUG
         )
         if not self.enabled or not logger.isEnabledFor(level) or self.limiter is None:
             return

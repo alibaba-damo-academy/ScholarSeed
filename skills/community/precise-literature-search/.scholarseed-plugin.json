@@ -1,7 +1,7 @@
 {
   "schema": 2,
   "id": "precise-literature-search",
-  "version": "1.0.50",
+  "version": "1.0.54",
   "host": ">=0.2.0,<0.4.0",
   "skill": "SKILL.md",
   "ui": { "compatibility": "2.0", "exports": ["Conversation", "createLiteraturePorts"] },

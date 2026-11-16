@@ -4,7 +4,11 @@ import {
   type RecordedStep,
   type StepKind,
 } from './model.ts'
-import { API_DIAGNOSTIC_HEADER, HTTP_LATENCY_DIAGNOSTIC_PREFIX } from '../../../../requests.ts'
+import {
+  API_DIAGNOSTIC_HEADER,
+  HTTP_LATENCY_DIAGNOSTIC_PREFIX,
+  isRequestDiagnosticId,
+} from '../../../../requests.ts'
 import { summarizeTarget } from './target.ts'
 import {
   fileMetadata,
@@ -398,8 +402,11 @@ export function installRecorderProbe(options: RecorderProbeOptions): RecorderLea
         target.origin === base.origin &&
         target.pathname.startsWith(prefix)
       ) {
-        correlationId = crypto.randomUUID().replaceAll('-', '')
         const headers = new Headers(init?.headers ?? request?.headers)
+        const supplied = headers.get(API_DIAGNOSTIC_HEADER)
+        correlationId = isRequestDiagnosticId(supplied)
+          ? supplied
+          : crypto.randomUUID().replaceAll('-', '')
         headers.set(API_DIAGNOSTIC_HEADER, correlationId)
         fetchInit = { ...init, headers }
         timingUrl = target.href
