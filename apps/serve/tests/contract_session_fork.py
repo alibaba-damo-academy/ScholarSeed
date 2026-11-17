@@ -129,7 +129,9 @@ class ForkTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 asyncio.run(
                     self.service._restore_fork_history(
-                        SimpleNamespace(id="rollback", restore_local_input_paths=lambda: None)
+                        SimpleNamespace(
+                            id="rollback", restore_local_input_paths=lambda _history: None
+                        )
                     )
                 )
         self.assertIsNone(snapshots.snapshot_for_turn("rollback", "client"))
@@ -147,7 +149,7 @@ class ForkTests(unittest.TestCase):
                 payload={"source_session_id": source_id, "source_product_seq": through_seq},
                 idempotency_key=SESSION_FORK_KEY,
             )
-            live = SimpleNamespace(id=target_id, restore_local_input_paths=lambda: None)
+            live = SimpleNamespace(id=target_id, restore_local_input_paths=lambda _history: None)
             asyncio.run(self.service._restore_fork_history(live))
             context = ProductEventStore(self.catalog.database).turn_context(target_id, "one")
             inherited_id = context.get("assistant_snapshot_id")
@@ -180,7 +182,7 @@ class ForkTests(unittest.TestCase):
         before = self.events.replay("legacy")
         asyncio.run(
             self.service._restore_fork_history(
-                SimpleNamespace(id="legacy", restore_local_input_paths=lambda: None)
+                SimpleNamespace(id="legacy", restore_local_input_paths=lambda _history: None)
             )
         )
         self.assertEqual(self.events.replay("legacy"), before)
@@ -224,7 +226,8 @@ class ForkTests(unittest.TestCase):
                                 cast(
                                     LiveSession,
                                     SimpleNamespace(
-                                        id=target_id, restore_local_input_paths=lambda: None
+                                        id=target_id,
+                                        restore_local_input_paths=lambda _history: None,
                                     ),
                                 )
                             )
@@ -311,7 +314,7 @@ class ForkTests(unittest.TestCase):
                 model_id=kwargs["model_id"],
                 activate=AsyncMock(),
                 aclose=AsyncMock(),
-                restore_local_input_paths=lambda: None,
+                restore_local_input_paths=lambda _history: None,
             )
         )
         self.service._runtime.ensure_active = bind_child
@@ -502,7 +505,7 @@ class ForkTests(unittest.TestCase):
             self.catalog.set_archived("source", self.owner, True)
 
         self.service._runtime.ensure_active = activate
-        live = SimpleNamespace(id="child", restore_local_input_paths=lambda: None)
+        live = SimpleNamespace(id="child", restore_local_input_paths=lambda _history: None)
         with self.assertRaises(ValueError):
             asyncio.run(self.service._restore_fork_history(live, expected_origin=expected))
         self.assertIsNone(self.events.by_key("child", SESSION_FORK_IMPORTED_KEY))
@@ -1283,7 +1286,7 @@ class ForkTests(unittest.TestCase):
             payload={"source_session_id": "source", "source_product_seq": terminal.product_seq},
             idempotency_key=SESSION_FORK_KEY,
         )
-        live = SimpleNamespace(id="child", restore_local_input_paths=lambda: None)
+        live = SimpleNamespace(id="child", restore_local_input_paths=lambda _history: None)
         self.service._runtime.ensure_active = AsyncMock()
         with patch.object(self.events, "inherit_history", side_effect=OSError("write failed")):
             with self.assertRaises(OSError):
