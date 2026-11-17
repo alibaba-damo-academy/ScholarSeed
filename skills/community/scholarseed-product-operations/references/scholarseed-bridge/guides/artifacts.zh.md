@@ -8,16 +8,22 @@
 仅传字节或核文件格式时不加载证据、检索或资料库 Skill；实际需要发现来源、解释内容或入库时才加载。
 遵守本轮搜索、网络与写入限制，直接链接不绕过限制。
 
-准备交付前读取 [artifact 契约](../contracts/artifact.jsonl)中的 artifact/publish，不使用文献获取或入库操作。
-契约缺失或过期才使用 [Bridge 回退](../README.zh.md)。不通过 Shell 调 Bridge 或查看凭据。
+交付使用类型明确的 publish_artifacts 工具，无需预先读取契约或调用 describe。
+旧宿主未提供该工具时，读取 [artifact 契约](../contracts/artifact.jsonl)中的 artifact/publish；
+该契约缺失或过期才使用 [Bridge 回退](../README.zh.md)。不通过 Shell 调 Bridge 或查看凭据。
+旧 scholarseed_bridge 单文件入口使用 capability=artifact、operation=publish，
+以及 request={"path":"relative/path","role":"final"}。
 完成请求及必要验证后发布交付物，检查每个成功回执并结束；失败不授权重做成功阶段或扩大任务。
 
 ## 交付
 
-在实际会话输出目录完成每个独立交付物，再用模型工具 scholarseed_bridge，
-capability=artifact、operation=publish、request={"path":"relative/path","role":"final"} 发布最终版本。
+在实际会话输出目录完成每个独立交付物，再一次声明：
+publish_artifacts({"files":[{"path":"relative/a.md","role":"final"},{"path":"relative/analysis.py","role":"final"}]}).
+只列明确交付物，不扫描并发布整个输出目录。回执顶层状态为 completed、partial 或 failed，并附逐项结果。
+结构错误拒绝整批，文件错误允许部分成功。修正错误后仅提交 retry_files，不重发已成功项。
+同一回合重复提交复用原登记，内容改变产生新版本；跨回合保留现有按回合登记的语义。
 主结果用 final，附加交付结果用 supporting。明确交给用户审阅或独立使用的阶段结果（如提案草稿、
-阶段分析）用 intermediate，仍调用同一操作并传 role=intermediate；仅生成文件不等于阶段交付。
+阶段分析）用 intermediate，在 files 中传 {"path":"relative/path","role":"intermediate"}；仅生成文件不等于阶段交付。
 阶段交付进入产物列表和任务概览，不出现会话文件卡；结果交付同时进入列表和文件卡。
 
 其他新增或修改文件由产品跟踪为工作文件，只有发布的交付物得到文件卡。
@@ -33,6 +39,7 @@ capability=artifact、operation=publish、request={"path":"relative/path","role"
 ## 输出位置
 
 SESSION_DIR 是当前会话已选定的真实输出目录。使用宿主给定位置；新项目会话按宿主指令绑定一次并复用。
+宿主给出的 output_dir 已存在，直接使用，无需创建它或检查重名。
 不修改 cwd，不从标题/ID 推导第二目录，不猜输出前缀；在授权范围内遵守明确目标，Bridge 路径相对实际 cwd。
 新交付物及配套资产放 SESSION_DIR，非交付任务文件放 SESSION_DIR/work/，按需建目录并使用有意义的名称。
 work/tmp/ 仅放可丢弃的本任务数据；保留原子同级暂存、清理语义及必要私有运行状态。
