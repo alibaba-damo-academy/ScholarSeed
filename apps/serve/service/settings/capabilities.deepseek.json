@@ -26,7 +26,7 @@
           {
             "kind": "effort",
             "values": ["none", "low", "high", "max"],
-            "default": "none",
+            "default": "low",
             "wire": {
               "responses": "reasoning.effort"
             }
@@ -47,7 +47,7 @@
         "Exact gateway wire ID for the Bailian-hosted deepseek-v4.1-flash-1017 snapshot; no capability inheritance by model-name prefix.",
         "Bailian documents 1000000 context tokens and 393216 output tokens for this snapshot. These are declared limits, not a full-window load-test result.",
         "Thinking levels follow https://help.aliyun.com/en/model-studio/deepseek-api and https://api-docs.deepseek.com/guides/thinking_mode/; equivalent compatibility aliases are not separate levels.",
-        "The product defaults to none (thinking disabled). A 2026-11-17 probe through the configured Responses gateway completed with zero reasoning tokens. This exact gateway entry declares Responses controls only; Chat Completions off parameters were not probed.",
+        "The product defaults to low to balance response latency and reasoning quality. The none option disables thinking; a 2026-11-17 probe through the configured Responses gateway completed with zero reasoning tokens. This exact gateway entry declares Responses controls only; Chat Completions off parameters were not probed.",
         "Native input modalities are text and image. PDF page images use the image path; native PDF file input is not declared."
       ]
     },

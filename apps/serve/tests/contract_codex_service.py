@@ -8353,7 +8353,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         effort = next(
             option for option in choice["reasoning_options"] if option["kind"] == "effort"
         )
-        self.assertEqual(effort["default"], "none")
+        self.assertEqual(effort["default"], "low")
         selected = model_module.apply_model_to_config(config, choice)
         self.assertEqual(converge_gateway_model_config(selected)["selected_model_key"], "auto")
         self.assertEqual(model_module.current_model_key(selected), "auto")
