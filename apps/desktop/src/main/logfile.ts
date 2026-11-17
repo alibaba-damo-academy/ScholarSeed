@@ -224,60 +224,92 @@ export class RotatingFileLog {
   }
 }
 
+export interface DiagnosticWriter {
+  write(line: string): boolean | Promise<boolean>
+  end(): Promise<void>
+}
+
 export class DiagnosticLog {
   private buffered: string[] = []
   private bufferedBytes = 0
   private droppedBytes = 0
   private retryTimer: ReturnType<typeof setTimeout> | undefined
   private ending: Promise<void> | null = null
+  private draining: Promise<void> | undefined
 
   constructor(
-    private readonly primary: RotatingFileLog,
-    private readonly fallback: (line: string) => boolean
+    private readonly primary: DiagnosticWriter,
+    private readonly fallback: (line: string) => boolean | Promise<boolean>
   ) {}
 
   write(line: string): void {
     if (this.ending) return
-    this.flush()
-    const marked = `[log] primary log unavailable; ${line}`
-    if (this.buffered.length === 0) {
-      if (this.primary.write(line) || this.fallback(marked)) return
-    }
     const retained = retainLogChunk(
       this.buffered,
-      marked,
+      line,
       this.bufferedBytes,
       DIAGNOSTIC_BUFFER_MAX_BYTES
     )
     this.bufferedBytes = retained.bytes
     this.droppedBytes += retained.droppedBytes
-    this.scheduleRetry()
+    void this.flush().catch(() => this.scheduleRetry())
   }
 
-  flush(): void {
-    if (this.ending) return
-    if (this.droppedBytes) {
-      const omitted = `[log] diagnostic fallback capacity exceeded: ${this.droppedBytes} bytes omitted\n`
-      if (this.primary.write(omitted) || this.fallback(omitted)) this.droppedBytes = 0
-    }
-    while (this.buffered.length) {
-      const line = this.buffered[0]
-      if (!this.primary.write(line) && !this.fallback(line)) {
+  flush(): Promise<void> {
+    if (this.draining) return this.draining
+    this.draining = Promise.resolve()
+      .then(async () => {
+        if (this.droppedBytes) {
+          const dropped = this.droppedBytes
+          const omitted = `[log] diagnostic fallback capacity exceeded: ${dropped} bytes omitted\n`
+          if (await this.deliver(omitted)) this.droppedBytes -= dropped
+        }
+        while (this.buffered.length) {
+          const batch = this.buffered.splice(0)
+          this.bufferedBytes = 0
+          let delivered = false
+          try {
+            delivered = await this.deliver(batch.join(''))
+          } finally {
+            if (!delivered) {
+              const retained = [...batch, ...this.buffered]
+              this.buffered = []
+              this.bufferedBytes = 0
+              for (const line of retained) {
+                const next = retainLogChunk(
+                  this.buffered,
+                  line,
+                  this.bufferedBytes,
+                  DIAGNOSTIC_BUFFER_MAX_BYTES
+                )
+                this.bufferedBytes = next.bytes
+                this.droppedBytes += next.droppedBytes
+              }
+            }
+          }
+          if (!delivered) break
+        }
+      })
+      .finally(() => {
+        this.draining = undefined
         this.scheduleRetry()
-        return
-      }
-      this.buffered.shift()
-      this.bufferedBytes -= Buffer.byteLength(line)
-    }
-    this.scheduleRetry()
+      })
+    return this.draining
+  }
+
+  private async deliver(line: string): Promise<boolean> {
+    return (
+      (await this.primary.write(line)) ||
+      (await this.fallback(`[log] primary log unavailable; ${line}`))
+    )
   }
 
   end(): Promise<void> {
     if (!this.ending) {
-      this.flush()
+      const drained = this.flush()
       if (this.retryTimer) clearTimeout(this.retryTimer)
       this.retryTimer = undefined
-      this.ending = this.primary.end()
+      this.ending = drained.then(() => this.primary.end())
     }
     return this.ending
   }
@@ -291,7 +323,7 @@ export class DiagnosticLog {
     if (this.retryTimer) return
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined
-      this.flush()
+      void this.flush().catch(() => this.scheduleRetry())
     }, DIAGNOSTIC_RETRY_DELAY_MS)
     this.retryTimer.unref()
   }

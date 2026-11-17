@@ -11,6 +11,22 @@ const URL_CLOSING_PAIRS = [
   ['{', '}'],
 ] as const
 
+export function userMessageTime(timestamp: number, locale: string): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat(locale, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(timestamp)
+      .map((part) => [part.type, part.value])
+  )
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`
+}
+
 export function userMessageParts(text: string): { text: string; href?: string }[] {
   const parts: { text: string; href?: string }[] = []
   let offset = 0

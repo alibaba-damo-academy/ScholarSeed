@@ -59,22 +59,117 @@ RECOVERY_ERROR_CODES = {
     "policy_rejected": SANDBOX_POLICY_ERROR,
     "cancelled": SANDBOX_CANCELLED_ERROR,
 }
+RECOVERY_OBJECTS = frozenset(
+    {"profile", "product", "codex", "sandbox_bin", "metadata", "daily_log"}
+)
+RECOVERY_RULES = frozenset(
+    {
+        "invalid_descriptor",
+        "invalid_acl",
+        "unsupported_ace",
+        "deny_ace",
+        "owner_rights_mask",
+        "unknown_principal",
+        "native_group_mask",
+        "untrusted_owner",
+        "maintenance_owner",
+        "acl_limit",
+        "security_drift",
+        "postcondition_drift",
+        "reparse_point",
+        "object_type",
+        "hardlink",
+        "daily_log_limit",
+        "native_deny",
+        "permission_mask",
+        "private_policy",
+        "unknown",
+    }
+)
 NATIVE_ERROR_LIMIT = 0xFFFFFFFF
 NATIVE_ENCODING = "utf-8"
 LOGGER = logging.getLogger(__name__)
 
 
 def _failure(
-    stage: str, reason: str, exit_code: int | None, system_error: int = 0
+    stage: str,
+    reason: str,
+    exit_code: int | None,
+    system_error: int = 0,
+    details: tuple[str, str, int | None] | None = None,
 ) -> SandboxRecoveryError:
+    suffix = ""
+    if details is not None:
+        object_kind, rule, count = details
+        suffix = f" object={object_kind} rule={rule}"
+        if count is not None:
+            suffix += f" count={count}"
     LOGGER.warning(
-        "windows_sandbox_recovery event=failed stage=%s reason=%s exit_code=%s system_error=%s",
+        "windows_sandbox_recovery event=failed stage=%s reason=%s exit_code=%s system_error=%s%s",
         stage,
         reason,
         exit_code,
         system_error,
+        suffix,
     )
     return SandboxRecoveryError(RECOVERY_ERROR_CODES.get(reason, SANDBOX_SETUP_ERROR))
+
+
+async def _read_output(stream: asyncio.StreamReader | None) -> tuple[bytearray, bool]:
+    output = bytearray()
+    overflow = False
+    if stream is not None:
+        while chunk := await stream.read(NATIVE_OUTPUT_LIMIT):
+            if len(output) + len(chunk) > NATIVE_OUTPUT_LIMIT:
+                overflow = True
+            if not overflow:
+                output.extend(chunk)
+    return output, overflow
+
+
+def _metadata_details(
+    output: bytearray, receipt: dict[str, object]
+) -> tuple[str, str, int | None] | None:
+    if receipt.get("stage") != "metadata":
+        return None
+    matches = []
+    for line in output.splitlines():
+        try:
+            detail = json.loads(line.decode(NATIVE_ENCODING))
+        except (ValueError, UnicodeError, RecursionError):
+            continue
+        if not isinstance(detail, dict) or not set(detail) <= {
+            "event",
+            "stage",
+            "reason",
+            "system_error",
+            "object",
+            "rule",
+            "count",
+        }:
+            continue
+        if (
+            any(detail.get(key) != receipt.get(key) for key in ("event", "stage", "reason"))
+            or type(detail.get("system_error", 0)) is not int
+            or detail.get("system_error", 0) != receipt.get("system_error", 0)
+        ):
+            continue
+        object_kind, rule, count = detail.get("object"), detail.get("rule"), detail.get("count")
+        if (
+            not isinstance(object_kind, str)
+            or object_kind not in RECOVERY_OBJECTS
+            or not isinstance(rule, str)
+            or rule not in RECOVERY_RULES
+        ):
+            continue
+        if "count" in detail and (
+            rule != "daily_log_limit"
+            or type(count) is not int
+            or not 0 < count <= NATIVE_ERROR_LIMIT
+        ):
+            continue
+        matches.append((object_kind, rule, count))
+    return matches[0] if len(matches) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -115,7 +210,7 @@ class SandboxRecovery:
                 str(executable),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
         except OSError as error:
             system_error = getattr(error, "winerror", None) or error.errno or 0
@@ -125,14 +220,10 @@ class SandboxRecovery:
                 system_error = 0
             raise _failure("helper_launch", "launch_failed", None, system_error) from None
         assert process.stdout is not None
-        output = bytearray()
-        overflow = False
         try:
-            while chunk := await process.stdout.read(NATIVE_OUTPUT_LIMIT):
-                if len(output) + len(chunk) > NATIVE_OUTPUT_LIMIT:
-                    overflow = True
-                if not overflow:
-                    output.extend(chunk)
+            (output, overflow), (diagnostic, diagnostic_overflow) = await asyncio.gather(
+                _read_output(process.stdout), _read_output(process.stderr)
+            )
         finally:
             code = await process.wait()
         if overflow:
@@ -153,7 +244,8 @@ class SandboxRecovery:
                 and (isinstance(system_error, int) and not isinstance(system_error, bool))
                 and 0 <= system_error <= NATIVE_ERROR_LIMIT
             ):
-                raise _failure(stage, reason, code, system_error)
+                details = None if diagnostic_overflow else _metadata_details(diagnostic, result)
+                raise _failure(stage, reason, code, system_error, details)
             raise _failure("transport", "invalid_response", code)
         if code != 0:
             raise _failure("transport", "unexpected_exit", code)

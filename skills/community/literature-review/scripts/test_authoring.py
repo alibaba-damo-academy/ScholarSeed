@@ -77,7 +77,21 @@ class AuthoringTest(unittest.TestCase):
             "source_evidence": {"images": {"5": {"label": "Raw caption"}}},
         }
         result = authoring_card(record)
-        self.assertEqual(result['Evidence limits'], {'material_limit': 'Some original content was unavailable.'})
+        self.assertNotIn('Evidence limits', result)
         self.assertNotIn('quarantined_groups', str(result))
         self.assertNotIn("Raw caption", str(result))
         self.assertNotIn("source_coverage", result)
+
+    def test_material_status_does_not_change_the_writing_view(self):
+        record = {
+            'title': 'Paper', 'abstract': 'Original abstract',
+            'card': {'conclusion': 'Valid only under assumption A'},
+            'common_fields': {'limitations': ['Only evaluated on dataset D']},
+        }
+        expected = authoring_card(record)
+        for depth in ('full', 'abstract_only'):
+            material = {**copy.deepcopy(record), 'reading_depth': depth,
+                        'source_coverage': {'complete': False}}
+            before = copy.deepcopy(material)
+            self.assertEqual(authoring_card(material), expected)
+            self.assertEqual(material, before)

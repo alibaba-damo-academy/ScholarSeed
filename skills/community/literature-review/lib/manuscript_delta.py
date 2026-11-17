@@ -1,21 +1,31 @@
 """Apply one model-authored delta to the complete native v1 source."""
-from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE
 from generation_diagnostics import GenerationError
 from figure_caption import CAPTION_CONTENT_GUIDANCE
 
-REFINE_GUIDANCE = TASK_GUIDANCE + '\n' + MANUSCRIPT_WRITING_GUIDANCE + r'''
-Refine the complete assembled document once. Follow the confirmed task and
-outline, including language, document scope and requested format. Improve
-organization, clarity, terminology and transitions using the supplied evidence.
+REFINE_GUIDANCE = r'''
+Refine the complete assembled document once as a coherent whole, not independent
+chapters. Follow the confirmed task and outline, including explicit exceptions,
+language, document scope and requested format. Do not add excluded components.
+Use the completed manuscript as the basis for editing, not for independent fact
+verification. Improve organization, clarity, terminology and transitions without
+introducing scientific claims, results, citations or stronger conclusions.
+Preserve numbers, formulas, assumptions, attribution and qualifying conditions.
+Reconcile the abstract and conclusions with what the body actually establishes.
+Read the body in order: retain a concept's definition where first needed, then
+use consistent terms without reintroducing it or repeating background framing.
+Keep abstracts and captions self-contained where needed. Preserve scientific
+meaning, distinct senses and necessary local explanations; when uncertain,
+retain the meaning and report the ambiguity rather than guessing a correction.
 Keep the abstract compact unless the user requests otherwise. Report specific
 unresolved issues without creating an additional review stage.
 
 The outline owns the asset inventory and placement. Retain one instance of each
-planned table and completed figure with its label, evidence and qualifications.
+planned table and completed figure with its label, citations and qualifications.
 Use asset_contract_warnings to reconcile the source with that inventory.
 Preserve supported content when moving it between a table and prose.
 The publisher owns the reference list and metadata. Keep one bibliography entry
-point and valid inline citations. Resolve bibliography_warnings at that boundary.
+point and valid inline citations; do not author bibliography entries or invent
+missing metadata. Resolve bibliography_warnings at that boundary.
 
 Resolve reported compile, hierarchy and layout errors within the supplied sources.
 Preserve section labels, resolved_section_languages, planned titles, actual asset
@@ -31,7 +41,8 @@ Return one JSON object: {"edits":[{"target":"main","before":"exact original text
 "after":"replacement","reason":"why"}],"issues":[]}.
 Targets must exist in sources. Each nonempty before matches exactly once in its
 original target. All edits address the same original source and must not overlap.
-Use sufficient surrounding text to identify a replacement. Empty edits is valid.
+Use sufficient surrounding text to identify a replacement. Omit unchanged passages.
+Empty edits is valid.
 Apply JSON escaping to string values. Return only this delta object.
 '''
 

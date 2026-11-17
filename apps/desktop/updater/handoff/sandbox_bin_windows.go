@@ -92,7 +92,7 @@ func sandboxBinOwnerWorker(home, user, group, expected string, parent processWai
 	if err := sandboxReadPrivilege(); err != nil {
 		return err
 	}
-	for _, path := range []string{filepath.Dir(filepath.Dir(home)), filepath.Dir(home), home} {
+	for index, path := range []string{filepath.Dir(filepath.Dir(home)), filepath.Dir(home), home} {
 		h, err := sandboxOpen(path, toolReadControl)
 		if err != nil {
 			return err
@@ -102,7 +102,11 @@ func sandboxBinOwnerWorker(home, user, group, expected string, parent processWai
 		if err != nil {
 			return err
 		}
-		if err = validateSandboxACL(snapshot, user, group, sandboxAncestorACL, readers...); err != nil {
+		mode := sandboxAncestorACL
+		if index == 0 {
+			mode = sandboxProfileACL
+		}
+		if err = validateSandboxACL(snapshot, user, group, mode, readers...); err != nil {
 			return err
 		}
 	}

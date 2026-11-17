@@ -7,6 +7,7 @@ const { createHash } = require('node:crypto')
 const INDEX = 'mutations-v1'
 const MAX_RECORDS = 4096
 const MAX_BYTES = 1024 * 1024
+const DARWIN_KEY = /^posix-([a-f0-9]{16})-([a-f0-9]{16})$/
 
 function close(native, handles) {
   while (handles.length) {
@@ -79,7 +80,47 @@ function visit(native, coordinator, location, identity, scopes, create, operatio
   }
 }
 function check(native, coordinator, location, bindings, own) {
-  for (const [identity, selected] of plan(bindings)) {
+  const planned = plan(bindings)
+  const aliases = new Map()
+  if (process.platform === 'darwin') {
+    const index = path.join(location.path, INDEX)
+    let pin
+    try {
+      pin = native.pin(index, false)
+    } catch (error) {
+      if (error.code !== 'ERR_LEASE_MISSING') throw error
+    }
+    if (pin) {
+      try {
+        if (!native.lineage(pin).includes(location.identity))
+          throw new Error('mutation index moved outside coordinator')
+        const expected = native.lineage(pin).at(-1)
+        for (const entry of fs.readdirSync(index)) {
+          const match = DARWIN_KEY.exec(entry)
+          if (!match) continue
+          if (!aliases.has(match[2])) aliases.set(match[2], [])
+          aliases.get(match[2]).push(entry.replaceAll('-', ':'))
+        }
+        const current = native.pin(index, false)
+        try {
+          const lineage = native.lineage(current)
+          if (lineage.at(-1) !== expected || !lineage.includes(location.identity))
+            throw new Error('mutation index changed')
+        } finally {
+          close(native, [current])
+        }
+      } finally {
+        close(native, [pin])
+      }
+    }
+  }
+  const expanded = new Map(planned)
+  for (const [identity, selected] of planned) {
+    for (const alias of aliases.get(identity.split(':').at(-1)) ?? []) {
+      expanded.set(alias, selected || expanded.get(alias) || false)
+    }
+  }
+  for (const [identity, selected] of expanded) {
     visit(
       native,
       coordinator,

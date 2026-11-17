@@ -3,15 +3,62 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from docx import Document
 from PIL import Image
 import pdf_fixture
-from manuscript_publication import publish,audit,render_pages,safe_title_stem
+from manuscript_publication import publish,audit,render_pages,safe_title_stem,deliverable_path
 
 class SinglePassTest(unittest.TestCase):
     def test_title_filename_replaces_spaces_colons_and_unsafe_characters(self):
         self.assertEqual(safe_title_stem('低秩矩阵分解：理论 / 方法?'),
                          '低秩矩阵分解_理论_方法')
         self.assertEqual(safe_title_stem('  A   B: C  '),'A_B_C')
+
+    def test_markdown_and_docx_use_the_same_title_stem_and_keep_legacy_files(self):
+        for format in ('markdown','docx'):
+            with self.subTest(format=format), tempfile.TemporaryDirectory() as folder:
+                ws=Path(folder);gen=ws/'05_generation';gen.mkdir()
+                source=gen/'full_draft_v2.md'
+                source.write_text('# Fallback title\n\nSupported content.\n\n![Image](figures/example.png)\n',encoding='utf-8')
+                figures=gen/'figures';figures.mkdir()
+                Image.new('RGB',(80,40),'white').save(figures/'example.png')
+                outline=ws/'04_outline';outline.mkdir()
+                (outline/'outline.json').write_text(json.dumps({'survey_title':'综述：方法 / 比较?',
+                                                               'outline_tree':[]}),encoding='utf-8')
+                (gen/'publication.json').write_text(json.dumps({'format':format,'citation_style':'numeric',
+                                                               'language':'chinese'}),encoding='utf-8')
+                output=ws/'06_output';output.mkdir()
+                legacy=output/'survey.md';legacy.write_text('Existing user content.',encoding='utf-8')
+                legacy_docx=output/'survey.docx';legacy_docx.write_bytes(b'Existing unrelated document.')
+                report=publish(ws)
+                self.assertEqual(report['status'],'SUCCESS',report)
+                target=Path(report['deliverable'])
+                self.assertEqual(target.name,'综述_方法_比较'+('.md' if format=='markdown' else '.docx'))
+                self.assertEqual(target.stem,deliverable_path(ws,source,'latex_pdf').stem)
+                self.assertEqual(legacy.read_text(encoding='utf-8'),'Existing user content.')
+                self.assertEqual(legacy_docx.read_bytes(),b'Existing unrelated document.')
+                self.assertEqual((output/'综述_方法_比较.md').read_text(encoding='utf-8'),source.read_text(encoding='utf-8'))
+                self.assertEqual((output/'figures/example.png').read_bytes(),(figures/'example.png').read_bytes())
+                if format=='docx':
+                    self.assertEqual(Document(target).paragraphs[0].text,'Fallback title')
+                    self.assertEqual(len(Document(target).inline_shapes),1)
+
+    def test_quick_markdown_uses_the_document_title_without_creating_survey_md(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ws=Path(folder);gen=ws/'05_generation';gen.mkdir()
+            (gen/'full_draft_v2.md').write_text('# Quick review\n\nA bounded summary.\n')
+            (gen/'publication.json').write_text(json.dumps({'format':'markdown','language':'english'}))
+            inputs=ws/'01_input';inputs.mkdir()
+            (inputs/'writing_request.json').write_text(json.dumps({
+                'intent':'Write a synthetic review without references.',
+                'language':'ENGLISH','execution':{'mode':'quick','budget_seconds':60},
+                'publication':{'format':'markdown'},
+                'constraints':[{'id':'no-refs','kind':'total_citations','value':{'max':0},
+                                'verbatim':'without references'}]}))
+            result=publish(ws)
+            self.assertEqual(result['status'],'SUCCESS',result)
+            self.assertEqual(Path(result['deliverable']).name,'Quick_review.md')
+            self.assertFalse((ws/'06_output/survey.md').exists())
 
     def test_postcheck_renders_only_first_page_without_assets_and_without_hash_cache(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -48,8 +95,9 @@ class SinglePassTest(unittest.TestCase):
             internal=gen/'_internal';internal.mkdir();(internal/'manuscript_contract.json').write_text('invalid old json')
             status=gen/'_status';status.mkdir();(status/'publication_pending.json').write_text('{}')
             (gen/'manuscript.json').write_text('broken obsolete manuscript')
-            self.assertEqual(publish(ws)['status'],'SUCCESS')
-            self.assertEqual((ws/'06_output/survey.md').read_text(),'# Main edited review\n\nSupported content.')
+            result=publish(ws)
+            self.assertEqual(result['status'],'SUCCESS')
+            self.assertEqual(Path(result['deliverable']).read_text(),'# Main edited review\n\nSupported content.')
 
     def test_unknown_current_citation_is_advisory_and_visible(self):
         with tempfile.TemporaryDirectory() as folder:

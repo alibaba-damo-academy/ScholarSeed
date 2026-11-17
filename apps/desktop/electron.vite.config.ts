@@ -5,7 +5,11 @@ import { nativeLease } from './scripts/shared/lease.mjs'
 import { velopackLoader } from './scripts/cd/velopack.mjs'
 import { build as buildPreload } from 'esbuild'
 import { developmentLocalization } from './scripts/ci/localization/dom.mjs'
-import { RENDERER_OPTIMIZE_DEPS, RENDERER_SHARED_DEPENDENCIES, supportedFontSources } from './renderer'
+import {
+  RENDERER_OPTIMIZE_DEPS,
+  RENDERER_SHARED_DEPENDENCIES,
+  supportedFontSources,
+} from './renderer'
 import { buildProtected, protectedWatchPolicy, PROTECTED_DEFINE } from './protected'
 import { PROTECTED_ASSETS } from './src/main/vaultipc'
 import {
@@ -60,9 +64,10 @@ export async function desktopConfiguration({
           external: ['original-fs'],
           input: {
             index: resolve(__dirname, 'src/main/index.ts'),
+            persistor: resolve(__dirname, 'src/main/persistor.ts'),
             'data-inspection': resolve(__dirname, 'src/main/data-inspection.ts'),
           },
-          output: { strictExecutionOrder: true },
+          output: { strictExecutionOrder: true, chunkFileNames: '[name]-[hash].js' },
         },
       },
     },

@@ -118,6 +118,18 @@ class WritingTest(unittest.TestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertEqual(model.calls, 2)
 
+    def test_docx_cli_reports_the_title_named_final_deliverable(self):
+        self.set_publication({'format':'docx','citation_style':'numeric'})
+        source=self.ws/'05_generation/full_draft_v2.md'
+        source.write_text('# Methods\n\nSynthetic publication content.\n',encoding='utf-8')
+        publication=self.cli('run','generation_publish')
+        self.assertEqual(publication.returncode,0,publication.stdout+publication.stderr)
+        result=json.loads(publication.stdout)
+        self.assertIn('06_output/Methods.docx',result['artifacts_written'])
+        self.assertFalse(result['artifacts_missing'])
+        self.assertTrue((self.ws/'06_output/Methods.md').is_file())
+        self.assertFalse((self.ws/'06_output/survey.docx').exists())
+
     def test_selected_chapter_publishes_without_other_drafts(self):
         self.put("01_input/writing_request.json", {"output_scope": "section", "selected_section_ids": ["3"]})
         check = self.cli("outline", "check", "--json", "--min-papers-per-section", "2")
@@ -135,7 +147,8 @@ class WritingTest(unittest.TestCase):
         self.assertEqual(receipt["edits"], 0)
         publication = self.cli("run", "generation_publish")
         self.assertEqual(publication.returncode, 0, publication.stdout + publication.stderr)
-        published = (self.ws / "06_output/survey.md").read_text()
+        delivered = json.loads((self.ws / "05_generation/generation_report.json").read_text())["deliverable"]
+        published = Path(delivered).read_text()
         self.assertNotIn("Evaluation", published)
         self.assertFalse(json.loads(publication.stdout)["artifacts_missing"])
 

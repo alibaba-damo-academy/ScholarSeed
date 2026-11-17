@@ -8,7 +8,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
-from authoring import writing_content, evidence_limits, business_content
+from authoring import writing_content, business_content
 from writing_contract import digest
 from generation_errors import GenerationError, diagnostic
 from paper_materials import evidence_records
@@ -116,10 +116,6 @@ def project(record, extra=()):
     if clean(record.get('abstract')) and record['abstract'] not in fields.values():
         fields={'Original abstract':record['abstract'],**fields}
         mapping={'Original abstract':'abstract',**mapping}
-    limits = evidence_limits(record)
-    if limits:
-        fields['Evidence limits'] = limits
-        mapping['Evidence limits'] = 'source_coverage'
     return fields, mapping
 
 
@@ -159,16 +155,15 @@ def build(ws, view, options=None):
             raise GenerationError('DUPLICATE_ID', 'record paperId differs from dictionary identity', pid)
         head = {'paper_id': pid, 'cite_key': keys[pid], 'title': record.get('title') or 'Unknown title',
                 'authors': record.get('authors') or (selected.get(pid) or {}).get('authors') or [],
-                'year': record.get('year') or 'unknown', 'paper_type': record.get('paper_type') or 'unknown',
-                'reading_depth': record.get('reading_depth') or 'unknown'}
+                'year': record.get('year') or 'unknown', 'paper_type': record.get('paper_type') or 'unknown'}
         fields, mapping = project(record, extra) if view == 'outline' else (writing_content(record), {})
         fields = business_content(fields)
         papers.append({**head, 'fields': fields})
         index[pid] = {**head, 'field_mapping': mapping,
                       'source_pointer': f'03_process/paper_cards.json#/{pid}'}
         lines += [f"## [{keys[pid]}] {head['title']}",
-                  f"Type: {head['paper_type']}; Year: {head['year']}; Evidence: {head['reading_depth']}" if view == 'writing' else
-                  f"ID: {pid}; Type: {head['paper_type']}; Year: {head['year']}; Evidence: {head['reading_depth']}"]
+                  f"Type: {head['paper_type']}; Year: {head['year']}" if view == 'writing' else
+                  f"ID: {pid}; Type: {head['paper_type']}; Year: {head['year']}"]
         for label, value in fields.items():
             lines.append(f'{label}: ' + (value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)))
         lines.append('')

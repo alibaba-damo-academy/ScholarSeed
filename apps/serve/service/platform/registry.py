@@ -22,12 +22,17 @@ REGISTRY_DIRECTORY = ".scholarseed-locks-v2"
 LEGACY_DIRECTORY = ".scholarseed-coordination"
 _DATABASE = "registry.sqlite"
 _DATABASE_BINDING = "registry.binding"
+_DARWIN_BINDINGS = "registry.darwin-v1"
 _RANGES = "ranges"
 _PENDING_RANGES = "ranges.pending"
 _DARWIN_BINDING = "flock:"
 _LOG = logging.getLogger(__name__)
 _SWEEP_LIMIT = 16
+_RETAINED_SLOT_FILES = 16
+_LEGACY_IDENTITY = re.compile(rb"posix:[0-9a-f]{16}:[0-9a-f]{16}")
+_PERSISTENT_IDENTITY = re.compile(rb"darwin:[0-9a-f]{32}:[0-9a-f]{16}:[0-9a-f]{16}:[0-9a-f]{8}")
 _DOMAIN_SLOT = re.compile(r"^(posix-[0-9a-f]{16}-[0-9a-f]{16}|windows-[0-9a-f]{16}-[0-9a-f]{32})-")
+_SLOT_FILE = re.compile(r"slot-([1-9][0-9]{0,9})")
 
 
 def remove_legacy_coordination(coordinator: Path) -> None:
@@ -154,11 +159,21 @@ class RegistryNative:
             self._pins[id(pin)] = None
         return pin
 
+    def _darwin_bindings(self, pin: object) -> tuple[str, str] | None:
+        record = self._native.read_at(pin, _DARWIN_BINDINGS, 192)
+        if record is None:
+            return None
+        fields = record.split(b"\n")
+        if len(fields) != 2 or not all(_PERSISTENT_IDENTITY.fullmatch(field) for field in fields):
+            raise LeaseError("ERR_LEASE_CHANGED")
+        return fields[0].decode("ascii"), fields[1].decode("ascii")
+
     @contextmanager
     def _database(self, pin: object) -> Iterator[sqlite3.Connection]:
         path = self._root / _DATABASE
+        stable = self._darwin_bindings(pin) if sys.platform == "darwin" else None
         binding = self._native.read_at(pin, _DATABASE_BINDING, 128)
-        if binding is not None and not os.path.lexists(path):
+        if (binding is not None or stable is not None) and not os.path.lexists(path):
             raise LeaseError("ERR_LEASE_CHANGED")
         if os.path.lexists(path):
             info = path.lstat()
@@ -168,7 +183,35 @@ class RegistryNative:
                 or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
             ):
                 raise LeaseError("ERR_LEASE_FILE")
+        darwin = sys.platform == "darwin"
+        persistent = stable[0].encode("ascii") if stable else binding
+        if darwin and persistent is not None and _PERSISTENT_IDENTITY.fullmatch(persistent):
+            if (
+                self._native.persistent_file_identity_at(pin, _DATABASE).encode("ascii")
+                != persistent
+            ):
+                raise LeaseError("ERR_LEASE_CHANGED")
         with closing(sqlite3.connect(path, timeout=5)) as db:
+            if darwin and binding is None and stable is None:
+                with _write_transaction(db):
+                    binding = self._native.read_at(pin, _DATABASE_BINDING, 128)
+                    if binding is None:
+                        if os.path.lexists(self._root / _RANGES):
+                            raise LeaseError("ERR_LEASE_CHANGED")
+                        binding = self._native.persistent_file_identity_at(pin, _DATABASE).encode(
+                            "ascii"
+                        )
+                        self._native.publish_registry_binding(pin, _DATABASE_BINDING, binding)
+                persistent = binding
+            if darwin and persistent is not None and _PERSISTENT_IDENTITY.fullmatch(persistent):
+                if (
+                    self._native.persistent_file_identity_at(pin, _DATABASE).encode("ascii")
+                    != persistent
+                ):
+                    raise LeaseError("ERR_LEASE_CHANGED")
+                db.execute("PRAGMA trusted_schema = OFF")
+                yield db
+                return
             if sys.platform == "darwin":
                 info = path.lstat()
                 observed = f"posix:{info.st_dev & ((1 << 64) - 1):016x}:{info.st_ino:016x}"
@@ -206,7 +249,20 @@ class RegistryNative:
                     raise LeaseError("ERR_LEASE_CHANGED")
                 handle = self._native.acquire_at(pin, _PENDING_RANGES, True, 0)
                 try:
-                    binding = self._native.lock_identity(handle)
+                    database_binding = (
+                        self._native.read_at(pin, _DATABASE_BINDING, 128)
+                        if sys.platform == "darwin"
+                        else None
+                    )
+                    if (
+                        sys.platform == "darwin"
+                        and database_binding
+                        and _PERSISTENT_IDENTITY.fullmatch(database_binding)
+                    ):
+                        binding = self._native.persistent_file_identity_at(pin, _PENDING_RANGES)
+                        self._native.sync_registry_directory(pin)
+                    else:
+                        binding = self._native.lock_identity(handle)
                     if sys.platform == "darwin":
                         binding = _DARWIN_BINDING + binding
                     db.execute("INSERT INTO binding VALUES (?)", (binding,))
@@ -219,21 +275,81 @@ class RegistryNative:
             if not binding.startswith(_DARWIN_BINDING):
                 raise LeaseError("ERR_LEASE_CHANGED")
             identity = binding.removeprefix(_DARWIN_BINDING)
+        persistent_ranges = False
+        if sys.platform == "darwin" and _PERSISTENT_IDENTITY.fullmatch(identity.encode("ascii")):
+            outer = self._native.read_at(pin, _DATABASE_BINDING, 128)
+            if (
+                self._darwin_bindings(pin) is not None
+                or not outer
+                or not _PERSISTENT_IDENTITY.fullmatch(outer)
+            ):
+                raise LeaseError("ERR_LEASE_CHANGED")
+            persistent_ranges = True
         with _write_transaction(db):
             if not os.path.lexists(ranges):
-                handle = self._native.acquire_at(pin, _PENDING_RANGES, True, 0, identity)
-                self._native.release(handle)
+                if sys.platform == "darwin" and self._darwin_bindings(pin) is not None:
+                    raise LeaseError("ERR_LEASE_CHANGED")
+                if persistent_ranges:
+                    if self._native.persistent_file_identity_at(pin, _PENDING_RANGES) != identity:
+                        raise LeaseError("ERR_LEASE_CHANGED")
+                else:
+                    handle = self._native.acquire_at(pin, _PENDING_RANGES, True, 0, identity)
+                    self._native.release(handle)
                 (self._root / _PENDING_RANGES).rename(ranges)
-        self._pins[id(pin)] = identity
+                if persistent_ranges:
+                    self._native.sync_registry_directory(pin)
+        if sys.platform == "darwin" and not persistent_ranges:
+            with _write_transaction(db):
+                stable = self._darwin_bindings(pin)
+                if stable is None:
+                    old = self._native.read_at(pin, _DATABASE_BINDING, 128)
+                    if old is None or _LEGACY_IDENTITY.fullmatch(old) is None:
+                        raise LeaseError("ERR_LEASE_CHANGED")
+                    database = self._native.persistent_file_identity_at(
+                        pin, _DATABASE, old.decode("ascii")
+                    )
+                    persistent_ranges = self._native.persistent_file_identity_at(
+                        pin, _RANGES, identity
+                    )
+                    self._native.publish_registry_binding(
+                        pin, _DARWIN_BINDINGS, f"{database}\n{persistent_ranges}".encode("ascii")
+                    )
+                    stable = (database, persistent_ranges)
+                if self._native.persistent_file_identity_at(pin, _DATABASE) != stable[0]:
+                    raise LeaseError("ERR_LEASE_CHANGED")
+                identity = stable[1]
         self._sweep(db, pin, identity)
+        if sys.platform == "darwin":
+            self._sweep_unused_files(db, pin, identity)
+        self._pins[id(pin)] = identity
         return identity
+
+    def _sweep_unused_files(self, db: sqlite3.Connection, pin: object, identity: str) -> None:
+        with _write_transaction(db):
+            if self._native.persistent_file_identity_at(pin, _RANGES) != identity:
+                raise LeaseError("ERR_LEASE_CHANGED")
+            count = 0
+            for entry in self._root.iterdir():
+                match = _SLOT_FILE.fullmatch(entry.name)
+                if match is None or not _RETAINED_SLOT_FILES < (slot := int(match[1])) <= _MAX_SLOT:
+                    continue
+                if db.execute("SELECT 1 FROM slots WHERE slot = ?", (slot,)).fetchone():
+                    continue
+                try:
+                    self._native.reclaim_registry_slot(pin, entry.name)
+                except LeaseError as error:
+                    if error.code not in {"ERR_LEASE_BUSY", "ERR_LEASE_FILE", "ERR_LEASE_SIZE"}:
+                        raise
+                    continue
+                count += 1
+                if count == _SWEEP_LIMIT:
+                    break
 
     def _lock_slot(self, pin: object, slot: int, exclusive: bool, identity: str) -> object:
         if sys.platform != "darwin":
             return self._native.acquire_at(pin, _RANGES, exclusive, slot, identity)
-        if self._native.file_identity_at(pin, _RANGES) != identity:
+        if self._native.persistent_file_identity_at(pin, _RANGES) != identity:
             raise LeaseError("ERR_LEASE_CHANGED")
-        # Keep each slot file even after its SQLite mapping is reclaimed.
         return self._native.acquire_at(pin, f"slot-{slot}", exclusive)
 
     def _referenced(self, name: str) -> bool:

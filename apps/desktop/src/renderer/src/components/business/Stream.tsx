@@ -79,6 +79,7 @@ import {
 import { useAccountAccess } from './access'
 import { useSkillNames, type SkillNames } from './skillnames'
 import { MessageActions, UserMessageText } from './Message'
+import { userMessageTime } from './utils'
 import { LoginPrompt } from './LoginPrompt'
 import { commandOutcome } from '../../command'
 import { activeThread, useApp, type ComposerReference } from '../../store'
@@ -1478,7 +1479,8 @@ export function Stream({
                         turnTiming={
                           (finalAgentRows.has(index) || row.item.kind === 'user') &&
                           row.item.turnId &&
-                          !processes.some((process) => process.turnId === row.item.turnId)
+                          (row.item.kind === 'agent' ||
+                            !processes.some((process) => process.turnId === row.item.turnId))
                             ? thread.turnTimings?.[row.item.turnId]
                             : undefined
                         }
@@ -3785,7 +3787,7 @@ function BrowserApprovalCard({
     if (event.target instanceof Element && event.target.closest('button')) event.preventDefault()
   }
 
-  const approvalIcon = <Icon name="hand" size={16} sw={1.2} />
+  const approvalIcon = <IconFont type="icon-qingqiupizhun" />
   const confirmation = (
     <ConfirmationCard
       compact
@@ -6889,10 +6891,7 @@ function UserBubble({
                   dateTime={new Date(sentAt).toISOString()}
                   className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
                 >
-                  {new Intl.DateTimeFormat(localization.resolvedLanguage ?? localization.language, {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  }).format(sentAt)}
+                  {userMessageTime(sentAt, localization.resolvedLanguage ?? localization.language)}
                 </time>
               )}
               <CopyButton

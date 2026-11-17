@@ -45,6 +45,7 @@ PRECOMPILE_DIRECTORY = 'compilation_precheck'
 COMPILE_DIAGNOSTIC_LIMIT = 8
 COMPILE_CONTEXT_LINES = 7
 COMPILE_DIAGNOSTIC_CHARS = 4000
+DELIVERABLE_SUFFIXES = {'latex_pdf':'.pdf','markdown':'.md','docx':'.docx'}
 ASSET_ANCHOR = re.compile(r'''(?m)^<a id=["']((fig|tab)[:-][^"']+)["']></a>[ \t]*$''')
 ASSET_REFERENCE = re.compile(r'(~)?\\(ref|autoref|cref)\{((?:fig|tab):[^}]+)\}')
 ASSET_LABELS = {'fig': 'figure', 'tab': 'table'}
@@ -299,8 +300,8 @@ def publication_title(ws,source):
     return match[1].strip() if match else 'survey'
 
 
-def deliverable_pdf_path(ws,source):
-    return Path(ws)/'06_output'/(safe_title_stem(publication_title(ws,source))+'.pdf')
+def deliverable_path(ws,source,output_format):
+    return Path(ws)/'06_output'/(safe_title_stem(publication_title(ws,source))+DELIVERABLE_SUFFIXES[output_format])
 
 
 def render_pages(ws,pdf=None,*,include_scope=False):
@@ -361,7 +362,6 @@ def _run(command,cwd,env):
 def _export(ws,source):
     out=ws/'06_output';out.mkdir(parents=True,exist_ok=True)
     if is_quick(ws):
-        shutil.copyfile(source,out/'survey.md')
         return out
     # Current local dependencies, including user-added tables, styles and bibs.
     files=dependencies(source)
@@ -371,7 +371,7 @@ def _export(ws,source):
         if path.is_relative_to(source.parent):
             target=out/path.relative_to(source.parent)
             target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
-    shutil.copyfile(source,out/('survey'+source.suffix))
+    if source.suffix!='.md':shutil.copyfile(source,out/('survey'+source.suffix))
     return out
 
 
@@ -432,7 +432,7 @@ def _publish(ws,env):
             box = tuple(length.pt for length in image_box()) if requested_format == 'docx' else None
             rendered_native,native_records=render_trees(raw,source.parent,resolver,
                                                        **({'image_box':box} if box else {}))
-        out=_export(ws,source);deliverable=out/'survey.md'
+        out=_export(ws,source);deliverable=deliverable_path(ws,source,'markdown')
         for record in native_records:
             image=source.parent/record['image']
             target=out/record['image']
@@ -457,7 +457,7 @@ def _publish(ws,env):
         output_format=(read_request(ws)['publication'].get('format')
                        if (ws/'01_input/writing_request.json').exists() else settings.get('format'))
         if output_format=='docx':
-            result.update(export_word(rendered,out,out/'survey.docx',settings.get('language','english')))
+            result.update(export_word(rendered,out,deliverable_path(ws,source,'docx'),settings.get('language','english')))
     else:
         text=source.read_text()
         engine=latex_engine(text)
@@ -509,7 +509,7 @@ def _publish(ws,env):
                 'compile':diagnosis,'visual_review_required':True,
                 'next_action':'Inspect PDF pages; edit v2 and its dependencies, then run workflow publish.'}
         if clean:
-            out=_export(ws,source);deliverable=deliverable_pdf_path(ws,source)
+            out=_export(ws,source);deliverable=deliverable_path(ws,source,'latex_pdf')
             shutil.copyfile(pdf,deliverable)
             legacy=out/'survey.pdf'
             if legacy!=deliverable and legacy.exists():legacy.unlink()

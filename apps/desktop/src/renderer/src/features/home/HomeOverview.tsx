@@ -325,7 +325,11 @@ export function HomeOverview(): React.JSX.Element {
                     />
                   </div>
                 </div>
-                {phase === 'loading' && <Spinner />}
+                {phase === 'loading' && (
+                  <div className="grid min-h-[var(--vds-layout-home-empty-height)] place-items-center">
+                    <Spinner />
+                  </div>
+                )}
                 {phase === 'error' && (
                   <Alert>
                     {t('loadFailed')}
@@ -335,6 +339,7 @@ export function HomeOverview(): React.JSX.Element {
                   </Alert>
                 )}
                 <Card
+                  hidden={phase === 'loading'}
                   padding="none"
                   className="min-w-0 overflow-hidden !bg-transparent !shadow-none [--vds-card-radius:var(--vds-radius-6)]"
                   data-testid="home-tasks-list"

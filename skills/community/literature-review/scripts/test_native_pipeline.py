@@ -19,6 +19,7 @@ from paper_materials import source_identity
 from chapter_pipeline import generate
 from manuscript import prepare
 from manuscript_delta import apply_delta
+from precheck import precheck
 from manuscript_publication import publish,audit,native_references,native_heading_ids
 from generation_errors import GenerationError
 from templates import LATEX_AUTHORING_GUIDANCE
@@ -183,7 +184,12 @@ class NativeTest(unittest.TestCase):
         refine=model.calls[-1];self.assertIn(r'\documentclass',refine['sources']['main'])
         self.assertIn(r'\usepackage{bm}',refine['sources']['main'])
         self.assertIn('citations.bib',refine['sources'])
-        self.assertIn('conditional',refine['evidence'].lower())
+        self.assertNotIn('evidence',refine)
+        contract=json.loads((self.ws/'05_generation/_internal/manuscript_contract.json').read_text())
+        self.assertNotIn('evidence',contract)
+        self.assertNotIn('writing_evidence',contract)
+        self.assertTrue(any('conditional' in packet.get('evidence','').lower()
+                            for packet in model.calls[:-1]))
         self.assertEqual(refine['resolved_section_languages'],
                          {'0':'english','1':'english','2':'english'})
         gen=self.ws/'05_generation';v2=gen/'full_draft_v2.tex'
@@ -191,9 +197,38 @@ class NativeTest(unittest.TestCase):
         self.assertIn('Mechanisms vary',(gen/'full_draft_v1.tex').read_text())
         self.assertFalse((gen/'manuscript.json').exists())
         self.assertFalse((gen/'full_draft_v3.tex').exists())
+        self.assertFalse((gen/'repetition.txt').exists())
         v2.write_text(v2.read_text()+'\n% Main edit\n')
         reopened=self.run_pipeline(model);self.assertEqual(len(model.calls),4)
         self.assertIn('Main edit',v2.read_text())
+
+    def test_redefinitions_reach_the_same_refinement_as_plain_language(self):
+        class LocatedModel(Model):
+            def __init__(self):
+                super().__init__()
+                self.messages=[]
+
+            async def chat_stream(self,messages,**kwargs):
+                self.messages.append(messages)
+                text=await super().chat_stream(messages,**kwargs)
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_ids') in (['1'],['2']):
+                    text+='\nRetrieval augmented generation (RAG) uses external evidence.'
+                    kwargs['_capture']['partial_response']=text
+                return text
+
+        model=LocatedModel();self.run_pipeline(model)
+        messages=model.messages[-1]
+        self.assertEqual(len(model.calls),4)
+        self.assertEqual(len(messages),3)
+        self.assertEqual(messages[2]['role'],'user')
+        self.assertIn('RAG',messages[2]['content'])
+        self.assertIn('Mechanisms',messages[2]['content'])
+        self.assertIn('Conclusion',messages[2]['content'])
+        with self.assertRaises(json.JSONDecodeError):json.loads(messages[2]['content'])
+        self.assertEqual(messages[2]['content'],
+                         (self.ws/'05_generation/repetition.txt').read_text())
+        self.assertNotIn('repetition_notes',json.loads(messages[1]['content']))
 
     def test_abstract_warnings_feed_existing_refinement_and_clear_after_repair(self):
         long_abstract = 'Detailed background. ' * 140 + '\n\nFurther details.'
@@ -335,6 +370,30 @@ class NativeTest(unittest.TestCase):
         self.assertIn('stray_backslash_after_rule_command',
                       str(refine['table_layout_warnings']))
         self.assertIn('TABLE LAYOUT REPAIR',model.systems[-1])
+        self.assertIn('Mechanisms differ',
+                      (self.ws/'05_generation/full_draft_v2.tex').read_text())
+        self.assertEqual(len(model.calls),4)
+
+    def test_repeated_explanations_do_not_block_an_unchanged_refinement(self):
+        explanation = 'Retrieval-augmented generation (RAG) uses external evidence.'
+        class UnchangedModel(Model):
+            async def chat_stream(self,messages,**kwargs):
+                packet=json.loads(messages[1]['content'])
+                if 'sources' in packet or packet.get('chapter_ids')==['1']:
+                    self.calls.append(packet);self.systems.append(messages[0]['content'])
+                    text=(json.dumps({'edits':[],'issues':[]}) if 'sources' in packet else
+                          explanation+'\n\n'+explanation+r' \citep{Keyp1}.')
+                    kwargs['_capture'].update(finish_reason='stop',usage={},partial_response=text)
+                    return text
+                return await super().chat_stream(messages,**kwargs)
+        model=UnchangedModel();out=self.run_pipeline(model)
+        gen=self.ws/'05_generation'
+        self.assertEqual(out['status'],'SUCCESS')
+        self.assertEqual(out['applied_edits'],0)
+        self.assertEqual(len(model.calls),4)
+        self.assertEqual((gen/'full_draft_v1.tex').read_text(),
+                         (gen/'full_draft_v2.tex').read_text())
+        self.assertIn(explanation,model.calls[-1]['sources']['main'])
 
     def test_passing_tables_add_nothing_table_specific_to_refinement(self):
         self.outline['outline_tree'][1]['tables']=[{
@@ -362,6 +421,84 @@ class NativeTest(unittest.TestCase):
         self.assertNotIn('table layout',model.systems[-1].lower())
         report=json.loads((self.ws/'05_generation/_status/table_layout_precheck.json').read_text())
         self.assertEqual(report['status'],'SUCCESS',report)
+
+    def test_docx_table_checks_use_the_markdown_authoring_source_before_and_after_refine(self):
+        configure(self.ws,{'publication':{'format':'docx'}})
+        self.outline['outline_tree'][1]['tables']=[{
+            'table_id':'T1','purpose':'Compare mechanisms.','content_plan':'One row per mechanism.',
+            'caption_draft':'Mechanism comparison.','row_unit':'Mechanism',
+            'comparison_dimensions':['Guarantee'],'paper_ids':['p1']}]
+        atomic_json(self.ws/'04_outline/outline.json',self.outline)
+        class MarkdownTable(Model):
+            async def chat_stream(self,messages,**kwargs):
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_ids')==['1']:
+                    self.calls.append(packet);self.systems.append(messages[0]['content'])
+                    text=('Mechanisms vary. \\cite{Keyp1}.\n\n<a id="tab:T1"></a>\n\n'
+                          'Mechanism comparison.\n\n| Mechanism | Guarantee |\n'
+                          '| --- | --- |\n| A | Conditional |\n')
+                    kwargs['_capture'].update(finish_reason='stop',usage={},partial_response=text)
+                    return text
+                return await super().chat_stream(messages,**kwargs)
+        model=MarkdownTable();out=self.run_pipeline(model)
+        self.assertEqual(model.calls[-1]['output_format'],'markdown')
+        self.assertNotIn('asset_contract_warnings',model.calls[-1])
+        self.assertEqual(out['asset_contract']['status'],'SUCCESS',out['asset_contract'])
+        self.assertEqual(out['asset_contract']['assets_checked'],1)
+        self.assertEqual(len(model.calls),4)
+
+    def test_docx_chapter_authored_markdown_images_are_reported_without_a_new_gate(self):
+        configure(self.ws,{'publication':{'format':'docx'}})
+        class MarkdownImage(Model):
+            async def chat_stream(self,messages,**kwargs):
+                text=await super().chat_stream(messages,**kwargs)
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_ids')==['1']:
+                    text+='\n\n![Unplanned image](unplanned.png)\n'
+                    kwargs['_capture']['partial_response']=text
+                return text
+        model=MarkdownImage();out=self.run_pipeline(model)
+        warnings=model.calls[-1]['asset_contract_warnings']
+        self.assertIn('chapter_authored_figure',{item['code'] for item in warnings})
+        self.assertIn('asset_identity_missing_or_ambiguous',
+                      {item['code'] for item in out['asset_contract']['issues']})
+        self.assertEqual(out['status'],'SUCCESS')
+        self.assertEqual(len(model.calls),4)
+
+    def test_markdown_source_diagnostics_join_the_existing_refinement_without_extra_calls(self):
+        configure(self.ws,{'publication':{'format':'markdown'}})
+        class MissingImage(Model):
+            def __init__(self):
+                super().__init__()
+                self.messages=[]
+
+            async def chat_stream(self,messages,**kwargs):
+                self.messages.append(messages)
+                text=await super().chat_stream(messages,**kwargs)
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_ids')==['1']:
+                    text+='\n\n![Missing](missing.png)\n'
+                    kwargs['_capture']['partial_response']=text
+                return text
+        model=MissingImage();out=self.run_pipeline(model)
+        report=json.loads((self.ws/'05_generation/_status/source_precheck.json').read_text())
+        self.assertEqual(report['status'],'WARNING')
+        self.assertIn('missing.png',model.messages[-1][-1]['content'])
+        self.assertIn('Source precheck',model.messages[-1][-1]['content'])
+        self.assertNotIn('source_precheck',model.calls[-1])
+        self.assertEqual(out['source_precheck']['status'],'WARNING')
+        self.assertEqual(out['status'],'SUCCESS')
+        self.assertEqual(len(model.calls),4)
+
+    def test_source_precheck_is_frozen_when_resuming_a_saved_refinement(self):
+        configure(self.ws,{'publication':{'format':'markdown'}})
+        model=Model()
+        with patch('chapter_pipeline.precheck',wraps=precheck) as check:
+            self.run_pipeline(model)
+            (self.ws/'05_generation/full_draft_v2.md').unlink()
+            self.run_pipeline(model)
+        check.assert_called_once()
+        self.assertEqual(len(model.calls),4)
 
     def test_asset_warnings_feed_single_refinement_preserving_raw_chapters(self):
         self.outline['outline_tree'][1]['tables']=[{

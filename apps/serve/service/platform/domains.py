@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -32,6 +33,7 @@ _NATIVE_RELEASE = "ERR_LEASE_RELEASE"
 _DOMAIN_RELEASE = "ERR_DOMAIN_RELEASE"
 _FAMILY_INDEX = "domains-v1"
 _MUTATION_INDEX = "mutations-v1"
+_DARWIN_MUTATION_KEY = re.compile(r"posix-([a-f0-9]{16})-([a-f0-9]{16})")
 _MUTATION_GATE_SUFFIX = "-mutations"
 _FAMILY_SELF = "self"
 _FAMILY_DESCENDANTS = "descendants"
@@ -1207,6 +1209,37 @@ def _check_index_records(
     # root for every ancestor index makes admission quadratic in the root count.
     _revalidate(native, bindings)
     coordinator = bindings[0]
+    if sys.platform == "darwin" and index_name == _MUTATION_INDEX:
+        index = os.path.join(coordinator.path, index_name)
+        try:
+            index_pin = native.pin(index, False)
+        except BaseException as error:
+            if getattr(error, "code", None) != "ERR_LEASE_MISSING":
+                raise
+        else:
+            try:
+                index_binding = _binding(native, index_pin, index)
+                if coordinator.identity not in index_binding.ancestors:
+                    raise DomainChangedError("mutation index escaped its retained coordinator")
+                expected_index = (coordinator, index_binding)
+                _revalidate(native, expected_index)
+                aliases: dict[str, list[str]] = {}
+                for entry in os.listdir(index):
+                    match = _DARWIN_MUTATION_KEY.fullmatch(entry)
+                    if match:
+                        aliases.setdefault(match[2], []).append(entry.replace("-", ":"))
+                _revalidate(native, expected_index)
+                # Older records only prove an inode, so retain the barrier for
+                # matching inodes even if their previous mount IDs differ.
+                plan = tuple(
+                    dict.fromkeys(
+                        (candidate, mode)
+                        for identity, mode in plan
+                        for candidate in (identity, *aliases.get(identity.rsplit(":", 1)[-1], ()))
+                    )
+                )
+            finally:
+                native.release(index_pin)
     for identity, mode in plan:
         encoded = identity.replace(":", "-")
         gates: list[object] = []

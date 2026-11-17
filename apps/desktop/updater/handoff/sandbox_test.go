@@ -47,6 +47,37 @@ func TestSandboxDiagnosticsNeverExposeNativeMessages(t *testing.T) {
 	}
 }
 
+func TestSandboxMetadataDiagnosticsAreBounded(t *testing.T) {
+	for _, entry := range []struct {
+		object string
+		rule   string
+		count  int
+		want   string
+	}{
+		{sandboxObjectMetadata, sandboxRuleDrift, 0, sandboxRuleDrift},
+		{sandboxObjectLog, sandboxRuleLogBound, sandboxLogLimit + 1, sandboxRuleLogBound},
+		{sandboxObjectLog, "private-token", 1000, sandboxRuleUnknown},
+		{"C:\\private-token", sandboxRuleOwner, 0, ""},
+	} {
+		cause := &sandboxCheckError{cause: errors.New("private-token S-1-5-21-1-2-3-9999"), object: entry.object, rule: entry.rule, count: entry.count}
+		failure := sandboxFailure(sandboxStageMetadata, cause)
+		diagnostic := SandboxDiagnostic(failure)
+		raw, err := json.Marshal(diagnostic)
+		if err != nil || strings.Contains(string(raw)+failure.Error(), "private-token") || diagnostic.Rule != entry.want {
+			t.Fatalf("unbounded metadata diagnostic: %s", raw)
+		}
+		if diagnostic.Count != 0 && (entry.rule != sandboxRuleLogBound || diagnostic.Count != sandboxLogLimit+1) {
+			t.Fatal("count escaped its actual bounded failure")
+		}
+		if SandboxExitCode(failure) != 4102 {
+			t.Fatal("metadata exit status changed")
+		}
+	}
+	if !errors.Is(sandboxMetadataFailure(sandboxObjectBin, syscall.Errno(5)), syscall.Errno(5)) {
+		t.Fatal("system error identity lost")
+	}
+}
+
 func TestSandboxWorkerDiagnosticsRoundTripEveryClassification(t *testing.T) {
 	seen := map[int]bool{}
 	for _, stage := range sandboxDiagnosticStages {

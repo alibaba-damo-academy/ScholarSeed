@@ -87,9 +87,9 @@ test('native send, headers and completion share the exact renderer correlation',
     ['request_sent', 'request_completed']
   )
   assert.ok(state.records.every((record) => record.client_request_id === CORRELATION))
-  assert.equal(state.records[0].diagnostic_previous_write_ms, null)
-  assert.equal(state.records[1].diagnostic_previous_write_event, 'request_sent')
-  assert.ok(Number(state.records[1].diagnostic_previous_write_ms) >= 0)
+  assert.equal(state.records[0].diagnostic_previous_enqueue_ms, null)
+  assert.equal(state.records[1].diagnostic_previous_enqueue_event, 'request_sent')
+  assert.ok(Number(state.records[1].diagnostic_previous_enqueue_ms) >= 0)
   assert.ok(Number(state.records[1].response_started_elapsed_ms) >= 0)
   assert.ok(Number(state.records[1].transfer_after_headers_ms) >= 0)
   assert.ok(!JSON.stringify(state.records).includes('private'))

@@ -2,19 +2,19 @@
 name: literature-review
 display_name_zh: 文献综述
 description: >-
-  Produce or revise an evidence-grounded survey, Related Work section, chapter or
-  fragment. Quick uses abstracts only and delivers Markdown without images.
-  Standard supports full-text evidence, figures, PDF, Markdown and DOCX.
-  Agree the plan before discovery and preserve supplied-source limits.
-  New literature discovery uses the independently installed agentic-search skill.
+  Write or revise evidence-grounded literature reviews, Related Work sections
+  or individual passages. Compare methods, findings and limitations to synthesize
+  research developments and open questions. Quick mode uses abstracts and delivers
+  Markdown without figures; Standard mode supports full-text analysis, figures
+  and Markdown, PDF or DOCX output.
 description_zh: >-
-  生成或修订有来源依据的文献综述、Related Work、章节或片段。支持快速和标准
-  两种执行路径。快速模式只读摘要、只交付Markdown、不生成图片；标准模式支持全文、
-  图表及PDF、Markdown、DOCX。在检索前确认方案，保留指定文献范围。
-  新文献发现依赖独立安装的 agentic-search。
+  撰写或修订有来源依据的文献综述、相关工作章节或局部段落，
+  比较研究方法、主要发现与局限，归纳研究进展和开放问题。
+  快速模式基于摘要生成Markdown，不含图片；标准模式支持全文分析、
+  图表及Markdown、PDF或DOCX交付。
 metadata:
-  version: "2026.11.13+9"
-version: "2026.11.13+9"
+  version: "2026.11.17+1"
+version: "2026.11.17+1"
 ---
 # Literature review
 
@@ -470,6 +470,13 @@ Once Quick evidence is ready or the Standard outline is confirmed, complete `evi
 
 The selected mode determines writing. Quick produces the requested Markdown in one call.
 Standard assembles the completed chapters and assets, then applies one complete-source delta refinement.
+This pass edits the manuscript without paper abstracts or cards, preserves scientific meaning and
+reports ambiguous scientific changes instead of guessing or adding claims.
+When found, the script supplies a compact natural-language list of possible cross-chapter
+redefinitions with source locations. These are editing candidates, not mandatory deletions or a delivery gate.
+For Markdown and DOCX, the script also runs a bounded local source precheck, with a temporary DOCX
+conversion when dependencies are ready. It adds only located source defects to the same refinement call;
+the precheck itself uses no model or visual inspection. An incomplete precheck is not a successful conversion check.
 Inspect the editable v2 for the requested document scope, language, format and required assets. Resolve
 concrete citation, compilation or layout diagnostics in that source and its dependencies, then publish.
 An unsuccessful refinement preserves v1, the response and its diagnostic instead of reporting success.
@@ -481,6 +488,8 @@ The refinement improves manuscript quality; code checks source identity, output 
 After inspecting v2, complete `writing` and start `publication`.
 
 1. Run `workflow publish`. The publisher handles citations, reference lists, asset numbering and export assembly.
+   PDF, Markdown and DOCX deliverables use the confirmed outline title or manuscript title as a sanitized
+   filename, with `survey` only as a no-title fallback. Use the returned paths, not fixed `survey.*` names.
 2. Resolve reported citation, bibliography and compile errors without reducing the task.
 3. Inspect the actual delivered files, using the inspection rules below.
 4. When the outcome is settled, call the bridge with `capability=literature`, `operation=review`,

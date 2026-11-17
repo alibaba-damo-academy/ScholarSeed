@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+import { build } from 'esbuild'
 import {
   persistedRendererPreferences,
   sanitizeRendererPreferences,
@@ -7,6 +9,22 @@ import {
 } from '../preferences.ts'
 import { defaultSelectionPrompts, SELECTION_PROMPT_ACTIONS } from '../prompts.ts'
 import { decodeRendererPreferences, RENDERER_PREFERENCES_MAX_BYTES } from './preferences-record.ts'
+
+test('read-only preference decoding bundles without filesystem, native or process capabilities', async () => {
+  const result = await build({
+    entryPoints: [fileURLToPath(new URL('./preferences-record.ts', import.meta.url))],
+    bundle: true,
+    platform: 'browser',
+    write: false,
+    metafile: true,
+  })
+  assert.equal(result.outputFiles.length, 1)
+  assert.ok(
+    Object.values(result.metafile.inputs).every((input) =>
+      input.imports.every((dependency) => !dependency.external)
+    )
+  )
+})
 
 test('CDP choice survives record restarts and missing legacy choice uses the default', () => {
   assert.equal(decodeRendererPreferences(null).browserAutomationEnabled, true)

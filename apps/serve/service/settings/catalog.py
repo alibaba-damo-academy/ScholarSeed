@@ -63,6 +63,7 @@ MODEL_CATALOG: List[Dict[str, Any]] = []
 # 内置目录条目只声明「连到哪、调哪个模型」; 上下文长度、模态、思考形态一律来自
 # capabilities.json 的 (连接, wire model) 声明 —— 名字不再产出能力真值 (proposal 78 I1)。
 GATEWAY_STRATEGY_MODELS = (
+    ("qwen4-max", "Qwen 4 Max"),
     ("qwen3.8-max", "Qwen 3.8 Max"),
     ("qwen3.8-flash", "Qwen 3.8 Flash"),
     ("qwen3-next-80b-a3b-thinking", "Qwen 3 Next 80B A3B Thinking"),
@@ -72,16 +73,19 @@ GATEWAY_APPROVAL_MODEL_KEY = "auto_review_model"
 GATEWAY_QWEN_APPROVAL_MODEL = "qwen3-next-80b-a3b-thinking"
 GATEWAY_QWEN_MODEL_KEYS = frozenset(
     {
+        "qwen4-max",
         "qwen3.8-max",
         "qwen3.8-flash",
         "qwen3-next-80b-a3b-thinking",
     }
 )
 GATEWAY_APPROVAL_MODELS = {name: GATEWAY_QWEN_APPROVAL_MODEL for name in GATEWAY_QWEN_MODEL_KEYS}
-# 内置目录仅保留两种主模型与独立审批模型；选择器只展示前两者。旧内置配置在加载态
-# 收敛到可见默认模型，不修改用户文件，也不改变个人连接。
+# The selector shows the main models. Legacy gateway selections converge to
+# the visible default on load.
 # 单一事实源: 产品可见性只在这里声明, 服务层不再维护第二张常量表。空集合 = 不收敛。
-GATEWAY_VISIBLE_MODEL_KEYS: frozenset[str] = frozenset({"qwen3.8-max", "qwen3.8-flash"})
+GATEWAY_VISIBLE_MODEL_KEYS: frozenset[str] = frozenset(
+    {"qwen4-max", "qwen3.8-max", "qwen3.8-flash"}
+)
 # 连接**身份**字段说明「连到哪、用什么协议、调哪个模型」; 连接**凭据**字段只说明「这条
 # 连接怎么鉴权」。判定内置目录时两组必须分开: 把凭据也算进连接声明, 会让用户一填
 # api_key 或一个自定义 header 就把内置模型目录整体抹空 —— 症状是模型菜单一个都不剩。

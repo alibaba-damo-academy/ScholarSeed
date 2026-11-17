@@ -9,6 +9,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 from scholarseed_runtime.contract import CapabilitySet, RuntimeBinding, RuntimePermissionMode
@@ -32,6 +33,7 @@ from service.chat.persistence.catalog import (
     SessionAccessError,
     SessionCatalogStore,
     SessionPrincipal,
+    SessionStateConflictError,
     SessionStatus,
 )
 from service.chat.persistence.events import (
@@ -205,6 +207,46 @@ class ForkTests(unittest.TestCase):
             self.assertIsNone(
                 snapshots.inherit_snapshot("source", "other-owner", "snapshot", connection)
             )
+
+        for source_id in ("source", "child"):
+            self.catalog.release(source_id, SessionPrincipal(user_id="owner"))
+            for target_id in ("legacy", "grandchild"):
+                with self.subTest(deleted=source_id, target=target_id):
+                    before = self.events.replay(target_id)
+                    binding = self.catalog.runtime_binding(target_id)
+                    inherited = snapshots.snapshot_for_turn(target_id, "client")
+                    assert inherited is not None
+                    self.service._access = SessionCatalogStore(self.catalog.database)
+                    self.service._events = ProductEventStore(self.catalog.database)
+                    for _ in range(2):
+                        asyncio.run(
+                            self.service._restore_fork_history(
+                                cast(
+                                    LiveSession,
+                                    SimpleNamespace(
+                                        id=target_id, restore_local_input_paths=lambda: None
+                                    ),
+                                )
+                            )
+                        )
+                    self.assertEqual(self.events.replay(target_id), before)
+                    self.assertEqual(self.catalog.runtime_binding(target_id), binding)
+                    self.assertEqual(
+                        AssistantStore(self.catalog.database).snapshot_for_turn(
+                            target_id, "client"
+                        ),
+                        inherited,
+                    )
+                    self.assertEqual(
+                        CitationStore(self.catalog.database).get(
+                            target_id, inherited.snapshot_id, "public-handle"
+                        ),
+                        receipt,
+                    )
+
+        unimported = self.register("unimported")
+        with self.assertRaisesRegex(SessionStateConflictError, SESSION_FORK_SOURCE_CHANGED):
+            self.events.inherit_history("source", unimported, terminal.product_seq)
 
     def test_workspace_copy_is_independent_and_excludes_private_runtime_files(self) -> None:
         source = self.root / "workspace"

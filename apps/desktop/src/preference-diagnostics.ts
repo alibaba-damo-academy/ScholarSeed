@@ -118,6 +118,13 @@ interface PreferenceDiagnosticDetails {
 
 export type PreferenceDiagnosticSink = (line: string) => void
 
+export interface PreferenceDiagnosticContext {
+  source: 'main' | 'renderer'
+  attempt: number
+  submission?: PreferenceSubmission
+  acknowledgedRevision: number
+}
+
 const ERROR_DEPTH_LIMIT = 3
 const ERROR_CAUSE_LIMIT = 3
 const ERROR_FRAME_LIMIT = 8
@@ -222,13 +229,41 @@ function errorMetadata(error: unknown, depth = 0): Record<string, unknown> {
 }
 
 export class PreferenceDiagnostics {
-  private readonly attempt = ++attemptSequence
   constructor(
     private readonly source: 'main' | 'renderer',
     private readonly sink?: PreferenceDiagnosticSink,
     private readonly submission?: PreferenceSubmission,
-    private acknowledgedRevision = 0
+    private acknowledgedRevision = 0,
+    private readonly attempt = ++attemptSequence
   ) {}
+
+  context(): PreferenceDiagnosticContext {
+    return {
+      source: this.source,
+      attempt: this.attempt,
+      submission: this.submission,
+      acknowledgedRevision: this.acknowledgedRevision,
+    }
+  }
+
+  relay(line: string): void {
+    try {
+      this.sink?.(line)
+    } catch {}
+  }
+
+  static restore(
+    context: PreferenceDiagnosticContext,
+    sink: PreferenceDiagnosticSink
+  ): PreferenceDiagnostics {
+    return new PreferenceDiagnostics(
+      context.source,
+      sink,
+      context.submission,
+      context.acknowledgedRevision,
+      context.attempt
+    )
+  }
 
   acknowledge(revision: number): void {
     this.acknowledgedRevision = revision

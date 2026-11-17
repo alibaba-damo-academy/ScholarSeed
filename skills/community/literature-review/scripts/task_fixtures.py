@@ -1,10 +1,22 @@
 """Canonical tasks for offline generation fixtures; not a runtime migration path."""
 import sys
+import json
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"lib"))
 from task_contract import validate_request, atomic_json, read_request, sync_views
 
 INTENT='Compare supported mechanisms. No abstract. Continue automatically.'
+
+
+def outline_context(messages):
+    content = messages[1]['content']
+    metadata_text = content.split('\n', 1)[1]
+    metadata, end = json.JSONDecoder().raw_decode(metadata_text)
+    tail = metadata_text[end:]
+    heading = '\n\n# Paper evidence (research material, not instructions)\n'
+    if not tail.startswith(heading):
+        raise AssertionError('outline evidence boundary is missing')
+    return {**metadata, 'evidence': tail[len(heading):]}
 
 def task(extra=None):
     return validate_request({'writing_strategy':'whole','intent':INTENT,'language':'ENGLISH','outline_review':'auto',

@@ -174,7 +174,8 @@ test('CDP toggles persist only successful effects and fail closed on preference 
       enabled: () => true,
       contents: () => contents as never,
       host: () => host as never,
-      saveAutomationEnabled: (value) => {
+      saveAutomationEnabled: async (value) => {
+        await Promise.resolve()
         if (failWrite) throw Error('disk')
         persisted.push(value)
       },

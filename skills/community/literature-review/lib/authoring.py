@@ -8,18 +8,9 @@ CONTENT_FIELDS = (
     "card",
     "survey_outline_skeletons",
 )
-IDENTITY_FIELDS = ("title", "year", "paper_type", "reading_depth")
+IDENTITY_FIELDS = ("title", "year", "paper_type")
 VALIDATION_FIELDS = ("quarantined_groups", "semantic_adequacy", "source_verification")
-LIMITS_LABEL = "Evidence limits"
 IMAGE_NOTICE = "Saved image-derived findings are not pixels inspected in this run."
-
-
-def evidence_limits(record):
-    if record.get('reading_depth') == 'abstract_only':
-        return {'material_limit': 'Abstract only; do not imply original full-text access.'}
-    if (record.get('source_coverage') or {}).get('complete') is False:
-        return {'material_limit': 'Some original content was unavailable.'}
-    return {}
 
 
 def writing_content(record):
@@ -30,9 +21,6 @@ def writing_content(record):
     card, source maps, source snapshot and PDF are never changed by projection.
     """
     content = {key: deepcopy(record[key]) for key in CONTENT_FIELDS if key in record}
-    limits = evidence_limits(record)
-    if limits:
-        content[LIMITS_LABEL] = limits
     return business_content(content)
 
 

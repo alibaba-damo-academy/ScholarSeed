@@ -109,6 +109,9 @@ configuration_logger = logging.getLogger(f"{RESOURCE_LIFECYCLE_LOGGER}.configura
 POOL_RESOURCE_LOG = "codex_resource_lifecycle"
 POOL_READINESS_LOG = "codex_pooled_readiness_fallback"
 POOL_CONFIGURATION_LOG = "codex_host_configuration_conflict"
+EXECUTION_CATALOG_HOST_LIMIT = 2
+SUPERSEDED_HOST_RETRY_DELAYS = (0.1, 0.25, 0.5, 1.0, 2.0)
+CATALOG_INDEPENDENT_ARGUMENTS = "launch_arguments_without_catalog"
 POOL_LEASE_RELEASED = "released"
 POOL_HOST_EXITED = "exited"
 POOL_CLOSE_FAILED = "close_failed"
@@ -153,11 +156,14 @@ class _HostSlot:
     owners: set[str] = field(default_factory=set)
     startup: asyncio.Task[None] | None = field(default=None, repr=False)
     closing: asyncio.Task[None] | None = field(default=None, repr=False)
+    reclaiming: asyncio.Task[None] | None = field(default=None, repr=False)
     startup_error: str = ""
     startup_retryability: RuntimeRetryability | None = None
     startup_wait_seconds: float | None = None
     close_safe: bool = False
     close_generation: int = 0
+    configuration: dict[str, str] = field(default_factory=dict, repr=False)
+    catalog_snapshot: catalog.ModelCatalogSnapshot | None = field(default=None, repr=False)
     resource_lease: ResourceLease | None = field(default=None, repr=False)
 
 
@@ -186,6 +192,7 @@ class PoolReservation:
     _released: bool = False
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, repr=False, compare=False)
     configuration: dict[str, str] = field(default_factory=dict, repr=False)
+    catalog_snapshot: catalog.ModelCatalogSnapshot | None = field(default=None, repr=False)
 
     @property
     def host_id(self) -> str:
@@ -688,6 +695,26 @@ class CodexHostPool:
             if name != "process_digest"
         }
         configuration["launch_arguments"] = self._digest(resolved_arguments)
+        catalog_arguments = tuple(
+            argument
+            for argument in request.launch_arguments
+            if id(argument) in self._catalog_candidates
+            and self._catalog_candidates[id(argument)][0]() is argument
+        )
+        snapshot = None
+        if len(catalog_arguments) == 1:
+            catalog_argument = catalog_arguments[0]
+            snapshot = self._catalog_candidates[id(catalog_argument)][1]
+            configuration[CATALOG_INDEPENDENT_ARGUMENTS] = self._digest(
+                _resolve_launch_arguments(
+                    tuple(
+                        argument
+                        for argument in launch_arguments
+                        if argument is not catalog_argument
+                    ),
+                    environment,
+                )
+            )
         configuration.update(
             {f"environment.{name}": self._digest(value) for name, value in environment.items()}
         )
@@ -743,7 +770,7 @@ class CodexHostPool:
                     RESOURCE_CANCELLED if self._closed else RESOURCE_WAIT_TIMEOUT,
                 )
             if not self.matches_scope(request.process_sharing_scope) or self._execution_conflict(
-                candidate_key, configuration=configuration, request_id=request_id
+                candidate_key, configuration=configuration, snapshot=snapshot, request_id=request_id
             ):
                 return self._rejected(
                     request_id,
@@ -786,7 +813,7 @@ class CodexHostPool:
                     RESOURCE_CANCELLED if self._closed else RESOURCE_WAIT_TIMEOUT,
                 )
             if not self.matches_scope(request.process_sharing_scope) or self._execution_conflict(
-                key, configuration=configuration, request_id=request_id
+                key, configuration=configuration, snapshot=snapshot, request_id=request_id
             ):
                 return self._rejected(
                     request_id,
@@ -817,6 +844,7 @@ class CodexHostPool:
                 )
             reservation = self._new(request_id, role, actual_deadline, key, fingerprint)
             reservation.configuration = configuration
+            reservation.catalog_snapshot = snapshot
             reservation.authority = self._digest(request.process_sharing_scope)
             reservation.timing = request.timing
             reservation.arguments = {
@@ -853,10 +881,16 @@ class CodexHostPool:
         key: tuple[str, CodexRuntimeIdentity, str, HostRole],
         *,
         configuration: Mapping[str, str] | None = None,
+        snapshot: catalog.ModelCatalogSnapshot | None = None,
         request_id: str = "",
     ) -> bool:
         current = self._execution_key
-        conflict = key[3] is HostRole.EXECUTION and current is not None and key != current
+        conflict = (
+            key[3] is HostRole.EXECUTION
+            and current is not None
+            and key != current
+            and key not in self._hosts
+        )
         if conflict and current is not None and configuration is not None:
             changed = {
                 name
@@ -867,6 +901,21 @@ class CodexHostPool:
                 changed.add("executable")
             if key[1] != current[1]:
                 changed.add("runtime_identity")
+            # A catalog expansion adds a Host with identical process credentials,
+            # policy and storage. The existing native threads keep their leases.
+            if (
+                changed == {"launch_arguments"}
+                and configuration.get(CATALOG_INDEPENDENT_ARGUMENTS) is not None
+                and snapshot is not None
+                and self._execution_catalog is not None
+                and snapshot.extends(self._execution_catalog)
+                and sum(slot.role is HostRole.EXECUTION for slot in self._hosts.values())
+                < min(
+                    self.policy.limit(HostRole.EXECUTION) or EXECUTION_CATALOG_HOST_LIMIT,
+                    EXECUTION_CATALOG_HOST_LIMIT,
+                )
+            ):
+                return False
             configuration_logger.warning(
                 "%s %s",
                 POOL_CONFIGURATION_LOG,
@@ -948,6 +997,7 @@ class CodexHostPool:
         if self._execution_conflict(
             reservation.key,
             configuration=reservation.configuration,
+            snapshot=reservation.catalog_snapshot,
             request_id=reservation.request_id,
         ):
             self._finish(reservation, ResourceState.REJECTED, RESOURCE_HOST_CONFIGURATION_CONFLICT)
@@ -1000,6 +1050,8 @@ class CodexHostPool:
                 host_id=host_id,
                 role=reservation.role,
                 resource_lease=resource_lease,
+                configuration=dict(reservation.configuration),
+                catalog_snapshot=reservation.catalog_snapshot,
                 startup_wait_seconds=(
                     SANDBOX_SETUP_TIMEOUT_SECONDS
                     if os.name == "nt"
@@ -1008,19 +1060,11 @@ class CodexHostPool:
                 ),
             )
             self._hosts[slot.key] = slot
-            if reservation.role is HostRole.EXECUTION:
+            if reservation.role is HostRole.EXECUTION and self._execution_key is None:
                 self._execution_key = reservation.key
                 self._execution_configuration = dict(reservation.configuration)
                 self._execution_authority = reservation.authority
-                self._execution_catalog = next(
-                    (
-                        self._catalog_candidates[id(argument)][1]
-                        for argument in reservation.arguments["launch_arguments"]
-                        if id(argument) in self._catalog_candidates
-                        and self._catalog_candidates[id(argument)][0]() is argument
-                    ),
-                    self._execution_catalog,
-                )
+                self._execution_catalog = reservation.catalog_snapshot
             slot.startup = self._background(self._start(slot, reservation.timing))
         slot.owners.add(reservation.reservation_id)
         reservation.slot = slot
@@ -1069,6 +1113,24 @@ class CodexHostPool:
         async with self._lock:
             if slot.state is HostState.STARTING:
                 slot.state = HostState.READY
+                if (
+                    slot.role is HostRole.EXECUTION
+                    and slot.key != self._execution_key
+                    and slot.owners
+                    and slot.catalog_snapshot is not None
+                    and self._execution_catalog is not None
+                    and slot.catalog_snapshot.extends(self._execution_catalog)
+                ):
+                    self._execution_key = slot.key
+                    self._execution_configuration = slot.configuration
+                    self._execution_catalog = slot.catalog_snapshot
+                    for previous in self._hosts.values():
+                        if (
+                            previous.role is HostRole.EXECUTION
+                            and previous is not slot
+                            and not previous.owners
+                        ):
+                            self._reclaim_superseded_host(previous)
                 for reservation_id in slot.owners:
                     self._log_resource(self._reservations[reservation_id], HostState.READY.value)
                 if not slot.owners:
@@ -1095,6 +1157,7 @@ class CodexHostPool:
             if self._execution_conflict(
                 reservation.key,
                 configuration=reservation.configuration,
+                snapshot=reservation.catalog_snapshot,
                 request_id=reservation.request_id,
             ):
                 waiting.popleft()
@@ -1277,6 +1340,11 @@ class CodexHostPool:
             # finishes. The last UI waiter is not its lifetime owner.
             self._detach(reservation, HOST_LEASE_RELEASED)
         elif (
+            slot.role is HostRole.EXECUTION and slot.key != self._execution_key and not self._closed
+        ):
+            self._detach(reservation, HOST_LEASE_RELEASED)
+            self._reclaim_superseded_host(slot)
+        elif (
             slot.role is HostRole.EXECUTION
             and slot.state is HostState.READY
             and reservation.state is ResourceState.CONSUMED
@@ -1298,15 +1366,32 @@ class CodexHostPool:
             )
         return reservation.closing
 
+    def _reclaim_superseded_host(self, slot: _HostSlot) -> None:
+        if slot.reclaiming is None or slot.reclaiming.done():
+            slot.reclaiming = self._background(self._retry_superseded_host(slot))
+
+    async def _retry_superseded_host(self, slot: _HostSlot) -> None:
+        if not await self._try_close_idle_host(slot, superseded_only=True):
+            return
+        for delay in SUPERSEDED_HOST_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            if not await self._try_close_idle_host(slot, superseded_only=True):
+                return
+
     async def _close_idle_host(self, slot: _HostSlot) -> None:
+        await self._try_close_idle_host(slot)
+
+    async def _try_close_idle_host(self, slot: _HostSlot, *, superseded_only: bool = False) -> bool:
+        """Return whether a pre-EOF busy response left an unowned Host available for retry."""
         async with self._lock:
             if (
                 self._hosts.get(slot.key) is not slot
                 or slot.owners
                 or self._closed
                 or slot.state is HostState.STARTING
+                or (superseded_only and slot.key == self._execution_key)
             ):
-                return
+                return False
             closing = self._stop_task(slot, safe=True)
         try:
             await asyncio.shield(closing)
@@ -1327,6 +1412,13 @@ class CodexHostPool:
                     slot.state = HostState.READY
                     slot.closing = None
                     self._wake(slot.role)
+                return (
+                    self._hosts.get(slot.key) is slot
+                    and slot.state is HostState.READY
+                    and not slot.owners
+                    and not self._closed
+                )
+        return False
 
     async def _release(
         self,
@@ -1591,7 +1683,7 @@ class CodexHostPool:
             ):
                 raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
             self._execution_key = None
-            self._execution_configuration.clear()
+            self._execution_configuration = {}
             self._execution_catalog = None
             self._execution_authority = self._digest(scope)
             self._readiness_cache.clear()
@@ -1611,7 +1703,7 @@ class CodexHostPool:
             ):
                 raise AppServerError(RESOURCE_HOST_BUSY, safe_error=RESOURCE_HOST_BUSY)
             self._execution_key = None
-            self._execution_configuration.clear()
+            self._execution_configuration = {}
             self._execution_catalog = None
             self._readiness_cache.clear()
 
@@ -1649,6 +1741,9 @@ class CodexHostPool:
     async def _shutdown(self) -> None:
         async with self._lock:
             self._closed = True
+            reclaiming = tuple(
+                slot.reclaiming for slot in self._hosts.values() if slot.reclaiming is not None
+            )
             for reservation in self._reservations.values():
                 if reservation.state in PENDING_RESOURCE_STATES:
                     self._finish(reservation, ResourceState.CANCELLED, RESOURCE_CANCELLED)
@@ -1674,6 +1769,9 @@ class CodexHostPool:
         outcomes = await asyncio.gather(
             *(asyncio.shield(task) for task in closing), return_exceptions=True
         )
+        for task in reclaiming:
+            task.cancel()
+        await asyncio.gather(*reclaiming, return_exceptions=True)
         errors = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
         if errors:
             raise BaseExceptionGroup(CODEX_POOL_CLOSE_ERROR, errors)

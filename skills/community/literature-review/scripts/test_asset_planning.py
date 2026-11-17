@@ -15,7 +15,7 @@ from task_contract import configure,atomic_json,validate_request,read_request
 from task_input import task_input
 from outlining import build_prompt
 from validate_outline import derive_from_task
-from task_fixtures import planned_outline
+from task_fixtures import planned_outline, outline_context
 from writing_contract import approval_snapshot,require_approval
 from operator_cli import configure_outline
 from asset_plan import derive,reference_issues,table_columns
@@ -147,7 +147,7 @@ class AssetCountTransferTest(unittest.TestCase):
             task = task_input(ws)
             request = read_request(ws)
             messages, _ = build_prompt(task, request, {'papers': []}, 'markdown')
-            context = json.loads(messages[1]['content'])
+            context = outline_context(messages)
             self.assertEqual(context['task']['constraints'], task['constraints'])
             limits, _ = derive_from_task(ws)
             self.assertEqual((limits['min_figures'], limits['max_figures']), (2, 2))
