@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -95,9 +96,11 @@ class RetirementContracts(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "Darwin registry identity")
     def test_darwin_identity_check_preserves_sqlite_write_lock(self):
         with directory("ss-registry-") as root:
-            path = root / "registry.sqlite"
+            coordinator = root / REGISTRY_DIRECTORY
+            coordinator.mkdir(mode=0o700)
+            path = coordinator / "registry.sqlite"
             native = DarwinDirectoryNative()
-            pin = native.pin(str(root), False)
+            pin = native.pin(str(coordinator), False)
             probe = """
 import sqlite3, sys
 from contextlib import closing
@@ -129,6 +132,32 @@ with closing(sqlite3.connect(sys.argv[1], timeout=0)) as db:
                     self.assertTrue(identity.startswith("darwin:"))
                     self.assertEqual(competing_writer(), "busy")
                     self.assertEqual(native.persistent_file_identity_at(pin, path.name), identity)
+                    self.assertEqual(competing_writer(), "busy")
+                    subprocess.run(["chmod", "+a", "everyone allow write", path], check=True)
+                    with self.assertRaises(LeaseError) as rejected:
+                        native.persistent_file_identity_at(pin, path.name)
+                    self.assertEqual(rejected.exception.code, "ERR_LEASE_PERMISSION")
+                    subprocess.run(["chmod", "-N", path], check=True)
+                    username = subprocess.check_output(["id", "-un"], text=True).strip()
+                    subprocess.run(
+                        ["chmod", "+a", f"user:{username} allow write", path], check=True
+                    )
+                    # The directory fits in PATH_MAX, but the full SQLite path does not.
+                    parent = root
+                    while len(os.fsencode(parent)) < 790:
+                        parent /= "a" * 180
+                    parent.mkdir(mode=0o700, parents=True)
+                    moved = parent / ("b" * (1015 - len(os.fsencode(parent)) - 1))
+                    coordinator.rename(moved)
+                    try:
+                        self.assertEqual(
+                            native.persistent_file_identity_at(pin, path.name, legacy), identity
+                        )
+                        self.assertEqual(
+                            native.persistent_file_identity_at(pin, path.name), identity
+                        )
+                    finally:
+                        moved.rename(coordinator)
                     self.assertEqual(competing_writer(), "busy")
                     db.rollback()
                     self.assertEqual(competing_writer(), "acquired")
