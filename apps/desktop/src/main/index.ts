@@ -297,6 +297,7 @@ import {
   startupFailureTitle,
   storageFailureMessage,
 } from './localization'
+import { detectRendererLanguage } from './locale'
 import { backendFailureMessage, updateInstallFailure, type BackendFailure } from './failure'
 import { resolveStartupBudgetMs } from './startupmarker'
 import {
@@ -5576,10 +5577,14 @@ function relaunchRepairedUpdate(result: Awaited<ReturnType<typeof repairInstalle
   app.exit(0)
 }
 
+async function applyStartupRepairLanguage(): Promise<void> {
+  await app.whenReady()
+  await applyMainLanguage(detectRendererLanguage())
+}
+
 async function offerStartupRepair(): Promise<boolean> {
   if (!app.isPackaged || process.platform !== MACOS_PLATFORM || headless) return false
-  await app.whenReady()
-  await applyMainLanguage(DEFAULT_LANGUAGE)
+  await applyStartupRepairLanguage()
   const t = mainLocalization().getFixedT(null, 'native')
   const answer = await dialog.showMessageBox({
     type: 'warning',
@@ -5605,7 +5610,7 @@ async function startDesktop(): Promise<void> {
       updateRepairTarget(process.argv, process.platform, app.isPackaged)
     )
       throw new Error('ERR_UPDATE_REPAIR_ARGUMENT')
-    await applyMainLanguage(DEFAULT_LANGUAGE)
+    await applyStartupRepairLanguage()
     if (
       !(await runRepairWizard(repairBaseScope(), repairRuntime(), relaunchRepairedUpdate, pushLog))
     )

@@ -5,14 +5,18 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { squirrelLaunchSuperseded, settleSquirrelStartup } from './squirrelstartup.ts'
 import { updateRepairMode, updateRepairTarget } from './repair.ts'
+import { detectPreferenceLanguage } from '../locale.ts'
 
 const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('index.ts', source, ts.ScriptTarget.Latest, true)
-const entry = parsed.statements
-  .find(
-    (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'startDesktop'
-  )!
-  .getText(parsed)
+function declaration(name: string): string {
+  return (
+    parsed.statements
+      .find((statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name)
+      ?.getText(parsed) ?? ''
+  )
+}
+const entry = declaration('startDesktop')
 const terminal = parsed.statements
   .find(
     (statement) =>
@@ -20,6 +24,71 @@ const terminal = parsed.statements
       statement.getText(parsed).startsWith('void startDesktop().catch')
   )!
   .getText(parsed)
+
+for (const entrypoint of ['startDesktop', 'offerStartupRepair']) {
+  test(`${entrypoint} uses the preferred system language before entering the repair wizard`, async () => {
+    for (const [languages, expected] of [
+      [['en-US', 'zh-Hans'], 'en'],
+      [['zh-Hans', 'en-US'], 'zh'],
+    ] as const) {
+      const actions: string[] = []
+      const scope = {
+        app: {
+          isPackaged: true,
+          whenReady: async () => {
+            actions.push('ready')
+          },
+        },
+        process: { platform: 'darwin', argv: ['--repair-update'] },
+        MACOS_PLATFORM: 'darwin',
+        UPDATE_REPAIR_WIZARD_ARGUMENT: '--repair-update',
+        updateRepairTarget,
+        headless: false,
+        DEFAULT_LANGUAGE: 'zh',
+        detectRendererLanguage: () => {
+          actions.push('detect')
+          return detectPreferenceLanguage({ languages, timeZone: 'Asia/Shanghai' })
+        },
+        applyMainLanguage: async (language: string) => {
+          actions.push(language)
+        },
+        mainLocalization: () => ({ getFixedT: () => (key: string) => key }),
+        dialog: {
+          showMessageBox: async () => {
+            actions.push('offer')
+            return { response: 0 }
+          },
+        },
+        repairBaseScope: () => ({}),
+        repairRuntime: () => ({}),
+        relaunchRepairedUpdate: () => undefined,
+        pushLog: () => undefined,
+        runRepairWizard: async () => {
+          actions.push('wizard')
+          return true
+        },
+      }
+      await runInNewContext(
+        ts.transpileModule(
+          [
+            declaration('applyStartupRepairLanguage'),
+            declaration(entrypoint),
+            `${entrypoint}()`,
+          ].join('\n'),
+          { compilerOptions: { target: ts.ScriptTarget.ES2022 } }
+        ).outputText,
+        scope
+      )
+      assert.deepEqual(actions, [
+        'ready',
+        'detect',
+        expected,
+        ...(entrypoint === 'offerStartupRepair' ? ['offer'] : []),
+        'wizard',
+      ])
+    }
+  })
+}
 
 async function launch(
   options: {
