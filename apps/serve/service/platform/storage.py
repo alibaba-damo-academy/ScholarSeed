@@ -1819,6 +1819,9 @@ class _DarwinSecurity:
         stat_function.argtypes = [integer, ctypes.POINTER(_DarwinStat), pointer]
         stat_function.restype = integer
         self.stat = stat_function
+        self.lstat = getattr(self.lib, "lstatx_np" + suffix)
+        self.lstat.argtypes = [ctypes.c_char_p, ctypes.POINTER(_DarwinStat), pointer]
+        self.lstat.restype = integer
         mount_function = getattr(self.lib, "fstatfs" + suffix)
         mount_function.argtypes = [integer, ctypes.POINTER(_DarwinMount)]
         mount_function.restype = integer
@@ -1891,13 +1894,14 @@ class _DarwinSecurity:
                 ):
                     raise LeaseError("ERR_LEASE_PERMISSION")
 
-    def persistent_identity(self, descriptor: int) -> str:
+    def persistent_identity(self, descriptor: int, info: _DarwinStat | None = None) -> str:
         # attrlist: five attribute groups, with volume info and UUID requested.
         attributes = (ctypes.c_uint32 * 6)(5, 0, 0x80040000, 0, 0, 0)
         volume = ctypes.create_string_buffer(20)
-        info = _DarwinStat()
         self._check(self.lib.fgetattrlist(descriptor, attributes, volume, ctypes.sizeof(volume), 0))
-        self._check(self.stat(descriptor, ctypes.byref(info), None))
+        if info is None:
+            info = _DarwinStat()
+            self._check(self.stat(descriptor, ctypes.byref(info), None))
         length = ctypes.c_uint32.from_buffer(volume).value
         uuid = volume.raw[4:]
         seconds, nanoseconds = info.birthtime
@@ -1911,9 +1915,9 @@ class _DarwinSecurity:
             raise LeaseError("ERR_LEASE_UNSUPPORTED")
         return f"darwin:{uuid.hex()}:{info.st_ino:016x}:{seconds:016x}:{nanoseconds:08x}"
 
-    def validate(
-        self, descriptor: int, ancestor: bool, role: DirectoryRole = DirectoryRole.PRIVATE
-    ) -> _PosixMetadata:
+    def _validated_stat(
+        self, descriptor: int, ancestor: bool, role: DirectoryRole, path: bytes | None = None
+    ) -> _DarwinStat:
         volume = _DarwinMount()
         self._check(self.mount(descriptor, ctypes.byref(volume)))
         if not volume.flags & _DARWIN_MNT_LOCAL:
@@ -1923,7 +1927,10 @@ class _DarwinSecurity:
             raise LeaseError("ERR_LEASE_ALLOCATION")
         info, acl, present = _DarwinStat(), ctypes.c_void_p(), ctypes.c_int()
         try:
-            self._check(self.stat(descriptor, ctypes.byref(info), security))
+            if path is None:
+                self._check(self.stat(descriptor, ctypes.byref(info), security))
+            else:
+                self._check(self.lstat(path, ctypes.byref(info), security))
             self._check(
                 self.lib.filesec_query_property(
                     security, _DARWIN_FILESEC_ACL, ctypes.byref(present)
@@ -1944,20 +1951,49 @@ class _DarwinSecurity:
                 if not acl:
                     raise LeaseError("ERR_LEASE_PERMISSION")
                 self._acl(acl)
-            return _PosixMetadata(
-                info.st_dev,
-                info.st_ino,
-                info.st_mode,
-                info.st_nlink,
-                info.st_uid,
-                info.st_gid,
-                info.st_size,
-                info.mtime[0] * _NANOSECONDS + info.mtime[1],
-                info.ctime[0] * _NANOSECONDS + info.ctime[1],
-            )
+            return info
         finally:
             if acl:
                 self.lib.acl_free(acl)
+
+    def validate(
+        self, descriptor: int, ancestor: bool, role: DirectoryRole = DirectoryRole.PRIVATE
+    ) -> _PosixMetadata:
+        info = self._validated_stat(descriptor, ancestor, role)
+        return _PosixMetadata(
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_nlink,
+            info.st_uid,
+            info.st_gid,
+            info.st_size,
+            info.mtime[0] * _NANOSECONDS + info.mtime[1],
+            info.ctime[0] * _NANOSECONDS + info.ctime[1],
+        )
+
+    def persistent_identity_at(
+        self, parent: int, name: str, path: bytes, expected: str | None
+    ) -> str:
+        # A raw close on the SQLite inode would release this process's POSIX locks.
+        info = self._validated_stat(parent, False, DirectoryRole.PRIVATE, path)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISREG(named.st_mode) or named.st_nlink != 1:
+            raise LeaseError("ERR_LEASE_FILE")
+        if (
+            named.st_dev != os.fstat(parent).st_dev
+            or named.st_dev != info.st_dev
+            or named.st_ino != info.st_ino
+            or named.st_mode != info.st_mode
+            or named.st_nlink != info.st_nlink
+            or (expected is not None and _lease_identity(named) != expected)
+        ):
+            raise LeaseError("ERR_LEASE_CHANGED")
+        if not os.access(
+            name, os.R_OK | os.W_OK, dir_fd=parent, effective_ids=True, follow_symlinks=False
+        ):
+            raise LeaseError("ERR_LEASE_NATIVE", errno.EACCES)
+        return self.persistent_identity(parent, info)
 
 
 @dataclass(eq=False)
@@ -1980,7 +2016,7 @@ class _LeaseLock:
     parent: _LeasePin
 
 
-def _lease_identity(info: _PosixMetadata) -> str:
+def _lease_identity(info: _PosixMetadata | os.stat_result) -> str:
     return f"posix:{info.st_dev & ((1 << 64) - 1):016x}:{info.st_ino:016x}"
 
 
@@ -2613,12 +2649,9 @@ class DarwinDirectoryNative(_PosixDirectoryNative):
     ) -> str:
         with self._operation():
             parent = self._pin(pin)
-            descriptor = self._file(parent, name, os.O_RDWR)
-            with self._temporary([descriptor]):
-                info = self._regular(descriptor)
-                if expected is not None and _lease_identity(info) != expected:
-                    raise LeaseError("ERR_LEASE_CHANGED")
-                return self._darwin_security.persistent_identity(descriptor)
+            self._name(name)
+            path = os.fsencode(os.path.join(self._descriptor_path(parent.leaf), name))
+            return self._darwin_security.persistent_identity_at(parent.leaf, name, path, expected)
 
     def publish_registry_binding(self, pin: object, name: str, data: bytes) -> None:
         """Publish under the registry write transaction shared with Desktop."""

@@ -426,40 +426,38 @@ static napi_value file_identity_at(napi_env env, napi_callback_info info) {
   void *data = NULL;
   if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok || (argc != 2 && argc != 3))
     return fail(env, "ERR_LEASE_ARGUMENT", 0);
-  bool persistent = argc == 3;
-  char *expected = NULL;
   struct lease *parent = lookup(env, data, argv[0]);
   if (!parent) return NULL;
   if (parent->state != LEASE_HELD || !parent->directory) return fail(env, "ERR_LEASE_ARGUMENT", 0);
   char *name = text_argument(env, argv[1], 128);
   if (!name) return NULL;
-  if (persistent) {
+  struct directory_error error = {0};
+  char identity[DIRECTORY_IDENTITY_BYTES];
+  bool observed;
+  if (argc == 3) {
 #ifdef _WIN32
     free(name);
     return fail(env, "ERR_LEASE_UNSUPPORTED", 0);
 #else
+    char *expected = NULL;
     napi_valuetype type;
     if (napi_typeof(env, argv[2], &type) != napi_ok ||
         (type != napi_null && !(expected = text_argument(env, argv[2], 128)))) {
       free(name);
       return NULL;
     }
+    observed = directory_persistent_file_identity_at(parent->directory, name, expected, identity, &error);
+    free(expected);
+    free(name);
 #endif
-  }
-  struct directory_error error = {0};
-  file_handle file = directory_bound_file(parent->directory, name, expected, &error);
-  free(expected);
-  free(name);
-  if (file == INVALID_FILE) return fail_directory(env, &error);
-  char identity[DIRECTORY_IDENTITY_BYTES];
-  bool observed;
-#ifndef _WIN32
-  if (persistent) observed = directory_persistent_file_identity(file, identity, &error);
-  else
-#endif
+  } else {
+    file_handle file = directory_bound_file(parent->directory, name, NULL, &error);
+    free(name);
+    if (file == INVALID_FILE) return fail_directory(env, &error);
     observed = directory_file_identity(file, identity, &error);
-  uint32_t closed = close_file(file);
-  if (closed) return fail(env, "ERR_LEASE_RELEASE", closed);
+    uint32_t closed = close_file(file);
+    if (closed) return fail(env, "ERR_LEASE_RELEASE", closed);
+  }
   if (!observed) return fail_directory(env, &error);
   if (napi_create_string_utf8(env, identity, NAPI_AUTO_LENGTH, &result) != napi_ok)
     return fail(env, "ERR_LEASE_NATIVE", 0);
