@@ -1,4 +1,4 @@
-from task_fixtures import prepare_planned, planned_outline, plan_table, set_planned_assets
+from task_fixtures import prepare_planned, planned_outline, plan_table, set_planned_assets, outline_context
 """Offline behavioral regression: transport, requirements, artifacts and reuse."""
 import asyncio
 import copy
@@ -43,7 +43,7 @@ class FakeModel:
 
 
 class EvidenceTest(unittest.TestCase):
-    def test_outline_preserves_bibliographic_authors_without_numeric_id_exposure(self):
+    def test_outline_keeps_authors_local_without_numeric_id_exposure(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             configure(workspace, {'intent': 'Compare the supplied papers', 'output_scope': 'section'})
@@ -57,7 +57,7 @@ class EvidenceTest(unittest.TestCase):
             evidence = e.read(result['artifacts'][0])
             self.assertEqual(evidence['papers'][0]['authors'], paper['authors'])
             messages, adapter = build_prompt(task_input(workspace), read_request(workspace), evidence, 'markdown')
-            self.assertIn('Actual Author', messages[1]['content'])
+            self.assertNotIn('Actual Author', messages[1]['content'])
             self.assertIn('[[paper:P01]]', messages[1]['content'])
             self.assertNotIn('987654321', messages[1]['content'])
             self.assertEqual(adapter['papers']['P01']['paper_id'], '987654321')
@@ -157,7 +157,7 @@ class ScriptedTest(unittest.TestCase):
         client=FakeModel(e.read(self.ws/'04_outline/outline.json'))
         (self.ws/'04_outline/outline.json').unlink()  # This tests initial generation, not a revision.
         asyncio.run(g.generate(self.ws,'outline',cfg=CONFIG,client=client))
-        payload=json.loads(client.calls[0][1]['content'])
+        payload=outline_context(client.calls[0])
         self.assertIn('An optional detail',payload['evidence'])
 
     def test_sent_outline_example_has_valid_distinct_node_shapes(self):

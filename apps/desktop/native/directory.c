@@ -62,10 +62,9 @@ static void failure(struct directory_error *error, const char *code, uint32_t sy
 }
 
 #ifndef _WIN32
-bool directory_persistent_identity(struct directory *directory,
-                                   char identity[DIRECTORY_IDENTITY_BYTES],
-                                   struct directory_error *error) {
-  int descriptor = directory->handles[directory->count - 1];
+bool directory_persistent_file_identity(file_handle descriptor,
+                                        char identity[DIRECTORY_IDENTITY_BYTES],
+                                        struct directory_error *error) {
   struct attrlist attributes = { .bitmapcount = ATTR_BIT_MAP_COUNT,
     .volattr = ATTR_VOL_INFO | ATTR_VOL_UUID };
   struct { uint32_t length; uuid_t uuid; } volume = {0};
@@ -90,6 +89,13 @@ bool directory_persistent_identity(struct directory *directory,
            uuid, (uint64_t)info.st_ino, (uint64_t)info.st_birthtimespec.tv_sec,
            (uint32_t)info.st_birthtimespec.tv_nsec);
   return true;
+}
+
+bool directory_persistent_identity(struct directory *directory,
+                                   char identity[DIRECTORY_IDENTITY_BYTES],
+                                   struct directory_error *error) {
+  return directory_persistent_file_identity(directory->handles[directory->count - 1],
+                                            identity, error);
 }
 #endif
 

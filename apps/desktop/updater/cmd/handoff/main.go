@@ -67,7 +67,7 @@ func main() {
 	}
 	if err != nil {
 		if sandboxRequested {
-			_ = json.NewEncoder(os.Stdout).Encode(handoff.SandboxDiagnostic(err))
+			handoff.WriteSandboxDiagnostic(os.Stdout, os.Stderr, err)
 			os.Exit(handoff.SandboxExitCode(err))
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(handoff.Event{Event: "error", Message: err.Error()})

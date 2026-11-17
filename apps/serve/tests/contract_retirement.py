@@ -8,6 +8,7 @@ import sys
 import unittest
 from contextlib import closing
 
+from service.platform.domains import DomainBusyError, Domains
 from service.platform.registry import (
     LEGACY_DIRECTORY,
     REGISTRY_DIRECTORY,
@@ -66,6 +67,141 @@ native.release(pin)
 
 
 class RetirementContracts(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin mount identity")
+    def test_legacy_mutation_bucket_still_blocks_after_device_drift(self):
+        with directory("ss-mutation-drift-") as root:
+            coordinator = root / REGISTRY_DIRECTORY
+            data = root / "data"
+            coordinator.mkdir()
+            data.mkdir()
+            native = DarwinDirectoryNative()
+            writer = Domains(native, str(coordinator), (str(data),))
+            try:
+                writer.occupy()
+                bucket = (
+                    coordinator
+                    / "mutations-v1"
+                    / f"posix-0000000000000000-{data.stat().st_ino:016x}"
+                    / "self"
+                )
+                bucket.mkdir(parents=True)
+                (bucket / "interrupted").write_bytes(b"unfinished")
+                with self.assertRaisesRegex(DomainBusyError, "unfinished mutation"):
+                    writer.check_writable()
+                self.assertEqual((bucket / "interrupted").read_bytes(), b"unfinished")
+            finally:
+                writer.close()
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin registry identity")
+    def test_darwin_resumes_after_failure_between_range_commit_and_publication(self):
+        with directory("ss-registry-") as root:
+            coordinator = root / REGISTRY_DIRECTORY
+            script = """
+import os, sys
+from pathlib import Path
+from service.platform.registry import RegistryNative
+from service.platform.storage import DarwinDirectoryNative
+root = Path(sys.argv[1])
+def interrupted(source, target):
+    assert source.name == "ranges.pending"
+    os._exit(23)
+Path.rename = interrupted
+registry = RegistryNative(DarwinDirectoryNative(), root)
+registry.acquire_at(registry.pin(str(root), True), sys.argv[2], False)
+"""
+            interrupted = subprocess.run(
+                [sys.executable, "-c", script, str(coordinator), _SLOT_NAME], check=False
+            )
+            self.assertEqual(interrupted.returncode, 23)
+            pending = coordinator / "ranges.pending"
+            inode = pending.stat().st_ino
+            self.assertTrue((coordinator / "registry.binding").read_bytes().startswith(b"darwin:"))
+            self.assertFalse((coordinator / "ranges").exists())
+            with closing(sqlite3.connect(coordinator / "registry.sqlite")) as db:
+                self.assertTrue(
+                    db.execute("SELECT identity FROM binding")
+                    .fetchone()[0]
+                    .startswith("flock:darwin:")
+                )
+            registry = RegistryNative(DarwinDirectoryNative(), coordinator)
+            pin = registry.pin(str(coordinator), False)
+            try:
+                registry.release(registry.acquire_at(pin, _SLOT_NAME, False))
+                self.assertEqual((coordinator / "ranges").stat().st_ino, inode)
+                self.assertFalse(pending.exists())
+            finally:
+                registry.release(pin)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin registry identity")
+    def test_darwin_migration_refuses_drift_before_publishing_stable_pair(self):
+        with directory("ss-registry-") as root:
+            coordinator = root / REGISTRY_DIRECTORY
+            native = DarwinDirectoryNative()
+            registry = RegistryNative(native, coordinator)
+            pin = registry.pin(str(coordinator), True)
+            try:
+                registry.release(registry.acquire_at(pin, _SLOT_NAME, False))
+            finally:
+                registry.release(pin)
+            stable = coordinator / "registry.darwin-v1"
+            old = coordinator / "registry.binding"
+
+            def legacy_identity(name):
+                info = (coordinator / name).stat()
+                return f"posix:{info.st_dev:016x}:{info.st_ino:016x}"
+
+            old_bytes = legacy_identity("registry.sqlite").encode("ascii")
+            with closing(sqlite3.connect(coordinator / "registry.sqlite")) as db, db:
+                db.execute(
+                    "UPDATE binding SET identity = ?", ("flock:" + legacy_identity("ranges"),)
+                )
+            drifted = b"posix:0000000000000000:" + old_bytes.split(b":")[-1]
+            old.write_bytes(drifted)
+            pin = registry.pin(str(coordinator), False)
+            try:
+                with self.assertRaises(LeaseError) as rejected:
+                    registry.acquire_at(pin, _SLOT_NAME, False)
+                self.assertEqual(rejected.exception.code, "ERR_LEASE_CHANGED")
+                self.assertFalse(stable.exists())
+                self.assertEqual(old.read_bytes(), drifted)
+                old.write_bytes(old_bytes)
+                registry.release(registry.acquire_at(pin, _SLOT_NAME, False))
+                stable_bytes = stable.read_bytes()
+            finally:
+                registry.release(pin)
+
+            # A new process would see a new mount number in both legacy records.
+            old.write_bytes(drifted)
+            with closing(sqlite3.connect(coordinator / "registry.sqlite")) as db, db:
+                db.execute(
+                    "UPDATE binding SET identity = 'flock:posix:0000000000000000:'"
+                    " || substr(identity, -16)"
+                )
+                db.execute("INSERT INTO slots VALUES ('retained', 18)")
+                db.execute("INSERT INTO slot_references VALUES ('retained', 'fixture')")
+            (coordinator / "slot-17").touch()
+            (coordinator / "slot-18").touch()
+            (coordinator / "slot-19").write_bytes(b"nonempty")
+            pin = registry.pin(str(coordinator), False)
+            held = native.acquire_at(pin, "slot-20", False)
+            try:
+                registry.release(registry.acquire_at(pin, _SLOT_NAME, False))
+                self.assertEqual(stable.read_bytes(), stable_bytes)
+                self.assertFalse((coordinator / "slot-17").exists())
+                for slot in (18, 19, 20):
+                    self.assertTrue((coordinator / f"slot-{slot}").exists())
+                with closing(sqlite3.connect(coordinator / "registry.sqlite")) as db:
+                    self.assertEqual(
+                        db.execute("SELECT * FROM slots").fetchall(), [("retained", 18)]
+                    )
+                    self.assertEqual(
+                        db.execute("SELECT * FROM slot_references").fetchall(),
+                        [("retained", "fixture")],
+                    )
+            finally:
+                native.release(held)
+                registry.release(pin)
+
     def test_inventory_accepts_only_empty_regular_legacy_policy_slots(self):
         for identity in (
             "posix-0000000000000001-0000000000000002",

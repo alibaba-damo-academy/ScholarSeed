@@ -12,6 +12,7 @@ import React, {
   useState,
 } from 'react'
 import {
+  Copy,
   EllipsisVertical,
   TextSelect,
   Maximize2,
@@ -987,7 +988,7 @@ export function AiPanel({
               <Tooltip content={t('panel.copyId')} side="bottom" portalled className="shrink-0">
                 <IconButton
                   data-testid="ai-copy-session-id"
-                  icon={<Icon name="copy" />}
+                  icon={<Copy strokeWidth={1.7} />}
                   label={t('panel.copyId')}
                   title={undefined}
                   onClick={() => void window.scholarseed.writeClipboard(thread.sessionId ?? '')}

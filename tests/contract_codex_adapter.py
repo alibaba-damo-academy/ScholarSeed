@@ -186,6 +186,7 @@ from scholarseed_runtime.contract.resource import (
     ResourceRequest,
     ResourceState,
 )
+from scholarseed_runtime.contract.session import RUNTIME_SUSPEND_BUSY
 from tests.contract_codex_capacity import ControlledHost
 
 PASS = 0
@@ -1867,7 +1868,7 @@ def test_host_catalog_preflight_receipts() -> None:
 
 def test_catalog_version_pins_granted_execution() -> None:
     async def scenario(home: Path) -> None:
-        pool = CodexHostPool()
+        pool = CodexHostPool(CapacityPolicy(execution_hosts=1))
         schema = ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA)
         entry = ModelCatalogEntry("qwen", schema)
         initial = ModelIntent(
@@ -2010,6 +2011,161 @@ def test_catalog_version_pins_granted_execution() -> None:
                 and not pool._catalog_candidates
                 and upgraded_lease.host.closed,
             )
+
+    with tempfile.TemporaryDirectory() as directory:
+        asyncio.run(scenario(Path(directory)))
+
+
+def test_catalog_expansion_preserves_the_previous_host_until_release() -> None:
+    async def scenario(home: Path) -> None:
+        pool = CodexHostPool()
+        schema = ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA)
+        existing = ModelCatalogEntry("qwen", schema)
+        initial = ModelIntent(
+            model_ref="qwen",
+            capabilities=schema,
+            catalog_models=(existing,),
+            transport=ModelTransport(mode=ModelConnectionMode.NATIVE),
+        )
+        expanded = replace(
+            initial,
+            model_ref="gpt",
+            catalog_models=(existing, ModelCatalogEntry("gpt", schema)),
+        )
+        request = CodexSessionOpenRequest(
+            "first",
+            "codex",
+            home,
+            executable="/runtime/codex",
+            process_sharing_scope="catalog-actor",
+            process_environment={codex_environment.CODEX_HOME_ENV: str(home)},
+        )
+        readiness = SimpleNamespace(
+            ready=True,
+            status=CodexRuntimeStatus.READY,
+            safe_error="",
+            executable=request.executable,
+            version="test",
+        )
+        with (
+            patch.object(pool, "probe_readiness", AsyncMock(return_value=readiness)),
+            patch.object(pool_module, "discover_codex_executable", return_value=request.executable),
+            patch.object(pool_module, "CodexProcessHost", ControlledHost),
+        ):
+            try:
+                first = await pool.model_catalog_argument(initial, request)
+                old = await pool.acquire(replace(request, launch_arguments=(first,)))
+                second = await pool.model_catalog_argument(expanded, request)
+                changed = replace(
+                    request,
+                    request_id="other-environment",
+                    launch_arguments=(second,),
+                    process_environment={**request.process_environment, "MODEL_SECRET": "changed"},
+                )
+                rejected = await pool.reserve(
+                    changed,
+                    role=HostRole.EXECUTION,
+                    request_id=changed.request_id,
+                    deadline=time() + TEST_WAIT_SECONDS,
+                )
+                check(
+                    "catalog expansion cannot bypass process environment compatibility",
+                    rejected.safe_error == RESOURCE_HOST_CONFIGURATION_CONFLICT,
+                )
+                with patch.object(ControlledHost, "start", AsyncMock(side_effect=OSError("start"))):
+                    try:
+                        await pool.acquire(
+                            replace(
+                                request, request_id="failed-expansion", launch_arguments=(second,)
+                            )
+                        )
+                    except AppServerError:
+                        check(
+                            "failed expansion keeps the previous Host and its catalog pinned",
+                            not old.host.closed
+                            and await pool.model_catalog_argument(initial, request) == first,
+                        )
+                    else:
+                        check("the additional Host startup failure must be returned", False)
+                async with asyncio.timeout(TEST_WAIT_SECONDS):
+                    while len(pool._hosts) != 1:
+                        await asyncio.sleep(0)
+                new = await pool.acquire(
+                    replace(request, request_id="expanded", launch_arguments=(second,))
+                )
+                check(
+                    "an additive catalog starts a second Host without closing the old owner",
+                    old.host_id != new.host_id and not old.host.closed and not new.host.closed,
+                )
+                check(
+                    "compatible requests select the expanded catalog after its Host is ready",
+                    await pool.model_catalog_argument(initial, request) == second,
+                )
+                third_intent = replace(
+                    expanded,
+                    model_ref="third",
+                    catalog_models=(*expanded.catalog_models, ModelCatalogEntry("third", schema)),
+                )
+                third = await pool.model_catalog_argument(third_intent, request)
+                rejected = await pool.reserve(
+                    replace(request, request_id="third", launch_arguments=(third,)),
+                    role=HostRole.EXECUTION,
+                    request_id="third",
+                    deadline=time() + TEST_WAIT_SECONDS,
+                )
+                check(
+                    "two overlapping catalog Hosts retain the bounded configuration fallback",
+                    rejected.safe_error == RESOURCE_HOST_CONFIGURATION_CONFLICT,
+                )
+                busy = AppServerError(RUNTIME_SUSPEND_BUSY, safe_error=RUNTIME_SUSPEND_BUSY)
+                old_host = old.host
+                old_host.close_error = busy
+                stop_idle = old_host.stop_idle
+
+                async def stop_idle_once_busy(generation: int) -> None:
+                    try:
+                        await stop_idle(generation)
+                    finally:
+                        old_host.close_error = None
+
+                old_slot = next(slot for slot in pool._hosts.values() if slot.host is old_host)
+                with patch.object(old_host, "stop_idle", side_effect=stop_idle_once_busy):
+                    await old.close()
+                    async with asyncio.timeout(TEST_WAIT_SECONDS):
+                        while old_slot.key in pool._hosts:
+                            await asyncio.sleep(0)
+                check(
+                    "superseded Host retries a pre-EOF busy response and releases capacity",
+                    old_host.closed and old_host.safe_close_calls == 2 and not new.host.closed,
+                )
+                newest = await pool.acquire(
+                    replace(request, request_id="third-after-reclaim", launch_arguments=(third,))
+                )
+                new_host = new.host
+                new_slot = next(slot for slot in pool._hosts.values() if slot.host is new_host)
+                new_host.close_error = busy
+                max_attempts = 1 + len(pool_module.SUPERSEDED_HOST_RETRY_DELAYS)
+                try:
+                    with patch.object(
+                        pool_module, "SUPERSEDED_HOST_RETRY_DELAYS", (0,) * (max_attempts - 1)
+                    ):
+                        await new.close()
+                        async with asyncio.timeout(TEST_WAIT_SECONDS):
+                            while new_slot.reclaiming is None:
+                                await asyncio.sleep(0)
+                            await asyncio.shield(new_slot.reclaiming)
+                    check(
+                        "persistently busy superseded Host stops retrying without forced close",
+                        new_host.safe_close_calls == new_host.close_calls == max_attempts
+                        and not new_host.closed
+                        and new_slot.key in pool._hosts
+                        and not newest.host.closed,
+                    )
+                finally:
+                    new_host.close_error = None
+                await newest.close()
+            finally:
+                await pool.aclose()
 
     with tempfile.TemporaryDirectory() as directory:
         asyncio.run(scenario(Path(directory)))
@@ -7058,6 +7214,7 @@ def main() -> int:
     test_catalog_http_preflight_boundaries()
     test_host_catalog_preflight_receipts()
     test_catalog_version_pins_granted_execution()
+    test_catalog_expansion_preserves_the_previous_host_until_release()
     test_catalog_cache_follows_native_connection_switches()
     test_child_thread_terminal_truth_and_authentication_classification()
     test_durable_thread_unsubscribes()

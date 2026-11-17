@@ -2,7 +2,6 @@ import React from 'react'
 import emptyImage from '../../assets/empty_img.webp'
 import { createFormatters } from '../../../../localization/format'
 import {
-  BookOpen,
   ArrowLeft,
   Package,
   Ellipsis,
@@ -234,7 +233,7 @@ function AddSkillButton({
           disabled={!onCreate}
           onSelect={onCreate}
         >
-          <BookOpen aria-hidden="true" />
+          <IconFont type="icon-shushen" />
           <span className="flex flex-col">
             <span>{t('createWithScholarSeed')}</span>
             <span className="text-[var(--vds-text-tertiary)] text-[length:var(--vds-font-caption)]">
@@ -645,7 +644,7 @@ export function Skills({ navigation }: { navigation?: React.ReactNode } = {}): R
         }
       />
       {tab === TAB_MARKETPLACE && (
-        <Button variant="tertiary" data-testid="skills-installed" onClick={() => setTab(TAB_HUB)}>
+        <Button variant="outline" data-testid="skills-installed" onClick={() => setTab(TAB_HUB)}>
           <Package aria-hidden="true" className="size-[var(--vds-icon-6)]" />
           {t('marketplace.installedShort')} {skills.length}
         </Button>
@@ -680,15 +679,11 @@ export function Skills({ navigation }: { navigation?: React.ReactNode } = {}): R
               value={tab}
               onValueChange={(value) => setTab(String(value))}
             >
-              <TabsList
-                aria-label={t('groups.label')}
-                className="!w-fit !justify-start !gap-[var(--vds-space-2)] !bg-transparent !p-0 [&>span]:hidden"
-              >
+              <TabsList aria-label={t('groups.label')} className="!w-fit">
                 {SKILL_TABS.map((group) => (
                   <TabsTrigger
                     key={group.id}
                     value={group.id}
-                    className="!rounded-[var(--vds-radius-3)] !font-[var(--vds-fw-regular)] !bg-[var(--vds-bg-gray-default-transparent)] data-[state=active]:!bg-[var(--vds-other-overlay-2)] !shadow-none"
                     data-testid={`skills-tab-${group.id}`}
                   >
                     {t(group.labelKey)}
@@ -924,7 +919,7 @@ export function Skills({ navigation }: { navigation?: React.ReactNode } = {}): R
                   visible.some((skill) => skill.group === group.id)
               ).map((group) => (
                 <section key={group.id} className="mt-[var(--vds-space-6)] first:mt-0">
-                  <div className="grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2 lg:grid-cols-3">
                     {visible
                       .filter((skill) => skill.group === group.id)
                       .map((skill) => {

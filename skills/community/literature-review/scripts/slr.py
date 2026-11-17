@@ -51,6 +51,7 @@ from workspace_binding import bind
 from figure_dependencies import wait_contexts
 from tracker import transition, STATES, PROTOCOLS, FLAT
 from preflight import CHECK_SCOPES, FULL_SCOPE
+from manuscript_publication import publication_source, deliverable_path
 from input_contracts import describe_init
 from local_papers import import_pdfs, load_local, budget as material_budget, validate_files
 from materials import import_materials
@@ -299,12 +300,20 @@ def _cmd_run(args, attempt=None) -> int:
     writes = stage.get("writes", [])
     spec_path = workspace / "04_outline/output_spec.json"
     if spec_path.exists() and json.loads(spec_path.read_text()).get("format") == "markdown":
-        writes = [re.sub(r"full_draft_v([123])\.tex$", r"full_draft_v\1.md", w)
-                  .replace("06_output/survey.pdf", "06_output/survey.md") for w in writes]
+        writes = [re.sub(r"full_draft_v([123])\.tex$", r"full_draft_v\1.md", artifact) for artifact in writes]
     if args.stage in ('verify_postcheck','generation_publish'):
-        from manuscript_publication import publication_source
-        if publication_source(workspace).suffix=='.md':
-            writes=[w.replace('06_output/survey.pdf','06_output/survey.md') for w in writes if w!='07_verifier/postcheck/pages/']
+        source=publication_source(workspace)
+        settings=_read_json_status(source.parent/'publication.json')
+        requested=(read_request(workspace).get('publication',{})
+                   if (workspace/'01_input/writing_request.json').exists() else {})
+        output_format=requested.get('format') or settings.get('format') or ('markdown' if source.suffix=='.md' else 'latex_pdf')
+        final=deliverable_path(workspace,source,output_format).relative_to(workspace).as_posix()
+        replacements={'06_output/survey.pdf':final,
+                      '06_output/survey.md':deliverable_path(workspace,source,'markdown').relative_to(workspace).as_posix()}
+        if source.suffix=='.md':
+            replacements['06_output/survey.tex']=replacements['06_output/survey.md']
+            writes=[artifact for artifact in writes if artifact!='07_verifier/postcheck/pages/']
+        writes=list(dict.fromkeys(replacements.get(artifact,artifact) for artifact in writes))
     produced = [w for w in writes if (workspace / w).exists()]
     missing = [w for w in writes if not (workspace / w).exists()]
     compile_result = {}

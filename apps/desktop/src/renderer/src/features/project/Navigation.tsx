@@ -530,7 +530,7 @@ export function ProjectNavigation(): React.JSX.Element {
           <section
             data-ob={PROJECT_GUIDE_ANCHORS.tasks}
             aria-labelledby="project-task-list"
-            className="flex min-h-0 flex-1 flex-col gap-[var(--vds-space-3)] px-[var(--vds-space-3)] py-[var(--vds-space-4)]"
+            className="flex min-h-0 flex-1 flex-col gap-[var(--vds-space-3)] px-[var(--vds-space-3)] pt-[var(--vds-space-4)]"
           >
             {pinFailed && <Alert tone="error" role="alert" description={t('saveFailed')} />}
             {changeFeedback && (
@@ -544,8 +544,9 @@ export function ProjectNavigation(): React.JSX.Element {
               )}
             <ScrollArea
               overlay
+              shadow="auto"
               data-scrolling={taskScrollbarVisible}
-              className="flex min-h-0 flex-1 flex-col -mr-[var(--vds-space-3)] data-[scrolling=false]:[&>[role=scrollbar]]:invisible"
+              className="flex min-h-0 flex-1 flex-col -mr-[var(--vds-space-3)] data-[scrolling=false]:[&>[role=scrollbar]]:invisible before:!-left-[var(--vds-space-3)] before:!h-0 before:![background:none] before:border-t before:border-[var(--vds-divider-default)] after:!-left-[var(--vds-space-3)] after:![background:linear-gradient(to_top,var(--vds-bg-gray-default),transparent)]"
               viewportClassName="min-h-0 flex-1 pr-[var(--vds-space-3)]"
               viewportProps={{ onScroll: taskScrollbar.scroll, 'aria-label': t('tasks') }}
             >

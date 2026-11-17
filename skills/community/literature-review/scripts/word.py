@@ -85,16 +85,20 @@ def inline(paragraph, tokens, root):
             raise ValueError('unsupported DOCX inline construct: ' + token.type)
 
 
+def parse(content):
+    parser = MarkdownIt('commonmark', {'html': True}).enable('table')
+    parser.inline.add_terminator_char('$')
+    parser.inline.ruler.before('escape', MATH_TOKEN, math_inline)
+    return parser.parse(content)
+
+
 def export(content, root, destination, language='english'):
     document = Document()
     normal = document.styles['Normal']
     normal.font.name = 'Times New Roman'
     normal.font.size = Pt(BODY_POINTS)
     normal.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), 'SimSun')
-    parser = MarkdownIt('commonmark', {'html': True}).enable('table')
-    parser.inline.add_terminator_char('$')
-    parser.inline.ruler.before('escape', MATH_TOKEN, math_inline)
-    tokens = parser.parse(content)
+    tokens = parse(content)
     paragraph = None
     list_styles = []
     table = None

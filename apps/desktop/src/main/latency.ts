@@ -11,8 +11,8 @@ const owners = new WeakMap<WebRequest, () => void>()
 type PendingRequest = {
   identifier: string
   startedAt: number
-  previousWriteMs?: number
-  previousWriteEvent?: string
+  previousEnqueueMs?: number
+  previousEnqueueEvent?: string
   responseAt?: number
   responseTimestampMs?: number
 }
@@ -48,8 +48,8 @@ export function installNetworkDiagnostics(
           timestamp_ms: Date.now(),
           elapsed_ms: performance.now() - request.startedAt,
           status,
-          diagnostic_previous_write_ms: request.previousWriteMs ?? null,
-          diagnostic_previous_write_event: request.previousWriteEvent ?? null,
+          diagnostic_previous_enqueue_ms: request.previousEnqueueMs ?? null,
+          diagnostic_previous_enqueue_event: request.previousEnqueueEvent ?? null,
           response_started_timestamp_ms: request.responseTimestampMs ?? null,
           response_started_elapsed_ms:
             request.responseAt !== undefined ? request.responseAt - request.startedAt : null,
@@ -62,8 +62,8 @@ export function installNetworkDiagnostics(
       )
     } catch {
     } finally {
-      request.previousWriteMs = performance.now() - writingAt
-      request.previousWriteEvent = event
+      request.previousEnqueueMs = performance.now() - writingAt
+      request.previousEnqueueEvent = event
     }
   }
   const sent = (details: OnSendHeadersListenerDetails): void => {

@@ -11,6 +11,9 @@ from generation_errors import GenerationError, diagnostic
 from chapter_plan import compile_plan, cards_plain, TERMINAL
 from asset_plan import derive
 from manuscript_delta import apply_delta, REFINE_GUIDANCE
+from repetition import repetition_notes
+from precheck import (precheck, diagnostic_notes, source_hash, TIMEOUT_SECONDS, PARTIAL, TIMEOUT,
+                      UNAVAILABLE, SOURCE_PRECHECK_REPORT, SOURCE_PRECHECK_NOTES, SOURCE_PRECHECK_TIMEOUT_KEY)
 from writing_contract import digest
 from figure_caption import CAPTION_CONTENT_GUIDANCE
 from native_document import assemble, extension, figure_files, chapter_frame, complete_chapter
@@ -140,9 +143,10 @@ TABLE_REPAIR_GUIDANCE = r'''TABLE LAYOUT REPAIR
 Deterministic preflight found problems only in the tables listed in
 table_layout_warnings. Repair every reported problem while preserving each
 affected table's scientific meaning, label, citations, units,
-qualifications, rows and comparison dimensions. Modify only the listed tables;
-tables not listed must not be redesigned for layout. Asset-contract warnings are
-a separate repair scope; caption wording may change to remove self-numbering.
+qualifications, rows and comparison dimensions. Restrict table-layout changes
+to the listed tables; continue the document-wide prose refinement above.
+Asset-contract warnings are a separate repair scope; caption wording may change
+to remove self-numbering.
 
 Make each affected table width-bounded by \linewidth and fit its height to a page
 or use a standalone multipage longtable with repeated headers. Preserve the
@@ -405,7 +409,6 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         else:
             packet={'sources':sources,'output_format':spec['format'],
                     'task':packets[0]['task'],'confirmed_outline':read(gen/'_internal/manuscript_outline.json')['outline'],
-                    'evidence':contract['evidence'],
                     'resolved_section_languages':contract.get('resolved_section_languages',{})}
         planned_tables=[];seen_tables=set()
         for chapter_packet in packets:
@@ -416,12 +419,13 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
                       if suffix=='tex' else {'status':'SUCCESS','tables_checked':0,'issues':[]})
         save(gen/'_status/table_layout_precheck.json',table_report)
         request_packet=dict(packet);request_packet.pop('table_layout_warnings',None)
+        request_packet.pop('evidence',None)
         request_packet['output_format']='markdown' if suffix=='md' else 'latex_pdf'
         request_packet['resolved_section_languages']=contract.get('resolved_section_languages',{})
         asset_plan = derive(request_packet['confirmed_outline'])
-        asset_report = inspect_native_assets(sources, asset_plan, spec['format'])
+        asset_report = inspect_native_assets(sources, asset_plan, request_packet['output_format'])
         chapters = {p['chapter_ids'][0]: (gen/'chapters'/f"{p['chapter_ids'][0]}.{suffix}").read_text() for p in packets}
-        chapter_warnings = inspect_chapter_figures(chapters, spec['format'])
+        chapter_warnings = inspect_chapter_figures(chapters, request_packet['output_format'])
         asset_report['issues'].extend(chapter_warnings)
         asset_report['status'] = 'WARNING' if asset_report['issues'] else 'SUCCESS'
         save(gen/'_status/asset_contract_precheck.json', asset_report)
@@ -441,7 +445,7 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
                 {'section_id':p['chapter_ids'][0],'output_language':p['output_language'],
                  'local_instructions':p.get('local_instructions',{})}
                 for p in packets if p.get('chapter_kind')=='abstract']
-            refine_guidance += '\n' + ABSTRACT_GUIDANCE + '\n' + ABSTRACT_REPAIR_GUIDANCE
+            refine_guidance += '\n' + ABSTRACT_REPAIR_GUIDANCE
         if abstract_report['issues']:
             request_packet['abstract_warnings']=abstract_report['issues']
         if table_report['issues']:
@@ -461,10 +465,36 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
                 request_packet['publication_requirements'] = (
                     LATEX_AUTHORING_GUIDANCE + '\nEnsure the complete document uses these template facilities and repair inconsistent mathematical notation and dependencies.'
                 )
+        source_check=None;source_notes=''
+        if suffix=='md':
+            check_path=gen/SOURCE_PRECHECK_REPORT
+            if packet_path.exists():
+                if not check_path.is_file():
+                    raise GenerationError('REFINEMENT_INPUT_CHANGED','Saved refinement has no source precheck; use a fresh workspace without overwriting this task')
+                source_check=read(check_path)
+            else:
+                source_check=await asyncio.to_thread(
+                    precheck,ws,v1,spec['format'],contract.get('language','english'),
+                    timeout_seconds=refine_cfg.get(SOURCE_PRECHECK_TIMEOUT_KEY,TIMEOUT_SECONDS))
+                save(check_path,source_check)
+            if (source_check.get('source_sha256')!=source_hash(v1)
+                    or source_check.get('requested_format')!=spec['format']
+                    or v1.read_text()!=sources['main']):
+                raise GenerationError('REFINEMENT_INPUT_CHANGED','Source precheck does not match the frozen manuscript and delivery format; nothing overwritten')
+            source_notes=diagnostic_notes(source_check,contract.get('language','english'))
         request_packet['refinement_protocol']='source-delta/v1'
+        repetition_text=repetition_notes(sources['main'],request_packet['output_format'],
+                                         contract.get('language','english'))
+        notes='\n\n'.join(text for text in (source_notes,repetition_text) if text)
+        messages=[{'role':'system','content':refine_guidance},
+                  {'role':'user','content':json.dumps(authoring_view(request_packet,cite_key_map),ensure_ascii=False)}]
+        if notes:
+            messages.append({'role':'user','content':notes})
         response=gen/'refine.response.txt';delta_path=gen/'delta.json'
         receipt_path=gen/'refine.receipt.json'
         identity=digest({'packet':authoring_view(request_packet,cite_key_map),
+                         'repetition_notes':repetition_text,
+                         **({'source_precheck_notes':source_notes} if source_check is not None else {}),
                          'guidance':refine_guidance,'config':refine_cfg,
                          'citation_keys':cite_key_map})
         if packet_path.exists() and read(packet_path)!=request_packet:
@@ -473,10 +503,10 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
             if receipt_path.exists():
                 raise GenerationError('REFINEMENT_INCOMPLETE','Response is missing from a completed call; preserve its receipt and logs')
             save(packet_path,request_packet)
-            text,metrics=await invoke(ws,'refinement_delta',
-                [{'role':'system','content':refine_guidance},
-                 {'role':'user','content':json.dumps(authoring_view(request_packet,cite_key_map),ensure_ascii=False)}],
-                refine_cfg,client=client,json_output=False)
+            if repetition_text:save(gen/'repetition.txt',repetition_text)
+            if source_notes:save(gen/SOURCE_PRECHECK_NOTES,source_notes)
+            text,metrics=await invoke(ws,'refinement_delta',messages,
+                                     refine_cfg,client=client,json_output=False)
             status['model_calls']+=metrics['model_calls']
             save(receipt_path,{'identity':identity,'response_sha256':digest(text),'metrics':metrics})
             save(response,text)
@@ -493,7 +523,7 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         post_table_report=(inspect_native_tables(result['main'],planned_tables)
                            if suffix=='tex' else {'status':'SUCCESS','tables_checked':0,'issues':[]})
         save(gen/'_status/table_layout_postcheck.json',post_table_report)
-        post_asset_report = inspect_native_assets(result, asset_plan, spec['format'])
+        post_asset_report = inspect_native_assets(result, asset_plan, request_packet['output_format'])
         save(gen/'_status/asset_contract_postcheck.json', post_asset_report)
         post_abstract_report=inspect_abstracts(result['main'],packets)
         save(gen/'_status/abstract_postcheck.json',post_abstract_report)
@@ -501,6 +531,7 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
             if target!='main':save(paths[target],text)
         save(v2,result['main'])
         status.update(status='SUCCESS',artifact=str(v2),**applied,
+                      **({'source_precheck':source_check} if source_check is not None else {}),
                       abstract=post_abstract_report,
                       asset_contract=post_asset_report,
                       table_layout=post_table_report,
@@ -508,6 +539,8 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
                       next_action='Edit v2 and its dependencies directly. '+PUBLISH_ACTION)
         if post_abstract_report['issues']:
             status['next_action']='Review abstract default deviations against user/template exceptions; repair v2 directly where needed. '+PUBLISH_ACTION
+        if source_check is not None and source_check.get('status') in (PARTIAL,TIMEOUT,UNAVAILABLE):
+            status['next_action']='Source precheck was incomplete; inspect source_precheck and retain publication and visual verification. '+status['next_action']
         update('main_editable')
         return read(status_path)
     except BaseException as exc:

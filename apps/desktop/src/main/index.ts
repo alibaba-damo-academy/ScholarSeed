@@ -80,7 +80,7 @@ import {
   OFFICE_FONT_CACHE_DIRECTORY,
   type NativeFontFace,
 } from '../fonts'
-import { OfficeFontCacheStore } from './fontcache'
+import { desktopPersistence, closeDesktopPersistence } from './persistence'
 import officeManifest from '../renderer/public/office/zeta-20250513/manifest.json'
 import officeFontManifest from '../renderer/public/fonts/sources.json'
 import { userInfo } from 'node:os'
@@ -365,7 +365,8 @@ import { externalWebUrl } from './external'
 import { DEFAULT_SERVE_URL } from '../../endpoints'
 import { installApplicationMenu } from './menu'
 import { createWindowController } from './tray'
-import { DiagnosticLog, RotatingFileLog, isRendererDiagnostic } from './logfile'
+import { DiagnosticLog, isRendererDiagnostic } from './logfile'
+import { AsyncFileLog } from './logging'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import { nextUpdateCheckAt, UpdateChecks } from './checks.ts'
 import {
@@ -533,7 +534,7 @@ let setLoginWindowVisible: ReturnType<typeof createLoginWindowSizing> | null = n
 let runtimePreparation: AbortController | null = null
 let startupScreen: StartupScreen | null = null
 let startupScreenStartedAt: number | null = null
-let windowLifecycleLog: RotatingFileLog | null = null
+let windowLifecycleLog: AsyncFileLog | null = null
 let windowDiagnostics: DiagnosticLog | null = null
 const WINDOW_LIFECYCLE_LOG_FILENAME = 'window.log'
 const windowController = createWindowController({
@@ -713,10 +714,13 @@ function isMainWindowSender(
 }
 
 function logWindowLifecycle(line: string): void {
-  windowLifecycleLog ??= new RotatingFileLog(
+  windowLifecycleLog ??= new AsyncFileLog(
     join(desktopHome(), LOGS_DIRNAME, WINDOW_LIFECYCLE_LOG_FILENAME),
-    { acquireWriter: () => desktopDirectoryWriter(join(desktopHome(), LOGS_DIRNAME)) }
+    { scope: 'window' }
   )
+  desktopPersistence().diagnostics((entry) => {
+    void windowLifecycleLog?.write(entry, true)
+  })
   windowDiagnostics ??= new DiagnosticLog(windowLifecycleLog, (entry) =>
     writeBackendDiagnostic(backend, entry)
   )
@@ -3052,8 +3056,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     rendererOrigin: () => mainRendererOrigin,
     policy: () => browserPolicy,
     host: () => browserHost,
-    saveAutomationEnabled: (enabled) => {
-      saveBrowserAutomationPreference(enabled)
+    saveAutomationEnabled: async (enabled) => {
+      await saveBrowserAutomationPreference(enabled)
     },
   })
   registerBrowserApprovalIpc(ipcMain, {
@@ -3604,22 +3608,37 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     isMainWindowSender(event.sender) ? (requestOfficeFontAccess?.() ?? false) : false
   )
   const officeFonts: OfficeFontFiles = new OfficeFontFiles(() => nativeFonts.enumerateFonts())
-  const officeFontCache = new OfficeFontCacheStore(
-    join(desktopStorage().userData, OFFICE_FONT_CACHE_DIRECTORY),
-    JSON.stringify([officeManifest, officeFontManifest])
+  const officeFontCache = {
+    directory: join(desktopStorage().userData, OFFICE_FONT_CACHE_DIRECTORY),
+    namespace: JSON.stringify([officeManifest, officeFontManifest]),
+  }
+  ipcMain.handle(OFFICE_FONT_CACHE_READ_CHANNEL, async (event, fingerprint: unknown) => {
+    if (!isMainWindowSender(event.sender, event.senderFrame))
+      throw new Error('Invalid Office cache sender')
+    officeFonts.assertFingerprint(fingerprint)
+    const result = await desktopPersistence().request('cache', {
+      ...officeFontCache,
+      fingerprint,
+      mode: 'load',
+    })
+    officeFonts.assertFingerprint(fingerprint)
+    return result
+  })
+  ipcMain.handle(
+    OFFICE_FONT_CACHE_WRITE_CHANNEL,
+    async (event, fingerprint: unknown, cache: unknown) => {
+      if (!isMainWindowSender(event.sender, event.senderFrame))
+        throw new Error('Invalid Office cache sender')
+      officeFonts.assertFingerprint(fingerprint)
+      await desktopPersistence().request('cache', {
+        ...officeFontCache,
+        fingerprint,
+        mode: 'save',
+        value: cache,
+      })
+      officeFonts.assertFingerprint(fingerprint)
+    }
   )
-  ipcMain.handle(OFFICE_FONT_CACHE_READ_CHANNEL, (event, fingerprint: unknown) => {
-    if (!isMainWindowSender(event.sender, event.senderFrame))
-      throw new Error('Invalid Office cache sender')
-    officeFonts.assertFingerprint(fingerprint)
-    return officeFontCache.load(fingerprint)
-  })
-  ipcMain.handle(OFFICE_FONT_CACHE_WRITE_CHANNEL, (event, fingerprint: unknown, cache: unknown) => {
-    if (!isMainWindowSender(event.sender, event.senderFrame))
-      throw new Error('Invalid Office cache sender')
-    officeFonts.assertFingerprint(fingerprint)
-    officeFontCache.save(fingerprint, cache)
-  })
   ipcMain.handle(OFFICE_FONT_CATALOG_CHANNEL, (event) => {
     if (!isMainWindowSender(event.sender, event.senderFrame))
       throw new Error('Invalid Office font sender')
@@ -6050,12 +6069,17 @@ async function startDesktop(): Promise<void> {
     void Promise.all([
       windowDiagnostics?.end() ?? windowLifecycleLog?.end(),
       updater.closeUpdateLog(),
-    ]).then(() => {
-      logsQuitFinished = true
-      // Let Electron finish processing the cancelled will-quit event first.
-      // An already settled log drain can otherwise re-enter quit too early.
-      setImmediate(() => app.quit())
-    })
+    ])
+      .then(() => closeDesktopPersistence())
+      .then(() => {
+        logsQuitFinished = true
+        // Let Electron finish processing the cancelled will-quit event first.
+        // An already settled log drain can otherwise re-enter quit too early.
+        setImmediate(() => app.quit())
+      })
+      .catch((error) => {
+        console.error('[shell] persistence drain failed; exit remains blocked', error)
+      })
   })
 }
 

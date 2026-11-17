@@ -16,7 +16,6 @@ import (
 )
 
 const sandboxMetadata = ".sandbox"
-const sandboxLogLimit = 90
 const sandboxMaximumAllowed = 0x02000000
 
 // The upstream rolling logger uses UTC dates. Only its bounded, direct log
@@ -36,7 +35,7 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 	normalized := before
 	normalized.acl = bytes.Clone(before.acl)
 	if len(normalized.acl) < toolACLHeaderBytes {
-		return nil, errors.New("sandbox metadata ACL truncated")
+		return nil, sandboxCheckFailure(sandboxRuleACL, errors.New("sandbox metadata ACL truncated"))
 	}
 	count := int(binary.LittleEndian.Uint16(normalized.acl[4:6]))
 	position, insert := toolACLHeaderBytes, len(normalized.acl)
@@ -47,12 +46,18 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 	sufficient := false
 	for index := 0; index < count; index++ {
 		if position+toolACEHeaderBytes+toolSIDMinimumBytes > len(normalized.acl) {
-			return nil, errors.New("sandbox metadata ACE truncated")
+			return nil, sandboxCheckFailure(sandboxRuleACE, errors.New("sandbox metadata ACE truncated"))
 		}
 		ace := normalized.acl[position:]
 		size := int(binary.LittleEndian.Uint16(ace[2:4]))
-		if size < toolACEHeaderBytes+toolSIDMinimumBytes || size > len(ace) || int(ace[9])*4+toolACEHeaderBytes+toolSIDMinimumBytes != size || ace[0] != 0 || ace[1]&^byte(toolKnownACEFlags) != 0 {
-			return nil, errors.New("sandbox metadata policy is not reviewed")
+		if size < toolACEHeaderBytes+toolSIDMinimumBytes || size > len(ace) || int(ace[9])*4+toolACEHeaderBytes+toolSIDMinimumBytes != size {
+			return nil, sandboxCheckFailure(sandboxRuleACE, errors.New("sandbox metadata policy is not reviewed"))
+		}
+		if ace[0] == 1 {
+			return nil, sandboxCheckFailure(sandboxRuleDeny, errors.New("sandbox metadata policy is not reviewed"))
+		}
+		if ace[0] != 0 || ace[1]&^byte(toolKnownACEFlags) != 0 {
+			return nil, sandboxCheckFailure(sandboxRuleACE, errors.New("sandbox metadata policy is not reviewed"))
 		}
 		sid, err := (*syscall.SID)(unsafe.Pointer(&ace[8])).String()
 		if err != nil {
@@ -60,7 +65,7 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 		}
 		access := toolMask(binary.LittleEndian.Uint32(ace[4:8]))
 		if sid == sandboxOwnerSID && access != toolFullAccess {
-			return nil, errors.New("sandbox metadata owner-rights policy is not reviewed")
+			return nil, sandboxCheckFailure(sandboxRuleOwnerRights, errors.New("sandbox metadata owner-rights policy is not reviewed"))
 		}
 		// Inherit-only ACEs are still policy on future metadata/bin children.
 		// Ancestor traversal validation alone intentionally skips those entries.
@@ -71,11 +76,11 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 			}
 		}
 		if !recognized {
-			return nil, errors.New("sandbox metadata principal is not reviewed")
+			return nil, sandboxCheckFailure(sandboxRulePrincipal, errors.New("sandbox metadata principal is not reviewed"))
 		}
 		if sid == group && group != "" {
 			if access&^uint32(sandboxDenyMask) != 0 {
-				return nil, errors.New("sandbox metadata grants native group excess authority")
+				return nil, sandboxCheckFailure(sandboxRuleGroupMask, errors.New("sandbox metadata grants native group excess authority"))
 			}
 			binary.LittleEndian.PutUint32(ace[4:8], access&uint32(toolReadExecute))
 		}
@@ -92,7 +97,7 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 		position += size
 	}
 	if position != len(normalized.acl) || int(binary.LittleEndian.Uint16(normalized.acl[2:4])) != position {
-		return nil, errors.New("sandbox metadata ACL has trailing data")
+		return nil, sandboxCheckFailure(sandboxRuleACL, errors.New("sandbox metadata ACL has trailing data"))
 	}
 	if err := validateSandboxACL(normalized, user, group, sandboxAncestorACL, readers...); err != nil {
 		return nil, err
@@ -101,7 +106,7 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 		return bytes.Clone(before.acl), nil
 	}
 	if before.owner != user {
-		return nil, errors.New("sandbox metadata maintenance requires the original owner")
+		return nil, sandboxCheckFailure(sandboxRuleMaintenance, errors.New("sandbox metadata maintenance requires the original owner"))
 	}
 	sid, err := syscall.StringToSid(sandboxAdminSID)
 	if err != nil {
@@ -114,7 +119,7 @@ func sandboxMetadataACL(before sandboxSecurity, user, group string, directory bo
 	copyBytes := unsafe.Slice((*byte)(unsafe.Pointer(sid)), sid.Len())
 	copy(ace[8:], copyBytes)
 	if len(before.acl)+len(ace) > 65535 || count == 65535 {
-		return nil, errors.New("sandbox metadata ACL exceeds bound")
+		return nil, sandboxCheckFailure(sandboxRuleACLBound, errors.New("sandbox metadata ACL exceeds bound"))
 	}
 	result := append(bytes.Clone(before.acl[:insert]), ace...)
 	result = append(result, before.acl[insert:]...)
@@ -131,7 +136,7 @@ func sandboxMetadataWrite(handle syscall.Handle, before sandboxSecurity, acl []b
 		return err
 	}
 	if current.fingerprint() != before.fingerprint() {
-		return errors.New("sandbox metadata changed before repair")
+		return sandboxCheckFailure(sandboxRuleDrift, errors.New("sandbox metadata changed before repair"))
 	}
 	if bytes.Equal(acl, before.acl) {
 		return nil
@@ -145,13 +150,16 @@ func sandboxMetadataWrite(handle syscall.Handle, before sandboxSecurity, acl []b
 		return err
 	}
 	if after.owner != before.owner || after.identity != before.identity || (after.control != before.control && after.control != before.control|0x0400) || !bytes.Equal(after.acl, acl) {
-		return errors.New("sandbox metadata repair changed unexpected security state")
+		return sandboxCheckFailure(sandboxRulePostcondition, errors.New("sandbox metadata repair changed unexpected security state"))
 	}
 	return nil
 }
 
-func sandboxPrepareMetadata(home, user, group string, readers ...string) error {
-	for _, path := range []string{filepath.Dir(filepath.Dir(home)), filepath.Dir(home), home} {
+func sandboxPrepareMetadata(home, user, group string, readers ...string) (failure error) {
+	object := sandboxObjectProfile
+	defer func() { failure = sandboxMetadataFailure(object, failure) }()
+	for index, path := range []string{filepath.Dir(filepath.Dir(home)), filepath.Dir(home), home} {
+		object = []string{sandboxObjectProfile, sandboxObjectProduct, sandboxObjectHome}[index]
 		handle, err := sandboxOpen(path, toolReadControl)
 		if err != nil {
 			return err
@@ -161,13 +169,18 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) error {
 		if err != nil {
 			return err
 		}
-		if err = validateSandboxACL(before, user, group, sandboxAncestorACL, readers...); err != nil {
+		mode := sandboxAncestorACL
+		if index == 0 {
+			mode = sandboxProfileACL
+		}
+		if err = validateSandboxACL(before, user, group, mode, readers...); err != nil {
 			return err
 		}
 	}
 	if err := sandboxPrepareBin(home, user, group, readers...); err != nil {
 		return err
 	}
+	object = sandboxObjectMetadata
 	target := filepath.Join(home, sandboxMetadata)
 	if _, err := createSandboxDirectory(target, user); err != nil {
 		return err
@@ -183,6 +196,7 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) error {
 		before    sandboxSecurity
 		acl       []byte
 		directory bool
+		object    string
 	}
 	var changes []change
 	defer func() {
@@ -200,7 +214,7 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) error {
 	if err != nil {
 		return err
 	}
-	changes = append(changes, change{dir, before, acl, true})
+	changes = append(changes, change{dir, before, acl, true, sandboxObjectMetadata})
 	entries, err := directory.ReadDir(-1)
 	if err != nil {
 		return err
@@ -210,9 +224,10 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) error {
 		if !sandboxMetadataLog(entry.Name()) {
 			continue
 		}
+		object = sandboxObjectLog
 		logCount++
 		if logCount > sandboxLogLimit {
-			return errors.New("sandbox metadata log count exceeds bound")
+			return &sandboxCheckError{cause: errors.New("sandbox metadata log count exceeds bound"), rule: sandboxRuleLogBound, count: logCount}
 		}
 		name, err := syscall.UTF16PtrFromString(filepath.Join(target, entry.Name()))
 		if err != nil {
@@ -233,9 +248,10 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) error {
 			return err
 		}
 
-		changes = append(changes, change{handle, before, acl, false})
+		changes = append(changes, change{handle, before, acl, false, sandboxObjectLog})
 	}
 	for _, change := range changes {
+		object = change.object
 		if err := sandboxMetadataWrite(change.handle, change.before, change.acl, change.directory); err != nil {
 			return err
 		}
@@ -246,7 +262,8 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) error {
 // Native elevated setup cannot create this sibling beneath the original user's
 // private Home. Prepare only the directory; native code owns helper contents and
 // its protected RX sandbox policy. Never traverse or change binary descendants.
-func sandboxPrepareBin(home, user, group string, readers ...string) error {
+func sandboxPrepareBin(home, user, group string, readers ...string) (failure error) {
+	defer func() { failure = sandboxMetadataFailure(sandboxObjectBin, failure) }()
 	target := filepath.Join(home, ".sandbox-bin")
 	if _, err := createSandboxDirectory(target, user); err != nil {
 		return err

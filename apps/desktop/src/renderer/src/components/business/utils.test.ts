@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { libraryFileType, libraryUpdatedAt, userMessageParts } from './utils.ts'
+import { libraryFileType, libraryUpdatedAt, userMessageParts, userMessageTime } from './utils.ts'
+
+test('user message time includes the local date and 24-hour minute in both languages', () => {
+  for (const locale of ['zh-CN', 'en-US']) {
+    assert.equal(
+      userMessageTime(new Date(2026, 9, 22, 10, 42).getTime(), locale),
+      '2026-10-22 10:42'
+    )
+    assert.equal(userMessageTime(new Date(2026, 0, 2, 0, 5).getTime(), locale), '2026-01-02 00:05')
+  }
+})
 
 test('user message links preserve literal text, queries and balanced URL punctuation', () => {
   const source = '# 标题\n*β* `code` https://example.com/a_(b)?x=1&y=%20。下一段'

@@ -1,5 +1,6 @@
 """Validate agent-authored JSON examples through their actual input interfaces."""
 import copy
+from importlib.metadata import version as distribution_version
 import json
 from pathlib import Path
 import re
@@ -16,8 +17,11 @@ from operator_cli import configure_outline,figure_plan
 from chapter_pipeline import chapter_messages
 from manuscript_delta import REFINE_GUIDANCE
 from chapter_plan import ROLES
-from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE
+from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE, EVIDENCE_GUIDANCE
 from abstract_contract import ABSTRACT_GUIDANCE
+from service.capabilities.service.descriptor import inspect_plugin, HOST_INCOMPATIBLE, PLUGIN_DESCRIPTOR
+from service.capabilities.service.install import parse_skill_frontmatter
+from service.capabilities.service.plugins import PLUGIN_CAPABILITIES
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -35,6 +39,28 @@ def description(operation,workspace=None):
 
 
 class RequestExampleTest(unittest.TestCase):
+    def test_source_plugin_and_skill_versions_pass_the_runtime_identity_contract(self):
+        expected=(ROOT/'VERSION').read_text().strip()
+        front,_=parse_skill_frontmatter((ROOT/'SKILL.md').read_text())
+        descriptor=json.loads((ROOT/PLUGIN_DESCRIPTOR).read_text())
+        self.assertEqual(front['version'],expected)
+        self.assertEqual(front['metadata']['version'],expected)
+        self.assertEqual(descriptor['version'],expected)
+        names={PLUGIN_DESCRIPTOR,'SKILL.md'}
+        for component in descriptor['components']:
+            names.update(component[key] for key in ('entry','preview') if component.get(key))
+        files={name:(ROOT/name).read_bytes() for name in names}
+        def inspect(payload):
+            return inspect_plugin(payload,skill_name=ROOT.name,skill_version=expected,
+                                  host_version=distribution_version('scholarseed'),
+                                  available_capabilities=PLUGIN_CAPABILITIES)
+        report=inspect(files)
+        errors={item['code'] for item in report['issues'] if item['severity']=='error'}
+        self.assertEqual(errors-{HOST_INCOMPATIBLE},set(),report['issues'])
+        descriptor['version']='0.0.0'
+        stale={**files,PLUGIN_DESCRIPTOR:json.dumps(descriptor).encode()}
+        self.assertIn('identity_mismatch',{item['code'] for item in inspect(stale)['issues']})
+
     def test_init_publication_defaults_and_examples_match_runtime(self):
         for mode in ('quick', 'standard'):
             described = describe_init(mode)
@@ -75,8 +101,8 @@ class RequestExampleTest(unittest.TestCase):
                 self.assertEqual(configure(fixture.ws, {'sources': sources})['status'], 'SUCCESS')
                 self.assertEqual(read_request(fixture.ws)['sources'], sources)
 
-    def test_shared_writing_guidance_reaches_all_chapters_and_refinement(self):
-        prompts = [('refinement', REFINE_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE)]
+    def test_writing_guidance_stays_in_chapters_not_refinement(self):
+        prompts = []
         for role in sorted(ROLES):
             for output_format in ('latex_pdf', 'markdown'):
                 for shared_tables in ([], [{'table_id': 'T1'}]):
@@ -91,6 +117,10 @@ class RequestExampleTest(unittest.TestCase):
                 self.assertTrue(expected.strip())
                 self.assertIn(TASK_GUIDANCE, prompt)
                 self.assertIn(expected, prompt)
+        self.assertTrue(REFINE_GUIDANCE.strip())
+        self.assertNotIn(TASK_GUIDANCE, REFINE_GUIDANCE)
+        self.assertNotIn(MANUSCRIPT_WRITING_GUIDANCE, REFINE_GUIDANCE)
+        self.assertNotIn(EVIDENCE_GUIDANCE, REFINE_GUIDANCE)
 
     def fixture(self):
         f=fixtures.NativeTest();f.setUp();self.addCleanup(f.doCleanups)

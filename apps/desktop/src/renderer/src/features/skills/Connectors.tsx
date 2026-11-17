@@ -535,7 +535,7 @@ export function Connectors({
       />
       {scope === 'market' && (
         <Button
-          variant="tertiary"
+          variant="outline"
           onClick={() => {
             setScope('mine')
             setQuery('')

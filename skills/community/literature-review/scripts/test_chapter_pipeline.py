@@ -67,7 +67,7 @@ class PacketTest(unittest.TestCase):
         self.assertIn("conditional mechanism", p["evidence"])
         self.assertEqual(len(p["confirmed_full_outline"]["outline_tree"]), 3)
 
-    def test_chapters_and_refinement_use_same_business_view_without_touching_cards(self):
+    def test_chapters_keep_business_evidence_without_copying_it_to_refinement(self):
         card_path = self.ws / "03_process/paper_cards.json"
         cards = json.loads(card_path.read_text())
         for card in cards.values():
@@ -80,13 +80,15 @@ class PacketTest(unittest.TestCase):
         before = card_path.read_bytes()
         prepare(self.ws)
         paths = list((self.ws / "05_generation/_internal/chapter_packets").glob("*.json"))
-        paths.append(self.ws / "05_generation/_internal/manuscript_contract.json")
         for path in paths:
             packet = json.loads(path.read_text())
             self.assertIn("21 percent on D with 40 labels; only under A", packet["evidence"])
             self.assertNotIn("LOCAL_SOURCE_SENTINEL", packet["evidence"])
             self.assertNotIn("LOCAL_REGION_SENTINEL", packet["evidence"])
             self.assertIn("Some original content was unavailable.", packet["evidence"])
+        contract = json.loads((self.ws / "05_generation/_internal/manuscript_contract.json").read_text())
+        self.assertNotIn("evidence", contract)
+        self.assertNotIn("writing_evidence", contract)
         self.assertEqual(card_path.read_bytes(), before)
 
     def test_dependency_cycle_rejected_before_call(self):

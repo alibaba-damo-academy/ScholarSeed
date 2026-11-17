@@ -98,16 +98,18 @@ export function LibraryToolbar({
   leading,
   children,
   searchVisible = false,
+  expandableSearch = false,
   refreshAfterActions = false,
 }: {
   query: string
   onQuery: (query: string) => void
   placeholder: string
-  refreshing: boolean
-  onRefresh: () => void
+  refreshing?: boolean
+  onRefresh?: () => void
   leading?: React.ReactNode
   children?: React.ReactNode
   searchVisible?: boolean
+  expandableSearch?: boolean
   refreshAfterActions?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('layout')
@@ -125,6 +127,7 @@ export function LibraryToolbar({
   const target = useContext(LibraryToolbarTarget)
   const trailing = useContext(LibraryToolbarTrailing)
   const projectToolbar = target !== undefined
+  const disclosureSearch = projectToolbar || expandableSearch
   useLayoutEffect(() => {
     const toolbar = toolbarRef.current
     const search = searchRef.current
@@ -203,21 +206,21 @@ export function LibraryToolbar({
       restoreSearchFocus.current = false
       return
     }
-    if (projectToolbar && expanded && !searchCompact) {
+    if (disclosureSearch && expanded && !searchCompact) {
       searchInputRef.current?.focus({ preventScroll: true })
     }
     if (!expanded && restoreSearchFocus.current) {
       restoreSearchFocus.current = false
       searchButtonRef.current?.focus({ preventScroll: true })
     }
-  }, [expanded, projectToolbar, searchCompact, target])
+  }, [expanded, disclosureSearch, searchCompact, target])
   const closeSearchOnEscape = (event: React.KeyboardEvent<HTMLInputElement>): void => {
     if (event.key !== 'Escape') return
     event.stopPropagation()
     restoreSearchFocus.current = true
     setExpanded(false)
   }
-  const refreshButton = !projectToolbar && (
+  const refreshButton = !projectToolbar && onRefresh && (
     <IconButton
       variant="outline"
       size="md"
@@ -233,11 +236,11 @@ export function LibraryToolbar({
     <div
       ref={toolbarRef}
       data-compact={compact}
-      data-search-open={projectToolbar && expanded}
+      data-search-open={disclosureSearch && expanded}
       className={
         projectToolbar
           ? 'group/library-toolbar relative flex min-w-max flex-1 items-center justify-end gap-[var(--vds-space-2)] data-[compact=true]:gap-[var(--vds-space-1)] [&>*]:shrink-0'
-          : 'flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-[var(--vds-space-2)]'
+          : 'group/library-toolbar flex min-w-0 flex-wrap items-center justify-end gap-[var(--vds-space-2)]'
       }
     >
       {leading && <div className="mr-auto min-w-0">{leading}</div>}
@@ -248,7 +251,7 @@ export function LibraryToolbar({
           className="pointer-events-none invisible absolute left-0 top-0 h-0 w-[var(--vds-library-toolbar-search-width)]"
         />
       )}
-      {projectToolbar ? (
+      {disclosureSearch ? (
         <div ref={searchRef} className="grid items-center">
           {searchCompact ? (
             <Popover open={expanded} onOpenChange={setExpanded}>

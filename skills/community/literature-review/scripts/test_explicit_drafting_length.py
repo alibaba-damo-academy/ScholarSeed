@@ -42,7 +42,7 @@ class ExplicitLengthTest(unittest.TestCase):
             doc.write_text('# Methods\n\nConditional assumptions matter.\n')
             report = publish(root)
             self.assertEqual(report['status'], 'SUCCESS')
-            self.assertEqual((root/'06_output/survey.md').read_text(),doc.read_text())
+            self.assertEqual(Path(report['deliverable']).read_text(),doc.read_text())
 
     def test_target_is_not_an_invented_range(self):
         report = document_length_check(['Evidence supports conditional guarantees.'],

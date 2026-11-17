@@ -1608,22 +1608,15 @@ export function LiteratureList({
       )
     }
   }
-  const renderImportMenu = (iconOnly = false, empty = false): React.JSX.Element => (
+  const renderImportMenu = (empty = false): React.JSX.Element => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        {projectPresentation ? (
+        {!empty || projectPresentation ? (
           <LibraryAction
             data-testid="literature-toolbar-import"
             variant={empty ? 'outline' : 'primary'}
             collapsible={!empty}
             label={literature('panel.projectAdd')}
-          />
-        ) : iconOnly ? (
-          <IconButton
-            data-testid="literature-toolbar-import"
-            variant="outline"
-            label={literature('panel.import')}
-            icon={<IconFont type="icon-line-operation-add" />}
           />
         ) : (
           <Button
@@ -2075,24 +2068,20 @@ export function LiteratureList({
               )
             }
           >
-            {renderImportMenu(true)}
+            {renderImportMenu()}
           </LibraryToolbar>
         ) : (
-          <div className="lit-actions ml-auto flex items-center gap-[var(--vds-library-list-actions-gap)] [&_.vds-icon-button]:w-[var(--vds-library-action-icon-button-size)] [&_.vds-icon-button]:h-[var(--vds-library-action-icon-button-size)] [&_.vds-icon-button]:text-[var(--vds-text-tertiary)]">
+          <>
             <MetadataBatch entries={[]} projectId={projectId} />
-            {renderImportMenu(true)}
-            <form
-              className="lit-search flex w-[var(--vds-library-list-search-width)] items-center gap-[var(--vds-library-list-gap)] ml-[var(--vds-library-list-search-margin-left)]"
-              onSubmit={(event) => event.preventDefault()}
+            <LibraryToolbar
+              expandableSearch
+              query={search}
+              onQuery={setSearch}
+              placeholder={literature('list.searchPlaceholder')}
             >
-              <SearchBox
-                aria-label={literature('list.search')}
-                placeholder={literature('list.searchPlaceholder')}
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </form>
-          </div>
+              {renderImportMenu()}
+            </LibraryToolbar>
+          </>
         )}
       </header>
       {task ? (
@@ -2279,7 +2268,7 @@ export function LiteratureList({
                 <EmptyState
                   image={{ src: emptyImage, alt: '' }}
                   title={literature('list.empty')}
-                  action={renderImportMenu(false, true)}
+                  action={renderImportMenu(true)}
                 />
               ) : (
                 <EmptyState

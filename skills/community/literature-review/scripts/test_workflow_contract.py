@@ -18,7 +18,7 @@ from task_contract import configure, read_request, atomic_json, structural_contr
 from paper_materials import readiness, require_ready, source_identity
 from writing_contract import preparation_identity, require_approval
 from structure_checks import actual_references, outline_structure_errors
-from task_fixtures import task
+from task_fixtures import task, outline_context
 import slr
 
 
@@ -211,7 +211,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(len(client.calls),1)
         self.assertFalse((self.ws/'04_outline/outline.json').exists())
         self.assertTrue(list((self.ws/'_logs/llm').rglob('candidate.json')))
-        context=json.loads(client.calls[0][1]['content'])
+        context=outline_context(client.calls[0])
         self.assertEqual(context['required_outline_nodes'][0]['section_id'],'0')
         outline=json.loads(old);outline['outline_tree'].insert(0,{'section_id':'0','title':'Abstract','description':'Summarize supported evidence.'})
         accepted=FakeModel(planned_outline(outline))

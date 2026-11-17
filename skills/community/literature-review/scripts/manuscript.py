@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / 'lib'))
 import slr_paths
 slr_paths.bootstrap(__file__)
 sys.path.insert(0, str(ROOT / 'scripts'))
-from authoring import writing_content
+from authoring import authoring_card
 from evidence import read, save
 from writing_contract import read_request, require_approval, select_outline, explicit_length_budget
 from output_spec import read_output_spec
@@ -156,9 +156,7 @@ def prepare(ws, assets=None, legacy_cards=False):
     relevant=list(dict.fromkeys(pid for item in figures for pid in item['paper_ids']))
     evidence_path=internal/'figure_evidence.json'
     save(evidence_path, {'papers':{keys[pid]:{'cite_key':keys[pid],
-        'title':cards[pid].get('title'), 'year':cards[pid].get('year'),
-        'paper_type':cards[pid].get('paper_type'), 'reading_depth':cards[pid].get('reading_depth'),
-        **writing_content(cards[pid])} for pid in relevant}})
+        **authoring_card(cards[pid])} for pid in relevant}})
     brief['evidence_path']=evidence_path.relative_to(ws).as_posix()
     brief['prompt_guidance']=PROMPT_GUIDANCE
     brief['caption_guidance']=CAPTION_GUIDANCE
@@ -173,13 +171,11 @@ def prepare(ws, assets=None, legacy_cards=False):
     contract = {'mode': strategy, 'pipeline':'native_v2', 'language': language,
                 'resolved_section_languages':section_languages,
                 'publication':{**spec,'language':assembly_language,'output_scope':read_request(ws)['output_scope']},
-                'evidence':Path(evidence_result['artifacts'][1]).read_text(),
                 'output_format': spec['format'], 'document_length_budget': budget,
                 'preparation_id':preparation_id,
                 'asset_plan_version':asset_plan['version'],'shared_figures':asset_plan['shared_figures'],
                 'shared_tables':asset_plan['shared_tables'],'required_asset_refs':asset_plan['required_asset_refs'],
                 'figure_plans':{it['figure_id']:{k:it[k] for k in ('figure_id','section_id','section_title','purpose','content_plan','caption_draft','visual_guidance','qualifications','language','paper_ids','task','section_description','subsections','evidence_scope')} for it in figures},
-                'writing_evidence': str(internal/'writing_evidence.md'),
                 'section_ids': [s['section_id'] for s in outline['outline_tree']],
                 'figure_slots': [it['figure_id'] for it in figures], 'refine': True}
     from chapter_pipeline import prepare_packets

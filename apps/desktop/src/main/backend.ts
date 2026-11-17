@@ -65,7 +65,8 @@ import {
   pythonExecutableDirectories,
   standardExecutablePath,
 } from './environment'
-import { LineTimestamper, RotatingFileLog } from './logfile'
+import { LineTimestamper } from './logfile'
+import { AsyncFileLog } from './logging'
 import { classifyBackendFailure, type BackendFailure } from './failure'
 import { redactDiagnosticError } from './redaction.ts'
 import { projectCodexRuntimeEnvironment } from './runtime'
@@ -334,15 +335,20 @@ export interface BackendLaunch {
 // Environment can contain credentials. Keep it out of enumerable handles and diagnostics.
 const backendFamilies = new WeakMap<BackendHandle, ProcessFamily>()
 const backendLaunches = new WeakMap<ChildProcess, Readonly<BackendLaunch>>()
-const backendDiagnosticWriters = new WeakMap<BackendHandle, (line: string) => boolean>()
+const backendDiagnosticWriters = new WeakMap<BackendHandle, (line: string) => Promise<boolean>>()
 let activeBackendLaunch: Readonly<BackendLaunch> | null = null
 /** Exact spawned child only; this observation grants no data or activation authority. */
 export function backendLaunch(handle: BackendHandle): Readonly<BackendLaunch> | null {
   return handle.proc ? (backendLaunches.get(handle.proc) ?? null) : null
 }
 
-export function writeBackendDiagnostic(handle: BackendHandle | null, line: string): boolean {
-  return handle ? (backendDiagnosticWriters.get(handle)?.(line) ?? false) : false
+export function writeBackendDiagnostic(
+  handle: BackendHandle | null,
+  line: string
+): Promise<boolean> {
+  return handle
+    ? (backendDiagnosticWriters.get(handle)?.(line) ?? Promise.resolve(false))
+    : Promise.resolve(false)
 }
 
 export interface BackendHandle {
@@ -1068,10 +1074,10 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     ]
 
     enterPhase(BACKEND_STARTUP_PHASE.log)
-    let logFile: RotatingFileLog | null = null
+    let logFile: AsyncFileLog | null = null
     try {
-      logFile = new RotatingFileLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE), {
-        acquireWriter: () => desktopDirectoryWriter(join(desktopHome(), LOGS_DIRNAME)),
+      logFile = new AsyncFileLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE), {
+        scope: 'backend',
         // Parent log writes qualify HOME ancestors. Startup must first finish
         // the child's exclusive configuration/database initialization.
         deferred: true,
@@ -1080,7 +1086,8 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       /* logging to file is best-effort */
     }
     const stamper = logFile ? new LineTimestamper((line) => logFile?.write(line)) : null
-    if (logFile) backendDiagnosticWriters.set(handle, (line) => logFile?.write(line) ?? false)
+    if (logFile)
+      backendDiagnosticWriters.set(handle, (line) => logFile?.write(line) ?? Promise.resolve(false))
     finishLog = async () => {
       stamper?.flush()
       // Called only after the owned output pipes close (or no child was spawned).

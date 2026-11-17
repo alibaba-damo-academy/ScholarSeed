@@ -37,7 +37,7 @@ interface BrowserIpcOwners {
   contents(): WebContents | null
   host(): ActiveBrowserHost | null
   rendererOrigin?(): string | null
-  saveAutomationEnabled?(enabled: boolean): void
+  saveAutomationEnabled?(enabled: boolean): void | Promise<void>
   policy?(): Pick<
     ReturnType<typeof createBrowserPolicy>,
     'snapshot' | 'set' | 'remove' | 'setAgentBrowserUse'
@@ -138,7 +138,7 @@ export function registerBrowserIpc(ipc: Pick<IpcMain, 'handle'>, owners: Browser
           else await host.automation.stop()
           if (owners.host() !== host) throw new Error(BROWSER_ERROR.desktopBridgeUnavailable)
           try {
-            owners.saveAutomationEnabled?.(command.enabled)
+            await owners.saveAutomationEnabled?.(command.enabled)
           } catch (error) {
             if (command.enabled) await host.automation.stop()
             throw error

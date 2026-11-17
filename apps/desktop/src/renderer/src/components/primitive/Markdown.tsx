@@ -79,7 +79,7 @@ const MARKDOWN_CLASS_NAME = [
   '[&_code]:bg-[var(--vds-other-overlay-1)] [&_code]:px-[5px] [&_code]:py-0 [&_code]:font-[var(--font-mono)]',
   '[&_code]:text-[0.86em] [&_code]:[overflow-wrap:anywhere] [&_code]:break-words',
   '[&_code]:[-webkit-box-decoration-break:clone] [&_code]:[box-decoration-break:clone]',
-  '[&_a]:font-[550] [&_a]:text-[var(--text)] [&_a]:underline',
+  '[&_a]:font-[550] [&_a]:text-[var(--text)] [&_a:hover]:underline [&_a:focus-visible]:underline',
 ].join(' ')
 const MARKDOWN_PARAGRAPH_CLASS_NAME = 'md-p my-2'
 const MARKDOWN_HEADING_CLASS_NAME = 'md-h my-2 mt-4 font-semibold leading-[1.3]'

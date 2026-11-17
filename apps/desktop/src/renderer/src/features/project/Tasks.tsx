@@ -268,6 +268,7 @@ export function Tasks({
                     <IconButton
                       size="xs"
                       variant="ghostIcon"
+                      className="[--vds-icon-button-glyph:var(--vds-icon-7)]"
                       label={t(
                         state.collapsedSessionIds[row.session_id]
                           ? 'expandChildren'
@@ -331,7 +332,7 @@ export function Tasks({
                       unread={sessionNeedsAttention(reminders.by_session[row.session_id] ?? 0)}
                     />
                     {hasChildren && (
-                      <span className="min-w-[var(--vds-control-height-xs)] text-center text-[length:var(--vds-font-body-lv1)] tabular-nums text-[var(--vds-text-tertiary)]">
+                      <span className="min-w-[var(--vds-control-height-xs)] text-center text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] tabular-nums text-[var(--vds-text-tertiary)]">
                         {childCount}
                       </span>
                     )}

@@ -302,7 +302,9 @@ export function ResourceListing(): React.JSX.Element {
                               }
                             />
                             <FileIcon />
-                            <EllipsisText tooltip={node.path}>{node.name}</EllipsisText>
+                            <EllipsisText tooltip={node.path} tooltipPortalled>
+                              {node.name}
+                            </EllipsisText>
                           </Button>
                         )}
                       </div>

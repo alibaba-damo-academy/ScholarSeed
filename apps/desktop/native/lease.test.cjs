@@ -11,6 +11,7 @@ const crypto = require('node:crypto')
 const asar = require('@electron/asar')
 const { verifyAsarClosure } = require('../scripts/cd/closure.cjs')
 const policy = require('./toolchain.json')
+const { DatabaseSync } = require('node:sqlite')
 const { LIBRARIES, BUNDLED_LIBRARIES } = require('./libraries.cjs')
 const { beginDomains, createDirectory, ensureDirectories } = require('./domains.cjs')
 const { bindRegistry, REGISTRY_DIRECTORY, removeLegacyCoordination } = require('./registry.cjs')
@@ -98,6 +99,100 @@ test('macOS registry holds independent slot locks in this process and across pro
     api.release(pin)
   }
   assert.equal(probe('second'), 'acquired')
+})
+
+test('macOS registry reopens after mount drift and rejects a replacement ranges file', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
+  t.after(() => fs.rmSync(account, { recursive: true, force: true }))
+  const coordinator = path.join(account, REGISTRY_DIRECTORY)
+  function acquire(create) {
+    const pin = api.pin(coordinator, create)
+    try {
+      const registry = bindRegistry(api, coordinator, pin)
+      registry.release(registry.acquireAt(pin, 'fixture', false))
+    } finally {
+      api.release(pin)
+    }
+  }
+  acquire(true)
+  const stablePath = path.join(coordinator, 'registry.darwin-v1')
+  const legacyPath = path.join(coordinator, 'registry.binding')
+  const legacyIdentity = name => {
+    const { dev, ino } = fs.statSync(path.join(coordinator, name), { bigint: true })
+    return 'posix:' + [dev, ino].map(value => value.toString(16).padStart(16, '0')).join(':')
+  }
+  const legacy = legacyIdentity('registry.sqlite')
+  const old = new DatabaseSync(path.join(coordinator, 'registry.sqlite'))
+  try {
+    old.prepare('UPDATE binding SET identity = ?').run('flock:' + legacyIdentity('ranges'))
+  } finally {
+    old.close()
+  }
+  const drifted = legacy.replace(/:[a-f0-9]{16}:/, ':0000000000000000:')
+  fs.writeFileSync(legacyPath, drifted)
+  assert.throws(() => acquire(false), { code: 'ERR_LEASE_CHANGED' })
+  assert.equal(fs.existsSync(stablePath), false)
+  fs.writeFileSync(legacyPath, legacy)
+  acquire(false)
+  const stable = fs.readFileSync(stablePath)
+  fs.writeFileSync(legacyPath, drifted)
+  const db = new DatabaseSync(path.join(coordinator, 'registry.sqlite'))
+  try {
+    db.exec("UPDATE binding SET identity = 'flock:posix:0000000000000000:' || substr(identity, -16)")
+  } finally {
+    db.close()
+  }
+  acquire(false)
+  assert.deepEqual(fs.readFileSync(stablePath), stable)
+  const ranges = path.join(coordinator, 'ranges')
+  fs.renameSync(ranges, ranges + '.original')
+  fs.writeFileSync(ranges, '', { mode: 0o600 })
+  assert.throws(() => acquire(false), { code: 'ERR_LEASE_CHANGED' })
+})
+
+test('macOS registry resumes an interrupted first ranges publication', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
+  t.after(() => fs.rmSync(account, { recursive: true, force: true }))
+  const coordinator = path.join(account, REGISTRY_DIRECTORY)
+  const script = `
+    const [library, module, coordinator, interrupted] = process.argv.slice(1)
+    const native = require(library)
+    const pin = native.pin(coordinator, interrupted === 'yes')
+    try {
+      if (interrupted === 'yes') require('node:fs').renameSync = source => {
+        if (!source.endsWith('/ranges.pending')) throw Error('unexpected publication')
+        process.exit(23)
+      }
+      const registry = require(module).bindRegistry(native, coordinator, pin)
+      registry.release(registry.acquireAt(pin, 'fixture', true))
+    } finally {
+      native.release(pin)
+    }
+  `
+  const run = mode => spawnSync(process.execPath, [
+    '-e', script, library, require.resolve('./registry.cjs'), coordinator, mode,
+  ], { encoding: 'utf8', timeout: PROCESS_TIMEOUT })
+  const interrupted = run('yes')
+  assert.equal(interrupted.status, 23, interrupted.stderr)
+  const pending = path.join(coordinator, 'ranges.pending')
+  const inode = fs.statSync(pending).ino
+  const ranges = path.join(coordinator, 'ranges')
+  assert.equal(fs.existsSync(ranges), false)
+  assert.match(fs.readFileSync(path.join(coordinator, 'registry.binding'), 'utf8'), /^darwin:/)
+  const db = new DatabaseSync(path.join(coordinator, 'registry.sqlite'))
+  try {
+    assert.match(db.prepare('SELECT identity FROM binding').get().identity, /^flock:darwin:/)
+  } finally {
+    db.close()
+  }
+  const resumed = run('no')
+  assert.equal(resumed.status, 0, resumed.stderr)
+  assert.equal(fs.statSync(ranges).ino, inode)
+  assert.equal(fs.existsSync(pending), false)
 })
 
 test(
@@ -1932,6 +2027,28 @@ test('interrupted mutation blocks parent and descendant writers after volatile l
   writer.occupy()
   writer.admit()
   writer.close()
+})
+
+test('macOS mutation intent remains blocking under an old device number', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const fx = domainFixture(t)
+  const first = beginDomains(api, fx.coordinator, [fx.child], true)
+  first.occupy()
+  first.reserveMutation('contract-migration-owner')
+  first.close()
+  const index = path.join(fx.coordinator, 'mutations-v1')
+  const inode = fs.statSync(fx.child, { bigint: true }).ino.toString(16).padStart(16, '0')
+  const bucket = fs.readdirSync(index).find(name => name.endsWith('-' + inode))
+  assert.ok(bucket)
+  fs.renameSync(path.join(index, bucket), path.join(index, 'posix-0000000000000000-' + inode))
+  const writer = beginDomains(api, fx.coordinator, [fx.child])
+  try {
+    writer.occupy()
+    assert.throws(() => writer.admit(), { code: 'ERR_LEASE_BUSY' })
+  } finally {
+    writer.close()
+  }
 })
 
 test('interrupted mutation blocks domain readers after volatile locks close', (t) => {

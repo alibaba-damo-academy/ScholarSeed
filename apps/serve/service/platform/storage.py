@@ -1824,6 +1824,10 @@ class _DarwinSecurity:
         mount_function.restype = integer
         self.mount = mount_function
         declarations = {
+            "fgetattrlist": (
+                [integer, pointer, pointer, ctypes.c_size_t, ctypes.c_ulong],
+                integer,
+            ),
             "filesec_init": ([], pointer),
             "filesec_free": ([pointer], None),
             "filesec_query_property": ([pointer, integer, ctypes.POINTER(integer)], integer),
@@ -1886,6 +1890,26 @@ class _DarwinSecurity:
                     for write in _DARWIN_ACL_WRITES
                 ):
                     raise LeaseError("ERR_LEASE_PERMISSION")
+
+    def persistent_identity(self, descriptor: int) -> str:
+        # attrlist: five attribute groups, with volume info and UUID requested.
+        attributes = (ctypes.c_uint32 * 6)(5, 0, 0x80040000, 0, 0, 0)
+        volume = ctypes.create_string_buffer(20)
+        info = _DarwinStat()
+        self._check(self.lib.fgetattrlist(descriptor, attributes, volume, ctypes.sizeof(volume), 0))
+        self._check(self.stat(descriptor, ctypes.byref(info), None))
+        length = ctypes.c_uint32.from_buffer(volume).value
+        uuid = volume.raw[4:]
+        seconds, nanoseconds = info.birthtime
+        if (
+            length != len(volume)
+            or not any(uuid)
+            or not info.st_ino
+            or seconds <= 0
+            or not 0 <= nanoseconds < _NANOSECONDS
+        ):
+            raise LeaseError("ERR_LEASE_UNSUPPORTED")
+        return f"darwin:{uuid.hex()}:{info.st_ino:016x}:{seconds:016x}:{nanoseconds:08x}"
 
     def validate(
         self, descriptor: int, ancestor: bool, role: DirectoryRole = DirectoryRole.PRIVATE
@@ -2584,8 +2608,49 @@ class DarwinDirectoryNative(_PosixDirectoryNative):
             with self._temporary([descriptor]):
                 return _lease_identity(self._regular(descriptor))
 
+    def persistent_file_identity_at(
+        self, pin: object, name: str, expected: str | None = None
+    ) -> str:
+        with self._operation():
+            parent = self._pin(pin)
+            descriptor = self._file(parent, name, os.O_RDWR)
+            with self._temporary([descriptor]):
+                info = self._regular(descriptor)
+                if expected is not None and _lease_identity(info) != expected:
+                    raise LeaseError("ERR_LEASE_CHANGED")
+                return self._darwin_security.persistent_identity(descriptor)
+
+    def publish_registry_binding(self, pin: object, name: str, data: bytes) -> None:
+        """Publish under the registry write transaction shared with Desktop."""
+        stage = "registry.darwin.pending"
+        with self._operation():
+            parent = self._pin(pin)
+            try:
+                os.unlink(stage, dir_fd=parent.leaf)
+            except FileNotFoundError:
+                pass
+        self.create_at(pin, stage, data)
+        with self._operation():
+            parent = self._pin(pin)
+            os.replace(stage, name, src_dir_fd=parent.leaf, dst_dir_fd=parent.leaf)
+            os.fsync(parent.leaf)
+
+    def reclaim_registry_slot(self, pin: object, name: str) -> None:
+        """Remove an unused slot while its allocator holds the registry write transaction."""
+        with self._operation():
+            parent = self._pin(pin)
+            descriptor = self._reclaim_open(parent, name, True)
+            if descriptor is not None:
+                with self._temporary([descriptor]):
+                    self._reclaim_remove(parent, name, descriptor)
+
+    def sync_registry_directory(self, pin: object) -> None:
+        with self._operation():
+            os.fsync(self._pin(pin).leaf)
+
     def __init__(self) -> None:
-        super().__init__(_DarwinSecurity())
+        self._darwin_security = _DarwinSecurity()
+        super().__init__(self._darwin_security)
 
     def duplicate_lease(self, handle: object) -> int:
         """Duplicate the open file description while retaining native ownership."""

@@ -3251,6 +3251,13 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def test_catalog_list_stops_running_after_terminal_with_pending_cleanup(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
+
+        async def listed_session() -> dict[str, Any]:
+            listing = await service.list(10, OWNER)
+            rows = [row for row in listing["sessions"] if row["session_id"] == PRODUCT_SESSION_ID]
+            self.assertEqual(len(rows), 1, listing)
+            return rows[0]
+
         event = RuntimeEvent(
             schema_version=1,
             event_id="fixture:terminal-pending-cleanup",
@@ -3273,7 +3280,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             turn_status="running",
         )
         self.catalog.record_turn_settlement(PRODUCT_SESSION_ID, "client-turn", event)
-        running = service._list_row(self.catalog.get(PRODUCT_SESSION_ID))
+        running = await listed_session()
         self.assertIsNone(running["readiness"])
         self.assertTrue(running["running"])
         self.catalog.update_status(
@@ -3282,7 +3289,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             turn_id="native-turn",
             turn_status="completed",
         )
-        completed = service._list_row(self.catalog.get(PRODUCT_SESSION_ID))
+        completed = await listed_session()
         self.assertFalse(completed["running"])
         self.assertEqual(completed["last_seq"], self.live.last_seq)
         self.assertEqual(completed["last_turn_status"], "completed")
@@ -3293,7 +3300,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             self.catalog.update_status(
                 PRODUCT_SESSION_ID, status, turn_id="native-turn", turn_status=outcome
             )
-            terminal = service._list_row(self.catalog.get(PRODUCT_SESSION_ID))
+            terminal = await listed_session()
             self.assertFalse(terminal["running"])
             self.assertEqual(terminal["last_turn_status"], outcome)
 
@@ -8336,7 +8343,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         config = {"model_name": "qwen3.8-max", "base_url": DEEPRD_GATEWAY_BASE_URL}
         self.assertEqual(
             {row["key"] for row in GATEWAY_MODEL_CATALOG},
-            {"qwen3.8-max", "qwen3.8-flash", "qwen3-next-80b-a3b-thinking"},
+            {"qwen4-max", "qwen3.8-max", "qwen3.8-flash", "qwen3-next-80b-a3b-thinking"},
         )
         settings = SimpleNamespace(runtime_executable=lambda: "codex")
         bridge = CompletionBridge("http://127.0.0.1:9999")
@@ -8354,6 +8361,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         upstream = next(iter(bridge._upstreams.values()))
         self.assertEqual(upstream.approval_model_ref, intent.approval_model_ref)
         for model_key in (
+            "qwen4-max",
             "qwen3.8-flash",
             "qwen3-next-80b-a3b-thinking",
         ):

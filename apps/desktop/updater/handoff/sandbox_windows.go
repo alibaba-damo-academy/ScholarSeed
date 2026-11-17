@@ -47,6 +47,7 @@ const (
 	sandboxAncestorACL sandboxACLMode = iota
 	sandboxPrivateACL
 	sandboxRepairACL
+	sandboxProfileACL
 )
 
 func (s sandboxSecurity) fingerprint() string {
@@ -101,11 +102,11 @@ func sandboxObjectSnapshot(handle syscall.Handle, directory bool) (sandboxSecuri
 	}
 	defer kernel.NewProc("LocalFree").Call(uintptr(descriptor))
 	if owner == nil || acl == nil {
-		return sandboxSecurity{}, errors.New("sandbox security descriptor is incomplete")
+		return sandboxSecurity{}, sandboxCheckFailure(sandboxRuleDescriptor, errors.New("sandbox security descriptor is incomplete"))
 	}
 	valid, _, _ := security.NewProc("IsValidAcl").Call(uintptr(acl))
 	if valid == 0 {
-		return sandboxSecurity{}, errors.New("sandbox ACL is invalid")
+		return sandboxSecurity{}, sandboxCheckFailure(sandboxRuleACL, errors.New("sandbox ACL is invalid"))
 	}
 	ownerSID, err := (*syscall.SID)(owner).String()
 	if err != nil {
@@ -114,7 +115,7 @@ func sandboxObjectSnapshot(handle syscall.Handle, directory bool) (sandboxSecuri
 	header := unsafe.Slice((*byte)(acl), toolACLHeaderBytes)
 	size := int(binary.LittleEndian.Uint16(header[2:4]))
 	if size < toolACLHeaderBytes {
-		return sandboxSecurity{}, errors.New("sandbox ACL is truncated")
+		return sandboxSecurity{}, sandboxCheckFailure(sandboxRuleACL, errors.New("sandbox ACL is truncated"))
 	}
 	var control uint16
 	var revision uint32
@@ -126,8 +127,14 @@ func sandboxObjectSnapshot(handle syscall.Handle, directory bool) (sandboxSecuri
 	if err := syscall.GetFileInformationByHandle(handle, &info); err != nil {
 		return sandboxSecurity{}, err
 	}
-	if info.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 || (info.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY != 0) != directory || (!directory && info.NumberOfLinks != 1) {
-		return sandboxSecurity{}, errors.New("sandbox object type or link count changed")
+	if info.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return sandboxSecurity{}, sandboxCheckFailure(sandboxRuleReparse, errors.New("sandbox object type or link count changed"))
+	}
+	if (info.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY != 0) != directory {
+		return sandboxSecurity{}, sandboxCheckFailure(sandboxRuleType, errors.New("sandbox object type or link count changed"))
+	}
+	if !directory && info.NumberOfLinks != 1 {
+		return sandboxSecurity{}, sandboxCheckFailure(sandboxRuleHardlink, errors.New("sandbox object type or link count changed"))
 	}
 	identity := fmt.Sprintf("%08x:%08x%08x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow)
 	return sandboxSecurity{ownerSID, bytes.Clone(unsafe.Slice((*byte)(acl), size)), control, identity}, nil
@@ -135,23 +142,24 @@ func sandboxObjectSnapshot(handle syscall.Handle, directory bool) (sandboxSecuri
 
 func validateSandboxACL(snapshot sandboxSecurity, user, group string, mode sandboxACLMode, readers ...string) (err error) {
 	defer func() { err = aclpolicy.Reject("recovery_writer", "recovery", "policy_denied", err, "") }()
+	ancestor := mode == sandboxAncestorACL || mode == sandboxProfileACL
 	if len(snapshot.acl) < toolACLHeaderBytes {
-		return errors.New("sandbox ACL header is truncated")
+		return sandboxCheckFailure(sandboxRuleACL, errors.New("sandbox ACL header is truncated"))
 	}
 	if !aclpolicy.RecoveryOwner(snapshot.owner, user) {
-		return errors.New("sandbox directory owner is not trusted")
+		return sandboxCheckFailure(sandboxRuleOwner, errors.New("sandbox directory owner is not trusted"))
 	}
 	count := int(binary.LittleEndian.Uint16(snapshot.acl[4:6]))
 	position := toolACLHeaderBytes
 	userAllowed, groupDenied := false, false
 	for index := 0; index < count; index++ {
 		if position+toolACEHeaderBytes+toolSIDMinimumBytes > len(snapshot.acl) {
-			return errors.New("sandbox ACE is truncated")
+			return sandboxCheckFailure(sandboxRuleACE, errors.New("sandbox ACE is truncated"))
 		}
 		ace := snapshot.acl[position:]
 		size := int(binary.LittleEndian.Uint16(ace[2:4]))
 		if size < toolACEHeaderBytes+toolSIDMinimumBytes || size > len(ace) || (ace[0] != 0 && ace[0] != 1) || ace[1]&^byte(toolKnownACEFlags) != 0 || int(ace[9])*4+toolACEHeaderBytes+toolSIDMinimumBytes != size {
-			return errors.New("sandbox ACL contains unsupported ACEs")
+			return sandboxCheckFailure(sandboxRuleACE, errors.New("sandbox ACL contains unsupported ACEs"))
 		}
 		sid, err := (*syscall.SID)(unsafe.Pointer(&ace[8])).String()
 		if err != nil {
@@ -160,23 +168,26 @@ func validateSandboxACL(snapshot sandboxSecurity, user, group string, mode sandb
 		mask := toolMask(binary.LittleEndian.Uint32(ace[4:8]))
 		if ace[0] == 1 {
 			if sid != group || ace[1]&toolInheritOnly != 0 || mask != sandboxDenyMask {
-				return errors.New("sandbox deny policy is not reviewed")
+				return sandboxCheckFailure(sandboxRuleDeny, errors.New("sandbox deny policy is not reviewed"))
 			}
 			if mode == sandboxRepairACL && ace[1] != toolInheritChildren {
-				return errors.New("sandbox recovery requires the explicit inheritable native deny")
+				return sandboxCheckFailure(sandboxRuleNativeDeny, errors.New("sandbox recovery requires the explicit inheritable native deny"))
 			}
 			groupDenied = true
 		} else {
-			if mode == sandboxAncestorACL && ace[1]&toolInheritOnly != 0 {
+			if ancestor && ace[1]&toolInheritOnly != 0 {
 				position += size
 				continue
 			}
 			reader := false
-			if mode == sandboxAncestorACL && sandboxAncestorTraversal(mask, ace[1]) {
+			if ancestor && sandboxAncestorTraversal(mask, ace[1]) {
+				reader = true
+			}
+			if mode == sandboxProfileACL && mask&^uint32(sandboxUserMask) == 0 {
 				reader = true
 			}
 			if group != "" && sid == group && mask&^uint32(toolReadExecute) == 0 {
-				if mode == sandboxAncestorACL || (mode == sandboxRepairACL && groupDenied && ace[1]&toolInheritedACE != 0 && mask&^uint32(sandboxDenyMask) == 0) {
+				if ancestor || (mode == sandboxRepairACL && groupDenied && ace[1]&toolInheritedACE != 0 && mask&^uint32(sandboxDenyMask) == 0) {
 					reader = true
 				}
 			}
@@ -187,11 +198,11 @@ func validateSandboxACL(snapshot sandboxSecurity, user, group string, mode sandb
 			}
 			if !aclpolicy.RecoveryWriter(sid, user, snapshot.owner) {
 				if !reader {
-					return errors.New("sandbox directory grants access to an untrusted principal")
+					return sandboxCheckFailure(sandboxRulePrincipal, errors.New("sandbox directory grants access to an untrusted principal"))
 				}
 			}
 			if mask&^uint32(toolFullAccess) != 0 || (sid == sandboxOwnerSID && mask != toolFullAccess) {
-				return errors.New("sandbox recovery refuses unknown owner-rights or permissions")
+				return sandboxCheckFailure(sandboxRuleMask, errors.New("sandbox recovery refuses unknown owner-rights or permissions"))
 			}
 			if sid == user && ace[1]&toolInheritOnly == 0 && mask&sandboxUserMask == sandboxUserMask {
 				userAllowed = true
@@ -200,7 +211,7 @@ func validateSandboxACL(snapshot sandboxSecurity, user, group string, mode sandb
 		position += size
 	}
 	if mode == sandboxRepairACL && (!userAllowed || !groupDenied) {
-		return errors.New("sandbox ACL does not match the reviewed private policy")
+		return sandboxCheckFailure(sandboxRulePrivate, errors.New("sandbox ACL does not match the reviewed private policy"))
 	}
 	return nil
 }
@@ -677,7 +688,7 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 			return result, err
 		}
 	}
-	for _, ancestor := range []struct{ path, stage string }{
+	for index, ancestor := range []struct{ path, stage string }{
 		{profile, sandboxStageProfile}, {filepath.Dir(home), sandboxStageProduct}, {home, sandboxStageHome},
 	} {
 		stage = ancestor.stage
@@ -690,7 +701,11 @@ func (p Policy) RecoverSandbox(home, version, executable string, parentID uint32
 		if readErr != nil {
 			return result, readErr
 		}
-		if err = validateSandboxACL(snapshot, user, group, sandboxAncestorACL, readers...); err != nil {
+		mode := sandboxAncestorACL
+		if index == 0 {
+			mode = sandboxProfileACL
+		}
+		if err = validateSandboxACL(snapshot, user, group, mode, readers...); err != nil {
 			return result, err
 		}
 	}

@@ -57,6 +57,11 @@ file_handle directory_file(struct directory *directory, const char *name, struct
 file_handle directory_bound_file(struct directory *directory, const char *name,
                                  const char *identity, struct directory_error *error);
 bool directory_file_identity(file_handle file, char *identity, struct directory_error *error);
+#ifndef _WIN32
+bool directory_persistent_file_identity(file_handle file,
+                                        char identity[DIRECTORY_IDENTITY_BYTES],
+                                        struct directory_error *error);
+#endif
 /* Exclusive lock on the pinned directory itself, for legacy-writer compatibility.
    Darwin only; Windows has no legacy directory-flock writer to exclude. */
 file_handle directory_lock_self(struct directory *directory, struct directory_error *error);

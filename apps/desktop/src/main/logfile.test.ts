@@ -21,6 +21,41 @@ import {
 const DIAGNOSTIC_RETRY_WINDOW_MS = 60_000
 const DIAGNOSTIC_OVERFLOW_ENTRIES = LOG_BUFFER_MAX_CHUNKS + 1
 
+test('asynchronous primary failure is acknowledged before fallback and close waits for fallback IO', async () => {
+  let acknowledge!: (result: boolean) => void
+  let fallbackComplete!: (result: boolean) => void
+  let closed = false
+  const fallback: string[] = []
+  const log = new DiagnosticLog(
+    {
+      write: () =>
+        new Promise<boolean>((resolve) => {
+          acknowledge = resolve
+        }),
+      end: async () => {
+        closed = true
+      },
+    },
+    (line) => {
+      fallback.push(line)
+      return new Promise<boolean>((resolve) => {
+        fallbackComplete = resolve
+      })
+    }
+  )
+  log.write('retained\n')
+  const ending = log.end()
+  await Promise.resolve()
+  assert.deepEqual(fallback, [])
+  acknowledge(false)
+  await Promise.resolve()
+  assert.match(fallback[0], /retained/)
+  assert.equal(closed, false)
+  fallbackComplete(true)
+  await ending
+  assert.equal(closed, true)
+})
+
 test('a partial diagnostic drain cannot let newer lines overtake retained lines', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const dir = workdir()
@@ -39,16 +74,18 @@ test('a partial diagnostic drain cannot let newer lines overtake retained lines'
   })
   const log = new DiagnosticLog(primary, () => false)
   log.write('older\n')
+  await log.flush()
   available = true
   rejectNext = true
   log.write('newer\n')
-  log.flush()
+  await log.flush()
+  await log.flush()
   await primary.end()
   const persisted = readFileSync(path, 'utf8')
   assert.ok(persisted.indexOf('older\n') < persisted.indexOf('newer\n'), persisted)
 })
 
-test('diagnostic backlog capacity is independent of the primary rotation cap', (context) => {
+test('diagnostic backlog capacity is independent of the primary rotation cap', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const dir = workdir()
   context.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -67,11 +104,11 @@ test('diagnostic backlog capacity is independent of the primary rotation cap', (
   })
   log.write('retained diagnostic longer than the rotation cap\n')
   available = true
-  log.flush()
+  await log.flush()
   assert.match(persisted.join(''), /retained diagnostic longer than the rotation cap/)
 })
 
-test('an undeliverable omission notice does not block retained diagnostics', (context) => {
+test('an undeliverable omission notice does not block retained diagnostics', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const dir = workdir()
   context.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -90,19 +127,19 @@ test('an undeliverable omission notice does not block retained diagnostics', (co
   })
   for (let index = 0; index < DIAGNOSTIC_OVERFLOW_ENTRIES; index++) log.write(`${index}\n`)
   available = true
-  log.flush()
+  await log.flush()
   assert.ok(persisted.length > 0)
   assert.ok(persisted.at(-1)?.endsWith(`${DIAGNOSTIC_OVERFLOW_ENTRIES - 1}\n`))
   const count = persisted.length
   acceptNotice = true
-  log.flush()
+  await log.flush()
   assert.equal(persisted.length, count + 1)
   assert.match(persisted.at(-1)!, /bytes omitted/)
-  log.flush()
+  await log.flush()
   assert.equal(persisted.length, count + 1)
 })
 
-test('quiet diagnostics retry after storage returns without requiring another write', (context) => {
+test('quiet diagnostics retry after storage returns without requiring another write', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const dir = workdir()
   context.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -119,11 +156,14 @@ test('quiet diagnostics retry after storage returns without requiring another wr
     return true
   })
   log.write('quiet diagnostic\n')
+  await log.flush()
   available = true
   context.mock.timers.tick(DIAGNOSTIC_RETRY_WINDOW_MS)
+  await log.flush()
   assert.match(persisted.join(''), /quiet diagnostic/)
   const count = persisted.length
   context.mock.timers.tick(DIAGNOSTIC_RETRY_WINDOW_MS)
+  await log.flush()
   assert.equal(persisted.length, count)
 })
 
@@ -179,8 +219,9 @@ test('failed primary diagnostics use the existing fallback writer and recover wi
   log.write('first diagnostic\n')
   assert.equal(existsSync(join(dir, 'backend.log')), false)
   fallbackReady = true
-  log.flush()
+  await log.flush()
   log.write('second diagnostic\n')
+  await log.end()
   await fallback.end()
   const persisted = readFileSync(join(dir, 'backend.log'), 'utf8')
   assert.match(persisted, /primary log unavailable/)
@@ -196,13 +237,13 @@ test('successful diagnostics do not duplicate to fallback and post-close writes 
   const primary = new RotatingFileLog(join(dir, 'window.log'))
   const log = new DiagnosticLog(primary, () => assert.fail('healthy primary must not duplicate'))
   log.write('healthy\n')
-  log.flush()
+  await log.flush()
   assert.equal(readFileSync(join(dir, 'window.log'), 'utf8'), 'healthy\n')
   await primary.end()
   assert.equal(primary.write('after close'), false)
 })
 
-test('diagnostic fallback buffers are bounded and report omitted bytes when storage recovers', (t) => {
+test('diagnostic fallback buffers are bounded and report omitted bytes when storage recovers', async (t) => {
   const dir = workdir()
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const primary = new RotatingFileLog(join(dir, 'window.log'), {
@@ -221,13 +262,13 @@ test('diagnostic fallback buffers are bounded and report omitted bytes when stor
   for (let index = 0; index < DIAGNOSTIC_OVERFLOW_ENTRIES; index++)
     log.write(`${index}: ${'x'.repeat(64)}\n`)
   available = true
-  log.flush()
+  await log.flush()
   assert.match(persisted.join(''), /capacity exceeded: \d+ bytes omitted/)
   assert.ok(persisted.at(-1)?.includes(`${DIAGNOSTIC_OVERFLOW_ENTRIES - 1}: `))
   assert.ok(persisted.length - 1 <= LOG_BUFFER_MAX_CHUNKS)
   assert.ok(Buffer.byteLength(persisted.slice(1).join('')) <= DIAGNOSTIC_BUFFER_MAX_BYTES)
   const count = persisted.length
-  log.flush()
+  await log.flush()
   assert.equal(persisted.length, count)
 })
 

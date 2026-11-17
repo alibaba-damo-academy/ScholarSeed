@@ -1835,6 +1835,8 @@ class ProductEventStore:
     ) -> None:
         source = SessionCatalogStore(self._database).get(source_session_id)
         if source is None:
+            if snapshots_only:
+                return
             raise SessionStateConflictError(SESSION_FORK_SOURCE_CHANGED)
         request = self.by_key(target.session_id, SESSION_FORK_KEY)
         source_workdir = Path(
