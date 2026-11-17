@@ -3,6 +3,35 @@
 
 FastAPI backend and product composition root. The distribution is `scholarseed`, and the namespace is `service`.
 
+## On-demand product plans / 按需产品计划
+
+Ordinary sessions retain the native lightweight plan tool and artifact delivery;
+they do not register the structured product `update_plan`. The optional
+`plan/enable` Bridge operation requires a declared user or workflow need. It
+persists selection without creating steps, authorizing work or starting clocks.
+Until enabled, execution and contract discovery reject the other plan operations;
+discovery exposes only the activation contract. Activation is not a security grant.
+The enabling turn uses Bridge; the next turn refreshes a changed tool profile
+through the existing history-preserving native-thread replacement path.
+
+Existing structured trees retain their service, revisions and timing rules.
+`release` preserves history and opts out; native-only steps never opt in. The
+selection is stored in `plan_enablement` events alongside existing plan snapshots,
+without a new database or schema migration. Product retrieval, PDF and artifact
+operations remain independent. The literature-review execution workflow enables
+its tracker through the shared product plan guide, not by merely loading a Skill.
+
+普通会话保留原生轻量计划和产物交付，不默认注册结构化产品 `update_plan`。
+只有明确的用户或工作流需求才通过 `plan/enable` 启用；该操作只持久保存选择，
+不创建步骤、不授权工作、不开始计时。未启用时，其他计划操作及其完整契约发现均被拒绝，
+发现只提供启用契约。启用本身不是安全授权。本轮通过 Bridge 使用，下一回合才通过
+既有的保留历史机制更换原生线程和工具配置，不在执行中热切换。
+
+已有产品树保留原服务、版本和计时规则；`release` 保留历史并退出。原生轻量步骤不自动
+启用产品计划。选择通过 `plan_enablement` 事件与既有快照共同恢复，不新增数据库或迁移。
+检索、PDF 和产物功能独立可用。文献综述的执行流程按统一计划指南启用阶段跟踪，
+仅加载 Skill 或讨论写作方案不启用。
+
 <a id="职责与边界"></a>
 ## Responsibilities and Boundaries
 

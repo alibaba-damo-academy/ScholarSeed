@@ -12,7 +12,7 @@ from starlette.status import HTTP_200_OK, HTTP_400_BAD_REQUEST, HTTP_403_FORBIDD
 
 from service.chat.api.bridge import scoped_bridge_admission, scoped_bridge_caller
 from service.chat.service.contracts import describe_contract, list_contracts
-from service.platform.activity import Activities
+from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     CONTRACT_DESCRIBE_ROUTE,
     CONTRACT_LIST_ROUTE,
@@ -52,11 +52,25 @@ def register_contract_routes(
                 {"ok": False, "error": "bridge_invalid_parameters"}, HTTP_400_BAD_REQUEST
             )
         project_id = getattr(live, "project_id", None)
+        plans = getattr(live, "plans", None)
+        product_plan = bool(
+            plans is not None
+            and await activities.finish_thread(ActivityDomain.BRIDGE, plans.enabled)
+        )
+        if (
+            resolve_caller(live.id) is not live
+            or live.publication_turn_id != turn_id
+            or live.bridge_activity is not activity
+        ):
+            return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         result = (
-            list_contracts(command, project_id=project_id)
+            list_contracts(command, project_id=project_id, product_plan=product_plan)
             if isinstance(command, ContractList)
             else describe_contract(
-                command.target_capability, command.target_operation, project_id=project_id
+                command.target_capability,
+                command.target_operation,
+                project_id=project_id,
+                product_plan=product_plan,
             )
         )
         return JSONResponse(

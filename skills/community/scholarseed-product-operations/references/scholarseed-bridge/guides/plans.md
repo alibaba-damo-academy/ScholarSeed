@@ -2,11 +2,28 @@
 
 **English** · [简体中文](plans.zh.md)
 
-Use the conversation's `update_plan` tool for meaningful stages of the actual task. Keep stable IDs and parent_id links; do not create a leaf per tool call or a retrospective completed checklist. Plans are presentation/execution records, not a replacement research workflow.
+Use a product plan only when the user explicitly requests a persistent task tree,
+an existing product tree needs continuation, or a workflow requires persistent
+stage tracking (for example the literature-review execution workflow). Ordinary
+research, multiple steps, long tools, retrieval and artifact publication do not
+require it. A written proposal or native lightweight plan does not enable it.
+
+When no product plan is enabled, read the bundled `plan/enable` contract and call
+`scholarseed_bridge` with capability `plan`, operation `enable`, and request
+`{purpose:"user_requested"|"workflow_required", reason:"actual need"}`. This does
+not authorize execution, create stages, or start timing. It returns current state.
+Use the [Bridge path](plans/fallback.md) for the rest of this turn; do not pass
+product arguments to a Codex native `update_plan` accepting `plan`/`explanation`.
+The host selects the dedicated product tool at the next turn boundary. Existing
+product trees remain enabled without another enable call; `release` opts out
+without deleting history. Merely loading this guide does not enable anything.
+
+Keep stable IDs and parent_id links; maintain real stages, not a leaf per tool
+call or a retrospective checklist. Plans do not replace the research workflow.
 
 Check the actual declared schema first. For an older tool requiring a request
 wrapper, read [legacy plans](plans/legacy.md) instead of applying the flat forms.
-If the native tool is absent, read [Bridge fallback](plans/fallback.md). Do not
+If the product tool is absent, read [Bridge fallback](plans/fallback.md). Do not
 preload either branch for the current flat tool; never switch an existing tree
 into a different native plan system.
 

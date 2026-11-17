@@ -267,12 +267,15 @@ from service.platform.bridge import (
     COMPONENT_HOST_PLUGIN,
     COMPONENT_REQUEST_MARKER,
     COMPONENT_SCHEMA_DEFAULT,
+    PLAN_CAPABILITY,
+    PLAN_NOT_ENABLED,
     PLAN_SOURCE,
     PLUGIN_INSTALL_CAPABILITY,
     SERVICE_PLAN_TOOL_NAME,
     ComponentInvocation,
     DisplayCardContent,
     PlanCommand,
+    PlanEnable,
     PluginInstallation,
 )
 from service.platform.citations import CitationAnswerFilter
@@ -1278,8 +1281,9 @@ class LiveSession:
             result: dict[str, Any] = {"ok": False, "error": "bridge_access_denied"}
         else:
             try:
+                arguments = prompt.get("arguments")
                 result = await execute_service_tool(
-                    prompt.get("arguments"),
+                    arguments,
                     session_id=self.id,
                     token=self.bridge_token,
                     local_socket=self.local_socket,
@@ -1287,6 +1291,14 @@ class LiveSession:
                     callback_turn_id=callback.native_turn_id,
                     tool_name=str(prompt.get("tool")),
                     workdir=self.runtime_workdir,
+                    product_plan=(
+                        (
+                            prompt.get("tool") == SERVICE_PLAN_TOOL_NAME
+                            or isinstance(arguments, Mapping)
+                            and arguments.get("capability") == PLAN_CAPABILITY
+                        )
+                        and await self._persistence.run(self.plans.enabled)
+                    ),
                 )
             except Exception:
                 self._logger.exception("service_tool_execution_failed session_id=%s", self.id)
@@ -3083,6 +3095,31 @@ class LiveSession:
                 self._local_input_paths[reference_id] = (canonical, kind)
                 self._local_input_path_ids[canonical] = reference_id
 
+    async def enable_plan(self, command: PlanEnable, turn_id: str) -> None:
+        async with self._projection_lock:
+
+            def require_turn() -> None:
+                if (
+                    not self.running
+                    or self.interrupting
+                    or self.terminating
+                    or self.terminated
+                    or not turn_id
+                    or turn_id != self.publication_turn_id
+                ):
+                    raise PermissionError("plan_turn_inactive")
+
+            record = await self._persistence.run(
+                self.plans.enable,
+                command,
+                turn_id=turn_id,
+                runtime_id=self.runtime_id,
+                vendor_thread_id=self.vendor_thread_id,
+                require_turn=require_turn,
+            )
+            if record is not None:
+                self._trace_and_broadcast(record)
+
     async def write_plan(self, command: PlanCommand) -> ProductEventRecord:
         async with self._projection_lock:
 
@@ -3096,6 +3133,8 @@ class LiveSession:
                     or command.turn_id != self.publication_turn_id
                 ):
                     raise PermissionError("plan_turn_inactive")
+                if not self.plans.enabled():
+                    raise PermissionError(PLAN_NOT_ENABLED)
 
             record = await self._persistence.run(
                 self.plans.write,

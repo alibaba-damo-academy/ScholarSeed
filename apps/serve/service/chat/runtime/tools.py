@@ -31,7 +31,10 @@ from service.platform.bridge import (
     CONTRACT_CAPABILITY,
     CONTRACT_DESCRIBE_OPERATION,
     PLAN_ACTION_STATUSES,
+    PLAN_CAPABILITY,
     PLAN_COMPLETE_ACTION,
+    PLAN_ENABLE_OPERATION,
+    PLAN_NOT_ENABLED,
     SERVICE_PLAN_TOOL_NAME,
     ArtifactsPublish,
     ContractDescribe,
@@ -48,7 +51,6 @@ from service.platform.vocabulary import (
 )
 
 SERVICE_BRIDGE_TOOL_NAME = "scholarseed_bridge"
-PLAN_CAPABILITY = "plan"
 PLAN_MODEL_OPERATIONS = ("get", "create", "update", "revise", "release", *PLAN_ACTION_STATUSES)
 MISSING_PARAMETER_ERROR = "missing"
 BRIDGE_VALIDATION_ACTION = (
@@ -225,7 +227,17 @@ SERVICE_ARTIFACT_TOOL = RuntimeServiceTool(
     ),
     input_schema=artifact_tool_schema(),
 )
-SESSION_SERVICE_TOOLS = (SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL, SERVICE_ARTIFACT_TOOL)
+SESSION_SERVICE_TOOLS = (SERVICE_BRIDGE_TOOL, SERVICE_ARTIFACT_TOOL)
+
+
+def session_service_tools(*, product_plan: bool) -> tuple[RuntimeServiceTool, ...]:
+    return (
+        (SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL, SERVICE_ARTIFACT_TOOL)
+        if product_plan
+        else SESSION_SERVICE_TOOLS
+    )
+
+
 SERVICE_TOOL_CAPABILITIES = {
     SERVICE_BRIDGE_TOOL_NAME: None,
     SERVICE_PLAN_TOOL_NAME: PLAN_CAPABILITY,
@@ -243,11 +255,18 @@ async def execute_service_tool(
     callback_turn_id: str = "",
     tool_name: str = SERVICE_BRIDGE_TOOL_NAME,
     workdir: Path | None = None,
+    product_plan: bool = True,
 ) -> dict[str, Any]:
     if tool_name not in SERVICE_TOOL_CAPABILITIES:
         return {"ok": False, "error": "bridge_access_denied"}
     if not isinstance(arguments, Mapping):
         return {"ok": False, "error": "bridge_invalid_parameters"}
+    if not product_plan and (
+        tool_name == SERVICE_PLAN_TOOL_NAME
+        or arguments.get("capability") == PLAN_CAPABILITY
+        and arguments.get("operation") != PLAN_ENABLE_OPERATION
+    ):
+        return {"ok": False, "error": PLAN_NOT_ENABLED}
     capability_override = SERVICE_TOOL_CAPABILITIES[tool_name]
     legacy_plan = (
         tool_name == SERVICE_PLAN_TOOL_NAME
@@ -302,7 +321,7 @@ async def execute_service_tool(
         return {"ok": False, "error": "bridge_invalid_parameters"}
     entry = BRIDGE_REQUESTS.get((capability, operation))
     if entry is None:
-        return operation_choices(capability)
+        return operation_choices(capability, product_plan=product_plan)
     request_type, route = entry.request_type, entry.route
     if ("request" in arguments) == ("request_file" in arguments):
         return {
