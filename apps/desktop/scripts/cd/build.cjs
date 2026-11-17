@@ -70,6 +70,8 @@ const CREDENTIAL_ENV_PREFIXES = [
 // The published version is a plain three-part SemVer; the build stamp lives in its
 // own field, so a version string never carries a timestamp or a commit suffix.
 const SEMVER_VERSION = /^\d+\.\d+\.\d+$/
+const VERSION_BRANCH = /^(?:preview|release)\/(\d+\.\d+\.\d+)$/
+const UNKNOWN_BRANCH = 'unknown'
 const BUILD_NUMBER = /^\d{12}$/
 // Beijing 恒为 UTC+8（中国无夏令时），构建号直接加该固定秒数偏移。
 const BUILD_NUMBER_OFFSET_SECONDS = 8 * 3600
@@ -438,17 +440,46 @@ Windows installer requires vpk 1.2.161 (--vpk); --velopack-base selects a prior 
 function provenance(snapshot = sourceSnapshot(REPO), repo = REPO) {
   const commit = snapshot.commit
   const currentBranch = command('git', ['branch', '--show-current'], { cwd: repo })
-  const branch = currentBranch || 'unknown'
+  const branch = currentBranch || UNKNOWN_BRANCH
   const remote = DEFAULT_REMOTE
   return { branch, commit, remote, clean: snapshot.clean, snapshot }
 }
 
-function sourceInputs(args, repo = REPO) {
+function versionBranches(source, repo, environment) {
+  if (source.branch !== UNKNOWN_BRANCH) return [source.branch]
+  if (environment.CI_COMMIT_REF_NAME) {
+    if (environment.CI_COMMIT_SHA !== source.commit) {
+      throw new Error('CI source ref must be bound to the checked-out commit')
+    }
+    return [environment.CI_COMMIT_REF_NAME]
+  }
+  const remotePrefix = `${DEFAULT_REMOTE}/`
+  const branches = command('git', ['for-each-ref', '--points-at', source.commit,
+    '--format=%(refname:lstrip=2)', 'refs/heads', `refs/remotes/${DEFAULT_REMOTE}`], { cwd: repo })
+    .split(/\r?\n/).map(ref => ref.startsWith(remotePrefix) ? ref.slice(remotePrefix.length) : ref)
+    .filter(ref => VERSION_BRANCH.test(ref))
+  if (new Set(branches.map(ref => VERSION_BRANCH.exec(ref)[1])).size > 1) {
+    throw new Error('source commit has conflicting version branches; check out the intended branch or supply a commit-bound CI ref')
+  }
+  return branches
+}
+
+function sourceInputs(args, repo = REPO, environment = process.env) {
   const snapshot = sourceSnapshot(repo)
   if ((args.type !== 'dev' || args.candidate) && !snapshot.clean) {
     throw new Error('package requires a clean worktree')
   }
-  return provenance(snapshot, repo)
+  const source = provenance(snapshot, repo)
+  if (args.type !== 'dev' || args.candidate) {
+    const version = args.version || environment.SCHOLARSEED_DESKTOP_VERSION || PACKAGE.version
+    for (const branch of versionBranches(source, repo, environment)) {
+      const expected = VERSION_BRANCH.exec(branch)?.[1]
+      if (expected && expected !== version) {
+        throw new Error(`source branch ${branch} does not match build version ${version}`)
+      }
+    }
+  }
+  return source
 }
 
 /**
@@ -830,7 +861,7 @@ async function main(argv = process.argv.slice(2)) {
     return null
   }
   const parsed = buildArguments(argv)
-  const source = sourceInputs({ type: buildType(argv, parsed), candidate: parsed.candidate })
+  const source = sourceInputs({ type: buildType(argv, parsed), candidate: parsed.candidate, version: parsed.version })
   const mutex = acquireMutex()
   try {
     // Locked npm dependencies are installed before any third-party module is loaded,
