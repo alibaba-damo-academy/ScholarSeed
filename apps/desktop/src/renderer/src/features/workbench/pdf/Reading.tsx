@@ -1157,7 +1157,7 @@ export function usePdfAnalysis({
   }
   const output = (content: PdfAiContent, showEvidence = true): React.JSX.Element => (
     <>
-      <Markdown text={content.text ?? ''} />
+      <Markdown text={content.text ?? ''} math />
       {content.uncertain && (
         <p className="mt-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]">
           {t('reading.uncertain')}
@@ -1534,7 +1534,7 @@ export function usePdfAnalysis({
             ) : floatingResult ? (
               output(floatingResult, true)
             ) : floatingPreview ? (
-              <Markdown text={floatingPreview} pending={busy} />
+              <Markdown text={floatingPreview} pending={busy} math />
             ) : null}
           </div>
         </ScrollArea>
@@ -2366,7 +2366,7 @@ export function usePdfAnalysis({
                     )}
                     {(floatingResult?.text || figureText) && (
                       <div className="mt-[var(--vds-space-3)] cursor-text select-text text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-pdf-reading-content-line-height)]">
-                        <Markdown text={floatingResult?.text ?? figureText} />
+                        <Markdown text={floatingResult?.text ?? figureText} math />
                       </div>
                     )}
                     {feedback('figure_explanation')}

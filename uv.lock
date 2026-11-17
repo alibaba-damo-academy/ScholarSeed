@@ -676,10 +676,10 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "deep-rnd-l1"
-version = "0.2.8"
-source = { path = "apps/serve/vendor/deep_rnd_l1-0.2.8-py3-none-any.whl" }
+version = "0.2.9"
+source = { path = "apps/serve/vendor/deep_rnd_l1-0.2.9-py3-none-any.whl" }
 wheels = [
-    { filename = "deep_rnd_l1-0.2.8-py3-none-any.whl", hash = "sha256:862ee6f754794c9b7620e1ae25d9ff0fe87ec1d77ff6c65ad14ddaafe5fca92a" },
+    { filename = "deep_rnd_l1-0.2.9-py3-none-any.whl", hash = "sha256:69f23a6001d23502754322ec3cf2f5a8129ceb5822656490cbc879a9a96f8e18" },
 ]
 
 [[package]]
@@ -3166,7 +3166,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'all'", specifier = "<49.0.0" },
     { name = "cryptography", marker = "extra == 'serve'", specifier = "<49.0.0" },
     { name = "damoatrace", editable = "packages/damoatrace" },
-    { name = "deep-rnd-l1", path = "apps/serve/vendor/deep_rnd_l1-0.2.8-py3-none-any.whl" },
+    { name = "deep-rnd-l1", path = "apps/serve/vendor/deep_rnd_l1-0.2.9-py3-none-any.whl" },
     { name = "docker", marker = "extra == 'all'" },
     { name = "docker", marker = "extra == 'docker'" },
     { name = "fastapi", marker = "extra == 'all'" },
