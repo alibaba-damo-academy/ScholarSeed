@@ -111,6 +111,7 @@ def forward_contract(
     upstream_responses: tuple[tuple[int, bytes, dict[str, str]], ...] = (),
     upstream_stream: httpx.AsyncByteStream | None = None,
     raise_server_exceptions: bool = True,
+    request_headers: dict[str, str] | None = None,
     diagnostics: list[tuple[str, dict]] | None = None,
     sources: list[tuple[str, str, dict]] | None = None,
     credential_resolver: Callable[[str, str], Awaitable[ModelCredential]] | None = None,
@@ -191,9 +192,131 @@ def forward_contract(
             response = client.post(
                 f"{MODEL_BRIDGE_ROUTE_PREFIX}{registration.bridge_id}/v1/responses",
                 json=payload,
+                headers=request_headers,
             )
             client.portal.call(bridge.close)
     return response, captured
+
+
+def test_native_routing_headers_roundtrip() -> None:
+    """The native client owns turn state; the bridge must not drop or retain it."""
+    state = "opaque+/state=with-padding" * 16
+    body = b'data: {"type":"response.completed","response":{"id":"resp_test","output":[]}}\n\n'
+    diagnostics: list[tuple[str, dict]] = []
+    for streaming in (True, False):
+        response, captured = forward_contract(
+            {"model": "alias", "input": [], "stream": streaming},
+            body,
+            wire_protocol=ModelWireProtocol.RESPONSES,
+            request_headers={
+                "session-id": "native-session",
+                "thread-id": "native-thread",
+                "x-codex-turn-state": state,
+                "Authorization": "Bearer caller-secret",
+                "Cookie": "caller-cookie",
+                "x-unreviewed": "do-not-forward",
+            },
+            upstream_responses=(
+                (
+                    200,
+                    body,
+                    {
+                        "x-codex-turn-state": state,
+                        "set-cookie": "upstream-cookie",
+                        "x-unreviewed": "do-not-return",
+                    },
+                ),
+            ),
+            diagnostics=diagnostics,
+        )
+        check(
+            "native routing identifiers reach upstream",
+            all(
+                captured[0].headers.get(k) == v
+                for k, v in {
+                    "session-id": "native-session",
+                    "thread-id": "native-thread",
+                    "x-codex-turn-state": state,
+                }.items()
+            ),
+        )
+        check(
+            "turn state returns intact to native client",
+            response.headers.get("x-codex-turn-state") == state,
+        )
+        check(
+            "routing does not replace product credentials",
+            captured[0].headers.get("authorization") == "Bearer contract-key",
+        )
+        check(
+            "request header allowlist excludes cookies and unknown fields",
+            "cookie" not in captured[0].headers and "x-unreviewed" not in captured[0].headers,
+        )
+        check(
+            "response header allowlist excludes cookies and unknown fields",
+            "set-cookie" not in response.headers and "x-unreviewed" not in response.headers,
+        )
+    check("opaque turn state is absent from diagnostics", state not in json.dumps(diagnostics))
+    response, captured = forward_contract(
+        {"model": "alias", "input": [], "stream": False},
+        b'{"choices":[]}',
+        wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS,
+        request_headers={"x-codex-turn-state": state, "session-id": "native-session"},
+        upstream_responses=((200, b'{"choices":[]}', {"x-codex-turn-state": state}),),
+    )
+    check(
+        "chat conversion does not inherit native routing",
+        "x-codex-turn-state" not in captured[0].headers
+        and "session-id" not in captured[0].headers
+        and "x-codex-turn-state" not in response.headers,
+    )
+
+
+def test_native_turn_state_is_not_retained_by_bridge() -> None:
+    async def run() -> None:
+        seen: list[str | None] = []
+
+        def upstream(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("x-codex-turn-state"))
+            return httpx.Response(
+                200,
+                json={"id": "resp_test", "output": []},
+                headers={"x-codex-turn-state": "issued-for-this-response"},
+            )
+
+        bridge = CompletionBridge("http://127.0.0.1:8770")
+        bridge._clients[False] = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        registrations = [
+            bridge.register(
+                endpoint=RESPONSES_ENDPOINT,
+                responses_endpoint=RESPONSES_ENDPOINT,
+                api_key="contract-key",
+                session_id=session,
+                wire_protocol=ModelWireProtocol.RESPONSES,
+                trust_env=False,
+            )
+            for session in ("session-a", "session-b")
+        ]
+        payload = {"model": "model", "input": [], "stream": False}
+        try:
+            for registration, headers in (
+                (registrations[0], {}),
+                (registrations[0], {"X-Codex-Turn-State": "same-turn-state"}),
+                (registrations[1], {}),
+                (registrations[0], {}),
+            ):
+                response = await bridge.forward(
+                    registration.bridge_id, payload, request_headers=headers
+                )
+                assert response.status_code == 200
+        finally:
+            await bridge.close()
+        check(
+            "routing state stays request-local across pooled sessions and new turns",
+            seen == [None, "same-turn-state", None, None],
+        )
+
+    asyncio.run(run())
 
 
 def test_generation_registration_excludes_tools() -> None:
@@ -3546,6 +3669,8 @@ def test_stream_diagnostics_preserve_usage_without_content() -> None:
 
 
 def main() -> int:
+    test_native_routing_headers_roundtrip()
+    test_native_turn_state_is_not_retained_by_bridge()
     test_stream_diagnostics_preserve_usage_without_content()
     test_generation_registration_excludes_tools()
     test_credential_diagnostics_exclude_secrets()
