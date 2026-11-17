@@ -276,6 +276,7 @@ class SessionModelSpec:
     capabilities: ModelCapabilities = ModelCapabilities()
     catalog_models: tuple[ModelCatalogEntry, ...] = ()
     approval_model_name: str = ""
+    runtime_model_ref: str = ""
 
     def runtime_model(
         self, reasoning_effort: str = "", thinking: ModelThinking | None = None
@@ -309,7 +310,7 @@ class SessionModelSpec:
             )
         context_window = _optional_int(_model_metadata(self.config).get("model_context_window"))
         intent = ModelIntent(
-            model_ref=self.model_name,
+            model_ref=self.runtime_model_ref or self.model_name,
             revision=revision,
             transport=ModelTransport(
                 mode=ModelConnectionMode.REMOTE,
@@ -1162,6 +1163,9 @@ class ModelService:
                 model_id=personal_model_id,
             )
             _require_supported_personal_provider(runtime_config.get("provider"))
+            runtime_model_ref = next(
+                self._catalog_entry(row).model_ref for row in catalog_rows if row["key"] == selected
+            )
             personal_provider, personal_environment = _codex_provider(
                 runtime_config,
                 self._completions,
@@ -1171,6 +1175,7 @@ class ModelService:
                 thinking=thinking,
                 turn_id_provider=resolve_turn_id,
                 source_text=source_text,
+                runtime_model_ref=runtime_model_ref,
                 renewal_source=lambda: (
                     owner_id,
                     selected,
@@ -1191,6 +1196,7 @@ class ModelService:
                 key=selected,
                 model_run=model_run,
                 model_name=wire_model_name(str(runtime_config.get("model_name") or "").strip()),
+                runtime_model_ref=runtime_model_ref,
                 config=runtime_config,
                 billing=API_BILLING,
                 reasoning_options=reasoning_options,
@@ -1353,11 +1359,31 @@ class ModelService:
         user_id: str,
     ) -> list[dict[str, Any]]:
         scope = self._catalog_scope(config, document, selected_row)
-        rows = self._catalog_models(config, document)
+        owner_id = self._owner_id(user_id)
+        profiles = []
+        for profile in document.get("profiles") or ():
+            if profile.get(ENABLED_KEY) and is_oauth_connection(profile):
+                private = self._profiles.profile(str(profile["id"]), owner_id=owner_id) or {}
+                profile = {**profile, MODEL_DIRECTORY_KEY: private.get(MODEL_DIRECTORY_KEY)}
+            profiles.append(profile)
+        rows = [
+            *self._available(config),
+            *self._personal_items({"profiles": profiles}, preload=True),
+        ]
         self._mark_gateway_credential_gate(rows, config, user_id)
-        self._mark_subscription_gate(rows, self._owner_id(user_id))
+        self._mark_subscription_gate(rows, owner_id)
         return [
-            row
+            (
+                {
+                    **row,
+                    "runtime_model_ref": "personal-"
+                    + hashlib.sha256(str(row["key"]).encode()).hexdigest(),
+                }
+                if scope[0] == BRIDGED_CATALOG_SCOPE
+                and row.get("source") == PERSONAL_MODEL_SOURCE
+                and row.get("billing") == API_BILLING
+                else row
+            )
             for row in sorted(rows, key=lambda item: str(item["key"]))
             if not row.get("disabled") and self._catalog_scope(config, document, row) == scope
         ]
@@ -1372,7 +1398,8 @@ class ModelService:
                 native_agent_messages=False,
             )
         return ModelCatalogEntry(
-            model_ref=wire_model_name(str(row.get("model_id") or row.get("model_name") or "")),
+            model_ref=str(row.get("runtime_model_ref") or "")
+            or wire_model_name(str(row.get("model_id") or row.get("model_name") or "")),
             capabilities=capabilities,
             context_window=_optional_int(row.get(CONTEXT_WINDOW_KEY)),
             approval_model_ref=str(row.get(GATEWAY_APPROVAL_MODEL_KEY) or ""),
@@ -1641,7 +1668,7 @@ class ModelService:
 
     @staticmethod
     def _personal_items(
-        document: Mapping[str, Any], *, hidden: bool = False
+        document: Mapping[str, Any], *, hidden: bool = False, preload: bool = False
     ) -> list[dict[str, Any]]:
         """Project enabled connections' selected models, one visibility partition at a time.
 
@@ -1656,11 +1683,22 @@ class ModelService:
                 continue
             profile_id = str(profile.get("id") or "")
             vendor, vendor_preset_id = _vendor_label(profile, preset_labels)
-            for model in profile.get(SELECTED_MODELS_KEY) or ():
+            selected = profile.get(SELECTED_MODELS_KEY) or ()
+            models = selected
+            if preload and is_oauth_connection(profile):
+                directory = profile.get(MODEL_DIRECTORY_KEY) or {}
+                models = {
+                    str(model.get(MODEL_ID_KEY) or ""): model
+                    for model in (*selected, *(directory.get("models") or ()))
+                    if isinstance(model, Mapping)
+                }.values()
+            for model in models:
                 model_id = str(model.get(MODEL_ID_KEY) or "")
                 if not model_id:
                     continue
-                if bool(model.get(MODEL_HIDDEN_KEY)) != hidden:
+                if bool(model.get(MODEL_HIDDEN_KEY)) != hidden and not (
+                    preload and is_oauth_connection(profile)
+                ):
                     continue
                 model_label = str(model.get(MODEL_LABEL_KEY) or "") or model_id
                 items.append(
@@ -1884,6 +1922,7 @@ def _codex_provider(
     turn_id_provider: Callable[[str], str] | None = None,
     source_text: str | None = None,
     approval_model_ref: str = "",
+    runtime_model_ref: str = "",
     catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
     allow_tools: bool = True,
     renewal_source: Callable[[], object] | None = None,
@@ -1907,6 +1946,10 @@ def _codex_provider(
     )
     if (
         chat_completions
+        or (
+            runtime_model_ref
+            and runtime_model_ref != wire_model_name(str(config.get("model_name") or ""))
+        )
         or bool(session_id)
         or not allow_tools
         or reasoning_effort is not None
@@ -1926,7 +1969,10 @@ def _codex_provider(
         allowed_models = frozenset({selected_model, approval_model_ref} - {""})
 
         def request_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
-            if str(payload.get("model") or "") not in allowed_models:
+            model = str(payload.get("model") or "")
+            if runtime_model_ref and model == runtime_model_ref:
+                return {**payload, "model": selected_model}
+            if model not in allowed_models:
                 raise SessionModelUnavailableError(MODEL_UNAVAILABLE_ERROR)
             return dict(payload)
 
@@ -1934,6 +1980,7 @@ def _codex_provider(
             return (
                 config,
                 sorted(allowed_models),
+                runtime_model_ref,
                 user_id,
                 account_tokens.revision if account_tokens is not None else None,
                 renewal_source() if renewal_source is not None else None,

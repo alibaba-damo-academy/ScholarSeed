@@ -1711,6 +1711,33 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(OAuthFailure):
                 native_upstream.request_policy({"model": "qwen3.8-flash"})
 
+    async def test_unselected_subscription_model_is_preloaded_without_granting_selection(self):
+        connection = await self.connected()
+        key = personal_model_key(connection, MODEL)
+        config = {"model_name": "qwen3.8-flash", "base_url": DEEPRD_GATEWAY_BASE_URL}
+        self.models._account_tokens = SimpleNamespace(current=lambda owner: f"token-{owner}")
+        await self.models.save_profile(
+            {**self.values, "selected_models": []}, connection, user_id=OWNER
+        )
+        self.profiles.set_enabled(connection, True, owner_id=OWNER)
+        self.profiles.set_directory(
+            connection,
+            {"models": [{"id": MODEL, "reasoning_efforts": ["low", "high"]}]},
+            owner_id=OWNER,
+        )
+        with patch("service.chat.service.models.load_builtin_work_config", return_value=config):
+            before = self.models.session_spec("qwen3.8-flash", session_id="qwen", user_id=OWNER)
+            self.assertIn(MODEL, {entry.model_ref for entry in before.catalog_models})
+            with self.assertRaises(SessionModelUnavailableError):
+                self.models.session_spec(key, session_id="early", user_id=OWNER)
+            await self.models.save_profile(
+                {**self.values, "selected_models": [{"id": MODEL}]},
+                connection,
+                user_id=OWNER,
+            )
+            after = self.models.session_spec(key, session_id="native", user_id=OWNER)
+            self.assertEqual(before.catalog_models, after.catalog_models)
+
     async def test_unified_catalog_resolver_keeps_frozen_dependencies_when_models_are_added(self):
         connection = await self.connected()
         with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
