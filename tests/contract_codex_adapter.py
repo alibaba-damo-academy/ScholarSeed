@@ -1538,6 +1538,27 @@ def test_mixed_catalog_declarations() -> None:
             "mixed compilation never mutates upstream native metadata",
             "auto_review_model_override" not in source["models"][0],
         )
+        retired = ModelCatalogEntry("gpt-retired", native, optional_preload=True)
+        preloaded_gpt = replace(entries[1], optional_preload=True)
+        snapshots = []
+
+        async def select(snapshot):
+            snapshots.append(snapshot)
+            return snapshot.argument
+
+        optional = replace(qwen, catalog_models=(entries[0], preloaded_gpt, entries[2], retired))
+        await model_catalog_argument(optional, request, native=fetch, select=select)
+        snapshot = snapshots[0]
+        check(
+            "missing optional metadata is omitted without inventing a prefix binding",
+            {entry.model_ref for entry in snapshot.entries} == {"qwen", "gpt", "reviewer"},
+        )
+        check("preloaded model can be selected on the existing Host", snapshot.declares(gpt))
+        retired_selected = replace(optional, model_ref=retired.model_ref, capabilities=native)
+        check(
+            "missing optional model is never reusable for execution",
+            not snapshot.declares(retired_selected),
+        )
         invalid = (
             (
                 "conflicting repeated declarations",

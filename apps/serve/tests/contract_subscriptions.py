@@ -1711,6 +1711,96 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(OAuthFailure):
                 native_upstream.request_policy({"model": "qwen3.8-flash"})
 
+    async def test_unselected_subscription_model_is_preloaded_without_granting_selection(self):
+        connection = await self.connected()
+        key = personal_model_key(connection, MODEL)
+        config = {"model_name": "qwen3.8-flash", "base_url": DEEPRD_GATEWAY_BASE_URL}
+        self.models._account_tokens = SimpleNamespace(current=lambda owner: f"token-{owner}")
+        await self.models.save_profile(
+            {**self.values, "selected_models": []}, connection, user_id=OWNER
+        )
+        self.profiles.set_enabled(connection, True, owner_id=OWNER)
+        self.profiles.set_directory(
+            connection,
+            {
+                "models": [
+                    {"id": MODEL, "reasoning_efforts": ["low", "high"]},
+                    {"id": "retired-unselected"},
+                ]
+            },
+            owner_id=OWNER,
+        )
+        with patch("service.chat.service.models.load_builtin_work_config", return_value=config):
+            before = self.models.session_spec("qwen3.8-flash", session_id="qwen", user_id=OWNER)
+            self.assertIn(MODEL, {entry.model_ref for entry in before.catalog_models})
+            upstream = next(
+                item for item in self.bridge._upstreams.values() if item.session_id == "qwen"
+            )
+            resolved = await upstream.catalog_resolver(upstream.owner_id, upstream.connection_id)
+            self.assertIn(MODEL, {row["slug"] for row in resolved["models"]})
+            self.assertNotIn("retired-unselected", {row["slug"] for row in resolved["models"]})
+            with patch.object(self.subscriptions, "catalog", return_value={"models": []}):
+                self.assertEqual(
+                    await upstream.catalog_resolver(upstream.owner_id, upstream.connection_id),
+                    {"models": []},
+                )
+            with self.assertRaises(SessionModelUnavailableError):
+                self.models.session_spec(key, session_id="early", user_id=OWNER)
+            await self.models.save_profile(
+                {**self.values, "selected_models": [{"id": MODEL}]},
+                connection,
+                user_id=OWNER,
+            )
+            after = self.models.session_spec(key, session_id="native", user_id=OWNER)
+            self.assertEqual(before.catalog_models, after.catalog_models)
+
+    async def test_unselected_duplicate_prefers_selected_subscription_connection(self):
+        selected = await self.connected()
+        second = await self.connected()
+        await self.models.save_profile(
+            {**self.values, "selected_models": []}, second, user_id=OWNER
+        )
+        self.profiles.set_enabled(second, True, owner_id=OWNER)
+        self.profiles.set_directory(second, {"models": [{"id": MODEL}]}, owner_id=OWNER)
+        config = {"model_name": "qwen3.8-flash", "base_url": DEEPRD_GATEWAY_BASE_URL}
+        self.models._account_tokens = SimpleNamespace(current=lambda owner: f"token-{owner}")
+        with patch("service.chat.service.models.load_builtin_work_config", return_value=config):
+            qwen = self.models.session_spec("qwen3.8-flash", session_id="qwen", user_id=OWNER)
+            native = self.models.session_spec(
+                personal_model_key(selected, MODEL), session_id="native", user_id=OWNER
+            )
+        self.assertEqual(qwen.catalog_models, native.catalog_models)
+        entry = next(entry for entry in qwen.catalog_models if entry.model_ref == MODEL)
+        self.assertEqual(entry.native_catalog_source, selected)
+
+    async def test_preload_preserves_selected_limits_and_ignores_malformed_discovery(self):
+        connection = await self.connected()
+        key = personal_model_key(connection, MODEL)
+        await self.models.save_profile(
+            {**self.values, "selected_models": [{"id": MODEL, "context_window": 64000}]},
+            connection,
+            user_id=OWNER,
+        )
+        self.profiles.set_directory(
+            connection,
+            {"models": [{"id": MODEL, "input_modalities": ["text", "image"]}]},
+            owner_id=OWNER,
+        )
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            spec = self.models.session_spec(key, user_id=OWNER)
+            entry = next(entry for entry in spec.catalog_models if entry.model_ref == MODEL)
+            self.assertEqual(entry.context_window, 64000)
+            self.assertEqual(entry.capabilities.input_modalities, ("text", "image"))
+
+        profile = self.profiles.profile(connection, owner_id=OWNER)
+        for invalid in ("legacy-snapshot", {"models": 42}):
+            with self.subTest(invalid=invalid):
+                rows = self.models._personal_items(
+                    {"profiles": [{**profile, "model_directory": invalid}]}, preload=True
+                )
+                self.assertEqual([row["key"] for row in rows], [key])
+                self.assertEqual(rows[0]["context_window"], 64000)
+
     async def test_unified_catalog_resolver_keeps_frozen_dependencies_when_models_are_added(self):
         connection = await self.connected()
         with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
