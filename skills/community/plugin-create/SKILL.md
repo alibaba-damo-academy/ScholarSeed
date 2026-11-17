@@ -2,7 +2,7 @@
 name: plugin-create
 description: Create or revise a local ScholarSeed workflow plugin with verified host interactions, fixed OpenUI result views where applicable, editable source and an inspected installation ZIP.
 description_zh: 为书深创建或迭代本地工作流插件，核实宿主交互，适用时用固定 OpenUI 布局展示结果，交付可编辑源码和经检查的安装包。
-version: "0.5.30"
+version: "0.5.31"
 ---
 
 # Create a ScholarSeed workflow plugin

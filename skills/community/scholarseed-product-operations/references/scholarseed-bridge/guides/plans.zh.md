@@ -2,11 +2,22 @@
 
 [English](plans.md) · **简体中文**
 
-使用会话 update_plan 记录真实任务阶段，保持稳定 ID 和 parent_id；不逐工具调用建步骤，
-也不事后制造已完成清单。计划是展示与执行记录，不替代科研工作流。
+仅用户明确要求持久任务树、已有产品计划需要继续，或工作流确实要求持久阶段跟踪
+（例如文献综述执行流程）时使用产品计划。普通科研、多步骤、长工具、检索和产物发布
+都不要求产品计划；文字方案或原生轻量计划也不启用它。
+
+尚未启用时，读取打包的 plan/enable 契约，以 scholarseed_bridge 调用 capability=plan、
+operation=enable，request 为 purpose=user_requested 或 workflow_required 及实际需求 reason。
+它只返回当前状态，不授权执行、不创建步骤、不开始计时。本轮随后走 [Bridge 路径](plans/fallback.zh.md)，
+不要把产品参数传给接受 plan/explanation 的 Codex 原生 update_plan；宿主在下一回合边界选择
+专用产品工具。已有产品树无需重复启用；release 退出产品计划但保留历史。
+仅阅读本指南不启用任何能力。
+
+保持稳定 ID 和 parent_id，只记录真实阶段，不逐工具调用建步骤，也不事后制造已完成清单。
+计划不替代科研工作流。
 
 先检查实际工具 Schema。旧式工具要求 request 包装时读[旧版计划](plans/legacy.zh.md)，不套用扁平形式。
-原生工具缺失时读 [Bridge 回退](plans/fallback.zh.md)。当前扁平工具不预加载两个分支，
+产品工具缺失时读 [Bridge 回退](plans/fallback.zh.md)。当前扁平工具不预加载两个分支，
 不把已有树切换到另一套原生计划系统。
 
 下列形式仅适用于扁平工具。先仅传 operation=get，返回计划、expected_revision、turn_id 和各 ID 的 actions。

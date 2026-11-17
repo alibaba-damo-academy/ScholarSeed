@@ -200,7 +200,7 @@ from service.platform.activity import (
     MaintenanceActive,
     MaintenanceStale,
 )
-from service.platform.bridge import ComponentInvocation, PluginInstallation
+from service.platform.bridge import ComponentInvocation, PlanEnable, PluginInstallation
 from service.platform.citations import CITATION_SCHEME
 from service.platform.content import ArtifactScopeKind, RootKind
 from service.platform.files import FILE_ACCESS_DENIED, FILE_ACCESS_FAILED, read_file_raw
@@ -3305,6 +3305,39 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         ensure.assert_awaited_once()
         self.assertIs(ensure.await_args.kwargs["purpose"], ResourcePurpose.TURN)
 
+    async def test_product_plan_selection_changes_only_at_turn_boundary(self) -> None:
+        async def factory(request):
+            session = FakeRuntimeSession(FakeAdapter(self.skill_file))
+            session.binding = (
+                request.binding
+                if hasattr(request, "binding")
+                else replace(
+                    session.binding,
+                    opaque_session_ref="product-plan-thread",
+                    profile=service_tool_profile(request.service_tools),
+                )
+            )
+            return session
+
+        runtime, provider = self.runtime_service(factory)
+        await runtime.ensure_active(self.live)
+        previous = self.live.runtime_session
+        previous_thread = self.live.vendor_thread_id
+        self.live.plans.enable(
+            PlanEnable(purpose="user_requested", reason="Track a persistent task tree"),
+            turn_id="turn-1",
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=previous_thread,
+            require_turn=lambda: None,
+        )
+        await runtime.ensure_active(self.live, purpose=ResourcePurpose.SESSION)
+        self.assertIs(self.live.runtime_session, previous)
+        await runtime.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertIsNot(self.live.runtime_session, previous)
+        self.assertNotEqual(self.live.vendor_thread_id, previous_thread)
+        self.assertIn("update_plan", {tool.name for tool in provider.opened[-1].service_tools})
+        self.assertTrue(self.live.plans.enabled())
+
     async def test_turn_refresh_replaces_dormant_runtime_without_retained_turn(self) -> None:
         runtime, provider = self.runtime_service()
         provider.resource_policy = replace(provider.resource_policy, refresh_before_turn=True)
@@ -4793,7 +4826,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 self.live._persistence,
                 "run",
-                new=AsyncMock(side_effect=OSError("state unavailable")),
+                new=AsyncMock(side_effect=[True, OSError("state unavailable")]),
             ),
             patch.object(self.adapter, "resolve_hil", wraps=self.adapter.resolve_hil) as respond,
             patch.object(self.logger, "warning") as warning,

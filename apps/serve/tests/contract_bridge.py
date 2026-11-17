@@ -520,7 +520,9 @@ class BridgeToolContracts(unittest.TestCase):
     def test_unknown_operation_lists_registered_choices_without_eager_schemas(self):
         result = self.invalid("plan", "update", {})
         self.assertEqual(result["error"], "bridge_operation_unknown")
-        self.assertEqual(result["valid_operations"], ["get", "write", "structure", "action"])
+        self.assertEqual(
+            result["valid_operations"], ["enable", "get", "write", "structure", "action"]
+        )
         self.assertEqual(result["capability"], "plan")
         self.assertIn(
             {
@@ -533,7 +535,9 @@ class BridgeToolContracts(unittest.TestCase):
         self.assertNotIn("request_schemas", result)
         described = describe_contract("plan", "update")
         self.assertFalse(described["ok"])
-        self.assertEqual(described["valid_operations"], ["get", "write", "structure", "action"])
+        self.assertEqual(
+            described["valid_operations"], ["enable", "get", "write", "structure", "action"]
+        )
         self.assertNotIn("request_schemas", described)
         unknown = self.invalid("unknown", "update", {})
         self.assertEqual(unknown["valid_operations"], [])

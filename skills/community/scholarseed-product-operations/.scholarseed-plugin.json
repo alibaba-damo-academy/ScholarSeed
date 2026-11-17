@@ -1,7 +1,7 @@
 {
   "schema": 2,
   "id": "scholarseed-product-operations",
-  "version": "2026.11.16+5",
+  "version": "2026.11.17+2",
   "host": "==0.3.2",
   "skill": "SKILL.md",
   "ui": {

@@ -87,6 +87,7 @@ PRODUCT_EVENT_SUBAGENT_COMPLETED = "subagent_completed"
 PRODUCT_EVENT_SUBAGENT_FAILED = "subagent_failed"
 PRODUCT_EVENT_SUBAGENT_INTERRUPTED = "subagent_interrupted"
 PRODUCT_EVENT_PLAN_SNAPSHOT = "plan_snapshot"
+PRODUCT_EVENT_PLAN_ENABLEMENT = "plan_enablement"
 PRODUCT_EVENT_FILE_CHANGED = "file_changed"
 #: 粗失效广播。AI 经 bridge 改动产品数据后, 告诉界面「哪些数据域过期了」; 只带域名
 #: 不带条目, 消费方按域整片重取。语义与取舍见 service/chat/service/invalidation.py。

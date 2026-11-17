@@ -12,6 +12,9 @@ from service.platform.bridge import (
     CONTRACT_DESCRIBE_OPERATION,
     CONTRACT_GUIDANCE_KEY,
     CONTRACT_PREREQUISITES_KEY,
+    PLAN_CAPABILITY,
+    PLAN_ENABLE_OPERATION,
+    PLAN_NOT_ENABLED,
 )
 from service.platform.queries import (
     DOMAIN_CHECKED,
@@ -33,12 +36,17 @@ def contract_query(capability: str, operation: str) -> dict[str, Any]:
     }
 
 
-def operation_choices(capability: str) -> dict[str, Any]:
-    operations = [name for owner, name in BRIDGE_REQUESTS if owner == capability]
+def operation_choices(capability: str, *, product_plan: bool = True) -> dict[str, Any]:
+    available = [
+        key
+        for key in BRIDGE_REQUESTS
+        if product_plan or key[0] != PLAN_CAPABILITY or key[1] == PLAN_ENABLE_OPERATION
+    ]
+    operations = [name for owner, name in available if owner == capability]
     return {
         "ok": False,
         "error": "bridge_operation_unknown",
-        "valid_capabilities": list(dict.fromkeys(owner for owner, _name in BRIDGE_REQUESTS)),
+        "valid_capabilities": list(dict.fromkeys(owner for owner, _name in available)),
         "capability": capability,
         "valid_operations": operations,
         "describe_choices": [contract_query(capability, operation) for operation in operations],
@@ -53,11 +61,13 @@ def operation_choices(capability: str) -> dict[str, Any]:
 
 
 def describe_contract(
-    capability: str, operation: str, *, project_id: str | None = None
+    capability: str, operation: str, *, project_id: str | None = None, product_plan: bool = True
 ) -> dict[str, Any]:
+    if not product_plan and capability == PLAN_CAPABILITY and operation != PLAN_ENABLE_OPERATION:
+        return {"ok": False, "error": PLAN_NOT_ENABLED}
     entry = BRIDGE_REQUESTS.get((capability, operation))
     if entry is None:
-        return operation_choices(capability)
+        return operation_choices(capability, product_plan=product_plan)
     request_type = entry.request_type
     schema = request_type.model_json_schema()
     guidance = schema.pop(CONTRACT_GUIDANCE_KEY, "")
@@ -100,11 +110,14 @@ def operation_availability(scope: str, project_id: str | None) -> dict[str, str]
     }
 
 
-def list_contracts(query: ContractList, *, project_id: str | None = None) -> dict[str, Any]:
+def list_contracts(
+    query: ContractList, *, project_id: str | None = None, product_plan: bool = True
+) -> dict[str, Any]:
     entries = sorted(
         (key, entry)
         for key, entry in BRIDGE_REQUESTS.items()
-        if not query.capability or key[0] == query.capability
+        if (not query.capability or key[0] == query.capability)
+        and (product_plan or key[0] != PLAN_CAPABILITY or key[1] == PLAN_ENABLE_OPERATION)
     )
     selected = entries[query.offset : query.offset + query.limit]
     return {

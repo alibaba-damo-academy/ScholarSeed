@@ -1840,6 +1840,9 @@ BRIDGE_REQUESTS.update(
 PLAN_MAX_ITEMS = 200
 SERVICE_PLAN_TOOL_NAME = "update_plan"
 PLAN_INITIAL_REVISION = 0
+PLAN_CAPABILITY = "plan"
+PLAN_ENABLE_OPERATION = "enable"
+PLAN_NOT_ENABLED = "plan_not_enabled"
 PLAN_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "plan/"
 PLAN_SOURCE = "structured"
 PLAN_GROUP = "group"
@@ -2034,7 +2037,41 @@ PLAN_MUTATIONS: dict[str, type[PlanCommand]] = {
     "structure": PlanStructure,
     "action": PlanAction,
 }
-PLAN_REQUESTS: dict[str, type[BaseModel]] = {"get": PlanRead, **PLAN_MUTATIONS}
+
+
+class PlanEnable(BaseModel):
+    """Explicit opt-in; this does not authorize work or create a task tree."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            CONTRACT_GUIDANCE_KEY: (
+                "Enable a persistent product task tree only for an explicit user request or a "
+                "workflow that requires that tracker. Ordinary product tools, multiple steps, "
+                "long tasks and reading a Skill do not require it. This grants no execution "
+                "permission. Continue through plan/get, structure and action in this turn; "
+                "the dedicated product tool is selected at the next turn boundary."
+            ),
+        },
+    )
+
+    purpose: Literal["user_requested", "workflow_required"]
+    reason: str = Field(min_length=1, max_length=PLAN_TEXT_CHARS)
+
+    @field_validator("reason")
+    @classmethod
+    def meaningful_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("plan_enable_reason_required")
+        return value
+
+
+PLAN_REQUESTS: dict[str, type[BaseModel]] = {
+    PLAN_ENABLE_OPERATION: PlanEnable,
+    "get": PlanRead,
+    **PLAN_MUTATIONS,
+}
 BRIDGE_REQUESTS.update(
     {
         ("plan", name): BridgeOperation(request, PLAN_ROUTE_PREFIX + name)

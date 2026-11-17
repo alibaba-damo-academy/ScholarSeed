@@ -71,7 +71,7 @@ class ScopedBridgeDrainContracts(unittest.IsolatedAsyncioTestCase):
         self.live.publish = AsyncMock()
         self.live.publish_artifact = AsyncMock(return_value={"id": "artifact"})
         self.live.display_card = AsyncMock(return_value={"id": "card"})
-        self.live.plans = SimpleNamespace(current=lambda: {"items": []})
+        self.live.plans = SimpleNamespace(current=lambda: {"items": []}, enabled=lambda: True)
         self.live.skill_state_by_name = AsyncMock(return_value=None)
         self.live.set_task_lease = Mock(wraps=self.live.set_task_lease)
         self.live.clear_task_lease = Mock(wraps=self.live.clear_task_lease)
