@@ -965,6 +965,59 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.bridge.registration_count(), 2)
         self.assertEqual(set(self.bridge._upstreams), {other.bridge_id})
 
+    async def test_oauth_selected_effort_reaches_outbound_responses_request(self):
+        connection = await self.connected()
+        await self.subscriptions.sync_directory(OWNER, connection)
+        app = FastAPI()
+        mount_completion_bridge(app, self.bridge)
+        sent = []
+        diagnostics = []
+        self.bridge._on_diagnostic = lambda session_id, event: diagnostics.append(event)
+
+        def upstream(request):
+            sent.append(json.loads(request.content))
+            event = {
+                "type": "response.completed",
+                "response": {"id": "effort-contract", "status": "completed", "output": []},
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text="data: " + json.dumps(event) + "\n\n",
+            )
+
+        async with (
+            httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as upstream_client,
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as bridge_client,
+        ):
+            self.bridge._clients[SUBSCRIPTION_TRUST_ENV] = upstream_client
+            with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+                for selected, stale in (("low", "high"), ("high", "low")):
+                    with self.subTest(selected=selected):
+                        spec = self.models.session_spec(
+                            personal_model_key(connection, MODEL),
+                            session_id="effort-" + selected,
+                            user_id=OWNER,
+                            reasoning_effort=selected,
+                        )
+                        intent, _ = spec.runtime_model()
+                        response = await bridge_client.post(
+                            intent.transport.endpoint + "/responses",
+                            json={
+                                "model": MODEL,
+                                "input": [{"role": "user", "content": "Check effort forwarding"}],
+                                "reasoning": {"effort": stale},
+                                "stream": True,
+                            },
+                        )
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(sent[-1].get("reasoning", {}).get("effort"), selected)
+                        self.assertFalse(sent[-1]["store"])
+                        self.assertTrue(sent[-1]["stream"])
+            self.assertEqual(len(sent), 2)
+            finished = [event for event in diagnostics if event["phase"] == "finished"]
+            self.assertEqual(len(finished), 2)
+
     async def test_tool_free_inference_crosses_bridge_without_unsupported_output_budget(self):
         connection = await self.connected()
         app = FastAPI()

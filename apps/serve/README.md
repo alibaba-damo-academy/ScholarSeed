@@ -151,6 +151,23 @@ The wheel retains this CLI. Desktop bundles place its relocatable launcher in `b
 
 Desktop always starts with `auth-mode=off` and `ownership-axis=machine`; standalone Serve supports an explicitly configured authentication mode. Model connection credentials are independent of the local HTTP access mode.
 
+<a id="native-responses-routing"></a>
+## Native Responses Routing / 原生 Responses 路由
+
+The model bridge forwards only `session-id`, `thread-id`, and `x-codex-turn-state`
+from native Responses requests, and returns `x-codex-turn-state` from successful
+Responses replies. The native client owns the opaque state: it replays it within
+one turn and starts fresh on the next turn. The bridge never stores it in a
+registration, credential, or pooled HTTP client. Chat Completions conversion does
+not inherit these headers; product authentication and revocation remain authoritative.
+This preserves the upstream routing contract; it does not guarantee prompt-cache hits.
+
+模型桥接仅向原生 Responses 上游透传请求中的 `session-id`、`thread-id` 与
+`x-codex-turn-state`，并从成功的 Responses 响应回传 `x-codex-turn-state`。
+原生客户端负责该不透明状态的生命周期：同一轮内回传，下一轮重新获取。
+桥接不将它保存在注册项、凭据或共享 HTTP 客户端中，Chat Completions 转换路径
+不继承这些头；产品认证与撤销仍由既有机制控制。该行为修复路由协议，不保证缓存命中。
+
 <a id="responses-summary-dialects--responses-摘要方言"></a>
 ## Responses Summary Dialects
 

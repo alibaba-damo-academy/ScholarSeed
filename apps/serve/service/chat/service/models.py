@@ -460,13 +460,6 @@ class ModelService:
                         if item.get("profile_id") == profile_id:
                             native = offered.get(item["model_id"], {})
                             item.update(_subscription_directory_capability(native))
-                            if native.get("reasoning_efforts") is not None:
-                                item["reasoning_efforts"] = native.get("reasoning_efforts")
-                            # Keep the declared form alongside the legacy effort list so the
-                            # renderer can distinguish effort, toggle and fixed-on models.
-                            if native.get("reasoning_options") is not None:
-                                item["reasoning_options"] = native.get("reasoning_options")
-                            item["reasoning_effort"] = native.get("reasoning_effort", "")
                             # 订阅目录没给思考形态时回落到注册表：OAuth 端点就是厂商官方面，
                             # 其模型档位属 vendor-doc 真值（与受信预置 BYOK 同一口径），否则
                             # gpt 这类原生支持 reasoning_effort 的订阅模型连滑块都不出现。
@@ -1074,6 +1067,19 @@ class ModelService:
         selected_row = next(
             row for row in self._catalog_models(config, document) if row["key"] == selected
         )
+        if selected_row.get("billing") == SUBSCRIPTION_BILLING:
+            profile = self._profiles.profile(str(selected_row["profile_id"]), owner_id=owner_id)
+            snapshot = (profile or {}).get(MODEL_DIRECTORY_KEY)
+            if isinstance(snapshot, dict):
+                native = next(
+                    (
+                        row
+                        for row in snapshot.get("models") or ()
+                        if row.get("id") == selected_row.get("model_id")
+                    ),
+                    {},
+                )
+                selected_row.update(_subscription_directory_capability(native))
         catalog_rows, catalog_models = self._execution_catalog(
             config, document, selected_row, user_id=user_id
         )
@@ -1107,6 +1113,7 @@ class ModelService:
                     session_id,
                     {},
                     reasoning_effort=reasoning_effort,
+                    reasoning_options=reasoning_options,
                     catalog_identity=json.dumps(
                         [asdict(entry) for entry in catalog_models], sort_keys=True
                     ),
@@ -1826,12 +1833,25 @@ def _personal_capability(
 
 
 def _subscription_directory_capability(native: Mapping[str, Any]) -> dict[str, Any]:
-    """Project modalities declared by the authenticated provider model directory."""
-
+    """Project the authenticated directory consistently for menu and execution."""
+    out: dict[str, Any] = {}
     modalities = _declared_list(native, INPUT_MODALITIES_KEY)
-    if not modalities or any(modality not in MODALITY_KINDS for modality in modalities):
-        return {}
-    return {INPUT_MODALITIES_KEY: modalities, **modality_flags(modalities)}
+    if modalities and all(modality in MODALITY_KINDS for modality in modalities):
+        out.update({INPUT_MODALITIES_KEY: modalities, **modality_flags(modalities)})
+    efforts = native.get(REASONING_EFFORTS_KEY)
+    options = native.get(REASONING_OPTIONS_KEY)
+    if efforts is not None:
+        out[REASONING_EFFORTS_KEY] = efforts
+    if options is not None:
+        out[REASONING_OPTIONS_KEY] = options
+    elif isinstance(efforts, list):
+        option: dict[str, Any] = {"kind": EFFORT_FORM, "values": efforts}
+        default = str(native.get("reasoning_effort") or "")
+        if default in efforts:
+            option["default"] = default
+        out[REASONING_OPTIONS_KEY] = [option] if efforts else []
+    out["reasoning_effort"] = native.get("reasoning_effort", "")
+    return out
 
 
 def _declared_list(entry: Mapping[str, Any], key: str) -> list[str] | None:
