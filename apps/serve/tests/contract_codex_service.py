@@ -8617,11 +8617,44 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upstream.route_model("codex-auto-review"), "codex-auto-review")
         self.assertEqual(intent.capabilities.tool_protocol.value, "json_schema")
 
+    async def test_auto_is_a_fixed_deepseek_gateway_model(self) -> None:
+        config = {"model_name": "qwen3.8-flash", "base_url": DEEPRD_GATEWAY_BASE_URL}
+        choice = model_module.resolve_model_choice("auto", config)
+        self.assertEqual(choice["label"], "Auto")
+        self.assertEqual(choice["model_name"], "bailian/deepseek-v4.1-flash-1017")
+        self.assertEqual(choice["route_kind"], "direct model")
+        self.assertEqual(choice["context_window"], 1_000_000)
+        self.assertEqual(choice["max_output_tokens"], 393_216)
+        self.assertTrue(choice["image_input"])
+        self.assertFalse(choice["pdf_input"])
+        self.assertEqual(choice["reasoning_efforts"], ["none", "low", "high", "max"])
+        effort = next(
+            option for option in choice["reasoning_options"] if option["kind"] == "effort"
+        )
+        self.assertEqual(effort["default"], "low")
+        selected = model_module.apply_model_to_config(config, choice)
+        self.assertEqual(converge_gateway_model_config(selected)["selected_model_key"], "auto")
+        self.assertEqual(model_module.current_model_key(selected), "auto")
+        self.assertIn("auto", {row["key"] for row in model_module.available_models(config)})
+        settings = SimpleNamespace(runtime_executable=lambda: "codex")
+        bridge = CompletionBridge("http://127.0.0.1:9999")
+        tokens = SimpleNamespace(current=lambda _user_id: "account-token")
+        service = ModelService(settings, bridge, account_tokens=tokens, activities=Activities())  # type: ignore[arg-type]
+        with patch.object(model_module, "load_builtin_work_config", return_value=selected):
+            spec = service.session_spec("auto", user_id="u-1")
+        intent, _ = spec.runtime_model()
+        self.assertEqual(intent.model_ref, "bailian/deepseek-v4.1-flash-1017")
+        self.assertEqual(intent.context_window, 1_000_000)
+        self.assertEqual(intent.capabilities.input_modalities, ("text", "image"))
+        self.assertEqual(intent.capabilities.reasoning_efforts, ("none", "low", "high", "max"))
+        self.assertEqual(intent.approval_model_ref, "")
+        self.assertEqual(spec.config["call_url"], f"{DEEPRD_GATEWAY_BASE_URL}/responses")
+
     async def test_builtin_qwen_uses_independent_auto_review_model(self) -> None:
         config = {"model_name": "qwen3.8-max", "base_url": DEEPRD_GATEWAY_BASE_URL}
         self.assertEqual(
             {row["key"] for row in GATEWAY_MODEL_CATALOG},
-            {"qwen4-max", "qwen3.8-max", "qwen3.8-flash", "qwen3-next-80b-a3b-thinking"},
+            {"auto", "qwen4-max", "qwen3.8-max", "qwen3.8-flash", "qwen3-next-80b-a3b-thinking"},
         )
         settings = SimpleNamespace(runtime_executable=lambda: "codex")
         bridge = CompletionBridge("http://127.0.0.1:9999")
