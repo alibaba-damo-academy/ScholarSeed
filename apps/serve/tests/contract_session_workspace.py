@@ -6,9 +6,12 @@ import asyncio
 import logging
 import os
 import tempfile
+import threading
+import unittest
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
@@ -35,6 +38,7 @@ from service.chat.active import RUNTIME_ID  # noqa: E402
 from service.chat.constants import (  # noqa: E402
     PRODUCT_EVENT_HIL_RESOLVED,
     PRODUCT_EVENT_TURN_INTERRUPTED,
+    SESSION_PROJECT_NOT_REGISTERED_ERROR,
     SESSION_RELOCATE_REQUIRES_TURN_ERROR,
     SESSION_RELOCATE_STOP_FAILED_ERROR,
     SESSION_RELOCATE_STOP_PENDING_ERROR,
@@ -47,6 +51,7 @@ from service.chat.persistence.catalog import (  # noqa: E402
     SessionStatus,
 )
 from service.chat.persistence.events import ProductEventStore  # noqa: E402
+from service.chat.persistence.notifications import observe_chat  # noqa: E402
 from service.chat.service.sessions import SessionService, workspace_allows  # noqa: E402
 from service.chat.service.workspaces import SessionWorkspaceService  # noqa: E402
 from service.content.persistence.catalog import ContentCatalog  # noqa: E402 -- after home isolation
@@ -57,10 +62,14 @@ from service.content.service.port import (  # noqa: E402 -- after home isolation
 from service.identity.service.skill_credentials import (  # noqa: E402
     skill_credentials_from_env,
 )
+from service.persistence.notifications import NotificationConnection  # noqa: E402
+from service.platform.activity import ActivityDomain, MaintenanceActive  # noqa: E402
+from service.platform.notifications import ChangeHub  # noqa: E402
 
 PASS = 0
 FAIL = 0
 TEST_STOP_TIMEOUT_SECONDS = 0.01
+RESUME_WORKER_WAIT_SECONDS = 5.0
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -189,6 +198,9 @@ class _Live:
 
 
 class _Runtime:
+    async def realign_metering_identity(self, live: _Live, user_id: str) -> None:
+        live.user_id = user_id
+
     def recover_publications(self, session_id: str) -> None:
         pass
 
@@ -804,12 +816,248 @@ async def scenario() -> None:
     )
 
 
+class ResumeIOContracts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory(prefix="resume-io-contract-")
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
+        self.project = self.root / "project"
+        self.project.mkdir()
+        self.service, self.catalog, self.runtime, self.sessions = _service(
+            self.root, {self.project}
+        )
+        self.owner = SessionPrincipal("resume-owner")
+        self.loop_thread = threading.get_ident()
+        payload, status = await self.service.open(
+            {"project_path": str(self.project)}, self.owner, actor_id=self.owner.user_id
+        )
+        self.assertEqual(status, 200)
+        self.session_id = payload["session_id"]
+        record = self.catalog.get(self.session_id)
+        assert record is not None
+        self.assertEqual(record.principal_id, self.owner.user_id)
+        attempt = "resume-io-binding"
+        self.catalog.begin_open(self.session_id, attempt)
+        self.catalog.bind_open(
+            self.session_id,
+            attempt,
+            RuntimeBinding(
+                product_session_id=self.session_id,
+                runtime_id=RUNTIME_ID,
+                adapter_version="1",
+                runtime_version="0.147.0",
+                protocol_version="2",
+                protocol_schema_hash="resume-io-schema",
+                opaque_session_ref="retained-thread",
+                capabilities=CapabilitySet(),
+            ),
+        )
+        self.sessions.pop(self.session_id)
+        self.runtime.opens.clear()
+        self.hub = ChangeHub("resume-io")
+        self.catalog.observe = lambda connection: observe_chat(connection, self.hub, shared=True)
+        self.service._events.observe = self.catalog.observe
+
+    async def resume(self, principal: SessionPrincipal | None = None):
+        return await self.service.open(
+            {"resume_session_id": self.session_id},
+            principal or self.owner,
+            actor_id="gateway-actor",
+        )
+
+    async def test_cold_and_warm_restore_keep_sqlite_and_validation_off_loop(self) -> None:
+        observed_threads = []
+        observe = NotificationConnection.observe
+        is_project = self.service._workspaces.is_project
+        writable_roots = self.service._writable_roots
+        readiness = self.runtime.readiness
+        runtime_open = self.runtime.open
+
+        def observe_in_worker(connection, *args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), self.loop_thread)
+            observed_threads.append(threading.get_ident())
+            return observe(connection, *args, **kwargs)
+
+        def validate_in_worker(*args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), self.loop_thread)
+            return is_project(*args, **kwargs)
+
+        def roots_in_worker(*args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), self.loop_thread)
+            return writable_roots(*args, **kwargs)
+
+        async def readiness_on_loop(**kwargs):
+            self.assertEqual(threading.get_ident(), self.loop_thread)
+            return await readiness(**kwargs)
+
+        async def open_on_loop(**kwargs):
+            self.assertEqual(threading.get_ident(), self.loop_thread)
+            return await runtime_open(**kwargs)
+
+        with (
+            patch.object(NotificationConnection, "observe", observe_in_worker),
+            patch.object(self.service._workspaces, "is_project", validate_in_worker),
+            patch.object(self.service, "_writable_roots", roots_in_worker),
+            patch.object(self.runtime, "readiness", readiness_on_loop),
+            patch.object(self.runtime, "open", open_on_loop),
+        ):
+            cold, cold_status = await self.resume()
+            warm, warm_status = await self.resume()
+        self.assertEqual((cold_status, warm_status), (200, 200))
+        self.assertEqual(cold["session_id"], warm["session_id"])
+        self.assertEqual(cold["runtime_workdir"], str(self.project))
+        self.assertEqual(self.runtime.opens[0]["resume_vendor_thread_id"], "retained-thread")
+        self.assertEqual(self.runtime.opens[0]["user_id"], "gateway-actor")
+        self.assertEqual(len(self.runtime.opens), 1)
+        self.assertTrue(observed_threads)
+        self.assertFalse(self.service._activities.snapshot().counts)
+
+    async def test_slow_restore_does_not_block_catalog_loading(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        require = self.catalog.require
+
+        def blocked_require(*args):
+            self.assertNotEqual(threading.get_ident(), self.loop_thread)
+            entered.set()
+            if not release.wait(RESUME_WORKER_WAIT_SECONDS):
+                raise TimeoutError("restore worker was not released")
+            return require(*args)
+
+        with patch.object(self.catalog, "require", blocked_require):
+            task = asyncio.create_task(self.resume())
+            try:
+                started = await asyncio.to_thread(entered.wait, RESUME_WORKER_WAIT_SECONDS)
+                if not started:
+                    await task
+                self.assertTrue(started)
+                listing = await asyncio.wait_for(
+                    self.service.list(60, self.owner), RESUME_WORKER_WAIT_SECONDS
+                )
+                self.assertEqual(listing["total"], 1)
+                self.assertFalse(task.done())
+            finally:
+                release.set()
+                if task.done() and not task.cancelled():
+                    task.exception()
+                restored, status = await task
+        self.assertEqual(status, 200)
+        self.assertEqual(restored["session_id"], self.session_id)
+
+    async def test_repeated_cancel_waits_for_worker_and_retains_open_lock(self) -> None:
+        entered, release = threading.Event(), threading.Event()
+        require = self.catalog.require
+
+        def blocked_require(*args):
+            self.assertNotEqual(threading.get_ident(), self.loop_thread)
+            entered.set()
+            if not release.wait(RESUME_WORKER_WAIT_SECONDS):
+                raise TimeoutError("restore worker was not released")
+            return require(*args)
+
+        gate = self.service._activities
+        with patch.object(self.catalog, "require", blocked_require):
+            task = asyncio.create_task(self.resume())
+            try:
+                started = await asyncio.to_thread(entered.wait, RESUME_WORKER_WAIT_SECONDS)
+                if not started:
+                    await task
+                self.assertTrue(started)
+                generation = gate.begin()
+                task.cancel()
+                await asyncio.sleep(0)
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertTrue(self.service._open_lock.locked())
+                self.assertFalse(task.done())
+                self.assertGreater(gate.snapshot().counts.get(ActivityDomain.RUNTIME.value, 0), 0)
+                self.assertFalse(gate.seal(generation))
+            finally:
+                release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, RESUME_WORKER_WAIT_SECONDS)
+        await asyncio.wait_for(gate.wait_business_drained(generation), RESUME_WORKER_WAIT_SECONDS)
+        self.assertFalse(self.service._open_lock.locked())
+        self.assertFalse(self.runtime.opens)
+        self.assertTrue(gate.seal(generation))
+
+    async def test_denied_owner_and_unregistered_project_do_not_open_runtime(self) -> None:
+        denied, denied_status = await self.resume(SessionPrincipal("foreign"))
+        self.assertEqual((denied_status, denied["error"]), (404, "session_not_found"))
+        with patch.object(self.service._workspaces, "is_project", return_value=False):
+            denied, denied_status = await self.resume()
+        self.assertEqual(denied_status, 409)
+        self.assertEqual(denied["error"], SESSION_PROJECT_NOT_REGISTERED_ERROR)
+        self.assertFalse(self.runtime.opens)
+        self.assertFalse(self.service._activities.snapshot().counts)
+
+    async def test_archived_session_remains_rejected_before_runtime_open(self) -> None:
+        self.catalog.set_archived(self.session_id, self.owner, True)
+        payload, status = await self.resume()
+        self.assertEqual(status, 409)
+        self.assertFalse(self.runtime.opens)
+        record = self.catalog.get(self.session_id)
+        assert record is not None
+        self.assertTrue(record.archived)
+        self.assertFalse(self.service._activities.snapshot().counts)
+
+    async def test_directory_access_failure_keeps_binding_and_releases_workers(self) -> None:
+        binding = self.catalog.activation(self.session_id)
+        with patch.object(
+            self.service, "_writable_roots", side_effect=PermissionError("directory denied")
+        ):
+            payload, status = await self.resume()
+        self.assertEqual(status, 500)
+        self.assertFalse(self.runtime.opens)
+        self.assertEqual(self.catalog.activation(self.session_id), binding)
+        self.assertFalse(self.service._activities.snapshot().counts)
+        self.assertFalse(self.service._open_lock.locked())
+
+    async def test_model_recovery_keeps_resolution_on_loop_and_write_durable(self) -> None:
+        self.catalog.set_model(self.session_id, self.owner, "retired-selection")
+        actors = []
+
+        def select_model(model_id, *, user_id):
+            self.assertEqual(threading.get_ident(), self.loop_thread)
+            self.assertEqual(model_id, "retired-selection")
+            actors.append(user_id)
+            return "available-selection"
+
+        with patch.object(self.runtime, "selected_model_key", select_model):
+            payload, status = await self.resume()
+        self.assertEqual(status, 200)
+        self.assertEqual(actors, ["gateway-actor"])
+        self.assertEqual(payload["runtime"]["model_id"], "available-selection")
+        self.assertEqual(
+            self.catalog.model_state(self.session_id).selected_model_id, "available-selection"
+        )
+
+    async def test_recovery_status_commit_still_delivers_notifications(self) -> None:
+        self.catalog.update_status(self.session_id, SessionStatus.RUNNING)
+        notifications = cast(AsyncGenerator[str, None], self.hub.events(self.owner.user_id))
+        await anext(notifications)
+        try:
+            payload, status = await self.resume()
+            frame = await asyncio.wait_for(anext(notifications), RESUME_WORKER_WAIT_SECONDS)
+        finally:
+            await notifications.aclose()
+        self.assertEqual(status, 200)
+        self.assertIn('"topic":"sessions"', frame)
+        record = self.catalog.get(self.session_id)
+        assert record is not None
+        self.assertEqual(record.status, SessionStatus.INTERRUPTED)
+        self.assertFalse(payload["running"])
+        self.assertFalse(self.service._activities.snapshot().counts)
+
+
 def main() -> int:
     print("native Codex session workspace contract")
     writable_root_access_contract()
     asyncio.run(scenario())
+    result = unittest.TextTestRunner().run(
+        unittest.defaultTestLoader.loadTestsFromTestCase(ResumeIOContracts)
+    )
     print(f"passed={PASS} failed={FAIL}")
-    return 1 if FAIL else 0
+    return 1 if FAIL or not result.wasSuccessful() else 0
 
 
 if __name__ == "__main__":
