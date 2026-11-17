@@ -6202,6 +6202,41 @@ def test_codex_retry_exhaustion_preserves_provider_status() -> None:
     asyncio.run(notification())
 
 
+def test_codex_idle_timeout_preserves_failure_semantics() -> None:
+    native_message = "stream disconnected before completion: idle timeout waiting for SSE"
+    for message in (native_message, "idle timeout waiting for SSE", native_message.upper()):
+        for error in (
+            {"message": message},
+            {"error": {"message": message}},
+            {"message": json.dumps({"error": {"message": message}})},
+        ):
+            original = json.loads(json.dumps(error))
+            failure = provider_failure(error)
+            check(
+                "native SSE idle timeout keeps its recoverable timeout identity",
+                failure.code == "timeout"
+                and failure.diagnostic_code == "timeout"
+                and failure.http_status is None
+                and failure.message == PROVIDER_UNAVAILABLE_MESSAGE
+                and failure.retryability is RuntimeRetryability.USER_RETRYABLE
+                and error == original,
+            )
+    for message in (
+        "user mentioned idle timeout waiting for SSE",
+        native_message + " private detail",
+    ):
+        failure = provider_failure({"message": message})
+        check(
+            "unrecognized prose remains generic and redacted",
+            failure.code == "codex_provider_failed",
+        )
+    failure = provider_failure({"code": "invalid_api_key", "message": native_message})
+    check(
+        "explicit provider authentication failure takes precedence over timeout prose",
+        failure.code == "invalid_api_key" and failure.retryability is RuntimeRetryability.TERMINAL,
+    )
+
+
 def test_codex_flattened_stream_disconnect_recovers_transient_semantics() -> None:
     """Codex 压平流内 5xx 后 adapter 仍要恢复「暂时不可用」，而不是「rejected the request」。
 
@@ -7272,6 +7307,7 @@ def main() -> int:
     test_evidence_cursor()
     test_upstream_inspection_launch()
     test_skill_refresh_does_not_require_exclusive_control()
+    test_codex_idle_timeout_preserves_failure_semantics()
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()
     test_subscription_capability_rejection_is_terminal()
