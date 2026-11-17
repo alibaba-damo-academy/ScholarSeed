@@ -6202,6 +6202,41 @@ def test_codex_retry_exhaustion_preserves_provider_status() -> None:
     asyncio.run(notification())
 
 
+def test_provider_terminal_preserves_its_exact_incident_reference() -> None:
+    async def scenario(status: str, incident_turn: str) -> None:
+        emitter = Mock(spec=CodexEmitter, incident=AsyncMock(), emit=AsyncMock())
+        runtime = CodexTurnRuntime(
+            Mock(thread_id="thread", attached_generation=1),
+            request=AsyncMock(),
+            ensure_attached=AsyncMock(return_value=1),
+            stale_requests=AsyncMock(),
+            emitter=emitter,
+            router=ThreadRouter(),
+            watcher=Mock(spec=WorkspaceWatch),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        runtime._flush_unknown_message = AsyncMock()
+        runtime._flush_watched_files = AsyncMock()
+        runtime.provider_incident_id = "provider-incident"
+        runtime.provider_incident_turn_id = incident_turn
+        await runtime._turn_completed({"id": "turn", "status": status})
+        payload = emitter.emit.await_args.kwargs["payload"]
+        if status == "failed" and incident_turn == "turn":
+            assert payload.get("incident_id") == "provider-incident"
+            assert emitter.incident.await_args.args[1].incident_id == payload["incident_id"]
+        else:
+            assert "incident_id" not in payload
+
+    for status, incident_turn in (
+        ("failed", "turn"),
+        ("failed", "another-turn"),
+        ("completed", "turn"),
+        ("interrupted", "turn"),
+    ):
+        asyncio.run(scenario(status, incident_turn))
+
+
 def test_codex_idle_timeout_preserves_failure_semantics() -> None:
     native_message = "stream disconnected before completion: idle timeout waiting for SSE"
     for message in (native_message, "idle timeout waiting for SSE", native_message.upper()):
@@ -7307,6 +7342,7 @@ def main() -> int:
     test_evidence_cursor()
     test_upstream_inspection_launch()
     test_skill_refresh_does_not_require_exclusive_control()
+    test_provider_terminal_preserves_its_exact_incident_reference()
     test_codex_idle_timeout_preserves_failure_semantics()
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()

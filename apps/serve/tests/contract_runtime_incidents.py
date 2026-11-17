@@ -1191,6 +1191,23 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(records[0].vendor_item_id)
         self.assertTrue(self.live.ledger.has_unknown_outcome)
 
+    async def test_failed_terminal_projects_only_its_explicit_incident_reference(self) -> None:
+        await self.emit(
+            RuntimeEventKind.RUNTIME_INCIDENT,
+            incident=self.incident(RuntimeIncidentState.FAILED, incident_id="independent"),
+        )
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={"safe_error": "provider failed", "incident_id": "provider-incident"},
+        )
+        failed = self.events.latest_kind(PRODUCT_SESSION_ID, PRODUCT_EVENT_TURN_FAILED)
+        assert failed is not None
+        self.assertEqual(failed.payload.get("incident_id"), "provider-incident")
+        self.assertEqual(failed.vendor_turn_id, VENDOR_TURN_ID)
+        session = self.catalog.get(PRODUCT_SESSION_ID)
+        assert session is not None
+        self.assertEqual(session.last_turn_status, "failed")
+
     async def test_incident_progression_is_typed_idempotent_and_redacted(self) -> None:
         retrying = self.incident(RuntimeIncidentState.RETRYING)
         await self.emit(

@@ -131,6 +131,7 @@ const FAILURE_TEXT = {
 } as const
 
 export function describeTurnFailure(data: {
+  incident_id?: string
   code?: string
   provider_error_code?: string
   message?: string
@@ -161,6 +162,9 @@ export function describeTurnFailure(data: {
       : undefined
   return {
     kind: 'error',
+    ...(typeof data.incident_id === 'string' && data.incident_id
+      ? { incidentId: data.incident_id }
+      : {}),
     title: '',
     action: '',
     message: kind === 'unknown' && fallback === 'raw' ? rawMessage : '',
@@ -179,6 +183,30 @@ export function describeTurnFailure(data: {
     },
     ...retry,
   }
+}
+
+/** Call after presentation filtering so an omitted error cannot hide a notice. */
+export function presentRuntimeFailures(items: ConvItem[]): ConvItem[] {
+  const failures = items.filter(
+    (item) =>
+      item.kind === 'error' && item.failure && !item.turnUnknown && item.incidentId && item.turnId
+  )
+  return items.filter(
+    (item) =>
+      !(
+        item.kind === 'status' &&
+        typeof item.text === 'object' &&
+        item.text.key === 'runtime.failed' &&
+        item.incidentId &&
+        item.turnId &&
+        failures.some(
+          (failure) =>
+            failure.kind === 'error' &&
+            failure.incidentId === item.incidentId &&
+            failure.turnId === item.turnId
+        )
+      )
+  )
 }
 
 export function isRecoverableTurnFailure(item: Extract<ConvItem, { kind: 'error' }>): boolean {
