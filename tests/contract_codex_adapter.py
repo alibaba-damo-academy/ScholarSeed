@@ -896,6 +896,9 @@ def test_remote_retry_budget_projection() -> None:
     )
     byok = project(ModelTransport(**remote, stream_max_retries=1, request_max_retries=1))
     gateway = project(ModelTransport(**remote, stream_max_retries=0, request_max_retries=0))
+    gateway_recovery = project(
+        ModelTransport(**remote, stream_max_retries=5, request_max_retries=0)
+    )
     undeclared = project(ModelTransport(**remote))
     check(
         "BYOK budget reaches the codex provider verbatim",
@@ -904,6 +907,11 @@ def test_remote_retry_budget_projection() -> None:
     check(
         "gateway budget of zero survives projection (not dropped as falsy)",
         gateway.get("stream_max_retries") == 0 and gateway.get("request_max_retries") == 0,
+    )
+    check(
+        "gateway stream recovery budget reaches the native provider without request retries",
+        gateway_recovery.get("stream_max_retries") == 5
+        and gateway_recovery.get("request_max_retries") == 0,
     )
     check(
         "undeclared budget omits the knobs so codex keeps its own default",
