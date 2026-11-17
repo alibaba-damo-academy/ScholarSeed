@@ -28,6 +28,7 @@
 #include <sys/file.h>
 #include <sys/mount.h>
 #include <sys/attr.h>
+#include <sys/kauth.h>
 #include <uuid/uuid.h>
 #include <unistd.h>
 #include "darwin-permissions.h"
@@ -62,21 +63,19 @@ static void failure(struct directory_error *error, const char *code, uint32_t sy
 }
 
 #ifndef _WIN32
-bool directory_persistent_file_identity(file_handle descriptor,
-                                        char identity[DIRECTORY_IDENTITY_BYTES],
-                                        struct directory_error *error) {
+static bool persistent_file_identity(file_handle volume_handle, const struct stat *info,
+                                     char identity[DIRECTORY_IDENTITY_BYTES],
+                                     struct directory_error *error) {
   struct attrlist attributes = { .bitmapcount = ATTR_BIT_MAP_COUNT,
     .volattr = ATTR_VOL_INFO | ATTR_VOL_UUID };
   struct { uint32_t length; uuid_t uuid; } volume = {0};
-  struct stat info;
-  if (fgetattrlist(descriptor, &attributes, &volume, sizeof(volume), 0) ||
-      fstat(descriptor, &info)) {
+  if (fgetattrlist(volume_handle, &attributes, &volume, sizeof(volume), 0)) {
     failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
     return false;
   }
   if (volume.length != sizeof(volume) || uuid_is_null(volume.uuid) ||
-      !info.st_ino || info.st_birthtimespec.tv_sec <= 0 ||
-      info.st_birthtimespec.tv_nsec < 0 || info.st_birthtimespec.tv_nsec >= 1000000000) {
+      !info->st_ino || info->st_birthtimespec.tv_sec <= 0 ||
+      info->st_birthtimespec.tv_nsec < 0 || info->st_birthtimespec.tv_nsec >= 1000000000) {
     failure(error, "ERR_LEASE_UNSUPPORTED", 0);
     return false;
   }
@@ -86,16 +85,21 @@ bool directory_persistent_file_identity(file_handle descriptor,
   /* st_dev is a mount/session identity. Do not persist it across boots.
      Birth time also fences reuse of an inode on the same persistent volume. */
   snprintf(identity, DIRECTORY_IDENTITY_BYTES, "darwin:%s:%016" PRIx64 ":%016" PRIx64 ":%08" PRIx32,
-           uuid, (uint64_t)info.st_ino, (uint64_t)info.st_birthtimespec.tv_sec,
-           (uint32_t)info.st_birthtimespec.tv_nsec);
+           uuid, (uint64_t)info->st_ino, (uint64_t)info->st_birthtimespec.tv_sec,
+           (uint32_t)info->st_birthtimespec.tv_nsec);
   return true;
 }
 
 bool directory_persistent_identity(struct directory *directory,
                                    char identity[DIRECTORY_IDENTITY_BYTES],
                                    struct directory_error *error) {
-  return directory_persistent_file_identity(directory->handles[directory->count - 1],
-                                            identity, error);
+  int descriptor = directory->handles[directory->count - 1];
+  struct stat info;
+  if (fstat(descriptor, &info)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  return persistent_file_identity(descriptor, &info, identity, error);
 }
 #endif
 
@@ -904,29 +908,7 @@ done:
   return valid;
 }
 #else
-static bool permissions(int descriptor, bool ancestor, struct directory_error *error) {
-  struct stat info;
-  struct statfs volume;
-  if (fstatfs(descriptor, &volume)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); return false; }
-  if (!(volume.f_flags & MNT_LOCAL)) { failure(error, "ERR_LEASE_UNSUPPORTED", 0); return false; }
-  filesec_t security = filesec_init();
-  acl_t acl = NULL;
-  int present = 0;
-  if (!security) { failure(error, "ERR_LEASE_ALLOCATION", 0); return false; }
-  if (fstatx_np(descriptor, &info, security) || filesec_query_property(security, FILESEC_ACL, &present) ||
-      (present && filesec_get_property(security, FILESEC_ACL, &acl))) {
-    uint32_t status = (uint32_t)errno;
-    filesec_free(security);
-    failure(error, "ERR_LEASE_NATIVE", status); return false;
-  }
-  filesec_free(security);
-  if (!darwin_directory_mode_trusted(info.st_uid, info.st_gid, info.st_mode, ancestor, geteuid())) {
-    if (acl) acl_free(acl);
-    failure(error, "ERR_LEASE_PERMISSION", 0); return false;
-  }
-  // No extended ACL is a positive filesec property observation, not an ignored
-  // errno from a failed lookup (acl_get_fd_np conflates absence with failure).
-  if (!present) return true;
+static bool trusted_acl(acl_t acl, struct directory_error *error) {
   if (!acl) { failure(error, "ERR_LEASE_PERMISSION", 0); return false; }
   uuid_t current, root;
   bool valid = mbr_uid_to_uuid(geteuid(), current) == 0 && mbr_uid_to_uuid(0, root) == 0;
@@ -957,6 +939,29 @@ static bool permissions(int descriptor, bool ancestor, struct directory_error *e
   acl_free(acl);
   if (!valid) failure(error, "ERR_LEASE_PERMISSION", 0);
   return valid;
+}
+
+static bool permissions(int descriptor, bool ancestor, struct directory_error *error) {
+  struct stat info;
+  struct statfs volume;
+  if (fstatfs(descriptor, &volume)) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); return false; }
+  if (!(volume.f_flags & MNT_LOCAL)) { failure(error, "ERR_LEASE_UNSUPPORTED", 0); return false; }
+  filesec_t security = filesec_init();
+  acl_t acl = NULL;
+  int present = 0;
+  if (!security) { failure(error, "ERR_LEASE_ALLOCATION", 0); return false; }
+  if (fstatx_np(descriptor, &info, security) || filesec_query_property(security, FILESEC_ACL, &present) ||
+      (present && filesec_get_property(security, FILESEC_ACL, &acl))) {
+    uint32_t status = (uint32_t)errno;
+    filesec_free(security);
+    failure(error, "ERR_LEASE_NATIVE", status); return false;
+  }
+  filesec_free(security);
+  if (!darwin_directory_mode_trusted(info.st_uid, info.st_gid, info.st_mode, ancestor, geteuid())) {
+    if (acl) acl_free(acl);
+    failure(error, "ERR_LEASE_PERMISSION", 0); return false;
+  }
+  return !present || trusted_acl(acl, error);
 }
 
 // Project ACLs describe access, not an application-private trust boundary.
@@ -1148,6 +1153,95 @@ file_handle directory_file(struct directory *directory, const char *name, struct
 file_handle directory_bound_file(struct directory *directory, const char *name,
                                  const char *identity, struct directory_error *error) {
   return open_lock_file(directory, name, false, identity, error);
+}
+
+// getattrlistat packs even 64-bit attributes at four-byte boundaries.
+struct __attribute__((packed, aligned(4))) identity_attributes {
+  uint32_t length;
+  attribute_set_t returned;
+  dev_t device;
+  struct timespec birth;
+  uid_t owner;
+  gid_t group;
+  uint32_t mode;
+  attrreference_t acl;
+  uint64_t inode;
+  uint32_t links;
+  unsigned char security[KAUTH_FILESEC_SIZE(ACL_MAX_ENTRIES)];
+};
+
+static bool identity_acl(const struct identity_attributes *attrs, struct directory_error *error) {
+  if (!(attrs->returned.commonattr & ATTR_CMN_EXTENDED_SECURITY)) return true;
+  size_t offset = offsetof(struct identity_attributes, acl) + (size_t)attrs->acl.attr_dataoffset;
+  size_t length = attrs->acl.attr_length;
+  if (attrs->acl.attr_dataoffset > 0 && offset >= offsetof(struct identity_attributes, security) &&
+      offset <= attrs->length && offset % 4 == 0 && length <= attrs->length - offset &&
+      KAUTH_FILESEC_VALID(length)) {
+    const struct kauth_filesec *acl = (const void *)((const unsigned char *)attrs + offset);
+    if (acl->fsec_magic == KAUTH_FILESEC_MAGIC && acl->fsec_entrycount <= ACL_MAX_ENTRIES &&
+        length == KAUTH_FILESEC_SIZE(acl->fsec_entrycount))
+      return trusted_acl(acl_copy_int_native(acl), error);
+  }
+  failure(error, "ERR_LEASE_PERMISSION", 0);
+  return false;
+}
+
+bool directory_persistent_file_identity_at(struct directory *directory, const char *name,
+                                           const char *expected, char identity[IDENTITY_BYTES],
+                                           struct directory_error *error) {
+  if (!leaf_name(name)) { failure(error, "ERR_LEASE_ARGUMENT", 0); return false; }
+  int parent = directory->handles[directory->count - 1];
+  struct stat pinned;
+  struct statfs volume;
+  if (fstat(parent, &pinned) || fstatfs(parent, &volume)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  if (!(volume.f_flags & MNT_LOCAL)) { failure(error, "ERR_LEASE_UNSUPPORTED", 0); return false; }
+  const attrgroup_t required = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_DEVID | ATTR_CMN_CRTIME |
+    ATTR_CMN_OWNERID | ATTR_CMN_GRPID | ATTR_CMN_ACCESSMASK | ATTR_CMN_FILEID;
+  struct attrlist request = { .bitmapcount = ATTR_BIT_MAP_COUNT,
+    .commonattr = required | ATTR_CMN_EXTENDED_SECURITY, .fileattr = ATTR_FILE_LINKCOUNT };
+  struct identity_attributes attrs = {0};
+  // Closing an independent descriptor on the SQLite inode drops its POSIX locks.
+  if (getattrlistat(parent, name, &request, &attrs, sizeof(attrs),
+                    FSOPT_NOFOLLOW | FSOPT_PACK_INVAL_ATTRS | FSOPT_REPORT_FULLSIZE)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  if (attrs.length < offsetof(struct identity_attributes, security) || attrs.length > sizeof(attrs) ||
+      (attrs.returned.commonattr & required) != required) {
+    failure(error, "ERR_LEASE_UNSUPPORTED", 0);
+    return false;
+  }
+  if (!S_ISREG(attrs.mode) || !(attrs.returned.fileattr & ATTR_FILE_LINKCOUNT) || attrs.links != 1) {
+    failure(error, "ERR_LEASE_FILE", 0);
+    return false;
+  }
+  if (pinned.st_dev != attrs.device) {
+    failure(error, "ERR_LEASE_CHANGED", 0);
+    return false;
+  }
+  if (expected) {
+    char legacy[IDENTITY_BYTES];
+    snprintf(legacy, sizeof(legacy), "posix:%016" PRIx64 ":%016" PRIx64,
+             (uint64_t)attrs.device, attrs.inode);
+    if (strcmp(expected, legacy)) {
+      failure(error, "ERR_LEASE_CHANGED", 0);
+      return false;
+    }
+  }
+  if (!darwin_directory_mode_trusted(attrs.owner, attrs.group, attrs.mode, false, geteuid())) {
+    failure(error, "ERR_LEASE_PERMISSION", 0);
+    return false;
+  }
+  if (!identity_acl(&attrs, error)) return false;
+  if (faccessat(parent, name, R_OK | W_OK, AT_SYMLINK_NOFOLLOW | AT_EACCESS)) {
+    failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno);
+    return false;
+  }
+  struct stat observed = { .st_ino = attrs.inode, .st_birthtimespec = attrs.birth };
+  return persistent_file_identity(parent, &observed, identity, error);
 }
 
 bool directory_create(struct directory *directory, const char *name, const unsigned char *buffer,

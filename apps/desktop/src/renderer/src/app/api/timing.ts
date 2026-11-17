@@ -3,7 +3,9 @@ import {
   HTTP_LATENCY_DIAGNOSTIC_PREFIX,
   SESSION_CATALOG_PATH,
   isRequestDiagnosticId,
+  catalogDiagnosticContext,
 } from '../../../../requests.ts'
+import { captureCatalogResource, type CatalogResourceCapture } from './resources.ts'
 
 const ERROR_NAMES = new Set(['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'])
 const responseTimings = new WeakMap<Response, CatalogTiming>()
@@ -16,19 +18,37 @@ type TimingEvent =
   | 'body_failed'
   | 'catalog_ready'
   | 'catalog_failed'
+  | 'resource_timing'
 
-type TimingDetails = { selected_rows?: number; failure_phase?: 'schema' | 'projection' }
+type TimingDetails = Record<string, unknown>
 
 class CatalogTiming {
   private readonly startedAt = performance.now()
   private headersAt: number | undefined
   private bodyAt: number | undefined
   private readonly stages: Record<string, unknown>[] = []
+  private resource: CatalogResourceCapture | undefined
+  private resourceAttempted = false
 
   constructor(
     readonly identifier: string,
-    readonly timeoutMs: number | undefined
+    readonly timeoutMs: number | undefined,
+    private readonly path: string,
+    private readonly url: string
   ) {}
+
+  fetch(transport: () => Promise<Response>): Promise<Response> {
+    this.resourceAttempted = true
+    this.resource = captureCatalogResource(this.url, (details) =>
+      this.record('resource_timing', null, undefined, details)
+    )
+    this.resource?.begin()
+    try {
+      return transport()
+    } finally {
+      this.resource?.dispatched()
+    }
+  }
 
   record(
     event: TimingEvent,
@@ -39,6 +59,13 @@ class CatalogTiming {
     const now = performance.now()
     if (event === 'headers_received') this.headersAt = now
     if (event === 'body_started') this.bodyAt = now
+    if (
+      event === 'fetch_failed' ||
+      event === 'body_failed' ||
+      event === 'body_decoded' ||
+      (event === 'headers_received' && status !== null && (status < 200 || status >= 300))
+    )
+      this.resource?.finish()
     try {
       const point = {
         layer: 'renderer',
@@ -51,6 +78,8 @@ class CatalogTiming {
         elapsed_ms: now - this.startedAt,
         timeout_ms: this.timeoutMs ?? null,
         status,
+        catalog: catalogDiagnosticContext(this.path),
+        resource_capture_enabled: this.resourceAttempted ? this.resource !== undefined : null,
         ...(this.headersAt !== undefined ? { after_headers_ms: now - this.headersAt } : {}),
         ...(this.bodyAt !== undefined ? { body_elapsed_ms: now - this.bodyAt } : {}),
         ...details,
@@ -67,7 +96,8 @@ class CatalogTiming {
         event === 'body_failed' ||
         event === 'body_decoded' ||
         event === 'catalog_ready' ||
-        event === 'catalog_failed'
+        event === 'catalog_failed' ||
+        event === 'resource_timing'
       if (
         !terminal &&
         !(event === 'headers_received' && status !== null && (status < 200 || status >= 300))
@@ -88,7 +118,8 @@ export function startCatalogTiming(
   path: string,
   method: string,
   timeoutMs: number | undefined,
-  headers: Headers
+  headers: Headers,
+  url: string
 ): CatalogTiming | undefined {
   if (path.split('?')[0] !== SESSION_CATALOG_PATH || method !== 'GET') return undefined
   try {
@@ -97,7 +128,7 @@ export function startCatalogTiming(
       ? supplied
       : crypto.randomUUID().replaceAll('-', '')
     headers.set(API_DIAGNOSTIC_HEADER, identifier)
-    const timing = new CatalogTiming(identifier, timeoutMs)
+    const timing = new CatalogTiming(identifier, timeoutMs, path, url)
     timing.record('fetch_started')
     return timing
   } catch {

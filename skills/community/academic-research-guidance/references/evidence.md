@@ -1,5 +1,7 @@
 ## Research Conclusions and Evidence
 
+**English** · [简体中文](evidence.zh.md)
+
 Answer the requested question directly and proportionately, in the user's language.
 Use normal prose and inline citations; do not attach evidence-category labels to
 every conclusion unless the user requests an evidence audit. Distinguish source facts

@@ -78,7 +78,7 @@ members = [
 ]
 
 [tool.uv.sources]
-deep-rnd-l1 = { path = "apps/serve/vendor/deep_rnd_l1-0.2.8-py3-none-any.whl" }
+deep-rnd-l1 = { path = "apps/serve/vendor/deep_rnd_l1-0.2.9-py3-none-any.whl" }
 scholarseed-runtime = { workspace = true }
 damoatrace = { workspace = true }
 scholarseed-codex = { workspace = true }

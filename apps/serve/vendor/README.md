@@ -1,8 +1,12 @@
 # L1 extraction distribution
 
-`deep_rnd_l1-0.2.8-py3-none-any.whl` is the fixed, provider-independent single-paper extractor from the sibling `deep_rnd` repository. Serve imports `knowledge_layer.comprehend`; it does not import the research checkout or read its model configuration at runtime. The wheel contains only the extraction API, prompts, schema and their standard-library helpers. It has no third-party dependencies or model credentials.
+`deep_rnd_l1-0.2.9-py3-none-any.whl` is the fixed, provider-independent single-paper extractor from the sibling `deep_rnd` repository. Serve imports `knowledge_layer.comprehend`; it does not import the research checkout or read its model configuration at runtime. The wheel contains only the extraction API, prompts, schema and their standard-library helpers. It has no third-party dependencies or model credentials.
 
 `provenance.json` records the source revision, each shipped source file's SHA-256, and the wheel SHA-256. The product dependency is pinned in `apps/serve/pyproject.toml`; the workspace source and byte hash are pinned in `pyproject.toml` and `uv.lock`.
+
+Version 0.2.9 strictly validates syntax-repair responses before accepting any block. It accepts exact root-level block objects or one unambiguous `blocks` envelope; missing/extra keys, mixed or nested envelopes, duplicate keys and non-object blocks are rejected with diagnostics. Original replies, accepted block names and unwrapping are recorded by the shared client. Existing content/provenance validation and bounded retry budgets remain unchanged. The 0.2.8 artifact is retained unchanged.
+
+0.2.9 在接纳前完整校验语法修复响应，只兼容精确根层区块或无歧义的单层 `blocks` 包装。缺键、多键、混合或嵌套包装、重复键及非对象区块均明确拒绝；共享客户端记录原始回执、接纳区块和解包状态。内容与溯源校验、有限重试预算不变，0.2.8 制品保留不动。
 
 Version 0.2.8 preserves unambiguously decoded blocks when another block is missing or truncated. It allows at most one syntax-only repair of undecodable blocks, followed by one source-grounded content repair. Syntax recovery cannot overwrite decoded blocks and never receives source text, images or a source cache prefix. Successful 0.2.7 assets remain reusable.
 

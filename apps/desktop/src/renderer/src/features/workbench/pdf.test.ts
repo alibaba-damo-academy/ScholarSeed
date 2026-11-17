@@ -621,6 +621,13 @@ test('figure explanation omits page navigation while other reading outputs retai
   assert.match(source, /showEvidence &&\s*evidencePages\(content.evidence\)/)
 })
 
+test('PDF AI reading renders math in streaming and completed explanations', () => {
+  const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  assert.match(source, /<Markdown text=\{floatingPreview\} pending=\{busy\} math \/>/)
+  assert.match(source, /<Markdown text=\{floatingResult\?\.text \?\? figureText\} math \/>/)
+  assert.match(source, /<Markdown text=\{content\.text \?\? ''\} math \/>/)
+})
+
 test('PDF owns its toolbar so the Dock does not reserve an empty row', () => {
   const feature = readFileSync(new URL('./feature.tsx', import.meta.url), 'utf8')
   assert.match(feature, /kind: 'pdf',[\s\S]*toolbar: 'viewer'/)

@@ -96,6 +96,83 @@ test('native send, headers and completion share the exact renderer correlation',
   state.dispose()
 })
 
+test('catalog scope is visible without exposing project paths or search content', () => {
+  const state = fixture()
+  state.send(1, {
+    url: `${BASE}/api/serve/sessions?scope=project&archived=true&limit=60&include_last_agent_reply=false&project_path=private&query=private`,
+  })
+  try {
+    assert.deepEqual(state.records[0].catalog, {
+      scope: 'project',
+      archived: true,
+      include_last_agent_reply: false,
+      limit: 60,
+    })
+    assert.ok(!JSON.stringify(state.records).includes('private'))
+  } finally {
+    state.dispose()
+  }
+})
+
+test('catalog diagnostics expose same-backend activity and a named event-loop window', () => {
+  const state = fixture()
+  state.send(10, { url: `${BASE}/api/serve/sessions/private-session/events` })
+  state.headers(10)
+  state.send(11, { url: `${BASE}/api/serve/runtime/prepare/private-preparation` })
+  state.send(12)
+  try {
+    const activity = state.records[0].backend_activity as Record<string, unknown>
+    assert.equal(activity.inflight_total, 3)
+    assert.equal(activity.with_headers, 1)
+    assert.deepEqual(activity.categories, { session_stream: 1, runtime_preparation: 1, catalog: 1 })
+    const loop = state.records[0].main_loop as Record<string, unknown>
+    assert.ok(Number(loop.window_ended_timestamp_ms) >= Number(loop.window_started_timestamp_ms))
+    assert.ok(!JSON.stringify(state.records).includes('private'))
+    state.complete(10)
+    state.complete(11)
+    state.complete(12)
+    assert.equal((state.records[1].backend_activity as Record<string, unknown>).inflight_total, 0)
+  } finally {
+    state.dispose()
+  }
+})
+
+test('activity is bounded, excludes other backends and never claims to count sockets', () => {
+  const state = fixture()
+  try {
+    for (let index = 0; index < NETWORK_DIAGNOSTIC_LIMIT; index += 1)
+      state.send(index, { url: `${BASE}/api/serve/sessions/private/events` })
+    state.send(500, { url: 'https://private.example/api/serve/sessions/private/events' })
+    state.send(501, { webContentsId: 99 })
+    state.send(502)
+    const activity = state.records[0].backend_activity as Record<string, unknown>
+    assert.equal(activity.inflight_total, NETWORK_DIAGNOSTIC_LIMIT)
+    assert.equal(activity.evicted_observations, 1)
+    assert.ok(!JSON.stringify(state.records).includes('private'))
+    assert.equal(activity.socket_count, undefined)
+  } finally {
+    state.dispose()
+  }
+})
+
+test('ambiguous or malformed scope values do not enter diagnostic logs', () => {
+  const state = fixture()
+  try {
+    state.send(1, {
+      url: `${BASE}/api/serve/sessions?scope=private&scope=project&archived=private&limit=private&include_last_agent_reply=private`,
+    })
+    assert.deepEqual(state.records[0].catalog, {
+      scope: null,
+      archived: null,
+      include_last_agent_reply: null,
+      limit: null,
+    })
+    assert.ok(!JSON.stringify(state.records).includes('private'))
+  } finally {
+    state.dispose()
+  }
+})
+
 test('unrelated origins, routes, contents and malformed identifiers are excluded', () => {
   const state = fixture()
   state.send(1, { url: 'https://external.test/api/serve/sessions' })
