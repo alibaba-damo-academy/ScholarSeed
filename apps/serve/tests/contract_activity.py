@@ -514,6 +514,30 @@ class ActivityContracts(unittest.IsolatedAsyncioTestCase):
             parent.close()
             foreign.close()
 
+    async def test_finished_thread_preserves_context_and_rejects_new_roots_during_drain(self):
+        gate = Activities()
+        marker = contextvars.ContextVar("finished-thread-marker", default="missing")
+        token = marker.set("request-context")
+
+        def operation():
+            self.assertEqual(marker.get(), "request-context")
+            with gate.enter(ActivityDomain.RUNTIME):
+                with self.assertRaises(MaintenanceActive):
+                    gate.enter(ActivityDomain.RUNTIME, root=True)
+            raise PermissionError("retained worker failure")
+
+        try:
+            with gate.enter(ActivityDomain.RUNTIME, root=True):
+                generation = gate.begin()
+                with self.assertRaisesRegex(PermissionError, "retained worker failure"):
+                    await gate.finish_thread(ActivityDomain.RUNTIME, operation)
+                self.assertEqual(gate.snapshot().counts, {ActivityDomain.RUNTIME.value: 1})
+                self.assertEqual(marker.get(), "request-context")
+                self.assertFalse(gate.seal(generation))
+            self.assertTrue(gate.seal(generation))
+        finally:
+            marker.reset(token)
+
     async def test_cancelled_commit_retains_lock_until_disk_and_memory_agree(self) -> None:
         gate = Activities()
         entered, release = threading.Event(), threading.Event()

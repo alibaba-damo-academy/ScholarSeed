@@ -715,6 +715,11 @@ class Activities:
                 raise cancellation
             return result
 
+    async def finish_thread(
+        self, domain: ActivityDomain, operation: Callable[..., T], *args: Any, **kwargs: Any
+    ) -> T:
+        return await self.finish(domain, lambda: self.to_thread(domain, operation, *args, **kwargs))
+
     def _thread(
         self, domain: ActivityDomain | None, operation: Callable[..., T], *args: Any, **kwargs: Any
     ) -> asyncio.Future[T]:

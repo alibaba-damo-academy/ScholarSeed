@@ -8,6 +8,7 @@ import json
 import mimetypes
 import secrets
 import uuid
+from collections.abc import Iterable
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -518,7 +519,7 @@ class LiveSession:
         self._rpc_evidence: list[RuntimeRpcEvidence] = []
         self._local_input_paths: dict[str, tuple[Path, InputKind]] = {}
         self._local_input_path_ids: dict[Path, str] = {}
-        self.restore_local_input_paths()
+        self.restore_local_input_paths(self._events.replay(self.id))
         self.ledger = SessionLedger(
             self.id,
             catalog,
@@ -3043,10 +3044,10 @@ class LiveSession:
         registered = self._local_input_paths.get(reference_id or "")
         return canonical if registered is not None and registered[1] == InputKind.FILE else None
 
-    def restore_local_input_paths(self) -> None:
+    def restore_local_input_paths(self, events: Iterable[ProductEventRecord]) -> None:
         """Rehydrate sent local path references from the durable product event log."""
 
-        for event in self._events.replay(self.id):
+        for event in events:
             if event.kind != PRODUCT_EVENT_USER_MESSAGE:
                 continue
             references = event.payload.get("refs")
