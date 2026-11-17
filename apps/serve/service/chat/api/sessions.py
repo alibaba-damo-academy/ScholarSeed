@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import nullcontext
 from typing import Any, BinaryIO, Iterator, Mapping
 
@@ -26,8 +27,11 @@ from service.chat.constants import (
 )
 from service.chat.persistence.catalog import (
     SessionAccessError,
+    SessionListCursorError,
     SessionListScope,
+    SessionOrderPlacement,
     SessionPrincipal,
+    SessionStateConflictError,
 )
 from service.chat.runtime.reconfiguration import (
     PREPARATION_INVALID,
@@ -59,6 +63,7 @@ from service.chat.service.sessions import (
     SESSION_LIST_MAX_LIMIT,
     SESSION_PERMISSION_CONTINUATION_TEXT,
     PermissionApplication,
+    SessionListTiming,
     SessionService,
 )
 from service.chat.service.turns import TurnService
@@ -71,10 +76,13 @@ from service.identity.utils import (
     require_host_process,
 )
 from service.platform.activity import ActivityDomain
+from service.platform.latency import requestLatency
 from service.platform.limits import ATTACHMENT_MAX_BYTES, UPLOAD_CHUNK_BYTES
 from service.platform.passive_events import passive_events
 
 HTTP_OK = 200
+PREDICTION_DISCONNECT_POLL_SECONDS = 0.1
+PREDICTION_FAILED = "prediction_failed"
 HTTP_CONFLICT = 409
 HTTP_BAD_REQUEST = 400
 HTTP_BAD_GATEWAY = 502
@@ -200,10 +208,10 @@ def mount_session_routes(
 
     @app.exception_handler(PreparationError)
     async def preparation_error(_request: Request, error: PreparationError) -> JSONResponse:
-        return JSONResponse(
-            {"ok": False, "error": str(error), "preparation_error": True},
-            status_code=HTTP_CONFLICT,
-        )
+        payload: dict[str, Any] = {"ok": False, "error": str(error), "preparation_error": True}
+        if error.state is not None:
+            payload["preparation_state"] = error.state.value
+        return JSONResponse(payload, status_code=HTTP_CONFLICT)
 
     @app.post("/api/serve/runtime/prepare")
     async def prepare_runtime(body: RuntimePreparationRequest, request: Request) -> Any:
@@ -227,6 +235,32 @@ def mount_session_routes(
                 {"ok": False, "error": RECONFIGURATION_NOT_FOUND}, status_code=HTTP_404_NOT_FOUND
             )
 
+    @app.post("/api/serve/sessions/{session_id}/prediction", dependencies=session_guard)
+    async def predict_message(session_id: str, request: Request) -> Any:
+        body = await _json(request)
+        turn_id = body.get("source_turn_id")
+        if not isinstance(turn_id, str) or not turn_id.strip():
+            raise HTTPException(HTTP_422_UNPROCESSABLE_CONTENT, "source_turn_id is required")
+        task = asyncio.create_task(
+            sessions.predict_message(session_id, turn_id, request_principal(request))
+        )
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=PREDICTION_DISCONNECT_POLL_SECONDS)
+                if await request.is_disconnected():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    return Response(status_code=HTTP_CONFLICT)
+            return await task
+        except ValueError as error:
+            return JSONResponse({"error": str(error)}, status_code=HTTP_CONFLICT)
+        except Exception:
+            return JSONResponse({"error": PREDICTION_FAILED}, status_code=HTTP_BAD_GATEWAY)
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     @app.get(
         "/api/serve/sessions/{session_id}/navigation",
         dependencies=[Depends(require_session_access)],
@@ -235,6 +269,14 @@ def mount_session_routes(
         # The service enforces ownership; restoring navigation must not realign
         # credentials, activate the runtime, or repair persisted session state.
         payload, status = sessions.navigation(session_id, request_principal(request))
+        return _result(payload, status)
+
+    @app.get(
+        "/api/serve/sessions/{session_id}/fork-origin",
+        dependencies=[Depends(require_session_access)],
+    )
+    def fork_origin(session_id: str, request: Request) -> Any:
+        payload, status = sessions.fork_origin(session_id, request_principal(request))
         return _result(payload, status)
 
     async def open_live_session(body: Mapping[str, Any], principal_id: str) -> dict[str, Any]:
@@ -318,17 +360,27 @@ def mount_session_routes(
             raise HTTPException(
                 HTTP_422_UNPROCESSABLE_CONTENT, SESSION_LIST_CURSOR_INVALID
             ) from error
-        return await sessions.list(
-            limit,
-            request_principal(request),
-            scope=scope,
-            project_path=project_path,
-            query=query,
-            history=events.portable_history,
-            cursor=cursor,
-            archived=archived,
-            include_last_agent_reply=include_last_agent_reply,
-        )
+        try:
+            observation = requestLatency(request.scope)
+            return await sessions.list(
+                limit,
+                request_principal(request),
+                scope=scope,
+                project_path=project_path,
+                query=query,
+                history=events.portable_history,
+                cursor=cursor,
+                archived=archived,
+                include_last_agent_reply=include_last_agent_reply,
+                timing=SessionListTiming.create(
+                    observation.requestId if observation else None,
+                    observation.clientRequestId if observation else None,
+                ),
+            )
+        except SessionListCursorError as error:
+            raise HTTPException(
+                HTTP_422_UNPROCESSABLE_CONTENT, SESSION_LIST_CURSOR_INVALID
+            ) from error
 
     @app.get("/api/serve/interactions/pending")
     def pending_interactions(request: Request) -> dict[str, Any]:
@@ -336,15 +388,8 @@ def mount_session_routes(
 
     @app.post("/api/serve/sessions/open")
     async def open_session(request: Request) -> Any:
-        # 会话进程的 env 只能在这里解析: 用户 JWT 只存在于本次请求 (middleware 验签后即
-        # 丢弃), 而 App Server / skill 要的那把 API Key 得拿它去账号服务换。默认 Codex
-        # 拿不到仍可按订阅登录运行; 需要该 key 的自定义 Codex 会由 launch contract fail closed。
         owner = request_principal(request)
         actor_id = request_user_id(request)
-        skill_environment = await credentials.environment(
-            actor_id,
-            bearer_or_cookie(request),
-        )
         body = await _json(request)
         prepare = body.pop("prepare_runtime", False)
         instance_id = body.pop("service_instance_id", "")
@@ -361,6 +406,11 @@ def mount_session_routes(
             return JSONResponse(
                 {"ok": False, "error": PREPARATION_INVALID}, status_code=HTTP_BAD_REQUEST
             )
+        skill_environment = await (
+            credentials.ensure(actor_id, bearer_or_cookie(request))
+            if prepare
+            else credentials.environment(actor_id, bearer_or_cookie(request))
+        )
         admission = (
             sessions.model_admission(
                 body["model_id"],
@@ -504,6 +554,15 @@ def mount_session_routes(
             )
         return {"ok": True, "references": references}
 
+    @app.get(
+        "/api/serve/sessions/{session_id}/file-references/location", dependencies=session_guard
+    )
+    def reference_location(session_id: str, reference_id: str = Query(...)) -> Any:
+        try:
+            return {"ok": True, **sessions.reference_location(session_id, reference_id)}
+        except ArtifactReadError as error:
+            return JSONResponse({"ok": False, "error": error.code}, status_code=HTTP_404_NOT_FOUND)
+
     @app.get("/api/serve/sessions/{session_id}/files", dependencies=session_guard)
     def session_files(
         session_id: str,
@@ -537,6 +596,16 @@ def mount_session_routes(
         )
 
     @app.get(
+        "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/entries",
+        dependencies=session_guard,
+    )
+    def artifact_entries(session_id: str, artifact_id: str) -> Any:
+        try:
+            return artifacts.directory_entries(session_id, artifact_id)
+        except ArtifactReadError as error:
+            return artifact_failure(error)
+
+    @app.get(
         "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/content",
         dependencies=session_guard,
     )
@@ -547,12 +616,31 @@ def mount_session_routes(
             return artifact_failure(error)
 
     @app.get(
+        "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/open",
+        dependencies=session_guard,
+    )
+    def artifact_open(session_id: str, artifact_id: str, member: str | None = Query(None)) -> Any:
+        try:
+            return artifacts.document_projection(session_id, artifact_id, member)
+        except ArtifactReadError as error:
+            return artifact_failure(error)
+
+    @app.get(
         "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/raw",
         dependencies=session_guard,
     )
-    def artifact_raw(session_id: str, artifact_id: str) -> Response:
+    def artifact_raw(
+        session_id: str,
+        artifact_id: str,
+        member: str | None = Query(None),
+        preview: bool = False,
+    ) -> Response:
         try:
-            document = artifacts.open_document(session_id, artifact_id)
+            document = (
+                artifacts.preview_document(session_id, artifact_id, member)
+                if preview
+                else artifacts.open_document(session_id, artifact_id, member)
+            )
         except ArtifactReadError as error:
             return artifact_failure(error)
         return _artifact_response(document)
@@ -561,9 +649,11 @@ def mount_session_routes(
         "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/raw",
         dependencies=session_guard,
     )
-    def artifact_raw_revision(session_id: str, artifact_id: str) -> Response:
+    def artifact_raw_revision(
+        session_id: str, artifact_id: str, member: str | None = Query(None)
+    ) -> Response:
         try:
-            document = artifacts.open_document(session_id, artifact_id)
+            document = artifacts.open_document(session_id, artifact_id, member)
         except ArtifactReadError as error:
             return artifact_failure(error)
         return _artifact_response(document, head=True)
@@ -572,7 +662,11 @@ def mount_session_routes(
         "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/raw",
         dependencies=session_guard,
     )
-    async def update_artifact_raw(session_id: str, artifact_id: str, request: Request) -> Response:
+    async def update_artifact_raw(
+        session_id: str, artifact_id: str, request: Request, member: str | None = Query(None)
+    ) -> Response:
+        if member is not None:
+            return artifact_failure(ArtifactReadError(ARTIFACT_EDIT_UNAVAILABLE))
         expected_revision = request.headers.get("if-match", "").strip().strip('"')
         if not expected_revision:
             return JSONResponse(
@@ -862,8 +956,44 @@ def mount_session_routes(
             body.archived,
             request_principal(request),
             actor_id=request_user_id(request),
+            stop_running=body.stop_running,
         )
         return _result(payload, status)
+
+    @app.delete("/api/serve/sessions/{session_id}/display-parent", dependencies=session_guard)
+    def detach_session(session_id: str, request: Request) -> dict[str, Any]:
+        return sessions.detach(session_id, request_principal(request))
+
+    @app.get("/api/serve/sessions/{session_id}/display-children", dependencies=session_guard)
+    def display_children(session_id: str, request: Request) -> dict[str, Any]:
+        return sessions.display_children(session_id, request_principal(request))
+
+    @app.put("/api/serve/sessions/{session_id}/display-parent", dependencies=session_guard)
+    async def restore_parent(session_id: str, request: Request) -> dict[str, Any]:
+        body = await _json(request)
+        parent = body.get("parent_session_id")
+        if not isinstance(parent, str) or not parent.strip():
+            raise HTTPException(HTTP_422_UNPROCESSABLE_CONTENT, "parent_session_id is required")
+        try:
+            return sessions.restore_parent(session_id, request_principal(request), parent.strip())
+        except ValueError as error:
+            raise HTTPException(HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+
+    @app.put("/api/serve/sessions/{session_id}/display-order", dependencies=session_guard)
+    async def reorder_session(session_id: str, request: Request) -> dict[str, Any]:
+        body = await _json(request)
+        target = body.get("target_session_id")
+        if not isinstance(target, str) or not target.strip():
+            raise HTTPException(HTTP_422_UNPROCESSABLE_CONTENT, "target_session_id is required")
+        try:
+            placement = SessionOrderPlacement(body.get("placement"))
+            return sessions.reorder(
+                session_id, request_principal(request), target.strip(), placement
+            )
+        except SessionStateConflictError as error:
+            raise HTTPException(HTTP_CONFLICT, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
 
     @app.put("/api/serve/sessions/{session_id}/pin", dependencies=session_guard)
     def set_session_pinned(
@@ -896,8 +1026,7 @@ def mount_session_routes(
         entries = []
         for session in payload["sessions"]:
             try:
-                listing = await request.app.state.activities.to_thread(
-                    ActivityDomain.RESOURCE,
+                listing = await request.app.state.activities.observe_thread(
                     sessions.files,
                     session["session_id"],
                     outputs_only=True,
@@ -953,6 +1082,12 @@ def mount_session_routes(
         body: SessionModelRequest,
         request: Request,
     ) -> Any:
+        if body.service_instance_id is not None and body.service_instance_id != getattr(
+            request.app.state, "service_instance_id", None
+        ):
+            return JSONResponse(
+                {"ok": False, "error": "service_instance_changed"}, status_code=HTTP_CONFLICT
+            )
         try:
             thinking = thinking_from_payload(body.thinking)
         except ValueError as exc:
@@ -985,13 +1120,17 @@ def mount_session_routes(
                 if status == HTTP_OK and continuation:
                     context = body.get("continuation_context")
                     context = context if isinstance(context, Mapping) else {}
+                    locale = context.get("locale")
+                    locale = locale.split("-")[0].lower() if isinstance(locale, str) else "zh"
                     result, result_status = await turns.post(
                         session_id,
                         {
                             "input": [
                                 {
                                     "type": InputKind.TEXT.value,
-                                    "text": SESSION_PERMISSION_CONTINUATION_TEXT,
+                                    "text": SESSION_PERMISSION_CONTINUATION_TEXT.get(
+                                        locale, SESSION_PERMISSION_CONTINUATION_TEXT["zh"]
+                                    ),
                                 }
                             ],
                             **{

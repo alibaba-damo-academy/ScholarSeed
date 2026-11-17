@@ -17,6 +17,18 @@ const {
   invoke,
 } = require('../native.cjs')
 
+test('native asset resolution externalizes only exact emitted platform library paths', async () => {
+  const { nativeLease } = await leaseModule
+  const plugin = nativeLease()
+  assert.equal(typeof plugin.resolveId, 'function')
+  for (const filename of libraries(process.platform)) {
+    assert.deepEqual(plugin.resolveId(`./${filename}`), { id: `./${filename}`, external: true })
+  }
+  for (const source of ['unknown.node', './unknown.node', '../lease.node', '/tmp/lease.node', './lease.node?asset', 'ws']) {
+    assert.equal(plugin.resolveId(source), undefined)
+  }
+})
+
 test('Darwin-only repair libraries are not declared for another platform', () => {
   assert.deepEqual(libraries('darwin'), ['lease.node', 'fonts.node', 'notarization.node', 'repair.node'])
   assert.deepEqual(libraries('win32'), ['lease.node', 'fonts.node', 'notification.node', 'velopack.node'])

@@ -11,7 +11,6 @@ import {
   EllipsisText,
   EmptyState,
   IconButton,
-  Spinner,
   Table,
   TableBody,
   TableCell,
@@ -24,11 +23,13 @@ import {
   LIBRARY_TABLE_CLASS,
   LibraryAction,
   LibraryFilter,
+  LibraryLoading,
   LibraryToolbar,
 } from '../../components/business/Library'
 import { libraryUpdatedAt } from '../../components/business/utils'
 import { fileIconForName } from '../../components/primitive'
 import { useApp } from '../../store'
+import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
 import type { ResourceNode } from './state'
 import { fetchResourceListing } from './api'
@@ -266,7 +267,9 @@ export function ResourceListing(): React.JSX.Element {
                     data-testid={`material-${node.path}`}
                     draggable={Boolean(project) && draft?.target !== node.path}
                     onDragStart={(event) => {
-                      if (project) writeProjectEntryDrag(event.dataTransfer, project, node)
+                      if (!project) return
+                      writeProjectEntryDrag(event.dataTransfer, project, node)
+                      setFileDragPreview(event.dataTransfer, node.name, node.kind)
                     }}
                     onContextMenu={(event) => openMenu(node, event)}
                   >
@@ -299,7 +302,9 @@ export function ResourceListing(): React.JSX.Element {
                               }
                             />
                             <FileIcon />
-                            <EllipsisText tooltip={node.path}>{node.name}</EllipsisText>
+                            <EllipsisText tooltip={node.path} tooltipPortalled>
+                              {node.name}
+                            </EllipsisText>
                           </Button>
                         )}
                       </div>
@@ -335,7 +340,7 @@ export function ResourceListing(): React.JSX.Element {
             })}
           </TableBody>
         </Table>
-        {loading && <Spinner />}
+        {loading && !visible.length && <LibraryLoading />}
         {failed && (
           <Button variant="outline" onClick={() => setRefresh((value) => value + 1)}>
             {t('readFailed')}

@@ -1,9 +1,9 @@
+import type { GenerationPreviewData } from '../../api'
 import type {
   ApiFailure,
   ConversationSearchResult,
   LiteratureCounts,
   LiteratureDetail,
-  LiteratureDownloadCard,
   LiteratureFacets,
   LiteratureNote,
   LiteraturePage,
@@ -19,9 +19,9 @@ import type {
   ResultLibraryState,
 } from '../../contracts/literature'
 import type { PaperMetaPayload, PaperMetaQuery } from './metadata'
+import type { InsightRequest } from './insights'
+import type { NoteSourceCandidates, NoteSourceGroup, ResolvedNoteSource } from './sources'
 import type { LiteratureCollection, LiteratureItem, LiteratureTag } from './state'
-import type { LiteratureDeliveryBatch, LiteratureDeliveryChoice } from '../../contracts/literature'
-import { parseDownloadCard } from './admission.ts'
 
 const API_ROOT = '/api/v1'
 const FIRST_PAGE = 1
@@ -48,83 +48,58 @@ export class LiteratureApiError extends Error {
   }
 }
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
-const DELIVERY_REQUEST_FAILED = 'literature_delivery_request_failed'
-const DOWNLOAD_REQUEST_FAILED = 'download_receipt_invalid'
 
-export async function resolveDownloadedFulltext(
+export async function retryFulltextAuthorization(
   sessionId: string,
-  operationId: string
-): Promise<{ literature_id: string; attachment_id: string }> {
-  const response = await fetch(
-    `${base()}/api/sessions/${encodeURIComponent(sessionId)}/literature/downloads/${encodeURIComponent(operationId)}`,
-    {
+  questionId: string,
+  contextRevision: number
+): Promise<void> {
+  const url = `${base()}/api/sessions/${encodeURIComponent(sessionId)}/literature/authorizations/${encodeURIComponent(questionId)}/retry`
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
       credentials: 'include',
-      cache: 'no-store',
-    }
-  )
-  if (!response.ok) throw await apiFailure(response, DOWNLOAD_REQUEST_FAILED)
-  const receipt = await response.json()
-  if (
-    typeof receipt.literature_id !== 'string' ||
-    !receipt.literature_id ||
-    typeof receipt.attachment_id !== 'string' ||
-    !receipt.attachment_id
-  )
-    throw new Error(DOWNLOAD_REQUEST_FAILED)
-  return receipt
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assistant_context_revision: contextRevision }),
+    })
+    if (response.status >= 500)
+      response = await fetch(url, { credentials: 'include', cache: 'no-store' })
+  } catch {
+    response = await fetch(url, { credentials: 'include', cache: 'no-store' })
+  }
+  if (!response.ok) throw await apiFailure(response, REQUEST_FAILED)
+  const result = await response.json()
+  if (result.ok !== true || typeof result.request_id !== 'string') throw new Error(REQUEST_FAILED)
 }
 
-export async function requestDownloadCard(
-  card: LiteratureDownloadCard
-): Promise<LiteratureDownloadCard> {
-  const query = new URLSearchParams({ run: card.run, project_id: card.project_id })
+export async function getNoteSources(itemId: string): Promise<NoteSourceCandidates> {
   const response = await fetch(
-    `${base()}/api/sessions/${encodeURIComponent(card.session_id)}/literature/downloads?${query}`,
+    `${base()}${API_ROOT}/literatures/${encodeURIComponent(itemId)}/note-sources`,
     { credentials: 'include', cache: 'no-store' }
   )
-  if (!response.ok) throw await apiFailure(response, DOWNLOAD_REQUEST_FAILED)
-  const result = await response.json()
-  const complete = parseDownloadCard({ ...card, papers: result.papers, omitted_papers: 0 })
-  if (
-    result.session_id !== card.session_id ||
-    result.run !== card.run ||
-    result.project_id !== card.project_id ||
-    !complete ||
-    complete.papers.length !== card.papers.length + (card.omitted_papers ?? 0) ||
-    !card.papers.every((preview) =>
-      complete.papers.some(
-        (paper) =>
-          paper.paper_id === preview.paper_id &&
-          paper.literature_id === preview.literature_id &&
-          paper.attachment_id === preview.attachment_id &&
-          paper.revision === preview.revision
-      )
-    )
-  )
-    throw new Error(DOWNLOAD_REQUEST_FAILED)
-  return complete
+  if (!response.ok) throw await apiFailure(response, REQUEST_FAILED)
+  return response.json()
 }
 
-export async function requestLiteratureDelivery<T = LiteratureDeliveryBatch>(
-  sessionId: string,
-  deliveryId: string,
-  action = '',
-  choice?: LiteratureDeliveryChoice
-): Promise<T> {
-  const path = `/api/sessions/${encodeURIComponent(sessionId)}/literature/deliveries/${encodeURIComponent(deliveryId)}`
-  const response = await fetch(`${base()}${path}${action ? `/${action}` : ''}`, {
-    credentials: 'include',
-    cache: 'no-store',
-    ...(action
-      ? {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(choice ?? {}),
-        }
-      : {}),
-  })
-  if (!response.ok) throw await apiFailure(response, DELIVERY_REQUEST_FAILED)
-  return (await response.json()) as T
+export async function resolveNoteSources(
+  itemId: string,
+  group: NoteSourceGroup,
+  signal?: AbortSignal
+): Promise<{ items: ResolvedNoteSource[] }> {
+  const response = await fetch(
+    `${base()}${API_ROOT}/literatures/${encodeURIComponent(itemId)}/note-sources/resolve`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(group),
+      signal,
+    }
+  )
+  if (!response.ok) throw await apiFailure(response, REQUEST_FAILED)
+  return response.json()
 }
 const SEARCH_ROOT = '/api/literature/searches'
 type QueryEntries = [string, string][]
@@ -233,6 +208,72 @@ export async function deleteLiteratureSearch(id: string): Promise<void> {
 }
 
 const SSE_FRAME_SEPARATOR = /\r?\n\r?\n/
+export class NoteGenerationFailure extends Error {
+  readonly invocationId: string
+  readonly detail: string
+
+  constructor(code: string, invocationId: string, detail: string) {
+    super(code)
+    this.invocationId = invocationId
+    this.detail = detail
+  }
+}
+
+export async function generateLiteratureNote(
+  itemId: string,
+  selection: InsightRequest,
+  onPreview?: (preview: GenerationPreviewData) => void
+): Promise<LiteratureNote> {
+  const response = await fetch(
+    `${base()}${API_ROOT}/literatures/${encodeURIComponent(itemId)}/notes/generate`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(selection),
+    }
+  )
+  if (!response.ok) throw await apiFailure(response, REQUEST_FAILED)
+  if (!response.body) throw new Error(REQUEST_FAILED)
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  let note: LiteratureNote | null = null
+  const consume = (frame: string): void => {
+    const data = frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n')
+    if (!data) return
+    const event = JSON.parse(data)
+    if (event.type === 'error') {
+      throw new NoteGenerationFailure(
+        String(event.code),
+        typeof event.invocation_id === 'string' ? event.invocation_id : '',
+        typeof event.detail === 'string' ? event.detail : ''
+      )
+    }
+    if (event.type === 'result') note = event.note as LiteratureNote
+    if (event.type === 'generation_preview') onPreview?.(event.data as GenerationPreviewData)
+  }
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += value
+      const frames = buffer.split(SSE_FRAME_SEPARATOR)
+      buffer = frames.pop() ?? ''
+      frames.forEach(consume)
+    }
+    if (buffer.trim()) consume(buffer)
+    if (!note) throw new Error(REQUEST_FAILED)
+    return note
+  } finally {
+    await reader.cancel()
+    reader.releaseLock()
+  }
+}
+
 export async function streamLiteratureSearch(
   id: string,
   afterSeq: number,
@@ -349,7 +390,8 @@ export async function fetchPaperMeta(query: PaperMetaQuery): Promise<PaperMetaPa
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ [query.dimension]: query.value }),
+    // 题录维度与备用标识一起送: 服务端按优先级选题录腿, 其余标识符只进摘要补充链。
+    body: JSON.stringify({ ...query.alternates, [query.dimension]: query.value }),
   })
   if (!response.ok) throw await apiFailure(response, PAPER_META_REQUEST_FAILED)
   return (await response.json()) as PaperMetaPayload
@@ -436,6 +478,24 @@ export const deleteLiteratureNote = (itemId: string, noteId: string): Promise<vo
   request(`/literatures/${encodeURIComponent(itemId)}/notes/${encodeURIComponent(noteId)}`, {
     method: 'DELETE',
   })
+export const indexLiteratureNote = (
+  itemId: string,
+  noteId: string,
+  version: number,
+  reading: unknown
+): Promise<LiteratureNote> =>
+  request(`/literatures/${encodeURIComponent(itemId)}/notes/${encodeURIComponent(noteId)}/index`, {
+    method: 'POST',
+    body: JSON.stringify({ version, reading }),
+  })
+
+export const notePaperRevision = (
+  itemId: string,
+  attachmentId: string
+): Promise<{ source_revision: string }> =>
+  request(
+    `/literatures/${encodeURIComponent(itemId)}/attachments/${encodeURIComponent(attachmentId)}/records`
+  )
 export const getLiteratureCounts = (projectId?: string): Promise<LiteratureCounts> =>
   request('/literatures/counts', undefined, { project_id: projectId })
 export const getLiteratureFacets = (query: LiteratureQuery): Promise<LiteratureFacets> =>
@@ -890,18 +950,17 @@ export async function requestConversationSearch(
   return result
 }
 
-export async function loadConversationSearch(
+export async function loadConversationLibraryStatus(
   session: string,
   card: string,
+  result: ConversationSearchResult,
   signal: AbortSignal,
   projectId?: string
 ): Promise<{
-  result: ConversationSearchResult
   saved: string[]
   warning: boolean
   libraryStatuses: Record<string, ResultLibraryState>
 }> {
-  const result = await requestConversationSearch(session, card, signal)
   const endpoint = `${base()}/api/sessions/${encodeURIComponent(session)}/literature`
   const saved: string[] = []
   const libraryStatuses: Record<string, ResultLibraryState> = Object.fromEntries(
@@ -948,7 +1007,6 @@ export async function loadConversationSearch(
     }
   }
   return {
-    result,
     saved,
     warning: Object.values(libraryStatuses).includes('unavailable'),
     libraryStatuses,
@@ -987,4 +1045,106 @@ export async function loadSearchLibraryStatus(
     }
   }
   return saved
+}
+
+/** 已下载全文的两条腿: 产品托管存储, 或技能自己下进 run 目录的 PDF。 */
+export type HeldFulltextStorage = 'managed' | 'run'
+const HELD_STORAGES: readonly HeldFulltextStorage[] = ['managed', 'run']
+const HELD_ENDPOINT_SUFFIX = {
+  status: 'fulltext-holdings',
+  attach: 'attachments/held',
+} as const
+export interface HeldAttachmentPaper {
+  literature_id: string
+  paper_id: string
+}
+export interface HeldAttachmentItem {
+  paper_id: string
+  literature_id: string
+  storage: HeldFulltextStorage | ''
+  attached: boolean
+  fulltext: boolean
+  code: string
+}
+export interface HeldAttachmentOutcome {
+  items: HeldAttachmentItem[]
+  acquired: number
+  fulltext: number
+  failed: number
+}
+
+function heldEndpoint(session: string, card: string, suffix: string): string {
+  return `${base()}/api/sessions/${encodeURIComponent(session)}/literature/results/${encodeURIComponent(card)}/${suffix}`
+}
+
+async function postHeld<Result>(
+  session: string,
+  card: string,
+  suffix: string,
+  papers: unknown[],
+  signal?: AbortSignal
+): Promise<Result> {
+  const response = await fetch(heldEndpoint(session, card, suffix), {
+    method: 'POST',
+    credentials: 'include',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ papers }),
+  })
+  if (!response.ok) throw new Error('literature_held_fulltext_unavailable')
+  return (await response.json()) as Result
+}
+
+/**
+ * 这批选中论文里哪些已经下载完成, 可以复用字节直接入库。
+ *
+ * 只有精确检索卡片能问这个问题: 判定依据是 serve 自己的账本 (bridge 托管字节) 和 run
+ * 目录里真实存在的 PDF, 不是元数据里的「可开放获取」预测。查询失败按「没有」处理,
+ * 界面因此退回仅元信息, 不会拿一个猜出来的数字去承诺全文。
+ */
+export async function loadHeldFulltext(
+  session: string,
+  card: string,
+  paperIds: readonly string[],
+  signal?: AbortSignal
+): Promise<Record<string, HeldFulltextStorage>> {
+  const held: Record<string, HeldFulltextStorage> = {}
+  for (let start = 0; start < paperIds.length; start += RESULT_STATUS_BATCH) {
+    const batch = paperIds.slice(start, start + RESULT_STATUS_BATCH)
+    const payload = await postHeld<{ items: Record<string, { storage?: string }> }>(
+      session,
+      card,
+      HELD_ENDPOINT_SUFFIX.status,
+      batch.map((id) => ({ id })),
+      signal
+    )
+    for (const [paperId, item] of Object.entries(payload.items ?? {})) {
+      const storage = item?.storage as HeldFulltextStorage | undefined
+      if (storage && HELD_STORAGES.includes(storage)) held[paperId] = storage
+    }
+  }
+  return held
+}
+
+/** 把已下载的 PDF 挂成这批新文献的主附件; serve 只复用字节, 不会再下载一次。 */
+export async function attachHeldFulltext(
+  session: string,
+  card: string,
+  papers: readonly HeldAttachmentPaper[]
+): Promise<HeldAttachmentOutcome> {
+  const outcome: HeldAttachmentOutcome = { items: [], acquired: 0, fulltext: 0, failed: 0 }
+  for (let start = 0; start < papers.length; start += RESULT_STATUS_BATCH) {
+    const batch = papers.slice(start, start + RESULT_STATUS_BATCH)
+    const payload = await postHeld<HeldAttachmentOutcome>(
+      session,
+      card,
+      HELD_ENDPOINT_SUFFIX.attach,
+      batch
+    )
+    outcome.items.push(...(payload.items ?? []))
+    outcome.acquired += payload.acquired ?? 0
+    outcome.fulltext += payload.fulltext ?? 0
+    outcome.failed += payload.failed ?? 0
+  }
+  return outcome
 }

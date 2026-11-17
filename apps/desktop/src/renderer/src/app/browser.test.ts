@@ -25,6 +25,14 @@ function isolatedBrowserEnvironment() {
   return { environment, effects }
 }
 
+test('browser bridge leaves native import previews absent', () => {
+  const fixture = isolatedBrowserEnvironment()
+  const bridge = createBrowserBridge(fixture.environment)
+  assert.equal('pickImport' in bridge, false)
+  assert.equal('pickImportPreview' in bridge, false)
+  assert.deepEqual(fixture.effects, [])
+})
+
 test('browser environment fixture records effects even when the rejection is swallowed', async () => {
   const fixture = isolatedBrowserEnvironment()
   await fixture.environment.fetch('https://example.invalid').catch(() => undefined)

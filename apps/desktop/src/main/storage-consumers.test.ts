@@ -5,12 +5,14 @@ import * as path from 'node:path'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
+import * as registry from '../../native/registry.cjs'
 import * as journal from './journal.ts'
 import * as resources from './resources.ts'
 import * as storageRecord from './storage-record.ts'
 import * as preferencesContract from '../preferences.ts'
 import * as preferenceDiagnostics from '../preference-diagnostics.ts'
 import * as preferencesRecord from './preferences-record.ts'
+import type * as preferenceFile from './preferencefile.ts'
 import * as windowRecord from './window-record.ts'
 import * as windowContract from '../window.ts'
 import * as trayContract from '../tray.ts'
@@ -29,20 +31,23 @@ function fixture(t: test.TestContext, overrides: Record<string, unknown> = {}) {
   const environment = { SCHOLARSEED_HOME: path.join(root, 'home') }
   const dependencies: Record<string, unknown> = {
     fs,
+    'node:path': path,
     'node:buffer': { Buffer },
     'node:child_process': {
       execFileSync: () => {
         throw new Error('storage consumers must not execute system commands')
       },
     },
+    '../../native/registry.cjs': registry,
     './journal.ts': journal,
     './resources.ts': resources,
     './storage-record.ts': storageRecord,
     './preferences-record.ts': preferencesRecord,
     './window-record.ts': windowRecord,
     './writer': { desktopDirectoryWriter: () => ({ close() {} }) },
+    './writer.ts': overrides['./writer'] ?? { desktopDirectoryWriter: () => ({ close() {} }) },
     path,
-    os: { homedir: () => root },
+    os: { homedir: () => root, userInfo: () => ({ homedir: root }) },
     electron: {
       app: {
         getName: () => 'ScholarSeed',
@@ -56,6 +61,7 @@ function fixture(t: test.TestContext, overrides: Record<string, unknown> = {}) {
       },
     },
     '../preferences': preferencesContract,
+    '../preferences.ts': preferencesContract,
     '../preference-diagnostics.ts': preferenceDiagnostics,
     '../window': windowContract,
     '../tray.ts': trayContract,
@@ -72,17 +78,62 @@ function fixture(t: test.TestContext, overrides: Record<string, unknown> = {}) {
       }).outputText,
       {
         exports,
+        Buffer,
+        TextDecoder,
         require: (id: string) => {
           assert.ok(Object.hasOwn(dependencies, id), `unexpected import ${id}`)
           return dependencies[id]
         },
-        process: { env: environment, platform: process.platform },
+        process: {
+          env: environment,
+          platform: process.platform,
+          arch: process.arch,
+          pid: process.pid,
+          versions: process.versions,
+        },
       }
     )
     return exports as T
   }
   const storage = load<typeof Storage>('storage')
   dependencies['./storage'] = storage
+  const record = load<typeof preferenceFile>('preferencefile')
+  dependencies['./preferencefile.ts'] = record
+  dependencies['./persistence.ts'] = {
+    desktopPersistence: () => ({
+      async request(
+        _kind: string,
+        input: {
+          path: string
+          language: 'en' | 'zh'
+          mode: string
+          value: unknown
+          enabled: boolean
+          diagnostics: preferenceDiagnostics.PreferenceDiagnosticContext
+        },
+        options: { diagnostic(line: string): void }
+      ) {
+        const diagnostics = preferenceDiagnostics.PreferenceDiagnostics.restore(
+          input.diagnostics,
+          options.diagnostic
+        )
+        if (input.mode === 'read')
+          return diagnostics.runSync('read', () =>
+            record.readPreferences(input.path, input.language)
+          )
+        if (input.mode === 'save')
+          return record.savePreferences(input.path, input.language, input.value, diagnostics)
+        return record.writePreferences(
+          input.path,
+          {
+            ...record.readPreferences(input.path, input.language),
+            browserAutomationEnabled: input.enabled,
+          },
+          diagnostics
+        )
+      },
+    }),
+  }
   return {
     storage,
     preferences: load<typeof Preferences>('preferences'),

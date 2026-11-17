@@ -21,8 +21,10 @@ import errno as errno_module
 import itertools
 import logging
 import os
+import re
 import threading
 import time
+from contextlib import nullcontext
 from typing import Any, Callable, Dict, Optional
 
 import httpx
@@ -69,6 +71,20 @@ REVOCATION_OVERLAP_S = 1.0
 JWKS_MIN_REFRESH_S = 10.0
 HTTP_TIMEOUT_S = 2.0
 EXCEPTION_CHAIN_LIMIT = 8
+TCP_CONNECT_EVENT = "connection.connect_tcp.started"
+UNOBSERVED_ENDPOINT = "unobserved"
+DIAGNOSTIC_HOST_PATTERN = re.compile(r"[A-Za-z0-9.:%_-]{1,255}")
+MAX_TCP_PORT = 65535
+PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 # 后台刷新线程名。daemon：serve 是每用户一个本地进程，退出时不该被这条腿拖住。
 REVOCATION_REFRESH_THREAD = "account-revocations"
 
@@ -121,7 +137,15 @@ class AccountTrust:
         self._base_url = base_url.strip().rstrip("/")
         self._activities = activities
         self._issuer = issuer.strip()
-        self._client = client if client is not None else httpx.Client(timeout=HTTP_TIMEOUT_S)
+        # Borrow injected clients; default transports belong to one trust refresh.
+        # A process-lifetime HTTPX client freezes environment/system proxies at
+        # construction, retaining obsolete routes after network configuration changes.
+        self._client = client
+        # Presence at construction is context, not proof of the selected proxy. Never log values.
+        self._proxy_env_keys = (
+            ",".join(key for key in PROXY_ENV_KEYS if key in os.environ) or "none"
+        )
+        self._client_source = "injected" if client is not None else "default_environment"
         # 单调时钟可注入（契约测按刷新节律推时间，不靠 sleep）；默认 monotonic：系统
         # 改时间不应让吊销缓存冻住或狂刷。
         self._clock = clock
@@ -375,14 +399,48 @@ class AccountTrust:
         # 取号走 itertools.count：请求线程与后台刷新线程都会进这里，`+= 1` 不是原子的。
         request_id = next(self._request_sequence)
         started = time.perf_counter()
+        tcp_host = UNOBSERVED_ENDPOINT
+        tcp_port: Optional[int] = None
+
+        def trace(event: str, info: Dict[str, Any]) -> None:
+            nonlocal tcp_host, tcp_port
+            # Only observe the actual TCP destination. No headers, URLs, exceptions or bodies.
+            # A pooled/custom transport may emit no connect event; do not infer "direct".
+            if event != TCP_CONNECT_EVENT:
+                return
+            host, port = info.get("host"), info.get("port")
+            tcp_host = (
+                host
+                if isinstance(host, str) and DIAGNOSTIC_HOST_PATTERN.fullmatch(host)
+                else UNOBSERVED_ENDPOINT
+            )
+            tcp_port = (
+                port
+                if isinstance(port, int) and not isinstance(port, bool) and 0 < port <= MAX_TCP_PORT
+                else None
+            )
+
+        proxy_env_keys = self._proxy_env_keys
         try:
-            response = self._client.get(self._base_url + path, params=params)
+            if self._client is None:
+                proxy_env_keys = (
+                    ",".join(key for key in PROXY_ENV_KEYS if key in os.environ) or "none"
+                )
+            context = (
+                nullcontext(self._client)
+                if self._client is not None
+                else httpx.Client(timeout=HTTP_TIMEOUT_S)
+            )
+            with context as client:
+                response = client.get(
+                    self._base_url + path, params=params, extensions={"trace": trace}
+                )
         except httpx.HTTPError as exc:
             diagnostics = _exception_diagnostics(exc)
             logger.warning(
                 "account_trust_request_failed path=%s request_id=%s phase=transport "
                 "elapsed_ms=%.1f failure_type=%s cause_chain=%s root_type=%s "
-                "errno=%s errno_name=%s errno_text=%s",
+                "errno=%s errno_name=%s errno_text=%s tcp_host=%s tcp_port=%s",
                 path,
                 request_id,
                 (time.perf_counter() - started) * 1000,
@@ -392,9 +450,22 @@ class AccountTrust:
                 diagnostics["errno"],
                 diagnostics["errno_name"],
                 diagnostics["errno_text"],
+                tcp_host,
+                tcp_port,
                 exc_info=logger.isEnabledFor(logging.DEBUG),
             )
             return None
+        finally:
+            logger.info(
+                "account_trust_connection path=%s request_id=%s tcp_host=%s tcp_port=%s "
+                "client_source=%s proxy_env_keys_at_creation=%s",
+                path,
+                request_id,
+                tcp_host,
+                tcp_port,
+                self._client_source,
+                proxy_env_keys,
+            )
         if response.status_code != HTTP_200_OK:
             logger.warning(
                 "account_trust_request_failed path=%s request_id=%s phase=status "

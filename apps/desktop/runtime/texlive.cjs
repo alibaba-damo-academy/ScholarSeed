@@ -34,10 +34,12 @@ const FONT_DIRECTORIES = ['opentype', 'truetype', 'type1']
 
 const CACHE_VERSION_PATTERN = /^20[0-9]{2}(?:-[a-z0-9]+)*$/
 const CACHE_IDENTITY_FILENAME = 'identity.json'
+const CACHE_FONT_CONFIG_FILENAME = 'fonts.conf'
 const CACHE_IDENTITY_SCHEMA = 1
 const CACHE_FILES = ['identity.json', 'fonts.conf', 'fontconfig', 'texmf-var', 'texmf-config',
   'identity-00000000-0000-0000-0000-000000000000.tmp', 'fonts-00000000-0000-0000-0000-000000000000.tmp']
 const CACHE_TEMPORARY_PATTERN = /^identity-[a-f0-9-]{36}\.tmp$/
+const CACHE_FONT_TEMPORARY_PATTERN = /^fonts-[a-f0-9-]{36}\.tmp$/
 
 function reviewedTexliveVersion(platform = process.platform) {
   return platform === WINDOWS_PLATFORM ? reviewedVersions.components.texlive.version : String(reviewedTexlive.texlive)
@@ -58,17 +60,22 @@ function texliveStateRoot(runtimeRoot, version) {
 }
 
 // Publish complete files without replacing another process's winning identity.
-function publishCacheFile(root, name, content, prefix) {
+function publishCacheFile(root, name, content, prefix, publish) {
   const file = path.join(root, name)
   if (fs.existsSync(file)) {
     if (fs.readFileSync(file, 'utf8') !== content) throw new Error('TeX cache configuration identity conflict')
     return
   }
-  const temporary = path.join(root, `${prefix}-${crypto.randomUUID()}.tmp`)
+  const staged = `${prefix}-${crypto.randomUUID()}.tmp`
+  const temporary = path.join(root, staged)
   try {
     fs.writeFileSync(temporary, content, { flag: 'wx' })
-    try { fs.linkSync(temporary, file) }
-    catch (error) { if (error.code !== 'EEXIST') throw error }
+    try {
+      if (publish) publish(staged, name)
+      else fs.linkSync(temporary, file)
+    } catch (error) {
+      if (error.code !== 'EEXIST' && error.code !== 'ERR_LEASE_EXISTS') throw error
+    }
   } finally { fs.rmSync(temporary, { force: true }) }
   if (fs.readFileSync(file, 'utf8') !== content) throw new Error('TeX cache configuration identity conflict')
 }
@@ -135,6 +142,14 @@ function texliveEnvironmentCurrent(options) {
   }
 }
 
+function texliveLegacyCacheAliases(writableRoot) {
+  return fs.readdirSync(writableRoot).flatMap(name => {
+    if (CACHE_TEMPORARY_PATTERN.test(name)) return [[name, CACHE_IDENTITY_FILENAME]]
+    if (CACHE_FONT_TEMPORARY_PATTERN.test(name)) return [[name, CACHE_FONT_CONFIG_FILENAME]]
+    return []
+  })
+}
+
 // Requires exclusive data-domain maintenance, including every running consumer.
 // Keep the version root inode stable: its native identity is the lock anchor.
 function rebuildTexliveEnvironment(options) {
@@ -143,7 +158,7 @@ function rebuildTexliveEnvironment(options) {
   const root = options.writableRoot
   const names = fs.readdirSync(root)
   const recognized = name => CACHE_FILES.includes(name) || CACHE_TEMPORARY_PATTERN.test(name) ||
-    /^fonts-[a-f0-9-]{36}\.tmp$/.test(name) || SHA256_PATTERN.test(name)
+    CACHE_FONT_TEMPORARY_PATTERN.test(name) || SHA256_PATTERN.test(name)
   const inspect = file => {
     const entry = fs.lstatSync(file)
     if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile()) || (entry.isFile() && entry.nlink !== 1))
@@ -158,7 +173,7 @@ function rebuildTexliveEnvironment(options) {
   return prepareTexliveEnvironment(options)
 }
 
-function prepareTexliveEnvironment(options) {
+function prepareTexliveEnvironment(options, publish) {
   const { identity, content, file, cache, variable, config, writableRoot } = texliveConfiguration(options)
   fs.mkdirSync(writableRoot, { recursive: true })
   const receipt = path.join(writableRoot, CACHE_IDENTITY_FILENAME)
@@ -166,9 +181,9 @@ function prepareTexliveEnvironment(options) {
   // publishers may have installed their receipt since our first observation.
   if (!fs.existsSync(receipt) && fs.readdirSync(writableRoot).some(name => !CACHE_TEMPORARY_PATTERN.test(name)) &&
       !fs.existsSync(receipt)) throw new Error('unidentified TeX cache; refusing to overwrite existing state')
-  publishCacheFile(writableRoot, CACHE_IDENTITY_FILENAME, identity, 'identity')
+  publishCacheFile(writableRoot, CACHE_IDENTITY_FILENAME, identity, 'identity', publish)
   for (const directory of [cache, variable, config]) fs.mkdirSync(directory, { recursive: true })
-  publishCacheFile(writableRoot, 'fonts.conf', content, 'fonts')
+  publishCacheFile(writableRoot, CACHE_FONT_CONFIG_FILENAME, content, 'fonts', publish)
   return { FONTCONFIG_FILE: file, FONTCONFIG_PATH: writableRoot,
     TEXMFVAR: variable, TEXMFCONFIG: config, TEXMFCACHE: variable }
 }
@@ -397,7 +412,7 @@ function bundledTexlive(resourcesRoot, platform = process.platform) {
   return binDir
 }
 
-module.exports = { texliveExecutionResources, texliveEnvironmentCurrent, rebuildTexliveEnvironment, texliveCacheRelativePaths, reviewedTexliveArchive, reviewedTexliveVersion, prepareTexliveEnvironment, texliveTreeDigest, texliveStateRoot, RUNTIME_CACHE_DIRNAME, TEXLIVE_CACHE_DIRNAME, PLATFORM_DIRECTORY, TREE_DIRECTORY, artifact, binDirectory, bundledTexlive,
+module.exports = { texliveExecutionResources, texliveEnvironmentCurrent, texliveLegacyCacheAliases, rebuildTexliveEnvironment, texliveCacheRelativePaths, reviewedTexliveArchive, reviewedTexliveVersion, prepareTexliveEnvironment, texliveTreeDigest, texliveStateRoot, RUNTIME_CACHE_DIRNAME, TEXLIVE_CACHE_DIRNAME, PLATFORM_DIRECTORY, TREE_DIRECTORY, artifact, binDirectory, bundledTexlive,
   cacheDirectory, publishCache,
   digest, executableName, probe, extractArchive, resolveVendoredTexlive, vendoredTexliveLocation, stagedBinDirectory, stagedEngines,
   stageTexlive, stageVerifiedTexlive }

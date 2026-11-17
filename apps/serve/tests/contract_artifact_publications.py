@@ -15,13 +15,77 @@ from service.chat.service.publication import (
     PublicationService,
     SessionArtifactStorage,
 )
+from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.platform.activity import Activities
-from service.platform.content import ArtifactScope, ArtifactScopeKind, RootKind
+from service.platform.content import (
+    ArtifactContentKind,
+    ArtifactFileEntry,
+    ArtifactScope,
+    ArtifactScopeKind,
+    RootKind,
+)
 
 
 class PublicationContract(unittest.TestCase):
+    def test_directory_members_are_retained_by_other_sessions_and_collected_after_last_publication(
+        self,
+    ):
+        folder = self.source.parent / "package"
+        folder.mkdir()
+        (folder / "empty").mkdir()
+        (folder / "report.md").write_bytes(self.source.read_bytes())
+        file = self.publish()
+        package = self.publish(
+            replace(
+                self.command,
+                session_id="directory-session",
+                declaration_id="directory",
+                path="package",
+            )
+        )
+        restored = (
+            PublicationService(self.content)
+            .store(self.command.project_id)
+            .list_session("directory-session")[0]
+        )
+        self.assertEqual(restored.content.kind, "directory")
+        manifest = self.content.artifact_manifest(restored.content)
+        member = next(entry for entry in manifest.entries if isinstance(entry, ArtifactFileEntry))
+        handle = replace(
+            restored.content,
+            kind=ArtifactContentKind.FILE,
+            sha256=member.sha256,
+            size=member.size,
+            media_type=member.media_type,
+        )
+        self.assertEqual(handle.sha256, file.content.sha256)
+        self.service.delete_session(self.command.project_id, "session")
+        self.source.unlink()
+        (folder / "report.md").unlink()
+        self.assertEqual(self.content.read_artifact(handle), b"version one")
+        self.assertEqual(self.content.artifact_manifest(package.content), manifest)
+        self.service.delete_session(self.command.project_id, "directory-session")
+        with self.assertRaises(ContentError):
+            self.content.read_artifact(handle)
+        with self.assertRaises(ContentError):
+            self.content.artifact_manifest(package.content)
+
+    def test_directory_gc_expands_duplicate_publications_before_removing_manifest(self):
+        folder = self.source.parent / "package"
+        folder.mkdir()
+        (folder / "report.md").write_bytes(b"directory")
+        first = self.publish(replace(self.command, path="package", declaration_id="first"))
+        second = self.publish(
+            replace(
+                self.command, path="package", declaration_id="second", role=ArtifactRole.SUPPORTING
+            )
+        )
+        self.assertEqual(first.content.sha256, second.content.sha256)
+        self.service.delete_session(self.command.project_id, "session")
+        self.assertEqual(self.service.store(self.command.project_id).list_session("session"), ())
+
     def test_managed_and_selected_roots_survive_reload_and_bind_session_context(self):
         selected = self.root / "selected-existing"
         selected.mkdir()

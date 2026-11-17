@@ -24,10 +24,3 @@ that license, so the individual upstream file remains authoritative.
 This notice does not assign a license to paper-fulltext-dl, the skill or the
 integrating platform. The package-wide license and public source URL have not yet
 been supplied and remain null in [provenance.json](provenance.json).
-
-## 中文说明
-
-相邻的 paper-fulltext-dl wheel 不再内置 Zotero translator 源码或生成后的
-adapter，只包含本地转换工具与浏览器运行时。用户如需启用，必须自行获取并审查
-translator，许可条款以各上游文件为准。PDF 检查依赖外部 `pypdfium2`，打包时需保留
-实际平台 wheel 携带的 pypdfium2、PDFium 及其依赖许可证文件。

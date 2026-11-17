@@ -79,7 +79,8 @@ def isolated_case(original: unittest.TestCase, module: str) -> unittest.TestCase
                 [
                     sys.executable,
                     "-P",
-                    str(Path(__file__).with_name("observations.py")),
+                    "-m",
+                    f"{__package__}.observations",
                     "--module",
                     module,
                     "--case",

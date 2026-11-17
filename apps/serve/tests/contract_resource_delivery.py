@@ -11,21 +11,24 @@ from unittest.mock import patch
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
-from service.persistence.project import ProjectDatabasePath, transaction
+from service.persistence.project import ProjectDatabasePath, reader, transaction
 from service.platform.activity import Activities
 from service.platform.resources import (
     FileState,
     PendingOrigin,
+    ReviewAction,
+    ReviewBatchDecision,
     ReviewCaptureResult,
     ReviewDecision,
     ReviewOutcome,
+    SnapshotIdentity,
     VersionOrigin,
 )
 from service.resources.persistence import pending
 from service.resources.persistence.version import VersionStore, VersionStoreConflict
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService, TurnOutcome
-from service.resources.service.history import ResourceVersionService
+from service.resources.service.history import ResourceVersionError, ResourceVersionService
 from service.resources.service.migration import ResourceReviewMigration
 from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.recovery import ResourceRecoveryService
@@ -592,6 +595,158 @@ async def exercise() -> None:
                         == content.snapshot(fenced.id, path).revision
                         and not versions.history(fenced.id, path),
                     )
+        for resolution in ("batch", "seal", "reject"):
+            for terminal in TurnOutcome:
+                isolated = registry.create(f"聊天与审阅-{resolution}-{terminal.value}")
+                path = "resources/lineage.md"
+                target = Path(isolated.root) / path
+                existing_file = terminal is not TurnOutcome.FAILED
+                if existing_file:
+                    target.write_bytes(b"baseline A\n")
+                session = f"lineage-{resolution}-{terminal.value}"
+                await deliveries.begin_turn(session, "first", isolated.root)
+                await deliveries.bind_turn(session, "first", "first", "lineage")
+                target.write_bytes(b"candidate B\n")
+                await deliveries.record_change(
+                    session, "first", str(target), "update", generation="lineage"
+                )
+                await deliveries.finish_turn(session, "first", TurnOutcome.COMPLETED)
+                isolated_store = VersionStore(
+                    Path(isolated.root) / PROJECT_DB_RELATIVE, isolated.root
+                )
+                file_id = versions.version_identity(isolated.id, path)[0]
+                before = isolated_store.pending(file_id)
+                head = isolated_store.head(file_id)
+                history = versions.history(isolated.id, path)
+                target.write_bytes(b"external C\n")
+                await deliveries.begin_turn(session, "chat", isolated.root)
+                baseline = isolated_store.turn_baselines(session, "chat")[0]
+                assert baseline.revision == content.snapshot(isolated.id, path).revision
+                assert isolated_store.pending(file_id) == before
+                assert isolated_store.head(file_id) == head
+                await deliveries.finish_turn(session, "chat", TurnOutcome.COMPLETED)
+                assert isolated_store.pending(file_id) == before
+                assert isolated_store.head(file_id) == head
+                assert versions.history(isolated.id, path) == history
+                assert target.read_bytes() == b"external C\n"
+                assert not isolated_store.turn_baselines(session, "chat")
+
+                await deliveries.begin_turn(session, "write", isolated.root)
+                await deliveries.bind_turn(session, "write", "write", "lineage")
+                target.write_bytes(b"agent D\n")
+                await deliveries.record_change(
+                    session, "write", str(target), "update", generation="lineage"
+                )
+                result = await deliveries.finish_turn(session, "write", terminal)
+                if terminal is TurnOutcome.UNKNOWN:
+                    assert isolated_store.turn_baselines(session, "write")[0] == baseline
+                    result = await deliveries.finish_turn(session, "write", TurnOutcome.COMPLETED)
+                current = isolated_store.pending(file_id)
+                assert current.review.id == before.review.id
+                assert current.review.base == before.review.base
+                assert current.review.candidate.object_id != baseline.object_id
+                isolated_store = VersionStore(
+                    Path(isolated.root) / PROJECT_DB_RELATIVE, isolated.root
+                )
+                with reader(isolated_store._database) as connection:
+                    assert baseline.object_id in isolated_store.live_object_ids(connection)
+                retention.collect(isolated.id, now_ms=9_000_000_000_000, grace_ms=0)
+                retention.collect(isolated.id, now_ms=9_000_000_000_001, grace_ms=0)
+                assert versions.verify_object(isolated.id, baseline.object_id)
+                assert (
+                    versions.review_snapshot(
+                        isolated.id,
+                        SnapshotIdentity(
+                            baseline.object_id,
+                            baseline.state,
+                            baseline.path,
+                            baseline.mode_bits,
+                            baseline.annotation_object_id,
+                        ),
+                    )[0]
+                    == b"external C\n"
+                )
+                assert (
+                    versions.review_snapshot(isolated.id, before.review.candidate)[0]
+                    == b"candidate B\n"
+                )
+                assert (
+                    await deliveries.finish_turn(
+                        session,
+                        "write",
+                        TurnOutcome.COMPLETED if terminal is TurnOutcome.UNKNOWN else terminal,
+                    )
+                    == result
+                )
+                assert len(isolated_store.turn_baselines(session, "write")) == 1
+                replay = await deliveries.begin_turn(session, "write", isolated.root)
+                assert replay.model_context == isolated_store.turn_model_context(session, "write")
+                final_content = b"agent D\n"
+                if terminal is TurnOutcome.COMPLETED:
+                    target.write_bytes(b"external C\n")
+                    await deliveries.begin_turn(session, "rewrite", isolated.root)
+                    await deliveries.bind_turn(session, "rewrite", "rewrite", "lineage")
+                    final_content = b"agent E\n"
+                    target.write_bytes(final_content)
+                    await deliveries.record_change(
+                        session, "rewrite", str(target), "update", generation="lineage"
+                    )
+                    result = await deliveries.finish_turn(session, "rewrite", terminal)
+                    current = isolated_store.pending(file_id)
+                    assert not isolated_store.turn_baselines(session, "rewrite")
+                    assert len(isolated_store.turn_baselines(session, "write")) == 1
+                disk = content.snapshot(isolated.id, path)
+                conflict = None
+                try:
+                    versions.commit_working(
+                        isolated.id, path, b"stale overwrite\n", baseline.revision, "stale"
+                    )
+                except ResourceVersionError as exc:
+                    conflict = exc.code
+                assert conflict == "revision_conflict" and target.read_bytes() == final_content
+                decision = ReviewDecision(
+                    current.review.id, current.revision, ReviewOutcome.ACCEPTED
+                )
+                if resolution == "batch":
+                    versions.accept_review_batch(
+                        isolated.id,
+                        result.batch_id,
+                        (
+                            ReviewBatchDecision(
+                                file_id,
+                                decision.review_id,
+                                decision.pending_revision,
+                                ReviewAction.ACCEPT,
+                                disk.revision,
+                            ),
+                        ),
+                    )
+                elif resolution == "seal":
+                    versions.seal_review(
+                        isolated.id, file_id, path, decision, disk.revision, "seal-lineage"
+                    )
+                else:
+                    ResourceRecoveryService(content, retention, annotations).reject_review(
+                        isolated.id,
+                        file_id,
+                        ReviewDecision(current.review.id, current.revision, ReviewOutcome.REJECTED),
+                        disk.revision,
+                        "reject-lineage",
+                    )
+                assert not isolated_store.turn_baselines(session, "write")
+                remaining = isolated_store.pending(file_id)
+                assert remaining is None or not remaining.needs_review
+                if resolution == "reject" and not existing_file:
+                    assert not target.exists()
+                else:
+                    assert target.read_bytes() == (
+                        b"baseline A\n" if resolution == "reject" else final_content
+                    )
+                check(
+                    f"{resolution}/{terminal.value}: chat, GC and explicit review preserve lineage",
+                    True,
+                )
+
         for protection in ("version", "mutation"):
             protected_project = registry.create(f"保护移动目标-{protection}")
             original_path = "resources/original.md"

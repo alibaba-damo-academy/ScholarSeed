@@ -28,6 +28,8 @@ from scholarseed_runtime.contract.model import ModelCredentialPort, ModelIntent
 from scholarseed_runtime.contract.permission import PermissionIntent
 from scholarseed_runtime.contract.secret import LaunchSecretIntent, RuntimeSecretPort
 
+RUNTIME_ACTIVE_TURN_CHANGED = "runtime_active_turn_changed"
+
 
 class CommandState(str, Enum):
     ACCEPTED = "accepted"
@@ -47,6 +49,7 @@ RUNTIME_SKILL_POLICY_UNSUPPORTED = "runtime_skill_policy_unsupported"
 
 
 class RuntimeControlKind(str, Enum):
+    TEXT_SAMPLE = "text.sample"
     MCP_SNAPSHOT = "mcp.snapshot"
     MCP_LIST_TOOLS = "mcp.list_tools"
     MCP_LIST_RESOURCES = "mcp.list_resources"
@@ -194,6 +197,8 @@ class OpenSessionRequest:
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
     process_sharing_scope: str = field(default="", repr=False)
     execution_environment: Mapping[str, str] = field(default_factory=dict)
+    #: One isolated generation: no tools, interactive callbacks or subsequent turns.
+    generation_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -229,6 +234,7 @@ class TurnRequest:
     submission_deadline: float | None = None
     submission_attempts: int = 0
     retry_authorizer: Callable[[SubmissionRetryProof], Awaitable[Callable[[], bool]]] | None = None
+    output_schema: dict[str, RuntimeValue] | None = None
 
 
 @dataclass(frozen=True)

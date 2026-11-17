@@ -23,27 +23,30 @@ from pydantic import (
     model_validator,
 )
 
-from service.capabilities.domain import COMPONENT_ANSWER_CAPABILITY
+from service.capabilities.service.declarative import CANVAS_SLOT, ConversationLayout
 from service.capabilities.service.utils import json_object
+from service.platform.vocabulary import COMPONENT_ANSWER_CAPABILITY
 
 PLUGIN_DESCRIPTOR = ".scholarseed-plugin.json"
+HOST_INCOMPATIBLE = "host_incompatible"
 PLUGIN_SCHEMA = 2
 PLUGIN_SKILL_ENTRY = "SKILL.md"
 HOST_COMPONENT_PLUGIN = "host"
-HOST_COMPONENT_REVISION = "host-v1"
+HOST_COMPONENT_REVISION = "host-v3"
+HOST_COMPONENT_FINGERPRINT = "host-v3-results"
 SYSTEM_UI_PLUGIN = "official-ui"
+RETIRED_COMPONENT_SLOTS = frozenset({"display.literature-downloads", "display.literature-delivery"})
 PUBLIC_COMPONENT_PROVIDERS = {
+    CANVAS_SLOT: HOST_COMPONENT_PLUGIN,
+    "conversation.ui": HOST_COMPONENT_PLUGIN,
     "interaction.question": HOST_COMPONENT_PLUGIN,
     "display.literature-search": HOST_COMPONENT_PLUGIN,
     "preview.literature-results": HOST_COMPONENT_PLUGIN,
-    "literature.selection": SYSTEM_UI_PLUGIN,
+    "literature.selection": HOST_COMPONENT_PLUGIN,
     "literature.authorization": HOST_COMPONENT_PLUGIN,
-    "display.literature-downloads": HOST_COMPONENT_PLUGIN,
-    "display.literature-delivery": HOST_COMPONENT_PLUGIN,
-    "display.literature-references": HOST_COMPONENT_PLUGIN,
+    "literature.outline": HOST_COMPONENT_PLUGIN,
 }
 PUBLIC_COMPONENT_SLOTS = frozenset(PUBLIC_COMPONENT_PROVIDERS)
-MAX_COMPONENT_VALUE_BYTES = 256 * 1024
 MAX_DESCRIPTOR_BYTES = 64 * 1024
 MAX_PREVIEW_BYTES = 256 * 1024
 MAX_DECLARATIONS = 64
@@ -139,9 +142,7 @@ class ComponentValidationError(ValueError):
 
 
 def validate_component_value(schema: Mapping[str, Any], value: Any) -> None:
-    encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
-    if len(encoded) > MAX_COMPONENT_VALUE_BYTES:
-        raise ValueError("component_value_oversized")
+    json.dumps(value, ensure_ascii=False, allow_nan=False)
     try:
         Draft202012Validator(schema).validate(value)
     except SchemaValidationError as error:
@@ -182,8 +183,18 @@ class PluginComponent(Declaration):
     id: Identifier
     slot: Capability | None = None
     public: bool = False
+    workbench: bool = Field(
+        default=False,
+        exclude_if=lambda enabled: not enabled,
+        description="Allow this packaged component to move from the conversation to the workbench.",
+    )
     entry: str | None = Field(
         default=None, description="Package-relative compiled JavaScript component entry"
+    )
+    openui: ConversationLayout | None = Field(
+        default=None,
+        exclude_if=lambda layout: layout is None,
+        description="Fixed display-only OpenUI layout. Agent data can fill declared required fields only.",
     )
     preview: str = Field(description="Package-relative conversation scenario JSON")
     actions: list[PluginAction] = Field(default_factory=list, max_length=MAX_DECLARATIONS)
@@ -204,7 +215,20 @@ class PluginComponent(Declaration):
     def unique_actions(self) -> PluginComponent:
         if len({action.id for action in self.actions}) != len(self.actions):
             raise ValueError("UI action IDs must be unique")
-        if self.public:
+        if self.openui is not None:
+            if (
+                self.public
+                or self.entry is not None
+                or self.workbench
+                or self.actions
+                or self.slot is None
+                or self.slot in PUBLIC_COMPONENT_SLOTS
+            ):
+                raise ValueError("openui_layout_display_only")
+            self.openui.validate_fields(self.input_schema)
+        elif self.public:
+            if self.workbench:
+                raise ValueError("workbench placement requires a packaged component")
             if self.slot not in PUBLIC_COMPONENT_SLOTS or self.entry is not None:
                 raise ValueError("public component must reference a host slot without code")
         elif self.slot in PUBLIC_COMPONENT_SLOTS:
@@ -298,7 +322,8 @@ def validate_scenario_value(value: Any, depth: int = 0) -> None:
 
 
 def validate_scenario(scenario: ComponentScenario, component_ids: set[str]) -> None:
-    for variant in (scenario, *scenario.cases):
+    variants: tuple[ComponentScenario | ScenarioCase, ...] = (scenario, *scenario.cases)
+    for variant in variants:
         steps: list[ScenarioStep] = []
         for response in (variant.responses or {}).values():
             steps.extend((response, *response.steps))
@@ -328,14 +353,17 @@ class PluginConfiguration(Declaration):
             ConfigurationKind.STRING: str,
             ConfigurationKind.INTEGER: int,
             ConfigurationKind.BOOLEAN: bool,
-        }[self.type]
+        }[ConfigurationKind(self.type)]
         if self.default is not None and type(self.default) is not expected:
             raise ValueError("configuration default does not match its declared type")
         return self
 
 
+UICompatibility = Literal["1.0", "2.0"]
+
+
 class UIDependency(Declaration):
-    compatibility: Literal["1.0"]
+    compatibility: UICompatibility
     exports: list[Label] = Field(max_length=MAX_DECLARATIONS)
 
 
@@ -372,6 +400,8 @@ class PluginDescriptor(Declaration):
 
     @model_validator(mode="after")
     def declared_actions(self) -> PluginDescriptor:
+        if self.ui is not None and any(component.openui for component in self.components):
+            raise ValueError("openui_layout_sdk_dependency")
         if len(set(self.capabilities)) != len(self.capabilities):
             raise ValueError("capabilities must be unique")
         if len({field.key for field in self.configuration}) != len(self.configuration):
@@ -495,7 +525,7 @@ def inspect_plugin(
     if not compatible:
         issues.append(
             {
-                "code": "host_incompatible",
+                "code": HOST_INCOMPATIBLE,
                 "path": "host",
                 "message": "host version is not compatible",
                 "severity": "error",
@@ -532,7 +562,7 @@ def inspect_plugin(
                         "severity": "error",
                     }
                 )
-        if component.entry in files:
+        if component.entry is not None and component.entry in files:
             try:
                 files[component.entry].decode("utf-8")
             except UnicodeError:
@@ -549,6 +579,14 @@ def inspect_plugin(
                 scenario = ComponentScenario.model_validate(
                     json_object(files[component.preview], limit=MAX_PREVIEW_BYTES)
                 )
+                if component.openui is not None:
+                    if scenario.interaction or any(case.interaction for case in scenario.cases):
+                        raise ValueError("openui_layout_display_only")
+                    validate_component_value(component.input_schema, scenario.data)
+                    for case in scenario.cases:
+                        validate_component_value(
+                            component.input_schema, {**scenario.data, **(case.data or {})}
+                        )
                 if set(scenario.responses) != {action.id for action in component.actions}:
                     raise ValueError("scenario responses must match declared actions")
                 for case in scenario.cases:

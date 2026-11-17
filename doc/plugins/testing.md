@@ -66,11 +66,19 @@ Record input, tool results, and notes. Preserve screenshots or recordings of fai
 
 For a custom card, call `setCopyContent()` and use the message's copy button. Paste into a text editor and verify the order of prose, cards, and subsequent conclusions, including choices, citations, and links. Switch conversations and return: copying history must still include the card. Register new copy content after editing a draft; do not copy stale choices. Missing card text must be explicitly indicated when none is registered.
 
-- **UI:** Light/dark themes, narrow windows, keyboard use, long text, and errors.
-- **State:** Re-rendering preserves edits; old save responses do not overwrite new input; cancellation does not continue the task.
-- **Updates:** A new package, digest, and installation confirmation; slot conflicts do not take over other plugins; failures preserve the old version.
-- **Historical cards:** Restore their pinned version and recheck current permissions.
-- **Platforms:** Verify affected installation and runtime behavior separately on macOS and Windows.
+When reusing official components, verify automatic registration without overwriting it. Compose prose, a bar chart, a table, citations/evidence, an artifact, and an explanation. Check copy order, complete data and units, missing values, collapsed code/excerpts, and unopened supplied artifact previews. Filtering, paging, and collapse must not truncate source content; a path is not proof that a file was read.
+
+Exercise `rich-content.compose`, `research-evidence.select`, and `artifacts-workbench.preview`. Copy immediately after saving a selection, then reopen the conversation and copy again. Check the latest saved selection and version. Registration failures must remain visible until retry or network recovery succeeds. The host enforces the 64 KiB limit: no silent truncation reported as success. Cards must not add independent copy buttons or direct clipboard access.
+
+Source preview catalogs, JSON editing, and HMR validate components and developer tooling only, not application copy/history recovery. Real Agent acceptance requires an explicit model budget and end-to-end evidence; document or fixture checks do not establish it.
+
+Keep historical regression separate from new-version acceptance. Old cards retain frozen resources and registered text; confirmation comes from answer receipts. New resources require new bindings. Never modify historical snapshots to make old conversations display new styles or text.
+
+- **UI:** light/dark themes, narrow windows, keyboard, long text, and errors.
+- **State:** redraw preserves edits; old save receipts do not overwrite new input; cancellation does not continue the task.
+- **Updates:** new packages, hashes, and installation confirmation; slot conflicts do not take over other plugins, and failures retain the old version.
+- **History:** restore fixed versions and recheck current permissions.
+- **Platforms:** verify affected installation and runtime flows separately on macOS and Windows.
 
 ## Troubleshooting
 

@@ -6,7 +6,7 @@ import copy
 import json
 import os
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -75,8 +75,14 @@ class ModelCatalogSnapshot:
             return self.document == candidate.document
         current = {row["slug"]: row for row in json.loads(self.document)["models"]}
         requested = {row["slug"]: row for row in json.loads(candidate.document)["models"]}
+        current_sources = {entry.model_ref: entry.native_catalog_source for entry in self.entries}
+        requested_sources = {
+            entry.model_ref: entry.native_catalog_source for entry in candidate.entries
+        }
         return all(
-            model in current and current[model] == requested[model]
+            model in current
+            and current[model] == requested[model]
+            and current_sources.get(model, "") == requested_sources.get(model, "")
             for model in candidate.required_models
         )
 
@@ -84,6 +90,13 @@ class ModelCatalogSnapshot:
         entries, required = declared_models(intent)
         current = {entry.model_ref: entry for entry in self.entries}
         return bool(entries) and all(current.get(model) == entries[model] for model in required)
+
+    def extends(self, previous: ModelCatalogSnapshot) -> bool:
+        """Allow overlap only when every existing model keeps the same definition."""
+        previous_models = tuple(row["slug"] for row in json.loads(previous.document)["models"])
+        if not previous_models or self.path == previous.path:
+            return False
+        return self.covers(replace(previous, required_models=previous_models))
 
 
 def declared_models(intent: ModelIntent) -> tuple[dict[str, ModelCatalogEntry], set[str]]:

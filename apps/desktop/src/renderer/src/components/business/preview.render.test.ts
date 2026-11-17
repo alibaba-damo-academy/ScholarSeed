@@ -5,9 +5,12 @@ import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium, expect, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+import type { ViteDevServer } from 'vite'
 import type { PluginMount } from '../../../../plugins.ts'
 import { createPreviewSession } from './preview.ts'
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const PACKAGES = path.resolve(ROOT, '../../../../../skills/community')
@@ -20,14 +23,19 @@ const BUILTINS = [
   'literature-review',
   'research-idea-partner',
 ]
-let server: Awaited<ReturnType<typeof createServer>> | undefined
+let server: ViteDevServer | undefined
 after(async () => {
   await server?.close()
 })
 
-async function openPreview(page: Page, name: string): Promise<PluginMount> {
+async function openPreview(
+  page: Page,
+  name: string,
+  configure?: (mount: PluginMount) => void
+): Promise<PluginMount> {
   if (!server) {
-    server = await createServer({
+    server = await servers.create({
+      cacheKey: 'preview',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -55,6 +63,7 @@ async function openPreview(page: Page, name: string): Promise<PluginMount> {
       fingerprint: 'official-fixture',
     },
   }
+  configure?.(mount)
   const results = mount.scenarios.results.data
   assert.equal(
     (results.papers as unknown[]).length,
@@ -97,6 +106,11 @@ for (const name of BUILTINS)
       try {
         const page = await browser.newPage()
         const mount = await openPreview(page, name)
+        const release = page.getByTestId('preview-ui-release')
+        await expect(release).toBeVisible()
+        await expect(page.getByTestId('plugin-conversation-preview')).not.toContainText(
+          mount.ui!.fingerprint
+        )
         const pagination = page.getByRole('navigation', { name: '预览组件分页' })
         for (const [index, component] of mount.descriptor.components.entries()) {
           if (index) await pagination.getByRole('button', { name: '下一页', exact: true }).click()
@@ -153,54 +167,40 @@ for (const name of BUILTINS)
   )
 
 test(
-  'delivery dialog is pointer reachable above the preview and returns focus on cancel',
+  'result details navigate within one page and revisiting restores default selection',
   { timeout: 60_000 },
   async () => {
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
-      await openPreview(page, 'research-idea-partner')
-      const pagination = page.getByRole('navigation', { name: '预览组件分页' })
-      await pagination.getByRole('button', { name: '第 4 页', exact: true }).click()
-      await page.getByRole('button', { name: '选择保存位置', exact: true }).click()
-      const dialog = page.getByTestId('literature-delivery-dialog')
-      await dialog.getByTestId('delivery-target-project').click({ timeout: 3000 })
-      await expect(page.getByRole('option', { name: '样例项目', exact: true })).toBeVisible()
-      await expect(page.getByRole('button', { name: '稍后保存', exact: true })).toBeVisible()
-      await page.keyboard.press('Escape')
-      await dialog.getByRole('button', { name: '稍后保存', exact: true }).click()
-      await expect(dialog).toHaveCount(0)
-      await expect(page.getByRole('button', { name: '选择保存位置', exact: true })).toBeFocused()
-    } finally {
-      await browser.close()
-    }
-  }
-)
-
-test(
-  'result details navigate within one page and revisiting discards selected rows',
-  { timeout: 60_000 },
-  async () => {
-    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
-    try {
-      const page = await browser.newPage()
+      const errors: string[] = []
+      page.on('pageerror', (error) => errors.push(error.message))
       const mount = await openPreview(page, 'agentic-search')
-      await page.getByRole('button', { name: '查看全部结果', exact: true }).click()
+      const receipt = page.getByRole('button', { name: '打开检索结果', exact: true })
+      await expect(receipt.getByText(/^检索结果/)).toHaveCSS('font-weight', '500')
+      const selection = page.getByRole('checkbox', { name: '选择当前筛选的全部结果', exact: true })
+      await expect(selection).toHaveCount(0)
+      await receipt.click()
       await expect(page.getByTestId('preview-component')).toHaveCount(1)
       await expect(page.getByTestId('preview-component')).toHaveAttribute(
         'data-component',
         'results'
       )
-      const selection = page.getByRole('checkbox', { name: '选择当前筛选的全部结果', exact: true })
-      await selection.check()
+      const detail = createPreviewSession(mount.scenarios.results).execute('open-results', {}).data
+        .target as { data: { papers: { title: string }[] } }
+      for (const paper of detail.data.papers)
+        await expect(page.getByRole('link', { name: paper.title, exact: true })).toBeVisible()
       await expect(selection).toBeChecked()
+      await selection.uncheck()
+      await expect(selection).not.toBeChecked()
       const pagination = page.getByRole('navigation', { name: '预览组件分页' })
       await page.getByRole('button', { name: '返回结果摘要', exact: true }).click()
       await expect(page.getByTestId('preview-page')).toHaveText(
         `组件 1 / ${mount.descriptor.components.length}`
       )
-      await page.getByRole('button', { name: '查看全部结果', exact: true }).click()
-      await expect(selection).not.toBeChecked()
+      await expect(selection).toHaveCount(0)
+      await receipt.click()
+      await expect(selection).toBeChecked()
       await expect(page.getByTestId('preview-page')).toHaveText(
         `组件 1 / ${mount.descriptor.components.length}`
       )
@@ -209,12 +209,12 @@ test(
         'data-component',
         'results'
       )
+      assert.deepEqual(errors, [])
     } finally {
       await browser.close()
     }
   }
 )
-
 test(
   'question and authorization retry in the original action area with preserved choices',
   { timeout: 60_000 },
@@ -233,7 +233,7 @@ test(
         const confirm =
           id === 'question'
             ? page.getByTestId('hil-question-confirm')
-            : page.getByTestId('hil-question-option-0-0')
+            : page.getByRole('button', { name: '确认授权', exact: true })
         if (id === 'question') await page.getByRole('radio').first().click()
         await confirm.click()
         await expect(page.getByTestId('hil-submit-error')).toBeVisible()
@@ -250,7 +250,7 @@ test(
 )
 
 test(
-  'authorization actions retain matching v0.3 button styles and dimensions',
+  'authorization actions distinguish primary confirmation and rejection at matching density',
   { timeout: 60_000 },
   async () => {
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
@@ -264,15 +264,15 @@ test(
         .getByRole('navigation', { name: '预览组件分页' })
         .getByRole('button', { name: `第 ${index + 1} 页`, exact: true })
         .click()
-      const authorize = page.getByTestId('hil-question-option-0-0')
-      const reject = page.getByTestId('hil-question-option-0-1')
+      const authorize = page.getByRole('button', { name: '确认授权', exact: true })
+      const reject = page.getByRole('button', { name: '拒绝', exact: true })
       await expect(authorize).toBeVisible()
-      await expect(reject).toHaveClass((await authorize.getAttribute('class')) ?? '')
+      await expect(reject).toBeVisible()
+      assert.notEqual(await reject.getAttribute('class'), await authorize.getAttribute('class'))
       const authorizeBox = await authorize.boundingBox()
       const rejectBox = await reject.boundingBox()
       assert.ok(authorizeBox)
       assert.ok(rejectBox)
-      assert.ok(Math.abs(authorizeBox.width - rejectBox.width) <= 1)
       assert.equal(authorizeBox.height, rejectBox.height)
     } finally {
       await browser.close()
@@ -281,21 +281,18 @@ test(
 )
 
 test(
-  'references source opens a local sample viewer and closes without navigation',
+  'literature result source opens a local sample viewer and closes without navigation',
   { timeout: 60_000 },
   async () => {
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
-      const mount = await openPreview(page, 'research-idea-partner')
-      const index = mount.descriptor.components.findIndex(
-        (component) => component.id === 'references'
-      )
-      await page
-        .getByRole('navigation', { name: '预览组件分页' })
-        .getByRole('button', { name: `第 ${index + 1} 页`, exact: true })
-        .click()
-      await page.getByRole('button', { name: '打开原文', exact: true }).first().click()
+      await openPreview(page, 'research-idea-partner')
+      const initialUrl = page.url()
+      await page.getByRole('button', { name: '打开检索结果', exact: true }).click()
+      const paper = page.getByTestId('search-paper-sample-0')
+      const source = paper.getByRole('link', { name: '样例 1：长上下文方法对比', exact: true })
+      await source.click()
       await expect(page.getByTestId('preview-viewer')).toBeVisible()
       await expect(page.getByTestId('preview-viewer')).toContainText('sample-0')
       await page
@@ -303,10 +300,9 @@ test(
         .getByRole('button', { name: '关闭样例内容', exact: true })
         .click()
       await expect(page.getByTestId('preview-viewer')).toHaveCount(0)
-      await expect(page.getByTestId('preview-component')).toHaveAttribute(
-        'data-component',
-        'references'
-      )
+      await expect(source).toBeVisible()
+      await expect(page.getByRole('button', { name: '返回结果摘要', exact: true })).toBeVisible()
+      assert.equal(page.url(), initialUrl)
       assert.equal(page.context().pages().length, 1)
     } finally {
       await browser.close()
@@ -315,90 +311,79 @@ test(
 )
 
 test(
-  'references deep menus and create dialog complete sample actions, reset and re-entry discard state',
+  'literature result menus and create dialog complete sample actions, reset and re-entry discard state',
   { timeout: 60_000 },
   async () => {
     const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     try {
       const page = await browser.newPage()
-      await openPreview(page, 'research-idea-partner')
-      const pages = page.getByRole('navigation', { name: '预览组件分页' })
-      await pages.getByRole('button', { name: '第 2 页', exact: true }).click()
-      const add = page.getByRole('button', {
-        name: '添加到文献库：样例 1：长上下文方法对比',
-        exact: true,
+      await openPreview(page, 'research-idea-partner', (mount) => {
+        const details = mount.scenarios.details
+        const collections = details.state?.collections
+        assert.ok(Array.isArray(collections) && collections.length === 1)
+        const [sample] = collections as { id: string; project_id: string }[]
+        const branch = {
+          id: 'long-context',
+          name: '长上下文',
+          parent_id: sample.id,
+          project_id: sample.project_id,
+        }
+        const leaf = {
+          id: 'evidence',
+          name: '证据对比',
+          parent_id: branch.id,
+          project_id: sample.project_id,
+        }
+        details.state = { ...details.state, collections: [...collections, branch, leaf] }
       })
+      const pages = page.getByRole('navigation', { name: '预览组件分页' })
+      const receipt = page.getByRole('button', { name: '打开检索结果', exact: true })
+      const paper = page.getByTestId('search-paper-sample-0')
+      const joined = paper.getByTestId('literature-joined')
+      const add = page.getByTestId('join-library-trigger')
+      const collection = page.getByRole('menuitem', { name: '加入我的分类', exact: true })
+      const create = page.getByRole('menuitem', { name: '新建分类…', exact: true })
+      await receipt.click()
       await add.click()
-      await page.getByRole('menuitem', { name: '加入我的分类', exact: true }).hover()
-      await page.getByRole('menuitem', { name: '研究方法', exact: true }).hover()
+      await expect(collection).toBeEnabled()
+      await collection.hover()
+      await page.getByRole('menuitem', { name: '样例分类', exact: true }).hover()
       await page.getByRole('menuitem', { name: '长上下文', exact: true }).hover()
       await page.getByRole('menuitem', { name: '证据对比', exact: true }).click()
-      await expect(page.getByText('已添加', { exact: true })).toBeVisible()
+      await expect(joined).toHaveCount(0)
+      await expect(paper.getByRole('checkbox')).toBeChecked()
+      await expect(paper.getByRole('checkbox')).toBeDisabled()
       await page.getByRole('button', { name: '重置预览', exact: true }).click()
-      await expect(page.getByText('已添加', { exact: true })).toHaveCount(0)
+      await receipt.click()
+      await expect(joined).toHaveCount(0)
       await add.click()
-      await page.getByRole('menuitem', { name: '加入我的分类', exact: true }).focus()
+      await expect(collection).toBeEnabled()
+      await collection.focus()
       await page.keyboard.press('ArrowRight')
-      await page.getByRole('menuitem', { name: '新建分类…', exact: true }).click()
-      const name = page.getByRole('textbox', { name: '分类名称', exact: true })
+      await create.click()
+      const name = page.getByRole('textbox', { name: '名称', exact: true })
       await expect(name).toBeFocused()
       await name.fill('预览临时分类')
       await page.getByRole('button', { name: '取消', exact: true }).click()
       await expect(name).toHaveCount(0)
       await add.click()
-      await page.getByRole('menuitem', { name: '加入我的分类', exact: true }).hover()
-      await page.getByRole('menuitem', { name: '新建分类…', exact: true }).click()
+      await expect(collection).toBeEnabled()
+      await collection.hover()
+      await create.click()
       await name.fill('预览临时分类')
-      await page.getByRole('button', { name: '创建并添加', exact: true }).click()
-      await expect(page.getByText('已添加', { exact: true })).toBeVisible()
-      await page.getByRole('searchbox', { name: '搜索文献标题' }).fill('样例 1')
+      await page.getByRole('button', { name: '创建分类', exact: true }).click()
+      await expect(joined).toHaveCount(0)
+      await expect(paper.getByRole('checkbox')).toBeChecked()
+      await expect(paper.getByRole('checkbox')).toBeDisabled()
       await pages.getByRole('button', { name: '下一页', exact: true }).click()
       await pages.getByRole('button', { name: '上一页', exact: true }).click()
-      await expect(page.getByRole('searchbox', { name: '搜索文献标题' })).toHaveValue('')
-      await expect(page.getByText('已添加', { exact: true })).toHaveCount(0)
-      assert.ok(
-        ((await page.evaluate('window.previewFixture.requests')) as { operation: string }[]).every(
-          (request) =>
-            ['plugin-preview-installed', 'plugin-release', 'plugin-validate'].includes(
-              request.operation
-            )
-        )
-      )
-    } finally {
-      await browser.close()
-    }
-  }
-)
-
-test(
-  'delivery saves sample choice, cancel preserves it and reset removes it',
-  { timeout: 60_000 },
-  async () => {
-    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
-    try {
-      const page = await browser.newPage()
-      await openPreview(page, 'precise-literature-search')
-      await page
-        .getByRole('navigation', { name: '预览组件分页' })
-        .getByRole('button', { name: '第 3 页', exact: true })
-        .click()
-      await expect(page.getByText('已获取，尚未保存到资料库', { exact: true })).toBeVisible()
-      await page.getByRole('button', { name: '选择保存位置', exact: true }).click()
-      const dialog = page.getByTestId('literature-delivery-dialog')
-      await dialog.getByRole('button', { name: '选择其他本地文件夹…', exact: true }).click()
-      await expect(dialog.getByText(/样例目录/)).toBeVisible()
-      await dialog.getByRole('button', { name: '保存全文', exact: true }).click()
-      await expect(dialog).toHaveCount(0)
-      await expect(page.getByText('全文保存完成', { exact: true })).toBeVisible()
-      await page.getByRole('button', { name: '重置预览', exact: true }).click()
-      await expect(page.getByText('全文保存完成', { exact: true })).toHaveCount(0)
-      await expect(page.getByText('已获取，尚未保存到资料库', { exact: true })).toBeVisible()
-      await page.getByRole('button', { name: '取消目录选择', exact: true }).click()
-      await page.getByRole('button', { name: '选择保存位置', exact: true }).click()
-      await dialog.getByRole('button', { name: '选择其他本地文件夹…', exact: true }).click()
-      await expect(dialog.getByText(/样例目录/)).toHaveCount(0)
-      await dialog.getByRole('button', { name: '稍后保存', exact: true }).click()
-      await expect(dialog).toHaveCount(0)
+      await receipt.click()
+      await expect(joined).toHaveCount(0)
+      await add.click()
+      await expect(collection).toBeEnabled()
+      await collection.hover()
+      await expect(create).toBeVisible()
+      await expect(page.getByRole('menuitem', { name: '预览临时分类', exact: true })).toHaveCount(0)
       assert.ok(
         ((await page.evaluate('window.previewFixture.requests')) as { operation: string }[]).every(
           (request) =>

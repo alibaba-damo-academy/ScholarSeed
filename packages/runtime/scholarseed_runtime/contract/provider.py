@@ -48,6 +48,13 @@ class RuntimeHostReconfiguration(Protocol):
     async def reconfigure(self, request: HostWarmupRequest) -> CommandReceipt: ...
 
 
+@runtime_checkable
+class RuntimeHostRetirement(Protocol):
+    """On the owning event loop, synchronously fence a revoked scope without force-closing work."""
+
+    def retire_execution_scope(self, scope: str) -> None: ...
+
+
 class RuntimeOpenNotAppliedError(RuntimeError):
     """Prove this reservation attempted no native open and settled its ownership.
 
@@ -125,6 +132,7 @@ __all__ = [
     "RUNTIME_HOST_WARMUP_COMMAND",
     "RuntimeHostWarmup",
     "RuntimeHostReconfiguration",
+    "RuntimeHostRetirement",
     "RuntimeOpenNotAppliedError",
     "RuntimeProvider",
 ]

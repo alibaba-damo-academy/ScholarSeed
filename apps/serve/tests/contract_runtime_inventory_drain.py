@@ -44,10 +44,16 @@ from service.chat.api.skills import mount_skill_routes
 from service.chat.persistence.catalog import OpenState, SessionCatalogStore, SessionPrincipal
 from service.chat.runtime.activation import ActivationPlan
 from service.chat.runtime.composition import LiveSessionService, RuntimeOpening
+from service.chat.service.models import (
+    MODEL_UNAVAILABLE_ERROR,
+    SessionModelSpec,
+    SessionModelUnavailableError,
+)
 from service.cli import serve
 from service.platform.activity import (
     Activities,
     ActivityDomain,
+    ActivityPhase,
     MaintenanceActive,
     MaintenanceStale,
 )
@@ -58,6 +64,58 @@ from tests._host import HOST_ID, USER_ID, HostContextFixture
 
 
 class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_model_preflight_rejection_does_not_fence_other_work(self):
+        provider = SimpleNamespace(
+            descriptor=SimpleNamespace(
+                capabilities=CapabilitySet(
+                    tuple(
+                        RuntimeCapability(capability.value, CapabilityState.SUPPORTED)
+                        for capability in (
+                            RuntimeCapabilityName.SHARED_HOST_CONTROL,
+                            RuntimeCapabilityName.HOST_WARMUP,
+                        )
+                    )
+                )
+            ),
+            prewarm=AsyncMock(
+                return_value=CommandReceipt(
+                    RUNTIME_HOST_WARMUP_COMMAND, CommandState.APPLIED, correlation_id=HOST_ID
+                )
+            ),
+        )
+        self.gateway.provider.return_value = provider
+        self.runtime.bind_host_warmup(cwd=self.root, environment=AsyncMock(return_value={}))
+        model = SessionModelSpec(key="restored-model", model_name="model", config={}, billing="api")
+        self.runtime._models.selected_model_key.return_value = model.key
+        self.runtime._models.session_spec.return_value = model
+
+        def warm(owner):
+            return self.runtime.warm_host(user_id=USER_ID, model_id=model.key, owner=owner)
+
+        operation = self.start_preparation(warm)
+        result = await self.wait_preparation(operation)
+        self.assertEqual((result["state"], result["error"]), ("rejected", MODEL_UNAVAILABLE_ERROR))
+        provider.prewarm.assert_not_awaited()
+        self.runtime._models.release_session.assert_called_once()
+        self.assertIs(self.activities.snapshot().phase, ActivityPhase.OPEN)
+        with self.activities.enter(ActivityDomain.STARTUP, root=True):
+            pass
+        self.assertEqual(self.activities.snapshot().counts, {})
+        self.runtime._models.session_spec.return_value = SessionModelSpec(
+            key=model.key,
+            model_name="model",
+            config={},
+            billing="api",
+            codex_provider={"base_url": "https://model.invalid/v1"},
+        )
+        retry = self.start_preparation(warm)
+        self.assertEqual((await self.wait_preparation(retry))["state"], "applied")
+        provider.prewarm.assert_awaited_once()
+        provider.prewarm.side_effect = SessionModelUnavailableError("failure after host invocation")
+        uncertain = self.start_preparation(warm)
+        self.assertEqual((await self.wait_preparation(uncertain))["state"], "restart_required")
+        self.assertIs(self.activities.snapshot().phase, ActivityPhase.DRAINING)
+
     def start_preparation(self, warm, *, request_id=None):
         return self.runtime.reconfiguration.start(
             request_id=request_id or str(uuid4()),
@@ -327,6 +385,51 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime._host_context = self.host_context.context
 
+    async def test_composed_resource_drain_follows_provider_and_propagates_blockers(self):
+        self.gateway.catalog = SimpleNamespace(runtime_ids=lambda: ("fixture",))
+        order = []
+
+        async def release():
+            order.append("provider")
+            return SimpleNamespace(state=CommandState.APPLIED)
+
+        async def drain(generation):
+            order.append("connector")
+            return ("busy-connector",)
+
+        self.gateway.provider.return_value = SimpleNamespace(release_idle_resources=release)
+        self.runtime._resource_drains = (drain,)
+        generation = self.activities.begin()
+        self.assertEqual(await self.runtime.drain_for_update(generation), ("busy-connector",))
+        self.assertEqual(order, ["provider", "connector"])
+        order.clear()
+        self.gateway.provider.return_value = SimpleNamespace(
+            release_idle_resources=AsyncMock(
+                return_value=SimpleNamespace(state=CommandState.REJECTED)
+            )
+        )
+        self.assertEqual(await self.runtime.drain_for_update(generation), ("fixture",))
+        self.assertEqual(order, [])
+        self.runtime.activation.drain_attachments = AsyncMock(return_value=("busy-session",))
+        self.assertEqual(await self.runtime.drain_for_update(generation), ("busy-session",))
+        self.assertEqual(order, [])
+
+    async def test_composed_resource_drain_rejects_generation_change_and_failure(self):
+        self.gateway.catalog = SimpleNamespace(runtime_ids=lambda: ())
+        generation = self.activities.begin()
+        failure = TimeoutError("connector cleanup incomplete")
+        self.runtime._resource_drains = (AsyncMock(side_effect=failure),)
+        with self.assertRaises(TimeoutError):
+            await self.runtime.drain_for_update(generation)
+
+        async def stale(generation):
+            self.activities.resume(generation)
+            return ()
+
+        self.runtime._resource_drains = (stale,)
+        with self.assertRaises(MaintenanceStale):
+            await self.runtime.drain_for_update(generation)
+
     async def test_shutdown_continues_after_activation_and_driver_close_failures(self):
         activation_error = RuntimeError("activation close failed")
         driver_error = RuntimeError("driver close failed")
@@ -484,7 +587,14 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
         self.runtime._catalog = catalog
         provider = self.update_provider()
         provider.open = AsyncMock(side_effect=ConnectionError("native startup failed"))
-        live = SimpleNamespace(id=session_id, runtime_id="fixture")
+        live = SimpleNamespace(
+            id=session_id,
+            runtime_id="fixture",
+            project_id="",
+            runtime_workdir=self.root,
+            output_root=self.root,
+            writable_roots=(),
+        )
         plan = ActivationPlan(provider, OpenSessionRequest(session_id, self.root), ("model", "ask"))
         with self.assertRaises(ConnectionError):
             await self.runtime._attach_runtime(live, plan, "reservation")
@@ -669,6 +779,10 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
         app = create_app(self.root, auth=False)
         self.addCleanup(app.state.storage_domains.close)
         activities = app.state.activities
+        self.assertEqual(
+            app.state.runtime_service._resource_drains,
+            (app.state.connector_broker.drain_resources,),
+        )
         generation = activities.begin()
         provider = Mock()
         with (
@@ -1199,10 +1313,16 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.gateway.inspect.await_count, 2)
         self.assertTrue(self.activities.seal(generation))
 
-    async def test_maintenance_rejects_public_skill_routes_without_inspection_or_credentials(self):
+    async def test_maintenance_allows_local_skill_browsing_but_rejects_execution(self):
         app = ServeApplication(activities=self.activities)
+        user_root = self.root / "user-skills"
+        fixture = user_root / "fixture"
+        fixture.mkdir(parents=True)
+        (fixture / "SKILL.md").write_text(
+            "---\nname: fixture\ndescription: Local browsing contract\n---\n", encoding="utf-8"
+        )
         app.state.skill_catalog = SkillCatalog(
-            bundled_root=self.root / "bundled", user_root=self.root / "user"
+            bundled_root=self.root / "bundled-skills", user_root=user_root
         )
         app.state.runtime_service = self.runtime
         public_skills = SimpleNamespace(payload=AsyncMock(), document=AsyncMock())
@@ -1215,6 +1335,11 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
+            response = await client.get("/api/capabilities/skills")
+            self.assertEqual(response.status_code, 200, response.text)
+            browsing = response.json()
+            self.assertEqual([row["name"] for row in browsing["skills"]], ["fixture"])
+            self.assertEqual(Path(response.json()["cwd"]), self.root.resolve())
             for method, route, kwargs in (
                 ("GET", "/api/serve/skills", {}),
                 ("GET", "/api/serve/skills/fixture/document", {}),
@@ -1228,7 +1353,7 @@ class RuntimeInventoryDrainContracts(unittest.IsolatedAsyncioTestCase):
             # Installed-package browsing is passive; it never opens a runtime.
             catalog = await client.get("/api/capabilities/skills")
             self.assertEqual(catalog.status_code, 200, catalog.text)
-            self.assertEqual(catalog.json()["skills"], [])
+            self.assertEqual(catalog.json(), browsing)
         credentials.ensure.assert_not_awaited()
         public_skills.payload.assert_not_awaited()
         self.gateway.inspect.assert_not_awaited()

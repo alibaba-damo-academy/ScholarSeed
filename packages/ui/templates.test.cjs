@@ -47,7 +47,7 @@ for (const withFields of [false, true]) test(`editable template preserves edits 
       } })
     }, withFields)
     await page.addScriptTag({ url: 'http://template.test/ui.js' })
-    await page.addScriptTag({ content: await fs.readFile(path.resolve(__dirname, '../../skills/community/plugin-create/templates/card.js'), 'utf8') })
+    await page.addScriptTag({ content: await fs.readFile(path.resolve(__dirname, 'example/legacy-card.js'), 'utf8') })
     await expect(page.getByRole('checkbox', { name: '目标一', exact: true })).toHaveAttribute('aria-checked', 'true')
     if (withFields) {
       await page.getByRole('textbox', { name: '自定义问题' }).fill('初次问题')
@@ -70,18 +70,23 @@ for (const withFields of [false, true]) test(`editable template preserves edits 
     }
     await page.getByRole('button', { name: '保存草稿', exact: true }).click()
     await page.evaluate(() => window.fixture.settle(false))
-    await expect(page.getByRole('alert')).toHaveText('保存失败，选择仍保留')
-    await page.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(page.getByRole('alert')).toHaveText('保存草稿失败，选择仍保留。可重试保存。')
+    await page.getByRole('button', { name: '确认所选项', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => window.fixture.submissions), [{ action: 'confirm', values: withFields ? { selected: ['two'], fields: { question: '保存期间的最新问题' } } : { selected: ['one', 'two'] } }])
-    await expect(page.getByRole('button', { name: '确认', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '确认所选项', exact: true })).toBeDisabled()
     await page.evaluate(() => { window.fixture.state.status = 'pending'; window.fixture.publish() })
-    await expect(page.getByRole('button', { name: '确认', exact: true })).toBeEnabled()
-    await page.getByRole('button', { name: '确认', exact: true }).click()
-    await page.evaluate(() => { window.fixture.state.status = 'resolved'; window.fixture.publish() })
+    await expect(page.getByRole('button', { name: '确认所选项', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '确认所选项', exact: true }).click()
+    await page.evaluate(() => {
+      const { state, submissions, publish } = window.fixture
+      state.draft = submissions.at(-1).values
+      state.status = 'resolved'
+      publish()
+    })
     await expect(page.getByText('已确认', { exact: true })).toBeVisible()
     for (const status of ['cancelled', 'unknown', 'stale']) {
       await page.evaluate(value => { window.fixture.state.status = value; window.fixture.publish() }, status)
-      await expect(page.getByRole('button', { name: '确认', exact: true })).toBeDisabled()
+      await expect(page.getByRole('button', { name: '确认所选项', exact: true })).toBeDisabled()
       await expect(page.getByRole('checkbox', { name: '目标二', exact: true })).toHaveAttribute('aria-checked', 'true')
     }
     assert.equal(await page.evaluate(() => window.fixture.submissions.length), 2)

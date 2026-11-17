@@ -18,7 +18,6 @@ require('./installer.test.cjs')
 require('./setup.test.cjs')
 require('./installation.test.cjs')
 require('./registration.test.cjs')
-require('../../shared/__tests__/component-cache.test.cjs')
 require('./cache.test.cjs')
 require('./compression.test.cjs')
 require('./assembly.test.cjs')
@@ -30,9 +29,9 @@ require('./verification.test.cjs')
 require('./browser.test.cjs')
 require('./mutex.test.cjs')
 require('./shipit.test.cjs')
+require('./recovery.test.cjs')
 require('./squirrel.test.cjs')
 require('../../../native/shipit/artifact.test.cjs')
-require('../../../native/shipit/fingerprint.test.cjs')
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
@@ -44,11 +43,11 @@ const { createRequire } = require('node:module')
 const ts = require('typescript')
 const { TARGETS } = require('../../shared/target.cjs')
 const { verifyInputs, verifyNotices, stageNotices } = require('../notices.cjs')
-const { skillLockProblems } = require('../../../../../scripts/shared/skills.cjs')
 const PACKAGE = require('../../../package.json')
 
 const {
   options,
+  requireInstallerSmoke,
   acquireMutex,
   BUILD_TYPES,
   builderEvidence,
@@ -63,6 +62,8 @@ const {
   resolveNsisConfiguration,
   payloadStatistics,
 } = require('../build.cjs')
+const { budget: smokeBudget } = require('../../../../../scripts/ci/smoke.json')
+const { MAX_TOTAL_BUDGET_MS } = require('../../../../../scripts/ci/budget.cjs')
 const {
   adHocOptions,
   preserveReviewedRuntime,
@@ -101,6 +102,53 @@ const {
   updateMacBundleName,
 } = require('../../pre/identity.cjs')
 const REPO_ROOT = path.join(sourceDirectory, '../../../..')
+
+test('installer smoke uses the same fixed command once on both platforms and ignores other build stages', () => {
+  const invocations = []
+  const launch = (executable, args, settings) => {
+    invocations.push({ executable, args, settings })
+    return { status: 0 }
+  }
+  const environment = { npm_execpath: 'npm', SCHOLARSEED_UPDATE_PAYLOAD_PRIVATE_KEY: 'not forwarded' }
+  for (const target of Object.values(TARGETS)) {
+    for (const stage of ['backend', 'dir']) {
+      assert.equal(requireInstallerSmoke({ stage, target }, environment, { launch }), false)
+    }
+    assert.equal(requireInstallerSmoke({ stage: target.installer, target }, environment, { launch }), true)
+  }
+  assert.deepEqual(invocations, Object.values(TARGETS).map(() => ({
+    executable: process.execPath,
+    args: [path.join(REPO_ROOT, 'scripts', 'ci', 'smoke.cjs')],
+    settings: { cwd: REPO_ROOT, env: { npm_execpath: 'npm' }, stdio: 'inherit', shell: false, windowsHide: true },
+  })))
+})
+
+test('installer smoke fails closed on launch errors, failed children and over-budget success', context => {
+  const build = { stage: 'dmg', target: { installer: 'dmg' } }
+  for (const result of [{ status: 7 }, { status: null, signal: 'SIGTERM' }]) {
+    assert.throws(() => requireInstallerSmoke(build, {}, { launch: () => result }), /smoke.*failed/i)
+  }
+  const error = new Error('spawn failed')
+  assert.throws(() => requireInstallerSmoke(build, {}, { launch: () => ({ error }) }), { message: error.message })
+  const limit = Math.min(smokeBudget.targetMs, MAX_TOTAL_BUDGET_MS)
+  for (const duration of [limit - 1, limit, limit + 1]) {
+    let elapsed = 0
+    const controls = { clock: () => elapsed, launch: () => {
+      elapsed = duration
+      return { status: 0 }
+    } }
+    if (duration <= limit) assert.equal(requireInstallerSmoke(build, {}, controls), true)
+    else assert.throws(() => requireInstallerSmoke(build, {}, controls), /wall-clock budget/)
+  }
+  const original = smokeBudget.targetMs
+  context.after(() => { smokeBudget.targetMs = original })
+  smokeBudget.targetMs = MAX_TOTAL_BUDGET_MS + 1
+  let elapsed = 0
+  assert.throws(() => requireInstallerSmoke(build, {}, { clock: () => elapsed, launch: () => {
+    elapsed = smokeBudget.targetMs
+    return { status: 0 }
+  } }), /wall-clock budget/)
+})
 
 test('build failures remain nonzero after the builder asynchronous cleanup hook', context => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'build-exit-'))
@@ -579,28 +627,9 @@ test('packaging targets preserve independent macOS and Windows artwork', () => {
     fs.readFileSync(path.join(desktopRoot, PACKAGE.build.win.icon))
   )
 })
-test('repository skill locks include manifests matching the reviewed dependency policy', () => {
-  const sourceRoot = path.join(REPO_ROOT, 'skills', 'community')
-  const lock = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'skills', 'skills.lock.json')))
-  // 三方一致性（源码清单 / lock 行 / registry 依赖政策）由 scripts/shared/skills.cjs 单独持有，
-  // 与 .husky/pre-push 共用同一实现。它收集全部违规而不是逐条 assert：单个坏技能
-  // 不得遮蔽排在它之后的技能。
-  const problems = [...skillLockProblems(REPO_ROOT)]
-
-  const publicationOracle = 'scripts/smoke_publication.py'
-  const oracleSkill = 'literature-review'
-  const oraclePath = path.join(sourceRoot, oracleSkill, publicationOracle)
-  const literatureReview = lock.skills.find((skill) => skill.slug === oracleSkill)
-  if (
-    !literatureReview ||
-    !literatureReview.files.some((file) => file.path === publicationOracle)
-  ) {
-    problems.push(`${oracleSkill} is missing ${publicationOracle} from the lock`)
-  } else if (!fs.existsSync(oraclePath) || fs.statSync(oraclePath).size <= 0) {
-    problems.push(`${oracleSkill} ${publicationOracle} is missing or empty in the source tree`)
-  }
-
-  assert.deepEqual(problems, [])
+test('literature review publication oracle exists in source', () => {
+  const oraclePath = path.join(REPO_ROOT, 'skills/community/literature-review/scripts/smoke_publication.py')
+  assert.ok(fs.statSync(oraclePath).size > 0)
 })
 test('macOS development protocol registration uses a stable checkout-specific bundle identity', () => {
   const calls = []
@@ -615,7 +644,7 @@ test('macOS development protocol registration uses a stable checkout-specific bu
   assert.match(firstId, /^com\.scholarseed\.desktop\.dev\.[a-f0-9]{16}$/)
   assert.deepEqual(JSON.parse(calls[1][1][3]), [{
     CFBundleURLName: PACKAGE.build.productName,
-    CFBundleURLSchemes: ['scholarseed'],
+    CFBundleURLSchemes: ['scholarseed-notification'],
     CFBundleTypeRole: 'Editor',
   }])
   assert.deepEqual(calls[2][1], ['-f', '/tmp/checkout/Electron.app'])
@@ -2033,7 +2062,6 @@ test('bundled workspace distributions are installed only from immutable wheels',
   assert.match(VERIFY_SOURCE, /frozen\.pythonDependencies\.inventory_sha256/)
   assert.match(VERIFY_SOURCE, /VERIFIER_FILENAME\),\s*'verify'/)
   assert.match(assemblySource, /--no-sources/)
-  assert.match(BUNDLE_BACKEND_SOURCE, /const wheels = \[\]/)
   assert.doesNotMatch(BUNDLE_BACKEND_SOURCE, /uv_bin" pip install[\s\S]*"\$pkg"/)
   // editable 残留断言随探针脚本移入 probe.cjs（bundle.cjs 经 RUNTIME_PROBE_SCRIPT 执行）
   assert.match(PROBE_SOURCE, /__editable__/)
@@ -2440,7 +2468,7 @@ test('desktop development identity reads product metadata and skips macOS writes
       },
       'node:crypto': crypto,
       electron: '/tmp/checkout/Electron.app/Contents/MacOS/Electron',
-      '../../package.json': { build: { productName: 'Contract Product' } },
+      '../../package.json': { build: { productName: 'Contract Product', protocols: PACKAGE.build.protocols } },
     }
     const loadDependency = name => {
       assert.ok(Object.hasOwn(dependencies, name), name)

@@ -1,6 +1,6 @@
 ---
 name: web-search
-version: "0.1.10"
+version: "0.1.11"
 description: "Search public-web sources for cited conversational answers, or run ScholarSeed's bounded search Invocation when a profile and candidate-output contract are supplied. Preserve the official/native/browser provider order; ordinary answers verify sources and respond in prose, while Invocations return candidates."
 description_zh: "为普通对话检索并核实公网来源、提供引用；收到明确 profile 和候选输出契约时执行书深受限搜索 Invocation，保留官方 API、原生搜索、浏览器的既定路径。"
 metadata:
@@ -23,9 +23,12 @@ metadata:
 ## Conversational answers
 
 Inside a ScholarSeed conversation, use the available `scholarseed_bridge` tool with
-`capability="search"`, `operation="run"`, and `request={"query":"...","profile":"official","limit":20}`
+`capability="search"`, `operation="run"`, and `request={"purpose":"...","query":"...","profile":"official","limit":20}`
 for the official candidate-collection step. The product executes the bounded skill and
 registers its explicitly published result independently of displayed shell output.
+Set `purpose` to a brief user-facing explanation of why this search is needed, in the
+user's language; keep `query` as the actual search terms. Each search record uses its
+own purpose, query and returned results rather than relying on surrounding prose.
 Do not launch `scripts/invoke.py` directly in the parent conversation or ask the user
 whether to register sources. The `native` and `browser` profiles select those providers;
 keep the provider order below and stop at a successful or valid empty result.
@@ -50,6 +53,10 @@ scholarly pages may be included in web mode. Cite each web-dependent claim besid
 with an actual returned URL, reusing one number per page and citing all sources behind
 combined claims. Snippets are leads, not verified page content: disclose snippet-only
 support, omit unsupported specifics and expose conflicts. Never invent citations.
+
+Keep inline citations in ordinary conversation and let ScholarSeed display the
+sources at the end of the answer. Do not append a duplicate sources list unless
+the user explicitly asks for a bibliography.
 
 ## Bounded Invocations
 

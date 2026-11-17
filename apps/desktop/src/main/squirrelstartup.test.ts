@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { spawn, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, mkdir, chmod, symlink, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, chmod, copyFile, symlink, writeFile, rm, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -16,6 +16,7 @@ import {
   readSquirrelFailure,
   bindSquirrelRequest,
   inspectSquirrelIdle,
+  verifySquirrelReplacement,
   squirrelHelpersAbsent,
   squirrelLaunchSuperseded,
 } from './squirrelstartup.ts'
@@ -38,9 +39,49 @@ test('superseded build evidence requires a strictly later valid build than both 
   )
 })
 
-test('superseded recovery refuses active user or root helpers and incomplete process evidence', () => {
+test('superseded recovery scopes helpers to the installed and bound candidate applications', async () => {
+  const helpers = [
+    '/Applications/Scholar Seed.app/Contents/ShipIt',
+    '/cache/candidate/Contents/ShipIt',
+  ]
+  const canonical = async (path: string) => path
+  for (const owner of [0, 501]) {
+    assert.equal(
+      await squirrelHelpersAbsent(
+        `${owner} /Applications/VS Code.app/Contents/ShipIt`,
+        501,
+        helpers,
+        canonical
+      ),
+      true
+    )
+    for (const helper of helpers)
+      assert.equal(
+        await squirrelHelpersAbsent(`${owner} ${helper}`, 501, helpers, canonical),
+        false
+      )
+  }
   assert.equal(
-    squirrelHelpersAbsent(' 501 /Applications/ScholarSeed.app/Contents/MacOS/ScholarSeed\n', 501),
+    await squirrelHelpersAbsent('501 /alias/ShipIt', 501, helpers, async () => helpers[0]),
+    false
+  )
+  assert.equal(await squirrelHelpersAbsent('501 ShipIt', 501, helpers, canonical), false)
+  assert.equal(
+    await squirrelHelpersAbsent('501 /unknown/ShipIt', 501, helpers, async () => {
+      throw new Error('unavailable')
+    }),
+    false
+  )
+})
+
+test('superseded recovery refuses active user or root helpers and incomplete process evidence', async () => {
+  const helpers = ['/Applications/App.app/ShipIt', '/cache/ShipIt']
+  assert.equal(
+    await squirrelHelpersAbsent(
+      ' 501 /Applications/ScholarSeed.app/Contents/MacOS/ScholarSeed\n',
+      501,
+      helpers
+    ),
     true
   )
   for (const processes of [
@@ -49,9 +90,12 @@ test('superseded recovery refuses active user or root helpers and incomplete pro
     '0 /Applications/App.app/ShipIt',
     '501 /cache/ShipIt',
   ]) {
-    assert.equal(squirrelHelpersAbsent(processes, 501), false)
+    assert.equal(await squirrelHelpersAbsent(processes, 501, helpers), false)
   }
-  assert.equal(squirrelHelpersAbsent('502 /Applications/Other.app/ShipIt\r\n', 501), true)
+  assert.equal(
+    await squirrelHelpersAbsent('502 /Applications/Other.app/ShipIt\r\n', 501, helpers),
+    true
+  )
 })
 
 test(
@@ -64,15 +108,15 @@ test(
     try {
       await mkdir(directory, { mode: 0o700 })
       await writeFile(join(directory, 'ShipItState.plist'), 'pending')
-      assert.equal(await inspectSquirrelIdle(cache, bundle), false)
+      assert.equal(await inspectSquirrelIdle(cache, bundle, application, null), false)
       await rm(join(directory, 'ShipItState.plist'))
       await chmod(directory, 0o777)
-      assert.equal(await inspectSquirrelIdle(cache, bundle), false)
+      assert.equal(await inspectSquirrelIdle(cache, bundle, application, null), false)
       await chmod(directory, 0o700)
       await rm(directory, { recursive: true })
       await symlink(cache, directory)
-      assert.equal(await inspectSquirrelIdle(cache, bundle), false)
-      assert.equal(await inspectSquirrelIdle(cache, '../invalid'), false)
+      assert.equal(await inspectSquirrelIdle(cache, bundle, application, null), false)
+      assert.equal(await inspectSquirrelIdle(cache, '../invalid', application, null), false)
     } finally {
       await rm(cache, { recursive: true, force: true })
     }
@@ -455,6 +499,112 @@ test(
 
 // OS contract fixture only: this is not a signed Squirrel update acceptance test.
 test(
+  'superseded inspection accepts only a stable bound native failure and preserves records',
+  { skip: process.platform !== 'darwin' },
+  async (t) => {
+    const directory = realpathSync(await mkdtemp(join(tmpdir(), 'superseded-failure-')))
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const application = join(directory, 'Example App.app')
+    const helper = join(application, 'Contents/Frameworks/Squirrel.framework/Resources/ShipIt')
+    const source = join(directory, 'request', 'Example.app')
+    const bundle = 'org.scholarseed.failure'
+    const cache = join(directory, `${bundle}.ShipIt`)
+    await mkdir(dirname(helper), { recursive: true })
+    await writeFile(helper, 'fixture: never executed')
+    await mkdir(source, { recursive: true })
+    await chmod(dirname(source), 0o700)
+    await mkdir(cache, { mode: 0o700 })
+    const state = join(cache, 'ShipItState.plist')
+    const ack = join(dirname(source), '.scholarseed-prepare.plist')
+    const native = terminalRecord(source, application)
+    const current = { ...handoff, nativeRequest: native }
+    const request = {
+      bundleIdentifier: bundle,
+      binding: native.binding,
+      targetBundleURL: pathToFileURL(application).href + '/',
+      updateBundleURL: pathToFileURL(source).href + '/',
+      installationAuthorized: true,
+      launchAfterInstallation: true,
+      useUpdateBundleName: true,
+    }
+    await writeFile(state, JSON.stringify(request), { mode: 0o600 })
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
+    await writeFile(ack, JSON.stringify(native), { mode: 0o600 })
+    const original = [readFileSync(state), readFileSync(ack)]
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
+    assert.deepEqual([readFileSync(state), readFileSync(ack)], original)
+    for (const patch of [
+      { bundleIdentifier: 'other.bundle' },
+      { binding: { ...native.binding, requestId: 'f'.repeat(64) } },
+      { targetBundleURL: pathToFileURL(source).href },
+      { updateBundleURL: pathToFileURL(application).href },
+    ]) {
+      await writeFile(state, JSON.stringify({ ...request, ...patch }))
+      assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
+    }
+    await writeFile(state, original[0])
+    await writeFile(ack, JSON.stringify({ ...native, ready: true }))
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
+    await writeFile(ack, JSON.stringify({ ...native, code: 0 }))
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
+    await writeFile(ack, original[1])
+    assert.equal(
+      await inspectSquirrelIdle(directory, bundle, application, {
+        ...current,
+        nativeRequest: undefined,
+      }),
+      false
+    )
+    await chmod(state, 0o666)
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
+    await chmod(state, 0o600)
+    await chmod(cache, 0o777)
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
+    await chmod(cache, 0o700)
+    await rename(application, application + '.previous')
+    await mkdir(dirname(helper), { recursive: true })
+    await writeFile(helper, 'replacement fixture')
+    await assert.rejects(
+      verifySquirrelReplacement(application, bundle, 'A1B2C3D4E5', '202611101200')
+    )
+    assert.equal(await readSquirrelFailure(request.updateBundleURL, application, native), false)
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
+    let verified = 0
+    const verify = async (path: string) => {
+      assert.equal(path, application)
+      verified++
+    }
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current, verify), true)
+    assert.equal(verified, 1)
+    assert.deepEqual([readFileSync(state), readFileSync(ack)], original)
+    assert.equal(
+      await inspectSquirrelIdle(directory, bundle, application, current, async () => {
+        throw new Error('wrong signing team')
+      }),
+      false
+    )
+    await writeFile(
+      ack,
+      JSON.stringify({ ...native, target: terminalRecord(source, application).target })
+    )
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current, verify), false)
+    await writeFile(ack, original[1])
+    assert.equal(
+      await inspectSquirrelIdle(directory, bundle, application, current, async () => {
+        await rename(application, application + '.changed')
+        await mkdir(dirname(helper), { recursive: true })
+        await writeFile(helper, 'raced replacement')
+      }),
+      false
+    )
+    await rm(state)
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
+  }
+)
+
+// OS contract fixture only: this is not a signed Squirrel update acceptance test.
+test(
   'native probe distinguishes terminal restoration from installation without admitting a live helper',
   { skip: process.platform !== 'darwin', timeout: 30_000 },
   async (t) => {
@@ -489,7 +639,16 @@ test(
     await chmod(dirname(source), 0o700)
     await writeFile(
       join(cache, 'ShipItState.plist'),
-      `<?xml version="1.0"?><plist version="1.0"><dict><key>targetBundleURL</key><string>${pathToFileURL(application).href}/</string><key>updateBundleURL</key><string>${pathToFileURL(source).href}</string></dict></plist>`
+      JSON.stringify({
+        targetBundleURL: pathToFileURL(application).href,
+        updateBundleURL: pathToFileURL(source).href,
+        binding: protocolBinding,
+        bundleIdentifier: bundle,
+        installationAuthorized: true,
+        launchAfterInstallation: true,
+        useUpdateBundleName: true,
+      }),
+      { mode: 0o600 }
     )
     const acknowledgement = join(dirname(source), '.scholarseed-prepare.plist')
     await writeFile(acknowledgement, JSON.stringify(terminalRecord(source, application)), {
@@ -506,6 +665,7 @@ test(
       nativeRequest: terminalRecord(source, application),
     }
     assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'restoring')
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
     await rm(acknowledgement)
     assert.equal(
       await inspectSquirrelStartup(current, directory, bundle, application),
@@ -518,6 +678,22 @@ test(
     helper.kill()
     await exited
     assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'failed')
+    assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
+    for (const [root, expected] of [
+      [join(directory, 'Other App.app'), true],
+      [source, false],
+    ] as const) {
+      const other = join(root, 'Contents/Frameworks/Squirrel.framework/Resources/ShipIt')
+      await mkdir(dirname(other), { recursive: true })
+      await copyFile(executable, other)
+      const active = spawn(other, [], { stdio: 'ignore' })
+      owned.helper = active
+      await once(active, 'spawn')
+      assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), expected)
+      const stopped = once(active, 'exit')
+      active.kill()
+      await stopped
+    }
     await rm(acknowledgement)
     assert.equal(
       await inspectSquirrelStartup(current, directory, bundle, application),

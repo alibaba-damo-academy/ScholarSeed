@@ -4,7 +4,7 @@ import { linkTooltipAPI } from '@milkdown/kit/component/link-tooltip'
 import type { Ctx } from '@milkdown/kit/ctx'
 import { $remark } from '@milkdown/kit/utils'
 
-import { DOCUMENT_LINK_ATTRIBUTE } from './links.ts'
+import { DOCUMENT_LINK_ATTRIBUTE, documentLinkTarget } from './links.ts'
 
 interface CitationMarkdownNode {
   type: string
@@ -31,7 +31,8 @@ function projectCitationText(
   for (const match of value.matchAll(NUMERIC_CITATION)) {
     const numbers = match[1].split(/\s*,\s*/u)
     if (!numbers.every((number) => references.has(number))) continue
-    if (match.index > cursor) projected.push({ type: 'text', value: value.slice(cursor, match.index) })
+    if (match.index > cursor)
+      projected.push({ type: 'text', value: value.slice(cursor, match.index) })
     if (numbers.length === 1) {
       projected.push({
         type: 'link',
@@ -57,15 +58,11 @@ function projectCitationText(
   return projected
 }
 
-function projectCitationNodes(
-  node: CitationMarkdownNode,
-  references: Set<string>
-): void {
+function projectCitationNodes(node: CitationMarkdownNode, references: Set<string>): void {
   if (!node.children || ['link', 'linkReference', 'inlineCode', 'code', 'html'].includes(node.type))
     return
   node.children = node.children.flatMap((child) => {
-    if (child.type === 'text')
-      return projectCitationText(child.value ?? '', references) ?? [child]
+    if (child.type === 'text') return projectCitationText(child.value ?? '', references) ?? [child]
     projectCitationNodes(child, references)
     return [child]
   })
@@ -97,11 +94,23 @@ export const numericCitationPlugin = $remark(
   () => () => (tree) => projectNumericCitations(tree)
 )
 
-export function configureCitationLinks(ctx: Ctx): void {
+export function configureCitationLinks(ctx: Ctx, markerClass: string): void {
   ctx.update(linkAttr.key, (previous) => (mark) => {
     const href = typeof mark.attrs.href === 'string' ? mark.attrs.href : ''
+    const target = documentLinkTarget(href)
+    const citation =
+      target.kind === 'citation' ||
+      target.kind === 'reference' ||
+      (target.kind === 'fragment' && href.startsWith('#ref-'))
+    const attrs = previous(mark)
     return {
-      ...previous(mark),
+      ...attrs,
+      ...(citation
+        ? {
+            class: [attrs.class, markerClass].filter(Boolean).join(' '),
+            'data-citation-marker': 'true',
+          }
+        : {}),
       [DOCUMENT_LINK_ATTRIBUTE]: href,
       contenteditable: 'false',
       tabindex: 0,

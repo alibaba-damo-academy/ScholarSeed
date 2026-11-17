@@ -163,6 +163,8 @@
     "loadFailed": "Cannot open {{title}}.",
     "loadFailureDetail": "{{message}} ({{code}})",
     "loadFailureUnknown": "The document could not be loaded. Try again.",
+    "readPermissionDenied": "You do not have permission to read this file. Restore read access, then retry.",
+    "readFailed": "The file could not be read. Check that it is accessible, then retry.",
     "artifactTooLarge": "This file exceeds the built-in preview limit. Open it with a system app or download it from the task artifact card.",
     "missingTitle": "{{title}} no longer exists or was moved.",
     "missingDescription": "The file may have been deleted or renamed outside ScholarSeed.",
@@ -547,11 +549,23 @@
     "newTab": "New tab",
     "projectFiles": "Project files",
     "projectExplorer": "Project explorer",
+    "browser": "Built-in browser",
     "projects": "Projects",
     "review": "Review changes · {{count}}",
     "versionDiff": "Compare versions · v{{sequence}} · {{name}}"
   },
   "monaco": {
     "frameTitle": "Code editor"
+  },
+  "bibliography": {
+    "preview": "Reference details",
+    "loading": "Loading reference details",
+    "failed": "Reference details could not be loaded. Hover again to retry.",
+    "unavailable": "Reference unavailable",
+    "authors": "Authors",
+    "year": "Year",
+    "publication": "Publication",
+    "missing": "Not provided",
+    "unstructured": "Original reference text; structured bibliographic details are unavailable."
   }
 }

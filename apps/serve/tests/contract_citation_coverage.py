@@ -116,6 +116,7 @@ class CoverageContract(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertNotIn("excerpt", declared["search_sources"][0])
+        self.assertEqual(declared["search_sources"][0]["description"], "Fabricated evidence")
         declared["search_sources"][0]["excerpt"] = "Fabricated evidence"
         reader = Mock(fetch_page=AsyncMock(side_effect=ValueError("unavailable")))
         model = Mock(invoke=AsyncMock())
@@ -373,6 +374,23 @@ class CoverageContract(unittest.IsolatedAsyncioTestCase):
 
 
 class PageContract(unittest.IsolatedAsyncioTestCase):
+    async def test_preview_retains_full_metadata_without_exposing_page_markup(self) -> None:
+        response = _Response(
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            b'<title>Fallback</title><meta name="citation_title" content="Full research title">'
+            b'<meta name="description" content="Research &amp; findings.">'
+            b'<meta name="citation_abstract" content="Complete abstract.">',
+            "text/html",
+        )
+        with patch.object(
+            HtmlFetcher, "_fetch_page", new=AsyncMock(return_value=(URL, URL, response))
+        ):
+            preview = await HtmlFetcher().fetch_preview(URL)
+        self.assertEqual(preview.title, "Full research title")
+        self.assertEqual(preview.description, "Complete abstract.")
+        self.assertEqual(preview.abstract, "Complete abstract.")
+
     async def test_html_declared_encoding_preserves_chinese_evidence(self) -> None:
         for charset in ("gbk", "big5"):
             for declaration in (

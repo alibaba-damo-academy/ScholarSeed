@@ -1,4 +1,5 @@
 import { documentDisplayTitle } from '../../delivery'
+import { useDocumentFailureText } from './failure'
 import { openSystemPath } from '../../api'
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -59,7 +60,8 @@ import { NewTabButton } from './Pages'
 import { workbenchTabTitle } from './tabs'
 import { documentPanelContext } from './panel'
 import { SelectionActionHost } from './Selection'
-import { DocumentExternalOpen } from './External'
+import { DocumentExternalOpen, DocumentFallbackActions } from './External'
+import { isHtmlDocument } from './html'
 import { preserveTextSelectionForContextMenu, retainsDocumentSelection } from './focus'
 import { isMissingDocumentFailure } from './api'
 import { useOfficeRuntime } from './office/runtime'
@@ -351,6 +353,7 @@ export function DocumentView({
   const state = useDocumentWorkspace()
   const workspace = useWorkspaceController()
   const { toast } = useToast()
+  const documentFailureText = useDocumentFailureText()
   const [activePanelId, setActivePanelId] = useState<string | null>(null)
   const session = state.sessions[tab.sessionId]
   const missing = Boolean(
@@ -414,12 +417,13 @@ export function DocumentView({
             oversizedArtifact
               ? t('dock.artifactTooLarge')
               : failure
-                ? t('dock.loadFailureDetail', { message: failure.message, code: failure.code })
+                ? documentFailureText(failure)
                 : t('dock.loadFailureUnknown')
           }
           title={t('dock.loadFailed', { title: documentDisplayTitle(tab, conversation, t) })}
           tone="error"
         />
+        <DocumentFallbackActions session={session} />
       </div>
     )
   }
@@ -497,6 +501,7 @@ export function DocumentView({
               toolbarActions: (
                 <>
                   <DocumentToolbarActions session={session} />
+                  {isHtmlDocument(session) && <DocumentExternalOpen session={session} />}
                   <DocumentVersionActions session={session} />
                 </>
               ),
@@ -597,7 +602,8 @@ function LeafView({
           const page = appState.tabs.find((entry) => entry.id === tabId)
           const viewer = page ? featureRegistry.viewers.get(page.kind) : undefined
           const active = tabId === leaf.activeTabId
-          if (page && viewer?.dockable) {
+          const dockable = viewer?.dockable
+          if (page && viewer && (typeof dockable === 'function' ? dockable(tabId) : dockable)) {
             return (
               <div
                 key={`${page.id}:${page.kind}`}
@@ -752,7 +758,7 @@ function dropPreviewStyle(target: DocumentDropPreview): React.CSSProperties {
   return { left: target.left, top: target.top, width: target.width, height: target.height }
 }
 
-export function DocumentDock(): React.JSX.Element {
+export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { t: uiText } = useTranslation('ui')
   const { state: appState } = useApp()
@@ -785,10 +791,13 @@ export function DocumentDock(): React.JSX.Element {
   }, [drag.draggingTabId, officeRuntime])
 
   useEffect(() => {
+    if (hidden) return undefined
     const dismissSelection = (): void => {
       const snapshot = workspace.getSnapshot()
       const focusedTabId = snapshot.focusedTabId
       const focusedTab = focusedTabId ? snapshot.tabs[focusedTabId] : null
+      if (focusedTab && snapshot.sessions[focusedTab.sessionId]?.selection?.locator.kind === 'pdf')
+        return
       if (focusedTabId && focusedTab && snapshot.sessions[focusedTab.sessionId]?.selection) {
         workspace.setSelection(focusedTabId, null)
       }
@@ -828,7 +837,7 @@ export function DocumentDock(): React.JSX.Element {
       document.removeEventListener('pointerdown', handleOutsidePointer, true)
       window.removeEventListener('blur', handleWindowBlur)
     }
-  }, [appState.autoSave, workspace])
+  }, [appState.autoSave, hidden, workspace])
 
   const beginAreaResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault()
@@ -852,8 +861,8 @@ export function DocumentDock(): React.JSX.Element {
   if (visibleAreas.length === 0) visibleAreas.push('primary')
 
   return (
-    <div className="vds-document-dock" data-testid="document-dock" ref={dockRef}>
-      <SelectionActionHost />
+    <div className="vds-document-dock" data-testid="document-dock" ref={dockRef} hidden={hidden}>
+      {!hidden && <SelectionActionHost />}
       <div
         className="vds-document-areas"
         style={

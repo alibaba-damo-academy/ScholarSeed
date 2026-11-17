@@ -61,11 +61,14 @@ from service.chat.active import RUNTIME_ID
 from service.chat.api.sessions import mount_session_routes
 from service.chat.constants import (
     AUTOMATIC_CRASH_RETRY,
+    PRODUCT_EVENT_MESSAGE_UPDATED,
     PRODUCT_EVENT_RUNTIME_INCIDENT,
+    PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
     PRODUCT_EVENT_TURN_RECONCILED,
     PRODUCT_EVENT_TURN_UNKNOWN,
+    PRODUCT_SESSION_STATE_FAILED,
     PRODUCT_TURN_OUTCOME_FAILED,
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
@@ -81,7 +84,8 @@ from service.chat.persistence.catalog import (
     UncertaintyKind,
     UncertaintyState,
 )
-from service.chat.persistence.events import ProductEventStore
+from service.chat.persistence.events import ProductEventRecord, ProductEventStore
+from service.chat.runtime.composition import LiveSessionService
 from service.chat.runtime.evidence import SessionTrace
 from service.chat.runtime.incidents import event_incident, incident_data
 from service.chat.runtime.ledger import SessionLedger
@@ -395,6 +399,61 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         await asyncio.wait_for(activities.wait_execution_drained(), 1)
 
+    async def test_permission_continuation_uses_requested_locale(self) -> None:
+        activities = Activities()
+        app = FastAPI()
+        app.state.activities = activities
+        sessions = SimpleNamespace(
+            require_access=lambda *_args: None,
+            align_metering_identity=lambda *_args: None,
+            is_readonly=lambda _session_id: False,
+            set_mode=AsyncMock(
+                side_effect=lambda *_args, **_kwargs: (
+                    {
+                        "ok": True,
+                        "mode": "ask",
+                        "continuation": {
+                            "submission_id": "permission-submission",
+                            "interrupt_generation": 1,
+                        },
+                    },
+                    200,
+                )
+            ),
+        )
+        turns = SimpleNamespace(post=AsyncMock(return_value=({"ok": True}, 200)))
+        mount_session_routes(
+            app,
+            sessions=sessions,
+            turns=turns,
+            events=SimpleNamespace(),
+            artifacts=SimpleNamespace(),
+            credentials=SimpleNamespace(),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for locale, expected in (
+                ("zh-CN", "继续刚才中断的任务。先核对已完成操作和产物，不重复已产生副作用的步骤。"),
+                (
+                    "en",
+                    "Continue the interrupted task. First check completed actions and outputs; do not repeat steps that have already caused side effects.",
+                ),
+            ):
+                with self.subTest(locale=locale):
+                    response = await client.post(
+                        f"/api/serve/sessions/{PRODUCT_SESSION_ID}/mode",
+                        json={
+                            "mode": "ask",
+                            "application": "interrupt_continue",
+                            "continuation_context": {"locale": locale},
+                        },
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["continued"], True)
+                    self.assertEqual(turns.post.await_args.args[1]["input"][0]["text"], expected)
+                    self.assertEqual(turns.post.await_count, (1 if locale == "zh-CN" else 2))
+
     async def test_permission_continuation_rejects_changed_origin(self) -> None:
         self.live.last_submission_id = "permission-submission"
         self.catalog.set_policy(PRODUCT_SESSION_ID, OWNER, "ask")
@@ -474,6 +533,101 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.live.aclose()
+
+    async def test_cold_restore_io_keeps_loop_responsive_and_cancellation_waits(self) -> None:
+        service = SimpleNamespace(
+            _models=SimpleNamespace(
+                selected_model_key=lambda model, **_kwargs: model,
+                release_session=lambda _session: None,
+                suspend_session=AsyncMock(),
+            ),
+            runtime_id=RUNTIME_ID,
+            _project_id_for_path=None,
+            recording=None,
+            _catalog=self.catalog,
+            _events=self.events,
+            _artifacts=self.live._artifacts,
+            _skills=self.live._skills,
+            _logger=self.logger,
+            _resource_changes=None,
+            _local_socket=None,
+            _publications=None,
+            _cards=None,
+            _activity_observer=None,
+            _answer_filter=None,
+            _citation_coverage=None,
+            _answer_guard=None,
+            _activities=Activities(),
+        )
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                entered, release = threading.Event(), threading.Event()
+                restored: list[LiveSession] = []
+                replay = self.events.model_runs
+
+                def slow_history(session_id):
+                    entered.set()
+                    release.wait(2)
+                    return replay(session_id)
+
+                def construct(**kwargs):
+                    kwargs["trace"] = SessionTrace(
+                        PRODUCT_SESSION_ID,
+                        self.workdir,
+                        runtime_id=RUNTIME_ID,
+                        trace_dir=self.root / "restore-trace",
+                    )
+                    live = LiveSession(**kwargs)
+                    restored.append(live)
+                    return live
+
+                timer = threading.Timer(1, release.set)
+                timer.start()
+                try:
+                    with (
+                        patch.object(self.events, "model_runs", side_effect=slow_history),
+                        patch(
+                            "service.chat.runtime.composition.LiveSession", side_effect=construct
+                        ),
+                    ):
+                        opening = asyncio.create_task(
+                            LiveSessionService.open(
+                                service,
+                                session_id=PRODUCT_SESSION_ID,
+                                cwd=self.workdir,
+                                project_path=None,
+                                output_root=self.workdir / "outputs",
+                                resume_vendor_thread_id=VENDOR_THREAD_ID,
+                                model_id="gpt-contract",
+                                permission_mode="ask",
+                                executable="",
+                            )
+                        )
+                        self.assertTrue(await asyncio.to_thread(entered.wait, 0.5))
+                        self.assertFalse(opening.done())
+                        if cancel:
+                            opening.cancel()
+                            await asyncio.sleep(0)
+                            opening.cancel()
+                            await asyncio.sleep(0)
+                            self.assertFalse(opening.done())
+                        release.set()
+                        if cancel:
+                            with self.assertRaises(asyncio.CancelledError):
+                                await opening
+                            self.assertTrue(restored[0].persistence._closed)
+                        else:
+                            live = await opening
+                            self.assertTrue(live.resumed)
+                            async with live.activation_lock:
+                                async with live.lifecycle_lock:
+                                    self.assertEqual(live.vendor_thread_id, VENDOR_THREAD_ID)
+                finally:
+                    release.set()
+                    timer.cancel()
+                    timer.join()
+                    for live in restored:
+                        await live.aclose()
 
     async def emit(
         self,
@@ -938,6 +1092,21 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.shield(task), 5.0)
         self.assertIsNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
         self.assertEqual(self.live.active_product_turn_id, "")
+
+    def _settled_failure(self) -> ProductEventRecord:
+        records = self.events.replay(PRODUCT_SESSION_ID)
+        failures = [record for record in records if record.kind == PRODUCT_EVENT_TURN_FAILED]
+        self.assertEqual(len(failures), 1)
+        failure = failures[0]
+        self.assertEqual(failure.vendor_turn_id, VENDOR_TURN_ID)
+        settled = records[-1]
+        self.assertEqual(settled.kind, PRODUCT_EVENT_SESSION_STATE)
+        self.assertEqual(settled.vendor_turn_id, VENDOR_TURN_ID)
+        self.assertEqual(settled.payload["state"], PRODUCT_SESSION_STATE_FAILED)
+        self.assertIs(settled.payload["recovery_pending"], False)
+        self.assertIs(settled.payload["recovery_blocked"], False)
+        self.assertLess(failure.product_seq, settled.product_seq)
+        return failure
 
     @staticmethod
     def incident(
@@ -1405,6 +1574,61 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         result, status = await turns.post(
             PRODUCT_SESSION_ID,
             {"wait": True, "input": [{"type": "text", "text": "continue after restart"}]},
+            side=False,
+        )
+        self.assertEqual(status, 202, result)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.catalog.queued_messages(PRODUCT_SESSION_ID), ())
+
+    async def test_recovered_settlement_preserves_reconciled_interruption_and_runs_next_turn(
+        self,
+    ) -> None:
+        client_id = "recheck-client"
+        self.catalog.enqueue_message(PRODUCT_SESSION_ID, client_id, {"text": "once"})
+        self.catalog.begin_queued_submission(PRODUCT_SESSION_ID, client_id)
+        self.catalog.mark_queue_running(PRODUCT_SESSION_ID, client_id, VENDOR_TURN_ID)
+        await self.emit(
+            RuntimeEventKind.TURN_UNKNOWN,
+            payload={"client_user_message_id": client_id},
+        )
+        self.catalog.fail_queued_submission(
+            PRODUCT_SESSION_ID, client_id, unknown=True, safe_error="unknown"
+        )
+        self.catalog.record_turn_settlement(
+            PRODUCT_SESSION_ID,
+            client_id,
+            RuntimeEvent(
+                schema_version=1,
+                event_id="recheck-pending-unknown",
+                product_session_id=PRODUCT_SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                native_session_id=VENDOR_THREAD_ID,
+                kind=RuntimeEventKind.TURN_UNKNOWN,
+                native_turn_id=VENDOR_TURN_ID,
+                correlation_id=client_id,
+                sequence=1,
+                process_generation=3,
+                delivery=DeliveryClass.MUST_PERSIST,
+                observed_at="",
+                payload={},
+            ),
+        )
+        self.live.runtime_session.resume_turns = (
+            ResumeTurnSnapshot(
+                client_id=client_id, turn_id=VENDOR_TURN_ID, terminal_status=TurnStatus.INTERRUPTED
+            ),
+        )
+        await self.live.reconcile_resumed_turns()
+        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger, activities=Activities())
+        turns.resume_pending_settlement(self.live)
+        await asyncio.wait_for(asyncio.shield(self.live.current_task), 5)
+        self.assertIsNone(self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID))
+        self.assertEqual(self.catalog.get(PRODUCT_SESSION_ID).last_turn_status, "interrupted")
+        self.assertFalse(self.live.running)
+
+        result, status = await turns.post(
+            PRODUCT_SESSION_ID,
+            {"wait": True, "input": [{"type": "text", "text": "next after recovery check"}]},
             side=False,
         )
         self.assertEqual(status, 202, result)
@@ -2367,20 +2591,30 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         candidate = replace(original, opaque_session_ref="manual-replacement")
 
         async def prepare(live, **_kwargs):
-            manual = self.catalog.manual_replacement_proof(PRODUCT_SESSION_ID, command_id)
-            self.catalog.begin_replacement(
-                manual, "manual-revision", "manual-reservation", manual=True
-            )
-            self.catalog.settle_replacement(
-                PRODUCT_SESSION_ID, proof.proof_id, ReplacementState.OPENING, candidate
-            )
-            self.catalog.replace_runtime_binding(
-                original, candidate, proof=manual, revision="manual-revision", manual=True
-            )
-            live.runtime_session.binding = candidate
-            live.runtime_binding = candidate
-            live.vendor_thread_id = candidate.opaque_session_ref
-            live._local_history = []
+            async with live.lifecycle_lock:
+                self.assertTrue(
+                    any(
+                        row.kind == PRODUCT_EVENT_MESSAGE_UPDATED
+                        and row.vendor_thread_id == original.opaque_session_ref
+                        and row.payload.get("queued_message_id") == command_id
+                        and row.payload.get("state") == QueuedMessageState.WAITING_RESOURCES.value
+                        for row in self.events.replay(PRODUCT_SESSION_ID)
+                    )
+                )
+                manual = self.catalog.manual_replacement_proof(PRODUCT_SESSION_ID, command_id)
+                self.catalog.begin_replacement(
+                    manual, "manual-revision", "manual-reservation", manual=True
+                )
+                self.catalog.settle_replacement(
+                    PRODUCT_SESSION_ID, proof.proof_id, ReplacementState.OPENING, candidate
+                )
+                self.catalog.replace_runtime_binding(
+                    original, candidate, proof=manual, revision="manual-revision", manual=True
+                )
+                live.runtime_session.binding = candidate
+                live.runtime_binding = candidate
+                live.vendor_thread_id = candidate.opaque_session_ref
+                live._local_history = []
 
         turns = TurnService(
             {PRODUCT_SESSION_ID: self.live},
@@ -2503,6 +2737,74 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(product_failure["status"], "error")
         self.assertEqual(product_failure["error"]["code"], "insufficient_quota")
 
+    async def test_subscription_limit_preserves_main_turn_attribution_after_auxiliary_failure(self):
+        client_turn_id = "client-subscription-limit-turn"
+        self.live.active_product_turn_id = client_turn_id
+        diagnostic = {
+            "phase": "finished",
+            "status_code": 200,
+            "end_reason": "provider_error",
+            "upstream_end": "provider_error",
+            "downstream": {
+                "last_event": "response.failed",
+                "terminal_event": "",
+                "error_code": "subscription_sharing_usage_limit_exceeded",
+            },
+        }
+        for stale_id in ("sample-request", "previous-turn", ""):
+            self.live.trace_completion({**diagnostic, "client_user_message_id": stale_id})
+            self.assertIsNone(self.live._model_bridge_failure)
+        self.live.trace_completion({**diagnostic, "client_user_message_id": client_turn_id})
+        recovered = self.live._model_bridge_failure
+        self.assertIsNotNone(recovered)
+        self.live.trace_completion(
+            {
+                **diagnostic,
+                "client_user_message_id": "late-sample-request",
+                "downstream": {"error_code": "authentication_error"},
+            }
+        )
+        self.assertEqual(self.live._model_bridge_failure, recovered)
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={
+                "error_code": "codex_provider_failed",
+                "safe_error": "The model provider rejected the request.",
+                "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            },
+        )
+        await self.settle_pending(client_turn_id)
+        record = self._settled_failure()
+        self.assertEqual(record.payload["code"], "subscription_sharing_usage_limit_exceeded")
+        self.assertFalse(record.payload["retryable"])
+        self.assertIsNone(self.live._model_bridge_failure)
+
+    async def test_model_bridge_transport_failure_enriches_same_turn_runtime_failure(self) -> None:
+        client_turn_id = "client-disconnected-turn"
+        self.live.active_product_turn_id = client_turn_id
+        self.live.trace_completion(
+            {
+                "client_user_message_id": client_turn_id,
+                "phase": "finished",
+                "upstream_end": "transport_error",
+                "transport_category": "protocol_error",
+            }
+        )
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={
+                "error_code": "codex_provider_failed",
+                "safe_error": "The model provider rejected the request.",
+                "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            },
+        )
+        await self.settle_pending(client_turn_id)
+        record = self._settled_failure()
+        self.assertEqual(record.kind, PRODUCT_EVENT_TURN_FAILED)
+        self.assertEqual(record.payload["code"], "connection_error")
+        self.assertTrue(record.payload["retryable"])
+        self.assertIsNone(self.live._model_bridge_failure)
+
     async def test_model_bridge_terminal_failure_enriches_same_turn_runtime_failure(self) -> None:
         client_turn_id = "client-content-safety-turn"
         self.live.active_product_turn_id = client_turn_id
@@ -2527,7 +2829,7 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         )
         await self.settle_pending(client_turn_id)
 
-        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        record = self._settled_failure()
         self.assertEqual(record.kind, PRODUCT_EVENT_TURN_FAILED)
         self.assertEqual(record.payload["code"], CONTENT_SAFETY_BLOCKED)
         self.assertEqual(record.payload["message"], CONTENT_SAFETY_MESSAGE)
@@ -2557,7 +2859,7 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         )
         await self.settle_pending(client_turn_id)
 
-        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        record = self._settled_failure()
         self.assertEqual(record.kind, PRODUCT_EVENT_TURN_FAILED)
         self.assertEqual(record.payload["code"], TRANSIENT_PROVIDER_FAILURE_CODE)
         self.assertEqual(record.payload["message"], TRANSIENT_PROVIDER_FAILURE_MESSAGE)
@@ -2587,7 +2889,7 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
             },
         )
         await self.settle_pending(client_turn_id)
-        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        record = self._settled_failure()
         self.assertEqual(record.kind, PRODUCT_EVENT_TURN_FAILED)
         self.assertEqual(record.payload["code"], "rate_limit_exceeded")
         self.assertTrue(record.payload["retryable"])
@@ -2627,7 +2929,7 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         )
         await self.settle_pending(client_turn_id)
 
-        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        record = self._settled_failure()
         self.assertEqual(record.payload["code"], "codex_provider_failed")
         self.assertEqual(record.payload["message"], "The model provider rejected the request.")
         self.assertTrue(record.payload["retryable"])

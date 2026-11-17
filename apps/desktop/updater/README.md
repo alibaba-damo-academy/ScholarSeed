@@ -3,7 +3,7 @@
 ## Sandbox private ownership
 
 The installed helper has a separate `--sandbox-home` entry, not an extension of
-the update or `group` request. It accepts only reviewed 0.163.0 or 0.165.0 execution whose
+the update or `group` request. It accepts only reviewed 0.165.0 execution whose
 path and entry hash match this build's authenticated runtime manifest. The
 component's upstream version must match the requested execution version exactly;
 a reviewed component for the other version cannot substitute for it. The
@@ -11,13 +11,33 @@ original coordinator token supplies the profile and owner SID, including when
 the application was started with an elevated token or by the built-in
 Administrator. It is never replaced with a linked token or the worker identity;
 system UAC settings and the login user remain unchanged. Only its default
-`.scholarseed/codex/.sandbox-secrets` directory is supported; custom homes are
+`.scholarseed/codex` Home with the bounded metadata and secrets targets below is supported; custom homes are
 reported as unsupported without redirecting to that default.
+
+Before secret ownership recovery, the original coordinator qualifies the profile,
+product directory and Home, and prepares the direct `.sandbox` metadata directory
+and at most 90 strict `sandbox.YYYY-MM-DD.log` entries. It also prepares only the
+`.sandbox-bin` directory, since elevated setup cannot create it beneath the
+original user’s private Home. Binary descendants remain untouched; existing native
+bin-group access must remain read/execute only. Official elevated setup opens
+its daily log before its structured error-reporting block; an original-user-only
+log can therefore prevent setup even after UAC succeeds. Existing metadata owned by
+the original user receives only a non-inheriting Administrators maintenance ACE
+(directory full control, existing logs modify). New metadata directories use the
+existing private descriptor. Existing native-group rights are validated but never
+expanded; credentials and other descendants are not traversed. Reparse points,
+hardlinked logs, unknown principals, deny rules and identity/security drift fail
+closed. Each object is pinned and checked before and after a handle-based write;
+contents, ownership and all existing ACEs remain unchanged. Tests cover an
+unprotected unrelated descendant to detect unintended inheritance propagation.
+The elevated recovery worker does not perform this metadata maintenance.
 
 The coordinator pins local ancestors and the target without deletion sharing,
 rejects reparse points, and inspects the target before applying recovery-only ACL
-qualification. An existing original-user owner with actual WRITE_DAC returns
-`unchanged` without auditing ancestor principals or modifying security. Other
+qualification. An existing original-user owner with actual WRITE_DAC and FILE_DELETE_CHILD,
+and an effective Administrators WRITE_DAC allowance, returns
+`unchanged` for that secrets target without further ancestor qualification or security changes. An owner
+missing either maintenance capability enters the reviewed maintenance qualification below. Other
 non-Administrators maintenance states return `unsupported` to the existing native
 sandbox startup, not a claim of healthy isolation. Tests exercise actual access
 under the caller token (including backup/restore privileges), and retain the
@@ -26,7 +46,7 @@ path failures remain errors. A missing leaf is created only under the original
 token with the existing explicit private descriptor and must pass its own owner,
 descriptor and WRITE_DAC checks. Confirmed Administrators ownership alone enters
 the reviewed ACL and owner-recovery path. Existing reviewed
-Administrators ownership is repaired by changing only Owner, never DACL. A
+Administrators ownership is first repaired by changing only Owner. A
 temporary user FullControl ACE cannot substitute for persistent ownership.
 Current-user recovery is attempted first; access-denied or missing-privilege
 results can launch the same installed helper through UAC, including from an
@@ -45,6 +65,41 @@ ACE order, masks, SIDs and the native sandbox deny, remains exact. This compares
 the postcondition; it never writes or restores the DACL. The pre-write fingerprint
 comparison remains byte-exact. macOS has no change to its recovery behavior.
 
+After ownership verification, the original coordinator checks FILE_DELETE_CHILD.
+If absent, it qualifies the same pinned ancestors and exact native private policy,
+requires the original user to own the directory, and adds only a non-inheriting
+FILE_DELETE_CHILD allow ACE for that user. It also adds a non-inheriting
+Administrators WRITE_DAC ACE when absent, so elevated full setup can reapply the
+native private DACL. This enables official Codex credential
+replacement; the helper never opens, deletes or rewrites credential files. The
+worker still changes only Owner, never DACL. No sandbox principal receives a new
+allow, and the exact explicit native deny must remain intact. Existing ACE bytes
+and order remain unchanged; the new ACE precedes inherited entries. Identity,
+owner and security control must remain unchanged except that SetSecurityInfo may
+set SE_DACL_AUTO_INHERITED (0x0400) on a legacy descriptor. No control bit may be
+cleared, including protection. A pre-write fingerprint and post-write descriptor
+and effective-access check fail closed on races or unexpected normalization.
+Credential DACL writers use a MAXIMUM_ALLOWED handle to suppress propagation to
+existing children. Before opening that handle, the coordinator releases only the
+target handles (retaining ancestor pins), then checks the expected directory
+identity/security again before mutation. Tests cover unchanged unprotected children.
+
+The `.sandbox-bin` directory has a different lifetime: native command refresh
+replaces its DACL before credential validation. Its Owner is therefore transferred
+to Administrators so implicit WRITE_DAC survives native refresh. The original user
+must retain the explicit native read/write/execute/delete/WRITE_DAC allowance;
+otherwise transfer is refused. A `bin:`-qualified worker snapshot selects only this
+fixed directory after the same installation/runtime/coordinator checks. The worker
+changes only Owner, never the bin DACL or descendants. Authenticated cross-user
+workers enable SeBackupPrivilege only in their own process to inspect private
+ancestor directory metadata; no ancestor ACL grant or credential read is added.
+SeRestorePrivilege is enabled only after policy/snapshot qualification.
+Sandbox-group access remains RX. Neither ownership route accepts an arbitrary target path or SID.
+
+The same repair runs before each Thread preflight under the startup mutex because
+official full setup may replace the directory DACL. Native command checks still
+run; this neither retries user turns nor removes readonly attributes or file locks.
+
 Only enabled non-deny-only token logon SIDs may retain read/execute access;
 OWNER RIGHTS FullControl is interpreted only after validating its actual owner.
 Unknown recovery policies are refused rather than normalized. These qualifications
@@ -58,8 +113,8 @@ Windows acceptance; cross-compilation and deterministic tests do not prove them.
 
 The 0.165.0 admission follows the bounded upstream source comparison recorded in
 the [Codex Adapter compatibility notes](../../../packages/adapters/codex/README.md#windows-01650-沙箱适配).
-Windows acceptance for this version remains pending; no ACL, UAC or directory
-qualification policy is relaxed by the additional exact version.
+Windows acceptance for this version remains pending; the additional exact version does not relax UAC or directory qualification.
+Credential maintenance is the bounded change described above.
 
 Recovery ancestor qualification additionally accepts allow ACEs limited to FILE_TRAVERSE
 and SYNCHRONIZE, applying only to that directory (an inherited marker is allowed,
@@ -71,14 +126,19 @@ inheritance; this does not trust arbitrary group names, other readers or mutatio
 permissions. On the repair target, only that same group's inherited RX may be
 accepted when preceded by the exact effective, explicit OI|CI native deny. The deny
 must cover the allowed mask and cannot be inherit-only, inherited or propagation-
-limited. Other untrusted allow entries remain refused. No existing ancestor or
-target DACL is rewritten, and the helper does not inspect credential contents or
+limited. Other untrusted allow entries remain refused. No existing ancestor DACL is rewritten; target mutation is limited to the
+original-user directory-only deletion grant above. The helper does not inspect credential contents or
 certify an entire secrets tree's access policy.
 
 Sandbox failures return only bounded `event=failed`, `stage`, `reason`, and an
 optional numeric `system_error`; they never return the underlying exception text.
 Stages distinguish installation/runtime qualification, each private ancestor,
-target validation, ownership, elevation, worker privileges, and final verification.
+metadata preparation (`metadata`), target validation, ownership, elevation, worker
+privileges, and final verification. New stage codes are appended to preserve
+existing worker exit codes. Metadata recognizes OWNER RIGHTS FullControl only
+for a validated trusted actual owner, including inherit-only ACEs; an already
+sufficient maintenance ACL is returned byte-for-byte unchanged.
+
 UAC cancellation is reported only from the actual cancellation result, separately
 from access denial or another launch failure. Elevated workers convey their fixed
 stage/reason through reserved nonzero process exit codes; their numeric system
@@ -305,6 +365,21 @@ installation's `Update.exe --uninstall` and immediately exit. Only `--silent` is
 forwarded; GUI startup failures have English/Chinese messages. Control Panel
 continues using the official updater and runs the same cleanup hook.
 
+The common before-uninstall hook also hands final retirement to a bounded
+Windows system PowerShell child running embedded code. It inherits only validated
+handles for the live official updater, its single-link image, the installation
+root and pinned ancestors. No arbitrary delete path, profile, external script,
+extra elevation or copied executable is accepted. The final image and root stay
+pinned against replacement while Velopack removes application contents. After the
+actual updater process exits successfully, the child reopens the two objects with
+deletion access and checks their volume and 128-bit file identities before deleting
+only that image and the empty root through their handles. Ancestors remain pinned
+throughout; a replacement during reopening is refused. Unknown members, access errors, failed
+updater exit and timeout remain failures; there is no recursive cleanup fallback.
+The embedded script participates in the native build source digest. The installer
+verifier still independently requires whole-root disappearance within 120 seconds.
+macOS retains its existing Squirrel.Mac lifecycle and never starts this child.
+
 Required acceptance: verify the root entry digest/signature after installation
 and update, exercise GUI/cancel and silent removal, and confirm removal of the
 root/runtime/packages. The build installer check uses the new entry and waits
@@ -465,9 +540,17 @@ implementation is removed. New Windows builds do not create or consume
 `.scholarseed-profiles`. Existing user directories are not scanned, migrated or
 deleted by this cleanup.
 
-`.scholarseed-coordination` remains the shared Desktop/Serve data coordination
-namespace. `.scholarseed-update-launch` remains the macOS Squirrel restart context.
-Neither path nor its current consumers change here.
+Desktop and Serve share the account-level `.scholarseed-locks-v2` coordination
+namespace on macOS and Windows. At startup they remove the old
+`.scholarseed-coordination` directory if it exists.
+`.scholarseed-update-launch` contains the macOS Squirrel restart context.
+
+After the packaged macOS workbench confirms readiness, Desktop removes empty
+installation directories under `.scholarseed-update-launch`, including directories
+with only an idle, empty `context-write` lock. Cleanup requires exclusive domain
+admission and an idle record lock. Any context, recovery directory or other entry
+keeps the installation directory in place. Interrupted or busy cleanup can be
+retried on the next successful startup.
 
 ## Windows installation directory
 
@@ -477,19 +560,19 @@ First installations may select another writable local fixed-drive folder. The fr
 
 `--silent --installto <directory>` uses the same preflight. The inner Setup is signed before embedding; the front end is branded and signed afterward, and final installer verification/hash calculation consumes the outer executable. Build/runtime tests and an unsigned directory screenshot do not establish final signed installation acceptance.
 
-安装位置检查区分风险与硬错误：上级目录中可解析的其他账户 owner/ALLOW 权限作为风险列出，交互安装默认不继续，用户明确确认后才继续；静默安装须额外传入 `--accept-directory-risk`，该授权不传给内部安装器或提权 worker。接受风险不代表上级目录已经安全，安装器不修改其 ACL。确认后锁定路径并重新检查结构、访问及相关权限；按主体与风险权限比较，增加无害读取 ACE 不会导致确认失效，风险变化仍停止。缺失的安装路径逐级通过固定父句柄原子创建私有目录。
+Installation preflight distinguishes risks from hard failures. Identifiable owner or Allow permissions for other accounts on ancestor directories are reported as risks. Interactive Setup stops by default and continues only after explicit confirmation. Silent Setup requires `--accept-directory-risk`; this consent is not passed to the inner installer or elevated worker. Accepting a risk does not make the ancestors safe, and Setup does not change their ACLs. After confirmation, Setup pins the path and rechecks structure, access and relevant permissions. It compares risks by principal and permission: adding a harmless read ACE does not invalidate consent, but changed risks still stop installation. Missing path components are created one at a time as private directories, atomically relative to pinned parent handles.
 
-权限判定区分真实卷根、普通祖先与程序/运行组件。卷根必须通过打开句柄的 volume-GUID 路径确认，盘符别名不会得到卷根豁免；普通祖先仍检查删除、写属性及权限变更。新建各级目录使用显式受保护 DACL，不再推断父级 inherit-only 写权限必然传播。generic 权限先归一化；仅同 SID 或 Everyone 的先行无条件 Deny 可以抵消相关 Allow，运行组件区分自身、直接子项及更深后代，不能用 NO_PROPAGATE 的 Deny 抵消深层授权。执行 Deny 按当前令牌的 enabled/deny-only SID 判断，不以无关主体 Deny 拒绝。未知 capability 没有写权限豁免；不支持的 ACE 明示无法评估并停止，不默认为安全。
+Permission checks distinguish physical volume roots, ordinary ancestors, and application or runtime component content. Only the volume-GUID path of the opened handle can establish a physical root; a drive alias does not qualify for that exception. Ordinary ancestors are still checked for deletion, attribute writes and permission changes. Newly created directories receive explicit protected DACLs; inherit-only write permissions on the parent are not assumed to propagate. Generic rights are normalized first. Only an earlier unconditional Deny ACE for the same SID or Everyone can offset the relevant Allow. Runtime checks distinguish the object, immediate children and deeper descendants: a `NO_PROPAGATE` Deny cannot offset a deeper grant. When checking execution denial, use the current token's enabled and deny-only SIDs, not unrelated principals. Unknown capability SIDs do not receive a write exception. Unsupported ACEs fail closed with an explicit diagnostic.
 
-安装执行域的 C、Go、Python 判定由 `native/security.json` 在构建期生成，并通过共同向量核对；运行期不加载策略文件。安装主体由同一策略的 profiles.installation 定义，适配层不各自维护白名单。真实物理卷根按外部卷管理边界判断，不按 owner SID 拒绝，根自身改权/改所有者按卷管理权限处理；外部 DELETE_CHILD 仍拒绝。普通祖先、程序目录和 runtime 保持严格规则，不修改用户磁盘的 owner/DACL，也不承诺抵御卷控制者未来主动改权。
+Build-time generation from `native/security.json` supplies the C, Go and Python installation checks, which are verified against shared test vectors. The policy file is not loaded at runtime. Its `profiles.installation` defines the installation principals; adapters do not keep separate allowlists. A verified physical volume root is an external management boundary, not rejected on the basis of its owner SID. Changes to the root's own permissions or owner are volume-management rights; untrusted `DELETE_CHILD` is still rejected. Ordinary ancestors, application directories and runtime directories keep their strict checks. Setup does not change the user's volume owner or DACL and does not promise protection if a volume controller changes permissions later.
 
-旧版迁移的数据定位仅检查路径结构及重叠；计划递归清理的目标仍检查内容及祖先权限，即使目标尚不存在也不能绕过祖先保护。运行组件保留和提权删除不接受目录风险确认作为放行依据。上述策略的确定性测试不替代 Windows 安装版及双账户验收。
+Legacy migration only checks path structure and overlap when locating data. Any target scheduled for recursive cleanup still requires content and ancestor permission checks; a nonexistent target does not waive ancestor protection. Directory-risk consent does not authorize runtime component retention or elevated deletion. Deterministic policy tests do not replace Windows installed-product and two-account acceptance.
 
-路径、磁盘、重解析点、访问检查或安装树私有权限检查失败仍阻止安装，并显示失败目录、原因和建议。重装换目录提示同时列出原目录与所选目录。组件冷下载使用安装树专用句柄：外部祖先保留结构及防删除固定，安装根和内部派生目录仍严格检查，不改变用户数据的 PRIVATE/PROJECT 策略。安装后无法创建启动进程与安装失败分别提示；进程成功创建不等于完整运行验收。
+Path, disk, reparse-point, access or private installation-tree permission failures still block Setup, which reports the directory, reason and recommendation. If a reinstall selects a different path, the prompt lists both the registered and selected paths. Cold component downloads use installation-specific handles: external ancestors stay structurally pinned and protected from deletion, and the installation root and derived directories remain subject to strict checks. The user-data `PRIVATE` and `PROJECT` policies are unchanged. Failure to create the launch process after installation is reported separately from installation failure; process creation alone does not prove that the application is ready.
 
-目录选择前导程序在交互安装期间显示统一品牌的等待界面，内部使用官方静默安装以延后正常启动。安装后仅为核验过的书深安装树设置当前用户、SYSTEM、Administrators 的私有权限，再调用官方 `Update.exe start`；静默调用不启动应用。新建根也先设置私有权限，重装重新处理新树；不修改用户选择目录的父级权限。
+Interactive Setup shows a branded waiting screen and runs the official inner installer silently to defer normal launch. After installation, it applies private permissions for the current user, SYSTEM and Administrators only to the verified ScholarSeed installation tree, then calls the official `Update.exe start`. Silent invocation does not launch the application. Newly created roots are private from the outset, and reinstallations apply the checks and permissions to the resulting tree again. Setup does not change permissions on the parent of a user-selected directory.
 
-安装目录句柄按阶段交接：预检与准备期间固定完整路径；调用官方安装引擎前仅关闭安装根目录的防删除句柄，祖先句柄持续持有，允许 Velopack 将旧根重命名后创建新根。引擎成功后重新以 no-follow、防删除方式固定新根，再执行安装身份核验和权限处理；引擎失败直接保留原错误，句柄关闭或新根资格失败均停止。不得对整条路径开放删除共享。该交接只用于 Windows Setup，macOS Squirrel 不使用此流程。
+Directory handles are handed off by phase. Preflight and preparation pin the full path. Before invoking official Setup for a fresh installation, close only the delete-blocking handle on the installation root, keeping the ancestor handles open so Velopack can create the new root. After the engine succeeds, pin the new root again with a no-follow, delete-blocking handle before verifying installation identity and applying permissions. For an existing installation, apply keeps the root handle open and replaces only `current`. Engine failure preserves the original error; failure to close the handle or qualify the new root stops the operation. Do not allow delete sharing across the entire path. This handoff applies only to Windows, not macOS Squirrel.
 
 ## Component preparation timing
 
@@ -791,3 +874,50 @@ Rejected qualifications use schema 1 `permission_rejected` events through each c
 New structured rejection events do not serialize exception text, full paths, raw SIDs, ACL/SDDL, bootstrap frames or credentials. Existing unrelated success logs are outside this event contract. Python and JavaScript observers retain the same exception; Go wraps with Unwrap so errors.Is/As and the original message continue to work. First-record correlation and observer-failure behavior are tested. Native binding errors expose `permissionIncidentId`; logging does not authorize a retry or grant. A rejected qualification may subsequently recover through an existing supported path, so this event alone does not prove the final user operation failed.
 
 Deterministic and native probes verify event production and refusal behavior. The installed launcher, native helper and feedback ZIP still require CI-package verification of the complete log collection chain; stderr output alone is not evidence of persistent product logs. No new machine journal, administrator registration or alternative log directory is created.
+
+## Running-application Setup replacement
+
+**current (source).** Setup freezes the candidate's product version and build number.
+It compares them numerically with the existing `sq.version` before shutdown and
+again before invoking the official engine. Higher versions/builds and equal-version
+repair are admitted; downgrade and unknown identities are rejected. Online updates
+still require a strictly newer package.
+
+A packaged Windows client exposes an installation-scoped named pipe after startup.
+Setup verifies the server's native process image belongs to that installation.
+The client asks for explicit confirmation, saves preferences, performs the existing
+`prepare_update` shutdown preparation and requires clean owned-backend/family exit.
+It sends `ready` and waits for Setup's `commit` acknowledgement before quitting.
+Cancellation, connection loss and failed preparation do not authorize replacement;
+pre-commit recovery reuses the same-version backend recovery flow. Setup then waits
+for processes whose native image paths belong to the installation, rechecks before
+engine invocation, and never terminates processes by image name.
+
+Older clients without the endpoint require the user to quit from the tray; Setup
+waits for their application/runtime processes to exit. Silent installation refuses
+an occupied installation instead of implicitly authorizing shutdown. When a
+potentially relevant process cannot be opened, Setup uses a read-only system
+query to compare its NT image path with the resolved installation root.
+Unresolved relevant process identities and bounded waits fail closed. The official
+Velopack engine still owns replacement, registration and hooks. Project data and user configuration are not
+migration inputs. macOS does not expose or consume this endpoint.
+
+Fresh or empty registered installations use the embedded official Setup. Existing
+installations use official `Update apply --norestart`, replacing `current` while
+keeping the installation root pinned and preserving its sibling `runtime` store.
+Build freezes the offset, size and digest of the exact inspected full package
+already inside Setup, plus the official updater member's size and digest. The
+wrapper checks and holds these inputs before requesting shutdown; it does not
+consume a neighboring download or relax the signed online-update protocol. The
+outer installer signature covers this embedded input and policy. Local unsigned
+builds remain local validation only. After application verification and permissions,
+normal startup validates component identities, receipts and key entry points and
+reuses unchanged versions. Missing or rejected components use existing preparation;
+reuse is not a complete corruption scan. No runtime backup/restore is introduced.
+
+**required / gap.** Transport tests (including real Windows Go/Node pipe exchange),
+version comparisons and process observations do not prove installed-product
+acceptance. Final Windows acceptance must cover an active task, confirmation and
+cancellation, older-client manual exit, higher product version and build number,
+relaunch, retained data and failure recovery. Formal signed-package acceptance
+remains with CI.

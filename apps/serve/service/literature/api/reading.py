@@ -27,13 +27,20 @@ from service.literature.persistence.reading import (
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.pdf import LiteraturePdf
+from service.literature.service.records import AttachmentRecords, attachment_snapshot
+from service.literature.service.sources import (
+    NOTE_SOURCE_BODY_LIMIT,
+    NOTE_SOURCE_INVALID,
+    NOTE_SOURCE_MISSING,
+    NoteSources,
+)
 from service.platform.citations import (
     LITERATURE_STORAGE,
     PDF_INDEX_STATE,
     CitationDocument,
     PdfIndexPort,
 )
-from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
+from service.platform.pdf import PdfAnnotationError
 from service.platform.ranges import parse_byte_range
 from service.platform.records import EMPTY_RECORDS, ProjectPdfRecordPort, RecordOwner, RecordTarget
 from service.platform.resources import ResourceManagedCopyPort
@@ -48,6 +55,7 @@ NO_CONTENT_STATUS = 204
 PRECONDITION_REQUIRED_STATUS = 428
 ROUTE = "/api/v1/literatures/{literature_id}/attachments/{attachment_id}"
 SELECTION_SNAPSHOT_ROUTE = f"{ROUTE}/selection-snapshot"
+NOTE_SOURCES_ROUTE = "/api/v1/literatures/{literature_id}/note-sources"
 MAXIMUM_SELECTION_FIELD_CHARS = 256
 SELECTION_RANGE_INVALID_STATUS = 422
 SELECTION_RANGE_TOO_LARGE_STATUS = 413
@@ -154,6 +162,33 @@ def register_reading_routes(
 ) -> None:
     catalog = AttachmentRecordCatalog(repository.database, changes=repository.changes)
     register_attachment_import(app, attachments, catalog)
+    note_sources = NoteSources(repository, AttachmentRecords(attachments, repository))
+
+    @app.get(NOTE_SOURCES_ROUTE)
+    def list_note_sources(literature_id: str) -> dict:
+        try:
+            return note_sources.candidates(literature_id)
+        except ContentError as error:
+            raise HTTPException(
+                404 if str(error) == NOTE_SOURCE_MISSING else 422, str(error)
+            ) from error
+
+    @app.post(f"{NOTE_SOURCES_ROUTE}/resolve")
+    async def resolve_note_sources(literature_id: str, request: Request) -> dict:
+        """Resolve note snapshots without modifying notes or attachment records."""
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > NOTE_SOURCE_BODY_LIMIT:
+                raise HTTPException(413, NOTE_SOURCE_INVALID)
+        try:
+            return note_sources.resolve(literature_id, json.loads(content))
+        except (ValueError, UnicodeDecodeError) as error:
+            raise HTTPException(422, NOTE_SOURCE_INVALID) from error
+        except ContentError as error:
+            raise HTTPException(
+                404 if str(error) == NOTE_SOURCE_MISSING else 422, str(error)
+            ) from error
 
     @app.post(SELECTION_SNAPSHOT_ROUTE)
     def capture_selection_snapshot(
@@ -176,13 +211,16 @@ def register_reading_routes(
         return {"snapshot_text": selected.text, "source_revision": revision}
 
     @app.get(f"{ROUTE}/open")
-    def open_attachment(literature_id: str, attachment_id: str) -> Response:
+    def open_attachment(literature_id: str, attachment_id: str, request: Request) -> Response:
         try:
             attachment = attachments.attachment(literature_id, attachment_id)
             data, media_type, revision = attachments.read_attachment(literature_id, attachment_id)
         except ContentError as error:
             raise _content_error(error) from error
         projection = _attachment_projection(formats, attachment.name, data)
+        attachments.prewarm(
+            getattr(request.app.state, PDF_INDEX_STATE, None), literature_id, attachment_id
+        )
         return Response(
             content=json.dumps(
                 {
@@ -378,9 +416,8 @@ def register_reading_routes(
     ) -> dict:
         try:
             data, _media_type, source_revision = pdf.read_attachment(literature_id, attachment_id)
-            initial = None if catalog.exists(attachment_id) else embedded_pdf_records(data)
-            return catalog.snapshot(
-                _target(literature_id, attachment_id), source_revision, initial
+            return attachment_snapshot(
+                catalog, _target(literature_id, attachment_id), source_revision, data
             ).response()
         except PdfAnnotationError as error:
             raise HTTPException(422, "invalid_annotations") from error
@@ -460,12 +497,11 @@ def register_reading_routes(
             )
             copied_revision = ""
             if copy_records:
-                initial = None if catalog.exists(attachment_id) else embedded_pdf_records(payload)
-                source_snapshot = catalog.snapshot(
-                    _target(literature_id, attachment_id), source_revision, initial
+                source_snapshot = attachment_snapshot(
+                    catalog, _target(literature_id, attachment_id), source_revision, payload
                 )
                 if target_snapshot.records != source_snapshot.records:
-                    if target_snapshot.records != EMPTY_RECORDS:
+                    if any(target_snapshot.records[key] for key in ("marks", "comments", "notes")):
                         raise HTTPException(409, "copy_target_records_conflict")
                     target_snapshot = _project_records(request).commit_asset(
                         project,

@@ -103,6 +103,7 @@ def custom_discovery(identifier: str, name: str, url: str) -> tuple[dict, dict] 
             )
         )
         resource = None
+        metadata_url = None
         for candidate in dict.fromkeys(candidates):
             metadata_url = secure_url(candidate)
             result = request(client, "GET", metadata_url)
@@ -110,7 +111,7 @@ def custom_discovery(identifier: str, name: str, url: str) -> tuple[dict, dict] 
                 continue
             resource = json_response(result)
             break
-        if resource is None:
+        if resource is None or metadata_url is None:
             return None
         if resource.get("resource", "").rstrip("/") != url.split("?", 1)[0].rstrip("/"):
             raise ValueError("connector_oauth_resource_invalid")

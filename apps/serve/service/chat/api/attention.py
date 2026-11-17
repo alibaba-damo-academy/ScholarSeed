@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictInt
 
@@ -27,8 +27,15 @@ class AttentionRead(AttentionReadAll):
 
 def mount_attention_routes(app: FastAPI, attention: AttentionService) -> None:
     @app.get("/api/serve/attention")
-    def snapshot(request: Request) -> dict[str, Any]:
-        return attention.store.snapshot(SessionPrincipal(request_owner_id(request)))
+    def snapshot(
+        request: Request,
+        epoch: str | None = None,
+        after_revision: int | None = Query(default=None, ge=0),
+    ) -> JSONResponse:
+        payload = attention.snapshot(
+            SessionPrincipal(request_owner_id(request)), epoch=epoch, after_revision=after_revision
+        )
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     def acknowledge(request: Request, body: AttentionReadAll, ids: tuple[str, ...] | None) -> Any:
         try:

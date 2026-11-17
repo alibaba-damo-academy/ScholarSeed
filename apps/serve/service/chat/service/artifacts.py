@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import mimetypes
 import os
 import stat
 import tempfile
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO
 
 from service.chat.constants import (
@@ -26,11 +25,17 @@ from service.chat.persistence.artifacts import (
     artifact_identity,
     current_artifact_records,
 )
-from service.chat.persistence.catalog import SessionCatalogStore
+from service.chat.persistence.catalog import (
+    SessionAccessError,
+    SessionCatalogStore,
+    SessionPrincipal,
+)
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
 from service.chat.runtime.projection import ARTIFACT_CHANGE_UPDATE, artifact_payload
 from service.content.domain.model import ContentError
 from service.platform.content import (
+    ArtifactContentKind,
+    ArtifactFileEntry,
     ArtifactScope,
     ArtifactScopeKind,
     ContentPort,
@@ -39,13 +44,20 @@ from service.platform.content import (
 from service.platform.files import export_file_name, guess_media_type
 from service.platform.limits import DOCUMENT_PREVIEW_MAX_BYTES
 from service.platform.storage import NOFOLLOW, NONBLOCK, open_directory, preserve_mode
-from service.platform.workbench import DocumentFormatPort
+from service.platform.workbench import (
+    REFERENCE_DOCUMENT_MAX_BYTES,
+    REFERENCE_SUFFIXES,
+    ArtifactDocumentSource,
+    DocumentFormatPort,
+)
 
 ARTIFACT_TEXT_MAX_BYTES = 512 * 1024
 ARTIFACT_RAW_MAX_BYTES = 16 * 1024 * 1024
 ARTIFACT_PREVIEW_MAX_BYTES = DOCUMENT_PREVIEW_MAX_BYTES
 ARTIFACT_HASH_CHUNK_BYTES = 64 * 1024
 ARTIFACT_EXPORT_MAX_BYTES = 128 * 1024 * 1024
+ARTIFACT_BINARY_MEDIA_TYPE = "application/octet-stream"
+ARTIFACT_TEXT_MEDIA_TYPE_PREFIX = "text/"
 
 ARTIFACT_NOT_FOUND = "session_artifact_not_found"
 ARTIFACT_PATH_FORBIDDEN = "session_artifact_path_forbidden"
@@ -53,6 +65,7 @@ ARTIFACT_INTEGRITY_MISMATCH = "session_artifact_integrity_mismatch"
 ARTIFACT_TOO_LARGE = "session_artifact_too_large"
 ARTIFACT_REVISION_CONFLICT = "session_artifact_revision_conflict"
 ARTIFACT_EDIT_UNAVAILABLE = "session_artifact_edit_unavailable"
+ARTIFACT_DIRECTORY_UNSUPPORTED = "session_artifact_directory_operation_unsupported"
 ARTIFACT_PATH_AMBIGUOUS = "session_artifact_path_ambiguous"
 ARTIFACT_PUBLICATION_REQUIRED = "session_artifact_publication_required"
 ARTIFACT_REVISION_PREFIX = "sha256:"
@@ -124,7 +137,13 @@ class ArtifactService:
     def bind_content(self, content: ContentPort) -> None:
         self._content = content
 
-    def _published_bytes(self, record: SessionArtifactRecord) -> bytes:
+    @property
+    def _content_port(self) -> ContentPort:
+        if self._content is None:
+            raise ArtifactReadError(ARTIFACT_NOT_FOUND)
+        return self._content
+
+    def _published_content(self, record: SessionArtifactRecord) -> VerifiedArtifactContent:
         raw = record.metadata.get("content")
         if self._content is None or not isinstance(raw, dict):
             raise ArtifactReadError(ARTIFACT_NOT_FOUND)
@@ -141,8 +160,73 @@ class ArtifactService:
                 raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
             if handle.sha256 != record.content_sha256 or handle.size != record.size_bytes:
                 raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH)
-            return self._content.read_artifact(handle)
+            if handle.kind not in (ArtifactContentKind.FILE, ArtifactContentKind.DIRECTORY):
+                raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH)
+            return handle
         except (KeyError, TypeError, ValueError, ContentError) as error:
+            raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH) from error
+
+    def _published_bytes(self, record: SessionArtifactRecord) -> bytes:
+        handle = self._published_content(record)
+        if handle.kind != ArtifactContentKind.FILE:
+            raise ArtifactReadError(ARTIFACT_DIRECTORY_UNSUPPORTED)
+        try:
+            return self._content_port.read_artifact(handle)
+        except ContentError as error:
+            raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH) from error
+
+    def directory_entries(self, session_id: str, artifact_id: str) -> dict[str, Any]:
+        record = self._record(session_id, artifact_id)
+        if record.status is not ArtifactStatus.PUBLISHED:
+            raise ArtifactReadError(ARTIFACT_DIRECTORY_UNSUPPORTED)
+        handle = self._published_content(record)
+        if handle.kind != ArtifactContentKind.DIRECTORY:
+            raise ArtifactReadError(ARTIFACT_DIRECTORY_UNSUPPORTED)
+        try:
+            return {
+                "artifact_id": artifact_id,
+                "kind": ArtifactContentKind.DIRECTORY.value,
+                "sha256": handle.sha256,
+                **asdict(self._content_port.artifact_manifest(handle)),
+            }
+        except ContentError as error:
+            raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH) from error
+
+    def _directory_member(
+        self, session_id: str, artifact_id: str, member: str
+    ) -> tuple[bytes, str]:
+        record = self._record(session_id, artifact_id)
+        if record.status is not ArtifactStatus.PUBLISHED:
+            raise ArtifactReadError(ARTIFACT_DIRECTORY_UNSUPPORTED)
+        handle = self._published_content(record)
+        if handle.kind != ArtifactContentKind.DIRECTORY:
+            raise ArtifactReadError(ARTIFACT_DIRECTORY_UNSUPPORTED)
+        try:
+            manifest = self._content_port.artifact_manifest(handle)
+            entry = next(
+                (
+                    entry
+                    for entry in manifest.entries
+                    if entry.path == member and isinstance(entry, ArtifactFileEntry)
+                ),
+                None,
+            )
+            if entry is None:
+                raise ArtifactReadError(ARTIFACT_NOT_FOUND)
+            file = replace(
+                handle,
+                source_path=f"{handle.source_path}/{entry.path}",
+                name=Path(entry.path).name,
+                kind=ArtifactContentKind.FILE,
+                sha256=entry.sha256,
+                size=entry.size,
+                media_type=entry.media_type,
+            )
+            raw = self._content_port.read_artifact(file)
+            if len(raw) > ARTIFACT_PREVIEW_MAX_BYTES:
+                raise ArtifactReadError(ARTIFACT_TOO_LARGE)
+            return raw, entry.media_type
+        except ContentError as error:
             raise ArtifactReadError(ARTIFACT_INTEGRITY_MISMATCH) from error
 
     def export_bytes(
@@ -244,6 +328,8 @@ class ArtifactService:
         return f"{ARTIFACT_REVISION_PREFIX}{sha256(raw).hexdigest()}"
 
     def _editable(self, record: SessionArtifactRecord, content: bytes) -> bool:
+        if record.display_product_seq is not None:
+            return False
         projection = self._formats.project(record.original_path, content)
         artifact_editable = projection.can_edit and projection.can_save
         if record.source_kind in {ArtifactSource.FILE_CHANGE, ArtifactSource.ARTIFACT_PUBLISH}:
@@ -266,7 +352,12 @@ class ArtifactService:
         editable = len(content) <= ARTIFACT_RAW_MAX_BYTES and self._editable(record, content)
         return content, _media_type, editable, self._revision(content)
 
-    def open_document(self, session_id: str, artifact_id: str) -> ArtifactDocument:
+    def open_document(
+        self, session_id: str, artifact_id: str, member: str | None = None
+    ) -> ArtifactDocument:
+        if member is not None:
+            raw, media_type = self._directory_member(session_id, artifact_id, member)
+            return ArtifactDocument(raw, media_type, False, self._revision(raw), len(raw))
         record = self._record(session_id, artifact_id)
         if record.status is ArtifactStatus.PUBLISHED:
             content, media_type, editable, revision = self.read_document(session_id, artifact_id)
@@ -312,6 +403,67 @@ class ArtifactService:
         except BaseException:
             stream.close()
             raise
+
+    def document_projection(
+        self, session_id: str, artifact_id: str, member: str | None = None
+    ) -> dict[str, Any]:
+        record = self._record(session_id, artifact_id)
+        document = self.open_document(session_id, artifact_id, member)
+        if isinstance(document.body, bytes):
+            payload = document.body
+        else:
+            with document.body:
+                payload = document.body.read()
+        projection = self._formats.project(member or record.original_path, payload)
+        return {
+            "viewer": projection.viewer,
+            "processor": projection.processor,
+            "content_kind": projection.content_kind,
+            "capabilities": {
+                "can_preview": projection.can_preview,
+                "can_edit": document.editable,
+                "can_select": projection.can_select,
+                "can_annotate": False,
+                "can_save": document.editable,
+                "can_version": False,
+                "can_diff": False,
+                "pending": list(projection.pending),
+            },
+            "media_type": document.media_type,
+            "size": document.size,
+            "revision": document.revision,
+        }
+
+    def read_analysis_document(
+        self, source: ArtifactDocumentSource, principal: str
+    ) -> tuple[bytes, str]:
+        try:
+            self._catalog.require(source.session_id, SessionPrincipal(principal))
+        except SessionAccessError as error:
+            raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN) from error
+        document = self.open_document(source.session_id, source.artifact_id, source.member)
+        if isinstance(document.body, bytes):
+            payload = document.body
+        else:
+            with document.body:
+                payload = document.body.read()
+        record = self._record(source.session_id, source.artifact_id)
+        return payload, source.member or record.original_path
+
+    def preview_document(
+        self, session_id: str, artifact_id: str, member: str | None = None
+    ) -> ArtifactDocument:
+        record = self._record(session_id, artifact_id)
+        document = self.open_document(session_id, artifact_id, member)
+        if isinstance(document.body, bytes):
+            payload = document.body
+        else:
+            with document.body:
+                payload = document.body.read()
+        preview = self._formats.preview(member or record.original_path, payload)
+        return ArtifactDocument(
+            preview, document.media_type, False, document.revision, len(preview)
+        )
 
     def _write_lock(self, target: Path) -> threading.Lock:
         key = str(target)
@@ -459,12 +611,78 @@ class ArtifactService:
             raw = draft if draft is not None else self._published_bytes(record)
             if len(raw) > ARTIFACT_PREVIEW_MAX_BYTES:
                 raise ArtifactReadError(ARTIFACT_TOO_LARGE)
-            return raw, record.mime_type or "application/octet-stream"
+            return raw, self._preview_media_type(record, raw)
         record, target = self._path(session_id, artifact_id)
         if target.stat().st_size > ARTIFACT_PREVIEW_MAX_BYTES:
             raise ArtifactReadError(ARTIFACT_TOO_LARGE)
-        guessed = guess_media_type(target.name)
-        return target.read_bytes(), record.mime_type or guessed or "application/octet-stream"
+        raw = target.read_bytes()
+        return raw, self._preview_media_type(record, raw)
+
+    def _preview_media_type(self, record: SessionArtifactRecord, raw: bytes) -> str:
+        if record.mime_type and record.mime_type != ARTIFACT_BINARY_MEDIA_TYPE:
+            return record.mime_type
+        guessed = guess_media_type(record.original_path)
+        if (
+            guessed
+            and guessed.startswith(ARTIFACT_TEXT_MEDIA_TYPE_PREFIX)
+            and not self._formats.project(record.original_path, raw).can_preview
+        ):
+            return ARTIFACT_BINARY_MEDIA_TYPE
+        return guessed or ARTIFACT_BINARY_MEDIA_TYPE
+
+    def read_relative_document(
+        self, session_id: str, artifact_id: str, revision: str, relative: str
+    ) -> tuple[bytes, str]:
+        source = self._record(session_id, artifact_id)
+        if (
+            source.status is not ArtifactStatus.PUBLISHED
+            or source.source_kind is not ArtifactSource.ARTIFACT_PUBLISH
+            or not source.vendor_turn_id
+            or not relative
+            or relative.startswith("/")
+            or "\\" in relative
+            or ":" in relative
+            or "\x00" in relative
+            or any(part in {"", ".", ".."} for part in relative.split("/"))
+            or PurePosixPath(relative).suffix.lower() not in REFERENCE_SUFFIXES
+        ):
+            raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
+        path_type = (
+            PureWindowsPath if PureWindowsPath(source.canonical_path).drive else PurePosixPath
+        )
+        source_path = path_type(source.canonical_path)
+        if source_path.suffix.lower() not in REFERENCE_SUFFIXES:
+            raise ArtifactReadError(ARTIFACT_PATH_FORBIDDEN)
+        if source.size_bytes is None or source.size_bytes > REFERENCE_DOCUMENT_MAX_BYTES:
+            raise ArtifactReadError(ARTIFACT_TOO_LARGE)
+        self._published_bytes(source)
+        original, _media = self.read_raw(session_id, artifact_id)
+        if len(original) > REFERENCE_DOCUMENT_MAX_BYTES:
+            raise ArtifactReadError(ARTIFACT_TOO_LARGE)
+        if self._revision(original) != revision:
+            raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
+        destination = source_path.parent / relative
+        candidates = [
+            record
+            for record in current_artifact_records(self._artifacts.list_session(session_id))
+            if record.status is ArtifactStatus.PUBLISHED
+            and record.source_kind is ArtifactSource.ARTIFACT_PUBLISH
+            and record.vendor_turn_id == source.vendor_turn_id
+            and path_type(record.canonical_path) == destination
+        ]
+        if len(candidates) != 1:
+            raise ArtifactReadError(ARTIFACT_PATH_AMBIGUOUS if candidates else ARTIFACT_NOT_FOUND)
+        target = candidates[0]
+        if target.size_bytes is None or target.size_bytes > REFERENCE_DOCUMENT_MAX_BYTES:
+            raise ArtifactReadError(ARTIFACT_TOO_LARGE)
+        self._published_bytes(target)
+        payload, _media = self.read_raw(session_id, artifact_identity(target))
+        if len(payload) > REFERENCE_DOCUMENT_MAX_BYTES:
+            raise ArtifactReadError(ARTIFACT_TOO_LARGE)
+        current, _media = self.read_raw(session_id, artifact_id)
+        if self._revision(current) != revision:
+            raise ArtifactReadError(ARTIFACT_REVISION_CONFLICT)
+        return payload, self._revision(payload)
 
     def write_raw(
         self,
@@ -474,6 +692,8 @@ class ArtifactService:
         expected_revision: str,
     ) -> ArtifactWriteReceipt:
         record = self._record(session_id, artifact_id)
+        if record.display_product_seq is not None:
+            raise ArtifactReadError(ARTIFACT_EDIT_UNAVAILABLE)
         if (
             record.source_kind is ArtifactSource.ARTIFACT_PUBLISH
             and record.status is ArtifactStatus.PUBLISHED

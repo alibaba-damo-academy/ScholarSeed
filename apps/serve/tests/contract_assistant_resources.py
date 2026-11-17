@@ -18,7 +18,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI
@@ -38,12 +38,13 @@ from service.assistant.service.citations import CitationService
 from service.assistant.service.context import AssistantService
 from service.assistant.service.links import LibraryLinkProjection
 from service.assistant.service.literature import AssistantLiteratureService
-from service.assistant.service.resources import AssistantResourceService
+from service.assistant.service.resources import AssistantResourceError, AssistantResourceService
 from service.chat.active import RUNTIME_ID
 from service.chat.constants import (
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_USER_MESSAGE,
+    PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
 )
 from service.chat.persistence.artifacts import (
@@ -86,6 +87,7 @@ from service.platform.bridge import (
     LiteratureImport,
     ResourceImport,
 )
+from service.platform.citations import ArtifactCitationReference, SavedCitationReference
 from service.platform.content import ArtifactScope, ArtifactScopeKind, AssetKind, RootKind
 from service.platform.context import (
     AssistantTurnItem,
@@ -108,7 +110,12 @@ from service.resources.api.routes import register_resource_routes
 from service.resources.domain.model import AgentImportSourceKind, ResourceLocationRef
 from service.resources.persistence.catalog import AGENT_IMPORTS_TABLE, ResourceAgentImportCatalog
 from service.resources.persistence.imports import ResourceImportCatalog
-from service.resources.service.writer import ResourceWriter, ResourceWriterError
+from service.resources.service.decisions import import_recovery
+from service.resources.service.writer import (
+    ResourceWriteDenied,
+    ResourceWriter,
+    ResourceWriterError,
+)
 from service.workbench.domain.model import WorkbenchFormatPolicy
 from service.workbench.service.indexing import PdfIndexService
 
@@ -399,12 +406,20 @@ class AssistantResourceContract(unittest.TestCase):
                 "text": "read this",
                 "refs": [
                     {
-                        "type": "file",
+                        "type": "directory" if path.is_dir() else "file",
                         "id": reference_id,
                         "title": path.name,
                         "path": str(path),
-                        "sha256": sha256(path.read_bytes()).hexdigest(),
-                        "origin": PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE if local else "",
+                        "sha256": "" if path.is_dir() else sha256(path.read_bytes()).hexdigest(),
+                        "origin": (
+                            (
+                                PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY
+                                if path.is_dir()
+                                else PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE
+                            )
+                            if local
+                            else ""
+                        ),
                     }
                 ],
             },
@@ -440,6 +455,60 @@ class AssistantResourceContract(unittest.TestCase):
         path.write_bytes(self.artifact_bytes)
         result = self.import_attachment(self.sent_attachment(path, local=True))
         self.assertEqual(result.status_code, 200, result.text)
+
+    def test_import_sent_directory_preserves_tree_name_and_original(self) -> None:
+        source = Path(self.temporary.name) / "experiment.v2"
+        (source / "nested").mkdir(parents=True)
+        (source / "nested" / "data.csv").write_bytes(b"x,y\n1,2\n")
+        reference = self.sent_attachment(source, local=True)
+        result = self.client.post(
+            f"/api/assistant/sessions/{SESSION_ID}/resources/attachment",
+            json={"reference_id": reference, "location": {"parent": "", "name": "experiment"}},
+        )
+        self.assertEqual(result.status_code, 200, result.text)
+        node = result.json()["node"]
+        self.assertEqual(node["kind"], "dir")
+        self.assertEqual(node["name"], "experiment")
+        saved, _ = self.content.read_bytes(self.project.id, node["path"] + "/nested/data.csv")
+        self.assertEqual(saved, b"x,y\n1,2\n")
+        self.assertEqual((source / "nested" / "data.csv").read_bytes(), saved)
+        with self.assertRaisesRegex(Exception, "session_attachment_not_found"):
+            AttachmentService(self.session_catalog, self.events).source_path(
+                UNBOUND_SESSION_ID, reference
+            )
+
+    def test_import_directory_rejects_a_replaced_symlink(self) -> None:
+        source = Path(self.temporary.name) / "folder"
+        source.mkdir()
+        reference = self.sent_attachment(source, local=True)
+        source.rmdir()
+        source.symlink_to(self.runtime_workdir, target_is_directory=True)
+        result = self.import_attachment(reference)
+        self.assertNotEqual(result.status_code, 200)
+        self.assertIn("session_attachment_forbidden", result.text)
+
+    def test_attachment_reimport_requires_a_new_name_and_preserves_both_originals(self) -> None:
+        path = self.runtime_workdir / SESSION_ATTACHMENT_DIRNAME / "upload.pdf"
+        path.parent.mkdir()
+        path.write_bytes(self.artifact_bytes)
+        reference = self.sent_attachment(path)
+        first = self.import_attachment(reference)
+        self.assertEqual(first.status_code, 200, first.text)
+        repeated = self.import_attachment(reference)
+        self.assertNotEqual(repeated.status_code, 200, repeated.text)
+        self.assertIn("name_exists", repeated.text)
+        saved, _ = self.content.read_bytes(self.project.id, first.json()["node"]["path"])
+        self.assertEqual(saved, self.artifact_bytes)
+        self.assertEqual(path.read_bytes(), self.artifact_bytes)
+        renamed = self.client.post(
+            f"/api/assistant/sessions/{SESSION_ID}/resources/attachment",
+            json={
+                "reference_id": reference,
+                "location": {"parent": "附件归档", "name": "实验报告-副本.pdf"},
+            },
+        )
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertNotEqual(renamed.json()["node"]["path"], first.json()["node"]["path"])
 
     def test_import_rejects_unsent_cross_session_and_missing_attachment(self) -> None:
         path = self.runtime_workdir / SESSION_ATTACHMENT_DIRNAME / "upload.pdf"
@@ -655,6 +724,43 @@ class AssistantResourceContract(unittest.TestCase):
                 )
                 self.assertNotEqual(response.status_code, 200, response.text)
 
+    def test_split_reference_route_is_session_and_revision_bound(self) -> None:
+        source = b"See [1](references.md#ref-key)."
+        report_id, report = self._publish_artifact("split.md", source, "text/markdown")
+        _reference_id, reference = self._publish_artifact(
+            "references.md", b"Published reference", "text/markdown"
+        )
+        self._publish_artifact("foreign.md", b"Other turn", "text/markdown", turn_id="foreign-turn")
+        report.unlink()
+        reference.unlink()
+        endpoint = f"/api/assistant/sessions/{SESSION_ID}/artifacts/{report_id}/reference"
+        params = {
+            "revision": "sha256:" + sha256(source).hexdigest(),
+            "href": "references.md#ref-key",
+        }
+        result = self.client.get(endpoint, params=params)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["text"], "Published reference")
+        self.assertEqual(result.json()["source_revision"], params["revision"])
+        for href in (
+            "foreign.md#ref-key",
+            "../references.md#ref-key",
+            "https://external/a.md#ref-key",
+        ):
+            with self.subTest(href=href):
+                self.assertEqual(
+                    self.client.get(endpoint, params={**params, "href": href}).status_code, 409
+                )
+        self.assertEqual(
+            self.client.get(endpoint, params={**params, "revision": "sha256:old"}).status_code, 409
+        )
+        self.assertGreaterEqual(
+            self.client.get(
+                endpoint.replace(SESSION_ID, UNBOUND_SESSION_ID), params=params
+            ).status_code,
+            400,
+        )
+
     def test_markdown_artifact_keeps_citation_receipts_and_missing_links(self) -> None:
         source = SourceFixture(Path(self.temporary.name))
         indexes = PdfIndexService(source, activities=self.activities)
@@ -700,6 +806,30 @@ class AssistantResourceContract(unittest.TestCase):
         artifact_params = {"revision": text_revision(original)}
         artifact_resolution = self.client.get(artifact_route, params=artifact_params)
         self.assertEqual(artifact_resolution.status_code, 200, artifact_resolution.text)
+        resource_service = self.client.app.state.assistant_resources
+        artifact_source = ArtifactCitationReference(
+            kind="artifact",
+            session_id=SESSION_ID,
+            artifact_id=artifact_id,
+            revision=text_revision(original),
+            handle=handle,
+        )
+        self.assertEqual(
+            resource_service.read_pdf_citation(
+                artifact_source, "local", catalog=self.session_catalog
+            )[0],
+            source.payload,
+        )
+        with self.assertRaises(ContentError):
+            resource_service.read_pdf_citation(
+                artifact_source, "foreign", catalog=self.session_catalog
+            )
+        with self.assertRaises(AssistantResourceError):
+            resource_service.read_pdf_citation(
+                artifact_source.model_copy(update={"revision": "changed"}),
+                "local",
+                catalog=self.session_catalog,
+            )
         self.assertEqual(artifact_resolution.json()["state"], "exact")
         self.assertEqual(
             artifact_resolution.json()["artifact_citation"],
@@ -756,6 +886,21 @@ class AssistantResourceContract(unittest.TestCase):
         raw = self.client.get("/api/assistant/resources/citation/raw", params=params)
         self.assertEqual(raw.status_code, 200, raw.text)
         self.assertEqual(raw.content, source.payload)
+        saved_source = SavedCitationReference(
+            kind="saved", project_id=self.project.id, path=path, handle=handle
+        )
+        self.assertEqual(
+            resource_service.read_pdf_citation(saved_source, "local", catalog=self.session_catalog)[
+                0
+            ],
+            source.payload,
+        )
+        with self.assertRaises(AssistantResourceError):
+            resource_service.read_pdf_citation(
+                saved_source.model_copy(update={"handle": "foreign"}),
+                "local",
+                catalog=self.session_catalog,
+            )
         self.assertEqual(raw.headers["content-type"], "application/pdf")
         denied_raw = self.client.get(
             "/api/assistant/resources/citation/raw", params={**params, "handle": "missing"}
@@ -1098,6 +1243,115 @@ class AssistantResourceContract(unittest.TestCase):
         )
         self.assertEqual(provenance.source_session_id, SESSION_ID)
         self.assertEqual(provenance.source_id, artifact_id)
+
+    def test_permission_recovery_retries_same_immutable_import_once(self):
+        live, headers = self.dialogue_bridge()
+        live.interactions = SimpleNamespace(
+            request_product_input=AsyncMock(
+                side_effect=lambda question, **kwargs: {"answers": {question["id"]: "retry_file"}}
+            )
+        )
+        query = {
+            "artifact_id": self.artifact_id,
+            "expected_sha256": sha256(self.artifact_bytes).hexdigest(),
+            "idempotency_key": "permission-retry",
+            "location": {"parent": "recovery", "name": ARTIFACT_NAME},
+        }
+        original = ResourceWriter.import_once
+        attempts = []
+
+        def denied_once(writer, *args):
+            attempts.append(args)
+            if len(attempts) == 1:
+                raise ResourceWriteDenied("recovery") from PermissionError(errno.EACCES, "denied")
+            return original(writer, *args)
+
+        with patch.object(ResourceWriter, "import_once", denied_once):
+            response = self.client.post(RESOURCE_IMPORT_ROUTE, json=query, headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(attempts[0], attempts[1])
+        self.assertEqual(
+            len(self.client.app.state.assistant_resources.library_links(SESSION_ID)), 1
+        )
+        self.assertEqual(live.interactions.request_product_input.await_count, 1)
+
+    def test_only_prepublication_permission_failures_offer_cancel_without_write(self):
+        writer = ResourceWriter(self.content)
+        location = ResourceLocationRef("permission-contract", "receipt.bin")
+
+        def denied(*args, **kwargs):
+            raise ContentError("write_failed") from PermissionError(errno.EACCES, "denied")
+
+        with patch.object(self.content, "prepare_bytes", side_effect=denied):
+            with self.assertRaises(ResourceWriteDenied):
+                writer.import_once(
+                    self.project.id,
+                    "before-publication",
+                    "source",
+                    "receipt.bin",
+                    b"content",
+                    location,
+                )
+        self.assertFalse(
+            (Path(self.project.root) / "resources/permission-contract/receipt.bin").exists()
+        )
+        with patch.object(writer._listing, "record", side_effect=denied):
+            with self.assertRaises(ResourceWriterError) as caught:
+                writer.import_once(
+                    self.project.id,
+                    "after-publication",
+                    "source",
+                    "receipt.bin",
+                    b"content",
+                    location,
+                )
+        self.assertNotIsInstance(caught.exception, ResourceWriteDenied)
+        query = ResourceImport(
+            artifact_id=self.artifact_id,
+            expected_sha256=sha256(self.artifact_bytes).hexdigest(),
+            idempotency_key="after-publication",
+            location={"parent": location.parent, "name": location.name},
+        )
+        self.assertIsNone(import_recovery(query, caught.exception))
+        self.assertTrue(
+            (Path(self.project.root) / "resources/permission-contract/receipt.bin").exists()
+        )
+
+    def test_permission_recovery_requires_immutable_source_and_idempotency(self):
+        denied = ResourceWriteDenied("target")
+        query = ResourceImport(artifact_id=self.artifact_id)
+        self.assertIsNone(import_recovery(query, denied))
+
+    def test_permission_recovery_cancel_and_stale_turn_never_repeat_save(self):
+        live, headers = self.dialogue_bridge()
+        query = {
+            "artifact_id": self.artifact_id,
+            "expected_sha256": sha256(self.artifact_bytes).hexdigest(),
+            "idempotency_key": "permission-cancel",
+            "location": {"parent": "recovery", "name": ARTIFACT_NAME},
+        }
+
+        def denied(*args):
+            raise ResourceWriteDenied("recovery") from PermissionError(errno.EACCES, "denied")
+
+        async def stale(question, **kwargs):
+            live.ledger.active_turn_id = "later-turn"
+            return {"answers": {question["id"]: "retry_file"}}
+
+        for decision, status in (({"cancelled": True}, 400), (stale, 403)):
+            live.interactions = SimpleNamespace(
+                request_product_input=AsyncMock(
+                    side_effect=decision if callable(decision) else None,
+                    return_value=decision if not callable(decision) else None,
+                )
+            )
+            with patch.object(ResourceWriter, "import_once", side_effect=denied) as writer:
+                response = self.client.post(RESOURCE_IMPORT_ROUTE, json=query, headers=headers)
+            self.assertEqual(response.status_code, status, response.text)
+            self.assertEqual(writer.call_count, 1)
+            self.assertFalse(
+                (Path(self.project.root) / "resources/recovery" / ARTIFACT_NAME).exists()
+            )
 
     def test_resource_dialogue_import_rejects_untrusted_sources_and_destinations(self):
         artifact_id, path = self._publish_artifact("guarded.pdf", pdf_bytes(), "application/pdf")

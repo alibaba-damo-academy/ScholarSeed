@@ -22,9 +22,7 @@
     "scholarseed-product-operations": {},
     "agentic-search": {"skills": ["web-search"]},
     "fast-search": {"skills": ["web-search"]},
-    "project-literature": {
-      "executables": ["scholarseed-bridge"]
-    },
+    "project-literature": {},
     "web-search": {
       "imports": ["playwright"]
     },
@@ -32,7 +30,7 @@
       "skills": ["agentic-search", "pdf-evidence", "project-literature"],
       "executables": ["scholarseed-skill-python"]
     },
-    "research-idea-partner": {"skills": ["agentic-search"], "executables": ["scholarseed-bridge", "scholarseed-skill-python"]},
+    "research-idea-partner": {"skills": ["agentic-search"], "executables": ["scholarseed-skill-python"]},
     "precise-literature-search": {
       "skills": ["web-search"],
       "wheels": ["vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl"],
@@ -42,9 +40,29 @@
     "literature-review": {
       "skills": ["agentic-search"],
       "python": ["matplotlib==3.10.8", "pysbd==0.3.4", "socksio==1.0.0"],
-      "imports": ["openai", "httpx", "socksio", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd", "filelock"],
+      "imports": ["openai", "httpx", "socksio", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd", "filelock", "knowledge_layer.comprehend", "service.literature.service.atomic", "docx", "markdown_it"],
       "bundled_executables": ["xelatex", "pdflatex", "bibtex", "kpsewhich"]
     },
-    "pdf-evidence": {}
+    "highlights-to-insights": {
+      "python": [
+        "pypdf==6.15.0",
+        "pdfplumber==0.11.10",
+        "pypdfium2==5.11.0",
+        "Pillow==12.3.0"
+      ],
+      "imports": [
+        "pypdf",
+        "pdfplumber",
+        "pdfminer",
+        "pypdfium2",
+        "PIL",
+        "markdown_it"
+      ],
+      "executables": [
+        "codex"
+      ]
+    },
+    "pdf-evidence": {},
+    "formal-verification": {"executables": ["scholarseed-skill-python"]}
   }
 }

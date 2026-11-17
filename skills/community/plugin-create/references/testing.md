@@ -1,28 +1,23 @@
-# 可编辑测试模板
+# Verify a generated workflow
 
-这份清单与 scaffold 的 responses/cases/submissions 配套，非独立演示页面，也不是实际使用通过声明。
+## Before packing
 
-| 操作 | 必须核对 |
-| --- | --- |
-| 首次打开 | 完整真实映射的预填；缺失字段与空数组、false、空字符串分开 |
-| 连续选择后立即确认 | 宿主收到最后一次编辑，不是上次 render 的副本 |
-| 空初值输入 | 空数组/缺省值下首个可见输入行接受文字，清空后能重新输入；显示、草稿与提交值一致 |
-| 取消预选 | 真实取消选中后保持未选，保存/重新渲染不回退到 data 的默认选择 |
-| 保存期间再编辑 | 旧回执不覆盖新编辑；提示仍有未保存修改 |
-| 保存失败再确认 | 编辑保留；不虚报已保存；提交仍经宿主校验 |
-| 确认失败再重试 | 仅一个有效操作入口，保留选择，重试可结算 |
-| 确认成功 | pending→submitting→resolved，AI 消费返回值推进下一步 |
-| 取消／未知 | 取消不推进，未知先核对而非重发业务 |
-| 翻页、重置、重开 | 预览恢复场景初值；真实已保存交互恢复其固定版本草稿 |
-| 多阶段修订 | 完整材料与约束仍在，新 request_id，未修改步骤不重复确认 |
+Define expected results independently of the implementation: real inputs, decisive output values and locators, applicable actions and their failure conditions. Use different inputs when they can change the result. Include applicable invalid data, cancellation or unknown delivery; do not require irrelevant scenarios.
 
-发布前把完整调用载荷写到会话持久目录，执行：
+Validate actual-shaped private-slot invocation payloads, including a malformed OpenUI input that must fail:
 
 ```sh
 scholarseed-skill-python -m service.cli.plugins validate ./plugin-source/.scholarseed-plugin.json ./work/request.json
 ```
 
-它只验证声明、request/display 信封及 input_schema，不调用模型、不安装、不授予权限。遇到缺字段，按 detail.path/missing 修正实际引用；保留原文件，产出修订版并比对所有输入字段。不能靠删除材料、清空选择、换成样例或占位引用使检查通过。
-检查真实发布的 values 和输出；预览样例通过不证明真实业务、模型分析和权限通过。测试报告逐项标记通过、失败或未验证，不隐藏失败录像。
+Fix the reported path rather than weakening the schema. For a fixed layout, check that two data sets populate the same tree with correctly aligned values and evidence. Verify there is no component JavaScript for that layout or dependency on the shared plugin UI SDK. For an agreed executable workbench, require entry syntax success and applicable submission examples: cover declared actions with preview `responses` and real-shaped `submissions`, not preview-only controls.
 
-scaffold 的 requests/ 保存各组件对应的调用载荷。对每个文件执行 validate；修改组件 schema、actions 或业务字段后同时更新载荷及生成 Skill 的引用。actions 使用描述符中的动作 ID 字符串，不使用按钮对象。结构检查通过不代表控件可编辑：仍须正常输入/取消选择、回读可见值，再保存或确认并核回传，不能用手工拼装提交值代替这一步。
+Pack and inspect one candidate. Retain its digest and use the same ZIP for preview and installation. Run `check <zip> --check-entries` for external or transferred archives, not as a duplicate check of unchanged output from `pack`.
+
+## Preview and real use
+
+Inspect the first view before scrolling. Check labels, values, evidence, narrow widths, themes, and keyboard and pointer operation where applicable. Preview samples are not real model inputs or actual receipts; if preview is unavailable, mark it unverified.
+
+After user-authorized installation and enablement, run the real generated Skill with fresh data. For fixed OpenUI, verify that the Agent sends business data only, Desktop renders the expected values, and an earlier result retains its own data when reopened. If the workflow depends on a decision or workbench, operate the actual surface: check selection and edit retention, the real receipt, continuation only on success, and the final artifact or export. Check recovery and copy where required; a preview or tool response does not prove the installed workflow worked.
+
+Report creation/package, preview, installation and usage separately. Keep evidence of failures and retest affected steps against the new digest after changes. If a required host action or installation consent is unavailable, record the stage and reason; do not replace it with a fixture.

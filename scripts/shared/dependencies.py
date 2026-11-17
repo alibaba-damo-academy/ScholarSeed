@@ -18,12 +18,16 @@ from typing import Any
 
 BUILD_GROUP_PREFIX = "component-build-"
 SOURCE_TARGETS_KEY = "source-build-targets"
+SOURCE_REPAIRS_KEY = "source-build-repairs"
+SOURCE_REPAIR_TARGETS = frozenset({"darwin-arm64", "darwin-x86_64"})
 DESKTOP_GROUP = "desktop"
 SERVE_EXTRA = "serve"
 LOCK_FILENAME = "uv.lock"
 PROJECT_FILENAME = "pyproject.toml"
 REGISTRY_RELATIVE = "skills/registry.json"
 SKILLS_RELATIVE = "skills/community"
+SERVE_RELATIVE = "apps/serve"
+PRODUCT_VENDOR_RELATIVE = f"{SERVE_RELATIVE}/vendor"
 NAME_PATTERN = re.compile(r"[-_.]+")
 REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
 SCHEMA_VERSION = 1
@@ -144,13 +148,29 @@ def skill_inputs(repo: Path) -> list[Path]:
     return sorted(set(wheels))
 
 
-def build_constraints(repo: Path, uv: Path, group: str) -> str:
+def locked_index_arguments(project: dict[str, Any]) -> tuple[str, ...]:
+    indexes = project.get("tool", {}).get("uv", {}).get("index", [])
+    if not isinstance(indexes, list) or any(not isinstance(index, dict) for index in indexes):
+        raise ValueError("locked export requires an array of [[tool.uv.index]] tables")
+    defaults = [index for index in indexes if index.get("default") is True]
+    if len(defaults) > 1:
+        raise ValueError("locked export requires at most one declared default index")
+    if not defaults:
+        return ()
+    url = defaults[0].get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("locked export requires a non-empty url for the declared default index")
+    return ("--default-index", url)
+
+
+def build_constraints(repo: Path, uv: Path, group: str, *, index_arguments: tuple[str, ...]) -> str:
     """Use uv's resolver to export the complete locked build environment."""
     builders = subprocess.run(
         [
             str(uv),
             "export",
             "--locked",
+            *index_arguments,
             "--only-group",
             group,
             "--no-emit-workspace",
@@ -167,14 +187,31 @@ def build_constraints(repo: Path, uv: Path, group: str) -> str:
     return builders + "\n"
 
 
-def source_builds(repo: Path, uv: Path, requirements: Path) -> list[dict[str, Any]]:
+def source_builds(
+    repo: Path, uv: Path, requirements: Path, *, index_arguments: tuple[str, ...] | None = None
+) -> list[dict[str, Any]]:
     """Export each isolated builder from the same lock as its runtime source."""
     project = tomllib.loads((repo / PROJECT_FILENAME).read_text(encoding="utf-8"))
+    if index_arguments is None:
+        index_arguments = locked_index_arguments(project)
     lock = tomllib.loads((repo / LOCK_FILENAME).read_text(encoding="utf-8"))
     runtime = requirements.read_text(encoding="utf-8")
     targets = project.get("tool", {}).get("scholarseed", {}).get(SOURCE_TARGETS_KEY, {})
+    repairs = project.get("tool", {}).get("scholarseed", {}).get(SOURCE_REPAIRS_KEY, {})
     target = f"{sys.platform}-{platform.machine().lower()}"
     groups = project.get("dependency-groups", {})
+    for name, selected in repairs.items():
+        if (
+            f"{BUILD_GROUP_PREFIX}{name}" not in groups
+            or not isinstance(selected, list)
+            or not selected
+            or any(
+                not isinstance(value, str) or value not in SOURCE_REPAIR_TARGETS
+                for value in selected
+            )
+            or (name in targets and not set(selected).issubset(targets[name]))
+        ):
+            raise ValueError(f"invalid source build repair targets: {name}")
     for name, selected in targets.items():
         if (
             f"{BUILD_GROUP_PREFIX}{name}" not in groups
@@ -208,30 +245,71 @@ def source_builds(repo: Path, uv: Path, requirements: Path) -> list[dict[str, An
             raise ValueError(f"source build group has no locked sdist: {group}")
         if name in targets and target not in targets[name]:
             continue
-        builders = build_constraints(repo, uv, group)
+        builders = build_constraints(repo, uv, group, index_arguments=index_arguments)
         result.append(
             {
                 "name": name,
                 "version": package["version"],
                 "sha256": source_hash.removeprefix("sha256:"),
                 "buildConstraints": builders,
+                **({"repairWheel": True} if target in repairs.get(name, []) else {}),
             }
         )
     return result
 
 
+def product_inputs(repo: Path) -> list[Path]:
+    """Resolve pinned Serve distributions delivered with the product sources."""
+    project = tomllib.loads((repo / PROJECT_FILENAME).read_text(encoding="utf-8"))
+    serve = tomllib.loads((repo / SERVE_RELATIVE / PROJECT_FILENAME).read_text(encoding="utf-8"))
+    dependencies = set(serve["project"]["dependencies"])
+    locked = {
+        item["name"]: item
+        for item in tomllib.loads((repo / LOCK_FILENAME).read_text(encoding="utf-8"))["package"]
+    }
+    vendor = (repo / PRODUCT_VENDOR_RELATIVE).resolve()
+    wheels = []
+    for name, source in project["tool"]["uv"]["sources"].items():
+        relative = source.get("path", "") if isinstance(source, dict) else ""
+        if not relative or not Path(relative).is_relative_to(PRODUCT_VENDOR_RELATIVE):
+            continue
+        wheel = (repo / relative).resolve()
+        if not wheel.is_relative_to(vendor) or wheel.suffix != ".whl":
+            raise ValueError(f"invalid product wheel source: {name}")
+        identity = wheel_identity(wheel)
+        if (
+            canonical(name) != identity["name"]
+            or f"{name}=={identity['version']}" not in dependencies
+        ):
+            raise ValueError(f"product wheel requires an exact Serve dependency: {name}")
+        package = locked.get(identity["name"], {})
+        expected = {"filename": wheel.name, "hash": f"sha256:{identity['sha256']}"}
+        if (
+            package.get("source") != {"path": relative}
+            or package.get("version") != identity["version"]
+            or expected not in package.get("wheels", [])
+        ):
+            raise ValueError(f"product wheel differs from uv.lock: {name}")
+        wheels.append(wheel)
+    return sorted(set(wheels))
+
+
 def export(repo: Path, uv: Path, requirements: Path, plan: Path) -> None:
     repo = repo.resolve()
+    project = tomllib.loads((repo / PROJECT_FILENAME).read_text(encoding="utf-8"))
+    index_arguments = locked_index_arguments(project)
     wheels = skill_inputs(repo)
+    products = product_inputs(repo)
     lock_path = repo / LOCK_FILENAME
     lock_sha256 = lock_digest(lock_path)
     requirements.parent.mkdir(parents=True, exist_ok=True)
-    excluded = [wheel_identity(wheel)["name"] for wheel in wheels]
+    excluded = [wheel_identity(wheel)["name"] for wheel in (*wheels, *products)]
     subprocess.run(
         [
             str(uv),
             "export",
             "--locked",
+            *index_arguments,
             "--all-packages",
             "--extra",
             SERVE_EXTRA,
@@ -251,8 +329,8 @@ def export(repo: Path, uv: Path, requirements: Path, plan: Path) -> None:
         stdout=subprocess.DEVNULL,
         check=True,
     )
-    builders = source_builds(repo, uv, requirements)
-    wheel_builders = build_constraints(repo, uv, "wheel-build")
+    builders = source_builds(repo, uv, requirements, index_arguments=index_arguments)
+    wheel_builders = build_constraints(repo, uv, "wheel-build", index_arguments=index_arguments)
     if lock_digest(lock_path) != lock_sha256:
         raise ValueError("dependency export changed uv.lock")
     write_json(
@@ -264,6 +342,7 @@ def export(repo: Path, uv: Path, requirements: Path, plan: Path) -> None:
             "source_builds": builders,
             "wheel_build_constraints": wheel_builders,
             "skill_wheels": [{"path": str(wheel), **wheel_identity(wheel)} for wheel in wheels],
+            "product_wheels": [{"path": str(wheel), **wheel_identity(wheel)} for wheel in products],
         },
     )
 
@@ -298,6 +377,14 @@ def snapshot(plan: Path, requirements: Path, wheels: list[Path], output: Path) -
     packages = projection["required"]
     compare(packages, projection["installed"])
     local = [wheel_identity(wheel) for wheel in wheels]
+    by_path = {
+        str(wheel.resolve()): identity for wheel, identity in zip(wheels, local, strict=True)
+    }
+    for expected in prepared.get("product_wheels", []):
+        if by_path.get(str(Path(expected["path"]).resolve())) != {
+            key: value for key, value in expected.items() if key != "path"
+        }:
+            raise ValueError("product wheel changed or missing since export")
     for wheel in (*local, *prepared["skill_wheels"]):
         name, version = wheel["name"], wheel["version"]
         if name in packages:

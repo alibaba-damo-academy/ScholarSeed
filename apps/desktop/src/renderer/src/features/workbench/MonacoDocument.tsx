@@ -19,6 +19,8 @@ import {
   useToast,
 } from '../../components/ui'
 import { useApp } from '../../store'
+import { documentSelectionReveal } from './workspace'
+import { flashSelection, textSelectionRange } from './reveal'
 import { showUnsavedIndicator } from './utils'
 import { writeClipboard } from '../../components/primitive/clipboard'
 import {
@@ -93,6 +95,7 @@ const REDO_COMMAND = 'redo'
 const HISTORY_ACTION_SOURCE = 'markdown-source-toolbar'
 const SHORTCUT_ACTION_SOURCE = 'shortcut-command'
 const FIND_WIDGET_SELECTOR = '.find-widget'
+const SELECTION_RECTANGLE_SELECTOR = '.view-overlays .selected-text'
 const CLOSE_FIND_WIDGET_COMMAND = 'closeFindWidget'
 const FIND_WIDGET_BLUR_SOURCE = 'find-widget-blur'
 const USER_SELECTION_SOURCES = new Set(['keyboard', 'mouse'])
@@ -245,6 +248,8 @@ export function MonacoDocument({
   const session = state.sessions[sessionId]
   const tab = state.tabs[tabId]
   const reveal = documentTextReveal(tab)
+  const selectionReveal = documentSelectionReveal(tab)
+  const handledSelectionReveal = useRef<typeof selectionReveal>(undefined)
   const [frame, setFrame] = useState<MonacoFrameContext | null>(null)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const wrapEnabledRef = useRef(appState.editorWordWrap)
@@ -614,6 +619,76 @@ export function MonacoDocument({
     }
   }, [active, reveal, session?.loadState, session?.revision, tabId])
 
+  useEffect(() => {
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    if (
+      !active ||
+      !frame ||
+      !editor ||
+      !model ||
+      !selectionReveal ||
+      session?.loadState !== 'ready'
+    )
+      return
+    if (handledSelectionReveal.current === selectionReveal) return
+    handledSelectionReveal.current = selectionReveal
+    const locator = selectionReveal.locator
+    let range: Monaco.IRange
+    if (locator.kind === 'markdown') {
+      const start = model.getPositionAt(locator.start)
+      const end = model.getPositionAt(locator.end)
+      range = {
+        startLineNumber: start.lineNumber,
+        startColumn: start.column,
+        endLineNumber: end.lineNumber,
+        endColumn: end.column,
+      }
+    } else if (locator.kind === 'text') {
+      range = textSelectionRange(locator)
+    } else return
+    const normalized = model.validateRange(range)
+    if (
+      normalized.startLineNumber !== range.startLineNumber ||
+      normalized.startColumn !== range.startColumn ||
+      normalized.endLineNumber !== range.endLineNumber ||
+      normalized.endColumn !== range.endColumn ||
+      (locator.kind === 'markdown' && locator.end > model.getValueLength()) ||
+      (locator.kind === 'text' && model.getValueInRange(range) !== selectionReveal.text)
+    ) {
+      toast({ title: t('officeError.reveal_missing'), tone: 'error' })
+      return
+    }
+    editor.setSelection(range)
+    editor.revealRangeInCenter(range)
+    editor.focus()
+    const host = editor.getDomNode()
+    if (!host) return
+    let cancelFlash: (() => void) | undefined
+    const animationFrame = requestAnimationFrame(() => {
+      editor.render(true)
+      const origin = frame.element.getBoundingClientRect()
+      const rectangles = Array.from(host.querySelectorAll(SELECTION_RECTANGLE_SELECTOR)).map(
+        (node) => {
+          const rect = node.getBoundingClientRect()
+          return {
+            left: origin.left + rect.left,
+            top: origin.top + rect.top,
+            width: rect.width,
+            height: rect.height,
+          }
+        }
+      )
+      cancelFlash = flashSelection(document, rectangles)
+      host.ownerDocument.addEventListener('scroll', cancelFlash, { capture: true, once: true })
+    })
+    return () => {
+      cancelAnimationFrame(animationFrame)
+      if (cancelFlash) host.ownerDocument.removeEventListener('scroll', cancelFlash, true)
+      cancelFlash?.()
+    }
+  }, [active, frame, selectionReveal, session?.loadState, tabId])
+
   if (!session || session.loadState === 'loading') {
     return <div className="vds-viewer-empty">{t('code.loading')}</div>
   }
@@ -779,7 +854,7 @@ export function MonacoDocument({
       <>
         <section className="grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--vds-bg-page)]">
           <div
-            className="flex min-h-[var(--vds-workbench-header-height)] min-w-0 flex-nowrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-page)] px-[var(--vds-space-2)] py-[var(--vds-space-1)]"
+            className="flex min-h-[var(--vds-workbench-header-height)] min-w-0 flex-nowrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)]"
             data-save-state={session.saveState}
             data-testid="source-document-toolbar"
           >

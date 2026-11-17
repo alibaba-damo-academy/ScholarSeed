@@ -26,6 +26,7 @@ from PIL import Image
 from apps.serve.tests import pdf as pdf_fixture
 from service.content.domain.model import PREPARED_CONFLICT, ContentError
 from service.content.persistence.catalog import ContentCatalog
+from service.content.service.extract import content_limit, extract_text
 from service.content.service.port import MAX_BYTES, ContentService, ProjectRegistry
 from service.platform.activity import Activities
 from service.platform.citations import PDF_INDEX_STATE
@@ -41,6 +42,8 @@ from service.workbench.persistence.records import PdfRecordCatalog
 from service.workbench.service.indexing import PdfIndexService
 from service.workbench.service.records import PdfRecordStore
 
+from .pdf import PageFixture, build_pdf
+
 PASS = 0
 FAIL = 0
 MEBIBYTE = 1024 * 1024
@@ -48,7 +51,8 @@ LEGACY_EDITOR_MAX_BYTES = 64 * MEBIBYTE
 
 
 def test_product_mime_registry_precedes_host() -> None:
-    office = {
+    registered = {
+        ".lean": "text/plain",
         ".doc": "application/msword",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xls": "application/vnd.ms-excel",
@@ -60,13 +64,13 @@ def test_product_mime_registry_precedes_host() -> None:
         with patch(
             "service.platform.files.mimetypes.guess_type", return_value=(host_type, None)
         ) as host:
-            for suffix, media_type in office.items():
+            for suffix, media_type in registered.items():
                 for spelling in (suffix, suffix.upper()):
                     check(
-                        f"product Office MIME {spelling} ignores host {host_type}",
+                        f"product MIME {spelling} ignores host {host_type}",
                         guess_media_type("document" + spelling) == media_type,
                     )
-            check("registered Office types do not query the host", host.call_count == 0)
+            check("registered types do not query the host", host.call_count == 0)
     for host_type in (None, "application/x-custom-document"):
         with patch(
             "service.platform.files.mimetypes.guess_type", return_value=(host_type, None)
@@ -76,6 +80,13 @@ def test_product_mime_registry_precedes_host() -> None:
                 guess_media_type("document.custom-format") == host_type,
             )
             host.assert_called_once_with("document.custom-format")
+
+
+def test_lean_source_extracts_as_text_without_changing_bytes() -> None:
+    source = "theorem 样例 : 1 = 1 := by rfl\n".encode("utf-8")
+    for path in ("stats_demo.lean", "stats_demo.LEAN"):
+        check("Lean has a bounded text extraction path", content_limit(path) is not None)
+        check("Lean preserves Unicode source", extract_text(path, source).encode("utf-8") == source)
 
 
 class WorkbenchSettings:
@@ -324,7 +335,10 @@ def test_recreated_pdf_opens_with_an_isolated_identity() -> None:
 
         first = client.get("/api/workbench/open", params={"path": target.name})
         first_asset_id = first.json().get("asset_id", "")
-        initialized = client.get(f"/api/workbench/assets/{first_asset_id}/pdf/records")
+        initialized = client.get(
+            f"/api/workbench/assets/{first_asset_id}/pdf/records",
+            params={"project": client.app.state.content.project().id},
+        )
         replacement = project / "replacement.tmp"
         replacement.write_bytes(original)
         replacement.replace(target)
@@ -341,8 +355,14 @@ def test_recreated_pdf_opens_with_an_isolated_identity() -> None:
             and reopened_asset_id != first_asset_id,
             f"first={first.text} reopened={reopened.text}",
         )
-        old_records = client.get(f"/api/workbench/assets/{first_asset_id}/pdf/records")
-        new_records = client.get(f"/api/workbench/assets/{reopened_asset_id}/pdf/records")
+        old_records = client.get(
+            f"/api/workbench/assets/{first_asset_id}/pdf/records",
+            params={"project": client.app.state.content.project().id},
+        )
+        new_records = client.get(
+            f"/api/workbench/assets/{reopened_asset_id}/pdf/records",
+            params={"project": client.app.state.content.project().id},
+        )
         check(
             "重建 PDF 的新旧记录归属保持隔离",
             old_records.status_code == 200
@@ -427,6 +447,42 @@ def test_pdf_visual_region_manifest_and_crop_use_the_live_revision() -> None:
     finally:
         if indexes is not None:
             indexes.close()
+        shutil.rmtree(project, ignore_errors=True)
+
+
+def test_bmp_images_are_preview_only() -> None:
+    project = Path(tempfile.mkdtemp(prefix="file-workbench-bmp-"))
+    try:
+        image = BytesIO()
+        Image.new("RGB", (2, 2), "blue").save(image, format="BMP")
+        content = image.getvalue()
+        client = _client(project)
+        for name in ("figure.bmp", "figure.BMP"):
+            (project / name).write_bytes(content)
+            opened = client.get("/api/workbench/open", params={"path": name})
+            payload = opened.json()
+            capabilities = payload.get("capabilities", {})
+            check(
+                f"{name} opens in the image viewer without editing or versioning",
+                opened.status_code == 200
+                and payload.get("viewer") == "image"
+                and capabilities.get("can_preview") is True
+                and capabilities.get("can_edit") is False
+                and capabilities.get("can_save") is False
+                and capabilities.get("can_version") is False
+                and capabilities.get("can_diff") is False,
+                opened.text,
+            )
+            preview = client.get("/api/workbench/content", params={"path": name})
+            check(
+                f"{name} preview preserves the original BMP bytes",
+                preview.status_code == 200
+                and preview.headers.get("content-type", "").startswith("image/")
+                and preview.content == content
+                and (project / name).read_bytes() == content,
+                f"status={preview.status_code} headers={dict(preview.headers)}",
+            )
+    finally:
         shutil.rmtree(project, ignore_errors=True)
 
 
@@ -577,7 +633,10 @@ def test_registered_preview_crosses_content_default_and_stops_at_500_mib() -> No
             f"status={complete.status_code} call={read_bytes.call_args}",
         )
         asset_id = opened_payload.get("asset_id", "")
-        records = client.get(f"/api/workbench/assets/{asset_id}/pdf/records")
+        records = client.get(
+            f"/api/workbench/assets/{asset_id}/pdf/records",
+            params={"project": client.app.state.content.project().id},
+        )
         check(
             "大 PDF 的批注记录随预览使用同一 500 MiB 上限",
             records.status_code == 200
@@ -933,14 +992,16 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-annotations-"))
     try:
         target = project / "paper.pdf"
-        original = b"%PDF-1.4\nimmutable\n"
+        original = build_pdf(PageFixture(), PageFixture(), title="immutable")
         target.write_bytes(original)
         client = _client(project)
 
         descriptor = client.get("/api/workbench/open", params={"path": "paper.pdf"}).json()
         asset_id = descriptor.get("asset_id", "")
         records_route = f"/api/workbench/assets/{asset_id}/pdf/records"
-        opened = client.get(records_route)
+        opened = client.get(
+            records_route, params={"project": client.app.state.content.project().id}
+        )
         revision = opened.json().get("record_revision", "")
         source_revision = opened.json().get("source_revision", "")
         check(
@@ -950,7 +1011,13 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
             and revision.startswith("sha256:")
             and opened.json().get("record_target", {}).get("subject_id") == asset_id
             and opened.json().get("records")
-            == {"schema_version": 1, "marks": [], "comments": [], "notes": []},
+            == {
+                "schema_version": 1,
+                "marks": [],
+                "comments": [],
+                "notes": [],
+                "native_annotations": [],
+            },
             f"status={opened.status_code} body={opened.text}",
         )
 
@@ -981,19 +1048,26 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
             ),
             encoding="utf-8",
         )
-        legacy = client.get(legacy_route)
+        legacy = client.get(legacy_route, params={"project": client.app.state.content.project().id})
         revision = legacy.json().get("record_revision", "")
         source_revision = legacy.json().get("source_revision", "")
         check(
             "PDF records ignore obsolete adjacent sidecars",
             legacy.status_code == 200
             and legacy.json().get("records")
-            == {"schema_version": 1, "marks": [], "comments": [], "notes": []},
+            == {
+                "schema_version": 1,
+                "marks": [],
+                "comments": [],
+                "notes": [],
+                "native_annotations": [],
+            },
             f"status={legacy.status_code} body={legacy.text}",
         )
 
         rejected_v1 = client.put(
             legacy_route,
+            params={"project": client.app.state.content.project().id},
             headers={"If-Match": f'"{revision}"'},
             json={
                 "expected_source_revision": source_revision,
@@ -1070,6 +1144,7 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
         }
         dangling = client.put(
             legacy_route,
+            params={"project": client.app.state.content.project().id},
             headers={"If-Match": f'"{revision}"'},
             json={
                 "expected_source_revision": source_revision,
@@ -1088,6 +1163,7 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
         )
         saved = client.put(
             legacy_route,
+            params={"project": client.app.state.content.project().id},
             headers={"If-Match": f'"{revision}"'},
             json={"expected_source_revision": source_revision, "records": records},
         )
@@ -1105,6 +1181,7 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
 
         conflict = client.put(
             legacy_route,
+            params={"project": client.app.state.content.project().id},
             headers={"If-Match": f'"{revision}"'},
             json={
                 "expected_source_revision": source_revision,
@@ -1121,7 +1198,9 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
 
         content = client.app.state.content
         renamed = content.rename(content.project().id, legacy_target.name, "renamed.pdf")
-        after_rename = client.get(legacy_route)
+        after_rename = client.get(
+            legacy_route, params={"project": client.app.state.content.project().id}
+        )
         check(
             "PDF 重命名后记录仍由同一 asset_id 读取",
             renamed.asset_id == legacy_asset_id
@@ -1140,7 +1219,9 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
                 content.move(content.project().id, renamed.path, "archive")
             except ContentError as error:
                 move_error = error.code
-        after_failed_move = client.get(legacy_route)
+        after_failed_move = client.get(
+            legacy_route, params={"project": client.app.state.content.project().id}
+        )
         check(
             "PDF 移动失败不留下新文件或错误记录关联",
             move_error == "move_failed"
@@ -1152,7 +1233,9 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
         )
 
         moved = content.move(content.project().id, renamed.path, "archive")
-        after_move = client.get(legacy_route)
+        after_move = client.get(
+            legacy_route, params={"project": client.app.state.content.project().id}
+        )
         check(
             "PDF 原子移动后记录仍由同一 asset_id 读取",
             moved.asset_id == legacy_asset_id
@@ -1162,7 +1245,9 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
         )
         held = project.parent / f"{project.name}-held.pdf"
         (project / moved.path).rename(held)
-        unavailable = client.get(legacy_route)
+        unavailable = client.get(
+            legacy_route, params={"project": client.app.state.content.project().id}
+        )
         check(
             "PDF 暂时失联时记录保留并明确返回 missing",
             unavailable.status_code == 200
@@ -1171,7 +1256,9 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
             f"status={unavailable.status_code} body={unavailable.text}",
         )
         held.rename(project / moved.path)
-        restored = client.get(legacy_route)
+        restored = client.get(
+            legacy_route, params={"project": client.app.state.content.project().id}
+        )
         check(
             "PDF 恢复后记录重新可定位",
             restored.status_code == 200
@@ -1189,10 +1276,12 @@ def test_pdf_records_are_database_only_and_revision_safe() -> None:
         first_open = client.get("/api/workbench/open", params={"path": "same-a/same.pdf"}).json()
         second_open = client.get("/api/workbench/open", params={"path": "same-b/same.pdf"}).json()
         first_records = client.get(
-            f"/api/workbench/assets/{first_open['asset_id']}/pdf/records"
+            f"/api/workbench/assets/{first_open['asset_id']}/pdf/records",
+            params={"project": client.app.state.content.project().id},
         ).json()
         second_records = client.get(
-            f"/api/workbench/assets/{second_open['asset_id']}/pdf/records"
+            f"/api/workbench/assets/{second_open['asset_id']}/pdf/records",
+            params={"project": client.app.state.content.project().id},
         ).json()
         check(
             "同名同内容不同目录 PDF 不串联 identity 或记录",
@@ -1211,7 +1300,9 @@ def test_pdf_records_survive_authorization_recovery() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-reauthorize-"))
     external = Path(tempfile.mkdtemp(prefix="file-workbench-external-"))
     try:
-        (external / "paper.pdf").write_bytes(b"%PDF-1.4\nlinked\n")
+        (external / "paper.pdf").write_bytes(
+            build_pdf(PageFixture(), PageFixture(), title="linked")
+        )
         client = _client(project)
         content = client.app.state.content
         project_id = content.project().id
@@ -1219,7 +1310,9 @@ def test_pdf_records_survive_authorization_recovery() -> None:
         path = f"{root.mount_path}/paper.pdf"
         descriptor = client.get("/api/workbench/open", params={"path": path}).json()
         route = f"/api/workbench/assets/{descriptor['asset_id']}/pdf/records"
-        initial = client.get(route).json()
+        initial = client.get(
+            route, params={"project": client.app.state.content.project().id}
+        ).json()
         records = {
             "schema_version": 1,
             "marks": [],
@@ -1228,6 +1321,7 @@ def test_pdf_records_survive_authorization_recovery() -> None:
         }
         saved = client.put(
             route,
+            params={"project": client.app.state.content.project().id},
             headers={"If-Match": f'"{initial["record_revision"]}"'},
             json={
                 "expected_source_revision": initial["source_revision"],
@@ -1235,9 +1329,9 @@ def test_pdf_records_survive_authorization_recovery() -> None:
             },
         )
         content.revoke_root(root.root_id)
-        revoked = client.get(route)
+        revoked = client.get(route, params={"project": client.app.state.content.project().id})
         restored_root = content.authorize_root(project_id, str(external), "关联资料")
-        restored = client.get(route)
+        restored = client.get(route, params={"project": client.app.state.content.project().id})
         check(
             "关联授权失效时保留记录且重新授权恢复原 identity",
             saved.status_code == 200
@@ -1259,6 +1353,7 @@ EDITOR_SUFFIXES = (
     "markdown",
     "py",
     "r",
+    "lean",
     "js",
     "jsx",
     "ts",
@@ -1465,7 +1560,55 @@ def test_office_image_leases() -> None:
         shutil.rmtree(project, ignore_errors=True)
 
 
+def test_html_read_permission_failure_and_retry() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        project = Path(directory)
+        (project / "page.html").write_text("<h1>Recovery</h1>", encoding="utf-8")
+        client = _client(project)
+        with patch("service.content.service.port.read_regular", side_effect=PermissionError()):
+            response = client.get("/api/workbench/content", params={"path": "page.html"})
+        check(
+            "HTML permission failure is actionable and retryable",
+            response.status_code == 403
+            and response.json()["detail"]
+            == {
+                "code": "read_permission_denied",
+                "retryable": True,
+            },
+            response.text,
+        )
+        original_open = Path.open
+
+        def denied_open(target: Path, *args: object, **kwargs: object):
+            if target.resolve() == (project / "page.html").resolve():
+                raise PermissionError()
+            return original_open(target, *args, **kwargs)
+
+        with patch.object(Path, "open", denied_open):
+            opened = client.get("/api/workbench/open", params={"path": "page.html"})
+        check(
+            "HTML open preserves permission denial while hashing",
+            opened.status_code == 403
+            and opened.json()["detail"]["code"] == "read_permission_denied",
+            opened.text,
+        )
+        with patch("service.content.service.port.read_regular", side_effect=OSError()):
+            generic = client.get("/api/workbench/content", params={"path": "page.html"})
+        check(
+            "ordinary read failure is not permission denial",
+            generic.status_code == 500 and generic.json()["detail"] == "read_failed",
+        )
+        recovered = client.get("/api/workbench/content", params={"path": "page.html"})
+        check(
+            "HTML retries successfully after access is restored",
+            recovered.status_code == 200 and recovered.content == b"<h1>Recovery</h1>",
+        )
+
+
 if __name__ == "__main__":
+    test_html_read_permission_failure_and_retry()
+    test_lean_source_extracts_as_text_without_changing_bytes()
+    test_bmp_images_are_preview_only()
     test_product_mime_registry_precedes_host()
     test_manual_raw_versioning_does_not_invent_preview_capabilities()
     test_office_image_leases()

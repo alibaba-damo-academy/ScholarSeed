@@ -1,84 +1,223 @@
-.git/
-.idea/
-.vscode/
-.cursor/
-.history/
-.vs/
-*.iml
-.DS_Store
-Thumbs.db
-.venv
-.venv-*/
-.python/
-.uv/
-.uv-cache/
+# Python
 __pycache__/
+*.pyc
+*.pyo
 *.py[cod]
 *.egg-info/
-.mypy_cache/
+*.egg
+# `.venv/` 只挡目录; 不带斜杠的 `.venv` 同时挡住「同名符号链接」。
+# 曾有一次把 .venv 符号链接误提交进仓库, 别人切分支后该链接自指形成环,
+# 导致 make desktop 报 `.venv/bin/python: No such file or directory`。
+.venv
+.venv/
+/.venv-desktop/
+# Content-addressed Python distributions shared by development virtual environments.
+/.python/
+/.venv.previous-*/
+venv/
+env/
+.eggs/
+build/
+dist/
 .pytest_cache/
+.mypy_cache/
 .ruff_cache/
 .tox/
 .nox/
-node_modules/
-.npm/
-.yarn/
-.pnpm-store/
-.cache/
-.parcel-cache/
-.turbo/
-.turborepo/
-dist/
-build/
-target/
-out/
-/release/
-.output/
-.tmp*
-tmp/
-coverage/
-.coverage*
+.coverage
 coverage.xml
 htmlcov/
+.ipynb_checkpoints/
+**/node_modules/
+ui/veda/playwright-report/
+ui/veda/test-results/
+ui/veda/blob-report/
+
+# Node / Bun
+ui/opentui/node_modules/
+ui/opentui/dist/
+ui/opentui/.pnpm-store/
+ui/opentui/bun.lockb
+ui/webui/node_modules/
+ui/webui/dist/
+ui/webui/.pnpm-store/
+.bun/
+.npm/
+.npm-cache/
+.pnpm-store/
+.yarn/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.vite/
+.vercel/
+coverage/
 *.tsbuildinfo
-*.log
-.log/
-.trash/
-*.sqlite*
+.pnpm-debug.log
+
+# Common build/dependency outputs
+**/target/
+**/build/
+**/dist/
+**/out/
+**/bin/
+**/obj/
+**/.gradle/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake-build-*/
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+
+# Common data/model/experiment artifacts
+**/datasets/
+**/checkpoints/
+**/outputs/
+**/runs/
+**/wandb/
+**/mlruns/
+*.sqlite
+*.sqlite3
 *.db
-*.db-wal
-*.db-shm
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.npy
+*.npz
+
+# Archives and large local binaries
+*.zip
+!/scholarseed_skills/delivery/cache/*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.mp4
+*.mov
+*.webm
+# Reviewed runtime payloads are downloaded from OSS and verified through manifests.
+scripts/vendor/python-build-standalone/*.sha256
+scripts/vendor/codex/*.sha256
+scripts/vendor/texlive/*.sha256
+scripts/vendor/ripgrep/*/*.sha256
+scripts/vendor/ripgrep/*/rg
+scripts/vendor/ripgrep/*/rg.exe
+apps/desktop/src/renderer/public/office/**/soffice.wasm
+apps/desktop/src/renderer/public/office/**/soffice.data
+# Product skill archives are the reproducible source of the DMG's ScholarSeed skill pack.
+!scholarseed_skills/*.tar.gz
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local config / state
+.env
+.envrc
+*.local
+/.claude/workflows/
+# Local proprietary/third-party Codex runtime inputs. They are build inputs only
+# and must never be committed to the product repository.
+/codex_packages/
+
+# Desktop Playwright output may contain isolated Codex homes, auth/config state,
+# JSONL transcripts, screenshots, traces, and generated HTML reports.
+/apps/desktop/test-results/
+/apps/desktop/playwright-report/
+/.playwright-cli/
+/.playwright/
+
+# Legacy/local dependency checkouts. Open-source source of truth lives under
+# packages/**; never stage these root-level working copies.
+/damoagent/
+/damoasub/
+/damoatrace/
+
+# Logs / state
+.logs/
+tmp/*
+!tmp/CLAUDE.md
+!tmp/AGENTS.md
+work/scratch/
+agent/bench/results/
+agent/bench/test_sessions/
+agent/bench/vendor/
+
+# Thread-scoped Codex inline visualizations are local conversation previews.
+# (整个 .codex/ 已在下方统一 ignore, 这条保留作为意图说明)
+.codex/visualizations/
+
+# Project-level runtime state (created when running the product in the repo cwd).
+# `.scholarseed/` is the current product state. Keep the previous product state and
+# DamoAgent's neutral default ignored as well so local data can never enter a commit.
 .scholarseed/
 .shushen/
+.veda/
 .damoagent/
+examples/_last_survey.md
+
+# Desktop acceptance-driver scratch output.
+ui/desktop/tmp/
 apps/desktop/.package-lock
-.playwright-cli/
-playwright-report/
-test-results/
-blob-report/
-/scripts/vendor/python-build-standalone/*.tar.gz
-/scripts/vendor/codex/*.tgz
-/scripts/vendor/texlive/*.tar.gz
-/scripts/vendor/ripgrep/*/rg
-/scripts/vendor/ripgrep/*/rg.exe
-/apps/desktop/src/renderer/public/office/**/soffice.wasm
-/apps/desktop/src/renderer/public/office/**/soffice.data
-.env
-.env.*
-!.env.example
-secrets.*
-!apps/serve/service/chat/runtime/secrets.py
-*.pem
-*.key
-*.p12
-id_rsa*
-/.ai/
-/wiki/
-/work-records/
+
+# npm 单包装配输出 (大二进制, 不进库; 用 packaging/build_npm_package.sh 复现)
+packaging/npm/
+scholarseed-*.tgz
+.run/
+
+version.json
+version_preview.json
+version_release.json
+
+# ── 本地资产: 只留本地, 不随开源仓库发布 ──
+# `.ai/`、`.superpowers/`、`wiki/` 为本地协作与历史材料；`.qoder/` 为 IDE 本地 MCP 配置（可能带凭据）。
+# Development workflow definitions and host aliases are private supplements.
 /.agents/
 /.claude/
-/.codex/
-/.qoder/
-/.mcp.json
+/.codex/skills
+CLAUDE.md
+/.ai/
+/.superpowers/
+/.wiki/
+/wiki/
+.qoder/
+# tmp/ 是临时工作区 (含给 Agent 的 tmp 使用规范), 按 §8 不随开源发布。
+tmp/
+
+# account 管理后台前端 (proposal 37): 依赖与构建产物不进库
+ui/account-admin/node_modules/
+ui/account-admin/dist/
+
+# account 部署环境速记: 含 RDS / 镜像仓库明文口令, 只留本地
+account/环境说明.md
+# 部署期生成的 JWT 签名私钥 (泄露 = 可伪造任意用户 token)
+*.pem
+/scripts/vendor/codex/arm64/codex
+# libutil 本地锁文件, 不入库
+libinfo_lock.ini
+
+# 开源版技能 pack 是生成物: 源码事实源在 skills/community/, 由
+# `python -m service.cli.prebundle --build` 离线编译产出。
 /apps/serve/service/capabilities/skills/
 /apps/serve/service/capabilities/ui.zip
+/apps/desktop/.playwright-cli/
+
+# 打包签名工具
+scholarseed-distribution/
+chimp.sh
+chimp.bat
+
+# Local execution plans and work records.
+/docs/superpowers/
+/work-records/
+/handoff.md

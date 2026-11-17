@@ -71,7 +71,7 @@ test('citation evidence renders the server projection and keeps an explicit orig
   assert.match(source, /presentation\.precision === 'page'/)
   assert.match(source, /citations\.manualCheck/)
   assert.match(source, /citations\.displayUnavailable/)
-  assert.match(source, /citations\.viewOriginal/)
+  assert.match(source, /onOpenOriginal=\{\(resolveTarget\) => void open\(resolveTarget\)\}/)
   assert.match(source, /\[overflow-wrap:break-word\]/)
   assert.doesNotMatch(source, /whitespace-pre-wrap \[overflow-wrap:anywhere\]/)
 })
@@ -82,8 +82,8 @@ test('source popover renders a directory and defers evidence to each citation ca
     '\n' +
     readFileSync(new URL('../../components/business/Citation.tsx', import.meta.url), 'utf8')
   const directory = source.slice(
-    source.indexOf('projected.map'),
-    source.indexOf('</PopoverContent></Popover></div>')
+    source.indexOf('const projected ='),
+    source.indexOf('</PopoverContent>', source.indexOf('const projected ='))
   )
 
   assert.match(directory, /data-citation-source-entry/)
@@ -92,6 +92,8 @@ test('source popover renders a directory and defers evidence to each citation ca
   assert.match(directory, /role="listitem"/)
   assert.match(directory, /<CitationLink/)
   assert.match(directory, /<WebCitationLink/)
+  assert.match(directory, /source.kind === 'project'/)
+  assert.match(directory, /renderProjectSource\?\.\(source\)/)
   assert.doesNotMatch(directory, /<EvidenceContent/)
 })
 
@@ -101,17 +103,40 @@ test('web citations reuse the citation trigger and open only the projected sourc
     '\n' +
     readFileSync(new URL('../../components/business/Citation.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /function openWebSource/)
-  assert.match(source, /window\.scholarseed\.openExternal\(url\)/)
-  assert.match(source, /NUMBERED_CITATION_CLASS/)
-  assert.doesNotMatch(source, /NUMBERED_CITATION_CLASS = 'ml-0\.5/)
+  assert.match(source, /React\.useContext\(WebNavigationContext\)/)
+  assert.doesNotMatch(source, /window\.scholarseed\.openExternal/)
+  assert.match(source, /openWebSource\(url, onOpened\)/)
+  assert.doesNotMatch(source, /window\.scholarseed\.browser\.dispatch/)
+  assert.match(source, /<CitationMarker/)
+  const marker = readFileSync(
+    new URL('../../components/primitive/Citation.tsx', import.meta.url),
+    'utf8'
+  )
+  assert.match(marker, /data-citation-label/)
+  assert.match(marker, /CITATION_JOINER/)
   assert.match(source, /source\.search_kind === 'paper'/)
-  assert.match(source, /onClick=\{\(\) => openWebSource\(source\.url\)\}/)
-  assert.match(source, /<PopoverTrigger asChild>/)
+  assert.match(source, /setOpen\(false\)\s+openWebSource\(source\.url\)/)
+  assert.match(source, /<HoverCardTrigger asChild>/)
+  assert.match(
+    source,
+    /onClick=\{\(event\) => \{\s*event.preventDefault\(\)\s*setOpen\(false\)\s*openWebSource\(source.url\)/
+  )
   assert.doesNotMatch(
     source,
     /onClick=\{\(\) => openWebSource\(source\.url\)\}.*data-citation-label/
   )
+})
+
+test('file citation labels navigate directly while hover preserves the evidence preview', () => {
+  const source = readFileSync(
+    new URL('../../components/business/Citation.tsx', import.meta.url),
+    'utf8'
+  )
+  assert.match(source, /onClick=\{\(\) => void open\(\)\}/)
+  assert.match(source, /<HoverCardContent/)
+  assert.doesNotMatch(source, /citations\.viewOriginal/)
+  assert.match(source, /source\.source_missing/)
+  assert.match(source, /problem\.quote/)
 })
 
 test('Markdown offers only registered citation URLs to the citation renderer', () => {

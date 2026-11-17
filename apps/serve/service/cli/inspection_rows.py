@@ -91,17 +91,20 @@ def read_candidate_rows(
         frame = json.loads(line, object_pairs_hook=_unique)
         if (
             not isinstance(frame, dict)
-            or type(frame.get("version")) is not int
+            or (not isinstance(frame.get("version"), int) or isinstance(frame.get("version"), bool))
             or frame["version"] != 1
             or frame.get("name") != preview.name
-            or type(frame.get("sequence")) is not int
+            or (
+                not isinstance(frame.get("sequence"), int)
+                or isinstance(frame.get("sequence"), bool)
+            )
             or frame["sequence"] != sequence
         ):
             raise ValueError("private row transfer identity changed")
         if frame.get("event") == "rows_end":
             if (
                 set(frame) != {"version", "event", "name", "sequence", "size", "digest"}
-                or type(frame["size"]) is not int
+                or (not isinstance(frame["size"], int) or isinstance(frame["size"], bool))
                 or frame["size"] != size
                 or not size
                 or frame["digest"] != preview.rows_digest

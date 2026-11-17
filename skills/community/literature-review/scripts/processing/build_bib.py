@@ -61,10 +61,14 @@ _slr_paths.bootstrap(__file__)
 # --- end slr path bootstrap ---
 
 import argparse
+import asyncio
 import json
 import os
 from collections import Counter
 from pathlib import Path
+
+from search_metadata_eligibility import bibliography_preflight, has_upstream_bibtex
+from bibliography import project as citation_metadata, resolve as resolve_citations, read_information
 
 from _utils import build_cite_key_map, parse_bibtex_entries, render_bibtex_entry
 
@@ -100,9 +104,14 @@ def _read_json(path: Path) -> tuple[dict | None, str]:
     return data, ""
 
 
-def _has_upstream_bibtex(meta: dict) -> bool:
-    cs = meta.get("citationStyles")
-    return isinstance(cs, dict) and bool((cs.get("bibtex") or "").strip())
+def preflight(workspace: Path) -> dict:
+    """Read-only author gate, usable before any fulltext or card generation."""
+    selected, error = _read_json(workspace / RETRIEVAL_DIR / SELECTED_FILENAME)
+    if error or not selected or any(not isinstance(row, dict) for row in selected.values()):
+        return {**_fail(error or 'Expected a non-empty selected-paper object keyed by paper_id'),
+                'code': 'BIBLIOGRAPHY_INPUT_INVALID',
+                'next_action': 'Inspect selected_paper.json; preserve selected paper identities.'}
+    return {'task': 'BIBLIOGRAPHY_PREFLIGHT', **bibliography_preflight(selected)}
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -114,7 +123,7 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def build(workspace: Path) -> tuple[dict, dict]:
+def build(workspace: Path, include_cards=True) -> tuple[dict, dict]:
     """Render the corpus bibliography. Returns (report, status)."""
     retrieval = workspace / RETRIEVAL_DIR
     process = workspace / PROCESS_DIR
@@ -125,11 +134,34 @@ def build(workspace: Path) -> tuple[dict, dict]:
     if selected is None:
         return {}, _fail(f"{retrieval / SELECTED_FILENAME} not found — "
                          f"run the retrieval stage first")
-    papers = {pid: meta for pid, meta in selected.items() if isinstance(meta, dict)}
+    if any(not isinstance(meta, dict) for meta in selected.values()):
+        return {}, _fail('Every selected paper must be an object; preserve the full frozen selection')
+    papers = dict(selected)
     if not papers:
         return {}, _fail(f"{SELECTED_FILENAME} contains no papers")
+    try:
+        information = read_information(workspace)
+    except (ValueError, OSError) as error:
+        return {}, _fail(str(error))
+    projected = {}
+    verified_types = {}
+    metadata_issues = []
+    for pid, meta in papers.items():
+        try:
+            projected[pid], issues, verified_types[pid] = citation_metadata(workspace, pid, meta, (information or {}).get(pid))
+        except (ValueError, OSError) as error:
+            return {}, _fail(str(error))
+        metadata_issues.extend({'paper_id': pid, 'reason': issue} for issue in issues)
+    papers = projected
+    unresolved_versions = [issue for issue in metadata_issues
+                           if issue['reason'] == 'source_title_or_author_group_conflict']
+    if unresolved_versions:
+        failure = {**_fail('Primary DOI metadata and the supplied author group need source-version review'),
+                   'code': 'BIBLIOGRAPHY_IDENTITY_CONFLICT', 'issues': unresolved_versions,
+                   'next_action': 'Inspect the original title/author evidence and the recorded primary metadata; keep one publication version as a complete group. Preserve selected sources and cite keys; do not guess missing identities.'}
+        return failure, failure
 
-    cards, err = _read_json(process / CARDS_FILENAME)
+    cards, err = _read_json(process / CARDS_FILENAME) if include_cards else (None, '')
     if err:
         return {}, _fail(err)
     # Cards are an input, not a requirement. They only add `abstract`, `tldr`,
@@ -143,6 +175,12 @@ def build(workspace: Path) -> tuple[dict, dict]:
     if key_error: return {}, _fail(key_error)
     cite_keys = build_cite_key_map(papers, cards, preassigned=preassigned or {})
 
+    failure = bibliography_preflight(papers)
+    if failure['issues']:
+        failure['issues'] = [dict(issue, cite_key=cite_keys[issue['paper_id']]) for issue in failure['issues']]
+        failure['task'] = 'BUILD_BIB'
+        return failure, failure
+
     entries: list[str] = []
     upstream = 0
     synthesised = 0
@@ -151,7 +189,7 @@ def build(workspace: Path) -> tuple[dict, dict]:
     for pid in sorted(papers):
         meta = papers[pid]
         cite_key = cite_keys[pid]
-        if _has_upstream_bibtex(meta):
+        if has_upstream_bibtex(meta):
             upstream += 1
         else:
             synthesised += 1
@@ -162,7 +200,8 @@ def build(workspace: Path) -> tuple[dict, dict]:
                 no_title.append(cite_key)
             if not (meta.get("authors") or []):
                 no_author.append(cite_key)
-        entries.append(render_bibtex_entry(cite_key, meta, card=cards.get(pid)))
+        entries.append(render_bibtex_entry(cite_key, meta, card=cards.get(pid),
+                                          **({'verified_type': verified_types[pid]} if verified_types.get(pid) else {})))
 
     text = HEADER + "\n" + "\n\n".join(entries) + "\n"
     _write_atomic(process / BIB_FILENAME, text)
@@ -194,6 +233,7 @@ def build(workspace: Path) -> tuple[dict, dict]:
         "cite_keys_json": str(process / CITE_KEYS_FILENAME),
         "by_relevance_level": dict(sorted(Counter(
             (p.get("relevance_level") or "unknown") for p in papers.values()).items())),
+        "citation_metadata_issues": metadata_issues,
     }
 
     reasons: list[str] = []
@@ -204,7 +244,7 @@ def build(workspace: Path) -> tuple[dict, dict]:
         return report, _fail(
             f"{len(unreadable)} rendered entr(y/ies) could not be parsed back out of "
             f"{BIB_FILENAME} (first: {unreadable[0]}) — the bibliography is not usable")
-    if not cards_present:
+    if include_cards and not cards_present:
         reasons.append(f"{CARDS_FILENAME} not found; entries carry no abstract/tldr fields")
     if no_title:
         reasons.append(f"{len(no_title)} paper(s) have no title to render")
@@ -226,9 +266,32 @@ def main() -> int:
                     help="workspace directory holding 02_retrieval/ (default: cwd)")
     ap.add_argument("--json", action="store_true",
                     help="print the full report rather than the status line")
+    ap.add_argument("--check-only", action="store_true",
+                    help="validate author metadata without generating bibliography or cite keys")
+    ap.add_argument("--material-only", action="store_true",
+                    help="with --check-only, report author issues without blocking evidence preparation")
     args = ap.parse_args()
 
-    report, status = build(Path(args.workspace).resolve())
+    if args.check_only:
+        status = preflight(Path(args.workspace).resolve())
+        if args.material_only and status.get('code') == 'AUTHOR_METADATA_INVALID':
+            status.update(status='SUCCESS', bibliography_status='FAILED', blocking_stage='bibliography')
+        print(json.dumps(status, indent=2, ensure_ascii=False))
+        return 0 if status['status'] == 'SUCCESS' else 1
+
+    if args.material_only:
+        ap.error('--material-only requires --check-only; bibliography validation remains mandatory')
+
+    workspace = Path(args.workspace).resolve()
+    selected, error = _read_json(workspace / RETRIEVAL_DIR / SELECTED_FILENAME)
+    try:
+        information = read_information(workspace)
+    except (ValueError, OSError) as info_error:
+        print(json.dumps(_fail(str(info_error)), ensure_ascii=False))
+        return 1
+    lookup = (asyncio.run(resolve_citations(workspace, selected, information)) if selected and not error else {})
+    report, status = build(workspace)
+    report['citation_metadata_lookup'] = lookup
 
     if args.json:
         print(json.dumps({**status, "report": report}, indent=2, ensure_ascii=False))

@@ -9,7 +9,7 @@ import { previewDocumentFormat, verifyReviewedSample } from './samples.ts'
 const text = (value: string): Uint8Array => new TextEncoder().encode(value)
 
 test('reviewed samples preserve exact bytes and content-derived revisions', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   assert.deepEqual(files.list().map(file => file.path), PREVIEW_DOCUMENTS.map(document => document.path).sort())
   for (const file of files.manifest()) {
     const document = PREVIEW_DOCUMENTS.find(document => document.path === file.path)!
@@ -26,7 +26,7 @@ test('reviewed manifest rejects altered sample bytes', () => {
 })
 
 test('format projection follows current bytes and reused CSV parser rather than fixture identity', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   assert.equal(previewDocumentFormat('renamed.bin', files.read('sample.pdf').bytes).contentKind, 'binary')
   assert.equal(previewDocumentFormat('renamed.bin', files.read('sample.pdf').bytes).viewer, 'unsupported')
   assert.equal(previewDocumentFormat('renamed.md', files.read('sample.pdf').bytes).viewer, 'unsupported')
@@ -37,7 +37,7 @@ test('format projection follows current bytes and reused CSV parser rather than 
 })
 
 test('saving and reopening share bytes, revision, identity and monotonic mtime without leaking mutable buffers', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const before = files.fileInfo('readme.md')
   const bytes = text('saved markdown')
   const saved = files.write('./readme.md', bytes)
@@ -53,8 +53,8 @@ test('saving and reopening share bytes, revision, identity and monotonic mtime w
 })
 
 test('instances and reset isolate mutations from each other and original fixture bytes', () => {
-  const first = new PreviewFiles()
-  const second = new PreviewFiles()
+  const first = new PreviewFiles('reviewed')
+  const second = new PreviewFiles('reviewed')
   const original = second.read('readme.md')
   first.write('readme.md', text('first instance only'))
   first.delete('hello.py')
@@ -66,7 +66,7 @@ test('instances and reset isolate mutations from each other and original fixture
 })
 
 test('relative virtual directories support atomic recursive rename and deletion', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const original = files.write('notes//draft.md', text('draft'))
   assert.equal(files.list('notes/')[0].path, 'notes/draft.md')
   files.rename('notes', 'renamed')
@@ -82,7 +82,7 @@ test('relative virtual directories support atomic recursive rename and deletion'
 })
 
 test('all operations reject traversal, absolute host paths, Windows aliases and NUL on every platform', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   for (const path of ['../outside', 'safe/../outside', '/Users/private', 'C:/Users/private', 'C:\\Users\\private', '\\\\server\\share', '//server/share', 'bad\0name']) {
     for (const operation of [() => files.read(path), () => files.write(path, text('bad')), () => files.list(path), () => files.delete(path), () => files.rename('readme.md', path)]) {
       assert.throws(operation, { code: PREVIEW_FILE_ERROR.invalidPath }, path)

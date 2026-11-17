@@ -1,4 +1,4 @@
-"""Workspace-bound artifact publication and download for one-shot runs."""
+"""Workspace-bound inputs, artifact publication and download for one-shot runs."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 import stat
 import tempfile
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -27,6 +28,8 @@ ARTIFACT_INTEGRITY_MISMATCH = "invocation_artifact_integrity_mismatch"
 ARTIFACT_FILE_TOO_LARGE = "invocation_artifact_file_too_large"
 
 FILE_OPEN_FLAGS = os.O_RDONLY | NOFOLLOW
+INPUT_OPEN_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW
+INPUT_FILE_MODE = 0o666
 
 
 class InvocationArtifactError(RuntimeError):
@@ -43,6 +46,30 @@ class InvocationArtifactService:
     def __init__(self, root: Path, metadata: InvocationMetadata) -> None:
         self._root = root
         self._metadata = metadata
+
+    def stage_inputs(self, workspace: Path, inputs: tuple[tuple[str, bytes], ...]) -> None:
+        for relative, payload in inputs:
+            path = Path(self._relative(relative))
+            with closing(
+                open_directory(canonical_root(workspace), tuple(path.parts[:-1]))
+            ) as directory:
+                descriptor = directory.open(path.name, INPUT_OPEN_FLAGS, INPUT_FILE_MODE)
+                try:
+                    with os.fdopen(descriptor, "wb") as handle:
+                        handle.write(payload)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    directory.sync()
+                except BaseException as error:
+                    try:
+                        directory.unlink(path.name)
+                    except FileNotFoundError:
+                        pass
+                    except BaseException as cleanup:
+                        raise BaseExceptionGroup(
+                            "invocation input write and cleanup failed", [error, cleanup]
+                        ) from None
+                    raise
 
     def publish(
         self,

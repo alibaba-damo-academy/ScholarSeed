@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "pair",
+  "revision": "1",
+  "projects": [
+    { "key": "first", "projectId": "research", "projectRevision": "1" },
+    { "key": "second", "projectId": "research", "projectRevision": "1" }
+  ]
+}

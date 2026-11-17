@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { stripTypeScriptTypes } from 'node:module'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { block, tail } from '../test-helpers/source-contract.ts'
 
 /**
@@ -52,6 +54,7 @@ const refreshCallBlock = block(
   'export async function revokeRefreshFamily'
 )
 const revokeBlock = tail(refreshSource, 'export async function revokeRefreshFamily')
+const renewal = block(mainSource, 'function ensureFreshAuth(', 'function registerRefreshTimer')
 
 test('refresh-ahead window and check cadence are ordered so a missed window still recovers', () => {
   const aheadSeconds = constant(
@@ -91,16 +94,15 @@ test('the refresh token is stored encrypted, atomically and owner-readable only'
     refreshSource,
     /join\(desktopHome\(\), `\$\{REFRESH_FILE_PREFIX\}\.\$\{namespace\}\.\$\{REFRESH_FILE_SUFFIX\}`\)/
   )
-  // 先写 .tmp 再 rename：崩溃时不会留下半截密文当有效凭据。
-  assert.match(saveBlock, /const tmp = `\$\{path\}\.tmp`/)
+  // The admitted writer creates an explicitly private file; journal owns atomic publication.
+  assert.match(saveBlock, /const writer = desktopDirectoryWriter\(dirname\(path\)\)/)
   assert.match(
     saveBlock,
-    /writeFileSync\(tmp, safeStorage\.encryptString\(token\), \{ mode: 0o600 \}\)/
+    /writeRecord\(path, safeStorage\.encryptString\(token\), undefined, writer\)/
   )
-  assert.match(saveBlock, /chmodSync\(tmp, 0o600\)/)
-  assert.match(saveBlock, /renameSync\(tmp, path\)/)
+  assert.match(saveBlock, /finally \{\s*writer.close\(\)/)
   // 明文永不落盘：加密之外不允许出现直接写 token 的路径。
-  assert.doesNotMatch(saveBlock, /writeFileSync\((path|tmp), token/)
+  assert.doesNotMatch(saveBlock, /writeRecord\(path, token/)
 })
 
 test('an empty token deletes the credential and a missing file is not an error', () => {
@@ -180,20 +182,20 @@ test('logout revocation is best effort and can never fail the local sign-out', (
 })
 
 test('the main-process renewal loop is single-flight and gated on a readable expiry', () => {
-  const loop = block(mainSource, 'function ensureFreshAuth(): void {', 'setInterval(')
+  const loop = renewal
   // 启动触发与每小时定时可能撞在一起；并发轮转会被服务端判成重放，把整个族掐断。
   assert.match(mainSource, /let refreshInflight: Promise<void> \| null = null/)
-  assert.match(loop, /if \(refreshInflight\) return/)
-  assert.match(loop, /refreshInflight = \(async \(\) => \{/)
-  assert.match(loop, /if \(!win \|\| win\.isDestroyed\(\)\) return/)
-  assert.match(loop, /const access = await readAuthCookie\(win\)\s*if \(!access\) return/)
+  assert.match(loop, /if \(refreshInflight\) return refreshInflight/)
+  assert.match(loop, /refreshInflight = Promise\.resolve\(\)\.then\(async \(\) => \{/)
+  assert.match(loop, /const win = aliveMainWindow\(\)\s*if \(!win\) return/)
+  assert.match(loop, /const access = await readAuthCookie\(win\)\s*if \(!access\) \{/)
   assert.match(loop, /const exp = accessExpSeconds\(access\)/)
   // 非 JWT（无 exp）不参与账号续期。
   assert.match(loop, /if \(exp == null\) return/)
   assert.match(loop, /if \(exp - Date\.now\(\) \/ 1000 > REFRESH_AHEAD_SECONDS\) return/)
   assert.match(
     loop,
-    /const refreshToken = loadRefreshToken\(refreshNamespace\)\s*\/\/[\s\S]*?if \(!refreshToken\) return/
+    /const refreshToken = loadRefreshToken\(refreshNamespace\)\s*\/\/[\s\S]*?if \(!refreshToken\) \{/
   )
   assert.match(
     loop,
@@ -202,7 +204,7 @@ test('the main-process renewal loop is single-flight and gated on a readable exp
 })
 
 test('a rotated pair is adopted, an explicit rejection clears credentials, a network error defers', () => {
-  const loop = block(mainSource, 'function ensureFreshAuth(): void {', 'setInterval(')
+  const loop = renewal
   assert.match(loop, /const outcome = await refreshTokens\(accountBase, refreshToken\)/)
   assert.match(loop, /await setAuthCookie\(win, outcome\.data\.token\)/)
   assert.match(loop, /saveRefreshToken\(outcome\.data\.refresh_token, refreshNamespace, pushLog\)/)
@@ -218,6 +220,59 @@ test('a rotated pair is adopted, an explicit rejection clears credentials, a net
   assert.match(loop, /token refresh deferred/)
   assert.match(mainSource, /setInterval\(\(\) => ensureFreshAuth\(\), REFRESH_CHECK_INTERVAL_MS\)/)
   assert.match(mainSource, /let refreshTimerRegistered = false/)
+})
+
+test('startup shares an in-flight renewal and waits for the new credentials', async () => {
+  let finishCookieWrite!: () => void
+  const cookieWrite = new Promise<void>((resolve) => {
+    finishCookieWrite = resolve
+  })
+  let reportCookieWriteStarted!: () => void
+  const cookieWriteStarted = new Promise<void>((resolve) => {
+    reportCookieWriteStarted = resolve
+  })
+  let rotations = 0
+  let refreshSaved = false
+  const ensureFreshAuth = runInNewContext(
+    stripTypeScriptTypes(`let refreshInflight = null; ${renewal}\nensureFreshAuth`),
+    {
+      appQuitting: false,
+      updateInstallationInProgress: false,
+      desktopWorkbenchReady: () => true,
+      aliveMainWindow: () => ({}),
+      readAuthCookie: async () => 'expired',
+      accessExpSeconds: () => 0,
+      REFRESH_AHEAD_SECONDS: 3600,
+      loadRefreshToken: () => 'old-refresh',
+      refreshNamespace: 'test',
+      accountBaseUrlFromServe: async () => 'https://example.test',
+      refreshTokens: async () => {
+        rotations += 1
+        return { ok: true, data: { token: 'new-access', refresh_token: 'new-refresh' } }
+      },
+      setAuthCookie: async (_win: unknown, token: string) => {
+        assert.equal(token, 'new-access')
+        reportCookieWriteStarted()
+        await cookieWrite
+      },
+      saveRefreshToken: (token: string) => {
+        assert.equal(token, 'new-refresh')
+        refreshSaved = true
+      },
+      pushLog: () => {},
+    }
+  ) as (startup?: boolean) => Promise<void> | undefined
+  assert.match(mainSource, /registerRefreshTimer\(\)[\s\S]*?await ensureFreshAuth\(true\)/)
+  const timerRenewal = ensureFreshAuth()
+  const startupRenewal = ensureFreshAuth(true)
+  assert.ok(startupRenewal)
+  assert.equal(startupRenewal, timerRenewal)
+  await cookieWriteStarted
+  assert.equal(refreshSaved, false)
+  finishCookieWrite()
+  await startupRenewal
+  assert.equal(refreshSaved, true)
+  assert.equal(rotations, 1)
 })
 
 test('the account base url comes from serve, never from a bundled default', () => {

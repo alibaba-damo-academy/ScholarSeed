@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
+from service.chat.runtime.interaction import SessionInteractions
+from service.chat.service.sessions import SessionService
 from service.cli.bridge import parser
 from service.content.persistence.catalog import ContentCatalog
+from service.content.service import external
+from service.content.service.context import ContentContextProvider
 from service.content.service.port import ContentService, ProjectRegistry
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
+    BLOCKING_OPERATIONS,
     BRIDGE_REQUESTS,
     RESOURCE_CURSOR_CHARS,
     RESOURCE_ROUTE_PREFIX,
@@ -35,7 +42,7 @@ from service.platform.vocabulary import (
 from service.resources.api.bridge import register_resource_bridge
 
 
-class ResourceBridgeContracts(unittest.TestCase):
+class ResourceBridgeFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -112,6 +119,327 @@ class ResourceBridgeContracts(unittest.TestCase):
         )
         return TestClient(app)
 
+
+class ResourceBridgeContracts(ResourceBridgeFixture):
+    def external_client(self, *, mode="ask", answer="allow_file_read", explicit=True, change=None):
+        self.external_file = self.root / "outside.txt"
+        if not self.external_file.exists():
+            self.external_file.write_text("external evidence", encoding="utf-8")
+        self.live.applied_permission_mode = mode
+        self.live.active_product_turn_id = "product-turn"
+        self.live.interrupt_generation = 0
+        self.live.attachment_generation = 0
+        self.live.last_submission_id = "submission"
+        self.live.terminating = False
+        self.live.terminated = False
+        catalog = SessionCatalogStore(self.root / "sessions.sqlite3")
+        self.approval_catalog = catalog
+        catalog.register(
+            self.live.id,
+            SessionPrincipal("owner"),
+            runtime_id="codex",
+            runtime_workdir=str(self.root),
+            project_path=self.project.root,
+            output_root=str(self.root),
+            model_id="test-model",
+            vendor_thread_id="native-thread",
+            vendor_session_id=None,
+            codex_version=None,
+            policy_id=mode,
+            status=SessionStatus.READY,
+            title="External read",
+            created_at=1.0,
+        )
+        self.approvals = []
+
+        async def publish(kind, payload, **kwargs):
+            if kind != "hil_requested":
+                return
+            self.approvals.append(payload)
+            if payload.get("state") == "resolved":
+                return
+            question = payload["questions"][0]
+            if change is not None:
+                change()
+            decision = {"answers": {question["id"]: answer}}
+            catalog.resolve_hil(question["id"], decision)
+            asyncio.get_running_loop().call_soon(
+                self.live.interactions._product_waiters[question["id"]].set_result, decision
+            )
+
+        self.live.interactions = SessionInteractions(self.live.id, catalog, publish)
+        return self._client(
+            user_message=lambda session, turn: (
+                f"Read `{self.external_file}`" if explicit else "Read references"
+            )
+        )
+
+    def test_external_read_waits_for_approval_and_does_not_register_a_mount(self):
+        with self.external_client() as client:
+            before = self.content.external_roots(self.project.id)
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(self.external_file)},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["content"], "external evidence")
+        self.assertNotIn("source_url", response.json())
+        self.assertEqual(self.content.external_roots(self.project.id), before)
+        self.assertEqual(len(self.approvals), 1)
+        self.assertEqual(
+            self.approvals[0]["questions"][0]["question"], str(self.external_file.resolve())
+        )
+
+    def test_external_read_denial_is_reused_after_mode_switch(self):
+        with self.external_client(answer="deny_file_read") as client:
+            for mode in ("ask", "safe_auto", "bypassPermissions"):
+                self.live.applied_permission_mode = mode
+                response = client.post(
+                    RESOURCE_ROUTE_PREFIX + "read-external",
+                    headers=self.headers,
+                    json={"path": str(self.external_file)},
+                )
+                self.assertEqual(response.status_code, 403, response.text)
+                self.assertEqual(response.json()["error"], "external_read_denied")
+        self.assertEqual(len(self.approvals), 1)
+
+    def test_external_safe_auto_uses_resolved_receipt_for_explicit_document(self):
+        with self.external_client(mode="safe_auto", answer="deny_file_read") as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(self.external_file)},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.approvals[0]["state"], "resolved")
+
+    def test_external_safe_auto_without_user_path_falls_back_to_manual(self):
+        with self.external_client(
+            mode="safe_auto", explicit=False, answer="deny_file_read"
+        ) as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(self.external_file)},
+            )
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertNotEqual(self.approvals[0].get("state"), "resolved")
+
+    def test_external_approval_responses_require_the_trusted_host(self):
+        with self.external_client() as client:
+            client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(self.external_file)},
+            )
+        request_id = self.approvals[0]["questions"][0]["id"]
+        service = SimpleNamespace(_access=self.approval_catalog)
+        self.assertTrue(SessionService.requires_host_for_hil(service, request_id))
+
+    def test_external_chunks_reuse_permission_but_other_files_do_not(self):
+        with self.external_client() as client:
+            for offset in (0, 3):
+                response = client.post(
+                    RESOURCE_ROUTE_PREFIX + "read-external",
+                    headers=self.headers,
+                    json={"path": str(self.external_file), "offset": offset, "limit": 3},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+            other = self.root / "second.txt"
+            other.write_text("second", encoding="utf-8")
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(other)},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(self.approvals), 2)
+
+    def test_external_read_rejects_replacement_during_approval(self):
+        def replace():
+            self.external_file.rename(self.root / "old.txt")
+            self.external_file.write_text("replacement", encoding="utf-8")
+
+        with self.external_client(change=replace) as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(self.external_file)},
+            )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["error"], "external_file_changed")
+
+    def test_external_read_rejects_cancelled_task_after_approval(self):
+        def cancel():
+            self.live.interrupt_generation += 1
+
+        with self.external_client(change=cancel) as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(self.external_file)},
+            )
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_external_read_rejects_directories_symlinks_and_relative_paths(self):
+        with self.external_client() as client:
+            linked = self.root / "symlink.txt"
+            linked.symlink_to(self.external_file)
+            for path in (str(self.root), str(linked), "outside.txt"):
+                response = client.post(
+                    RESOURCE_ROUTE_PREFIX + "read-external",
+                    headers=self.headers,
+                    json={"path": path},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.approvals, [])
+
+    def test_project_read_rejects_external_path_with_actionable_error(self):
+        with self._client() as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read",
+                headers=self.headers,
+                json={"path": str(self.external / "linked.md")},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("read-external", response.json()["error"])
+
+    def test_external_contract_and_cli_are_registered_as_long_wait(self):
+        command = parser().parse_args(
+            ["resource", "read-external", "--json", '{"path":"/example.txt"}']
+        )
+        self.assertEqual((command.capability, command.operation), ("resource", "read-external"))
+        self.assertIn(("resource", "read-external"), BLOCKING_OPERATIONS)
+        contract = BRIDGE_REQUESTS[("resource", "read-external")]
+        with self.assertRaises(ValidationError):
+            contract.request_type.model_validate({"path": "/example.txt", "authorized": True})
+
+    def test_external_new_turn_does_not_inherit_approval(self):
+        with self.external_client() as client:
+            for turn in ("turn", "next-turn"):
+                self.live.ledger.active_turn_id = turn
+                response = client.post(
+                    RESOURCE_ROUTE_PREFIX + "read-external",
+                    headers=self.headers,
+                    json={"path": str(self.external_file)},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(self.approvals), 2)
+
+    def test_external_changed_file_cannot_reuse_prior_approval(self):
+        with self.external_client() as client:
+            request = {"path": str(self.external_file)}
+            self.assertEqual(
+                client.post(
+                    RESOURCE_ROUTE_PREFIX + "read-external", headers=self.headers, json=request
+                ).status_code,
+                200,
+            )
+            self.external_file.write_text("changed content", encoding="utf-8")
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external", headers=self.headers, json=request
+            )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["error"], "external_file_changed")
+        self.assertEqual(len(self.approvals), 1)
+
+    def test_external_sensitive_file_requires_manual_approval_in_safe_auto(self):
+        with self.external_client(mode="safe_auto", answer="deny_file_read") as client:
+            sensitive = self.root / ".private.txt"
+            sensitive.write_text("private", encoding="utf-8")
+            self.external_file = sensitive
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(sensitive)},
+            )
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertNotEqual(self.approvals[0].get("state"), "resolved")
+
+    def test_external_product_private_file_is_not_approvable(self):
+        with self.external_client(mode="bypassPermissions") as client:
+            private = self.root / ".scholarseed"
+            private.mkdir()
+            target = private / "secret.txt"
+            target.write_text("secret", encoding="utf-8")
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(target)},
+            )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["error"], "external_file_forbidden")
+        self.assertEqual(self.approvals, [])
+
+    def test_external_parent_replacement_cannot_change_approved_file(self):
+        def replace():
+            parent = self.external_file.parent
+            parent.rename(parent.with_name("previous-parent"))
+            parent.mkdir()
+            self.external_file.write_text("replacement", encoding="utf-8")
+
+        with self.external_client(change=replace) as client:
+            parent = self.root / "parent"
+            parent.mkdir()
+            self.external_file = parent / "test.txt"
+            self.external_file.write_text("approved", encoding="utf-8")
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(self.external_file)},
+            )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["error"], "external_file_changed")
+
+    def test_external_private_directory_case_alias_is_forbidden(self):
+        with self.external_client(mode="bypassPermissions") as client:
+            private = self.root / ".ScholarSeed"
+            private.mkdir()
+            target = private / "secret.txt"
+            target.write_text("private", encoding="utf-8")
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-external",
+                headers=self.headers,
+                json={"path": str(target)},
+            )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["error"], "external_file_forbidden")
+        self.assertEqual(self.approvals, [])
+
+    def test_external_invalid_platform_names_fail_without_approval(self):
+        with self.external_client(mode="bypassPermissions") as client:
+            for name in ("document.txt:stream", "document.txt.", "CON"):
+                response = client.post(
+                    RESOURCE_ROUTE_PREFIX + "read-external",
+                    headers=self.headers,
+                    json={"path": str(self.root / name)},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.approvals, [])
+
+    def test_external_read_does_not_equate_windows_path_and_handle_change_times(self):
+        target = self.root / "timestamps.txt"
+        target.write_text("partial content", encoding="utf-8")
+        actual_fstat = external.os.fstat
+
+        def handle_stat(descriptor):
+            observed = actual_fstat(descriptor)
+            return SimpleNamespace(
+                st_mode=observed.st_mode,
+                st_nlink=observed.st_nlink,
+                st_dev=observed.st_dev,
+                st_ino=observed.st_ino,
+                st_size=observed.st_size,
+                st_mtime_ns=observed.st_mtime_ns,
+                st_ctime_ns=observed.st_ctime_ns + 1,
+            )
+
+        with patch.object(external, "PATH_CHANGE_TIME_COMPARABLE", False, create=True):
+            snapshot = self.content.external_file_snapshot(str(target))
+            with patch.object(external.os, "fstat", side_effect=handle_stat):
+                self.assertEqual(self.content.read_external_file(snapshot, 0, 7), b"partial")
+
     def test_read_accepts_optional_project_without_expanding_listing(self) -> None:
         query = ResourceRead.model_validate(
             {"path": "resources/foreign.md", "project_id": self.other_project.id}
@@ -119,6 +447,91 @@ class ResourceBridgeContracts(unittest.TestCase):
         self.assertEqual(query.project_id, self.other_project.id)
         with self.assertRaises(ValidationError):
             ResourceList.model_validate({"project_id": self.other_project.id})
+
+    def test_text_read_keeps_valid_files_when_failed_file_is_removed(self) -> None:
+        self.live.interactions = SimpleNamespace(
+            request_product_input=AsyncMock(return_value={"cancelled": True})
+        )
+        with self._client(context_provider=ContentContextProvider(self.content)) as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-text",
+                headers=self.headers,
+                json={"paths": ["resources/a.md", "resources/missing.pdf"]},
+            )
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertEqual(result["files"][0]["text"], "alpha")
+        self.assertEqual(result["removed"], ["resources/missing.pdf"])
+        self.assertEqual(result["failures"][0]["path"], "resources/missing.pdf")
+        self.assertEqual(self.content.read_text(self.project.id, "resources/a.md"), "alpha")
+
+    def test_text_read_retry_reopens_only_original_failed_file(self) -> None:
+        async def recover(question, **kwargs):
+            self.content.write_text(self.project.id, "resources/repaired.txt", "repaired")
+            return {"answers": {question["id"]: "retry_file"}}
+
+        self.live.interactions = SimpleNamespace(
+            request_product_input=AsyncMock(side_effect=recover)
+        )
+        with self._client(context_provider=ContentContextProvider(self.content)) as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-text",
+                headers=self.headers,
+                json={"paths": ["resources/a.md", "resources/repaired.txt"]},
+            )
+        self.assertEqual([item["text"] for item in response.json()["files"]], ["alpha", "repaired"])
+        self.assertEqual(self.live.interactions.request_product_input.await_count, 1)
+
+    def test_repeated_parse_failures_have_distinct_interaction_items(self) -> None:
+        requests = []
+
+        async def recover(question, **kwargs):
+            requests.append((question, kwargs))
+            if len(requests) == 1:
+                return {"answers": {question["id"]: "retry_file"}}
+            return {"cancelled": True}
+
+        self.live.interactions = SimpleNamespace(
+            request_product_input=AsyncMock(side_effect=recover)
+        )
+        with self._client(context_provider=ContentContextProvider(self.content)) as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-text",
+                headers=self.headers,
+                json={"paths": ["resources/a.md", "resources/missing.pdf"]},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(requests), 2)
+        self.assertNotEqual(requests[0][1]["item_id"], requests[1][1]["item_id"])
+        self.assertEqual(requests[0][0]["question"], requests[1][0]["question"])
+        self.assertEqual(response.json()["files"][0]["text"], "alpha")
+
+    def test_text_read_stale_turn_cannot_retry(self) -> None:
+        async def recover(question, **kwargs):
+            self.live.ledger.active_turn_id = "new-turn"
+            return {"answers": {question["id"]: "retry_file"}}
+
+        self.live.interactions = SimpleNamespace(
+            request_product_input=AsyncMock(side_effect=recover)
+        )
+        with self._client(context_provider=ContentContextProvider(self.content)) as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read-text",
+                headers=self.headers,
+                json={"paths": ["resources/missing.pdf"]},
+            )
+        self.assertEqual(response.status_code, 403)
+
+    def test_text_read_rejects_absolute_and_parent_paths_before_provider(self) -> None:
+        with self._client(context_provider=ContentContextProvider(self.content)) as client:
+            for path in ("/etc/passwd", "../foreign.md", "C:/secret.txt", "resources/../secret"):
+                with self.subTest(path=path):
+                    response = client.post(
+                        RESOURCE_ROUTE_PREFIX + "read-text",
+                        headers=self.headers,
+                        json={"paths": [path]},
+                    )
+                    self.assertEqual(response.status_code, 400)
 
     def test_foreign_read_requires_the_active_frozen_explicit_file(self) -> None:
         path = "resources/foreign.md"

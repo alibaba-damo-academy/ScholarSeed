@@ -12,8 +12,8 @@ import {
 const input = { attentionId: randomUUID(), title: '<title>&', body: '"body"\u0001', silent: true }
 test('toast text cannot inject XML or activation payloads', () => {
   assert.equal(
-    notificationXml(input, 'scholarseed://notification/test'),
-    '<toast activationType="protocol" launch="scholarseed://notification/test"><visual><binding template="ToastGeneric"><text>&lt;title&gt;&amp;</text><text>&quot;body&quot;</text></binding></visual><audio silent="true"/></toast>'
+    notificationXml(input, 'scholarseed-notification://notification/test'),
+    '<toast activationType="protocol" launch="scholarseed-notification://notification/test"><visual><binding template="ToastGeneric"><text>&lt;title&gt;&amp;</text><text>&quot;body&quot;</text></binding></visual><audio silent="true"/></toast>'
   )
 })
 function fixture() {
@@ -134,7 +134,7 @@ test('protocol activation after dismissal navigates once without trusting arbitr
   const f = fixture()
   f.emit('timeout')
   f.emit('close')
-  assert.equal(f.owner.activate('scholarseed://notification/unknown'), false)
+  assert.equal(f.owner.activate('scholarseed-notification://notification/unknown'), false)
   assert.equal(f.owner.activate(f.activationUrl + '?session=other'), false)
   assert.equal(f.owner.activate(f.activationUrl), true)
   assert.deepEqual(f.events, ['submitted', 'click'])
@@ -156,13 +156,13 @@ test('disposed and evicted routes cannot navigate', () => {
 })
 
 test('only strict UUID notification routes enter the cross-integrity inbox', () => {
-  const url = 'scholarseed://notification/12345678-1234-4123-8123-123456789abc'
+  const url = 'scholarseed-notification://notification/12345678-1234-4123-8123-123456789abc'
   assert.equal(findNotificationUrl(['exe', `"${url}"`]), url)
   for (const value of [
     url + '?session=x',
     url + '/other',
     url.replace('notification', 'auth'),
-    'scholarseed://notification/unknown',
+    'scholarseed-notification://notification/unknown',
   ])
     assert.equal(findNotificationUrl([value]), undefined)
 })
@@ -180,7 +180,7 @@ test('macOS cold launch extracts the notification response identity without trus
     {},
     { userInfo: { identifier } },
     { identifier: 123 },
-    { identifier: `scholarseed://notification/${identifier}` },
+    { identifier: `scholarseed-notification://notification/${identifier}` },
     { identifier: `${identifier}?session=other` },
     { identifier: '/tmp/target' },
   ])
@@ -409,7 +409,7 @@ test('unavailable settings remain diagnostic and preserve one real notification 
   assert.equal(records[1].hresult, '0x80070490')
   assert.equal(records[1].setting, -1)
   assert.equal(records[1].id, input.attentionId)
-  assert.equal(owner.activate(`scholarseed://notification/${input.attentionId}`), true)
+  assert.equal(owner.activate(`scholarseed-notification://notification/${input.attentionId}`), true)
   assert.deepEqual(events, ['submitted', 'click'])
   assert.equal(closed, 1)
 })
@@ -458,7 +458,10 @@ test('Show failures after unavailable settings are rethrown unchanged without re
     )
     assert.equal(records[2].stage, 'Show')
     assert.equal(records[2].hresult, `0x${hresult.toString(16)}`)
-    assert.equal(owner.activate(`scholarseed://notification/${input.attentionId}`), false)
+    assert.equal(
+      owner.activate(`scholarseed-notification://notification/${input.attentionId}`),
+      false
+    )
   }
 })
 

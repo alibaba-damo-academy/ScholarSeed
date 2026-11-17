@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Button, Spinner } from '../ui'
+import { Divider, IconButton, Spinner, Tabs, TabsContent, TabsList, TabsTrigger } from '../ui'
+import { Icon } from '../../icons'
 import {
   fitImage,
   imageViewState,
@@ -18,20 +19,29 @@ import {
 
 const EMPTY_SIZE: ImageSize = { width: 0, height: 0 }
 const PRIMARY_POINTER_BUTTON = 0
+const ACTUAL_SIZE: ImageViewState = { mode: 'manual', scale: 1, x: 0, y: 0 }
 
-export function ImageView({
-  url,
-  title,
-  failed: sourceFailed = false,
-  viewState,
-  onViewChange,
-}: {
+type ImageViewProps = {
   url: string
   title: string
   failed?: boolean
+  showMetadata?: boolean
   viewState?: Readonly<Record<string, unknown>>
   onViewChange: (next: ImageViewState) => void
-}): React.JSX.Element {
+}
+
+export function ImageView(props: ImageViewProps): React.JSX.Element {
+  return <ImageResource key={props.url} {...props} />
+}
+
+function ImageResource({
+  url,
+  title,
+  failed: sourceFailed = false,
+  showMetadata = true,
+  viewState,
+  onViewChange,
+}: ImageViewProps): React.JSX.Element {
   const { t: imageText } = useTranslation('workbench')
   const viewportRef = useRef<HTMLDivElement>(null)
   const drag = useRef<{ pointerId: number; x: number; y: number; view: ImageViewState } | null>(
@@ -62,6 +72,7 @@ export function ImageView({
     return () => observer.disconnect()
   }, [])
 
+  const displayMode = view.mode === 'fit' ? 'fit' : 'actual'
   const saveView = onViewChange
   useEffect(() => {
     const element = viewportRef.current
@@ -89,60 +100,66 @@ export function ImageView({
   }
 
   return (
-    <div className="flex h-full w-full min-h-0 min-w-0 flex-col" data-testid="image-viewer">
+    <Tabs
+      className="!flex h-full w-full min-h-0 min-w-0 flex-col !gap-0"
+      data-testid="image-viewer"
+      value={displayMode}
+      disabled={!ready}
+      onValueChange={(mode) => saveView(mode === 'fit' ? fitImage(natural, viewport) : ACTUAL_SIZE)}
+    >
       <div
-        className="flex shrink-0 flex-wrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-line-2)] bg-[var(--vds-bg-gray-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--vds-text-7)] [font-variant-numeric:tabular-nums]"
+        className="flex shrink-0 flex-wrap items-center justify-center gap-[var(--vds-space-2)] border-b border-[var(--vds-line-2)] bg-[var(--vds-bg-gray-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--vds-text-7)] [font-variant-numeric:tabular-nums]"
         role="toolbar"
         aria-label={imageText('image.toolbar')}
       >
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label={imageText('image.zoomOut')}
-          disabled={!ready || view.scale <= IMAGE_MIN_SCALE}
-          onClick={() => saveView(zoomImage(view, view.scale / IMAGE_ZOOM_FACTOR))}
-        >
-          −
-        </Button>
-        <output data-testid="image-zoom" aria-label={imageText('image.zoom')}>
-          {Math.round(view.scale * IMAGE_PERCENT)}%
-        </output>
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label={imageText('image.zoomIn')}
-          disabled={!ready || view.scale >= IMAGE_MAX_SCALE}
-          onClick={() => saveView(zoomImage(view, view.scale * IMAGE_ZOOM_FACTOR))}
-        >
-          +
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!ready}
-          aria-pressed={view.mode === 'fit'}
-          onClick={() => saveView(fitImage(natural, viewport))}
-        >
-          {imageText('image.fit')}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={!ready}
-          onClick={() => saveView({ mode: 'manual', scale: 1, x: 0, y: 0 })}
-        >
-          {imageText('image.actual')}
-        </Button>
-        {ready && (
-          <span data-testid="image-dimensions">
-            {natural.width} × {natural.height}
-          </span>
+        <div className="flex items-center">
+          <IconButton
+            label={imageText('image.zoomOut')}
+            icon={<Icon name="minus" size={15} />}
+            size="sm"
+            variant="ghost"
+            disabled={!ready || view.scale <= IMAGE_MIN_SCALE}
+            onClick={() => saveView(zoomImage(view, view.scale / IMAGE_ZOOM_FACTOR))}
+          />
+          <output
+            className="inline-flex h-[var(--vds-control-height-sm)] min-w-[calc(2*var(--vds-space-9))] items-center justify-center rounded-[var(--vds-radius-4)] border border-[var(--vds-fill-6)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-2)] text-[var(--vds-text-primary)]"
+            data-testid="image-zoom"
+            aria-label={imageText('image.zoom')}
+          >
+            {Math.round(view.scale * IMAGE_PERCENT)}%
+          </output>
+          <IconButton
+            label={imageText('image.zoomIn')}
+            icon={<Icon name="plus" size={15} />}
+            size="sm"
+            variant="ghost"
+            disabled={!ready || view.scale >= IMAGE_MAX_SCALE}
+            onClick={() => saveView(zoomImage(view, view.scale * IMAGE_ZOOM_FACTOR))}
+          />
+          <Divider
+            orientation="vertical"
+            className="!self-center !min-h-0 !h-[var(--vds-lh-body-lv1)] [--vds-divider-margin-vertical:0_var(--vds-space-2)]"
+          />
+        </div>
+        <TabsList aria-label={imageText('image.zoom')}>
+          <TabsTrigger value="fit">{imageText('image.fit')}</TabsTrigger>
+          <TabsTrigger value="actual">{imageText('image.actual')}</TabsTrigger>
+        </TabsList>
+        {showMetadata && (
+          <>
+            {ready && (
+              <span data-testid="image-dimensions">
+                {natural.width} × {natural.height}
+              </span>
+            )}
+            <span>{imageText('image.readonly')}</span>
+          </>
         )}
-        <span>{imageText('image.readonly')}</span>
       </div>
-      <div
+      <TabsContent
+        value={displayMode}
         ref={viewportRef}
-        className="relative flex min-h-0 min-w-0 flex-1 cursor-grab items-center justify-center overflow-hidden bg-[var(--vds-fill-3)] [touch-action:none] [user-select:none] data-[dragging=true]:cursor-grabbing [&>img]:pointer-events-none [&>img]:absolute [&>img]:left-1/2 [&>img]:top-1/2 [&>img]:max-h-none [&>img]:max-w-none [&>img]:[transform-origin:center]"
+        className="relative flex min-h-0 min-w-0 flex-1 cursor-grab items-center justify-center overflow-hidden !bg-[var(--vds-fill-3)] [touch-action:none] [user-select:none] data-[dragging=true]:cursor-grabbing [&>img]:pointer-events-none [&>img]:absolute [&>img]:left-1/2 [&>img]:top-1/2 [&>img]:max-h-none [&>img]:max-w-none [&>img]:[transform-origin:center]"
         data-testid="image-viewport"
         data-scale={view.scale}
         data-pan-x={view.x}
@@ -196,7 +213,7 @@ export function ImageView({
         ) : (
           !ready && <Spinner aria-label={imageText('image.loading')} />
         )}
-      </div>
-    </div>
+      </TabsContent>
+    </Tabs>
   )
 }

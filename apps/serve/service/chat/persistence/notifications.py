@@ -37,6 +37,8 @@ SESSION_STATE_FIELDS = (
     "pinned",
     "archived",
     "project_path",
+    "display_parent_session_id",
+    "detached_parent_session_id",
 )
 SUMMARY_KINDS = (
     PRODUCT_EVENT_SESSION_STATE,

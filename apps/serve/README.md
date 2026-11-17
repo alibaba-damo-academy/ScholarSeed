@@ -1,0 +1,381 @@
+<a id="appsserve--书深产品后端"></a>
+# apps/serve — ScholarSeed Product Backend
+
+FastAPI backend and product composition root. The distribution is `scholarseed`, and the namespace is `service`.
+
+<a id="职责与边界"></a>
+## Responsibilities and Boundaries
+
+<a id="l1-extraction-protocol--l1-提取协议"></a>
+### L1 Extraction Protocol
+
+Literature material extraction and AI reading share the block contract, parser and
+bounded recovery in `service/literature/service/comprehension.py`. Material extraction
+generates only `card`, `common_fields` and `source_map`; AI reading prepends its reading
+and decodes the same tail. The shared L1 kernel still owns semantic validation and
+field-allowlisted content recovery. Syntax-only recovery omits originals and images;
+missing blocks cannot enter that path. Valid compatible assets are reused without
+re-extraction. The final L1 structure and downstream consumers remain unchanged.
+
+Literature material extraction and AI reading share the block contract, parser, and bounded recovery in `service/literature/service/comprehension.py`. Material extraction generates only `card`, `common_fields`, and `source_map`; AI reading emits the reading first, then parses the same tail. The shared L1 kernel remains responsible for semantic validation and field-allowlisted content recovery. Syntax-only repair does not send original text or images, and missing blocks cannot use this path. Valid compatible assets are not re-extracted; the final L1 structure and downstream consumption remain unchanged.
+
+- `bootstrap.py:create_app` composes business domains; `chat/api/routes.py:create_chat_app` composes the session service.
+- Manages projects, materials, literature, workbench, context, sessions, credentials, skills, artifacts, and SSE.
+- `chat/service/adapters.py` parses the product manifest; `chat/runtime/selection.py` applies product enablement policy to Providers discovered by the Runtime Gateway.
+- `chat/runtime/` combines product state with the public Runtime contract, then projects and persists product events.
+- Runtime contract/Gateway, the Codex executor, and Trace are owned by separate packages; the Serve wheel packages only `service`.
+
+Cross-domain protocols live in `platform/`, and implementations are injected by the composition root. Project paths are resolved through `ContentPort`; project business databases are opened uniformly through `persistence/project.py`.
+
+<a id="thread-completion-accounting--线程完成计数"></a>
+## Thread Completion Accounting
+
+`Activities.observe_thread` and `Activities.to_thread` release their reservations
+in the worker's `finally`, before publishing its result or exception. Completion
+callbacks remain an idempotent fallback for work that never starts and retrieve
+unobserved exceptions. Cancelling an awaiting task does not release the reservation
+of a still-running worker. An observation barrier grants no execution admission
+during maintenance; neither callback scheduling nor an extra event-loop tick is
+a completion receipt.
+
+`Activities.observe_thread` and `Activities.to_thread` release the count in the worker's `finally`, completing cleanup before publishing its result or exception. Completion callbacks remain an idempotent cleanup fallback for work that never starts and retrieve unobserved exceptions. Cancelling the awaiting coroutine does not release the count for a worker that is still running. An observation barrier grants no new execution admission during maintenance; callback scheduling or waiting for another event-loop tick is not proof that the actual work has completed.
+
+<a id="task-archive-consent--任务归档确认"></a>
+## Task Archive Consent
+
+The archive request accepts `stop_running`. When false, the session owner uses its
+existing locked idle check and never enters the stop/activation path. Work that
+still needs stopping returns `409 session_archive_stop_required`, so the client
+must obtain explicit stop consent. Omitted values preserve existing callers;
+restoring an archive does not stop work. The strict stop and drain checks remain unchanged.
+
+An archive request with `stop_running=false` permits direct archival only after the existing locked idle check; it does not enter the stop or activation path. If work still needs to be stopped, the response is `409 session_archive_stop_required`, and the client must obtain explicit consent to stop. Omitting the field preserves existing caller semantics; restoring an archive does not stop work. The existing strict stop and drain checks are unchanged.
+
+<a id="http-diagnostic-correlation--http-诊断关联"></a>
+## HTTP Diagnostic Correlation
+
+Desktop automatically adds an opaque diagnostic ID to session-catalog GETs.
+Feedback recording also instruments other fetches to the configured Serve API
+and preserves an existing valid ID. Serve validates the ID and records it separately
+from its own request ID; it is never an authentication or admission capability.
+Detailed Resource Timing is permitted only for such requests whose response
+already grants the same origin CORS access. The diagnostic header can introduce a
+CORS preflight; timing gaps must not be labelled pure connection queuing.
+
+Valid correlated requests retain received, headers, finished and catalog-worker
+phase records at INFO. Uncorrelated successes remain DEBUG-only. Desktop's
+`[http-latency]` records join renderer fetch, headers, body-start, JSON and catalog
+outcomes to native network send, response, completion and error stages using
+`client_request_id`. Native observation is limited to the main renderer, configured
+backend origin and exact catalog route. It retains at most 128 requests and leaves
+headers, network policy and CSP callbacks untouched. Disposal or eviction leaves
+the network outcome unknown.
+
+The renderer captures event times immediately and batches logs on decode or failure.
+Native logs include the response-start timestamp in the terminal record, avoiding a
+synchronous disk write for each phase. A process crash can leave renderer stages
+unflushed. These records omit queries, user paths, headers, bodies and exception
+messages. Use event timestamps to align processes and monotonic durations within
+each process. Native records include the previous diagnostic write duration for the
+same request. Log writes can overlap network or server work, so their duration
+cannot simply be added or subtracted. Missing stages have unknown timing. The
+instrumentation leaves the cause and repair of the Windows cold-entry timeout unverified.
+
+With DEBUG logging enabled, the outer ASGI lifespan owns a loop heartbeat and a
+bounded watchdog thread. A stall records an episode ID and at most twelve frame
+basenames/function names/line numbers, never locals, source text or full paths.
+Recovery and request records carry the episode timing, including stalls before
+ASGI entry. Identity phase timestamps and sampled worker-token/waiter peaks
+complement, but do not replace, browser transmission timing. Historical timeout
+attribution remains unconfirmed; see the development runbook for limitations.
+
+Request sampling is enabled when DEBUG or WARNING is enabled at request creation;
+WARNING retains slow-header, loop-lag and error diagnostics. If neither level is
+enabled, no request UUID, worker-limiter lookup or periodic request timer is used.
+`received.route` is null before routing; later records use a route template, or
+`unmatched` after an unclassified response. Independent slow-header and loop-lag
+thresholds default to 500 ms. Loop lag measures lateness beyond the 250 ms sampling
+deadline, not total blocking duration; an absent warning cannot rule out a stall.
+
+During feedback recording, Desktop adds a random per-fetch diagnostic ID only to its configured Serve API. Serve validates it strictly and records it separately from its own request ID; this ID grants neither authentication nor execution permission. The diagnostic request may read detailed Resource Timing only when the response has already granted CORS access to the same origin. Recording may trigger an additional CORS preflight; do not label all pre-send waiting as connection queuing.
+
+With DEBUG logging enabled, the outer ASGI lifespan owns a loop heartbeat and a bounded watchdog thread. A stall records an episode ID and at most twelve frame basenames, function names, and line numbers; it never records local variables, source text, or full paths. Recovery and request records carry episode timing, including stalls before the request enters ASGI. Identity-phase timestamps and sampled worker-pool token/waiter peaks complement browser transmission timing; they do not replace it. The historical timeout attribution remains unconfirmed; see the development runbook for limitations and operating instructions.
+
+Request sampling starts only if DEBUG or WARNING is enabled when the request is created; WARNING retains slow-header, loop-lag, and error diagnostics. If both levels are disabled, no request UUID is generated, the worker limiter is not queried, and no per-request timer is started. Before routing, `received.route` is null; later records use the route template, or `unmatched` for a response without a classified route. Slow-header and loop-lag thresholds are independent and default to 500 ms each. Loop lag measures lateness past the 250 ms sampling deadline, not total blocking duration; the absence of a warning does not rule out a stall.
+
+<a id="入口"></a>
+## Entry Points
+
+| Command | Purpose |
+| --- | --- |
+| `scholarseed` / `scholarseed-desktop` | Launch the Electron desktop product |
+| `scholarseed-serve` | Launch the backend, bound to the local loopback address by default |
+| `scholarseed-bridge` | Compatibility CLI for use when the host has provided an authenticated scope; ordinary Agents use the `scholarseed_bridge` model tool |
+
+The wheel retains this CLI. Desktop bundles place its relocatable launcher in
+`backend/compat/`, outside the Agent PATH; other launchers remain in `backend/bin/`.
+Compatibility callers must supply a valid host-owned scope. The CLI does not supply
+model callback identity and cannot replace operations that require it. Never copy credentials.
+
+The wheel retains this CLI. Desktop bundles place its relocatable launcher in `backend/compat/`, outside the Agent PATH; other launchers remain in `backend/bin/`. Compatibility callers must have a valid host-provided scope. The CLI does not provide model callback identity and cannot replace operations that require it. Do not copy credentials.
+
+Desktop always starts with `auth-mode=off` and `ownership-axis=machine`; standalone Serve supports an explicitly configured authentication mode. Model connection credentials are independent of the local HTTP access mode.
+
+<a id="responses-summary-dialects--responses-摘要方言"></a>
+## Responses Summary Dialects
+
+The model bridge normalizes reasoning-text events only for connection/model pairs
+that explicitly declare `responses_reasoning_summary` in the bundled capability
+registry. The declaration describes that connection's public-summary response
+contract, not a model-name heuristic. Requests, gateway forwarding, other models,
+and the Adapter's non-public reasoning filter remain unchanged. Keep the declaration
+consistent if the connection's upstream response semantics change.
+
+The model bridge normalizes reasoning-text events only for connection/model pairs that explicitly declare `responses_reasoning_summary` in the bundled capability registry. The declaration describes that connection's public-summary response contract; it is not inferred from the model name. Requests, gateway forwarding, other models, and the Adapter's non-public reasoning filter remain unchanged. Keep the declaration consistent if the connection's upstream response semantics change.
+
+<a id="匿名技能广场"></a>
+## Anonymous Skill Marketplace
+
+`capabilities/service/clawhub.py` owns the online marketplace read and download contract and connects to `https://scholarseed.damo.alibaba.com/skillhub/` by default. At startup, `SCHOLARSEED_CLAWHUB_URL` can specify another HTTP/HTTPS base URL with an unambiguous subpath; trailing slashes are removed consistently. Query parameters, fragments, credentials in the URL, dot segments, encoded path separators, and whitespace are not accepted. All initial listing, search, detail, version, and download requests preserve the base path. Download `Location` is resolved against the current request URL; only backend root-relative `/api/v1/skills/...` redirects from that base have the base path restored, and an existing prefix is not duplicated. Other root-relative paths, absolute URLs, and allowlisted downloads retain their existing resolution rules. Trust checks still compare the origin, not the base path, and source-equivalence sets are not used to authorize downloads.
+Use only the gateway backend API; do not depend on the SkillHub frontend or modify cluster configuration. Restart the application after changing the deployment environment. Do not overwrite user account, model, or skill configuration. HTTP cannot guarantee transport integrity; production services should use HTTPS.
+
+Desktop accesses the listing, detail, and fixed-version installation routes at `/api/capabilities/skills/marketplace` through the existing device skill bridge. It uses only host-local capabilities, requires no account login, and does not pass that capability or ScholarSeed identity to the marketplace. Standalone Serve still follows its own authentication policy; anonymous remote reads do not imply that all local APIs are public.
+
+This deployment's anonymous ClawHub-compatible API returns `nextCursor`, which is passed back as the `page` parameter in the next-page request; it also provides keyword search, skill details, and downloads. After decoding the compatible `namespace--slug` identity, the service reads the public version metadata for that namespace; identities without a namespace use `global`. Verify this contract if the service implementation or protocol changes; do not fall back to the old build's Registry login/Token flow.
+
+Downloads retain the anonymous Cookie issued by the service; after same-origin redirects, only HTTPS download hosts on the allowlist are permitted. `SCHOLARSEED_CLAWHUB_DOWNLOAD_HOSTS` accepts a comma-separated override for the default OSS host `deep-rd.oss-cn-hangzhou.aliyuncs.com`. Cross-origin requests clear the Cookie and forward no user credentials. Requests, JSON, and archives have timeout, size, and redirect limits. Suspicious or malicious markings cause installation to be rejected; a missing scan is not treated as safe. Remote content is displayed only; scripts and declared actions are not executed.
+
+Installation reuses the user skill installer and rejects cross-platform path traversal, symlinks, and overwriting an existing name. It stores the marketplace URL, slug, and version in `.origin.json` at the user skill root, then refreshes discovery through the existing native inventory configuration chain.
+Installation channel and the package's upstream source are independent. The upload, marketplace-install, creation, and GitHub-import entry points record `installationSources` in product skill state; listings return `installationSource`. An old `.origin.json` inside an uploaded ZIP does not change the channel of that upload. If no trusted history exists, return `unknown`; do not infer that an item was uploaded because its source record is missing. Deleting a user skill also removes its channel record. System-provided cards always display “官方” (“Official”).
+Installed items belong under “我添加的” (“Added by me”), are not mixed with bundled skills, and do not bypass later dependency or third-party authorization requirements. “我添加的” reads metadata from mapped SkillHub sources in the UI language and reuses their `displayName` as the title, keeping it consistent with the marketplace. If the remote title is missing or unavailable, retain the local name; do not change the skill identity or installation record.
+The built-in `find-skill` is based on the deployed `skillhub-registry`, retains upstream sources, and uses the `scholarseed_bridge` model tool's `skill/search`, `detail`, `list`, and `document` operations to read marketplace and local skills. `install`, `enable`, `disable`, `update`, and `delete` reuse the same capabilities management service. No external CLI installation is required, and the model cannot choose a registry or installation directory or publish remotely.
+Write operations must pass through a real confirmation card in the current turn and recheck permissions and context before execution. Retrying the same `client_op_id` in the same turn reuses the completed receipt; a different target or parameters require a new ID. Installation uses a fixed version. Updates check the original source and expected previous version. The constraints that preinstalled skills cannot be deleted and required skills cannot be disabled remain unchanged.
+After writing, verify local state through `skill/list`; do not conflate installed, enabled, currently available, and loaded in the current turn. An item is shown as installed only when both source URL and slug match. Serve provides `registryAliases` for the supported default registry addresses, ignoring trailing slashes to prevent duplicate installations after an address change. Other environment-overridden addresses and different subpaths on the same origin remain distinct; do not merge by hostname or skill name. Existing source records are not rewritten; new installation records store the normalized full base URL. Source equivalence does not expand download-origin or allowlist trust.
+
+Skill ownership display reuses the bundled `registry.json` located alongside `SKILL.md`; it does not use the SkillHub publishing account. Marketplace listings read version files by namespace, native slug, and published version; details read the selected version. Serve projects authors and GitHub sources consistently. The card's author field shows a clickable owner/repo, while the original author declaration, skill directory, revision, and adaptation type appear in the details. Installed items read local registration directly; authors are not copied into `.origin.json`, and old installations are not enriched over the network. Missing, invalid, or unreadable registration does not fall back to the publisher. Registration is for display only; it does not prove author identity or change tagging, review, or installation admission. Remote files have size and concurrency limits; a per-item failure does not affect other directories. Do not download the whole package or access the GitHub API just to display this information.
+
+Local uploads are first validated through `POST /api/capabilities/skills/upload/preview`, which reads the name, description, body, version, and author; preview does not create an installation record. After user confirmation, the original upload route is called and validation runs again.
+Only a `SKILL.md` file or a ZIP containing exactly one `SKILL.md` at the root or within one unique top-level directory is accepted. The name, description, and instruction body are required. There is no limit on the compressed ZIP size, but limits still apply to the instruction document, expanded size, and entry count; path traversal, special/encrypted files, and duplicate paths are rejected. These checks and budgets also cover macOS metadata. After validation, preview and installation both exclude `__MACOSX` directories, `.DS_Store`, and AppleDouble files prefixed with `._`; these are not counted as skill directories or written into the installation result. Other hidden files are retained. A collision with the same stable name does not overwrite. If runtime-state synchronization fails, delete this newly added installation without touching existing skills. The product's default policy no longer locks `fast-search`; all built-in skills can be disabled.
+
+Upload preview classifies a card-plugin package only by whether both `.scholarseed-package.json` and `.scholarseed-plugin.json` exist at the skill root; it does not parse their contents. The upload dialog does not show a skill-details preview or a separate plugin-check button. Clicking Install on an ordinary skill installs it directly; clicking Install on a plugin runs the automatic checks and then requires explicit authorization.
+If the package manifest is missing, the upload installs only an ordinary skill, retains no plugin declaration discoverable by the host, and loads no card. A package manifest alone does not trigger plugin validation. When both manifests are present, card installation must pass the existing plugin checks and permission confirmation and cannot bypass them through ordinary upload. Ordinary uploads still validate `SKILL.md`, extraction safety, and name conflicts.
+
+Desktop feedback is submitted remotely by Main directly and does not depend on Serve being available. `POST /api/serve/feedback/bundle` reuses feedback attachment validation, session scope, and log budgets; it returns only a diagnostic ZIP and neither creates managed credentials nor submits remotely. The existing submission endpoint for standalone Web/Serve remains unchanged. If Desktop collection fails, the result is explicitly downgraded to partial diagnostics.
+
+The session listing `GET /api/serve/sessions` retains a maximum of 500 entries per page, sorted by last-active time descending, with session ID as the tie-breaker for equal timestamps. When `next_cursor` in the response is nonempty, preserve the original scope/project/query and pass `cursor` to continue reading; an empty value means the listing is finished. The cursor marks only a sort position; ownership and project checks are rerun on each page. An invalid cursor returns 422. `total` retains its existing bounded-candidate-batch semantics and does not represent the total number in the entire database. Pagination does not provide a frozen snapshot during concurrent modifications.
+
+Session branching reuses `POST /api/serve/sessions/open`: when only `fork_session_id` is provided, the product-event watermark from session creation is fixed; when `fork_turn_id` is also provided, the branch is cut at the specified completed response. A branch request cannot override project, model, or permission fields. Prefer a native fork for a completed response. Whole-session forks and non-native history cut points reuse controlled history initialization and do not automatically submit a model turn.
+For an independent workspace path, copy the current files from the source session's working directory before activating the new branch, preserving relative paths. Do not copy runtime-private directories, credentials, environment files, or dependency caches, and do not follow symlinks or Windows reparse points. A copy failure prevents branch activation. Shared project-directory paths do not copy files; the source and branch continue to use the same live directory. A running source may fork only from an explicitly completed native response within the same shared project directory. Forks without a starting point, with an incomplete starting point, with non-native history backfill, or requiring independent file copies remain rejected. Reuse the source lifecycle lock, release it before target resource admission, and revalidate source identity, working directory, native binding, and fixed completion watermark before copying and before the history transaction after target activation.
+Failed new branches are closed and archived, not exposed as resumable sessions. File contents reflect their current state at fork time, not their state at the selected historical response; source files are not rolled back. Commit history import and artifact association in the same transaction. In an independent workspace, rebind submitted attachments and mutable artifacts to independent copies so branch modifications and deletions do not affect source files. In a shared project directory, attachments and mutable artifacts continue to refer to shared files, so branch modifications and deletions affect the same files. Published or out-of-directory artifacts retain read-only references. Existing branches are not migrated automatically. Drafts, pending-send references, running tasks, and queues are not inherited. Existing rejection rules apply to archived sources.
+These protocols and source constraints do not replace acceptance of real Desktop behavior, real model calls, or cross-session continuation.
+
+Running sources may fork only through an explicitly completed native turn in the same shared
+project workspace. Forks without a turn, incomplete turns, non-native history imports and
+independent workspace copies remain rejected while the source runs. Source identity, workspace,
+native binding and the fixed completion boundary are checked again before copying and before
+the history transaction after target activation. The source lifecycle lock is released before
+target resource admission. Failed new forks are closed and archived, not exposed as resumable
+sessions. Shared files remain live; a conversation-history prefix is not a historical file snapshot.
+Only independent workspace forks copy current files and rebind submitted attachments and mutable
+artifacts to independent copies before activation. Shared workspace forks do not copy files:
+changes and deletions affect the same shared files. Independent copies retain the private-file,
+symlink and Windows reparse-point exclusions; copy failure prevents activation.
+
+<a id="external-single-file-reads--项目外单文件读取"></a>
+## External Single-File Reads
+
+`resource/read-external` accepts one absolute local file path and bounded text/base64
+chunks. It uses the existing product HIL ledger: `ask` waits for a decision;
+`safe_auto` automatically approves ordinary document paths explicitly present in the
+current user message, otherwise it asks. Hidden/sensitive paths are not eligible for
+automatic document approval. Full-access mode skips the manual decision, not the
+protected-path and file-identity checks. Product-private files remain forbidden.
+Grants and denials bind the current execution and exact file generation; chunks
+reuse a decision, but another file, turn or restarted session does not inherit it.
+Cancellation invalidates outstanding access. No parent-directory permission, writes,
+persistent mount or unscoped source URL is created. File replacement fails closed.
+`resource/read` remains project-relative and directs absolute paths to this operation.
+
+`resource/read-external` accepts one absolute local path and reads bounded text/base64 chunks. It reuses the product HIL ledger: `ask` waits for a user decision; `safe_auto` automatically approves ordinary document paths explicitly named in the current user message and asks otherwise. Hidden or sensitive paths are not eligible for automatic document approval. Full-access mode skips manual confirmation but not protected-path or file-identity checks; product-private files remain forbidden. Grants and denials are bound to the current execution and exact file version. Chunks reuse the decision, but it is not inherited by another file, turn, or restarted session. Cancellation invalidates access. The operation grants no parent-directory or write permission, creates no persistent mount, and generates no unscoped source link. File replacement fails closed. `resource/read` retains project-relative path semantics; absolute paths should use this new operation.
+
+<a id="全文授权桥"></a>
+## Full-Text Authorization Bridge
+
+On activation, a literature-review task reads the exact `sources.refs` bound to its request, and the literature domain prepares the original abstracts and bibliographic records in a batch. `SelectedSources` reuses metadata completion within a bounded budget and writes back only trusted gaps, using bibliography versions and project-ownership CAS. It publishes an immutable manifest in the task workspace. Single- and multi-paper selections continue to use `selected-sources/v2`; selections containing collections use `selected-sources/v3`, preserving original collection references, project members expanded within the transaction, and version bindings. It returns the manifest reference, hash, and counts for ready, missing, and duplicate items; collection members are not replaced by enumerating each paper in context.
+An exact selection does not trigger completion of all project candidates; discovery tasks without selected literature continue to use the existing candidate pool. The Skill consumes the activation response once and retains the original refs; only a unique ready paper counts toward the follow-up search target. Missing abstracts, identity ambiguity, version conflicts, and network failures retain their separate diagnostics; missing-item prompts are nonblocking messages. Once retrieval adaptation freezes the corpus, reactivation uses the same manifest; later library edits are for new tasks.
+
+Quick's retrieval checkpoint confirms only the abstract corpus, returns `not_required`, and neither establishes full-text authorization nor exports L1. At the same final-corpus checkpoint, Standard records the actual `literature:`, `paper:`, and source-artifact scopes; one question covers that batch. Reads and asset exports still check their own valid grants. Access to existing source text, compatible L1, and LaTeX/PDF acquisition all happen afterward. If authorization is denied, preserve the original task and results; the user must separately choose to use abstracts as a substitute.
+
+Projects no longer pre-create a fixed `literature/` directory. Artifact literature imports write global bibliography records and separate attachments directly through the literature domain. Project associations remain maintained by the global literature repository; no extra project-file copy is published. Admitted imported bytes are staged in the existing operation ledger and cleared after completion; retries do not reread mutable source files. Historical completed receipts retain the original asset identity. Old pending operations read only staged content validated by Content or registered files; they do not publish again. Existing project `literature/` and `文献/` directories are not automatically deleted or moved. Projects retaining an old literature root continue to read it in its original layout.
+
+`literature/authorize` and the literature-review retrieval checkpoint share the Assistant authorization Owner's `authorize_sources`: publish product HIL and wait for a real decision; do not pass a pending `question` to the model for paraphrasing. Model tools and the CLI register full-text authorization as a long-wait operation with no fixed read timeout; waiting ends on a user decision or task cancellation. Timeout limits for connections, writes, and ordinary requests remain unchanged.
+Full-text authorization requires manual user confirmation in every permission mode; ordinary tool auto-approval policy is unaffected. Literature management's `literature/fulltext` also passes through this authorization gate; do not download or mount a PDF before confirmation. Without a research task, use the exact literature-library source scope for the current turn; do not fabricate a task or reuse authorization from another turn. Library downloads reuse a scope card where users can inspect and select specific papers; an empty selection cannot be confirmed.
+The server records confirmation provenance through the actual answer entry point. Historical records missing provenance are not displayed as manual user confirmation. Approvals without a trusted historical manual source are no longer valid grants and require reconfirmation; original HIL answers are not rewritten. Manual confirmation, including standard questions without a component, is accepted only through the existing trusted-host response channel; fail closed when that host capability is unavailable.
+Response `ok` does not mean authorization. Only when `disposition=authorized` may literature in `granted_refs` continue to be read. Reuse the original decision for an already decided scope; new scope still requires authorization. After waiting for authorization, recheck the call scope and task identity. Reads of individual papers still check authorization independently. Do not automatically activate a task, guess the authorization type, or relax hosted full-text access restrictions. Deterministic regression coverage is in `tests/contract_literature_bridge.py` and `tests/contract_fulltext_gate.py`; real-model and Desktop acceptance are performed separately.
+
+Full-text consent always requires a real manual response through the existing trusted-host
+channel, including standard questions without a component. Ordinary tool auto-approval is
+unchanged. `literature/fulltext` uses the same durable, source-scoped authorization before
+downloading or attaching a PDF; ordinary library requests remain bound to their current turn.
+Library consent reuses the paper-selection card so users can inspect the exact scope;
+an empty selection cannot be approved.
+Only the server records manual approval provenance. Historical automatic or unverified grants
+require new confirmation without rewriting their original HIL answers, and are never presented
+as a manual user confirmation. Missing host authority fails closed.
+
+When an entire literature item is an explicit task reference, its attachments can be read on demand using `attachment_id` in `literature/read`; opening or selecting one attachment does not authorize other attachments. `literature/list` returns identifiers for all associated attachments, while `readable/error` still describes only the primary PDF. PDFs retain page and excerpt references. UTF-8 text attachments are returned in chunks using `start_page=1/end_page=1` and character-based `offset/limit`; an empty `next_offset` means reading is complete. Text source links lead back to the attachment list for the literature item and are not presented as PDF excerpt references. Other formats explicitly return unsupported.
+
+<a id="文献文件名测试边界"></a>
+## Literature Filename Test Boundary
+
+Filename rules are owned by [domain/utils.py](service/literature/domain/utils.py). Under an explicitly enabled audit scope, [contract_filenames](tests/contract_filenames.py) loads [filenames](tests/filenames.py) and runs all 4 business cases, using independent literal expectations and assertions that inputs remain unchanged. It does not build the project, database, or runtime; deliberately substituting an incorrect sanitization rule must fail the original assertions. The entry point rejects `skip`/`expectedFailure` for business cases. [logic guard](tests/logic.py) covers both module loading and execution, restores audit activation state and bytecode settings after exceptional exits, and uses negative tests to verify imports, subsequent branches, and entry-point wiring. This facility checks Python audit events; it is not a security sandbox. The business-case file is not a standalone test entry point. From `apps/serve`, it can be run independently with `../../.venv/bin/python -m tests.contract_filenames`.
+
+The suite is registered in [run_all](tests/run_all.py); a targeted run does not represent full CI or real Desktop acceptance. On first session startup, only a `RuntimeOpenNotAppliedError` matching the reservation can return the session to a retryable state. The Catalog atomically resets the session, attempt, and OPENING state only when there is no native binding/vendor identity, preserving the original message and attempt record; the next retry creates a new attempt. Genuine unknown outcomes, cancellations, cleanup failures, and historical `OPEN_UNKNOWN` states are not cleared automatically. A database commit failure also does not remove the open fence.
+Queue reads and failure events expose unknown-open retry restrictions separately through
+`retry_blocked_error`, retaining the original `safe_error`. Send admission refuses the
+uncertain state. Status checks read durable facts even for cold sessions; they return
+`still_unknown` without activation, fence clearing or replay. Without not-applied proof,
+the UI directs users to diagnostics; checking status does not promise automatic recovery.
+
+Queue reads and failure events project retry restrictions for sessions with an unknown open separately through `retry_blocked_error`, retaining the original `safe_error`. Ordinary send/retry admission rejects this state. Status checks read only durable facts; cold sessions also return `still_unknown` without activating the native session, clearing the fence, or replaying messages. Without proof that the open was not applied, the UI only directs users to feedback diagnostics; checking status does not mean automatic recovery is available.
+
+For a single Turn submission, transport-unknown and process-exit-unknown outcomes are normalized into one pending-settlement boundary by exact session, command, and generation. The authoritative recovery association from the ambiguous-submission incident takes precedence; both original Trace records are retained. Duplicate reports do not remove the unknown fence or fabricate a terminal state; other identities or conflicting terminal states remain rejected. On Gateway consumption failure, immediately record a redacted type and projection sequence and stop; do not skip the failed event. Resuming normal consumption does not mean the manual-confirmation loop has passed acceptance. A late report for an already closed old unknown must not overwrite a later turn's state or clear another turn's active identity.
+
+For a crash during execution, first check native history: restore the result without resending if the turn completed; continue the unfinished task if it was interrupted; if it remains unknown, product policy authorizes one retry of the original input, accepting the risk of duplicate execution. Do not change the old result to successful or unsubmitted. Record automatic authorization separately; do not present it as user confirmation. Serve reuses the native confirmation ticket and exact ledger CAS, removing only this TURN fence while retaining HIL, other unknown operations, cancellation, maintenance, and configuration checks. Create only one durably associated successor per original turn; another crash in the successor does not create an infinite recovery chain, and startup does not scan and bulk-resend historical unknowns. The recovery successor reuses the original frozen context and claim, then settles the original one-time material on completion; it must not silently lose already claimed material by freezing again. See the task record for actual Windows product acceptance and remaining unverified items; this mechanism description does not replace acceptance.
+
+For an executor that declares `turn_confirmation`, a UI risk confirmation first waits for Gateway drain observation, obtains the exact confirmation ticket, and verifies the projection watermark. Only after executor confirmation does it update the product ledger using generation/incident CAS. The confirmation credential and original RuntimeEvent remain in the uncertainty payload. A database or event-publication failure can be retried idempotently against the same target; republishing a durable typed confirmation does not touch native state again. An old product-only confirmation is not assumed to prove native safety. HTTP still returns `unknown_outcome=true`; risk confirmation does not change the unknown result of the old submission.
+
+<a id="项目启动边界"></a>
+## Project Startup Boundary
+
+When the project registry is completely empty, after startup recovery completes, create `书深默认项目` (“ScholarSeed Default Project”) as a `MANAGED` subdirectory under the effective workspace directory through the normal controlled creation flow. Do not register the workspace container as a project. Archived projects still count as existing projects, so archiving alone does not create a substitute on the next startup. Deletion removes only the registration and preserves local files; if the registry is still empty afterward, the next startup creates a new default project in a location that does not overwrite the old directory.
+
+`POST /api/serve/sessions/open` accepts `fork_session_id` and `fork_turn_id` as a pair and cannot include model, permission, or recovery-override fields. Serve validates source access, the completed turn, and the current native binding; inherits project and model/permission selections; creates a new task through the existing activation flow; and then imports user/assistant text and completed-turn events up to the cut point. It does not copy queues, approvals, or artifact-write heads. The source task and project files are not rolled back. If the new native result is uncertain, the existing `OPEN_UNKNOWN` boundary handles it; creation is not repeated automatically.
+
+The first MCP inventory requires both a ready host toolchain and open workbench admission. While waiting for the toolchain receipt, a lifespan-owned background task continues waiting without blocking Serve startup or publishing a failed configuration prematurely. MCP is not published if toolchain admission fails. On shutdown, cancel and finish that waiting task; inventory must not continue after the application closes.
+
+The ordinary native launcher checks only the client core directory; the result explicitly sets `projects_deferred=true` to indicate that projects have not been checked. This result cannot be used for update migration or project-storage initialization. Serve checks each project's registered location, project database, and external authorization directory. On failure, it preserves the registration and failure reason, prohibits business I/O for that project, and continues starting other projects. A project's failed eligibility during one startup does not automatically become available if the directory reappears; it is checked again after restart.
+
+Creation, removal, and authorization recovery first mark each project's recovery state, then run through a lifecycle-managed queue. Recovery for the same project remains ordered. On failure, retain the pending recovery record and reason for unavailability; other projects can continue accepting operations. Recovery context can bypass only this project's “recovering” state, not actual permission or storage failures. Update checks still require a complete project snapshot and migration proof; project isolation during ordinary startup does not count as passing update compatibility.
+
+Project directories use the `project` role, with the operating system checking permissions for actual operations such as reading, listing, and creating. Existing shared sandbox ACLs are allowed; ACLs are not modified, and every principal that can write to the project need not be on the client's private trust list. Configuration, credentials, coordinators, and update-control data continue to use the `private` role. Both roles retain directory-identity, no-follow/reparse, and native-handle release checks. Private data sharing the same root cannot be downgraded by declaring it a project.
+
+<a id="windows-打包配置源"></a>
+## Windows Packaged Configuration Source
+
+The packaged default configuration source for a Windows per-user installation uses an exact, read-only installation binding: the composition root verifies that the loaded module, running interpreter, and default configuration share the same installation root; the native layer retains every ancestor handle and identity; and ACLs are still checked strictly at the installation root and each level below it. Risks at locations outside the installation root do not authorize private-data directories. This capability reads only `defaults/config.json`; it does not allow writing, creating, deleting, or recycling, and trust cannot be re-established after path replacement. Rules for ordinary private data, external configuration sources, and project permissions are unchanged. Guardian paths that do not support this binding are explicitly rejected without downgrading authorization. This is not a per-machine installation or additional proof of signature authenticity.
+
+<a id="windows-会话目录属性权限"></a>
+## Windows Session Directory Attribute Permissions
+
+Default sessions continue to use Home/service/sessions/session-ID; neither old nor new sessions are migrated. The composition root passes only the three product directories Home, service, and sessions to sandbox permission preparation, adding non-inheritable read-attributes permission to each directory itself. It does not grant permissions recursively, expose directory listing or private file contents, or change UAC. Private-directory validation accepts this exact metadata permission; file permissions and inherited/content permissions remain strictly rejected. Home/projects remains in use for Trace ledger lookup and is not repurposed as the session workspace.
+<a id="启动健康与能力"></a>
+## Startup Health and Capabilities
+
+Background Runtime readiness warmup waits for both the toolchain receipt and workbench admission. It must not start physical probing before private-channel authentication and the toolchain receipt are complete; workbench admission does not mean the HTTP listener is ready. When the toolchain is preparing or has failed, public readiness reports the corresponding safe state directly instead of starting a probe and overwriting its result. A standalone CLI whose toolchain is ready by default retains its existing behavior. The lifecycle owns and finishes the waiting task; it holds no execution lease while waiting. Before probing, it reacquires root STARTUP admission and neither races ahead nor waits on itself during maintenance. On shutdown, cancel the task and wait for the actual probe to finish; authentication, health deadlines, and fail-closed rules are not relaxed.
+
+`/api/healthz/backend` reports only basic service, instance identity, and storage admission, without waiting for AI probing. `/api/healthz` retains full Runtime readiness diagnostics. Both are protected by STARTUP admission and are unavailable during maintenance. `readiness: null` in the session listing means probing has not happened; it is not execution authorization. Creation, opening, and sending still use the existing capability checks. After composition and storage eligibility succeed, the standalone CLI runs read-only Skill Python validation in parallel with Runtime readiness probing. PATH is still committed on the main thread before HTTP opens. RuntimeService owns the warmup task and waits for the actual probe to finish on startup failure and shutdown. This separation does not prove model authentication or a successful real turn.
+
+At application startup, initializing the UI model directory after identity is known schedules warmup of the shared execution Host; it does not wait for the first message or repeatedly start warmup through healthz polling. While waiting for workbench/toolchain readiness, it holds no execution lease. Once conditions are met, it reacquires root RUNTIME admission. If the identity environment changes, that warmup attempt is abandoned and a later initialization can retry. Warmup creates no product session or native Thread. It uses the normal model connection and credential projection, and its preparation lock does not span capacity waits.
+A healthy Host remains resident after all attachments are released. A Thread that remains attached is not automatically unsubscribed while it has a product subscription or its execution tree is not confirmed idle. When it has no subscription and is fully idle, detach promptly; the native layer then waits on its own for the default 30 minutes before unloading. Passive history SSE does not implicitly start or resume execution; a detached Thread is loaded on demand for normally authorized execution. Explicit maintenance/shutdown still drains and finishes actual resources and does not remove Windows admission or native artifact gates.
+Serve startup does not guess an anonymous execution principal, preventing pre-login warmup from locking the wrong shared domain. Execution Host configuration conflicts are explicitly rejected at resource admission and surfaced through existing session/queue exits. They do not trigger attachment-pressure reclamation, retry on another Host, or automatically launch a confirmation or restart. If warmup receives `RESTART_REQUIRED`, it records that a restart is needed and does not incorrectly mark `host_ready`. After waiting tasks finish, the user switches configuration through an explicitly confirmed full-application exit/restart and the existing drain process; this change adds no in-place hot-switch entry point.
+CONTROL reuses the EXECUTION Host through the real request principal, actual model, and complete startup intent. Skill, model, and MCP inventories do not start another Host; configuration conflicts are explicitly rejected. The Skill cache is partitioned by principal, verified Host identity/generation, and cwd, and startup intent is revalidated before every cache hit. Ordinary session reads and Thread-level enablement do not trigger a global forced refresh. Configuration writes and explicit refreshes must pass through the shared idle fence; an unknown write requires explicit recovery/restart. MCP settings still require host authorization, and the bridge still validates the current session/turn; shared-principal startup context is additionally checked before runtime inventory. Startup commits only existing managed configuration and does not launch inventory processes as an anonymous principal.
+Testing and real Desktop acceptance were paused for this iteration as requested; lifecycle acceptance cannot be declared passed.
+
+Managed Desktop can use `--await-toolchain` to move TeX preparation from a prerequisite for basic HTTP to a prerequisite for AI execution. This mode must use private parent/child process control; the one-time Boolean receipt carries no environment or path. TeX paths, fonts, and cache environment are frozen before Python is created. A preparation failure or control-channel disconnect before the receipt prevents AI execution; it does not fall back to host TeX. Version probing remains parallel; model/skill inventory waits, and resource-process creation checks admission again. This is a conservative gate shared by all AI execution, not a skill-specific determination of TeX dependencies. Preparation is repeated after restart.
+
+<a id="崩溃后的安全续作"></a>
+## Safe Continuation After a Crash
+
+Adapter only rebuilds the executor, restores the same Thread, and provides authoritative history. When host evidence is complete, the product `RecoveryService` creates one new system continuation command through the original durable queue; it does not resend the old `turn/start` or tools and does not invoke manual UNKNOWN confirmation. If the automatic continuation itself crashes again, it does not automatically chain another continuation; the previously completed original turn is only reconciled.
+
+The model bridge records durable state before actually exposing any tool output to the client or granting an upstream unknown hosted tool permission to execute. Unknown, fragmented, or oversized output conservatively blocks recovery; without complete bridge evidence, the absence of a tool in history cannot establish that there were no side effects. A user-authorized, read-only `web_search` request may be repeated a bounded number of times only for the exact Responses endpoint registered by the composition root and the established declaration fields. It may incur duplicate charges and does not prove that the upstream request has not already executed. Bridge does not follow redirects or accept a `trusted` marker reported by the model. Arbitrary compatible endpoints, unknown parameters, MCP, and nested hosted tools receive no such exemption. Even for `web_search_call`, actual tool output conservatively blocks automatic continuation of the original turn.
+
+On process exit, first seal the old stream, revoke and close it, and wait for its actual HTTP consumer. After restoring the same Thread, also wait for the original execution, resource-preparation, and queue-settlement Owners to finish. Admission requires all of the following: interrupted history with exact client/native identity; a fully idle execution tree; no unknown operation/HIL; and no change in user cancellation, new input, principal, model, permissions, or maintenance state. The original user's message moving from admitted to bound is the same intent. A binding update is allowed only when client, body, references, and context-snapshot version match exactly; a binding projection must not be mistaken for new input, and matching client identity alone cannot admit a new body. UNKNOWN reconciliation is determined by the durable queue and explicit submission identity; one-sided impersonation and namespace collisions remain unknown.
+
+Continuation submission binds generation, active revision, watermark, and synchronized product authorization under the Runtime `TURN_ADMISSION` capability. Adapter and the native writer recheck immediately before writing; changes to upstream registration, destination, protocol, or principal also revoke this authorization. Maintenance, shutdown, a new user message, or cancellation cannot silently start an old continuation after waiting. The continuation is displayed as system state, not an ordinary user message; live views, history, cancellation, and queues do not expose internal prompts. An interrupted state derived from crash reconciliation carries the `process_exit` reason, avoiding a false report that the user stopped it. A terminal Turn state does not replace Adapter declaring the whole process restored. Recovery state also marks the display boundary of the new turn: retain the admitted start sequence and record the binding-update sequence separately. Merge history by session-event sequence and ordinary-user/recovery-turn boundaries so an old crash is not displayed as a second failure of the continuation.
+
+macOS and Windows use the same authorization, durable queue, and pre-write fence; process exit and the real product flow are accepted separately. A controlled fault is not a reproduction of a native `Windows.Globalization.dll` failure and does not mean that DLL's root cause has been fixed.
+
+<a id="历史目录续载"></a>
+## Historical Session Listing Continuation
+
+`GET /api/serve/sessions` accepts an explicit nonnegative `offset` (the first batch uses `0`) to continue through the stable candidate sequence after the existing identity, Runtime, and project/unassigned filters. `limit` remains the maximum number returned in this batch. `next_offset` points to the next unconsumed matching candidate; `null` explicitly means the sequence is exhausted. Search retains titles, bodies, and location information and no longer checks only the first 500 candidates; complete rows are built only for the current returned batch. In this mode, `total` is the number of candidates in scope, not the number of search matches. Clients must not infer later positions from it or from the number of visible rows.
+
+Omitting `offset` preserves the old call's limit and `total` semantics and does not return `next_offset`. New continuation clients must reject missing, invalid, or non-advancing positions; they must not silently treat a response from an old service as exhaustion. Positions do not provide a cross-request snapshot. Concurrent additions, deletions, and activity-time changes may move records; when a directory change is known, fetch the first batch again and deduplicate while appending. This implementation reuses directory-metadata reads across the full authorized scope, so cost grows with directory size; no storage or index was added. The contract entry point is `contract_session_listing`; real Desktop and target-platform acceptance are performed separately.
+
+<a id="trace-启动边界"></a>
+## Trace Startup Boundary
+
+Ordinary Serve, native `--startup`, and upgrade-compatibility checks only establish eligibility for the Trace directory and inspect the SQLite index; they do not enumerate, read, or hash historical JSONL. The snapshot explicitly uses `history=deferred` to indicate that history has not been checked, not that full validation passed. Historical appends do not participate in startup or upgrade-check convergence. When eligibility is established and the Trace directory is confirmed absent, retain empty evidence with `history=complete` without creating the directory; this proves only that the snapshot had no history, not that diagnostic records added later were checked.
+
+Upgrade does not migrate original Trace data, old context ledgers, or FTS indexes, and does not perform a full historical audit or copy the entire database; original history and old ledgers are explicitly marked for deferred checking. Candidate write formats are still cross-validated through `trace-write-formats`. Business-database migration projections, directory eligibility, and rejection of unknown index formats are unchanged. An explicitly requested full audit still follows its existing budget but is no longer an upgrade-admission condition. Passing upgrade does not prove that all old diagnostic data is interpretable.
+
+Trace queries, full-text indexing, and content rewriting reject unsupported diagnostic formats at the consumption boundary. Permission, I/O, or encoding errors during a query fail explicitly; they are not presented as an absence of history. The actual lifecycle projection of old ledgers runs on demand when queried. An installed old source inspector continues to run its own checks; a new candidate does not modify or bypass the old binary. The old source's full-scan limit is removed only when both sides use the new boundary.
+
+`bytes_read=0` in startup logs refers only to historical JSONL; it does not mean SQLite or other startup domains performed no I/O. If the read-only index check encounters SQLite's explicit `SQLITE_READONLY_ROLLBACK`, it records only a pending-recovery state. Ordinary startup uses existing native exclusive-directory maintenance, opens the existing index with `mode=rw` so SQLite can roll it back, then checks it read-only again and proves that the startup snapshot converged. It does not manually delete journals, rebuild the index, or change permissions. Native startup preflight performs no writes; upgrade-compatibility previews and explicit full audits still reject an unrecovered index. Other permission, I/O, corruption, and format errors are not classified as recoverable, and file-binding changes fail explicitly. On the first actual Trace write, existing content-quota maintenance may still scan history. This decoupling does not change retention policy, delete history, rebuild the index, or claim to eliminate that write cost.
+
+<a id="初始化与停止的绑定边界"></a>
+### Binding Boundary Between Initialization and Stop
+
+When initial native initialization succeeds but the product has not claimed any submission, persist the binding as `unsubmitted`. Stop still cancels the unsubmitted message and waits for protected initialization and cleanup to finish; remain in `interrupting` while waiting and do not treat the cancellation request as completed. After a pre-turn refresh, idle reclamation, or restart on Windows, a binding with explicit evidence that it was unsubmitted follows the existing CAS replacement and creates an empty native Thread. Preserve the product session and cancellation record; do not replay the cancelled message as native history.
+
+Claiming a message into `submitting` and changing the binding to `bound` happen in the same transaction, before any possible native execution. Once this boundary is crossed, it is no longer considered an empty Thread. Unknown submissions, existing history, and old-version `bound` bindings are still restored under their original identities; they are not rebuilt automatically because a turn ID is missing or recovery failed. An unconfirmed open remains `open_unknown`; an initialization-complete marker does not fabricate proof that recovery is safe. On macOS, normally resident attachments continue to be reused; the replacement above is used only when reactivating an attachment explicitly known to be unsubmitted. State does not read native private databases or rollout data and does not modify official Codex artifacts.
+
+<a id="技能与发行"></a>
+## Skills and Distribution
+
+<a id="windows-内置工具访问"></a>
+### Windows Built-in Tool Access
+
+Packaged Windows also uses `platform/recovery.py` to connect to a native helper inside the installation that is constrained by a compiled policy. This recovery port is separate from tool RX admission and is bound to discovered, frozen Runtime storage roots. Adapter passes the actual Home, version, and executable under the existing resource lease/startup lock. Recovery does not read credentials, migrate custom directories, or expose an arbitrary privilege-escalation API to the renderer. Output is bounded and limited to fixed result types; raw stderr is not included in product logs. Cancellation must wait for the helper's terminal state; a cancellation request is not proof that the permission operation has ended. Actual Windows UAC, permission isolation, and conversation recovery still require acceptance on a native packaged installation.
+
+On recovery failure, consume only the fixed-schema `stage`, `reason`, and optional numeric `system_error`, validate them against an allowlist, and write them to `windows_sandbox_recovery`; do not record native free text, paths, or unknown fields. `ancestor_profile`, `ancestor_product`, and `ancestor_codex` distinguish ancestor checks. `elevation` distinguishes actual results such as `cancelled` and `access_denied`; do not infer user cancellation from a generic nonzero exit code. `metadata` separately identifies metadata-directory and log-preparation failures so they are not confused with subsequent target checks.
+The `metadata` stage identifies metadata-directory/log preparation failures
+separately from subsequent target validation, without logging native free text.
+Exceptional or oversized output is recorded as `transport`; failure to start the helper is recorded as `helper_launch`. The worker's numeric system code may not be returned. In logs, `system_error=0` means no numeric value is available and must not be interpreted as a successful operation. The packaged installation must contain both the new helper and its host consumer.
+
+For packaged Desktop, the Owner of the actual installation/component paths projects the fixed tool-resource declaration. Serve freezes it when configuring the Provider; `platform/toolchain.py` verifies that it matches the actual interpreter and product-module locations. Model/session paths are not accepted, and PATH and user skills are not scanned. Packaged Windows explicitly rejects a missing manifest or external override; standalone Serve/development mode does not automatically grant tool-directory permissions.
+On Windows, even without a built-in asset manifest, a resource-preparation object with an empty asset set is injected. After binding the admitted workspace, when the native sandbox is ready, it prepares non-inheritable read-attributes permission on that workspace itself. This is independent of the tool RX manifest and prevents PowerShell path resolution from losing the current location because workspace metadata is unreadable. Permissions are not expanded recursively. Necessary ancestors for projects within the account are prepared separately under the attribute policy below; permissions for deleting session files are unchanged. Existing sandbox write permissions on the workspace are retained, while tool assets continue to be rejected strictly if their sandbox permissions exceed RX. Metadata preparation uses Adapter's approved-version gate (currently 0.159.0 and 0.163.0); other development-mode versions are now explicitly rejected too and require separate version approval rather than bypassing the gate.
+This preparation does not cover private ancestor directories outside the workspace. If those directories deny sandbox attribute reads, PowerShell may still be unable to resolve the current location. In that case choose a workspace location whose ancestors can be resolved. Do not treat initialization readiness as acceptance of cwd or file operations, and do not automatically expand ancestor permissions.
+
+The allowlist is limited to built-in `backend/bin`, the current Python distribution tree, frozen `backend/pylibs` in component layout, and declared PowerShell, Electron/Node, and TeX components. In flat layout, product modules are already in the Python tree. `platform/access.py` binds dynamic metadata permissions to the fixed-resource admission SID established during installation for the existing local sandbox group. The installer Owner checks and grants permissions to fixed tool trees; Serve does not traverse or repair them. For parent directories inside an installation root verified against both the running interpreter and product module, add only non-inheritable directory-query permissions (list directory, read attributes, synchronize) to support Windows long-path lookup. For the workspace directory resolved by the composition root, add only non-inheritable read-attributes permission to support PowerShell location and file operations. Do not add write permission or authorize ancestors outside the installation root. Preflight directories/files using fixed no-reparse handles, preserving owner, control bits, and other ACEs; reject unknown types, links, and read/execute deny entries. Coordinate each root independently. If some roots succeed before another fails, retain and record the newly added RX permissions; do not roll back by overwriting with an old DACL. Authorization is persistent and shared by the sandbox group; do not remove it at session exit. New or replaced assets require preparation again after product restart. The cross-process mutex coordinates product writers only; it does not guarantee transactionality with concurrent ACL operations by arbitrary external administrators.
+Desktop injects the real local SID admitted during installation through `SCHOLARSEED_TOOL_PRINCIPAL`. If a fixed-resource declaration lacks a valid SID, startup is rejected; there is no fallback to a session-time full-tree check. Before dynamic metadata authorization, resolve the actual sandbox-group SID and compare it with the admission binding; reject a mismatch and do not repair an old installation during a conversation. Per-generation native-sandbox readiness checks and dynamic preparation of workspace and parent-directory permissions remain unchanged. Standalone Serve/development mode without a fixed-resource declaration prepares only attribute permissions for the admitted workspace; a missing admission SID for fixed resources or the installation directory is still explicitly rejected. Hot modification of installed assets or their ACLs is unsupported; updates require draining and restarting the product and repeating installation admission.
+After validated TeX resource preparation succeeds, Desktop passes the version, archive SHA-256, and font-directory description once through the private authenticated ParentControl channel. Readiness and the description take effect together; execution is rejected on failure or if the description is not received. The resource description supplies configuration data only; it does not authorize extra paths or change Windows fixed-resource admission.
+The macOS and Windows session composition places TeX/XDG caches in that session's `.tool-cache/texlive` and prepares the directory before launching tools using no-reparse handles. New directories inherit the session ACL; existing directory permissions remain unchanged. fontconfig retains bundled and system font directories and generates a session-specific configuration based on content digests; it rejects links and existing content that differs and does not overwrite user files. Configuration and caches are passed through the Thread execution environment without polluting shared Host startup environment. Windows TeX Live also receives `XE_FONTCONFIG_PATH` / `XE_FC_CACHEDIR` to prevent fallback to installation-directory caches. Caches do not reuse writable paths under Desktop Home and do not add sandbox write permissions to tool directories or Home.
+
+Current native-version admission is controlled by Adapter. Source code and local contract tests do not replace acceptance of native Windows ACLs, real “Help me approve” search, non-writability, and discovery isolation. The product fix cannot be declared passed until these checks are completed.
+
+Built-in tool probe failures use `windows_sandbox_tool_probe_failed`, separate from resource-permission preparation failures, which use `windows_sandbox_tool_access_failed`. A generic nonzero process exit is not interpreted as a Win32 permission error. If compilation or PDF validation fails, retain `scholarseed-probe-result.json` in that run's random `verification` directory. It contains the actual exit code, up to 64 KiB of the tail of each of stdout and stderr, and a truncation marker; missing or invalid fields are not fabricated. Keep this file alongside existing compilation logs. Find its directory through existing backend logs; it must be provided separately with a problem report and is not automatically added to the feedback package. Raw output is not placed in ordinary logs, exception messages, or the UI. The new file refuses overwrites and link paths; a retention failure still propagates the original preflight error. Successful preflight continues to clean up the random directory. Timeouts and unknown native results retain unknown-result semantics and do not suggest that safe resending is possible.
+
+`capabilities/skills/` is generated by offline compilation from the repository's `skills/community/` and is not maintained manually. The root `desktop` dependency group and `uv.lock` freeze the bundled Python dependencies; skill provisioning installs only reviewed local wheels and does not resolve dependencies separately. User skills are not included in the product package.
+
+See the [root README](../../README.md) for installation and verification entry points, and the [build guide](../../docs/runbooks/build.md) for the packaged-installation workflow.
+
+See the [plugin author contract](service/capabilities/README.md) for offline description, checking, and packaging entry points for local plugin authors. Only offline checks are currently provided; this does not mean Desktop isolated preview, installation confirmation, or native capability integration is complete.
+Project-session resource preparation receives the cwd for the current execution and does not store mutable paths on a shared instance. On Windows, add non-inheritable read-attributes permission only to necessary ancestors below the OS account directory and above the actual cwd, so PowerShell can resolve the current location under private directories such as Documents. First pin and preflight the complete chain, then grant permissions. Do not follow links, ignore deny entries, or tolerate a missing segment in the actual chain; do not scan recursively. Do not automatically expand permissions for the account directory itself or projects outside the account. Fixed-tool and official sandbox-workspace read/write policies remain unchanged; macOS does not perform this ACL preparation.
+
+When the user agrees to attach logs to Windows diagnostic feedback, also read the fixed `sandbox.YYYY-MM-DD.log` files for the current UTC date and previous two days from the product Codex Home `.sandbox/` directory. Read only the last 128 KiB of each file. Retain at most 64 suspected-failure lines as categories/numeric system codes and SHA-256 values, with a summary limit of 64 KiB; explicitly mark missing, unreadable, or truncated files. Categories are textual clues and do not prove root cause. The filesystem Owner opens directories and leaf files without following links, rejecting reparse points/links and multiple hard links; it does not create directories or repair permissions. The feedback package contains only `feedback/sandbox-summary.json`; it excludes raw commands, paths, and exception bodies and does not read `.sandbox-secrets`. macOS skips this source; do not collect it when diagnostic consent is disabled. The real failure-to-disk-to-feedback-ZIP path in a fully packaged installation still needs acceptance using the CI package on ecs-win4.
+
+The recovery helper's load phase declares only an absolute path; whether it needs to be called is still determined by Adapter's reviewed version admission. A missing unused helper does not block runtime discovery. An actual `CreateProcess` failure records the numeric system code at the `helper_launch` stage; it does not record the raw path or infer that the user cancelled authorization. The version-admission set has not been expanded.
+
+## Session-bound structured writing
+
+The product bridge operation `generation/run` accepts a frozen session-local input file
+(`prompt`, `schema`, optional `images` and display-only `preview`) and a new output path.
+Serve binds the active conversation model, reasoning settings and credentials; the request
+cannot select a provider or inherit parent conversation history. The existing one-shot runtime
+executes one tool-free structured turn, records usage and timing, and keeps cancellation and
+cleanup within the parent turn. A used request ID cannot silently replay a charged call.
+
+Preview events are persisted with their parent turn and rendered during generation and history
+replay. They are explicitly unverified; only the skill's accepted `note.md` and `source-map.json`
+are published as deliverables. The Highlights to Insights source and writing instructions live in
+[`skills/community/highlights-to-insights`](../../skills/community/highlights-to-insights/SKILL.md).
+
+Generation requests may use `output_format: "markdown"` without `schema`. The runtime then streams plain Markdown; optional literal hidden-marker delimiters in the preview configuration keep workflow provenance out of displayed text. Structured requests continue to require their schema.
+
+<a id="模型连接变更回执"></a>
+## Model Connection Change Receipts
+
+Deleting, enabling, or disabling a connection returns only the redacted connection inventory; OAuth deletion continues to include a warning when remote revocation is unconfirmed. Maintenance admission for the model catalog, credential refresh, and default-model selection are handled by a separate catalog read and are not conditions for a persisted connection change to succeed. Desktop applies the inventory first, then refreshes the model menu independently. If a change request fails, it performs a read-only inventory check and does not automatically replay the write. If inventory reading fails, retain existing content and report the explicit error; do not interpret the failure as an empty inventory.

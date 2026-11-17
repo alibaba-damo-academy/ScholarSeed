@@ -8,7 +8,6 @@ import (
 
 const (
 	sandboxVersion        = "0.165.0"
-	sandboxPriorVersion   = "0.163.0"
 	sandboxSecrets        = ".sandbox-secrets"
 	sandboxProduct        = ".scholarseed"
 	sandboxHomeName       = "codex"
@@ -17,6 +16,7 @@ const (
 	sandboxRepaired       = "repaired"
 	sandboxUnsupported    = "unsupported"
 	sandboxRepairRequired = "repair_required"
+	sandboxDeleteRequired = "delete_required"
 	sandboxParentFlag     = "--sandbox-parent"
 	sandboxHomeFlag       = "--sandbox-home"
 	sandboxVersionFlag    = "--sandbox-version"
@@ -36,7 +36,7 @@ func sandboxAncestorTraversal(mask uint32, flags byte) bool {
 }
 
 func validateSandboxVersion(version string) error {
-	if version != sandboxVersion && version != sandboxPriorVersion {
+	if version != sandboxVersion {
 		return errors.New("sandbox recovery runtime version is not reviewed")
 	}
 	return nil

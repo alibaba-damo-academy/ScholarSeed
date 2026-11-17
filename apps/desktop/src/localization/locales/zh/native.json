@@ -31,7 +31,6 @@
     "badge": "{{count}} 条未查看提醒"
   },
   "dialogs": {
-    "literatureDelivery": "选择全文保存文件夹",
     "importResource": "选择文件或文件夹",
     "importFile": "选择文件",
     "importDirectory": "选择文件夹",
@@ -58,6 +57,12 @@
     "minimize": "最小化到托盘",
     "cancel": "取消",
     "doNotAskAgain": "不再询问"
+  },
+  "overinstall": {
+    "title": "安装书深",
+    "message": "退出书深并继续安装？",
+    "detail": "正在执行的任务将停止。书深会先保存待写入的设置并关闭后台进程，再允许安装器替换程序。项目和历史记录将保留。",
+    "confirm": "退出并安装"
   },
   "updateRecovery": {
     "title": "书深更新恢复",
@@ -127,6 +132,9 @@
     "componentExpanding": "正在展开 {{name}}：{{percent}}%"
   },
   "installer": {
+    "closeRunning": "书深正在运行。此版本需要手动退出：请从系统托盘菜单退出书深，然后点击“是”继续安装。取消将保留当前安装。",
+    "running": "书深尚未完成退出。请关闭正在执行的任务并从系统托盘退出，然后重新运行安装器。",
+    "downgrade": "已安装更高版本，请使用相同或更高版本的安装包。",
     "title": "安装书深",
     "uninstallWaiting": "请先点击旧卸载窗口的“确定”。正在等待进程退出及目录清理，最多 2 分钟。",
     "uninstallIncomplete": "旧版本卸载尚未完成，或安装目录不完整：{{path}}。请点击旧卸载窗口的“确定”并等待其退出及目录清理，然后重新运行安装包。若仍失败，请联系支持人员；不要手动删除未知文件。",

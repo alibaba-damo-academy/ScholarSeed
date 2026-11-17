@@ -27,6 +27,7 @@ declare const __SCHOLARSEED_WEB_VERSION__: string
 
 /** 桌面独有能力不在浏览器实现，交回 renderer 既有的降级分支。 */
 const PLATFORM_FALLBACK = 'browser'
+const DESKTOP_BRIDGE_UNAVAILABLE = 'desktop_bridge_unavailable'
 // 同源：地址前缀留空，请求由 Vite 的 /api 反代转给 serve（SSE 与 cookie 因此免跨源）。
 const PREFERENCES_STORAGE_KEY = 'scholarseed.web.preferences'
 const DEVICE_STORAGE_KEY = 'scholarseed.web.device'
@@ -110,7 +111,9 @@ if (!window.scholarseed) {
     openExternal: async (url) => {
       window.open(url, '_blank', 'noopener,noreferrer')
     },
-    saveFileCopy: async ({ suggestedName, bytes }) => {
+    saveFileCopy: async (request) => {
+      if (!('bytes' in request)) return { ok: false, error: DESKTOP_BRIDGE_UNAVAILABLE }
+      const { suggestedName, bytes } = request
       const payload = new Uint8Array(bytes.byteLength)
       payload.set(bytes)
       const url = URL.createObjectURL(new Blob([payload.buffer]))

@@ -1,5 +1,6 @@
 import { htmlSchema } from '@milkdown/kit/preset/commonmark'
 import { $remark } from '@milkdown/kit/utils'
+import { bibliographyAnchor } from './bibliography.ts'
 
 const ANCHOR_ATTRIBUTE = '(?:id|name)'
 const EMPTY_ANCHOR = /^<a\s+(?:id|name)\s*=\s*(["'])([^\s"'<>`=&\p{Cc}]+)\1\s*>\s*<\/a\s*>\s*$/iu
@@ -12,7 +13,7 @@ interface AnchorSyntaxNode {
 }
 
 export function markdownAnchorDom(value: string): [string, Record<string, string>] | null {
-  if (!EMPTY_ANCHOR.test(value)) return null
+  if (!EMPTY_ANCHOR.test(value) && !bibliographyAnchor(value)) return null
   return ['span', { 'data-type': 'html', 'data-value': value, contenteditable: 'false' }]
 }
 

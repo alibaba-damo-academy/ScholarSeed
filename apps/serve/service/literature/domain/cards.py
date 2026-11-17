@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from enum import StrEnum
 from hashlib import sha256
 
 CARD_INVALID = "papercard_invalid"
@@ -21,6 +22,57 @@ GLOBAL_STORAGE = "literature"
 REVISION_PREFIX = "sha256:"
 ARRAY_INDEX = re.compile(r"\[(\d+)\]")
 SENTENCE_LINE = re.compile(r"^#(\d+)\s+(.+)$", re.MULTILINE)
+LEGACY_FULL_READING = ("l1-reading/v2", "0.2.4", "l1/v2.4")
+READING_SCHEMA = "l1-reading/v2"
+READING_PAPER_TYPES = frozenset(("method", "benchmark", "survey", "theory"))
+
+
+class ReadingState(StrEnum):
+    MISSING = "missing"
+    STALE = "stale"
+    INCOMPATIBLE = "incompatible"
+    READY = "ready"
+
+
+def reading_state(asset: dict | None, revision: str) -> ReadingState:
+    """Check saved structure and source version, not evidence quality or completeness."""
+    if asset is None:
+        return ReadingState.MISSING
+    if not isinstance(asset, dict):
+        return ReadingState.INCOMPATIBLE
+    l1, metadata, snapshot = (asset.get(key) for key in ("l1", "metadata", "source_snapshot"))
+    if not isinstance(l1, dict) or not isinstance(metadata, dict) or not isinstance(snapshot, dict):
+        return ReadingState.INCOMPATIBLE
+    if metadata.get("schema_version") != READING_SCHEMA:
+        return ReadingState.INCOMPATIBLE
+    revision = revision.removeprefix(REVISION_PREFIX)
+    if not revision or any(
+        not isinstance(value, str) or value.removeprefix(REVISION_PREFIX) != revision
+        for value in (asset.get("revision"), snapshot.get("source_revision"))
+    ):
+        return ReadingState.STALE
+    if str(l1.get("paper_type", "")).lower() not in READING_PAPER_TYPES:
+        return ReadingState.INCOMPATIBLE
+    return ReadingState.READY
+
+
+def reading_result(value: dict) -> dict:
+    """Correct the known full-reading producer's old coverage label on read only."""
+    metadata, l1 = value.get("metadata"), value.get("l1")
+    if not isinstance(metadata, dict) or not isinstance(l1, dict):
+        return value
+    producer = tuple(
+        metadata.get(key) for key in ("schema_version", "extractor_version", "prompt_version")
+    )
+    coverage = metadata.get("coverage")
+    if (
+        producer == LEGACY_FULL_READING
+        and l1.get("reading_depth") == "partial"
+        and isinstance(coverage, dict)
+        and coverage.get("complete") is False
+    ):
+        return {**value, "l1": {**l1, "reading_depth": "full"}}
+    return value
 
 
 def digest(value: object) -> str:
@@ -69,7 +121,9 @@ def normalize_bundle(raw: dict) -> dict:
     values = flatten(card)
     valid = {}
     invalid = []
-    for path, ids in fields.items():
+    for sourcePath, sourceIds in fields.items():
+        ids = sourceIds
+        path = sourcePath
         if not isinstance(path, str) or not isinstance(ids, list) or not ids:
             invalid.append(str(path))
             continue

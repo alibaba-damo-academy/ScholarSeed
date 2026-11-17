@@ -246,13 +246,13 @@ class HistoryService:
                         default=0,
                     )
                     snippet = row["text"][first : first + HISTORY_SNIPPET_CHARS]
-                    row = {
+                    scoredRow: HistoryMessage = {
                         **row,
                         "text": snippet,
                         "text_offset": first,
                         "truncated": first > 0 or len(snippet) < len(row["text"]),
                     }
-                    scored.append((score, source_order[row["session_id"]], position, row))
+                    scored.append((score, source_order[row["session_id"]], position, scoredRow))
             rows = [
                 row
                 for _, _, _, row in sorted(scored, key=lambda item: (-item[0], item[1], -item[2]))
@@ -335,7 +335,8 @@ class HistoryService:
                 raise ValueError
             revision, offset, text_offset = values
             if revision != fingerprint or any(
-                type(value) is not int or value < 0 for value in (offset, text_offset)
+                (not isinstance(value, int) or isinstance(value, bool)) or value < 0
+                for value in (offset, text_offset)
             ):
                 raise ValueError
             return offset, text_offset

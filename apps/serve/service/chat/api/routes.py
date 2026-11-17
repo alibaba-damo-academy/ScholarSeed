@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AbstractContextManager, AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -95,6 +95,7 @@ from service.settings.credentials import ModelCredentialStore
 from service.settings.mcp import McpConfigurationService, McpConfigurationStore
 from service.settings.oauth import CHATGPT_PROVIDER
 from service.settings.plans import McpPlanService, McpPlanStore
+from service.translation.api import mount_translation_routes
 
 _log = logging.getLogger(__name__)
 DEFAULT_PRODUCT = "all"
@@ -117,6 +118,7 @@ def create_chat_app(
     activities: Activities | None = None,
     notifications: ChangeHub | None = None,
     runtime_discovery: RuntimeDiscovery | None = None,
+    runtime_descriptors: Callable[[], AbstractContextManager[tuple[int, ...]]] | None = None,
 ) -> FastAPI:
     """Create the Service-owned product shell around typed Codex sessions."""
 
@@ -269,7 +271,7 @@ def create_chat_app(
 
     def session_turn_id(session_id: str) -> str:
         live = sessions.get(session_id)
-        return live.active_product_turn_id if live is not None else ""
+        return live.model_request_id if live is not None else ""
 
     def session_turn_activity(session_id: str) -> ActivityLease | None:
         live = sessions.get(session_id)
@@ -348,6 +350,11 @@ def create_chat_app(
         user_root=SERVICE_SKILLS_DIR,
         components=ComponentRegistry(SERVICE_COMPONENTS_DATABASE),
     )
+    connector_store = ConnectorStore()
+    hosted_oauth = HostedOAuth(os.environ.get(ACCOUNT_BASE_URL_ENV, ""), account_tokens.current)
+    connector_secrets = ConnectorSecrets(connector_store, activities, hosted_oauth)
+    mcp_store = McpConfigurationStore()
+    connector_broker = ConnectorBroker(mcp_store, connector_secrets, activities)
     runtime_service = LiveSessionService(
         activities=activities,
         catalog=access_store,
@@ -357,14 +364,11 @@ def create_chat_app(
         models=model_service,
         logger=_log,
         resource_changes=resource_deliveries,
+        resource_drains=(connector_broker.drain_resources,),
         discovery=runtime_discovery,
+        runtime_descriptors=runtime_descriptors,
     )
     runtime_service.bind_sessions(sessions)
-    connector_store = ConnectorStore()
-    hosted_oauth = HostedOAuth(os.environ.get(ACCOUNT_BASE_URL_ENV, ""), account_tokens.current)
-    connector_secrets = ConnectorSecrets(connector_store, activities, hosted_oauth)
-    mcp_store = McpConfigurationStore()
-    connector_broker = ConnectorBroker(mcp_store, connector_secrets, activities)
     mcp_service = McpConfigurationService(
         mcp_store,
         runtime_service.mcp_configuration_port,
@@ -497,6 +501,7 @@ def create_chat_app(
     connector_service.broker = connector_broker
     app.state.connector_broker = connector_broker
     mount_connector_routes(app, connector_service)
+    mount_translation_routes(app)
     mount_skill_routes(
         app, skills=skill_service, credentials=skill_credentials, activities=activities
     )

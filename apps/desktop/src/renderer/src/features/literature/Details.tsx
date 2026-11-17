@@ -5,10 +5,14 @@ import { collectionNodes, paperJoinKey, type JoinDestination } from './hierarchy
 import { ResultReport } from './Report'
 import type { ConversationSearchResult } from '../../contracts/literature'
 import type { LiteratureCardPorts } from './ports'
+import type { LiteratureResultAuthorization } from './interaction'
+import { saveBibtex, type SaveCopyBridge } from './export'
 
-const DetailsContext = createContext<{ ports: LiteratureCardPorts; joining: JoinPorts } | null>(
-  null
-)
+const DetailsContext = createContext<{
+  ports: LiteratureCardPorts
+  joining: JoinPorts
+  saveCopy?: SaveCopyBridge
+} | null>(null)
 
 function DetailsJoin(
   props: Omit<React.ComponentProps<typeof Joining>, 'ports'>
@@ -19,11 +23,13 @@ function DetailsJoin(
 
 function DetailsView(props: LiteratureSearchViewProps): React.JSX.Element {
   const context = useContext(DetailsContext)!
+  const { saveCopy } = context
   return (
     <SearchSurface
       {...props}
       actions={{
         projectId: context.ports.projectId,
+        saveBibtex: saveCopy ? (bibtex) => saveBibtex(bibtex, saveCopy) : undefined,
         receipts: context.joining.receipts,
         Join: DetailsJoin,
         openSource: (paper) => context.ports.openSource(paper.paper_id),
@@ -35,11 +41,14 @@ function DetailsView(props: LiteratureSearchViewProps): React.JSX.Element {
 export function LiteratureDetails({
   content,
   ports,
+  saveCopy,
 }: {
   content: Record<string, unknown>
   ports: LiteratureCardPorts
+  saveCopy?: SaveCopyBridge
 }): React.JSX.Element {
   const result = content as unknown as ConversationSearchResult
+  const context = content.context as { authorization?: LiteratureResultAuthorization } | undefined
   const [receipts, setReceipts] = useState<ReadonlyMap<string, JoinDestination>>(new Map())
   const joining: JoinPorts = {
     projectId: ports.projectId,
@@ -63,9 +72,9 @@ export function LiteratureDetails({
     },
   }
   return (
-    <DetailsContext.Provider value={{ ports, joining }}>
-      <div className="h-screen">
-        <ResultReport View={DetailsView} result={result} />
+    <DetailsContext.Provider value={{ ports, joining, saveCopy }}>
+      <div className="h-[var(--vds-conversation-details-height)] min-w-0 overflow-hidden">
+        <ResultReport View={DetailsView} result={result} authorization={context?.authorization} />
       </div>
     </DetailsContext.Provider>
   )

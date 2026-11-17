@@ -10,11 +10,20 @@ import os
 import sys
 import time
 from typing import Optional
+from types import SimpleNamespace
+from pathlib import Path
+
+from knowledge_layer.comprehend import ExtractionProtocolError, extraction_blocks
+
+from service.literature.service.atomic import material_asset, prepare_abstract
+from service.literature.service.comprehension import ReadingInput, ComprehensionError, EXTRACTION_INCOMPLETE
+
 
 import llm_call  # for setting LLM_RETRIES at runtime
 from config import _create_llm
 from llm_call import _merge_usage
 from log_utils import setup_logging
+from paper_materials import ABSTRACT_ONLY, source_identity
 from progress import (
     DELTA_IDEATION_TYPES,
     VALID_TYPES,
@@ -32,13 +41,9 @@ from step2_prepare import (
     _get_sections,
     _has_full_text,
     _number_abstract_sentences,
-    _parse_sentences_index,
     trim_content_partial,
 )
-from step3_warmup import _warmup_cache
-from step4_card import _extract_card_combined, _validate_card
-from step5_delta import _extract_delta, _validate_delta
-from step6_ideation import _extract_ideation_claims, _validate_ideation
+from paper_materials import QUALITY_ACTION, QUALITY_READY, QUALITY_DEGRADED, quality_problem
 from step0_load import load_inputs
 from utils import (
     _atomic_write_json,
@@ -48,6 +53,7 @@ from utils import (
     _resolve_input_dir,
     _resolve_output_dir,
 )
+from diagnostics import EvidenceLog, text_size
 
 # ---- Retry constant (can be overridden at runtime) ----
 MAX_RETRIES = 3       # Outer validation retry (card quality check)
@@ -61,7 +67,7 @@ async def _process_single_paper(
     llm,
     paper_id: str,
     entity_entry: dict,
-    paper_info_entry: dict,
+    paper_info_entry: dict | None,
     depth: str,
     paper_type: str,
     with_source_map: bool = False,
@@ -69,6 +75,7 @@ async def _process_single_paper(
     with_ideation: bool = False,
     stop: Optional[PipelineStop] = None,
     usage_out: Optional[dict] = None,
+    diagnostic=None,
 ) -> tuple[dict, Optional[dict], Optional[dict], Optional[dict], dict]:
     """Process a single paper end-to-end (KV Cache Scheme 2).
 
@@ -76,333 +83,96 @@ async def _process_single_paper(
     If usage_out is passed, usage is also accumulated into it (survives exceptions).
     """
     paper_info_entry = paper_info_entry or {}
-    title = entity_entry.get("title", "") or "(title unavailable)"
-    abstract = entity_entry.get("abstract", "") or ""
-    info_type = paper_info_entry.get("info_type", "")
-    agg_usage: dict = usage_out if usage_out is not None else {}
+    if with_delta or with_ideation:
+        raise ValueError('Review material extraction produces L1 cards only, without delta or ideation stages')
+    title = entity_entry.get('title') or '(title unavailable)'
+    abstract = entity_entry.get('abstract') or ''
+    agg_usage = usage_out if usage_out is not None else {}
+    saved = paper_info_entry.get('paper_card')
+    if saved and not quality_problem(saved):
+        return {**saved, 'paperId': paper_id}, None, None, None, agg_usage
+    prepared = (paper_info_entry.get('parse_report') or {}).get('reading_input')
+    source = (ReadingInput(**{**prepared, 'title': title, 'abstract': abstract}) if prepared
+              else prepare_abstract(title, abstract))
 
-    # ---- Hub cache hit: info_type="card" — reuse stored products, generate only what is missing ----
-    card_from_hub = (info_type == "card")
-    if card_from_hub and depth == "metadata_only":
-        depth = "full"
-    hub_delta_entry = None
-    hub_ideation_entry = None
-    hub_source_map_entry = None
-    card = None
-    common_fields = {}
-    card_source_map = {}
-    if card_from_hub:
-        hub_pc = paper_info_entry.get("paper_card")
-        hub_type = None
-        if isinstance(hub_pc, dict):
-            card = hub_pc.get("card")
-            common_fields = hub_pc.get("common_fields") or {}
-            ht = hub_pc.get("paper_type")
-            if ht in VALID_TYPES:
-                hub_type = ht
+    class Client:
+        def __init__(self):
+            self.records = []
+            self.failure: Exception | None = None
+            self.call_number = 0
 
-        # Hub card validity check — hub claims info_type="card" but the bundle is
-        # actually incomplete. Don't trust the flag: discard hub artifacts and
-        # fall through to fresh extraction, otherwise we'd emit a card=None entry
-        # or a card with no source_mapping that can't be rebuilt afterwards.
-        hub_sm_present = isinstance(paper_info_entry.get("source_mapping"), dict)
-        if not card:
-            logging.info(
-                f"[CARD_INVALIDATE] {paper_id}: info_type=card but hub card "
-                f"missing/empty; discarding hub artifacts, re-extracting"
-            )
-            card_from_hub = False
-            card = None
-            common_fields = {}
-        elif with_source_map and not hub_sm_present:
-            logging.info(
-                f"[CARD_INVALIDATE] {paper_id}: info_type=card but hub "
-                f"source_mapping missing; re-extracting to rebuild card mapping"
-            )
-            card_from_hub = False
-            card = None
-            common_fields = {}
+        async def chat(self, system, user, *, max_tokens=None, json_mode=False,
+                       cache_prefix=None, temperature=None, images=(), **kwargs):
+            self.failure = None
+            if images:
+                raise ValueError('Review material extraction is text-only')
+            self.call_number += 1
+            call_number = self.call_number
 
-        # Type conflict resolution — upstream (reclassify / entity) takes priority over hub
-        if paper_type and hub_type and paper_type != hub_type:
-            # Upstream type disagrees with hub → discard all hub artifacts, re-extract
-            logging.info(
-                f"[CARD_INVALIDATE] {paper_id}: upstream type={paper_type} "
-                f"!= hub type={hub_type}; discarding hub card/delta/ideation"
-            )
-            card_from_hub = False
-            card = None
-            common_fields = {}
-        elif not paper_type and hub_type:
-            # No upstream type → fall back to hub type
-            paper_type = hub_type
-        # else: both agree or both empty → keep as-is
+            def observe(event, **values):
+                response = values.pop('response', None)
+                if response is not None:
+                    parsed = llm_call._extract_json_from_response(response)
+                    if response.lstrip().startswith('<card>'):
+                        try:
+                            parsed = {key: value for key, value in extraction_blocks(response, paper_type).items()
+                                      if key != 'paper_type'}
+                        except ExtractionProtocolError as error:
+                            parsed = None
+                            values['protocol_error'] = str(error)
+                    values['response_ref'] = diagnostic.result(paper_id, 'model_response',
+                                                               {'text': response, 'parsed': parsed})
+                    values['returned_keys'] = sorted(parsed) if isinstance(parsed, dict) else None
+                    fields = parsed.get('fields') if isinstance(parsed, dict) else None
+                    values['repair_fields'] = sorted(fields) if isinstance(fields, dict) else None
+                diagnostic.event(event, paper_id=paper_id, call_number=call_number, **values)
 
-        if card_from_hub:
-            hub_sm = paper_info_entry.get("source_mapping")
-            if isinstance(hub_sm, dict):
-                hub_source_map_entry = hub_sm
-                card_source_map = hub_sm.get("card_mapping") or {}
-            d = paper_info_entry.get("delta")
-            if with_delta and isinstance(d, dict) and d.get("deltas"):
-                hub_delta_entry = d
-            i = paper_info_entry.get("ideation")
-            if with_ideation and isinstance(i, dict) and i.get("idea_claims"):
-                hub_ideation_entry = i
-
-    # Discovered metadata is filtered upstream. Local/legacy inputs still need
-    # actual source text or a validated hub card; never extract from a title alone.
-    sections = _get_sections(paper_info_entry)
-    has_section_text = isinstance(sections, str) and bool(sections.strip())
-    if not abstract.strip() and not has_section_text and card is None:
-        raise ValueError(f"{paper_id}: no abstract or full text available for paper-card extraction")
-    if not abstract.strip() and has_section_text and depth == "metadata_only":
-        depth = "partial"
-
-    # Step 1: Classify paper_type if missing
-    if not paper_type:
-        paper_type, _ = await _classify_paper_type(
-            llm, title, abstract, stop=stop, where=f"{paper_id}/classify",
-            usage_out=agg_usage,
-        )
-
-    # Step 2: Prepare content
-    if depth == "metadata_only" or not sections:
-        if abstract:
-            content = _number_abstract_sentences(abstract)
-        else:
-            content = f"Title: {title}"
-    elif isinstance(sections, str) and sections.strip():
-        content = sections
-        if depth == "partial":
-            content, _ = trim_content_partial(content)
-    else:
-        if abstract:
-            content = _number_abstract_sentences(abstract)
-        else:
-            content = f"Title: {title}"
-
-    # Decide what still needs a fresh LLM extraction
-    has_bib = bool(paper_info_entry.get("bib") or paper_info_entry.get("bib_info"))
-    should_gen_delta = (
-        with_delta
-        and hub_delta_entry is None
-        and paper_type in DELTA_IDEATION_TYPES
-        and depth != "metadata_only"
-        and (info_type == "origin_latex" or (info_type == "card" and has_bib))
-    )
-    should_gen_ideation = (
-        with_ideation
-        and hub_ideation_entry is None
-        and paper_type in DELTA_IDEATION_TYPES
-        and depth != "metadata_only"
-    )
-
-    # Step 3: Warmup
-    if (not card_from_hub and (with_delta or with_ideation)) or should_gen_delta or should_gen_ideation:
-        await _warmup_cache(llm, title, content, stop=stop, where=f"{paper_id}/warmup",
-                            usage_out=agg_usage)
-    else:
-        logging.debug(f"[WARMUP_SKIP] {paper_id}: no fresh delta/ideation extraction")
-
-    # Step 4: Card + common_fields (+ optional source_map)
-    effective_source_map = with_source_map
-    if card_from_hub:
-        logging.info(
-            f"[CARD_CACHE_HIT] {paper_id}: reuse hub card/common/source_map "
-            f"(type={paper_type}, hub_delta={hub_delta_entry is not None}, "
-            f"hub_ideation={hub_ideation_entry is not None})"
-        )
-    else:
-        for attempt in range(MAX_RETRIES):
+            if diagnostic:
+                diagnostic.event('model_call', paper_id=paper_id, call_number=call_number,
+                                 system_size=text_size(system), input_size=text_size(user))
             try:
-                card, common_fields, card_source_map, _ = await _extract_card_combined(
-                    llm, paper_type, title, content,
-                    with_source_map=effective_source_map,
-                    stop=stop, where=f"{paper_id}/card+common",
-                    usage_out=agg_usage,
-                )
-                errors = _validate_card(paper_type, depth, card, common_fields)
-                if not errors:
-                    break
-                logging.warning(
-                    f"[RETRY] {paper_id}: card validation failed (attempt {attempt + 1}/{MAX_RETRIES}): {errors}"
-                )
-            except (FatalLLMError, RuntimeError):
+                value, usage = await llm_call._llm_call(
+                    llm, system, user, expect_json=json_mode, max_tokens=max_tokens,
+                    stop=stop, where=f'{paper_id}/asset', usage_out=agg_usage,
+                    **({'observer': observe} if diagnostic else {}))
+            except Exception as error:
+                self.failure = error
                 raise
-            except Exception as exc:
-                logging.warning(
-                    f"[RETRY] {paper_id}: card extraction error (attempt {attempt + 1}/{MAX_RETRIES}): {exc}"
-                )
-                if attempt + 1 >= MAX_RETRIES:
-                    raise
+            self.records.append(SimpleNamespace(
+                input_tokens=usage.get('prompt_tokens', 0), output_tokens=usage.get('completion_tokens', 0),
+                invocation_id='', model_key='', receipt_id=''))
+            return json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else value, usage
 
-    # Step 5: Delta extraction
-    delta = None
-    delta_source_map = {}
-    if should_gen_delta:
-        for attempt in range(MAX_RETRIES):
-            try:
-                delta, delta_source_map, _ = await _extract_delta(
-                    llm, title, content,
-                    with_source_map=effective_source_map,
-                    stop=stop, where=f"{paper_id}/delta",
-                    usage_out=agg_usage,
-                )
-                delta_errors = _validate_delta(delta)
-                if not delta_errors:
-                    break
-                logging.warning(
-                    f"[RETRY] {paper_id}: delta validation failed (attempt {attempt + 1}/{MAX_RETRIES}): {delta_errors}"
-                )
-            except (FatalLLMError, RuntimeError):
-                raise
-            except Exception as exc:
-                logging.warning(
-                    f"[RETRY] {paper_id}: delta extraction error (attempt {attempt + 1}/{MAX_RETRIES}): {exc}"
-                )
-                if attempt + 1 >= MAX_RETRIES:
-                    break
-
-    # Step 6: Ideation claims
-    ideation = None
-    if should_gen_ideation:
-        for attempt in range(MAX_RETRIES):
-            try:
-                ideation, _ = await _extract_ideation_claims(
-                    llm, title, content,
-                    stop=stop, where=f"{paper_id}/ideation",
-                    usage_out=agg_usage,
-                )
-                ideation_errors = _validate_ideation(ideation)
-                if not ideation_errors:
-                    break
-                logging.warning(
-                    f"[RETRY] {paper_id}: ideation validation failed (attempt {attempt + 1}/{MAX_RETRIES}): {ideation_errors}"
-                )
-            except (FatalLLMError, RuntimeError):
-                raise
-            except Exception as exc:
-                logging.warning(
-                    f"[RETRY] {paper_id}: ideation extraction error (attempt {attempt + 1}/{MAX_RETRIES}): {exc}"
-                )
-                if attempt + 1 >= MAX_RETRIES:
-                    break
-
-    # Quality Notes
-    quality_notes = []
-    if depth == "metadata_only":
-        quality_notes.append("Reading depth is 'metadata_only' — card extracted from abstract only.")
-    if not sections and not card_from_hub:
-        quality_notes.append("No full text available.")
-    if not abstract or len(abstract) < 100:
-        quality_notes.append(f"Abstract is very short ({len(abstract or '')} chars).")
-
-    # Build result entry (card)
-    has_parse_dict = bool(sections) or (card_from_hub and bool(paper_info_entry.get("paper_card", {}).get("has_parse_dict")))
-    result_entry = {
-        "paperId": paper_id,
-        "title": entity_entry.get("title", ""),
-        "abstract": entity_entry.get("abstract", ""),
-        "year": entity_entry.get("year"),
-        "paper_type": paper_type,
-        "relevance_level": entity_entry.get("relevance_level", "L1"),
-        "info_type": info_type,
-        "has_parse_dict": has_parse_dict,
-        "reading_depth": depth,
-        "card": card,
-        "common_fields": common_fields,
-    }
-
-    if quality_notes:
-        note_text = " | ".join(quality_notes)
-        if card and isinstance(card, dict):
-            existing_other = card.get("other_info", "")
-            card["other_info"] = f"{existing_other} | {note_text}".strip(" |") if existing_other else note_text
-        else:
-            result_entry["quality_notes"] = note_text
-
-    # Build delta entry
-    delta_entry = None
-    if hub_delta_entry is not None:
-        delta_entry = dict(hub_delta_entry)
-        delta_entry["paperId"] = paper_id
-        delta_entry["title"] = entity_entry.get("title", "")
-    elif delta is not None:
-        delta_items = delta if isinstance(delta, list) else delta.get("deltas", [])
-        bib_dict = paper_info_entry.get("bib") or paper_info_entry.get("bib_info") or {}
-        for item in delta_items:
-            if isinstance(item, dict):
-                bib_id = item.get("cited_bib_id", "")
-                bib_info = bib_dict.get(bib_id, {})
-                item["cited_bib_title"] = bib_info.get("title", "")
-        delta_entry = {
-            "paperId": paper_id,
-            "title": entity_entry.get("title", ""),
-            "paper_type": paper_type,
-            "deltas": delta_items,
-        }
-
-    # Build ideation entry
-    ideation_entry = None
-    if hub_ideation_entry is not None:
-        ideation_entry = dict(hub_ideation_entry)
-        ideation_entry["paperId"] = paper_id
-        ideation_entry["title"] = entity_entry.get("title", "")
-    elif ideation is not None:
-        claims = ideation.get("idea_claims", []) if isinstance(ideation, dict) else []
-        ideation_sentences = {}
-        if claims:
-            sent_idx_for_ideation = _parse_sentences_index(content)
-            all_claim_ids: set[int] = set()
-            for claim in claims:
-                sids = claim.get("source_ids", [])
-                if isinstance(sids, list):
-                    all_claim_ids.update(x for x in sids if isinstance(x, int))
-            ideation_sentences = {
-                str(sid): sent_idx_for_ideation[sid]
-                for sid in sorted(all_claim_ids)
-                if sid in sent_idx_for_ideation
-            }
-        ideation_entry = {
-            "paperId": paper_id,
-            "title": entity_entry.get("title", ""),
-            "paper_type": paper_type,
-            "idea_claims": claims,
-            "sentences": ideation_sentences,
-        }
-
-    # Build source_map entry
-    source_map_entry = None
-    if card_from_hub and delta is None:
-        if isinstance(hub_source_map_entry, dict):
-            source_map_entry = dict(hub_source_map_entry)
-            source_map_entry["paperId"] = paper_id
-            source_map_entry["title"] = entity_entry.get("title", "")
-    elif with_source_map and (card_source_map or delta_source_map):
-        sent_idx = _parse_sentences_index(content)
-        all_ids: set[int] = set()
-        for ids in card_source_map.values():
-            if isinstance(ids, list):
-                all_ids.update(x for x in ids if isinstance(x, int))
-        for ids in delta_source_map.values():
-            if isinstance(ids, list):
-                all_ids.update(x for x in ids if isinstance(x, int))
-        resolved_sentences = {
-            str(sid): sent_idx[sid]
-            for sid in sorted(all_ids)
-            if sid in sent_idx
-        }
-
-        source_map_entry = {
-            "paperId": paper_id,
-            "title": entity_entry.get("title", ""),
-            "card_mapping": card_source_map,
-            "delta_mapping": delta_source_map,
-            "sentences": resolved_sentences,
-        }
-
-    return result_entry, delta_entry, ideation_entry, source_map_entry, agg_usage
+    payload = Path(paper_info_entry['source_file']).read_bytes() if prepared else None
+    client = Client()
+    try:
+        asset = await material_asset(source, client, paper_type=paper_type,
+                                     paper=entity_entry, pdf_payload=payload)
+    except Exception as exc:
+        if diagnostic:
+            details = getattr(exc, 'diagnostics', {})
+            diagnostic.result(paper_id, 'extraction_failure', {
+                'error_type': type(exc).__name__, 'error': str(exc),
+                'l1': details.get('l1'), 'source_mapping': details.get('source_mapping'),
+                'source_revision': source.snapshot.get('source_revision'), 'usage': agg_usage})
+        if client.failure is not None:
+            raise client.failure from client.failure.__cause__
+        if not isinstance(exc, ComprehensionError) or prepared or str(exc) != EXTRACTION_INCOMPLETE:
+            raise
+        # The original abstract remains usable evidence when optional structured
+        # extraction fails. This task-local record is not a cached framework L1.
+        card = {**{key: entity_entry.get(key) for key in ('title', 'authors', 'year')},
+                'paperId': paper_id, 'abstract': abstract,
+                'card': {'abstract': abstract}, 'reading_depth': ABSTRACT_ONLY,
+                'material_sha256': source_identity(entity_entry, paper_info_entry),
+                'has_parse_dict': False,
+                'extraction_notice': str(exc)}
+        return card, None, None, None, agg_usage
+    card = {**asset['l1'], 'paperId': paper_id, 'title': title, 'abstract': abstract,
+            'authors': entity_entry.get('authors') or [], 'year': entity_entry.get('year'),
+            'source_coverage': asset['metadata']['coverage'],
+            'asset_revision': asset['revision'], 'has_parse_dict': bool(prepared)}
+    return card, None, None, None, agg_usage
 
 
 # ============================================================================
@@ -416,6 +186,7 @@ async def _run_async(args):
     llm_call.LLM_RETRIES = getattr(args, "llm_retries", 3)
 
     folder_path = _resolve_folder(args.folder)
+    diagnostic = EvidenceLog(folder_path, 'processing')
     input_dir = _resolve_input_dir(folder_path)
     output_dir = _resolve_output_dir(args, folder_path)
     concurrency = args.concurrency
@@ -431,9 +202,20 @@ async def _run_async(args):
     entity, paper_info, title_index, existing_cards, pending_papers = load_inputs(
         input_dir, output_dir, limit
     )
+    pending_ids = {identity for identity, entry in pending_papers}
+    for identity in entity.keys() & existing_cards.keys() - pending_ids:
+        diagnostic.event('paper_reused', paper_id=identity, model_calls=0,
+                         result_store='03_process/paper_cards.json')
 
     if not pending_papers:
-        result = {"status": "SUCCESS", "processed": 0, "failed": 0, "message": "All papers already processed"}
+        blocked = [pid for pid in entity if quality_problem(existing_cards.get(pid))]
+        result = {"status": "PARTIAL_SUCCESS" if blocked else "SUCCESS", "processed": 0,
+                  "failed": 0, "quality_blocked_ids": blocked,
+                  "message": "Saved extraction needs review; no automatic re-extraction" if blocked
+                  else "All papers already processed"}
+        if blocked:
+            result["next_action"] = QUALITY_ACTION
+        diagnostic.event('run_finished', status=result['status'], processed=0)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
@@ -445,12 +227,12 @@ async def _run_async(args):
         thinking=getattr(args, "thinking", False),
         workspace=folder_path,
     )
+    diagnostic.event('model_selected', model=getattr(llm, 'model', None),
+                     retry_owner=getattr(llm, 'retry_owner', 'script'), papers=len(pending_papers))
 
-    # Init logging — 统一写入 session.log + 通过 StreamHandler→stderr→run_log.txt
-    setup_logging(os.path.join(folder_path, "session.log"))
+    setup_logging(diagnostic.directory / 'processing.log')
 
-    # Init run_log.txt — monkey-patch stderr 拦截 logging StreamHandler 输出
-    log_path = os.path.join(output_dir, "run_log.txt")
+    log_path = diagnostic.directory / 'stderr.log'
     _log_file = open(log_path, "a", encoding="utf-8")
 
     _orig_stderr_write = sys.stderr.write
@@ -519,6 +301,8 @@ async def _run_async(args):
                 return
 
             paper_usage: dict = {}
+            paper_started = time.monotonic()
+            diagnostic.event('paper_started', paper_id=pid)
             try:
                 paper_t0 = time.time()
                 title = ent.get("title", "")
@@ -551,6 +335,7 @@ async def _run_async(args):
                         with_ideation=with_ideation,
                         stop=pipeline_stop,
                         usage_out=paper_usage,
+                        diagnostic=diagnostic,
                     )
                 )
 
@@ -559,18 +344,15 @@ async def _run_async(args):
                     card_entry.get("paper_type", "") if isinstance(card_entry, dict) else ""
                 ) or paper_type or "?"
                 logging.info(
-                    f"[PAPER] {pid}: {paper_elapsed:.1f}s, depth={depth}, type={actual_type}, "
+                    f"[PAPER] {pid}: {paper_elapsed:.1f}s, depth={card_entry.get('reading_depth', depth)}, type={actual_type}, "
                     f"info_type={info.get('info_type', 'N/A') if info else 'null'}"
                 )
 
                 # Save card incrementally
-                if info.get('parse_report'):
-                    import hashlib
-                    card_entry['source_text_sha256'] = hashlib.sha256(info.get('sentences','').encode()).hexdigest()
                 from paper_materials import source_identity, material_state
-                card_entry["material_sha256"] = source_identity(ent, info)
                 card_entry["material_state"] = material_state(ent, info)
                 cards[pid] = card_entry
+                diagnostic.result(pid, 'card_result', card_entry)
                 _atomic_write_json(cards_path, cards)
 
                 # Save delta incrementally
@@ -588,10 +370,17 @@ async def _run_async(args):
                     source_maps_data[pid] = source_map_entry
                     _atomic_write_json(source_maps_path, source_maps_data)
 
+                problem = quality_problem(card_entry)
+                if problem:
+                    tracker.record_failure(pid, problem, category="validation")
+                    logging.warning(f"[QUALITY_BLOCKED] {pid}: {problem}; saved locally")
+                    return
+
                 tracker.record_success(pid)
                 await pipeline_stop.record_paper_success(pid)
 
             except asyncio.CancelledError:
+                diagnostic.event('paper_cancelled', paper_id=pid)
                 tracker.record_cancelled(
                     pid, pipeline_stop.fatal_reason or "pipeline task cancelled"
                 )
@@ -605,6 +394,7 @@ async def _run_async(args):
                 logging.error(f"[FATAL] {pid}: {error_msg}")
                 shutdown.should_stop = True
             except Exception as exc:
+                diagnostic.event('paper_failed', paper_id=pid, error_type=type(exc).__name__, error=str(exc))
                 info = classify_error(exc)
                 category = getattr(exc, "category", None) or info.category
                 error_msg = format_exception(exc, where=pid)
@@ -614,6 +404,8 @@ async def _run_async(args):
                     logging.error(f"[CIRCUIT_BREAKER] {pipeline_stop.fatal_reason}")
             finally:
                 await _accumulate_usage(paper_usage)
+                diagnostic.event('paper_finished', paper_id=pid,
+                                 elapsed_seconds=time.monotonic() - paper_started, usage=paper_usage)
 
     # Dispatch all tasks concurrently
     task_to_pid = {
@@ -702,12 +494,13 @@ async def _run_async(args):
         depth_dist[dp] = depth_dist.get(dp, 0) + 1
         rl = card_data.get("relevance_level", "unknown")
         relevance_dist[rl] = relevance_dist.get(rl, 0) + 1
-        if card_data.get("card"):
+        if card_data.get("card") and not quality_problem(card_data):
             total_card_chars += len(json.dumps(card_data["card"], ensure_ascii=False))
             valid_count += 1
 
     paper_count = tracker.processed
     quality_stats = {
+        "quality_blocked_ids": [pid for pid in entity if quality_problem(cards.get(pid))],
         "type_distribution": type_dist,
         "reading_depth_distribution": depth_dist,
         "relevance_level_distribution": relevance_dist,
@@ -728,7 +521,7 @@ async def _run_async(args):
     # Determine final status
     if pipeline_stop.should_stop():
         status = "FAILED"
-    elif tracker.failed == 0 and tracker.skipped == 0 and tracker.cancelled == 0:
+    elif tracker.failed == 0 and tracker.skipped == 0 and tracker.cancelled == 0 and not quality_stats["quality_blocked_ids"]:
         status = "SUCCESS"
     elif tracker.processed > 0:
         status = "PARTIAL_SUCCESS"
@@ -758,6 +551,8 @@ async def _run_async(args):
     }
     if tracker.failed_papers:
         result["failed_papers"] = tracker.failed_papers[:10]
+    diagnostic.event('run_finished', status=status, total=tracker.total,
+                     processed=tracker.processed, failed=tracker.failed, usage=token_stats)
     if tracker.skipped_papers:
         result["skipped_papers"] = tracker.skipped_papers[:10]
     if tracker.cancelled_papers:

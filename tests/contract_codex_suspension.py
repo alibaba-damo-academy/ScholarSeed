@@ -11,9 +11,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from scholarseed_codex.activity import NativeActivityState
+from scholarseed_codex.attachment import ThreadAttachment
 from scholarseed_codex.diagnostic import THREAD_HISTORY_MISSING_ERROR
 from scholarseed_codex.process import CodexProcessHost
-from scholarseed_codex.protocol.session import CodexSessionOpenRequest
+from scholarseed_codex.protocol.session import CodexSessionEventKind, CodexSessionOpenRequest
 from scholarseed_codex.protocol.state import (
     AppServerError,
     CodexProcessState,
@@ -47,6 +48,264 @@ TEST_WATERMARK = 5
 TEST_TIMEOUT_SECONDS = 5.0
 TEST_ROOT = "suspension-root"
 TEST_NAMESPACE = "suspension-attachment"
+
+
+class CodexUnloadContracts(unittest.IsolatedAsyncioTestCase):
+    def attachment_fixture(self):
+        host = CodexProcessHost(executable="contract", rpc_timeout=TEST_TIMEOUT_SECONDS)
+        host._generation = TEST_GENERATION
+        host._proc = Mock(spec=asyncio.subprocess.Process, returncode=None, pid=123)
+        host.state = CodexProcessState.READY
+        events = []
+        attachment = ThreadAttachment(
+            request=CodexSessionOpenRequest(
+                request_id="unload", runtime_id="codex", cwd=Path.cwd(), model="selected"
+            ),
+            listener=events.append,
+            thread_id=TEST_ROOT,
+            attachment_state=CodexThreadAttachmentState.ATTACHED,
+            attached_generation=TEST_GENERATION,
+        )
+        attachment.turn = Mock(abandon_files=Mock(), reconcile=AsyncMock())
+        host._threads[TEST_ROOT] = attachment
+        host.suspend_blockers = Mock(return_value=())
+        host._watcher.close = AsyncMock()
+        return host, attachment, events
+
+    async def test_expected_unload_consumes_both_notification_orders(self) -> None:
+        for methods in (
+            ("thread/status/changed", "thread/closed"),
+            ("thread/closed", "thread/status/changed"),
+        ):
+            with self.subTest(methods=methods):
+                host, attachment, events = self.attachment_fixture()
+
+                async def unsubscribe(*arguments, methods=methods, host=host, **keywords):
+                    for method in methods:
+                        await host._handle_notification(
+                            method,
+                            {"threadId": TEST_ROOT, "status": {"type": "notLoaded"}},
+                            generation=TEST_GENERATION,
+                        )
+                    return {"status": "unsubscribed"}
+
+                host.request = AsyncMock(side_effect=unsubscribe)
+                await host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+                self.assertEqual(
+                    [event.kind for event in events], [CodexSessionEventKind.RUNTIME_STATUS]
+                )
+                self.assertEqual(
+                    events[0].payload,
+                    {"status": {"type": "notLoaded"}, "attachment_state": "detached"},
+                )
+                self.assertIsNone(attachment.attachment_incident)
+                self.assertIs(attachment.attachment_state, CodexThreadAttachmentState.CLOSED)
+                self.assertNotIn(TEST_ROOT, host._threads)
+
+    async def test_not_loaded_does_not_replace_closed_or_cross_identity(self) -> None:
+        host, attachment, events = self.attachment_fixture()
+        acknowledged = asyncio.Event()
+
+        async def unsubscribe(*arguments, **keywords):
+            acknowledged.set()
+            return {"status": "unsubscribed"}
+
+        host.request = AsyncMock(side_effect=unsubscribe)
+        pending = asyncio.create_task(
+            host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        )
+        try:
+            await acknowledged.wait()
+            confirmation = attachment.unload_confirmation
+            assert confirmation is not None
+            for method in ("thread/status/changed", "thread/closed"):
+                for thread_id, generation in (
+                    (TEST_ROOT, TEST_CHANGED_GENERATION),
+                    ("wrong-thread", TEST_GENERATION),
+                ):
+                    await host._handle_notification(
+                        method,
+                        {"threadId": thread_id, "status": {"type": "notLoaded"}},
+                        generation=generation,
+                    )
+                    self.assertFalse(confirmation.done())
+            await host._handle_notification(
+                "thread/status/changed",
+                {"threadId": TEST_ROOT, "status": {"type": "notLoaded"}},
+                generation=TEST_GENERATION,
+            )
+            self.assertFalse(confirmation.done())
+            self.assertFalse(pending.done())
+            self.assertEqual(
+                [event.kind for event in events], [CodexSessionEventKind.RUNTIME_STATUS]
+            )
+            self.assertIsNone(attachment.attachment_incident)
+            await host._handle_notification(
+                "thread/closed", {"threadId": TEST_ROOT}, generation=TEST_GENERATION
+            )
+            await asyncio.wait_for(pending, TEST_TIMEOUT_SECONDS)
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    async def test_unexpected_detachment_preserves_recovery_success_and_failure(self) -> None:
+        for method in ("thread/status/changed", "thread/closed"):
+            for failure in (False, True):
+                with self.subTest(method=method, failure=failure):
+                    host, attachment, events = self.attachment_fixture()
+                    await host._handle_notification(
+                        method,
+                        {"threadId": TEST_ROOT, "status": {"type": "notLoaded"}},
+                        generation=TEST_GENERATION,
+                    )
+                    incident = attachment.attachment_incident
+                    assert incident is not None
+                    self.assertIs(incident.state, RuntimeIncidentState.DETECTED)
+                    self.assertIs(attachment.attachment_state, CodexThreadAttachmentState.DETACHED)
+                    self.assertEqual(attachment.attached_generation, 0)
+                    host._prepare_thread_resources = AsyncMock()
+                    host._watcher.open = AsyncMock()
+                    host._request_thread_attachment = AsyncMock(
+                        return_value={
+                            "thread": {"id": TEST_ROOT},
+                            "model": "selected",
+                            "modelProvider": "provider",
+                        },
+                        side_effect=AppServerError("resume failed") if failure else None,
+                    )
+                    host.start = AsyncMock()
+                    if failure:
+                        with self.assertRaises(AppServerError):
+                            await host.ensure_attached(TEST_ROOT)
+                    else:
+                        self.assertEqual(await host.ensure_attached(TEST_ROOT), TEST_GENERATION)
+                    incidents = [event.incident for event in events if event.incident is not None]
+                    self.assertEqual(
+                        [item.state for item in incidents],
+                        [
+                            RuntimeIncidentState.DETECTED,
+                            RuntimeIncidentState.RETRYING,
+                            (
+                                RuntimeIncidentState.FAILED
+                                if failure
+                                else RuntimeIncidentState.RECOVERED
+                            ),
+                        ],
+                    )
+                    if failure:
+                        self.assertIs(
+                            attachment.attachment_state, CodexThreadAttachmentState.BROKEN
+                        )
+                        self.assertFalse(
+                            any(event.kind is CodexSessionEventKind.RESUMED for event in events)
+                        )
+                    else:
+                        self.assertTrue(
+                            all(item.incident_id == incident.incident_id for item in incidents)
+                        )
+                        self.assertIsNone(attachment.attachment_incident)
+                        self.assertIs(
+                            attachment.attachment_state, CodexThreadAttachmentState.ATTACHED
+                        )
+
+    async def test_unload_timeout_clears_expected_boundary(self) -> None:
+        host, attachment, events = self.attachment_fixture()
+        host.rpc_timeout = 0
+        host.request = AsyncMock(return_value={"status": "unsubscribed"})
+        with self.assertRaises(AppServerError):
+            await host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        self.assertIsNone(attachment.unload_confirmation)
+        for method in ("thread/status/changed", "thread/closed"):
+            await host._handle_notification(
+                method,
+                {"threadId": TEST_ROOT, "status": {"type": "notLoaded"}},
+                generation=TEST_CHANGED_GENERATION,
+            )
+        self.assertEqual(events, [])
+        await host._handle_notification(
+            "thread/status/changed",
+            {"threadId": TEST_ROOT, "status": {"type": "notLoaded"}},
+            generation=TEST_GENERATION,
+        )
+        self.assertIsNotNone(attachment.attachment_incident)
+        self.assertIs(attachment.attachment_state, CodexThreadAttachmentState.DETACHED)
+
+    async def test_missing_unload_confirmation_never_releases_the_attachment(self) -> None:
+        host = CodexProcessHost(executable="contract", rpc_timeout=0)
+        host._generation = TEST_GENERATION
+        attachment = ThreadAttachment(
+            request=CodexSessionOpenRequest(
+                request_id="unload", runtime_id="codex", cwd=Path.cwd()
+            ),
+            listener=None,
+            thread_id=TEST_ROOT,
+        )
+        host._threads[TEST_ROOT] = attachment
+        attachment.turn = SimpleNamespace(abandon_files=Mock())
+        host.suspend_blockers = Mock(return_value=())
+        host._watcher.close = AsyncMock()
+        host.request = AsyncMock(return_value={"status": "unsubscribed"})
+        with self.assertRaises(AppServerError) as raised:
+            await host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        self.assertEqual(raised.exception.safe_error, "codex_thread_unload_timeout")
+        self.assertIs(host._threads[TEST_ROOT], attachment)
+        self.assertIsNone(attachment.unload_confirmation)
+        host._watcher.close.assert_not_awaited()
+        host.request.return_value = {"status": "notLoaded"}
+        await host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        self.assertNotIn(TEST_ROOT, host._threads)
+
+    async def test_unsubscribe_ack_does_not_confirm_native_unload(self) -> None:
+        host = CodexProcessHost(executable="contract", rpc_timeout=TEST_TIMEOUT_SECONDS)
+        host._generation = TEST_GENERATION
+        attachment = ThreadAttachment(
+            request=CodexSessionOpenRequest(
+                request_id="unload", runtime_id="codex", cwd=Path.cwd()
+            ),
+            listener=None,
+            thread_id=TEST_ROOT,
+        )
+        host._threads[TEST_ROOT] = attachment
+        attachment.turn = SimpleNamespace(abandon_files=Mock())
+        host.suspend_blockers = Mock(return_value=())
+        host._watcher.close = AsyncMock()
+        acknowledged = asyncio.Event()
+
+        async def unsubscribe(*arguments, **keywords):
+            acknowledged.set()
+            return {"status": "unsubscribed"}
+
+        host.request = AsyncMock(side_effect=unsubscribe)
+        pending = asyncio.create_task(
+            host.suspend_thread(TEST_ROOT, TEST_GENERATION, wait_closed=True)
+        )
+        try:
+            await acknowledged.wait()
+            await asyncio.sleep(0)
+            self.assertFalse(pending.done())
+            self.assertIn(TEST_ROOT, host._threads)
+            await host._handle_notification(
+                "thread/closed", {"threadId": TEST_ROOT}, generation=TEST_CHANGED_GENERATION
+            )
+            self.assertFalse(pending.done())
+            await host._handle_notification(
+                "thread/closed", {"threadId": TEST_ROOT}, generation=TEST_GENERATION
+            )
+            await asyncio.wait_for(pending, TEST_TIMEOUT_SECONDS)
+            self.assertNotIn(TEST_ROOT, host._threads)
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    def test_owned_threads_unload_without_a_cache_delay(self) -> None:
+        host = CodexProcessHost(executable="contract")
+        request = CodexSessionOpenRequest(
+            request_id="unload", runtime_id="codex", cwd=Path.cwd(), model="model"
+        )
+        params = host._thread_params(request, include_dynamic_tools=False)
+        self.assertEqual(params["config"]["thread_unload_delay_secs"], 0)
 
 
 class SuspensionNative:

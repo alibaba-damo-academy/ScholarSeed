@@ -6,7 +6,6 @@ import importlib.metadata
 import json
 import os
 import platform
-import re
 import shutil
 import stat
 import subprocess
@@ -38,6 +37,20 @@ from service.platform.storage import filesystem_path
 PROBE_TIMEOUT_SECONDS = 60
 INSTALL_TIMEOUT_SECONDS = 1800
 PYTHON_FLAGS = ("-I", "-B")
+PRODUCT_LIBS_ENV = "SCHOLARSEED_PRODUCT_LIBS"
+PRODUCT_PROBE = """
+import runpy
+import sys
+
+root, mode, target = sys.argv[1:4]
+# Keep stdlib and installed third-party dependencies ahead of product libraries.
+sys.path.append(root)
+sys.argv = [target if mode == "-m" else "-c", *sys.argv[4:]]
+if mode == "-m":
+    runpy.run_module(target, run_name="__main__", alter_sys=True)
+else:
+    exec(compile(target, "<string>", "exec"), {"__name__": "__main__"})
+"""
 # Native toolchain executables carry a platform suffix. POSIX permission bits do
 # not round-trip on Windows, so existence is the executability evidence there.
 EXECUTABLE_SUFFIX = ".exe" if os.name == "nt" else ""
@@ -74,10 +87,20 @@ def _inputs(lock_path: Path, root: Path) -> dict[str, Any]:
 
 
 def _python(arguments: list[str], *, installing: bool = False) -> None:
-    # No checkout, PYTHONPATH or user site may mask a missing installed dependency.
+    # Component layouts carry product wheels outside site-packages. Admit only
+    # that declared directory; keep -I so ambient PYTHONPATH/user site stay out.
+    command = arguments
+    product_libs = os.environ.get(PRODUCT_LIBS_ENV, "")
+    if product_libs:
+        root = filesystem_path(product_libs)
+        if not Path(product_libs).is_absolute() or not root.is_dir():
+            raise PackageError("invalid product library directory")
+        if len(arguments) < 2 or arguments[0] not in {"-c", "-m"}:
+            raise PackageError("unsupported product Python dependency command")
+        command = ["-c", PRODUCT_PROBE, str(root), *arguments]
     with tempfile.TemporaryDirectory(prefix="scholarseed-dependency-probe-") as directory:
         result = subprocess.run(
-            [sys.executable, *PYTHON_FLAGS, *arguments],
+            [sys.executable, *PYTHON_FLAGS, *command],
             cwd=directory,
             capture_output=not installing,
             text=True,

@@ -2,6 +2,8 @@
 const { prepareTexliveEnvironment, texliveTreeDigest } = require('../../runtime/texlive.cjs')
 const { timed, timedAsync, startStage } = require('../../../../scripts/shared/timing.cjs')
 const { sourceSnapshot, sourceUnchanged } = require('../../../../scripts/shared/source.cjs')
+const { budget: smokeBudget } = require('../../../../scripts/ci/smoke.json')
+const { MAX_TOTAL_BUDGET_MS } = require('../../../../scripts/ci/budget.cjs')
 // Desktop packaging owner for native macOS and Windows builds.
 const fs = require('node:fs')
 const os = require('node:os')
@@ -10,6 +12,7 @@ const crypto = require('node:crypto')
 const { execFileSync, spawnSync } = require('node:child_process')
 const { createRequire } = require('node:module')
 const { executableDigest } = require('../shared/digest.cjs')
+const { verifyMacOSTree } = require('../shared/macos.cjs')
 const { REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME } = require('./bundle.cjs')
 const { freezeBytecode } = require('./assembly.cjs')
 const {
@@ -37,6 +40,7 @@ let dependencies
 
 const DESKTOP = path.resolve(__dirname, '../..')
 const REPO = path.resolve(DESKTOP, '../..')
+const SMOKE = path.join(REPO, 'scripts', 'ci', 'smoke.cjs')
 const UI_BUILD_SCRIPT = path.join(REPO, 'packages/ui/build.cjs')
 const PACKAGE = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'package.json')))
 const { PYLIBS_DIRNAME, WINDOWS_BUNDLED_RUNTIME_DIRS } = require('../../runtime/components.cjs')
@@ -489,6 +493,22 @@ function credentialFreeEnv(environment, prefixes = CREDENTIAL_ENV_PREFIXES) {
   return result
 }
 
+function requireInstallerSmoke(args, environment, { launch = spawnSync, clock = () => performance.now() } = {}) {
+  if (args.stage !== args.target.installer) return false
+  const started = clock()
+  const result = launch(process.execPath, [SMOKE], {
+    cwd: REPO, env: credentialFreeEnv(environment), stdio: 'inherit', shell: false, windowsHide: true,
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(`installer smoke failed (${result.signal || result.status || 'unknown exit'}); packaging was not started`)
+  }
+  if (clock() - started > Math.min(smokeBudget.targetMs, MAX_TOTAL_BUDGET_MS)) {
+    throw new Error('installer smoke exceeded its total wall-clock budget; packaging was not started')
+  }
+  return true
+}
+
 async function freezeFile(source, destination) {
   const { verify } = loadDependencies()
   const expected = await verify.sha256(source)
@@ -782,8 +802,7 @@ function resultBase(context, args, source, runtime, builder) {
       target: context.target,
       skills: {
         source: context.skillSource,
-        lock: context.lock,
-        lock_sha256: context.lockSha256,
+        lock: context.skillInventory,
       },
       runtime,
       python_dependencies: context.pythonDependencies,
@@ -838,6 +857,7 @@ async function main(argv = process.argv.slice(2)) {
     if (args.platform !== process.platform || args.target.arch !== hostArch()) {
       throw new Error('build on the matching native platform and architecture')
     }
+    if (requireInstallerSmoke(args, process.env)) assertSource(source)
     args.buildNumber = buildNumberOf(args, source.commit)
     const releaseRoot = path.join(DESKTOP, 'release')
     fs.mkdirSync(releaseRoot, { recursive: true })
@@ -893,7 +913,7 @@ async function main(argv = process.argv.slice(2)) {
       resourceRoot,
       notices,
       output: path.join(runDirectory, 'artifacts'),
-      lock: path.join(runDirectory, 'skills.lock.json'),
+      skillInventory: path.join(backend, 'skills.lock.json'),
       dependencies: path.join(runDirectory, 'dependencies.json'),
       skillSource: path.join(REPO, 'skills', 'community'),
       result: path.resolve(args.result || path.join(runDirectory, 'release-result.json')),
@@ -943,7 +963,12 @@ async function main(argv = process.argv.slice(2)) {
     // （如 scholarseed-bridge）。P2a 组件化后这些 launcher 在 backend/bin，不在宿主 PATH
     // （CI 不激活仓库 venv），故把产品自有 launcher 目录前置进门禁 PATH，不依赖宿主环境。
     const productBinDir = path.join(backend, 'bin')
-    const productPathEnv = `${productBinDir}${path.delimiter}${environment.PATH}`
+    // Codex ships separately from the Python console scripts; skill checks must
+    // discover the staged executable without relying on a host installation.
+    const codexBinDir = path.join(backend, 'codex-runtime', 'bin')
+    const productPathEnv = [productBinDir, codexBinDir, environment.PATH]
+      .filter(Boolean)
+      .join(path.delimiter)
     const productEnv =
       args.platform === 'win32'
         ? {
@@ -968,11 +993,10 @@ async function main(argv = process.argv.slice(2)) {
           '--source',
           context.skillSource,
           '--lock',
-          context.lock,
+          context.skillInventory,
         ],
         { env: productEnv }
       )
-      context.lockSha256 = await verify.sha256(context.lock)
       run(
         python,
         [
@@ -980,10 +1004,8 @@ async function main(argv = process.argv.slice(2)) {
           '-m',
           'service.cli.prebundle',
           '--provision',
-          '--source',
-          context.skillSource,
           '--lock',
-          context.lock,
+          context.skillInventory,
           '--report',
           context.dependencies,
           '--toolchain-root',
@@ -991,10 +1013,7 @@ async function main(argv = process.argv.slice(2)) {
         ],
         { env: productEnv }
       )
-      // Compile oracle: prove the staged toolchain compiles what the bundled skill
-      // actually emits. The preambles are read from the skill source, which
-      // prebundle verifies byte-for-byte against the staged pack, so a package
-      // added to a preamble fails the build here instead of a user's survey.
+      // Compile oracle: prove the staged toolchain compiles the skill's preambles.
       const oracleScript = path.join(
         context.skillSource,
         'literature-review',
@@ -1037,7 +1056,6 @@ async function main(argv = process.argv.slice(2)) {
         ],
         { env: productEnv }
       )
-      fs.copyFileSync(context.lock, path.join(backend, 'skills.lock.json'))
       fs.copyFileSync(context.dependencies, path.join(backend, 'dependencies.json'))
     })
     if (args.platform === 'win32') {
@@ -1049,7 +1067,8 @@ async function main(argv = process.argv.slice(2)) {
     if (args.platform === 'darwin') {
       context.pythonDependencies.bytecode = timed('python.bytecode-freeze', () =>
         freezeBytecode({backend, python}, productEnv))
-      context.browser = await prepareBrowser(resourceRoot, args.arch)
+      context.browser = await prepareBrowser(resourceRoot, args.arch, environment)
+      context.macos = verifyMacOSTree(resourceRoot)
     }
     context.updateEngine = args.platform === 'win32' ? 'velopack' : undefined
     verify.atomicJSON(context.file, context)
@@ -1179,6 +1198,7 @@ module.exports = {
   buildNumberOf,
   buildRunDirectory,
   credentialFreeEnv,
+  requireInstallerSmoke,
   freezeFile,
   frozenProductConfiguration,
   acquireMutex,

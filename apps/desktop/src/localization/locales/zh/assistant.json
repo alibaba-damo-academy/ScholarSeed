@@ -1,4 +1,49 @@
 {
+  "externalRead": {
+    "title": "读取项目外文件",
+    "description": "文件：{{path}}\n操作：只读。范围：仅此文件、仅当前任务；不授权父目录、不写入或永久关联。",
+    "allow": "允许本次读取",
+    "deny": "拒绝",
+    "allowed": "已批准当前任务读取此文件；未授予目录或写入权限，读取结果以实际执行为准。",
+    "denied": "已拒绝读取此文件，原文件保持不变。"
+  },
+  "recovery": {
+    "saveTitle": "书深没有「{{path}}」文件夹的写入权限",
+    "saveDescription": "在系统设置里授权后重试，或取消本次保存。",
+    "authorize": "去授权",
+    "settingsFailed": "无法打开系统权限设置，请手动检查文件和文件夹权限。尚未重试或写入。",
+    "cancelSave": "取消",
+    "saveCancelled": "已取消本次保存，不创建或改存文件",
+    "saveRetryRequested": "已请求重试原保存操作，结果以实际执行为准",
+    "fileTitle": "{{path}} 无法读取",
+    "fileDescription": "请检查文件访问权限，或更换、解密后重试；其余文件仍可使用。",
+    "retryFile": "重试",
+    "removeFile": "移除这个文件",
+    "fileRetryRequested": "已请求重新读取原文件",
+    "fileRemoved": "已从本次读取中移除失败文件，原文件和历史记录未删除",
+    "searchTitle": "检索未完成",
+    "searchDescription": "查询：{{query}}\n失败原因：{{reason}}\n已有内容和检索结果已保留；本次查询未完成，不代表没有相关研究。重新检索仅重做该查询。",
+    "retrySearch": "重新检索",
+    "dismiss": "关闭",
+    "retryRequested": "已请求重新检索，结果以实际执行为准",
+    "dismissed": "已关闭提示，失败查询未被标记为成功"
+  },
+  "toolProcess": {
+    "retry": "重试该检索",
+    "retrying": "正在重试…",
+    "retryFailed": "重试失败，原记录已保留。",
+    "checkRetry": "检查重试结果",
+    "retryTitle": "重试失败的检索？",
+    "retryDescription": "仅重新执行下面这条已记录的只读检索，不重跑成功步骤。检索可能产生模型用量；原失败与新结果均会保留。",
+    "failures_other": "{{count}} 个工具步骤失败，请查看执行记录确认影响。",
+    "viewFailure": "查看",
+    "label": "处理过程"
+  },
+  "toolSearch": {
+    "empty": "未返回网页结果",
+    "more_other": "+其他 {{count}} 个",
+    "collapse": "收起"
+  },
   "cancel": "取消",
   "overview": {
     "showMore": "查看更多（{{count}}）",
@@ -28,8 +73,8 @@
     "positionLost": "原位置已失效",
     "unavailable": "原回答当前不可访问",
     "count": "条注释",
-    "selectedText": "所选文本：",
-    "userComment": "用户评论："
+    "selectedText": "所选文本",
+    "userComment": "用户评论"
   },
   "translation": {
     "title": "翻译",
@@ -128,20 +173,36 @@
   },
   "attachments": {
     "openImage": "打开原图",
+    "scrollPrevious": "向左查看附件",
+    "scrollNext": "向右查看附件",
     "actions": "附件操作 {{title}}",
-    "save": "保存到资料库",
+    "save": "导入资料库",
     "title": "保存附件到资料库",
     "description": "保存附件副本，原任务中的附件继续保留。",
     "currentProject": "当前项目",
     "errors": {
       "assistant_project_unavailable": "当前会话未关联项目，无法保存到资料库。",
+      "nameExists": "该位置已有同名文件，请修改名称后重新导入。原文件不会被覆盖。",
       "session_attachment_not_found": "附件已不可用，请重新添加。",
       "session_attachment_changed": "附件内容已发生变化，请重新添加后保存。",
       "session_attachment_forbidden": "附件位置已变化，无法读取原文件，请重新添加。",
       "saveFailed": "保存失败，请稍后重试。"
-    }
+    },
+    "saveAs": "另存为…",
+    "copyPath": "复制路径",
+    "openFolder": "在文件管理器中打开",
+    "defaultApplication": "系统默认应用",
+    "actionSucceeded": "文件操作成功",
+    "actionFailed": "文件操作失败，请检查源文件是否存在、可读，以及系统权限。原引用仍然保留。"
   },
   "artifactEntry": {
+    "directorySnapshot": "发布时的只读目录快照；源目录后续修改或删除不会改变此版本。点击文件在工作台查看。",
+    "directoryLabel": "只读目录快照",
+    "directoryReadOnly": "只读快照",
+    "directoryOpenSourceMac": "在访达中打开源文件夹",
+    "directoryOpenSource": "打开源文件夹",
+    "directoryLoading": "正在读取目录快照…",
+    "directoryEmpty": "此目录快照为空。",
     "addToConversation": "加入当前对话",
     "projectUnavailable": "当前会话未关联项目，无法存入资料库。",
     "notFound": "这份产物已经不存在。",
@@ -159,6 +220,8 @@
     "importShort": "导入",
     "open": "打开",
     "openWith": "打开方式",
+    "openInRightTab": "在右侧标签页打开",
+    "chooseOpenMethod": "选择打开方式",
     "loadingApps": "正在读取应用…",
     "noApps": "没有可用的应用",
     "defaultApp": "默认",
@@ -208,6 +271,7 @@
     "previousVersion": "版本 {{version}}"
   },
   "citations": {
+    "projectNavigationSource": "项目来源导航；不代表已逐句核验或绑定历史文件版本",
     "searchSources": "候选来源（未逐项关联）",
     "toolDeclared": "工具声明的候选，尚未关联到正文证据",
     "noAssociatedSources": "部分内容尚未关联来源，请自行核对关键事实",
@@ -221,14 +285,29 @@
       "interrupted": "来源核验已中断，部分内容可能没有引用"
     },
     "displayUnavailable": "该片段暂无法正常展示，请查看原文。",
+    "expandExcerpt": "展开全文",
+    "collapseExcerpt": "收起全文",
     "manualCheck": "供人工核对",
     "pageOnly": "暂无法精确定位，当前展示对应页面缩略图。",
     "evidenceImageAlt": "第 {{page}} 页原文证据区域",
     "viewOriginal": "查看原文",
     "undecoded": "片段中有未识别字符，请打开 PDF 核对原文。",
     "unavailableTitle": "来源暂不可打开",
-    "preview": "PDF 引用预览",
+    "fileMissing": "文件不存在，已保留此前保存的引用原文片段。",
+    "preview": "引用预览",
     "webPreview": "网页来源预览",
+    "webPreviewUnavailable": "网页预览暂不可用，仍可打开原文。",
+    "paperSource": "文献",
+    "paperMultipleAuthors": "{{author}} 等",
+    "webSource": "网页",
+    "fileSource": "文件",
+    "selectionSource": "文件选区",
+    "unknownSource": "未知来源",
+    "resourceSource": "资料库",
+    "attachmentSource": "附件",
+    "previousSource": "上一个来源",
+    "nextSource": "下一个来源",
+    "referenceCount_other": "共引用 {{formattedCount}} 处",
     "webSearchSource": "网页搜索来源",
     "pageEvidenceSource": "已读取网页并关联证据",
     "declaredSource": "回答声明的网页来源",
@@ -261,7 +340,8 @@
       "fulltext": "PDF 原文",
       "sourceExcerpt": "PaperCard 关联原句",
       "abstract": "摘要",
-      "papercard": "PaperCard 提炼"
+      "papercard": "PaperCard 提炼",
+      "structuredText": "原文片段"
     },
     "error": {
       "sourceChanged": "PDF 无法打开或内容已变化，保留引用片段供核对。",
@@ -293,14 +373,14 @@
     "emptyFolders": "当前资料库还没有文件夹，可保存到项目根目录或新建文件夹。",
     "save": "保存",
     "removeAll": "移除全部注释",
-    "addConversation": "添加到任务",
-    "copyText": "复制文本",
+    "addConversation": "添加到会话框",
+    "copyText": "复制内容",
     "textCopied": "文本已复制",
     "textCopyFailed": "复制文本失败，请重试。",
-    "importAnswer": "导入回答到资料库",
+    "importAnswer": "导入到资料库",
     "selectionActions": "回答选区操作",
     "comment": "批注内容",
-    "optionalComment": "说明处理方式并添加到任务（选填）",
+    "optionalComment": "请添加注释",
     "add": "添加",
     "cancelAdd": "取消添加",
     "addAnnotation": "添加回答批注",
@@ -317,6 +397,8 @@
     "createIn": "在“{{name}}”中新建",
     "correctRetry": "{{detail}} 请修改后重试。",
     "editNote": "编辑注释 {{number}}",
+    "editNoteTooltip": "编辑该条注释",
+    "deleteNoteTooltip": "删除该条注释",
     "removeNote": "移除注释 {{number}}",
     "annotationLabel": "注释 {{number}}：{{comment}}",
     "saveFailed": "保存失败：{{detail}}"
@@ -335,7 +417,11 @@
     "assistant": "书深"
   },
   "quote": {
-    "open": "打开 {{name}}"
+    "open": "打开 {{name}}",
+    "fragments": "选区：{{count}}",
+    "openItem": "打开片段 {{index}} 的来源",
+    "noText": "此引用没有可用的原文。",
+    "previewOnly": "此历史引用仅保留预览，未恢复完整原文。"
   },
   "contextOption": {
     "collapse": "收起文件夹 {{name}}",
@@ -346,12 +432,17 @@
     "more": "加载更多"
   },
   "referencePicker": {
+    "resourcesTitle": "从资料库中选择",
+    "literatureTitle": "从文献库中选择",
+    "cancel": "取消",
+    "confirm": "确定",
     "collections": "我的分类",
     "ungrouped": "未整理",
     "ungroupedEmpty": "还没有未整理的文献。",
     "searchResults": "搜索结果",
     "collectionEmpty": "这个分类下还没有文献。",
     "select": "选择 {{name}}",
+    "selectAll": "全选",
     "selected": "已选择 {{count}} 项",
     "add": "添加引用",
     "file": "文件",
@@ -429,5 +520,42 @@
   "excerptName": {
     "default": "AI 任务摘录",
     "named": "{{subject}}_任务摘录"
+  },
+  "contextGroups": {
+    "annotations_other": "{{count}} 条注释",
+    "selections_other": "{{count}} 条划词",
+    "unavailable": "原文预览不可用"
+  },
+  "pdfComment": {
+    "title": "PDF 评论",
+    "label": "PDF 评论 · {{source}}",
+    "feedback": "你的反馈，不作为文献原文证据。",
+    "page": "PDF·第{{page}}页",
+    "unavailable": "评论或来源已变化或不可用，请移除后从原文重新添加。"
+  },
+  "images": {
+    "open": "查看图片 {{name}}（{{index}} / {{count}}）",
+    "remove": "移除图片 {{name}}",
+    "scrollPrevious": "向左查看图片",
+    "scrollNext": "向右查看图片",
+    "copy": "复制图片",
+    "more": "图片更多操作",
+    "openWorkbench": "在书深工作台中打开",
+    "openWith": "打开方式",
+    "loadingApps": "正在读取应用…",
+    "noApps": "没有可用的应用",
+    "import": "导入资料库",
+    "saveAs": "另存原文件",
+    "openSystem": "使用系统程序打开原文件",
+    "reveal": "打开所在文件夹",
+    "close": "关闭图片查看器",
+    "previous": "上一张",
+    "next": "下一张",
+    "goto": "转到第 {{index}} 张",
+    "position": "{{index}} / {{count}}　缩放 {{zoom}}%",
+    "loadFailed": "图片加载失败，仍可尝试打开原文件。",
+    "actionSucceeded": "图片操作成功",
+    "copySucceeded": "图片复制成功",
+    "actionFailed": "图片操作失败，请检查原文件或系统权限。"
   }
 }

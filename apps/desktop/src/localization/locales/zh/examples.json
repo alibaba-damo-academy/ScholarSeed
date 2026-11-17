@@ -1,10 +1,111 @@
 {
+  "confirmation": {
+    "variants": "确认卡片类型",
+    "selection": "带勾选功能",
+    "normal": "普通权限",
+    "high": "高风险权限",
+    "custom": "自定义内容",
+    "description": "四种确认卡片共用同一外壳。此处仅演示展开、勾选与确认，不执行命令、访问文件或提交真实授权。",
+    "paper": "研究文献 {{index}}.pdf",
+    "fileTitle": "请求文件访问权限",
+    "fileDescription": "当前文件操作已暂停。允许后，仅在本次任务执行中授权访问下方路径，并继续当前文件操作。",
+    "fileAllow": "允许本次访问",
+    "path": "路径",
+    "operation": "操作",
+    "scope": "授权范围",
+    "write": "创建并写入文件",
+    "currentScope": "仅本次任务执行、仅上述路径",
+    "finished": "本次演示已结束，可点击“重置交互演示”再次查看。"
+  },
+  "authorization": {
+    "normal": "普通权限",
+    "high": "高风险权限",
+    "title": "请求权限",
+    "command": "是否允许运行：{{command}}",
+    "allow": "允许一次",
+    "deny": "拒绝",
+    "reset": "重置交互演示",
+    "description": "点击“拒绝”或“允许一次”后隐藏授权卡片，重置可再次展示。仅演示界面交互，不执行命令或提交真实授权。"
+  },
+  "artifactPreview": {
+    "title": "产物",
+    "file": "文件产物",
+    "images": "图片产物",
+    "combined": "组合示例"
+  },
+  "a2uiPreview": {
+    "title": "A2UI",
+    "canvas": "画布",
+    "components": "OpenUI基础组件"
+  },
+  "workbenchPreview": {
+    "title": "工作台",
+    "results": "科研结果",
+    "review": "科研综述"
+  },
+  "chartPreview": {
+    "title": "图表",
+    "general": "通用图表"
+  },
+  "processingPreview": {
+    "title": "处理过程",
+    "exceptions": "异常与中断"
+  },
+  "bodyPreview": {
+    "title": "正文",
+    "formula": "公式",
+    "table": "简表",
+    "markdown": "Markdown"
+  },
+  "citationPreview": {
+    "title": "引用",
+    "sources": "引用来源",
+    "markers": "引用标记"
+  },
+  "prototype": {
+    "overview": "总览与通用约定",
+    "unbuilt": "未建设",
+    "unbuiltDescription": "此条目按产品原型保留，尚无独立组件展示。可继续补充布局、状态与交互设计。",
+    "groups": {
+      "input": "用户输入",
+      "dialogue": "对话组件",
+      "process": "处理过程",
+      "confirmation": "确认与澄清",
+      "artifacts": "文件与产物",
+      "fallbacks": "异常与兜底",
+      "skills": "技能"
+    },
+    "images": "图片",
+    "files": "文件",
+    "clarification": "澄清卡片",
+    "clarify": "澄清",
+    "generatedFile": "生成文件",
+    "fileTypes": "文件类型",
+    "lean": "Lean 文件",
+    "generatedImages": "生成图片",
+    "multipleFiles": "多个文件",
+    "errors": "错误与中断",
+    "fallback": "格式兜底",
+    "review": "技能：文献综述",
+    "idea": "技能：想法生成",
+    "quick": "技能：快速文献检索",
+    "precise": "技能：精确文献检索"
+  },
+  "link": {
+    "title": "链接 Link",
+    "description": "使用主题链接色，不显示下划线，保留键盘焦点样式；打开方式由调用方决定。",
+    "default": "普通链接",
+    "icon": "带图标的链接",
+    "newTab": "在新标签页打开",
+    "disabled": "暂不可用的链接"
+  },
   "title": "Veda Design System",
   "subtitle": "基础组件状态矩阵",
   "language": "界面语言",
   "chinese": "中文",
   "english": "English",
   "menu": {
+    "link": "链接 Link",
     "label-form": "标签与表单 Label/Form",
     "alert": "提示 Alert",
     "alert-dialog": "提示弹窗 AlertDialog",
@@ -75,14 +176,142 @@
     "task-monitor": "任务监控 TaskMonitor",
     "todo-panel": "待办面板 TodoPanel",
     "workspace-files": "项目文件 WorkspaceFiles",
-    "page": "页面布局 Page"
+    "page": "页面布局 Page",
+    "image-preview": "图片预览"
   },
   "groups": {
     "ui": "基础组件",
     "primitive": "通用组件",
-    "business": "业务组件"
+    "business": "业务组件",
+    "conversation": "会话组件"
+  },
+  "conversation": {
+    "clarificationPending": "待填写",
+    "messages": "文字消息",
+    "tools": "工具执行",
+    "plan": "执行计划",
+    "approval": "确认卡片",
+    "pluginInstallation": "插件安装卡片",
+    "pluginInstallationDescription": "展示 plugin-create 生成插件后的待安装卡片；此示例不执行安装或访问文件。",
+    "authorization": "授权卡片",
+    "clarification": "澄清待填写卡",
+    "context": "引用与上下文",
+    "suggestions": "下一步建议",
+    "researchHidden": "无方向内容时，现有研究方向组件隐藏；这里不补造方向。",
+    "queueLocalOnly": "只修改了本页内存队列；未发送、未写入服务器，也未撤回真实消息。",
+    "editorLocalOnly": "本页草稿仅存于内存；Enter 只换行，不发送、不入队、不上传。",
+    "taskStatusHidden": "按现有组件规则，完成已读或已放弃时不显示状态图标，不补造完成标记。",
+    "backgroundEmpty": "当前样例没有后台任务；不创建真实任务。",
+    "nextTitle": "接下来可以做什么？（隔离样例）",
+    "nextLiterature": "补充文献",
+    "nextLiteratureDescription": "整理相关研究与来源；只记录本页选择，不真实发送。",
+    "nextValidation": "设计验证方案",
+    "nextValidationDescription": "补充实验指标与验证步骤；只演示现有卡片交互。",
+    "nextFreeText": "补充要求（本地样例）",
+    "nextSubmit": "提交样例",
+    "nextLocalOnly": "仅记录本地模拟提交；没有发送模型请求或开启新轮。",
+    "contextCandidates": "候选上下文（点击添加）",
+    "contextDraft": "本页草稿引用",
+    "contextEmpty": "尚未添加引用；预览不会自动添加或发送。",
+    "contextPreviewSample": "预览样例",
+    "contextPreviewTitle": "样例内容预览",
+    "contextSampleContent": "这是本素材的只读样例内容，不是读取真实资料或文献的结果。\n\n**预览不添加引用、不发送、不入库。**",
+    "contextSelectionTitle": "样例划词",
+    "contextResourceTitle": "样例资料",
+    "contextLiteratureTitle": "样例文献",
+    "contextQuoteText": "这一段是用户加入上下文时的样例划词原文。",
+    "contextMessage": "请参考本轮所列上下文；这是已发送消息的独立展示样例，没有真实发送。",
+    "contextRemove": "移除：{{name}}",
+    "contextLocationGap": "已展示定位回调与样例锚点，不是精确定位成功；真实文档定位暂未接入。",
+    "resetInteraction": "重置交互演示",
+    "demoResolved": "演示操作已回执；没有读取文件、授权真实请求或继续任务。",
+    "skippedGap": "演示已跳过。现有前端对空答案不展示回执，保留该缺口；未执行真实任务。",
+    "interactionFailure": "演示提交失败，未发生真实授权或执行。可重试或重置演示。",
+    "priorityHeader": "任务偏好",
+    "priorityQuestion": "本次任务更关注什么？",
+    "quality": "质量优先（推荐）",
+    "speed": "速度优先",
+    "outputHeader": "期望产物",
+    "outputQuestion": "希望获得哪些产物？",
+    "papers": "文献列表（推荐）",
+    "comparison": "方法对比",
+    "notesHeader": "补充说明",
+    "notesQuestion": "还有哪些需要保留的要求？",
+    "states": "示例状态",
+    "scopeTitle": "现有组件 · 隔离展示",
+    "scope": "复用正式产品组件展示模拟状态，不发送模型请求，不执行授权、重试、恢复或文件写入；不代表对应需求已全部实现。",
+    "pendingTitle": "待确认规则",
+    "pending": "图片需求 02 与引用需求 04 的再次导入规则仍待确认，任务分支保持禁用。授权不等于已读取或入库；通用澄清不套用大纲确认的五分钟继续规则。",
+    "limits": {
+      "management": "复用 SessionTitleEditor、SessionRenameDialog、SessionDropdownMenu；标题编辑与弹窗改名只走本页模拟响应，失败保留弹窗输入。分支始终禁用。归档与删除仅展示原菜单及其回调，不挂载确认或执行宿主；不修改真实会话、不写盘。无会话身份时禁用菜单操作。切换状态或语言重置样例，归档/删除完整生命周期与规则继续待确认。",
+      "research": "复用 ResearchContext 展示当前方向、候选方向、展开收起与无内容隐藏。沿用固定协议标题和首条研究通道内容的解析方式，折叠时最多显示三条方向，展开显示原始文本；不新增方向选择、生成或保存能力。协议标记的显示、格式及超过三条的呈现规则保留待确认。",
+      "queue": "将 Composer 原队列展示提为同一业务文件内的 ComposerQueue，原 Composer 继续复用，API、发送和持久化仍留在原业务流程。素材只开放展开、本地编辑及本地移除；插话、重发、检查结果与确认未知结果因未绑定回调而禁用，原状态和权限门禁继续生效。编辑区复用输入编辑器，但这里只保存文字到本页内存，不模拟引用修改或服务端回执。等待资源、提交中、失败、未知结果阻断及空队列为固定快照；真实提交、状态竞态与生命周期仍未在此验收。",
+      "editor": "复用 ComposerEditor 与独立草稿存储，以及 Composer 的现有高度上限。可输入、多行换行、滚动、重置、接受或取消静态样例补全，并查看只读和禁用状态。这里只展示输入编辑器，不挂载完整 Composer；不调用模型预测、不真实发送或入队、不上传。完整发送工具栏、停止、权限与排队消息仍与业务耦合，暂未抽离；中英文输入法的完整真机行为仍待专项验收。切换状态或语言会重置本页草稿。",
+      "taskstatus": "复用 TaskStatus 的行内与徽标变体，展示运行、等待、失败、完成未读，以及完成已读和已放弃时的隐藏规则。样例按钮仅切换状态快照，不修改真实任务或未读记录。悬停提示沿用现有实现，状态图标本身的键盘可达性仍待补齐；不补造恢复、重试或通知能力。",
+      "background": "复用 StatusStrip 的后台任务展开与收起，展示活动、成功、失败、超时、取消和失联样例；本页不注入记忆和约束通道，不启动、停止或重试真实任务。各状态为独立快照，不代表实际生命周期已执行。现有状态条对所有终态统一显示“后台任务已完成”，不等于全部成功；计数口径、终态汇总文案、键盘与焦点反馈仍保留待确认，不在此修正。",
+      "suggestions": "复用 NextSteps 与当前 StoreProvider 的提交注册器；选项或自由输入只记录本页模拟提交，提交中禁用，成功样例只消费一次；失败保留输入，旧卡失活。这里不挂载真实 Composer，不发送、不建新轮。真实草稿保留、后端生成建议与会话重入未在此验收；切换状态或语言会重建样例。",
+      "citations": "复用 CitationLink、CitationSources，展示行内引证、来源列表、结构化片段、来源变化、不可用及加载失败。解析只返回本地模拟数据，can_open_pdf=false；不展示“已定位原文”，不打开真实 PDF。网页外链、精确定位、区域图像、真实版本校验与恢复暂未接通；重新检查仅重复本地解析，不代表定位成功。现有悬停预览可能与引用状态弹窗同时显示，浮层互斥仍待完善。",
+      "artifacts": "复用 ArtifactEntry 的产物卡、版本菜单及操作菜单；预览使用现有 Dialog 与 Markdown 展示静态样例。样例不提供会话、项目写入目标或真实路径，因此入库、另存、复制路径、系统打开及文件定位禁用。版本选择只切换样例标识，不读取历史文件；真实文件预览、产物分组、导出与入库生命周期仍是缺口。",
+      "messages": "复用真实会话 Stream：用户原文与换行保留，HTTP/HTTPS 链接可识别；长消息渐隐折叠并可展开、收起。悬停或键盘聚焦消息显示复制操作，用户消息同时显示发送时间；末条回复操作常显，历史回复按悬停或聚焦显示。复制使用真实剪贴板并显示成功或失败反馈；链接会打开外部浏览器。内容与时间均为示例，不发送模型请求。",
+      "attachments": "复用 ComposerAttachments 和 ComposerSkillRefs；可移除与重置示例引用。这里只展示现有文件标签，不代表已有图片缩略图组、同组查看器或完整文件菜单。",
+      "tools": "复用真实 Stream、Composer 与三级折叠，展示执行、回答输出、完成、含失败、主动暂停及网页检索。检索请用原控件展开处理过程与工具组，再查看其他结果、收起或折叠详情。内容、查询和计时均为隔离示例，不运行模型、命令或真实重试。",
+      "plan": "复用 TodoPanel 展示进行中、全部完成与失败计划，展开查看步骤；不提供真实继续动作，时间仅在已有计时证据存在时显示。",
+      "receipts": "复用 Stream 的 interaction_reply 展示已回答与已跳过回执；状态按钮仅切换样本，不提交答案或授权。",
+      "approval": "复用全文操作与文献综述的授权策略、确认卡及回执。展示带勾选框和不带勾选框的待授权、已授权、已拒绝，以及确认卡已失效，共七种状态。仅为隔离模拟，不读取全文、不入库、不继续任务。",
+      "clarification": "按 PRD 展示待填写、已提交、已跳过；复用正式澄清卡片，支持推荐草稿、补充输入、连续滚动及题号导航，回执常显。状态按钮仅选择模拟样本，不代表真实模型验收。",
+      "context": "复用 ContextOption、ComposerRefChip、AssistantContextQuote、SessionReference 和 Stream。添加、去重、移除只改变本页草稿；预览不添加或发送。已发送与来源不可用为独立模拟快照，切换状态会重置草稿。划词按文章合并、注释集合、资料/文献全选、图片分组、完整四层布局及真实原文/原会话跳转未在此补齐；已发送来源打开入口保持禁用，定位仅展示现有回调与锚点。"
+    },
+    "statesLabel": {
+      "streaming": "回答输出中",
+      "paused": "已暂停",
+      "search": "网页检索",
+      "toolFailed": "含失败",
+      "actionable": "可交互样例",
+      "rejected": "提交失败样例",
+      "expired": "旧卡失活",
+      "short": "短消息",
+      "long": "长消息",
+      "history": "历史与末条回复",
+      "running": "进行中",
+      "completed": "已完成",
+      "failed": "失败",
+      "answered": "已提交",
+      "skipped": "已跳过",
+      "pending": "待填写 / 待确认",
+      "submitting": "提交中",
+      "unknown": "结果未知",
+      "stale": "已失效",
+      "draft": "待发送草稿",
+      "sent": "已发送样例",
+      "unavailable": "来源不可用"
+    },
+    "sampleText": "请保留研究问题的原文与换行，比较蛋白质折叠方法。\n*原始标记*、β 与 DOI 都是用户输入。",
+    "messageText": "请比较蛋白质折叠方法，保留原文与换行。\n*原始标记*、β 与 DOI 都是用户输入，不渲染为 Markdown。\n参考论文：https://doi.org/10.1038/s41586-021-03819-2。",
+    "messageAnswer": "这是用于查看文字消息效果的示例回答。\n\n## 方法对比\n\n- **保留数据来源**：区分训练数据与评测数据。\n- **比较研究结论**：同时说明结果与局限。\n\n| 检查项 | 示例要求 |\n| --- | --- |\n| 原文 | 保留换行与特殊字符 |\n| 来源 | [论文链接](https://doi.org/10.1038/s41586-021-03819-2) |\n\n**示例内容，不是实际研究或执行结果。**",
+    "messageFollowup": "请补充方法的局限，并保留论文链接。",
+    "messageLatestAnswer": "这是末条回复示例。\n\n- 历史回复：悬停或键盘聚焦时显示操作。\n- 末条回复：操作保持可见。\n- 复制：成功后显示勾选反馈，失败时显示错误反馈。\n\n**仅展示现有组件效果，不是模型生成结果。**",
+    "sampleAnswer": "这是用于查看组件的示例回答。\n\n- 保留方法与数据来源\n- 比较研究结论\n\n**示例内容，不是实际执行结果。**",
+    "sampleFailure": "示例来源不可用；保留输入输出记录，不执行重试。",
+    "toolSample": {
+      "request": "比较蛋白质折叠研究方法，先检查项目笔记，再检索相关研究。",
+      "intro": "先读取项目笔记，确认研究范围。",
+      "next": "笔记已确认范围，接着检索结构、动力学与实验验证方面的资料。",
+      "readResult": "示例笔记已读取：区分结构预测、分子动力学与实验验证。",
+      "searchResult": "示例检索完成，保留工具输入、输出和批次记录。",
+      "failure": "示例来源请求超时，结果可能不完整。原失败记录已保留；这里不执行真实重试。",
+      "answer": "已整理资料，可按研究目标比较结构预测、分子动力学与实验验证。",
+      "partial": "工具已完成，回答仍在输出。\n\n正在比较结构预测、分子动力学与实验验证的适用范围……",
+      "queryOne": "蛋白质折叠 结构预测 研究",
+      "queryTwo": "蛋白质折叠 分子动力学 评测",
+      "queryThree": "蛋白质折叠 实验验证 局限",
+      "resultTitle": "蛋白质折叠研究示例来源"
+    },
+    "answer": "结构预测与实验验证；补充：保留专业术语。"
   },
   "form": {
+    "displayLabel": "字段回显标签 · 12px / 400 / 三级文字",
+    "displayValue": "科研项目",
+    "simpleLabel": "简单表单标签 · 12px / 400 / 三级文字",
     "required": "必填标签",
     "optionalDisabled": "禁用可选标签",
     "name": "项目名称",
@@ -91,8 +320,13 @@
     "error": "项目名称不能为空。"
   },
   "alert": {
+    "descriptionOnly": "只有图标和描述的提示，可通过右侧按钮关闭。",
+    "descriptionAction": "只有图标和描述的提示，支持示例操作与关闭。",
+    "exampleAction": "示例操作",
+    "actionCompleted": "示例操作已触发，此提示仍可关闭。",
     "description": "较长的信息，最多显示两行，超出使用省略号。",
     "info": "通用类提示",
+    "neutral": "中性提示",
     "warning": "警示类标题",
     "error": "错误类标题",
     "success": "成功类标题"
@@ -234,6 +468,8 @@
     "warning": "警告提示"
   },
   "controls": {
+    "scrollPrevious": "向左滚动",
+    "scrollNext": "向右滚动",
     "summary": "项目摘要",
     "summaryBody": "展示可折叠的轻量信息块。",
     "details": "执行详情",
@@ -312,6 +548,10 @@
     "weibo": "微博",
     "trash": "移至回收站",
     "openDialog": "打开对话框",
+    "feedbackInfo": "提示类弹窗",
+    "feedbackDanger": "危险类弹窗",
+    "feedbackWarning": "警告类弹窗",
+    "feedbackDescription": "弹窗描述补充文案，用于说明当前提示、操作影响或需要注意的事项。",
     "projectSettings": "项目设置",
     "dialogDescription": "居中显示的轻量对话框。",
     "confirm": "确定",
@@ -549,6 +789,38 @@
     "palette": "基础色板"
   },
   "attachments": {
+    "annotationQuote": "三篇论文的关键事实我都做了检索核对（只到摘要和公开版本级别，未读全文）。先说结论：研究主线是成立的，但还需要核对各实验的任务定义、样本规模和适用范围。其中一个结果仅来自单个任务，不能直接推广到全部场景；还应明确区分相关研究与独立实验，避免重复计数。",
+    "annotationComment": "请补充原文出处和对照组分析，并说明结论的适用边界。建议分别整理三篇论文的实验条件、评价指标和局限，将摘要中已确认的事实与仍需阅读全文核验的判断分开呈现，避免把单项实验结果写成普遍结论。",
+    "referencesTitle": "引用附件 · 输入框",
+    "referencesSent": "引用附件 · 已发送",
+    "sentDetails": {
+      "annotation": "示例所选文本：比较实验条件。\n示例注释：请补充对照组分析。",
+      "selection": "示例划词原文：研究结论应说明样本规模与适用范围。"
+    },
+    "referenceSamples": {
+      "annotation": "注释引用",
+      "selection": "划词引用",
+      "skill": "技能引用",
+      "session": "对话引用",
+      "resource": "资料引用",
+      "literature": "文献引用",
+      "image": "附件图片引用",
+      "file": "文件引用"
+    },
+    "beforeSend": "发送前",
+    "afterSend": "发送后",
+    "imagesDraft": "图片附件 · 输入框",
+    "imagesSent": "图片附件 · 已发送",
+    "imagesHelp": "悬停单张图片显示 16px 移除按钮；点击图片可打开同组预览，支持切换、缩放和拖动。移除与重置只影响本地示例，不读取或修改真实会话文件。",
+    "filesTitle": "文件附件",
+    "filesSent": "文件与文件夹附件 · 已发送",
+    "samples": {
+      "experimentFolder": "实验资料",
+      "literatureFolder": "参考文献",
+      "interviewNotes": "访谈记录.txt",
+      "bibliography": "references.bib"
+    },
+    "filesSentHelp": "文件和文件夹在同一行展示，支持横向滚动和键盘 Tab 浏览。点击只模拟打开，不读取真实文件。",
     "help": "点击附件可模拟打开预览，右上角按钮可移除附件。",
     "opened": "准备预览：{{title}}",
     "removed": "已移除：{{title}}",
@@ -612,17 +884,6 @@
         "chartCategory": "数据分析",
         "missingMatplotlib": "缺少 matplotlib 运行依赖",
         "literatureDocument": "# literature-review\n\n用于快速构建论文综述脉络。\n\n## 使用\n\n输入研究主题后，技能会检索、筛选并组织关键论文。"
-      },
-      "context": {
-        "research": "研究方向",
-        "researchText": "## Research context\n\n**Session research directions:**\n- 结构预测模型的误差来源\n- 扩散模型与 MSA 弱依赖方法对比\n- 复合物预测在药物发现中的应用边界",
-        "researchWhy": "预览研究方向折叠条。",
-        "memory": "记忆",
-        "memoryText": "用户偏好先输出中文结构化摘要，再给英文术语对照。",
-        "memoryWhy": "展示 StatusStrip 的记忆命中。",
-        "constraints": "约束",
-        "constraintText": "优先覆盖近三年公开论文，避免只复述单一模型结论。",
-        "constraintWhy": "展示约束计数。"
       }
     }
   },
@@ -658,5 +919,10 @@
     "retrying": "重试中",
     "retryDescription": "请求未成功，正在重新连接服务。",
     "retryTitle": "正在重试"
+  },
+  "imagePreview": {
+    "title": "图片预览",
+    "description": "全屏遮罩、图片切换、滚轮缩放、双击与拖拽；第三张展示加载失败。文件操作由使用方接入。",
+    "open": "打开图片预览"
   }
 }

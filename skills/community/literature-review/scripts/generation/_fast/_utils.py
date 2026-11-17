@@ -531,6 +531,7 @@ def make_cite_key(paper: dict) -> str:
 
 
 _BIBTEX_HEADER_RE = re.compile(r"^@(\w+)\s*\{\s*([^,\s]+)\s*,", re.MULTILINE)
+VERIFIED_BIBTEX_TYPES = frozenset({'Article', 'InProceedings', 'InCollection', 'Book', 'TechReport', 'Misc'})
 _BIBTEX_UNESCAPED_AMP_RE = re.compile(r"(?<!\\)&")
 _BIBTEX_FIELD_LINE_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?P<field>year|journal)"
@@ -608,6 +609,43 @@ def _escape_bibtex_for_latex(entry: str) -> str:
     return "\n".join(out_lines)
 
 
+def _entry_field_spans(entry):
+    """Find only top-level field names and the entry boundary, preserving values."""
+    header = _BIBTEX_HEADER_RE.search(entry)
+    if not header:
+        return {}, None
+    depth, quoted, boundary = 1, False, True
+    fields = {}
+    index = header.end()
+    while index < len(entry):
+        char = entry[index]
+        if char == '\\':
+            index += 2
+            continue
+        if depth == 1 and not quoted and char == '%':
+            end = entry.find('\n', index)
+            index = end + 1 if end >= 0 else len(entry)
+            continue
+        if depth == 1 and char == '"':
+            quoted = not quoted
+        elif char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return fields, index
+        if depth == 1 and not quoted:
+            if char == ',':
+                boundary = True
+            elif boundary and not char.isspace():
+                field = re.match(r'([A-Za-z][A-Za-z0-9_-]*)\s*=', entry[index:])
+                if field:
+                    fields[field[1].lower()] = (index, index + len(field[1]))
+                boundary = False
+        index += 1
+    return fields, None
+
+
 def _inject_card_fields(entry: str, card: dict | None, meta: dict | None = None) -> str:
     """Inject abstract, TLDR note, has_parse_dict, reading_depth (from
     `03_process/paper_cards.json` — `card`), and venue name (from
@@ -616,13 +654,20 @@ def _inject_card_fields(entry: str, card: dict | None, meta: dict | None = None)
     that _synthesise_bibtex_entry / _patch_verbatim_bibtex already derive
     from the same source — downstream consumers asked for both.
     """
-    venue_meta = meta.get("venue") if isinstance(meta, dict) else None
+    meta = meta or {}
+    fields, closing = _entry_field_spans(entry)
+    if 'accessed' in fields and 'urldate' not in fields:
+        start, end = fields['accessed']
+        entry = entry[:start] + 'urldate' + entry[end:]
+        fields, closing = _entry_field_spans(entry)
+    accessed = meta.get('urldate') or meta.get('accessed')
+    venue_meta = (meta.get('journal_name') or meta.get('journal') or meta.get('venue'))
     venue_name = ""
     if isinstance(venue_meta, dict):
         venue_name = (venue_meta.get("name") or "").strip()
     elif isinstance(venue_meta, str):
         venue_name = venue_meta.strip()
-    if not card and not venue_name:
+    if not card and not venue_name and not accessed:
         return entry
     card = card or {}
     abstract = (card.get("abstract") or "").strip()
@@ -632,7 +677,7 @@ def _inject_card_fields(entry: str, card: dict | None, meta: dict | None = None)
         tldr = (cf.get("tldr") or "").strip()
     has_parse_dict = card.get("has_parse_dict")
     reading_depth = (card.get("reading_depth") or "").strip() if isinstance(card.get("reading_depth"), str) else card.get("reading_depth")
-    if not abstract and not tldr and has_parse_dict is None and not reading_depth and not venue_name:
+    if not abstract and not tldr and has_parse_dict is None and not reading_depth and not venue_name and not accessed:
         return entry
     abstract = abstract.replace("{", "").replace("}", "")
     tldr = tldr.replace("{", "").replace("}", "")
@@ -646,30 +691,29 @@ def _inject_card_fields(entry: str, card: dict | None, meta: dict | None = None)
             indent = m.group(1)
             break
     extra_lines: list[str] = []
-    if abstract:
+    if abstract and 'abstract' not in fields:
         extra_lines.append(f"{indent}abstract = {{{abstract}}},")
-    if tldr:
+    if tldr and 'tldr' not in fields:
         extra_lines.append(f"{indent}tldr = {{{tldr}}},")
-    if has_parse_dict is not None:
+    if has_parse_dict is not None and 'has_parse_dict' not in fields:
         extra_lines.append(f"{indent}has_parse_dict = {{{str(bool(has_parse_dict)).lower()}}},")
-    if reading_depth:
+    if reading_depth and 'reading_depth' not in fields:
         extra_lines.append(f"{indent}reading_depth = {{{reading_depth}}},")
-    if venue_name:
+    if venue_name and 'venue' not in fields:
         extra_lines.append(f"{indent}venue = {{{venue_name}}},")
-    for i in range(len(lines) - 1, -1, -1):
-        if lines[i].lstrip().startswith("}"):
-            for j in range(i - 1, -1, -1):
-                if not lines[j].strip():
-                    continue
-                if not lines[j].rstrip().endswith(",") and not lines[j].lstrip().startswith("@"):
-                    lines[j] = lines[j].rstrip() + ","
-                break
-            lines[i:i] = extra_lines
-            break
-    return "\n".join(lines)
+    if accessed and 'urldate' not in fields:
+        extra_lines.append(f"{indent}urldate = {{{accessed}}},")
+    if not extra_lines:
+        return entry
+    if closing is None:
+        raise ValueError('cannot add metadata to an unbalanced bibliography entry')
+    prefix = entry[:closing].rstrip()
+    if not prefix.endswith(','):
+        prefix += ','
+    return prefix + '\n' + '\n'.join(extra_lines) + '\n' + entry[closing:]
 
 
-def render_bibtex_entry(cite_key: str, meta: dict, card: dict | None = None) -> str:
+def render_bibtex_entry(cite_key: str, meta: dict, card: dict | None = None, *, verified_type=None) -> str:
     """Return a BibTeX entry for `cite_key`, preferring upstream-provided
     `citationStyles.bibtex` when present, falling back to a synthesised entry.
 
@@ -679,10 +723,10 @@ def render_bibtex_entry(cite_key: str, meta: dict, card: dict | None = None) -> 
     when the upstream block exists its first-line key matches `cite_key`. We
     still rewrite the first-line key defensively in case of future drift.
 
-    The entry type is an inherited Claude Code compatibility contract: preserve
-    the upstream type byte-for-byte (including ``@Conference``); when upstream
-    BibTeX is absent, `_synthesise_bibtex_entry` always emits ``@Article``.
-    Never infer or remap the type from venue/publication metadata.
+    Preserve an upstream type byte-for-byte (including ``@Conference``). A
+    separately verified primary CSL type may supply the type of a synthesised
+    entry; otherwise the legacy default remains ``@Article``. Never infer its
+    type from venue labels or unverified publication_types.
 
     The upstream bibtex string may itself be missing year/journal or contain
     placeholder values (year=0, journal=Manuscript). When that happens we
@@ -706,7 +750,7 @@ def render_bibtex_entry(cite_key: str, meta: dict, card: dict | None = None) -> 
             raw = _inject_card_fields(raw.rstrip(), card, meta=meta)
             return _escape_bibtex_for_latex(raw)
 
-    entry = _synthesise_bibtex_entry(cite_key, meta)
+    entry = _synthesise_bibtex_entry(cite_key, meta, verified_type=verified_type)
     entry = _inject_card_fields(entry, card, meta=meta)
     return _escape_bibtex_for_latex(entry)
 
@@ -716,6 +760,9 @@ def _resolve_top_level_year(meta: dict) -> str:
 
 
 def _resolve_top_level_journal(meta: dict) -> str:
+    explicit = meta.get('journal_name') or meta.get('journal')
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
     venue = meta.get("venue")
     if isinstance(venue, dict):
         name = (venue.get("name") or "").strip()
@@ -784,7 +831,7 @@ def _patch_verbatim_bibtex(raw: str, meta: dict) -> str:
     return "\n".join(out)
 
 
-def _synthesise_bibtex_entry(cite_key: str, meta: dict) -> str:
+def _synthesise_bibtex_entry(cite_key: str, meta: dict, *, verified_type=None) -> str:
     # Claude Code compatibility: missing upstream citationStyles.bibtex always
     # fell back to @Article.  Do not "improve" this by guessing from venue,
     # publication_types, booktitle, or any later metadata enrichment.
@@ -792,25 +839,34 @@ def _synthesise_bibtex_entry(cite_key: str, meta: dict) -> str:
     year = meta.get("year") or meta.get("publication_year") or ""
     authors = meta.get("authors") or []
     if isinstance(authors, list) and authors:
-        author_str = " and ".join(
-            (a.get("name") if isinstance(a, dict) else str(a)) or ""
-            for a in authors[:8]
-        ).strip(" and ") or "Anonymous"
+        names = []
+        for author in authors:
+            if isinstance(author, dict) and author.get('family'):
+                names.append(author['family'] + ', ' + (author.get('given') or ''))
+            elif isinstance(author, dict) and author.get('literal'):
+                names.append('{' + (author.get('name') or '') + '}')
+            else:
+                names.append((author.get('name') if isinstance(author, dict) else str(author)) or '')
+        author_str = " and ".join(name.strip() for name in names if name.strip()) or "Anonymous"
     else:
         author_str = "Anonymous"
     eids = meta.get("external_ids") or {}
     arxiv = eids.get("ArXiv") or eids.get("arxiv") or meta.get("arxiv_id") or ""
     doi = eids.get("DOI") or eids.get("doi") or meta.get("doi") or ""
     venue = meta.get("venue")
-    journal = ""
-    if isinstance(venue, dict):
+    journal = meta.get('journal_name') or meta.get('journal') or ''
+    if not journal and isinstance(venue, dict):
         journal = venue.get("name") or ""
+    elif not journal and isinstance(venue, str):
+        journal = venue
     if not journal:
         journal = meta.get("journal") or ""
     if not journal and arxiv:
         journal = f"arXiv preprint arXiv:{arxiv}"
+    if verified_type is not None and verified_type not in VERIFIED_BIBTEX_TYPES:
+        raise ValueError('unsupported verified bibliographic type')
     lines = [
-        f"@Article{{{cite_key},",
+        f"@{verified_type or 'Article'}{{{cite_key},",
         f"  title  = {{{title}}},",
         f"  author = {{{author_str}}},",
     ]
@@ -818,7 +874,7 @@ def _synthesise_bibtex_entry(cite_key: str, meta: dict) -> str:
         lines.append(f"  year   = {{{year}}},")
     if journal:
         lines.append(f"  journal= {{{journal}}},")
-    for field in ("booktitle", "volume", "number", "pages", "publisher", "url"):
+    for field in ("booktitle", "volume", "number", "pages", "publisher", "url", "address", "isbn"):
         value = meta.get(field)
         if value:
             lines.append(f"  {field} = {{{value}}},")

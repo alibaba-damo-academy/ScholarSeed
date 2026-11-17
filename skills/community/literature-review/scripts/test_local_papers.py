@@ -1,4 +1,5 @@
 """Local PDF ingestion, corpus sizing, network-free parsing and endpoint migration."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,9 @@ from pypdf import PdfReader, PdfWriter
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'scripts'),str(ROOT/'lib')]
 from task_contract import configure,atomic_json,read_request
+from materials import import_materials
+from planning import packet,complete,decide,require_plan
+from task_contract import digest
 from local_papers import import_pdfs,load_local,budget,sizing,source_directory
 from retrieval.adapt_search_output import run as adapt
 from processing.fetch_fulltext import acquire,Cache,CACHE_DIRNAME,Breaker,run as fulltext
@@ -32,12 +36,188 @@ class LocalPapersTest(unittest.TestCase):
         page.insert_text((50,90),f'Local evidence {n}. The method uses conditional matching.')
         page.insert_text((50,120),'The experiment tests the stated setting. Limitations remain conditional.')
         doc.set_metadata({'title':title or f'Local research {n}','author':author});doc.save(path);doc.close();return path
+
+    def test_metadata_preview_reads_first_page_without_inventing_or_changing_materials(self):
+        source=self.pdf()
+        before=source.read_bytes()
+        result=import_pdfs(self.ws,{'files':[str(source)]})
+        preview=result['metadata_preview']
+        self.assertEqual(len(preview['items']),1)
+        item=preview['items'][0]
+        self.assertEqual(item['page'],1)
+        self.assertEqual(item['path'],str(source.resolve()))
+        self.assertEqual(item['missing_fields'],['year'])
+        self.assertIn('Local evidence 0',item['text'])
+        self.assertIsNone(item['error'])
+        self.assertFalse(item['truncated'])
+        paper=next(iter(load_local(self.ws).values()))
+        self.assertIsNone(paper['year'])
+        self.assertEqual(paper['abstract'],'')
+        self.assertEqual(source.read_bytes(),before)
+        self.assertEqual(Path(paper['local_source']['path']).read_bytes(),before)
+
+    def test_metadata_preview_total_budget_preserves_every_pdf(self):
+        paths=[self.pdf(0),self.pdf(1)]
+        originals={str(path.resolve()):path.read_bytes() for path in paths}
+        with patch('local_papers.METADATA_PREVIEW_CHARACTERS',16):
+            result=import_pdfs(self.ws,{'files':[str(path) for path in paths]})
+        preview=result['metadata_preview']
+        self.assertEqual(preview['characters'],16)
+        self.assertEqual(sum(len(item['text']) for item in preview['items']),16)
+        self.assertEqual(len(preview['items']),2)
+        self.assertTrue(all(item['truncated'] for item in preview['items']))
+        self.assertEqual(preview['items'][1]['error'],'metadata_preview_budget_exhausted')
+        papers=load_local(self.ws)
+        self.assertEqual(len(papers),2)
+        for paper in papers.values():
+            original=paper['local_source']['original_paths'][0]
+            self.assertEqual(Path(paper['local_source']['path']).read_bytes(),originals[original])
+            self.assertIsNone(paper['year'])
+
+    def test_complete_metadata_skips_preview_text_extraction(self):
+        source=self.pdf()
+        with patch('pypdf._page.PageObject.extract_text',side_effect=AssertionError('must not extract')):
+            result=import_pdfs(self.ws,{'files':[{'path':str(source),'title':'Actual title',
+                                                'authors':['Actual Author'],'year':2024}]})
+        self.assertEqual(result['metadata_preview']['items'],[])
+        self.assertEqual(result['metadata_preview']['characters'],0)
+
+    def test_metadata_preview_failure_does_not_discard_pdf(self):
+        source=self.pdf()
+        with patch('pypdf._page.PageObject.extract_text',side_effect=ValueError('unsupported text')):
+            result=import_pdfs(self.ws,{'files':[str(source)]})
+        self.assertEqual(result['status'],'SUCCESS')
+        self.assertEqual(len(load_local(self.ws)),1)
+        self.assertEqual(result['metadata_preview']['items'][0]['error'],
+                         'metadata_preview_extraction_failed:ValueError')
+        self.assertEqual(result['metadata_preview']['items'][0]['text'],'')
+
+    def test_local_import_precedes_plan_and_selected_abstracts_without_claiming_ready(self):
+        refs=['literature:first','literature:second']
+        configure(self.ws,{'execution':{'mode':'standard'},'outline_review':'plan',
+                           'sources':{'policy':'provided_only','refs':refs}})
+        result=import_pdfs(self.ws,{'files':[str(self.pdf())]})
+        self.assertEqual(result['status'],'SUCCESS')
+        self.assertEqual(result['imported_count'],1)
+        self.assertNotIn('search_target',result)
+        self.assertNotIn('combined_target',result)
+        self.assertTrue((self.ws/'02_retrieval/local_papers.json').is_file())
+        with self.assertRaisesRegex(ValueError,'selected references'):
+            budget(self.ws)
+        front=packet(self.ws)
+        complete(self.ws,{'packet_id':front['packet_id'],'snapshot_id':digest(front['snapshot']),
+                          'request_id':'front','started_at':0,'deadline_at':300,
+                          'decision':{'answers':{'front':'Proceed.'}}})
+        decide(self.ws,{'packet_id':front['packet_id'],'action':'proceed'})
+        items=[]
+        for ref in refs:
+            identity=ref.removeprefix('literature:')
+            detail={'ok':True,'scope':'project','notice':'Bibliography and abstract only.',
+                    'item':{'id':identity,'title':'Actual '+identity,'authors':'Actual Author',
+                            'year':2024,'publication':'Actual venue','doi':'','version':1},
+                    'abstract':'The method supports a bounded finding under its stated assumptions.',
+                    'attachments':[],'source_url':'/literature/'+identity+'?project_id=actual'}
+            items.append({'ref_id':ref,'detail':detail})
+        with self.assertRaisesRegex(ValueError,'every selected reference'):
+            import_materials(self.ws,{'items':items[:1]})
+        with self.assertRaisesRegex(ValueError,'selected references'):
+            budget(self.ws)
+        import_materials(self.ws,{'items':items})
+        require_plan(self.ws)
+        self.assertEqual(len(load_local(self.ws)),3)
+        self.assertEqual(budget(self.ws)['search_target'],0)
+        self.assertEqual(budget(self.ws)['combined_target'],3)
+
+    def test_same_pdf_bibliography_refresh_keeps_approval_but_changed_bytes_do_not(self):
+        source=self.pdf()
+        configure(self.ws,{'execution':{'mode':'standard'},'outline_review':'plan'})
+        import_pdfs(self.ws,{'files':[str(source)]})
+        front=packet(self.ws)
+        complete(self.ws,{'packet_id':front['packet_id'],'snapshot_id':digest(front['snapshot']),
+                          'request_id':'front','started_at':0,'deadline_at':300,
+                          'decision':{'answers':{'front':'Use author-year.'}}})
+        decide(self.ws,{'packet_id':front['packet_id'],'action':'proceed',
+                        'patch':{'publication':{'citation_style':'author_year'},
+                                 'user_requests':['Use author-year.'],
+                                 'effective_requirements':'Keep the scope; use author-year.'}})
+        require_plan(self.ws)
+        changed={'path':str(source),'title':'Title read from the same PDF',
+                 'authors':['Actual Author'],'year':2024}
+        configure(self.ws,{'local_pdfs':[changed]})
+        with self.assertRaises(ValueError):
+            require_plan(self.ws)
+        import_pdfs(self.ws)
+        require_plan(self.ws)
+        decision_path=self.ws/'_status/plan_decision.json'
+        approved=decision_path.read_bytes()
+        import_pdfs(self.ws)
+        self.assertEqual(decision_path.read_bytes(),approved)
+        replacement=self.pdf(1)
+        source.write_bytes(replacement.read_bytes())
+        import_pdfs(self.ws)
+        with self.assertRaises(ValueError):
+            require_plan(self.ws)
+        self.assertEqual(decision_path.read_bytes(),approved)
+
+    def test_bibliography_refresh_does_not_approve_unrelated_request_changes(self):
+        source=self.pdf()
+        configure(self.ws,{'execution':{'mode':'standard'},'outline_review':'plan'})
+        import_pdfs(self.ws,{'files':[str(source)]})
+        front=packet(self.ws)
+        complete(self.ws,{'packet_id':front['packet_id'],'snapshot_id':digest(front['snapshot']),
+                          'request_id':'front','started_at':0,'deadline_at':300,
+                          'decision':{'answers':{'front':'Proceed.'}}})
+        decide(self.ws,{'packet_id':front['packet_id'],'action':'proceed'})
+        configure(self.ws,{'effective_requirements':'A different research scope.',
+                           'local_pdfs':[{'path':str(source),'title':'Corrected title'}]})
+        import_pdfs(self.ws)
+        with self.assertRaises(ValueError):
+            require_plan(self.ws)
     def search(self,n,duplicate=None):
         papers=[{'paper_id':str(i+100),'title':f'Supplement {i}','authors':['Remote Author'],'year':2024,
                  'abstract':'Supported mechanism description.','source':'paperhub','tier':2} for i in range(n)]
         if duplicate:papers[0].update(duplicate)
         atomic_json(self.ws/'02_retrieval/metadata.json',{'papers':papers})
         atomic_json(self.ws/'02_retrieval/as_run/session/search_state.json',{})
+    def test_project_candidate_with_local_abstract_uses_normal_selection_budget(self):
+        provenance = {'kind':'local_pdf_abstract','source_revision':'sha256:abc','pages':[1]}
+        self.search(1, {'paper_id':'literature:paper','source':'project_library',
+                        'library_refs':['literature:paper'],'abstract_provenance':provenance})
+        corpus, report, _ = adapt(self.ws)
+        self.assertIn('literature:paper', corpus)
+        paper = corpus['literature:paper']
+        self.assertEqual(paper['abstract_provenance'], provenance)
+        self.assertEqual(paper['library_refs'], ['literature:paper'])
+        self.assertNotIn('paperhub_id', paper)
+        self.assertEqual(report['local_count'], 0)
+        self.assertEqual(report['corpus_plan']['policy'], 'configured_retrieval')
+        # Library membership never forces inclusion or bypasses missing metadata.
+        self.search(1, {'paper_id':'literature:paper','source':'project_library','abstract':''})
+        corpus, report, _ = adapt(self.ws)
+        self.assertNotIn('literature:paper', corpus)
+
+    def test_verified_library_preview_passes_selection_without_abstract(self):
+        evidence={'kind':'local_pdf_excerpt','source_revision':'sha256:'+'a'*64,'text':'Original method and conditions.'}
+        evidence['text_sha256']=hashlib.sha256(evidence['text'].encode()).hexdigest()
+        paper={'paper_id':'literature:paper','source':'project_library','title':'Library method',
+               'library_refs':['literature:paper'],'abstract':'','selection_evidence':evidence,
+               'authors':['Ada Author'],'year':2024}
+        self.search(1,paper)
+        atomic_json(self.ws/'02_retrieval/library_candidates.json',{
+            'schema':'literature-candidates/v1','scope':'project_literature','sources':[{**paper,'ref_id':'literature:paper'}]})
+        corpus,report,_=adapt(self.ws)
+        self.assertEqual(corpus['literature:paper']['abstract'],'')
+        self.assertEqual(corpus['literature:paper']['selection_evidence'],evidence)
+        self.assertEqual(report['local_count'],0)
+        self.assertEqual(report['corpus_plan']['policy'],'configured_retrieval')
+        self.search(1,{**paper,'authors':[]})
+        corpus,report,_=adapt(self.ws)
+        self.assertIn('literature:paper',corpus)
+        self.assertEqual(corpus['literature:paper']['selection_evidence'],evidence)
+        self.search(1,{**paper,'selection_evidence':{**evidence,'text':'Forged excerpt'}})
+        corpus,report,_=adapt(self.ws)
+        self.assertNotIn('literature:paper',corpus)
+
     def test_public_import_and_bound_search_import_need_no_ids_or_workspace(self):
         source=self.pdf()
         def cli(args,request=None):
@@ -104,11 +284,12 @@ class LocalPapersTest(unittest.TestCase):
         self.assertEqual(set(corpus),set(adapt(self.ws)[0]))
     def test_remote_duplicate_merges_metadata_into_local_identity(self):
         import_pdfs(self.ws,{'files':[{'path':str(self.pdf()),'doi':'10.1234/same'}]})
-        self.search(42,{'doi':'10.1234/same','title':'Alternate spelling','year':2022})
+        local_id=next(iter(load_local(self.ws)))
+        self.search(2,{'doi':'10.1234/same','title':'Alternate spelling','year':2022})
         corpus,report,_=adapt(self.ws);local=next(p for p in corpus.values() if p.get('user_supplied'))
         self.assertEqual(local['metadata_provenance']['year'],'search_metadata')
         self.assertEqual(local['year'],2022);self.assertEqual(local['paperhub_id'],'100')
-        self.assertEqual(len(corpus),41);self.assertNotIn('100',corpus)
+        self.assertEqual(set(corpus),{local_id,'101'});self.assertNotIn('100',corpus)
         self.assertEqual(len(report['local_duplicates_merged']),1)
     def test_local_only_parse_uses_no_download_and_reaches_outline_cards(self):
         import_pdfs(self.ws,{'files':[str(self.pdf())]})

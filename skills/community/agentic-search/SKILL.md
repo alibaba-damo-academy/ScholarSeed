@@ -2,7 +2,7 @@
 name: agentic-search
 description: Tiered academic paper discovery for quick search-bar lookup, balanced interactive research, or maximum-quality multi-round retrieval. Infer hidden entities, search PaperHub with keyword/title/citation paths, optionally use public web evidence, and return a precision-first tiered metadata set. Use for natural-language research needs that ask to find relevant papers, including requests with a time budget or speed/quality preference.
 description_zh: "分档发现学术论文：支持搜索框快速查找、均衡的交互式研究，以及质量优先的多轮检索。推断查询中的隐含实体，通过 PaperHub 的关键词、标题和引用路径检索，按需补充公网证据，并返回以精准度优先、按档位组织的论文元数据。适用于用自然语言查找相关论文的需求，包括指定时间预算或速度与质量偏好的请求。"
-version: "1.1.8"
+version: "1.1.12"
 ---
 
 # Agentic Literature Search
@@ -10,8 +10,8 @@ version: "1.1.8"
 Return relevant papers in `metadata.json`. Do not generate a narrative report
 unless the user explicitly asks for one.
 
-For a standalone conversation search, after producing real non-empty `metadata.json`, publish the result with
-`scholarseed-bridge literature result --json '{"run":"RESULT_DIR","checkpoint":"metadata","skill":"agentic-search"}'`,
+For a standalone conversation search, after producing real non-empty `metadata.json`, publish the result through the `scholarseed_bridge` model tool with
+`{"capability":"literature","operation":"result","request":{"run":"RESULT_DIR","checkpoint":"metadata","skill":"agentic-search"}}`,
 replacing RESULT_DIR with the session-relative result directory. This displays the host's
 conversation component and the host's full-result actions; it does not authorize full-text access.
 The dedicated search-bar invocation owns its result tab and does not need this conversation call.
@@ -47,9 +47,18 @@ Balanced graph.
 
 1. `SKILL_DIR` is the absolute directory containing this file. Use absolute
    paths for bundled tools.
-2. `WORK_DIR` is the user's current working directory. Write only under
-   `WORK_DIR/agentic-search-results/<short-topic>/`; append a timestamp rather
-   than overwrite existing results.
+2. Keep cwd unchanged. Use the actual output directory selected for this session
+   (`SESSION_DIR`); do not infer its name from the title or create a second session.
+   Honor a search-bar or caller-specified result directory exactly. Otherwise,
+   for a new search deliverable use `SESSION_DIR/agentic-search-results/`; for a search
+   supporting another task use `SESSION_DIR/work/agentic-search-results/`. This is
+   `RESULT_DIR`; if occupied, use a fresh readable subdirectory instead of overwriting.
+   Resume a known earlier search at its original path, never by scanning for a topic. If the caller supplied a project candidate
+   snapshot, pass its path as `--input` to the existing `state.py init` (Balanced/
+   Quality) or `quick_search.py` (Quick); do not paste or rewrite the snapshot.
+   These are optional candidates for normal selection, not mandatory papers or
+   a subtraction from the target. Use relevant candidate titles in the existing
+   title-query budget when metadata or a PaperHub ID is missing.
 3. Treat PaperHub as an optional enhanced source. Authentication comes only
    from `SCHOLARSEED_API_KEY`; configuration is loaded by `tools/localconf.py`.
 4. Read `SETUP.md` only when non-authentication configuration is invalid or a
@@ -163,6 +172,11 @@ Do not call the runtime Web Search tool directly, call Brave, open web pages,
 use a pool-inspection tool, or run a
 model-based selection pass. Do not create a result directory or plan file
 yourself.
+
+An explicit requested paper count overrides the mode's default: pass `--count N`
+(1–25 for Quick). When the user names a closed set of papers, use those exact
+titles for title queries, add `--exact-titles`, set `--count` to that set's size, and do not broaden it
+with related-paper keyword queries. A mode's default is not a minimum result count.
 
 ### 2. Run once
 

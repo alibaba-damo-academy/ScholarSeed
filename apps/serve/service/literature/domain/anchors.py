@@ -73,7 +73,8 @@ def project(text: str, *, unwrap: bool = False) -> Projection:
             tex_quoted = pair == "``"
         elif value == '"':
             tex_quoted = False
-        for char in unicodedata.normalize("NFKC", value):
+        for sourceChar in unicodedata.normalize("NFKC", value):
+            char = sourceChar
             if char.isspace():
                 if not chars or chars[-1] == " ":
                     continue

@@ -19,6 +19,7 @@ import {
   DocumentWorkspaceRegistry,
   documentNavigationView,
   documentTextReveal,
+  documentSelectionReveal,
   focusedSelectionPresentation,
   tabIdsForClose,
   type DocumentLoader,
@@ -1678,6 +1679,32 @@ test('text reveal opens Markdown source, reuses its tab, and advances the reques
   assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 1)
 })
 
+test('selection reveal preserves the viewer and replays each click without sharing tab state', async () => {
+  const workspace = new DocumentWorkspace(loader())
+  const tabId = await workspace.open(source, 'edit')
+  const other = await workspace.open({ ...source, path: 'other.md' }, 'edit')
+  const request = {
+    locator: { kind: 'markdown' as const, start: 0, end: 4, source_map_version: 'md-source-v1' },
+    text: 'Draft',
+  }
+  workspace.revealSelection(tabId, request)
+  assert.equal(workspace.getSnapshot().focusedTabId, tabId)
+  assert.equal(workspace.getSnapshot().tabs[tabId].viewKind, 'edit')
+  assert.equal(documentSelectionReveal(workspace.getSnapshot().tabs[tabId])?.sequence, 1)
+  workspace.revealSelection(tabId, request)
+  assert.equal(documentSelectionReveal(workspace.getSnapshot().tabs[tabId])?.sequence, 2)
+  assert.equal(documentSelectionReveal(workspace.getSnapshot().tabs[other]), undefined)
+  assert.throws(
+    () => workspace.revealSelection(tabId, { ...request, sourceRevision: 'changed' }),
+    /source_revision_changed/
+  )
+  assert.equal(documentSelectionReveal(workspace.getSnapshot().tabs[tabId])?.sequence, 2)
+  workspace.setTabViewState(tabId, { ...workspace.getSnapshot().tabs[tabId].viewState, page: 2 })
+  workspace.clearSelectionReveal(tabId)
+  assert.equal(documentSelectionReveal(workspace.getSnapshot().tabs[tabId]), undefined)
+  assert.equal(workspace.getSnapshot().tabs[tabId].viewState?.page, 2)
+})
+
 test('project relocation preserves the stable session, tab and PDF view state', async () => {
   const pdfSource = { kind: 'project' as const, path: 'papers/original.pdf', project: 'project-1' }
   const relocatedVersioning = {
@@ -2241,7 +2268,11 @@ test('selection presentation is isolated by tab and exposed only for the focused
   const session = workspace.getSnapshot().sessions[sessionId]
 
   workspace.focusTab(previewId)
-  workspace.setSelection(previewId, textSelection(sessionId, session.revision), viewport)
+  const boundary = { left: 620, top: 160, right: 1180, bottom: 760 }
+  workspace.setSelection(previewId, textSelection(sessionId, session.revision), {
+    ...viewport,
+    boundary,
+  })
 
   const selected = workspace.getSnapshot()
   assert.equal(selected.sessions[sessionId].selection?.text, 'Draft')
@@ -2250,6 +2281,7 @@ test('selection presentation is isolated by tab and exposed only for the focused
   assert.equal(focusedSelectionPresentation(selected)?.tab.id, previewId)
   assert.equal(focusedSelectionPresentation(selected)?.presentation.point.x, 110)
   assert.equal(focusedSelectionPresentation(selected)?.presentation.visible, false)
+  assert.deepEqual(focusedSelectionPresentation(selected)?.presentation.boundary, boundary)
 
   workspace.focusTab(editId)
   assert.equal(focusedSelectionPresentation(workspace.getSnapshot()), null)

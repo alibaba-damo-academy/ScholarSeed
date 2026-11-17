@@ -13,7 +13,9 @@ const MAX_RECEIPT_BYTES = 128 * 1024
 const RECIPE_FILES = {
   python: ['apps/desktop/scripts/cd/assembly.cjs', 'apps/desktop/scripts/cd/bytecode.py',
     'apps/desktop/scripts/cd/normalize.py', 'apps/desktop/scripts/cd/payload.py', 'scripts/shared/dependencies.py',
-    'apps/serve/service/capabilities/service/dependencies.py'],
+    'apps/serve/service/capabilities/service/dependencies.py', 'scripts/shared/platform.cjs',
+    'apps/desktop/native/toolchain.json', 'apps/desktop/scripts/cd/wheels.cjs', 'apps/desktop/scripts/cd/cache.cjs',
+    'apps/desktop/scripts/shared/macos.cjs'],
   texlive: ['apps/desktop/runtime/texlive.cjs', 'apps/desktop/scripts/cd/texlive.cjs', 'apps/desktop/scripts/cd/payload.py',
     'apps/desktop/package.json', 'apps/desktop/pnpm-lock.yaml'],
   powershell: ['apps/desktop/runtime/powershell.cjs', 'apps/desktop/scripts/cd/payload.py'],

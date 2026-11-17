@@ -11,7 +11,8 @@ here automatically instead of failing on a user machine.
 Resolved engine paths are reported so a caller that staged its own toolchain can
 assert the compile really used it rather than a host TeX installation.
 
-Nothing is imported from the skill: the preambles are read with `ast`, so this
+Nothing is imported from the skill: literal preambles and root-relative UTF-8
+template reads are resolved with `ast`, without executing source expressions, so this
 stays runnable in a bare toolchain check where the skill's own module graph is
 not the subject under test.
 """
@@ -98,7 +99,42 @@ def preambles() -> dict[str, str]:
             and isinstance(node.targets[0], ast.Name)
             and node.targets[0].id in wanted
         ):
-            found[node.targets[0].id] = ast.literal_eval(node.value)
+            value = node.value
+            if isinstance(value, ast.Call):
+                if (
+                    not isinstance(value.func, ast.Attribute)
+                    or value.func.attr != "read_text"
+                    or value.args
+                    or len(value.keywords) != 1
+                    or value.keywords[0].arg != "encoding"
+                    or ast.literal_eval(value.keywords[0].value) != OUTPUT_ENCODING
+                ):
+                    raise ValueError("unsupported publication preamble read")
+                path_node = value.func.value
+                parts = []
+                while isinstance(path_node, ast.BinOp) and isinstance(path_node.op, ast.Div):
+                    part = ast.literal_eval(path_node.right)
+                    if not isinstance(part, str) or Path(part).is_absolute():
+                        raise ValueError("publication template path must be relative")
+                    parts.insert(0, part)
+                    path_node = path_node.left
+                if (
+                    not isinstance(path_node, ast.Attribute)
+                    or path_node.attr != "HOME"
+                    or not isinstance(path_node.value, ast.Name)
+                    or path_node.value.id != "_slr_paths"
+                    or not parts
+                ):
+                    raise ValueError("publication template must be rooted at _slr_paths.HOME")
+                template = ROOT.joinpath(*parts).resolve()
+                if not template.is_relative_to(ROOT.resolve()):
+                    raise ValueError("publication template escapes the skill root")
+                preamble = template.read_text(encoding=OUTPUT_ENCODING)
+            else:
+                preamble = ast.literal_eval(value)
+            if not isinstance(preamble, str):
+                raise ValueError("publication preamble must be a string")
+            found[node.targets[0].id] = preamble
     missing = sorted(wanted - set(found))
     if missing:
         raise RuntimeError(f"publication preambles not found: {missing}")

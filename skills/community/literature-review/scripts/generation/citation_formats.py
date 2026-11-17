@@ -54,10 +54,12 @@ Usage (also the way to eyeball a style before shipping it):
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 __all__ = [
     "BibEntry", "parse_bib_file", "parse_bib_text",
@@ -69,6 +71,16 @@ __all__ = [
 # cap baked into assets/unsrtnat_scholarseed.bst, so the two paths do not disagree
 # about the same paper.
 _AUTHOR_CAP = 10
+REFERENCE_METADATA_VERSION = 1
+
+
+def reference_anchor(key: str, *, title: str, authors: str, year: str,
+                     publication: str, url: str, doi: str) -> str:
+    metadata = {"version": REFERENCE_METADATA_VERSION, "title": title,
+                "authors": authors, "year": year, "publication": publication,
+                "url": url, "doi": doi}
+    encoded = quote(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")), safe="")
+    return f'<a id="ref-{html.escape(key, quote=True)}" data-scholarseed-reference="{encoded}"></a>'
 
 
 # ---------------------------------------------------------------------------
@@ -137,21 +149,63 @@ class BibEntry:
         return f"<BibEntry {self.key} {self.year}>"
 
 
+def _name_parts(raw, delimiter):
+    parts, start, index, depth = [], 0, 0, 0
+    while index < len(raw):
+        if raw[index] == '\\':
+            index += 2
+            continue
+        if raw[index] == '{':
+            depth += 1
+        elif raw[index] == '}':
+            depth -= 1
+        matched = re.match(delimiter, raw[index:]) if depth == 0 else None
+        if matched:
+            parts.append(raw[start:index])
+            index += matched.end()
+            start = index
+        else:
+            index += 1
+    return [*parts, raw[start:]]
+
+
+def _literal_name(raw):
+    if not raw.startswith('{'):
+        return False
+    depth = 0
+    for index, char in enumerate(raw):
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return index == len(raw) - 1
+    return False
+
+
 def _split_authors(raw: str) -> list[tuple[str, str]]:
     """`"Vaswani, Ashish and Noam Shazeer"` -> `[("Ashish","Vaswani"), ("Noam","Shazeer")]`."""
     out: list[tuple[str, str]] = []
-    for name in re.split(r"\s+and\s+", raw or ""):
-        name = _clean_value(name)
+    for source in _name_parts(raw or '', r'\s+and\s+'):
+        source = source.strip()
+        name = _clean_value(source)
         if not name:
             continue
-        if "," in name:
-            family, given = (p.strip() for p in name.split(",", 1))
+        commas = [_clean_value(part) for part in _name_parts(source, ',')]
+        if _literal_name(source):
+            family, given = name, ''
+        elif len(commas) == 2:
+            family, given = commas
+        elif len(commas) == 3:
+            family, given = ' '.join(part for part in commas[:2] if part), commas[2]
         else:
             parts = name.split()
             if len(parts) == 1:
                 family, given = parts[0], ""
             else:
-                family, given = parts[-1], " ".join(parts[:-1])
+                particle = next((index for index, part in enumerate(parts[:-1])
+                                 if part and part[0].islower()), len(parts) - 1)
+                family, given = ' '.join(parts[particle:]), ' '.join(parts[:particle])
         out.append((given, family))
     return out
 
@@ -200,7 +254,7 @@ def _parse_fields(body: str) -> dict[str, str]:
             value, i = body[start:j], j
         while i < len(body) and body[i] in ", \t\r\n":
             i += 1
-        fields[name] = _clean_value(value)
+        fields[name] = value.strip() if name in ('author', 'editor') else _clean_value(value)
     return fields
 
 
@@ -347,14 +401,25 @@ def _render_acm(entry: BibEntry, number: int) -> str:
 
 
 _GBT_AUTHOR_CAP = 3
+
+
+def preprint_entry(entry):
+    return bool(entry.fields.get('eprint') and (
+        entry.entry_type in {'misc', 'online'} or entry.venue.casefold().startswith('arxiv')
+        or entry.doi.casefold().startswith('10.48550/arxiv.')))
+
+
+def reference_requirements(entries, style, cited, *, pdf=False):
+    """Additional type-specific blockers; consultation dates are not required for display."""
+    return []
+
 _GBT_MARKERS = {
     "article": "J", "inproceedings": "C", "conference": "C",
     "proceedings": "C", "book": "M", "incollection": "M",
     "phdthesis": "D", "mastersthesis": "D", "techreport": "R",
-    "misc": "EB/OL", "online": "EB/OL",
+    "misc": "EB", "online": "EB",
 }
 _GBT_CONTAINED = {"inproceedings", "conference", "incollection"}
-_GBT_ONLINE_SUFFIX = '/OL'
 
 
 def _render_gbt(entry: BibEntry, number: int) -> str:
@@ -365,10 +430,8 @@ def _render_gbt(entry: BibEntry, number: int) -> str:
     if len(entry.authors) > _GBT_AUTHOR_CAP:
         authors.append("等" if any(re.search(r"[\u3400-\u9fff]", name) for name in authors) else "et al.")
     marker = _GBT_MARKERS.get(entry.entry_type, "Z")
-    if entry.fields.get('eprint') and entry.entry_type in {'misc', 'online'}:
-        marker = 'PP/OL'
-    if (entry.doi or entry.url) and not marker.endswith(_GBT_ONLINE_SUFFIX):
-        marker += _GBT_ONLINE_SUFFIX
+    if preprint_entry(entry):
+        marker = 'PP'
     title = f"{entry.title}[{marker}]"
     if entry.entry_type in _GBT_CONTAINED:
         title += f"//{entry.venue}"
@@ -383,9 +446,6 @@ def _render_gbt(entry: BibEntry, number: int) -> str:
         date += f"({entry.number})"
     if entry.pages:
         date += f": {entry.pages}"
-    accessed = entry.fields.get("urldate") or entry.fields.get("accessed")
-    if accessed:
-        date += f"[{accessed}]"
     result = f"[{number}] " + ". ".join(part for part in (", ".join(authors), title, date) if part).rstrip(".") + "."
     if entry.url:
         result += f" {entry.url}."
@@ -533,7 +593,10 @@ class CitationResolver:
         lines = ["", "#" * heading_level + f" {heading}", ""]
         for key in self.order:
             entry = self.entries[key]
-            lines.append(f'<a id="ref-{key}"></a>')
+            lines.append(reference_anchor(
+                key, title=entry.title,
+                authors="; ".join(" ".join(part for part in author if part) for author in entry.authors),
+                year=entry.year, publication=entry.venue, url=entry.url, doi=entry.doi))
             lines.append(self.render_entry(entry, self.numbers.get(key, 0)))
             lines.append("")
         return lines

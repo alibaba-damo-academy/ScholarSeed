@@ -1,6 +1,8 @@
 const sourceDirectory = require('node:path').dirname(__dirname)
 const assert = require('node:assert/strict')
+const { spawnSync } = require('node:child_process')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const vm = require('node:vm')
@@ -75,6 +77,40 @@ test('worker-local ids and repeated helper declarations are not globally dedupli
   assert.equal(result.records[0].logicalKey, result.records[2].logicalKey)
   assert.deepEqual(result.records.map(record => record.occurrence), [1, 1, 2, 2])
   assert.deepEqual(result.records.map(record => record.runtimeId), [2, 1, 2, 1])
+})
+
+test('a failed test file without a summary preserves completed records and the next file', context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-node-worker-'))
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const previous = '00-previous.test.cjs'
+  const aborted = '01-aborted.test.cjs'
+  const continued = '02-continued.test.cjs'
+  const destination = path.join(directory, 'events.jsonl')
+  fs.writeFileSync(path.join(directory, previous), "require('node:test')('previous file completes', () => {})")
+  fs.writeFileSync(path.join(directory, aborted), [
+    "const test = require('node:test')",
+    "test('completed before exit', () => {})",
+    "test('worker exits', () => new Promise(() => setImmediate(() => process.exit(1))))"
+  ].join('\n'))
+  fs.writeFileSync(path.join(directory, continued), "require('node:test')('next file still runs', () => {})")
+  const run = spawnSync(process.execPath,
+    nodeReporterArgs(['--test', '--test-concurrency=1', previous, aborted, continued], destination),
+    { cwd: directory, env: { ...process.env, NODE_TEST_CONTEXT: undefined }, encoding: 'utf8' })
+  assert.equal(run.status, 1, run.stderr || run.stdout)
+  const raw = fs.readFileSync(destination, 'utf8')
+  const result = parseNodeEvents(raw, 'sample')
+  assert.equal(result.frameworkSuccess, false)
+  assert.deepEqual(result.records.map(record => [record.titlePath[0], record.status]),
+    [['previous file completes', 'passed'], ['completed before exit', 'passed'],
+      [aborted, 'failed'], ['next file still runs', 'passed']])
+  assert.deepEqual(result.fileSummaries.map(file => path.basename(file.file)), [previous, continued])
+  assert.deepEqual(result.counts, {
+    tests: 4, passed: 3, failed: 1, cancelled: 0, skipped: 0, todo: 0, suites: 0, topLevel: 4
+  })
+  const missingPrevious = raw.trimEnd().split('\n').map(line => JSON.parse(line))
+    .filter(event => event.type !== 'test:summary' || !event.data.file ||
+      path.basename(event.data.file) !== previous)
+  assert.throws(() => parseNodeEvents(encoded(missingPrevious), 'sample'), /unattributed results/)
 })
 
 test('incomplete, duplicated, mismatched and malformed observations fail closed', () => {

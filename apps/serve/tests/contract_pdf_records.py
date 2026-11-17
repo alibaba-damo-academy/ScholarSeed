@@ -9,6 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest import TestCase
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -29,14 +30,19 @@ from service.literature.schema import (
 )
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.pdf import LiteraturePdf
-from service.platform.activity import Activities
+from service.literature.service.records import AttachmentRecords
+from service.platform.activity import Activities, MaintenanceActive
 from service.platform.content import RootKind
 from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.records import (
     EMPTY_RECORDS,
+    NATIVE_ANNOTATIONS,
     RecordOwner,
     RecordTarget,
     decode_records,
+    encode_records,
+    payload_revision,
+    project_anchors,
     record_revision,
 )
 from service.workbench.domain.model import WorkbenchFormatPolicy
@@ -93,6 +99,25 @@ def _records() -> dict:
     }
 
 
+def _point_records() -> dict:
+    records = _records()
+    records["marks"].append(
+        {
+            **records["marks"][0],
+            "id": "point",
+            "style": "comment",
+            "color": "green",
+            "point": [1.0, 0.0],
+            "quads": [],
+            "text": "",
+        }
+    )
+    records["comments"].append(
+        {"id": "point-body", "mark_id": "point", "body": "User comment", "created_at": 1.0}
+    )
+    return records
+
+
 def test_records_v1_is_canonical_and_source_bound() -> None:
     records = decode_records(_records())
     assert records == _records()
@@ -105,6 +130,68 @@ def test_records_v1_is_canonical_and_source_bound() -> None:
         "comments": [],
         "notes": [],
     }
+
+
+def test_point_comments_are_explicit_and_preserve_text_records() -> None:
+    original = _records()
+    for point in ([0, 0], [1, 1], [0.25, 0.75]):
+        records = _records()
+        records["marks"].append(
+            {
+                **records["marks"][0],
+                "id": "point-comment",
+                "style": "comment",
+                "point": point,
+                "quads": [],
+                "text": "",
+            }
+        )
+        records["comments"].append(
+            {
+                "id": "point-body",
+                "mark_id": "point-comment",
+                "body": "Page thought",
+                "created_at": 2,
+            }
+        )
+        decoded = decode_records(records)
+        assert decoded["marks"][0] == original["marks"][0]
+        assert decoded["comments"][0] == original["comments"][0]
+        assert decoded["marks"][1]["point"] == point
+        assert decoded["marks"][1]["quads"] == []
+        assert decoded["marks"][1]["text"] == ""
+        assert decode_records(json.dumps(decoded).encode()) == decoded
+        stale = project_anchors(decoded, True)
+        assert all(mark["anchor_state"] == "stale" for mark in stale["marks"])
+        assert stale["marks"][1]["point"] == point
+        assert stale["comments"] == decoded["comments"]
+        assert record_revision("source-a", decoded) != record_revision("source-b", decoded)
+
+
+def test_point_comments_reject_invalid_or_ambiguous_geometry() -> None:
+    for invalid in (
+        {"point": [-0.1, 0.5]},
+        {"point": [0.1, 1.1]},
+        {"point": [float("nan"), 0.5]},
+        {"point": [0.1, float("inf")]},
+        {"point": [True, 0.5]},
+        {"point": ["0.1", 0.5]},
+        {"point": [0.1]},
+        {"point": [0.1, 0.5, 0.7]},
+        {"point": None},
+        {"quads": [[0.1, 0.1, 0.2, 0.2]]},
+        {"text": "invented selection"},
+        {"style": "highlight"},
+    ):
+        records = _records()
+        records["marks"][0].update(
+            {"style": "comment", "point": [0.1, 0.5], "quads": [], "text": "", **invalid}
+        )
+        try:
+            decode_records(records)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted invalid point comment: {invalid}")
 
 
 def test_attachment_content_reads_managed_payload_once() -> None:
@@ -222,13 +309,13 @@ def test_exact_attachment_routes_enforce_parent_media_and_two_revisions() -> Non
             headers={"If-Match": f'"{snapshot["record_revision"]}"'},
             json={
                 "expected_source_revision": snapshot["source_revision"],
-                "records": _records(),
+                "records": _point_records(),
             },
         )
         assert saved.status_code == 200
         assert Change(ChangeTopic.RECORDS, subject=pdf["id"]) in changes
         changes.clear()
-        assert len(saved.json()["records"]["marks"]) == 1
+        assert saved.json()["records"] == decode_records(_point_records())
         stale_record_write = client.put(
             route,
             headers={"If-Match": f'"{snapshot["record_revision"]}"'},
@@ -243,6 +330,9 @@ def test_exact_attachment_routes_enforce_parent_media_and_two_revisions() -> Non
         stale = client.get(route)
         assert stale.status_code == 200
         assert stale.json()["records"]["marks"][0]["anchor_state"] == "stale"
+        assert stale.json()["records"]["marks"][1]["anchor_state"] == "stale"
+        assert stale.json()["records"]["marks"][1]["point"] == [1.0, 0.0]
+        assert stale.json()["records"]["comments"][-1]["body"] == "User comment"
         source_conflict = client.put(
             route,
             headers={"If-Match": f'"{saved.json()["record_revision"]}"'},
@@ -429,12 +519,9 @@ def test_explicit_copy_creates_independent_project_owner_and_optional_snapshot()
             headers={"Idempotency-Key": "without-records"},
         )
         assert omitted.status_code == 200, omitted.text
-        assert (
-            project_records.snapshot_asset(
-                target_project.id, omitted.json()["target_target"]["subject_id"]
-            ).records
-            == EMPTY_RECORDS
-        )
+        assert project_records.snapshot_asset(
+            target_project.id, omitted.json()["target_target"]["subject_id"]
+        ).records == {**EMPTY_RECORDS, NATIVE_ANNOTATIONS: []}
         assert copied.status_code == 200, copied.text
         receipt = copied.json()
         assert receipt["source_target"] == source_target.response()
@@ -443,7 +530,7 @@ def test_explicit_copy_creates_independent_project_owner_and_optional_snapshot()
         target = project_records.snapshot_asset(
             target_project.id, receipt["target_target"]["subject_id"]
         )
-        assert target.records == edited_records
+        assert target.records == {**edited_records, NATIVE_ANNOTATIONS: []}
         changed_source = literature_records.snapshot(source_target, source_revision)
         literature_records.commit(
             source_target,
@@ -451,12 +538,9 @@ def test_explicit_copy_creates_independent_project_owner_and_optional_snapshot()
             EMPTY_RECORDS,
             changed_source.record_revision,
         )
-        assert (
-            project_records.snapshot_asset(
-                target_project.id, receipt["target_target"]["subject_id"]
-            ).records
-            == edited_records
-        )
+        assert project_records.snapshot_asset(
+            target_project.id, receipt["target_target"]["subject_id"]
+        ).records == {**edited_records, NATIVE_ANNOTATIONS: []}
 
 
 def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> None:
@@ -469,8 +553,8 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
     )
     project = content.create_project("Roundtrip")
     path = Path(content.resolve(project.id, "roundtrip.pdf"))
-    original = _records()
-    original["comments"] = [
+    original = _point_records()
+    original["comments"] += [
         {
             "id": "comment",
             "mark_id": original["marks"][0]["id"],
@@ -495,7 +579,7 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
     path.write_bytes(exported)
     project_store = PdfRecordStore(content, PdfRecordCatalog(content))
     imported = project_store.snapshot(project.id, "roundtrip.pdf")
-    assert imported.records == decode_records(original)
+    assert imported.records == {**decode_records(original), NATIVE_ANNOTATIONS: []}
     assert path.read_bytes() == exported
     edited = project_store.commit_asset(
         project.id,
@@ -504,12 +588,9 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
         imported.record_revision,
         imported.source_revision,
     )
-    assert (
-        PdfRecordStore(content, PdfRecordCatalog(content))
-        .snapshot(project.id, "roundtrip.pdf")
-        .records
-        == EMPTY_RECORDS
-    )
+    assert PdfRecordStore(content, PdfRecordCatalog(content)).snapshot(
+        project.id, "roundtrip.pdf"
+    ).records == {**EMPTY_RECORDS, NATIVE_ANNOTATIONS: []}
     assert edited.record_revision != imported.record_revision
 
     files = root / "files"
@@ -540,7 +621,7 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
         route = f"/api/v1/literatures/paper/attachments/{attachment['id']}/records"
         response = client.get(route)
         assert response.status_code == 200, response.text
-        assert response.json()["records"] == decode_records(original)
+        assert response.json()["records"] == {**decode_records(original), NATIVE_ANNOTATIONS: []}
         assert client.get(route).json() == response.json()
         saved = client.put(
             route,
@@ -551,8 +632,108 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
             },
         )
         assert saved.status_code == 200, saved.text
-        assert client.get(route).json()["records"] == EMPTY_RECORDS
+        assert client.get(route).json()["records"] == {**EMPTY_RECORDS, NATIVE_ANNOTATIONS: []}
     assert path.read_bytes() == exported
+
+
+def test_native_records_backfill_both_owners_and_deletions_survive_legacy_clients() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        payload = pdf_fixture.annotated_pdf()
+        revision = payload_revision(payload)
+        content_catalog = ContentCatalog(root / "content.sqlite3")
+        content = ContentService(
+            ProjectRegistry(str(root / "projects"), content_catalog),
+            content_catalog,
+            activities=Activities(),
+        )
+        project = content.create_project("Native annotations")
+        path = Path(content.resolve(project.id, "native.pdf"))
+        path.write_bytes(payload)
+        binding = content.identify(project.id, "native.pdf")
+        assert binding.asset.asset_id is not None
+        catalog = PdfRecordCatalog(content)
+        catalog.create(
+            project.id,
+            binding.asset.asset_id,
+            record_revision(revision, EMPTY_RECORDS),
+            revision,
+            encode_records(EMPTY_RECORDS),
+        )
+        store = PdfRecordStore(content, catalog)
+        imported = store.snapshot(project.id, "native.pdf")
+        assert len(imported.records["marks"]) == 2
+        assert len(imported.records["comments"]) == 3
+        saved = store.commit_asset(
+            project.id, binding.asset.asset_id, EMPTY_RECORDS, imported.record_revision, revision
+        )
+        assert saved.records["marks"] == []
+        assert saved.records[NATIVE_ANNOTATIONS] == imported.records[NATIVE_ANNOTATIONS]
+        assert store.snapshot(project.id, "native.pdf").records == saved.records
+        assert path.read_bytes() == payload
+        omitted_path = Path(content.resolve(project.id, "without-records.pdf"))
+        omitted_path.write_bytes(payload)
+        omitted = content.identify(project.id, "without-records.pdf")
+        assert omitted.asset.asset_id is not None
+        empty_copy = store.snapshot_asset(
+            project.id, omitted.asset.asset_id, initial_records=EMPTY_RECORDS
+        )
+        assert empty_copy.records["marks"] == []
+        assert empty_copy.records[NATIVE_ANNOTATIONS] == saved.records[NATIVE_ANNOTATIONS]
+        assert store.snapshot_asset(project.id, omitted.asset.asset_id) == empty_copy
+
+        files = root / "files"
+        files.mkdir()
+        repository = LiteratureRepository(root / "literature.sqlite3")
+        repository.save(LiteratureItem(id="paper", title="Paper"))
+        attachment = _stage_attachment(
+            repository, files, "paper", "native.pdf", payload, kind="pdf", media_type=PDF_MEDIA_TYPE
+        )
+        target = RecordTarget(RecordOwner.LITERATURE_ATTACHMENT, "paper", attachment["id"])
+        AttachmentRecordCatalog(repository.database).snapshot(target, revision, EMPTY_RECORDS)
+        app = FastAPI()
+        with patch.object(literature_files, "SERVICE_LITERATURE_FILES_DIR", files):
+            linked_path = Path(content.resolve(project.id, "linked.pdf"))
+            linked_path.write_bytes(payload)
+            linked = content.identify(project.id, "linked.pdf")
+            assert linked.asset.asset_id is not None
+            catalog.link(project.id, linked.asset.asset_id, target)
+            linked_store = PdfRecordStore(
+                content,
+                catalog,
+                shared_records=AttachmentRecords(
+                    LiteratureAttachmentContent(repository), repository
+                ),
+            )
+            assert (
+                len(linked_store.snapshot_asset(project.id, linked.asset.asset_id).records["marks"])
+                == 2
+            )
+            register_reading_routes(
+                app,
+                repository,
+                LiteratureAttachmentContent(repository),
+                LiteraturePdf(repository),
+                WorkbenchFormatPolicy(),
+            )
+            client = TestClient(app)
+            route = f"/api/v1/literatures/paper/attachments/{attachment['id']}/records"
+            response = client.get(route)
+            assert response.status_code == 200, response.text
+            imported = response.json()
+            assert len(imported["records"]["marks"]) == 2
+            saved = client.put(
+                route,
+                headers={"If-Match": imported["record_revision"]},
+                json={"expected_source_revision": revision, "records": EMPTY_RECORDS},
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["records"]["marks"] == []
+            assert (
+                saved.json()["records"][NATIVE_ANNOTATIONS]
+                == imported["records"][NATIVE_ANNOTATIONS]
+            )
+            assert client.get(route).json() == saved.json()
 
 
 def test_invalid_embedded_records_initialize_an_empty_snapshot_without_blocking() -> None:
@@ -578,11 +759,148 @@ def test_invalid_embedded_records_initialize_an_empty_snapshot_without_blocking(
             Path(content.resolve(project.id, path)).write_bytes(document.tobytes())
         binding = content.identify(project.id, path)
         snapshot = store.snapshot(project.id, path)
-        assert snapshot.records == EMPTY_RECORDS
+        assert snapshot.records == {**EMPTY_RECORDS, NATIVE_ANNOTATIONS: []}
         assert store_catalog.get(project.id, binding.asset.asset_id) is not None
 
 
+def test_initialized_records_remain_read_only_during_business_drain() -> None:
+    root = Path(tempfile.mkdtemp())
+    gate = Activities()
+    catalog = ContentCatalog(root / "content.sqlite3")
+    content = ContentService(
+        ProjectRegistry(str(root / "projects"), catalog), catalog, activities=gate
+    )
+    project = content.create_project("Observations")
+    records_catalog = PdfRecordCatalog(content)
+    store = PdfRecordStore(content, records_catalog)
+    with pdf_fixture.open() as document:
+        document.new_page()
+        payload = document.tobytes()
+    bindings = []
+    for name in ("first.pdf", "second.pdf", "cold.pdf"):
+        Path(content.resolve(project.id, name)).write_bytes(payload)
+        bindings.append(content.identify(project.id, name))
+    first, second, cold = bindings
+    first_snapshot = store.snapshot_asset(
+        project.id, first.asset.asset_id, initial_records=_records()
+    )
+    different = _records()
+    different["comments"][0]["body"] = "second asset"
+    second_snapshot = store.snapshot_asset(
+        project.id, second.asset.asset_id, initial_records=different
+    )
+    assertions = TestCase()
+    generation = gate.begin()
+    try:
+        with (
+            patch.object(records_catalog, "get", side_effect=AssertionError("mutating getter")),
+            patch.object(records_catalog, "_schema", side_effect=AssertionError("record schema")),
+            patch.object(
+                records_catalog, "_link_schema", side_effect=AssertionError("link schema")
+            ),
+        ):
+            assert store.snapshot_asset(project.id, first.asset.asset_id) == first_snapshot
+            assert store.snapshot_asset(project.id, second.asset.asset_id) == second_snapshot
+        with assertions.assertRaises(MaintenanceActive):
+            store.snapshot_asset(project.id, cold.asset.asset_id)
+        assert records_catalog.peek(project.id, cold.asset.asset_id) is None
+        with assertions.assertRaises(MaintenanceActive):
+            store.commit_asset(
+                project.id,
+                first.asset.asset_id,
+                EMPTY_RECORDS,
+                first_snapshot.record_revision,
+                first_snapshot.source_revision,
+            )
+        Path(content.resolve(project.id, "first.pdf", read_only=True)).unlink()
+        missing = store.snapshot_asset(project.id, first.asset.asset_id)
+        assert missing.source_state == "missing"
+        assert missing.records == first_snapshot.records
+        assert gate.snapshot().counts == {}
+        assert gate.seal(generation)
+        with assertions.assertRaises(MaintenanceActive):
+            store.snapshot_asset(project.id, second.asset.asset_id)
+    finally:
+        gate.resume(generation)
+
+
+def test_linked_initialized_records_use_the_existing_read_only_port_during_drain() -> None:
+    root = Path(tempfile.mkdtemp())
+    gate = Activities()
+    catalog = ContentCatalog(root / "content.sqlite3")
+    content = ContentService(
+        ProjectRegistry(str(root / "projects"), catalog), catalog, activities=gate
+    )
+    project = content.create_project("Linked")
+    with pdf_fixture.open() as document:
+        document.new_page()
+        payload = document.tobytes()
+    Path(content.resolve(project.id, "linked.pdf")).write_bytes(payload)
+    binding = content.identify(project.id, "linked.pdf")
+    files = root / "files"
+    files.mkdir()
+    repository = LiteratureRepository(root / "literature.sqlite3")
+    repository.save(LiteratureItem(id="paper", title="Paper"))
+    attachment = _stage_attachment(
+        repository,
+        files,
+        "paper",
+        "paper.pdf",
+        payload,
+        kind="pdf",
+        role=AttachmentRole.PRIMARY,
+        media_type=PDF_MEDIA_TYPE,
+    )
+    shared = AttachmentRecords(LiteratureAttachmentContent(repository), repository)
+    target = RecordTarget(RecordOwner.LITERATURE_ATTACHMENT, "paper", attachment["id"])
+    records_catalog = PdfRecordCatalog(content)
+    store = PdfRecordStore(content, records_catalog, shared_records=shared)
+    with patch.object(literature_files, "SERVICE_LITERATURE_FILES_DIR", files):
+        initial = shared.snapshot_target(target)
+        expected = shared.commit_target(
+            target, _records(), initial.record_revision, initial.source_revision
+        )
+        store.link_asset(project.id, binding.asset.asset_id, target)
+        generation = gate.begin()
+        try:
+            with (
+                patch.object(
+                    shared, "snapshot_target", side_effect=AssertionError("initialization")
+                ),
+                patch.object(
+                    records_catalog, "_link_schema", side_effect=AssertionError("link schema")
+                ),
+                patch.object(
+                    AttachmentRecordCatalog,
+                    "_schema",
+                    side_effect=AssertionError("attachment schema"),
+                ),
+            ):
+                observed = store.snapshot_asset(project.id, binding.asset.asset_id)
+                assert observed.record_target == target
+                assert observed.records == expected.records
+                assert observed.source_revision == expected.source_revision
+                assert observed.source_path == "linked.pdf"
+            with TestCase().assertRaises(MaintenanceActive):
+                store.commit_asset(
+                    project.id,
+                    binding.asset.asset_id,
+                    EMPTY_RECORDS,
+                    expected.record_revision,
+                    expected.source_revision,
+                )
+            assert shared.peek_target(target).records == expected.records
+            assert gate.snapshot().counts == {}
+        finally:
+            gate.resume(generation)
+
+
 def run() -> None:
+    test_native_records_backfill_both_owners_and_deletions_survive_legacy_clients()
+    test_initialized_records_remain_read_only_during_business_drain()
+    test_linked_initialized_records_use_the_existing_read_only_port_during_drain()
+    test_point_comments_are_explicit_and_preserve_text_records()
+    test_point_comments_reject_invalid_or_ambiguous_geometry()
     test_embedded_records_initialize_both_owners_without_overwriting_edits()
     test_invalid_embedded_records_initialize_an_empty_snapshot_without_blocking()
     test_records_v1_is_canonical_and_source_bound()

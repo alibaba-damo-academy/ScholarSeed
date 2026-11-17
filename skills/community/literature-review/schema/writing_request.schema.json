@@ -8,6 +8,9 @@
   ],
   "additionalProperties": false,
   "properties": {
+    "execution": {"type":"object","required":["mode"],"additionalProperties":false,"properties":{"mode":{"enum":["quick","standard"]},"budget_seconds":{"type":"integer","minimum":1},"confirmation":{"enum":["timeout_auto","required"]}}},
+    "deliverable": {"type":"object","required":["kind","unit"],"additionalProperties":false,"properties":{"kind":{"enum":["survey","related_work","chapter","fragment","components"]},"unit":{"enum":["document","chapter","paragraph","components"]}}},
+    "sources": {"type":"object","required":["policy"],"additionalProperties":false,"properties":{"policy":{"enum":["provided_only","supplement","discover"]},"refs":{"type":"array","items":{"type":"string"},"uniqueItems":true}}},
     "intent": {
       "type": "string"
     },
@@ -59,7 +62,7 @@
     },
     "outline_review": {
       "type": "string",
-      "enum": ["required", "auto", "timeout_auto"]
+      "enum": ["plan", "required", "auto", "timeout_auto"]
     },
     "review_timeout_seconds": {
       "type": "integer",

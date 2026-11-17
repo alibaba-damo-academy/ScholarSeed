@@ -22,7 +22,7 @@ from service.content.domain.model import PREPARED_CONFLICT, PREPARED_UNAVAILABLE
 from service.content.service.native import creation_marker, set_creation_marker
 from service.content.service.space import ProjectSpace
 from service.content.service.utils import open_directory, read_regular
-from service.persistence.project import transaction
+from service.persistence.project import reader, transaction
 from service.platform.content import (
     AssetBinding,
     AssetKind,
@@ -829,13 +829,16 @@ def status(
     database: str,
     asset_id: str,
     active_root_ids: frozenset[str] = frozenset(),
+    *,
+    read_only: bool = False,
 ) -> AssetBinding:
     """Project a durable identity without deleting it when source access is lost."""
 
     if not asset_id or not Path(database).is_file():
         raise ContentError(PREPARED_UNAVAILABLE)
-    with transaction(database) as connection:
-        _schema(connection)
+    with reader(database) if read_only else transaction(database) as connection:
+        if not read_only:
+            _schema(connection)
         row = connection.execute(
             f"SELECT * FROM {ASSET_TABLE} WHERE asset_id = ?", (asset_id,)
         ).fetchone()
@@ -849,6 +852,8 @@ def status(
         try:
             physical = _physical_for_row(scope, row["path"], row)
         except ContentError as error:
+            if read_only and isinstance(error.__cause__, PermissionError):
+                return AssetBinding(asset=reference, state=AssetState.AUTHORIZATION_REQUIRED)
             state = AssetState.CONFLICT if error.code == PREPARED_CONFLICT else AssetState.MISSING
             return AssetBinding(asset=reference, state=state)
         if _physical_identity(physical) != _stored_identity(row):
@@ -911,8 +916,12 @@ def lookup(
     scope: ProjectSpace, database: str, asset_id: str, *, creation: PreparedContent | None = None
 ) -> FileAssetRef:
     """Resolve an existing identity without creating a catalog or restoring files."""
-    if not asset_id or not Path(database).is_file():
+    if (not asset_id and creation is None) or not Path(database).is_file():
         raise ContentError(PREPARED_UNAVAILABLE)
+    lookup_value = asset_id
+    if not asset_id:
+        assert creation is not None
+        lookup_value = creation.marker
     with transaction(database) as connection:
         connection.execute("BEGIN IMMEDIATE")
         table = connection.execute(
@@ -920,7 +929,9 @@ def lookup(
         ).fetchone()
         row = (
             connection.execute(
-                f"SELECT * FROM {ASSET_TABLE} WHERE asset_id = ?", (asset_id,)
+                f"SELECT * FROM {ASSET_TABLE} WHERE "
+                + ("asset_id = ?" if asset_id else "creation_marker = ?"),
+                (lookup_value,),
             ).fetchone()
             if table is not None
             else None
@@ -931,6 +942,7 @@ def lookup(
             creation.project_id != scope.project.id or row["receipt"] != _receipt(creation)
         ):
             raise ContentError(PREPARED_CONFLICT)
+        asset_id = row["asset_id"]
         _recover(scope, connection, asset_ids=(asset_id,))
         row = connection.execute(
             f"SELECT * FROM {ASSET_TABLE} WHERE asset_id = ?", (asset_id,)
@@ -939,13 +951,15 @@ def lookup(
 
 
 def read(
-    scope: ProjectSpace, database: str, asset_id: str, limit: int
+    scope: ProjectSpace, database: str, asset_id: str, limit: int, *, read_only: bool = False
 ) -> tuple[bytes, FileAssetRef]:
     """Read the registered physical object, not a same-path replacement."""
-    lookup(scope, database, asset_id)
-    with transaction(database) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        _recover(scope, connection, asset_ids=(asset_id,))
+    if not read_only:
+        lookup(scope, database, asset_id)
+    with reader(database) if read_only else transaction(database) as connection:
+        if not read_only:
+            connection.execute("BEGIN IMMEDIATE")
+            _recover(scope, connection, asset_ids=(asset_id,))
         row = connection.execute(
             f"SELECT * FROM {ASSET_TABLE} WHERE asset_id = ?", (asset_id,)
         ).fetchone()

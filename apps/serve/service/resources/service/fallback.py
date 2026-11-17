@@ -7,6 +7,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import aclosing, closing
 from dataclasses import replace
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from time import monotonic
@@ -120,7 +121,7 @@ class ResourceSearchResultPolicy:
                         path=FALLBACK_BROWSER_ARTIFACT,
                         provider=FALLBACK_BROWSER_PROVIDER,
                         maximum_bytes=SEARCH_MAX_BYTES,
-                        validate=lambda content: self._validate(content, receipt),
+                        validate=partial(self._validate, receipt=receipt),
                     )
             records = []
             for line in output.splitlines():

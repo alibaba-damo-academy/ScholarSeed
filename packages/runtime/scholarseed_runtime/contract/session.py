@@ -140,6 +140,8 @@ class RuntimeExecutionThread:
 
 @dataclass(frozen=True)
 class RuntimeActivitySnapshot:
+    """Activity evidence; transient tree observations were invalidated by same-generation churn."""
+
     generation: str
     revision: int
     watermark: int
@@ -147,6 +149,7 @@ class RuntimeActivitySnapshot:
     blockers: tuple[str, ...] = ()
     execution_tree_complete: bool = False
     execution_tree_blockers: tuple[str, ...] = ()
+    execution_tree_transient: bool = False
 
     @property
     def idle(self) -> bool:

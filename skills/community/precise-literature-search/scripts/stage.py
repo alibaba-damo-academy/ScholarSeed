@@ -21,7 +21,7 @@ from run_state import (initialize_run, read_state, update_status, increment_sear
 from stage_guard import (authorize_download, claim_stage, contained, digest,
                          require_run, release_stage, require_worker, cancel_stage, serialized)
 from task_binding import ACTIVATION_HINT, activation_request
-from validate_json import ContractError, validate_data
+from validate_json import ContractError, INTENT_SOURCE_REQUEST_CLEAR, validate_data
 
 SKILL = Path(__file__).resolve().parent.parent
 FINAL_DELIVERY_CHECKPOINT = {
@@ -56,30 +56,12 @@ def read_download_manifest(run: Path) -> dict:
     return manifest
 
 
-def with_task_activation(result: dict, run: Path, *, download_checkpoint: bool = False) -> dict:
+def with_task_activation(result: dict, run: Path, *, validate_download: bool = False) -> dict:
     """Attach this run's lease activation request; the product lease lasts one turn."""
     activation = activation_request(run)
-    output = {**result, "task_activation": activation,
-              "task_activation_hint": ACTIVATION_HINT}
-    manifest = run / DOWNLOAD_MANIFEST_RELATIVE
-    if download_checkpoint and path_exists(manifest) and any(paper.get("status") == "downloaded"
-                                    for paper in read_download_manifest(run)["papers"]):
-        output["download_admission"] = {
-            "capability": "literature", "operation": "ingest",
-            "request": {"run": activation["request"]["workspace"]},
-        }
-        output["fulltext_delivery"] = {
-            "capability": "literature", "operation": "delivery",
-            "request": {"run": activation["request"]["workspace"]},
-            "instructions": "Register verified successes with download_admission first, then call this checkpoint. The user chooses where to save resources; library admission is separate. Canceling preserves library items and reading authorization.",
-        }
-        output["download_admission_hint"] = (
-            "After task activation, call this native scholarseed_bridge request now, including "
-            "partial successes. It saves PDFs to the library and publishes full-text buttons; "
-            "do not wait for reading or final-report. Resolve run relative to the actual session "
-            "workdir. Downloaded and admitted are separate outcomes; report admission failures."
-        )
-    return output
+    if validate_download and path_exists(run / DOWNLOAD_MANIFEST_RELATIVE):
+        read_download_manifest(run)
+    return {**result, "task_activation": activation, "task_activation_hint": ACTIVATION_HINT}
 
 
 def web_search_invoke() -> str:
@@ -100,11 +82,13 @@ def execute(script: str, arguments: list[str], *, environment=None) -> None:
         raise ValueError(f"{script} failed with exit {result.returncode}; preserve artifacts and resume")
 
 
-def start(work_dir: Path, request_file: Path, auto_delegated=False) -> dict:
+def start(
+    work_dir: Path, request_file: Path, auto_delegated=False, *, session_dir: Path | None = None
+) -> dict:
     request = filesystem_path(request_file).read_text(encoding="utf-8")
     if not request.strip():
         raise ValueError("request file is empty")
-    run = initialize_run(work_dir, request)
+    run = initialize_run(work_dir, request, session_dir=session_dir)
     atomic_write_json(run / "workflow.json", {
         "schema_version": "2.0", "run_id": run.name,
         "auto_delegated": bool(auto_delegated), "created_at": utc_now(),
@@ -122,7 +106,7 @@ def start(work_dir: Path, request_file: Path, auto_delegated=False) -> dict:
     atomic_write_json(intent_path, draft)
     command = [sys.executable, str(SKILL / "scripts/stage.py"), "search",
                "--run-dir", str(run), "--intent", str(intent_path)]
-    return {"status": "ready", "run_dir": str(run), "next_action": "confirm_intent",
+    return {"status": "ready", "run_dir": str(run), "next_action": "resolve_intent",
             "intent_file": str(intent_path),
             "intent_instructions": (
                 "Edit this complete draft: restate precise_intent and fill criteria only from "
@@ -131,9 +115,12 @@ def start(work_dir: Path, request_file: Path, auto_delegated=False) -> dict:
                 + ("Resolve ambiguity conservatively under explicit auto delegation; then set "
                    "confirmed=true and confirmation_source=auto_delegated."
                    if auto_delegated else
-                   "Obtain explicit user confirmation (reuse an already-confirmed scope); then set "
-                   "confirmed=true and confirmation_source=user_explicit.")
-                + " Execute next_command only after confirmation; balance is the default, "
+                   "If the original scope is clear, send a user-visible scope statement before "
+                   "the search command unless the duration notice already stated it. Do not wait. "
+                   f"Set confirmed=true and confirmation_source={INTENT_SOURCE_REQUEST_CLEAR}. "
+                   "Ask only about material forks; once the user resolves them, use "
+                   "confirmed=true and confirmation_source=user_explicit without another confirmation.")
+                + " Execute next_command only after resolving scope; balance is the default, "
                   "and an explicit mode/budget can be appended with search options."),
             "next_argv": command, "next_command": command_display(command)}
 
@@ -179,6 +166,13 @@ def prepare_search(run: Path, intent_path: Path | None, profile: str | None,
         validate_data("intent", intent)
         if intent["confirmed"] is not True:
             raise ValueError("intent is not confirmed")
+        if intent.get("confirmation_source") == INTENT_SOURCE_REQUEST_CLEAR:
+            request_path = state["paths"]["request"]
+            if not request_path or (
+                intent["original_request"].rstrip()
+                != filesystem_path(contained(run, request_path)).read_text(encoding="utf-8").rstrip()
+            ):
+                raise ValueError("clear scope must preserve the original request")
         if intent.get("confirmation_source") == "auto_delegated" and not read_json(run / "workflow.json")["auto_delegated"]:
             raise ValueError("automatic intent confirmation was not delegated")
         atomic_write_json(run / "intent.json", intent)
@@ -548,6 +542,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     begin = sub.add_parser("start")
     begin.add_argument("--work-dir", required=True, type=Path)
+    begin.add_argument("--session-dir", type=Path, help="Actual session output location within the work directory")
     begin.add_argument("--request-file", required=True, type=Path)
     begin.add_argument("--auto-delegated", action="store_true")
     for name in ("search", "complete", "authorize-download", "download", "reading", "report", "status", "resume", "cancel", "refine", "metadata-only"):
@@ -578,7 +573,7 @@ def main() -> int:
     run = None
     try:
         if args.command == "start":
-            result = start(args.work_dir, args.request_file, args.auto_delegated)
+            result = start(args.work_dir, args.request_file, args.auto_delegated, session_dir=args.session_dir)
             run = Path(result["run_dir"])
         else:
             run = canonical_path(args.run_dir)
@@ -606,7 +601,7 @@ def main() -> int:
                 result = metadata_only(run, args.decision_source)
             else:
                 result = stats(run)
-        print(json.dumps(with_task_activation(result, run, download_checkpoint=args.command == DOWNLOAD_COMMAND), ensure_ascii=False))
+        print(json.dumps(with_task_activation(result, run, validate_download=args.command == DOWNLOAD_COMMAND), ensure_ascii=False))
         return 0
     except ChildProcessCancelled as exc:
         print(json.dumps({"status": "cancelled", "signal": exc.signum}))
@@ -615,7 +610,7 @@ def main() -> int:
         result = {"status": "blocked", "reason": str(exc)}
         if args.command == DOWNLOAD_COMMAND and run is not None:
             try:
-                result = with_task_activation(result, run, download_checkpoint=True)
+                result = with_task_activation(result, run, validate_download=True)
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 pass
         print(json.dumps(result, ensure_ascii=False))

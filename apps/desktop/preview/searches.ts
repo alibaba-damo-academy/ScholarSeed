@@ -1,20 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { LiteratureSearchPaper, LiteratureSearchTask } from '../src/renderer/src/contracts/literature.ts'
-import { WEB_SEARCH_CANDIDATE_LIMIT, WEB_SEARCH_OUTPUT_SCHEMA_ID } from '../src/renderer/src/features/resources/search.ts'
-import { OFFICIAL_SEARCH_MODE } from '../src/renderer/src/features/resources/state.ts'
+import { WEB_SEARCH_CANDIDATE_LIMIT } from '../src/renderer/src/features/resources/search.ts'
 
 export const PREVIEW_SEARCH = {
-  maxQuery: 2_000,
   hostname: 'example.invalid',
   literatureQuery: '模拟文献检索：可复现研究',
   literatureTitle: 'Mock paper: reproducible research workflows',
-  webTitle: 'Mock web result: reproducible research',
 } as const
-
-const WEB_CANDIDATES = [
-  { title: PREVIEW_SEARCH.webTitle, url: `https://${PREVIEW_SEARCH.hostname}/research`, description: '受审模拟搜索摘要：可复现研究的记录与验证，不来自联网检索。' },
-  { title: 'Mock web result: shared design validation', url: `https://${PREVIEW_SEARCH.hostname}/design`, description: '受审模拟搜索摘要：设计师与开发者共享界面验证，不提供真实网页正文。' },
-] as const
 
 export class PreviewSearchError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code) }
@@ -56,15 +48,4 @@ export class PreviewSearches {
     return { items }
   }
 
-  webSearch(body: unknown) {
-    if (!record(body) || typeof body.query !== 'string' || !body.query.trim() || body.query.length > PREVIEW_SEARCH.maxQuery) throw new PreviewSearchError(422, 'preview_search_invalid')
-    const limit = body.limit ?? WEB_SEARCH_CANDIDATE_LIMIT
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > WEB_SEARCH_CANDIDATE_LIMIT) throw new PreviewSearchError(422, 'preview_search_invalid')
-    const timestamp = new Date().toISOString()
-    return {
-      schema: WEB_SEARCH_OUTPUT_SCHEMA_ID, status: 'completed', provider: OFFICIAL_SEARCH_MODE,
-      query: body.query, search_id: randomUUID(), started_at: timestamp, completed_at: timestamp, duration_ms: 0,
-      candidates: WEB_CANDIDATES.slice(0, limit).map(candidate => ({ ...candidate })), error: null,
-    }
-  }
 }

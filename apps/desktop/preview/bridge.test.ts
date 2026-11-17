@@ -158,6 +158,16 @@ test('preview bridge keeps identity and preferences in its scene namespace witho
   await bridge.savePreferences(preferences)
   assert.equal(requests[0].url, previewStatePath('tab-one', 'conversation-approval'))
   assert.equal(requests[0].init?.method, 'POST')
+  await bridge.savePreferences({ ...preferences, theme: 'dark', languageMode: undefined }, {
+    writerId: 'product',
+    submissionSources: ['explicit'],
+    changedFields: ['theme', 'languageMode'],
+    submittedRevision: 1,
+  })
+  assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
+    preferences: { theme: 'dark', languageMode: null },
+    changedFields: ['theme', 'languageMode'],
+  })
   assert.deepEqual(await bridge.getDeviceInfo(), { device_id: 'tab-one', device_label: 'ScholarSeed Preview' })
 })
 

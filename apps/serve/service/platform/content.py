@@ -143,6 +143,17 @@ class ImportSourcePlan:
 
 
 @dataclass(frozen=True)
+class ExternalFileSnapshot:
+    """Metadata-only identity for a task-scoped external file read."""
+
+    path: str
+    revision: str
+    size: int
+    media_type: str
+    automatic_eligible: bool
+
+
+@dataclass(frozen=True)
 class ContentSnapshot:
     """一次文件内容观察；revision 对 exact bytes 负责。"""
 
@@ -253,6 +264,36 @@ class ArtifactStorageLocation:
     database: str
 
 
+class ArtifactContentKind(str, Enum):
+    FILE = "file"
+    DIRECTORY = "directory"
+
+
+DIRECTORY_MANIFEST_VERSION = 1
+
+
+@dataclass(frozen=True)
+class ArtifactDirectoryEntry:
+    path: str
+    kind: ArtifactContentKind = ArtifactContentKind.DIRECTORY
+
+
+@dataclass(frozen=True)
+class ArtifactFileEntry:
+    path: str
+    sha256: str
+    size: int
+    media_type: str
+    kind: ArtifactContentKind = ArtifactContentKind.FILE
+
+
+@dataclass(frozen=True)
+class ArtifactDirectoryManifest:
+    entries: tuple[ArtifactDirectoryEntry | ArtifactFileEntry, ...]
+    total_size: int
+    version: int = DIRECTORY_MANIFEST_VERSION
+
+
 @dataclass(frozen=True)
 class VerifiedArtifactContent:
     """Immutable artifact bytes; original filename survives hash-addressed storage.
@@ -267,6 +308,7 @@ class VerifiedArtifactContent:
     media_type: str
     size: int
     sha256: str
+    kind: ArtifactContentKind = ArtifactContentKind.FILE
 
 
 class RootKind(str, Enum):
@@ -508,7 +550,7 @@ class ContentPort(Protocol):
         """Resolve an absolute source against the registered project and mounts."""
         ...
 
-    def resolve(self, project_id: str, path: str) -> str:
+    def resolve(self, project_id: str, path: str, *, read_only: bool = False) -> str:
         """相对路径 → 经越界校验的绝对路径。越界则拒绝。"""
         ...
 
@@ -552,7 +594,7 @@ class ContentPort(Protocol):
         ...
 
     def read_asset_bytes(
-        self, project_id: str, asset_id: str, max_bytes: int = ...
+        self, project_id: str, asset_id: str, max_bytes: int = ..., *, read_only: bool = False
     ) -> tuple[bytes, str]:
         """Read a registered physical file by stable identity, refusing path substitution."""
         ...
@@ -561,7 +603,9 @@ class ContentPort(Protocol):
         """Register or resolve an existing file without modifying its source bytes."""
         ...
 
-    def asset_status(self, project_id: str, asset_id: str) -> AssetBinding:
+    def asset_status(
+        self, project_id: str, asset_id: str, *, read_only: bool = False
+    ) -> AssetBinding:
         """Return a stable identity even while its source locator is unavailable."""
         ...
 
@@ -578,6 +622,14 @@ class ContentPort(Protocol):
 
         This grants no mount, writable root or arbitrary agent file access.
         """
+        ...
+
+    def external_file_snapshot(self, path: str) -> ExternalFileSnapshot:
+        """Inspect one regular file without reading its content or granting access."""
+        ...
+
+    def read_external_file(self, snapshot: ExternalFileSnapshot, offset: int, limit: int) -> bytes:
+        """Read the same file generation after the caller verifies task-scoped authorization."""
         ...
 
     def plan_import_sources(
@@ -603,6 +655,10 @@ class ContentPort(Protocol):
 
     def validate_prepared(self, prepared: PreparedContent) -> None:
         """Validate a persisted creation receipt without materializing it."""
+        ...
+
+    def read_prepared(self, prepared: PreparedContent) -> bytes:
+        """Read verified staged or committed bytes without publishing a file."""
         ...
 
     def publish_prepared(self, prepared: PreparedContent) -> FileAssetRef:
@@ -647,6 +703,12 @@ class ContentPort(Protocol):
         """Read bytes once and reject a source that changes during the read."""
         ...
 
+    def relative_snapshot(
+        self, project_id: str, source: str, revision: str, relative: str, max_bytes: int
+    ) -> StableContentSnapshot:
+        """Read a descendant sibling snapshot, bound to the source's exact revision."""
+        ...
+
     def capture_stable(
         self,
         project_id: str,
@@ -676,6 +738,10 @@ class ContentPort(Protocol):
 
     def read_artifact(self, content: VerifiedArtifactContent) -> bytes:
         """Read and verify immutable bytes; never fall back to the working file."""
+        ...
+
+    def artifact_manifest(self, content: VerifiedArtifactContent) -> ArtifactDirectoryManifest:
+        """Read a validated immutable directory manifest, never its original directory."""
         ...
 
     def remove_artifact(self, content: VerifiedArtifactContent) -> None:

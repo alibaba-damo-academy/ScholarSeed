@@ -202,7 +202,7 @@ class McpDocument(BaseModel):
     @field_validator("schema_version", mode="before")
     @classmethod
     def validate_version(cls, value: object) -> object:
-        if type(value) is not int or value != MCP_SCHEMA_VERSION:
+        if not isinstance(value, int) or isinstance(value, bool) or value != MCP_SCHEMA_VERSION:
             raise ValueError(MCP_INVALID_CONFIG)
         return value
 
@@ -301,7 +301,11 @@ class McpConfigurationStore:
     def prepare(
         self, servers: tuple[McpServer, ...], *, expected_revision: int
     ) -> PreparedMcpPublication:
-        if type(expected_revision) is not int or expected_revision < MCP_INITIAL_REVISION:
+        if (
+            not isinstance(expected_revision, int)
+            or isinstance(expected_revision, bool)
+            or expected_revision < MCP_INITIAL_REVISION
+        ):
             raise McpConfigurationConflict()
         lifetime = ExitStack()
         temporary = ""

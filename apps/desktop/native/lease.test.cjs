@@ -4,15 +4,17 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const net = require('node:net')
-const { spawn, execFileSync } = require('node:child_process')
+const { spawn, execFileSync, spawnSync } = require('node:child_process')
 const { createInterface } = require('node:readline')
 const { once } = require('node:events')
 const crypto = require('node:crypto')
 const asar = require('@electron/asar')
 const { verifyAsarClosure } = require('../scripts/cd/closure.cjs')
 const policy = require('./toolchain.json')
+const { DatabaseSync } = require('node:sqlite')
 const { LIBRARIES, BUNDLED_LIBRARIES } = require('./libraries.cjs')
 const { beginDomains, createDirectory, ensureDirectories } = require('./domains.cjs')
+const { bindRegistry, REGISTRY_DIRECTORY, removeLegacyCoordination } = require('./registry.cjs')
 const texlive = require('../runtime/texlive.cjs')
 
 const library = process.env.SCHOLARSEED_LEASE_LIBRARY
@@ -26,6 +28,172 @@ const api = require(library)
 const holder = path.join(__dirname, 'holder.cjs')
 const PROCESS_TIMEOUT = 20000
 assert.equal(process.versions.node, policy.node, 'run native contracts with the reviewed Node')
+
+test('startup removes only the legacy coordination path', (t) => {
+  const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
+  t.after(() => fs.rmSync(account, { recursive: true, force: true }))
+  const legacy = path.join(account, '.scholarseed-coordination')
+  const coordinator = path.join(account, REGISTRY_DIRECTORY)
+  fs.mkdirSync(coordinator)
+  fs.mkdirSync(path.join(legacy, 'domains-v1'), { recursive: true })
+  fs.writeFileSync(path.join(legacy, 'domains-v1', 'record'), '')
+  removeLegacyCoordination(coordinator)
+  removeLegacyCoordination(coordinator)
+  assert.deepEqual(fs.readdirSync(account), [REGISTRY_DIRECTORY])
+  fs.symlinkSync(coordinator, legacy, 'junction')
+  removeLegacyCoordination(coordinator)
+  assert.deepEqual(fs.readdirSync(account), [REGISTRY_DIRECTORY])
+})
+
+test('macOS registry holds independent slot locks in this process and across processes', {
+  skip: process.platform !== 'darwin',
+}, (t) => {
+  const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
+  t.after(() => fs.rmSync(account, { recursive: true, force: true }))
+  const coordinator = path.join(account, REGISTRY_DIRECTORY)
+  const pin = api.pin(coordinator, true)
+  const registry = bindRegistry(api, coordinator, pin)
+  const probe = (name) => execFileSync(process.execPath, ['-e', `
+    const [library, registryModule, coordinator, name] = process.argv.slice(1)
+    const native = require(library)
+    const pin = native.pin(coordinator, false)
+    const registry = require(registryModule).bindRegistry(native, coordinator, pin)
+    try {
+      registry.release(registry.acquireAt(pin, name, true))
+      console.log('acquired')
+    } catch (error) {
+      if (error.code !== 'ERR_LEASE_BUSY') throw error
+      console.log(error.code)
+    } finally {
+      native.release(pin)
+    }
+  `, library, require.resolve('./registry.cjs'), coordinator, name], {
+    encoding: 'utf8',
+    timeout: PROCESS_TIMEOUT,
+  }).trim()
+  const held = new Set()
+  const acquire = (name, exclusive) => {
+    const handle = registry.acquireAt(pin, name, exclusive)
+    held.add(handle)
+    return handle
+  }
+  const release = (handle) => {
+    registry.release(handle)
+    held.delete(handle)
+  }
+  try {
+    const first = acquire('first', false)
+    const shared = acquire('first', false)
+    acquire('second', true)
+    assert.throws(() => acquire('first', true), { code: 'ERR_LEASE_BUSY' })
+    assert.throws(() => acquire('second', false), { code: 'ERR_LEASE_BUSY' })
+    assert.equal(probe('first'), 'ERR_LEASE_BUSY')
+    release(shared)
+    assert.equal(probe('first'), 'ERR_LEASE_BUSY')
+    release(first)
+    assert.equal(probe('first'), 'acquired')
+    assert.equal(probe('second'), 'ERR_LEASE_BUSY')
+    assert.throws(() => acquire('second', true), { code: 'ERR_LEASE_BUSY' })
+  } finally {
+    for (const handle of held) release(handle)
+    api.release(pin)
+  }
+  assert.equal(probe('second'), 'acquired')
+})
+
+test('macOS registry reopens after mount drift and rejects a replacement ranges file', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
+  t.after(() => fs.rmSync(account, { recursive: true, force: true }))
+  const coordinator = path.join(account, REGISTRY_DIRECTORY)
+  function acquire(create) {
+    const pin = api.pin(coordinator, create)
+    try {
+      const registry = bindRegistry(api, coordinator, pin)
+      registry.release(registry.acquireAt(pin, 'fixture', false))
+    } finally {
+      api.release(pin)
+    }
+  }
+  acquire(true)
+  const stablePath = path.join(coordinator, 'registry.darwin-v1')
+  const legacyPath = path.join(coordinator, 'registry.binding')
+  const legacyIdentity = name => {
+    const { dev, ino } = fs.statSync(path.join(coordinator, name), { bigint: true })
+    return 'posix:' + [dev, ino].map(value => value.toString(16).padStart(16, '0')).join(':')
+  }
+  const legacy = legacyIdentity('registry.sqlite')
+  const old = new DatabaseSync(path.join(coordinator, 'registry.sqlite'))
+  try {
+    old.prepare('UPDATE binding SET identity = ?').run('flock:' + legacyIdentity('ranges'))
+  } finally {
+    old.close()
+  }
+  const drifted = legacy.replace(/:[a-f0-9]{16}:/, ':0000000000000000:')
+  fs.writeFileSync(legacyPath, drifted)
+  assert.throws(() => acquire(false), { code: 'ERR_LEASE_CHANGED' })
+  assert.equal(fs.existsSync(stablePath), false)
+  fs.writeFileSync(legacyPath, legacy)
+  acquire(false)
+  const stable = fs.readFileSync(stablePath)
+  fs.writeFileSync(legacyPath, drifted)
+  const db = new DatabaseSync(path.join(coordinator, 'registry.sqlite'))
+  try {
+    db.exec("UPDATE binding SET identity = 'flock:posix:0000000000000000:' || substr(identity, -16)")
+  } finally {
+    db.close()
+  }
+  acquire(false)
+  assert.deepEqual(fs.readFileSync(stablePath), stable)
+  const ranges = path.join(coordinator, 'ranges')
+  fs.renameSync(ranges, ranges + '.original')
+  fs.writeFileSync(ranges, '', { mode: 0o600 })
+  assert.throws(() => acquire(false), { code: 'ERR_LEASE_CHANGED' })
+})
+
+test('macOS registry resumes an interrupted first ranges publication', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
+  t.after(() => fs.rmSync(account, { recursive: true, force: true }))
+  const coordinator = path.join(account, REGISTRY_DIRECTORY)
+  const script = `
+    const [library, module, coordinator, interrupted] = process.argv.slice(1)
+    const native = require(library)
+    const pin = native.pin(coordinator, interrupted === 'yes')
+    try {
+      if (interrupted === 'yes') require('node:fs').renameSync = source => {
+        if (!source.endsWith('/ranges.pending')) throw Error('unexpected publication')
+        process.exit(23)
+      }
+      const registry = require(module).bindRegistry(native, coordinator, pin)
+      registry.release(registry.acquireAt(pin, 'fixture', true))
+    } finally {
+      native.release(pin)
+    }
+  `
+  const run = mode => spawnSync(process.execPath, [
+    '-e', script, library, require.resolve('./registry.cjs'), coordinator, mode,
+  ], { encoding: 'utf8', timeout: PROCESS_TIMEOUT })
+  const interrupted = run('yes')
+  assert.equal(interrupted.status, 23, interrupted.stderr)
+  const pending = path.join(coordinator, 'ranges.pending')
+  const inode = fs.statSync(pending).ino
+  const ranges = path.join(coordinator, 'ranges')
+  assert.equal(fs.existsSync(ranges), false)
+  assert.match(fs.readFileSync(path.join(coordinator, 'registry.binding'), 'utf8'), /^darwin:/)
+  const db = new DatabaseSync(path.join(coordinator, 'registry.sqlite'))
+  try {
+    assert.match(db.prepare('SELECT identity FROM binding').get().identity, /^flock:darwin:/)
+  } finally {
+    db.close()
+  }
+  const resumed = run('no')
+  assert.equal(resumed.status, 0, resumed.stderr)
+  assert.equal(fs.statSync(ranges).ino, inode)
+  assert.equal(fs.existsSync(pending), false)
+})
 
 test(
   'Windows maintenance independently rebinds the real server without reopening startup',
@@ -791,6 +959,40 @@ test('data ACL policy follows the platform while installation remains strict', (
     assert.throws(() => api.pin(parent, false), { code: 'ERR_LEASE_PERMISSION' })
     assert.throws(() => api.pin(child, false), { code: 'ERR_LEASE_PERMISSION' })
   }
+})
+
+test('admitted record creation stays private under an unrelated inheritable reader grant', (t) => {
+  const root = directory(t)
+  const coordinator = path.join(root, 'coordination')
+  const data = path.join(root, 'data')
+  for (const filename of [coordinator, data]) api.release(api.pin(filename, true))
+  if (process.platform === 'win32') {
+    // A sandbox read-root grant must not become the new record's only ACL.
+    execFileSync('C:/Windows/System32/icacls.exe', [data, '/grant', '*S-1-5-32-546:(OI)(CI)(RX)'])
+  }
+  const domains = beginDomains(api, coordinator, [data])
+  const bytes = Buffer.from([0, 255, 128, 1])
+  assert.throws(() => domains.create(data, 'record.tmp', bytes), /admitted writer/)
+  domains.occupy()
+  domains.admit()
+  try {
+    const published = path.join(data, 'record.enc')
+    fs.writeFileSync(published, 'previous record', { mode: 0o600 })
+    domains.create(data, 'record.tmp', bytes)
+    fs.renameSync(path.join(data, 'record.tmp'), published)
+    assert.deepEqual(fs.readFileSync(published), bytes)
+    if (process.platform === 'win32') {
+      const script = `(Get-Acl -LiteralPath '${published.replaceAll("'", "''")}').Sddl`
+      const descriptor = execFileSync('C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+        { encoding: 'utf8' })
+      assert.doesNotMatch(descriptor, /S-1-5-32-546|;;;BG\)/)
+    }
+    fs.unlinkSync(published)
+  } finally {
+    domains.close()
+  }
+  assert.throws(() => domains.create(data, 'late.tmp', bytes), /admitted writer/)
 })
 
 test('relative lock opens reject hardlinks and preserve the linked file', (t) => {
@@ -1827,6 +2029,344 @@ test('interrupted mutation blocks parent and descendant writers after volatile l
   writer.close()
 })
 
+test('macOS mutation intent remains blocking under an old device number', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const fx = domainFixture(t)
+  const first = beginDomains(api, fx.coordinator, [fx.child], true)
+  first.occupy()
+  first.reserveMutation('contract-migration-owner')
+  first.close()
+  const index = path.join(fx.coordinator, 'mutations-v1')
+  const inode = fs.statSync(fx.child, { bigint: true }).ino.toString(16).padStart(16, '0')
+  const bucket = fs.readdirSync(index).find(name => name.endsWith('-' + inode))
+  assert.ok(bucket)
+  fs.renameSync(path.join(index, bucket), path.join(index, 'posix-0000000000000000-' + inode))
+  const writer = beginDomains(api, fx.coordinator, [fx.child])
+  try {
+    writer.occupy()
+    assert.throws(() => writer.admit(), { code: 'ERR_LEASE_BUSY' })
+  } finally {
+    writer.close()
+  }
+})
+
+test('interrupted mutation blocks domain readers after volatile locks close', (t) => {
+  const fx = domainFixture(t)
+  const bytes = Buffer.from('{"schemaVersion":1,"revision":7}')
+  fs.writeFileSync(path.join(fx.child, 'agent-policy.json'), bytes)
+  const migrator = beginDomains(api, fx.coordinator, [fx.child], true)
+  migrator.occupy()
+  migrator.reserveMutation('contract-migration-owner')
+  migrator.close() // Volatile X lease is gone; the durable intent remains.
+
+  // Reading a half-migrated authorization domain must fail closed, both on the
+  // selected root and on an ancestor whose descendants bucket carries the intent.
+  for (const root of [fx.home, fx.child]) {
+    const reader = beginDomains(api, fx.coordinator, [root])
+    try {
+      reader.occupy()
+      assert.throws(() => reader.read(root, 'agent-policy.json', 1024), {
+        code: 'ERR_LEASE_BUSY',
+      })
+    } finally {
+      reader.close()
+    }
+  }
+  const sibling = beginDomains(api, fx.coordinator, [fx.sibling])
+  sibling.occupy()
+  assert.equal(sibling.read(fx.sibling, 'agent-policy.json', 1024), null)
+  sibling.close()
+
+  // Only the same owner with identical intent bytes may retire the barrier.
+  const foreign = beginDomains(api, fx.coordinator, [fx.child], true)
+  foreign.occupy()
+  assert.throws(() => foreign.reserveMutation('different-owner'), { code: 'ERR_LEASE_BUSY' })
+  foreign.close()
+  const recovery = beginDomains(api, fx.coordinator, [fx.child], true)
+  recovery.occupy()
+  recovery.reserveMutation('contract-migration-owner').finish()
+  recovery.close()
+
+  const after = beginDomains(api, fx.coordinator, [fx.child])
+  after.occupy()
+  assert.deepEqual(after.read(fx.child, 'agent-policy.json', 1024), bytes)
+  after.close()
+})
+
+test('verifyReadBarriers rejects a durable intent left by an exited migrator', (t) => {
+  const fx = domainFixture(t)
+  const bytes = Buffer.from('{"schemaVersion":1,"revision":3}')
+  fs.writeFileSync(path.join(fx.child, 'agent-policy.json'), bytes)
+  const migrator = beginDomains(api, fx.coordinator, [fx.child], true)
+  migrator.occupy()
+  migrator.reserveMutation('contract-migration-owner')
+  migrator.close() // Volatile X lease gone; the durable intent remains.
+
+  const reader = beginDomains(api, fx.coordinator, [fx.child])
+  reader.occupy()
+  assert.throws(() => reader.verifyReadBarriers(), { code: 'ERR_LEASE_BUSY' })
+  // A failed verification returns the session to guarded, so no read can pass.
+  assert.throws(() => reader.read(fx.child, 'agent-policy.json', 1024), /occupied admission/)
+  reader.close()
+
+  const foreign = beginDomains(api, fx.coordinator, [fx.child], true)
+  foreign.occupy()
+  assert.throws(() => foreign.reserveMutation('different-owner'), { code: 'ERR_LEASE_BUSY' })
+  foreign.close()
+  const recovery = beginDomains(api, fx.coordinator, [fx.child], true)
+  recovery.occupy()
+  recovery.reserveMutation('contract-migration-owner').finish()
+  recovery.close()
+
+  const verified = beginDomains(api, fx.coordinator, [fx.child])
+  verified.occupy()
+  verified.verifyReadBarriers()
+  assert.deepEqual(verified.read(fx.child, 'agent-policy.json', 1024), bytes)
+  verified.close()
+})
+
+test('a held read occupancy prevents maintainers from registering new barriers', (t) => {
+  const fx = domainFixture(t)
+  const nested = path.join(fx.child, 'nested')
+  fs.mkdirSync(nested)
+  const record = path.join(fx.child, 'agent-policy.json')
+  const bytes = Buffer.from('{"schemaVersion":1,"revision":1}')
+  fs.writeFileSync(record, bytes)
+  const reader = beginDomains(api, fx.coordinator, [fx.child])
+  reader.occupy()
+  reader.verifyReadBarriers()
+  try {
+    // Same domain and ancestor maintenance conflict on the a slot; descendant
+    // maintenance conflicts on the selected domain's b slot. Admission is taken
+    // inside beginDomains, so construction itself must fail.
+    for (const root of [fx.child, fx.home, nested]) {
+      assert.throws(
+        () => beginDomains(api, fx.coordinator, [root], true),
+        { code: 'ERR_LEASE_BUSY' },
+        `maintenance on ${root} must not enter while a reader holds occupancy`
+      )
+    }
+    // The verified occupancy stays usable for repeated reads.
+    assert.deepEqual(reader.read(fx.child, 'agent-policy.json', 1024), bytes)
+    assert.deepEqual(reader.read(fx.child, 'agent-policy.json', 1024), bytes)
+  } finally {
+    reader.close()
+  }
+  // Releasing occupancy lets maintenance register and retire an intent again.
+  const maintainer = beginDomains(api, fx.coordinator, [fx.child], true)
+  maintainer.occupy()
+  maintainer.reserveMutation('contract-migration-owner').finish()
+  maintainer.close()
+})
+
+test('re-acquired occupancy must re-verify barriers', (t) => {
+  const fx = domainFixture(t)
+  const bytes = Buffer.from('{"schemaVersion":1,"revision":2}')
+  fs.writeFileSync(path.join(fx.child, 'agent-policy.json'), bytes)
+  const reader = beginDomains(api, fx.coordinator, [fx.child])
+  reader.occupy()
+  reader.verifyReadBarriers()
+  assert.deepEqual(reader.read(fx.child, 'agent-policy.json', 1024), bytes)
+  reader.close()
+
+  // A migrator runs between the two occupancies and leaves a durable intent.
+  const migrator = beginDomains(api, fx.coordinator, [fx.child], true)
+  migrator.occupy()
+  migrator.reserveMutation('contract-migration-owner')
+  migrator.close()
+
+  const second = beginDomains(api, fx.coordinator, [fx.child])
+  second.occupy()
+  assert.throws(() => second.verifyReadBarriers(), { code: 'ERR_LEASE_BUSY' })
+  second.close()
+})
+
+test('directory lock is exclusive, ordered before its pin, and platform limited', (t) => {
+  const fx = domainFixture(t)
+  const pin = api.pin(fx.child, false)
+  const second = api.pin(fx.child, false)
+  try {
+    if (process.platform === 'win32') {
+      // No legacy Windows directory-flock writer exists; the shared policy lock is
+      // the only mutual exclusion there.
+      assert.throws(() => api.lockDirectoryAt(pin), { code: 'ERR_LEASE_PLATFORM' })
+      return
+    }
+    const lock = api.lockDirectoryAt(pin)
+    assert.throws(() => api.lockDirectoryAt(second), { code: 'ERR_LEASE_BUSY' })
+    assert.throws(() => api.release(pin), { code: 'ERR_LEASE_IN_USE' })
+    api.release(lock)
+    const reacquired = api.lockDirectoryAt(second)
+    assert.throws(() => api.lockDirectoryAt(pin), { code: 'ERR_LEASE_BUSY' })
+    api.release(reacquired)
+  } finally {
+    api.release(second)
+    api.release(pin)
+  }
+})
+
+// The legacy writer is policy.ts's own fcntl.flock on an independently opened
+// browser directory fd. Reproduce that exact path rather than the new primitive,
+// so compatibility is proven against the real old mechanism.
+const LEGACY_DIRECTORY_FLOCK = `import fcntl, os, sys, time
+target, mode, gate = sys.argv[1:4]
+fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+if mode == 'try':
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(1)
+    sys.exit(0)
+fcntl.flock(fd, fcntl.LOCK_EX)
+with open(gate + '.held', 'w') as receipt:
+    receipt.write('held')
+deadline = time.time() + 20
+while not os.path.exists(gate) and time.time() < deadline:
+    time.sleep(0.01)
+`
+
+;(process.platform === 'darwin' ? test : test.skip)(
+  'directory lock and a legacy flock writer exclude each other in both directions',
+  async (t) => {
+    const fx = domainFixture(t)
+    const pin = api.pin(fx.child, false)
+    t.after(() => api.release(pin))
+    const python = '/usr/bin/python3'
+    const gate = path.join(fx.root, 'legacy-gate')
+
+    // New writer holds the directory; the legacy writer must not acquire it.
+    const lock = api.lockDirectoryAt(pin)
+    const denied = spawnSync(python, ['-c', LEGACY_DIRECTORY_FLOCK, fx.child, 'try', gate], {
+      encoding: 'utf8',
+      timeout: 20000,
+    })
+    assert.equal(denied.status, 1, denied.stderr || 'legacy writer unexpectedly acquired the lock')
+    api.release(lock)
+
+    // Legacy writer holds flock; the new primitive must report busy, not block.
+    const holder = spawn(python, ['-c', LEGACY_DIRECTORY_FLOCK, fx.child, 'hold', gate], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const exited = once(holder, 'exit')
+    const deadline = Date.now() + 20000
+    while (!fs.existsSync(gate + '.held')) {
+      assert.ok(Date.now() < deadline, 'legacy holder never reported its lock')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.throws(() => api.lockDirectoryAt(pin), { code: 'ERR_LEASE_BUSY' })
+    fs.writeFileSync(gate, 'release')
+    assert.equal((await exited)[0], 0)
+    const recovered = api.lockDirectoryAt(pin)
+    api.release(recovered)
+  }
+)
+
+test('directory replace publishes exact bytes, overwrites, and leaves no staged residue', (t) => {
+  const fx = domainFixture(t)
+  const pin = api.pin(fx.child, false)
+  try {
+    const target = path.join(fx.child, 'agent-policy.json')
+    const staged = path.join(fx.child, 'replace-staged')
+    const first = Buffer.from('{"schemaVersion":1,"revision":1}')
+    const second = Buffer.from('{"schemaVersion":1,"revision":2,"sites":{}}')
+
+    api.replaceAt(pin, 'agent-policy.json', first)
+    assert.deepEqual(fs.readFileSync(target), first)
+    assert.equal(fs.existsSync(staged), false)
+
+    api.replaceAt(pin, 'agent-policy.json', second)
+    assert.deepEqual(fs.readFileSync(target), second)
+    assert.equal(fs.existsSync(staged), false)
+    if (process.platform !== 'win32') assert.equal(fs.statSync(target).mode & 0o777, 0o600)
+
+    // A crashed writer's orphan is cleaned under the caller's exclusive lock.
+    fs.writeFileSync(staged, 'orphan', { mode: 0o600 })
+    api.replaceAt(pin, 'agent-policy.json', first)
+    assert.deepEqual(fs.readFileSync(target), first)
+    assert.equal(fs.existsSync(staged), false)
+
+    assert.throws(() => api.replaceAt(pin, 'replace-staged', first), { code: 'ERR_LEASE_ARGUMENT' })
+    assert.throws(() => api.replaceAt(pin, 'agent-policy.json', Buffer.alloc(0)), {
+      code: 'ERR_LEASE_ARGUMENT',
+    })
+    assert.throws(() => api.replaceAt(pin, 'agent-policy.json', Buffer.alloc(1024 * 1024 + 1)), {
+      code: 'ERR_LEASE_ARGUMENT',
+    })
+    assert.deepEqual(fs.readFileSync(target), first)
+  } finally {
+    api.release(pin)
+  }
+})
+
+test('domain replacement requires an admitted writer and revalidates bindings', (t) => {
+  const fx = domainFixture(t)
+  const bytes = Buffer.from('{"schemaVersion":1,"revision":4}')
+  const writer = beginDomains(api, fx.coordinator, [fx.child])
+  try {
+    assert.throws(() => writer.replace(fx.child, 'agent-policy.json', bytes), /admitted writer/)
+    writer.occupy()
+    assert.throws(() => writer.replace(fx.child, 'agent-policy.json', bytes), /admitted writer/)
+    assert.throws(() => writer.replace(fx.sibling, 'agent-policy.json', bytes), /admitted writer/)
+    writer.admit()
+    writer.replace(fx.child, 'agent-policy.json', bytes)
+    assert.deepEqual(fs.readFileSync(path.join(fx.child, 'agent-policy.json')), bytes)
+    const next = Buffer.from('{"schemaVersion":1,"revision":5}')
+    writer.replace(fx.child, 'agent-policy.json', next)
+    assert.deepEqual(fs.readFileSync(path.join(fx.child, 'agent-policy.json')), next)
+    assert.equal(fs.existsSync(path.join(fx.child, 'replace-staged')), false)
+    // An unselected root is an ordinary error, so it forbids later operations on
+    // this session exactly like create() and read(); probe it last.
+    assert.throws(() => writer.replace(fx.sibling, 'agent-policy.json', bytes), /selected root/)
+    assert.throws(() => writer.replace(fx.child, 'agent-policy.json', bytes), /admitted writer/)
+  } finally {
+    writer.close()
+  }
+  assert.throws(() => writer.replace(fx.child, 'agent-policy.json', bytes), /admitted writer/)
+})
+
+test('directory replace keeps the previous record when publication cannot land', (t) => {
+  const fx = domainFixture(t)
+  const pin = api.pin(fx.child, false)
+  try {
+    const kept = Buffer.from('{"revision":9}')
+    api.replaceAt(pin, 'agent-policy.json', kept)
+    // A directory leaf cannot be replaced by a file; publication must fail before
+    // the rename and clean its own staged record without touching the directory.
+    const blocked = path.join(fx.child, 'blocked')
+    fs.mkdirSync(blocked)
+    assert.throws(
+      () => api.replaceAt(pin, 'blocked', Buffer.from('x')),
+      (error) => {
+        assert.equal(error.code, 'ERR_LEASE_NATIVE')
+        assert.equal(typeof error.systemCode, 'number')
+        // Raw NTSTATUS is only produced by the Windows rename path; other platforms
+        // must not expose a stale or fabricated value.
+        if (process.platform !== 'win32') assert.equal(error.nativeStatus, undefined)
+        else assert.equal(typeof error.nativeStatus, 'number')
+        return true
+      }
+    )
+    assert.equal(fs.statSync(blocked).isDirectory(), true)
+    assert.equal(fs.existsSync(path.join(fx.child, 'replace-staged')), false)
+    assert.deepEqual(fs.readFileSync(path.join(fx.child, 'agent-policy.json')), kept)
+
+    // A symlink leaf is replaced as the link itself, never written through to its
+    // external target.
+    const outside = path.join(fx.root, 'outside.json')
+    fs.writeFileSync(outside, 'external')
+    const link = path.join(fx.child, 'linked.json')
+    fs.symlinkSync(outside, link)
+    api.replaceAt(pin, 'linked.json', Buffer.from('internal'))
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'external')
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), false)
+    assert.equal(fs.readFileSync(link, 'utf8'), 'internal')
+    assert.equal(fs.existsSync(path.join(fx.child, 'replace-staged')), false)
+  } finally {
+    api.release(pin)
+  }
+})
+
 
 test('project role accepts shared data while private pins and coordination remain strict', (t) => {
   const root = directory(t)
@@ -1893,17 +2433,22 @@ test('project role preserves OS read denial and reparse rejection', (t) => {
 })
 
 for (const host of [process.execPath, electron]) {
-  test(`macOS TeX rebuild waits for ${host === electron ? 'Electron' : 'Node'} consumer exit`,
-    { skip: process.platform !== 'darwin' }, async t => {
+  test(`TeX rebuild waits for ${host === electron ? 'Electron' : 'Node'} consumer exit`,
+    { skip: !['darwin', 'win32'].includes(process.platform) }, async t => {
       const fx = domainFixture(t)
-      const writableRoot = path.join(fx.child, '2026')
+      const writableRoot = path.join(process.platform === 'win32' ? fx.sibling : fx.child, '2026')
       fs.mkdirSync(writableRoot)
       const options = { binDirectory: path.join(fx.root, 'old', 'bin'), writableRoot,
-        version: '2026', platform: 'darwin', archiveSha256: 'a'.repeat(64), environment: {} }
+        version: '2026', platform: process.platform, archiveSha256: 'a'.repeat(64), environment: {} }
       const env = texlive.prepareTexliveEnvironment(options)
       const marker = path.join(env.TEXMFVAR, 'keep')
       fs.writeFileSync(marker, 'active compiler state')
-      const owner = await start(t, host, fx.selection([fx.home]), 'domain-write', fx.root)
+      const before = api.pin(writableRoot, false)
+      const identity = api.identity(before)
+      api.release(before)
+      assert.equal(texlive.texliveEnvironmentCurrent(options), true)
+      const occupiedRoot = process.platform === 'win32' ? writableRoot : fx.home
+      const owner = await start(t, host, fx.selection([occupiedRoot]), 'domain-write', fx.root)
       const maintenance = beginDomains(api, fx.coordinator, [writableRoot], true)
       try {
         assert.throws(() => maintenance.occupy(), { code: 'ERR_LEASE_BUSY' })
@@ -1911,13 +2456,110 @@ for (const host of [process.execPath, electron]) {
         await owner.stop()
         maintenance.occupy()
         const moved = { ...options, binDirectory: path.join(fx.root, 'moved', 'bin') }
-        texlive.rebuildTexliveEnvironment(moved)
+        if (process.platform === 'win32') {
+          maintenance.clearCache(writableRoot)
+          texlive.prepareTexliveEnvironment(moved)
+        } else {
+          texlive.rebuildTexliveEnvironment(moved)
+        }
         maintenance.check()
         assert.equal(texlive.texliveEnvironmentCurrent(moved), true)
         assert.equal(fs.existsSync(marker), false)
-        assert.throws(() => beginDomains(api, fx.coordinator, [fx.home]), { code: 'ERR_LEASE_BUSY' })
+        if (process.platform === 'win32') {
+          // An interruption after a receipt disappears leaves an incomplete
+          // cache, even when the expected identity has not changed.
+          fs.writeFileSync(marker, 'partially cleared state')
+          fs.rmSync(env.FONTCONFIG_FILE)
+          assert.equal(texlive.texliveEnvironmentCurrent(moved), false)
+          maintenance.clearCache(writableRoot)
+          texlive.prepareTexliveEnvironment(moved)
+          assert.equal(texlive.texliveEnvironmentCurrent(moved), true)
+          assert.equal(fs.existsSync(marker), false)
+        }
+        const after = api.pin(writableRoot, false)
+        assert.equal(api.identity(after), identity)
+        api.release(after)
+        assert.throws(() => beginDomains(api, fx.coordinator, [occupiedRoot]), { code: 'ERR_LEASE_BUSY' })
       } finally {
         maintenance.close()
       }
     })
 }
+
+test('Windows TeX cache publication leaves one link and preserves the first publisher',
+  { skip: process.platform !== 'win32' }, t => {
+    const fx = domainFixture(t)
+    const writer = beginDomains(api, fx.coordinator, [fx.child], true)
+    const staged = 'identity-00000000-0000-0000-0000-000000000000.tmp'
+    const temporary = path.join(fx.child, staged)
+    const identity = path.join(fx.child, 'identity.json')
+    try {
+      writer.occupy()
+      // Exit before rename leaves just a single-link staged file.
+      fs.writeFileSync(temporary, 'interrupted')
+      writer.clearCache(fx.child)
+      assert.equal(fs.existsSync(temporary), false)
+      fs.writeFileSync(temporary, 'first')
+      writer.publishCache(fx.child, staged, 'identity.json')
+      assert.equal(fs.existsSync(temporary), false)
+      assert.equal(fs.statSync(identity).nlink, 1)
+      fs.writeFileSync(temporary, 'second')
+      assert.throws(() => writer.publishCache(fx.child, staged, 'identity.json'), { code: 'ERR_LEASE_EXISTS' })
+      assert.equal(fs.readFileSync(identity, 'utf8'), 'first')
+      assert.equal(fs.readFileSync(temporary, 'utf8'), 'second')
+      writer.clearCache(fx.child)
+      assert.deepEqual(fs.readdirSync(fx.child), [])
+
+      // The previous publisher could die with both names still linked.
+      fs.writeFileSync(temporary, 'legacy publication')
+      fs.linkSync(temporary, identity)
+      assert.equal(fs.statSync(identity).nlink, 2)
+      writer.clearCache(fx.child, texlive.texliveLegacyCacheAliases(fx.child))
+      assert.deepEqual(fs.readdirSync(fx.child), [])
+    } finally {
+      writer.close()
+    }
+  })
+
+test('Windows TeX cache recovery refuses a third link outside the cache',
+  { skip: process.platform !== 'win32' }, t => {
+    const fx = domainFixture(t)
+    const staged = path.join(fx.child, 'identity-00000000-0000-0000-0000-000000000000.tmp')
+    const identity = path.join(fx.child, 'identity.json')
+    const outside = path.join(fx.sibling, 'outside')
+    fs.writeFileSync(staged, 'legacy publication')
+    fs.linkSync(staged, identity)
+    fs.linkSync(staged, outside)
+    const writer = beginDomains(api, fx.coordinator, [fx.child], true)
+    try {
+      writer.occupy()
+      assert.throws(() => writer.clearCache(fx.child, texlive.texliveLegacyCacheAliases(fx.child)),
+        { code: 'ERR_LEASE_DIRECTORY' })
+      for (const name of [staged, identity, outside]) assert.equal(fs.statSync(name).nlink, 3)
+    } finally {
+      writer.close()
+    }
+  })
+
+test('Windows TeX cache preflight retains a cache containing a junction or hard link',
+  { skip: process.platform !== 'win32' }, t => {
+    const fx = domainFixture(t)
+    const outside = path.join(fx.sibling, 'outside')
+    fs.writeFileSync(outside, 'external data')
+    const keep = path.join(fx.child, 'keep')
+    fs.writeFileSync(keep, 'cache contents')
+    const unsafe = path.join(fx.child, 'unsafe')
+    for (const create of [() => fs.symlinkSync(fx.sibling, unsafe, 'junction'), () => fs.linkSync(outside, unsafe)]) {
+      create()
+      const maintenance = beginDomains(api, fx.coordinator, [fx.child], true)
+      try {
+        maintenance.occupy()
+        assert.throws(() => maintenance.clearCache(fx.child), { code: 'ERR_LEASE_DIRECTORY' })
+        assert.equal(fs.readFileSync(keep, 'utf8'), 'cache contents')
+        assert.equal(fs.readFileSync(outside, 'utf8'), 'external data')
+      } finally {
+        maintenance.close()
+      }
+      fs.unlinkSync(unsafe)
+    }
+  })

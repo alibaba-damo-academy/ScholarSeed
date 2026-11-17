@@ -20,10 +20,9 @@ dependencies = []
 component-build = ["distlib==0.4.0"]
 wheel-build = ["pip", "setuptools==84.0.0", "wheel==0.48.0", "packaging==26.3"]
 # Per-source isolated builders. The suffix selects the runtime source in uv.lock.
-component-build-jieba = ["setuptools==84.0.0"]
-component-build-bibtexparser = ["setuptools==84.2.1"]
-# fastcdc's published CPython 3.12 arm64 wheel requires macOS 14; build for our native target.
-component-build-fastcdc = ["poetry-core==2.5.0", "setuptools==84.0.0", "wheel==0.48.0", "cython==3.2.4"]
+component-build-jieba = ["pip==26.2.1", "setuptools==84.0.0", "wheel==0.48.0"]
+component-build-bibtexparser = ["pip==26.2.1", "setuptools==84.2.1", "wheel==0.48.0"]
+component-build-fastcdc = ["pip==26.2.1", "poetry-core==2.5.0", "setuptools==84.0.0", "wheel==0.48.0", "cython==3.2.4", "delocate==0.13.0; sys_platform == 'darwin'"]
 # Desktop runtime closure, including the reviewed bundled-skill requirements.
 # The registry remains the skill policy; the release contract checks this input.
 desktop = [
@@ -35,6 +34,10 @@ desktop = [
     "pysbd==0.3.4",
     "socksio==1.0.0",
     "paper-fulltext-dl",
+    "pypdf==6.15.0",
+    "pdfplumber==0.11.10",
+    "pypdfium2==5.11.0",
+    "Pillow==12.3.0",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +55,7 @@ dev = [
     "pytest-asyncio>=1.4,<2",
     "reportlab>=4.4,<6",
     "types-PyYAML>=6.0.12",
+    "types-jsonschema>=4",
     "types-openpyxl>=3.1",
     "types-xlrd>=2.0",
 ]  # 格式化、静态检查与测试运行器 (pnpm ops ci format / ci check lint python / ci check types python / pytest)
@@ -60,8 +64,10 @@ dev = [
 
 # ── uv workspace: 成员各自持有 pyproject / 依赖 / 测试 / 发布边界 ──
 [tool.scholarseed.source-build-targets]
-# Other targets keep upstream wheels; macOS arm64 must also support macOS 13.
-fastcdc = ["darwin-arm64"]
+fastcdc = ["darwin-arm64", "darwin-x86_64", "win32-amd64"]
+
+[tool.scholarseed.source-build-repairs]
+fastcdc = ["darwin-arm64", "darwin-x86_64"]
 
 [tool.uv.workspace]
 members = [
@@ -72,6 +78,7 @@ members = [
 ]
 
 [tool.uv.sources]
+deep-rnd-l1 = { path = "apps/serve/vendor/deep_rnd_l1-0.2.8-py3-none-any.whl" }
 scholarseed-runtime = { workspace = true }
 damoatrace = { workspace = true }
 scholarseed-codex = { workspace = true }
@@ -157,6 +164,7 @@ explicit = true
 # .venv) 与 importlib.metadata 依赖它把源码树直接摊到 .pth 上; 写成命令行 flag 时,
 # 任何一步顺带重装这些包 (例如解析 scholarseed 的依赖) 都会把 compat 形态冲掉。
 [tool.uv.config-settings-package]
+scholarseed = { editable_mode = "compat" }
 scholarseed-runtime = { editable_mode = "compat" }
 damoatrace = { editable_mode = "compat" }
 scholarseed-codex = { editable_mode = "compat" }
@@ -169,6 +177,7 @@ asyncio_mode = "auto"
 # import 都能正确解析 (否则不同机器的 Pylance 解释器不一致会报 import / 类型幻影)。
 venvPath = "."
 venv = ".venv"
+stubPath = "apps/serve/typings"
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 analyzeUnannotatedFunctions = true
@@ -197,7 +206,7 @@ explicit_package_bases = true
 # `packages.adapters.codex.scholarseed_codex.appserver` 又是 `scholarseed_codex.appserver`
 # (两个 adapter 带 py.typed 后可从已安装包解析), 报 "found twice under different
 # module names" 并中断整个检查。
-mypy_path = ["apps/serve", "packages/runtime", "packages/damoatrace", "packages/adapters/codex"]
+mypy_path = ["apps/serve", "packages/runtime", "packages/damoatrace", "packages/adapters/codex", "apps/serve/typings"]
 plugins = ["pydantic.mypy"]
 exclude = '''(?x)(
     ^apps/desktop/

@@ -62,7 +62,8 @@ class OutlineCliContractTest(unittest.TestCase):
         self.assertNotIn('--requirements',captured[0])
 
     def test_removed_legacy_flag_is_rejected(self):
-        result=subprocess.run([str(ROOT/'scripts/slr'),'outline','check','--requirements','unused'],capture_output=True,text=True)
+        # Test argparse directly; the product launcher separately requires the installed host executable.
+        result=subprocess.run([sys.executable,str(ROOT/'scripts/slr.py'),'outline','check','--requirements','unused'],capture_output=True,text=True)
         self.assertEqual(result.returncode,2)
         self.assertIn('unrecognized arguments',result.stderr)
 
@@ -119,6 +120,20 @@ class CompactOutlineTest(unittest.TestCase):
         outline["outline_tree"][0]["figures"] = [{"figure_id": "F1", "caption": "Geometry"}]
         self.assertEqual(self.check(outline, {"min_figures": 1, "max_figures": 1}), [])
         self.assertIn("at most 0", " ".join(self.check(outline, {"max_figures": 0})))
+
+    def test_after_abstract_uses_full_order_but_body_first_still_excludes_abstract(self):
+        for abstract_title,introduction_title in (('Abstract','Introduction'),('摘要','引言')):
+            with self.subTest(language=abstract_title):
+                outline=self.outline()
+                outline['outline_tree'][0]['title']=introduction_title
+                outline['outline_tree'].insert(0,{'section_id':'0','title':abstract_title,
+                                                  'description':'Summarize the review.','role':'abstract'})
+                required=[{'title':abstract_title,'position':'first'},
+                          {'title':introduction_title,'position':'first'},
+                          {'title':introduction_title,'position':'after:'+abstract_title}]
+                self.assertEqual(self.check(outline,{'required_sections':required}),[])
+                outline['outline_tree'][0],outline['outline_tree'][1]=outline['outline_tree'][1],outline['outline_tree'][0]
+                self.assertIn('AFTER',' '.join(self.check(outline,{'required_sections':required})))
 
     def test_identity_and_shape_fail_with_actionable_errors(self):
         for mutation in (

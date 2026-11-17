@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -43,10 +43,127 @@ from tests.contract_product_events import (
     register_session,
 )
 
-INTERACTION_WAIT_TIMEOUT_SECONDS = 5
+AUTOMATIC_WAIT_TIMEOUT_SECONDS = 5
 
 
 class AttentionContract(unittest.TestCase):
+    def test_incremental_snapshot_route_validates_cursor_and_never_adds_content_endpoint(
+        self,
+    ) -> None:
+        baseline = self.attention.snapshot(OWNER)
+        self.emit(PRODUCT_EVENT_MESSAGE_DELTA, "answer", item="answer", delta="**Answer**")
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
+        service = AttentionService(self.attention, self.catalog, self.events, Mock())
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def identity(request: Request, call_next):
+            request.state.user_id = request.headers.get("test-owner", OWNER.user_id)
+            return await call_next(request)
+
+        mount_attention_routes(app, service)
+        with TestClient(app) as client:
+            path = "/api/serve/attention"
+            self.assertNotIn("markdown", client.get(path).json()["items"][0])
+            query = {"epoch": baseline["epoch"], "after_revision": baseline["revision"]}
+            response = client.get(path, params=query)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            self.assertEqual(response.json()["items"][0]["markdown"], "**Answer**")
+            self.assertEqual(
+                client.get(path, params=query, headers={"test-owner": "stranger"}).json()["items"],
+                [],
+            )
+            for value in ("-1", "oops", "1.5"):
+                self.assertEqual(
+                    client.get(path, params={"after_revision": value}).status_code, 422
+                )
+            self.assertEqual(client.get(path + "/missing/content").status_code, 404)
+
+    def test_incremental_original_is_bound_to_completed_item_not_later_text(self) -> None:
+        baseline = self.attention.snapshot(OWNER)
+        self.emit(
+            PRODUCT_EVENT_MESSAGE_DELTA,
+            "original",
+            item="answer",
+            delta="Original",
+            phase="final_answer",
+        )
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
+        self.emit(PRODUCT_EVENT_MESSAGE_DELTA, "late", item="answer", delta="Late replacement")
+        self.emit(PRODUCT_EVENT_MESSAGE_DELTA, "another", item="another", delta="Other item")
+        service = AttentionService(self.attention, self.catalog, self.events, Mock())
+        result = service.snapshot(
+            OWNER, epoch=baseline["epoch"], after_revision=baseline["revision"]
+        )
+        self.assertEqual(result["items"][0]["markdown"], "Original")
+        self.attention.read(OWNER, epoch=result["epoch"], through_revision=result["revision"])
+        self.assertEqual(
+            service.snapshot(OWNER, epoch=baseline["epoch"], after_revision=0)["items"], []
+        )
+
+    def test_snapshot_bounds_serialized_utf8_without_partial_markdown(self) -> None:
+        baseline = self.attention.snapshot(OWNER)
+        answers = ["**" + "中" * 30 + "**", "**hello**", "**" + "字" * 9 + "**"]
+        for index, answer in enumerate(answers):
+            turn = f"turn-{index}"
+            self.emit(
+                PRODUCT_EVENT_MESSAGE_DELTA, f"text-{index}", turn=turn, item=turn, delta=answer
+            )
+            self.emit(PRODUCT_EVENT_TURN_COMPLETED, f"done-{index}", turn=turn)
+        service = AttentionService(self.attention, self.catalog, self.events, Mock())
+        with (
+            patch("service.chat.service.attention.ATTENTION_SOURCE_BYTES", 40),
+            patch("service.chat.service.attention.ATTENTION_BATCH_BYTES", 40),
+        ):
+            result = service.snapshot(
+                OWNER, epoch=baseline["epoch"], after_revision=baseline["revision"]
+            )
+        self.assertEqual([item["markdown"] for item in result["items"]], [None, "**hello**", None])
+        self.assertEqual(result["unread_count"], 3)
+
+    def test_snapshot_does_not_read_sources_for_cold_old_or_plain_reminders(self) -> None:
+        baseline = self.attention.snapshot(OWNER)
+        self.emit(PRODUCT_EVENT_TURN_FAILED, "failed", message="**plain failure**")
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "empty", turn="empty")
+        service = AttentionService(self.attention, self.catalog, self.events, Mock())
+        with patch.object(
+            self.events, "latest_answer", side_effect=AssertionError("unexpected read")
+        ):
+            cold = service.snapshot(OWNER)
+            service.snapshot(OWNER, epoch="other", after_revision=0)
+            service.snapshot(OWNER, epoch=cold["epoch"], after_revision=cold["revision"])
+            fresh = service.snapshot(OWNER, epoch=baseline["epoch"], after_revision=0)
+        self.assertNotIn("markdown", fresh["items"][0])
+        self.assertEqual(fresh["items"][0]["body"], "**plain failure**")
+        self.assertIsNone(fresh["items"][1]["markdown"])
+
+    def test_snapshot_carries_complete_answers_only_after_same_scope_cursor(self) -> None:
+        service = AttentionService(self.attention, self.catalog, self.events, Mock())
+        baseline = self.attention.snapshot(OWNER)
+        answer = "# Heading\n\n**" + "word " * 80 + "end**\n\n`**literal**`"
+        self.emit(PRODUCT_EVENT_MESSAGE_DELTA, "original", item="answer", delta=answer)
+        self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
+        self.emit(PRODUCT_EVENT_MESSAGE_DELTA, "later", turn="other", item="other", delta="Other")
+        fresh = service.snapshot(
+            OWNER, epoch=baseline["epoch"], after_revision=baseline["revision"]
+        )
+        self.assertEqual(fresh["items"][0]["markdown"], answer)
+        self.assertLess(len(fresh["items"][0]["body"]), len(answer))
+        self.assertEqual(self.events.latest_answer(SESSION_ID, "turn-1").payload["delta"], answer)
+        for result in (
+            service.snapshot(OWNER),
+            service.snapshot(OWNER, epoch="other", after_revision=0),
+            service.snapshot(OWNER, epoch=fresh["epoch"], after_revision=fresh["revision"]),
+            service.snapshot(OWNER, epoch=fresh["epoch"], after_revision=fresh["revision"] + 1),
+        ):
+            self.assertNotIn("markdown", result["items"][0])
+        stranger = service.snapshot(
+            SessionPrincipal("stranger"), epoch=baseline["epoch"], after_revision=0
+        )
+        self.assertEqual(stranger["items"], [])
+        self.assertEqual(self.attention.snapshot(OWNER)["unread_count"], 1)
+
     def test_rename_advances_snapshot_but_not_item_revision(self) -> None:
         self.emit(PRODUCT_EVENT_TURN_COMPLETED, "done")
         before = self.attention.snapshot(OWNER)
@@ -291,6 +408,43 @@ class AttentionContract(unittest.TestCase):
         self.assertEqual(before["unread_count"], 1)
         self.assertEqual(reopened.snapshot(OWNER), before)
 
+    def test_automatic_interactions_never_leave_waiting_attention(self) -> None:
+        async def scenario(immediate: bool) -> None:
+            counts = []
+            request_id = f"automatic:{immediate}"
+            decision = {"answers": {request_id: "approved"}}
+
+            async def publish(kind, data, *, turn_id="", item_id="", idempotency_key=""):
+                event = self.events.append(
+                    session_id=SESSION_ID,
+                    runtime_id=RUNTIME_ID,
+                    vendor_thread_id=VENDOR_THREAD_ID,
+                    vendor_turn_id=turn_id,
+                    vendor_item_id=item_id or None,
+                    kind=kind,
+                    payload=data,
+                    idempotency_key=idempotency_key,
+                )
+                counts.append(self.attention.snapshot(OWNER)["unread_count"])
+                return event
+
+            interactions = SessionInteractions(SESSION_ID, self.catalog, publish)
+            result = await asyncio.wait_for(
+                interactions.request_product_input(
+                    {"id": request_id, "question": "Approve?", "options": []},
+                    turn_id="turn-1",
+                    automatic_decision=lambda: decision if immediate or counts else None,
+                ),
+                AUTOMATIC_WAIT_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(result, decision)
+            self.assertEqual(counts, [0] if immediate else [1, 0])
+            self.assertEqual(self.catalog.hil(request_id).status, HilStatus.RESOLVED)
+
+        for immediate in (True, False):
+            with self.subTest(immediate=immediate):
+                asyncio.run(scenario(immediate))
+
     def test_resolved_product_interactions_withdraw_waiting_attention(self) -> None:
         async def scenario() -> None:
             counts = []
@@ -322,7 +476,7 @@ class AttentionContract(unittest.TestCase):
                 )
             )
             try:
-                async with asyncio.timeout(INTERACTION_WAIT_TIMEOUT_SECONDS):
+                async with asyncio.timeout(AUTOMATIC_WAIT_TIMEOUT_SECONDS):
                     await requested.wait()
                     await interactions.resolve(None, request_id, decision, active_turn_id="turn-1")
                     result = await request

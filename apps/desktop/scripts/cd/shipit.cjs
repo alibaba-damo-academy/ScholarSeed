@@ -34,6 +34,7 @@ const PREPARATION_CONTRACTS = {
   preflight: { units: SUPPORT_UNITS, external: true },
   succession: { units: SUPPORT_UNITS, flags: ['-framework', 'Security'] },
   parking: { units: SUPPORT_UNITS, external: true, flags: ['-Wno-deprecated-declarations', '-framework', 'Security', '-framework', 'ServiceManagement'], sources: ['../directory.c'] },
+  retirement: { units: SUPPORT_UNITS },
 }
 
 function describeResult(result) {

@@ -3,6 +3,9 @@ import test from 'node:test'
 import { matchReadingText } from './geometry.ts'
 import {
   citationRegions,
+  commentLayout,
+  commentPinPosition,
+  commentRailPositions,
   clipQuads,
   enclosingRectangle,
   fittedScale,
@@ -15,12 +18,162 @@ import {
   pdfSelectionShape,
   percentScale,
   projectVisibleMarks,
+  resizePdfTranslation,
   selectionPageText,
+  translationSpreadSize,
+  translationWidthRatio,
   normalizeHighlightQuads,
   normalizeQuads,
 } from './geometry.ts'
 import { internalLink, outlineTree, resolveDestination } from './navigation.ts'
 import { PDF_MARK_PALETTE } from './records.ts'
+
+test('translation fitting uses the same combined width as the rendered columns', () => {
+  const page = { width: 612, height: 792 }
+  const viewport = { width: 1100, height: 800 }
+  for (const ratio of [translationWidthRatio(undefined), 0.25, 1, 2]) {
+    const spread = translationSpreadSize(page, ratio)
+    const scale = fittedScale('width', spread, viewport)
+    assert.ok(Math.abs(page.width * scale * (1 + ratio) - viewport.width) < 0.001)
+    assert.equal(spread.height, page.height)
+  }
+  assert.equal(translationWidthRatio(undefined), 2 / 3)
+  assert.equal(translationWidthRatio(Number.NaN), 2 / 3)
+  assert.equal(translationWidthRatio(-1), 0.25)
+  assert.equal(translationWidthRatio(10), 2)
+})
+
+test('translation divider follows pointer offsets in width and page fitting', () => {
+  const page = { width: 612, height: 792 }
+  for (const mode of ['width', 'page'] as const) {
+    for (const viewport of [
+      { width: 1100, height: 800 },
+      { width: 700, height: 1100 },
+    ]) {
+      const ratio = translationWidthRatio(undefined)
+      const scale = fittedScale(mode, translationSpreadSize(page, ratio), viewport)
+      const initialDivider = (page.width * scale * (1 - ratio)) / 2
+      for (const offset of [-40, 40]) {
+        const resized = resizePdfTranslation({ page, viewport, mode, ratio, scale }, offset)
+        const divider = (page.width * resized.scale * (1 - resized.ratio)) / 2
+        assert.ok(Math.abs(divider - initialDivider - offset) < 0.001)
+        assert.equal(resized.ratio > ratio, offset < 0)
+      }
+    }
+  }
+})
+
+test('manual zoom resizing keeps the displayed spread width and scale bounds', () => {
+  const page = { width: 612, height: 792 }
+  const initial = {
+    page,
+    viewport: { width: 700, height: 800 },
+    mode: 'custom' as const,
+    ratio: translationWidthRatio(undefined),
+    scale: 1.5,
+  }
+  const initialWidth = page.width * initial.scale * (1 + initial.ratio)
+  for (const offset of [-50, 50]) {
+    const resized = resizePdfTranslation(initial, offset)
+    assert.ok(Math.abs(page.width * resized.scale * (1 + resized.ratio) - initialWidth) < 0.001)
+    assert.ok(Math.abs(page.width * (resized.scale - initial.scale) - offset) < 0.001)
+    assert.equal(resized.ratio > initial.ratio, offset < 0)
+  }
+  for (const offset of [-10000, 10000]) {
+    const resized = resizePdfTranslation(initial, offset)
+    assert.ok(resized.ratio >= 0.25 && resized.ratio <= 2)
+    assert.ok(resized.scale >= 0.1 && resized.scale <= 5)
+  }
+})
+
+test('page-side comment pins do not hide each other at the same line or bottom edge', () => {
+  assert.deepEqual(commentRailPositions([95, 95, 20, 20], 100, 28), [
+    { x: 28, y: 72 },
+    { x: 56, y: 72 },
+    { x: 0, y: 20 },
+    { x: 0, y: 48 },
+  ])
+})
+
+test('comment layout reserves every outside column without moving clear point comments', () => {
+  const page = { width: 200, height: 100 }
+  const layout = commentLayout({
+    anchors: [95, 95, 20, 20],
+    points: [[0.1, 0.1]],
+    page,
+    size: 28,
+    gap: 4,
+    text: [],
+  })
+  assert.deepEqual(layout.textPins, [
+    { x: 232, y: 72 },
+    { x: 260, y: 72 },
+    { x: 204, y: 20 },
+    { x: 204, y: 48 },
+  ])
+  assert.deepEqual(layout.pointPins, [{ x: 20, y: 10 }])
+  assert.equal(layout.railWidth, 92)
+  for (const pin of layout.textPins) assert.ok(pin.x + 28 <= page.width + layout.railWidth)
+})
+
+test('point fallbacks share the reserved rail with text pins and other fallbacks', () => {
+  const page = { width: 200, height: 100 }
+  const layout = commentLayout({
+    anchors: [50],
+    points: [
+      [0.5, 0.5],
+      [0.5, 0.5],
+    ],
+    page,
+    size: 28,
+    gap: 4,
+    text: [{ left: 0, top: 0, right: 200, bottom: 100 }],
+  })
+  const pins = [...layout.textPins, ...layout.pointPins]
+  assert.equal(layout.railWidth, 92)
+  for (const pin of pins) {
+    assert.ok(pin.x >= page.width)
+    assert.ok(pin.x + 28 <= page.width + layout.railWidth)
+    for (const other of pins) {
+      if (other === pin) continue
+      assert.ok(
+        pin.x + 28 <= other.x ||
+          other.x + 28 <= pin.x ||
+          pin.y + 28 <= other.y ||
+          other.y + 28 <= pin.y
+      )
+    }
+  }
+})
+
+test('comment layout releases the rail when only clear points or no comments remain', () => {
+  for (const points of [[], [[0.5, 0.5]]] as const) {
+    assert.equal(
+      commentLayout({
+        anchors: [],
+        points,
+        page: { width: 200, height: 300 },
+        size: 28,
+        gap: 4,
+        text: [],
+      }).railWidth,
+      0
+    )
+  }
+})
+
+test('comment pins stay near their real point without covering text or leaving page edges', () => {
+  const page = { width: 200, height: 300 }
+  assert.deepEqual(commentPinPosition([0, 0], page, 28, []), { x: 0, y: 0 })
+  assert.deepEqual(commentPinPosition([1, 1], page, 28, []), { x: 172, y: 272 })
+  const text = [{ left: 80, top: 100, right: 140, bottom: 130 }]
+  const pin = commentPinPosition([0.5, 0.4], page, 28, text)
+  assert.ok(pin.x + 28 <= 80 || pin.x >= 140 || pin.y + 28 <= 100 || pin.y >= 130)
+  assert.deepEqual(
+    commentPinPosition([0.5, 0.5], page, 28, [{ left: 0, top: 0, right: 200, bottom: 300 }]),
+    { x: 200, y: 150 }
+  )
+})
 
 test('mark geometry merges duplicate and overlapping fragments without crossing lines or columns', () => {
   const quads = [

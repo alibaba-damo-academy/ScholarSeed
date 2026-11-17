@@ -90,6 +90,7 @@ test('search round keys isolate sessions, runs and rounds and exclude other lite
     { ...content, round: 2 },
     { ...content, run_id: 'other' },
     { ...content, session_id: 'other' },
+    { ...content, origin: 'research-idea-citations' },
   ]
   assert.equal(new Set(variants.map(searchSupersessionKey)).size, variants.length)
   const cards: ConvItem[] = [
@@ -139,5 +140,6 @@ test('the literature contribution opts search into first-position projection wit
     new URL('../../components/business/Cards.tsx', import.meta.url),
     'utf8'
   )
-  assert.match(cards, /card => cards\.get\(card\.type\)\?\.supersessionPosition/)
+  assert.match(cards, /card\.component\?\.component === OPENUI_SLOT\s*\? 'first'/)
+  assert.match(cards, /:\s*cards\.get\(card\.type\)\?\.supersessionPosition/)
 })

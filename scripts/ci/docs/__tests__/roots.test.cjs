@@ -1,0 +1,26 @@
+const assert = require('node:assert/strict')
+const { spawnSync } = require('node:child_process')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const test = require('node:test')
+
+const SCRIPT = path.resolve(__dirname, '../structure-check.mjs')
+
+test('explicit document roots preserve valid input and reject missing or escaping references', context => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'document-root-'))
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const filename = path.join(root, 'guide.md')
+  const valid = '# Guide\n\n[Section](#section)\n\n## Section\n'
+  fs.writeFileSync(filename, valid)
+  const invoke = files => spawnSync(process.execPath, [SCRIPT, '--root', root, ...files], { encoding: 'utf8' })
+  const passed = invoke(['guide.md'])
+  assert.equal(passed.status, 0, passed.stderr)
+  assert.deepEqual(JSON.parse(passed.stdout).errors, [])
+  assert.equal(fs.readFileSync(filename, 'utf8'), valid)
+  fs.writeFileSync(filename, '# Guide\n\n[Missing](missing.md)\n')
+  const failed = invoke(['guide.md'])
+  assert.notEqual(failed.status, 0)
+  assert.ok(JSON.parse(failed.stdout).errors.length > 0)
+  assert.notEqual(invoke(['../outside.md']).status, 0)
+})

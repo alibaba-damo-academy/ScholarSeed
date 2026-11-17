@@ -1,0 +1,73 @@
+{
+  "format": 1,
+  "active": "V11",
+  "scope": "figure-reader-contract",
+  "versions": {
+    "V1": {
+      "file": "V1.json",
+      "sha256": "36970523cb3086ae55d8dd4cf58bda527901af049abe0ee3f908291875e7ade3",
+      "validation": "passed"
+    },
+    "V2": {
+      "file": "V2.json",
+      "sha256": "d37b1fe57e02b3b0704a5245ed408029d10905989f0b42783f7110d090aea000",
+      "validation": "not_run"
+    },
+    "V3": {
+      "file": "V3.json",
+      "sha256": "10c42809b701fd228cef1d5c8c4fe9195ddd25a2ebc5ca5d587c6c1d78d5bb6a",
+      "validation": "passed"
+    },
+    "V4": {
+      "file": "V4.json",
+      "sha256": "455e193850534197769794382107c15f498ef421e0dc6670e93117596c371981",
+      "validation": "partial"
+    },
+    "V5": {
+      "file": "V5.json",
+      "sha256": "eff227d0404f78d4feb4e433b9e40d48f174a1496e1b9e765f47dbf1e178f63a",
+      "validation": "passed"
+    },
+    "V6": {
+      "file": "V6.json",
+      "sha256": "d002a677405bc4d789eefe8ccdf4402f4977a65a993e1618a49ba0bdb74e64c1",
+      "validation": "not_run"
+    },
+    "V7": {
+      "file": "V7.json",
+      "sha256": "9cd8a0f29d86bf2f82c0a105ca134e252d52dd6753527bd45a0cf8d469637cad",
+      "validation": "failed"
+    },
+    "V8": {
+      "file": "V8.json",
+      "sha256": "624d9e89300dcf9b18cb429f0565f2c480741104bf03d4e100f4a4658559e797",
+      "validation": "not_run"
+    },
+    "V9": {
+      "file": "V9.json",
+      "sha256": "7b7abd952d16407b0b6eb90ebc32d1696b541948d09264040e25bedd2d0a1d92",
+      "validation": "not_run"
+    },
+    "V10": {
+      "file": "V10.json",
+      "sha256": "5432a524cea203fdc79074628abdf3bf469942355adfbb841e35c1e37e76646f",
+      "validation": "failed"
+    },
+    "V11": {
+      "file": "V11.json",
+      "sha256": "7d062a22e8ac72823ee4eaa3d0f83807417e851fea4f73caa6f4685427dcd2ae",
+      "validation": "passed",
+      "result_file": "V11-results.json",
+      "result_sha256": "2b11995f0178ef2e43ab2c343164b42a904559df65b225462328affa7641a8c0",
+      "freeze": {
+        "state": "frozen",
+        "date": "2026-09-22",
+        "tag": "cpes-figure-v11-frozen",
+        "branch": "experiment/cpes-figure-v11",
+        "code_commit": "eba39b9",
+        "evaluation_commit": "b3b0038"
+      }
+    }
+  },
+  "channel": "experimental"
+}

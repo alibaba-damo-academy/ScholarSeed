@@ -1,15 +1,15 @@
 import React from 'react'
+import { Hammer } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { Icon } from '../../icons'
 import type { ComposerReference } from '../../store'
-import { ComposerRefChip } from './RefChip'
+import { ReferenceAttachment } from '../primitive'
 
 export const SKILL_REF_KIND = 'skill'
 
 export function ComposerSkillRefs({
   refs,
-  onRemove
+  onRemove,
 }: {
   refs: ComposerReference[]
   onRemove?: (index: number) => void
@@ -23,12 +23,12 @@ export function ComposerSkillRefs({
   return (
     <div className="contents">
       {skillRefs.map(({ ref, index }) => (
-        <div key={ref.type + ref.id} className="box-border max-w-full shrink-0 pb-[var(--vds-space-1)] pr-[var(--vds-space-1)]">
-          <ComposerRefChip
+        <div key={ref.type + ref.id} className="box-border flex max-w-full shrink-0 items-center">
+          <ReferenceAttachment
+            variant="text"
             title={ref.title}
-            icon={<Icon name="plug-simple" size={12} sw={1.8} />}
+            icon={<Hammer size={12} strokeWidth={1.5} />}
             label={ref.title}
-            suffix={t('skills.kind')}
             closeLabel={t('skills.removeNamed', { title: ref.title })}
             onClose={onRemove ? () => onRemove(index) : undefined}
           />

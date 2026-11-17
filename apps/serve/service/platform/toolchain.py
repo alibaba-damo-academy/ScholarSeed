@@ -23,7 +23,7 @@ from scholarseed_runtime.contract.sandbox import SandboxProbe
 from service.platform.access import RESOURCE_PRINCIPAL_CHANGED, prepare_tool_access
 from service.platform.pdf import pdf_document_text
 from service.platform.storage import (
-    DIRECTORY_MODE,
+    DIRECTORY_ACL_READ_ACCESS,
     NOFOLLOW,
     PRIVATE_FILE_MODE,
     canonical_root,
@@ -141,7 +141,7 @@ class ToolchainReadiness:
         self._settled.clear()
 
     def complete(self, ready: bool, resources: CompilerResources | None = None) -> None:
-        if type(ready) is not bool or self.state is not ToolchainState.PREPARING:
+        if not isinstance(ready, bool) or self.state is not ToolchainState.PREPARING:
             raise ValueError("toolchain preparation is not pending")
         if resources is not None and (not ready or not isinstance(resources, CompilerResources)):
             raise ValueError(RESOURCE_INVALID)
@@ -327,13 +327,7 @@ class CompilerResources:
 
     def prepare_environment(self, workdir: Path) -> dict[str, str]:
         environment = self.environment(workdir)
-        # Cache directories must inherit the sandbox workdir ACL. Windows' 0700
-        # mkdir creates a protected user-only DACL, unlike ordinary inherited
-        # directory creation. Never change ACLs on existing entries.
         root = canonical_root(workdir)
-        mode = (
-            WINDOWS_INHERITED_DIRECTORY_MODE if sys.platform == WINDOWS_PLATFORM else DIRECTORY_MODE
-        )
         fingerprint = sha256(self.configuration).hexdigest()
         for suffix in (
             (TEXLIVE_VARIABLE_DIRECTORY,),
@@ -342,16 +336,16 @@ class CompilerResources:
             (TEXLIVE_CONFIG_DIRECTORY, fingerprint),
         ):
             with ExitStack() as stack:
-                parent = open_directory(root, ())
+                parent = open_directory(root, (), final_access=DIRECTORY_ACL_READ_ACCESS)
                 stack.callback(parent.close)
                 parts: tuple[str, ...] = ()
                 for part in (TOOL_CACHE_DIRECTORY, RESOURCE_TEXLIVE, *suffix):
                     try:
-                        parent.mkdir(part, mode)
+                        parent.mkdir(part, inherit_acl=True)
                     except FileExistsError:
                         pass
                     parts += (part,)
-                    parent = open_directory(root, parts)
+                    parent = open_directory(root, parts, final_access=DIRECTORY_ACL_READ_ACCESS)
                     stack.callback(parent.close)
         publish_exact_bytes(
             root,
@@ -483,16 +477,18 @@ class ToolResources:
         output_identity = None
         with ExitStack() as stack:
             if output_root is not None and texlive is not None:
-                parent = open_directory(output_root, ())
+                parent = open_directory(output_root, (), final_access=DIRECTORY_ACL_READ_ACCESS)
                 stack.callback(parent.close)
                 for part in (TOOL_CACHE_DIRECTORY, VERIFICATION_DIRECTORY, uuid4().hex):
                     try:
-                        parent.mkdir(part, WINDOWS_INHERITED_DIRECTORY_MODE)
+                        parent.mkdir(part, WINDOWS_INHERITED_DIRECTORY_MODE, inherit_acl=True)
                     except FileExistsError:
                         if len(parts) == 2:
                             raise FileExistsError("tool probe identity collision") from None
                     parts += (part,)
-                    parent = open_directory(output_root, parts)
+                    parent = open_directory(
+                        output_root, parts, final_access=DIRECTORY_ACL_READ_ACCESS
+                    )
                     stack.callback(parent.close)
                 output = output_root.joinpath(*parts)
                 output_identity = parent.identity()
@@ -704,7 +700,9 @@ def _retain_probe_failure(probe: SandboxProbe, result: Mapping[str, Any]) -> Non
     exit_code = result.get("exitCode")
     evidence: dict[str, Any] = {
         "kind": probe.kind,
-        "exit_code": exit_code if type(exit_code) is int else None,
+        "exit_code": (
+            exit_code if (isinstance(exit_code, int) and not isinstance(exit_code, bool)) else None
+        ),
     }
     for stream in ("stdout", "stderr"):
         value = result.get(stream)
@@ -726,8 +724,8 @@ def _retain_probe_failure(probe: SandboxProbe, result: Mapping[str, Any]) -> Non
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
             PRIVATE_FILE_MODE,
         )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(evidence, stream, ensure_ascii=True)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as diagnosticStream:
+            json.dump(evidence, diagnosticStream, ensure_ascii=True)
     LOGGER.warning("tool_verification_diagnostic event=retained")
 
 

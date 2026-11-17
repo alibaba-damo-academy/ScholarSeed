@@ -26,7 +26,7 @@ export function PdfScale({
   const { t } = useTranslation('pdf')
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(() => String(Math.round(scale * 100)))
-  const clickTimer = useRef<number>()
+  const clickTimer = useRef<number | undefined>(undefined)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const clearClick = (): void => {

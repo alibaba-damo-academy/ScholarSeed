@@ -5,7 +5,7 @@
 # URLs and verified by their manifests; they are not tracked through Git LFS.
 apps/desktop/src/renderer/public/office/** -text
 # Preserve the already-reviewed Windows Office component bytes on every host.
-apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md -text
+apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md text eol=crlf
 *.pdf binary
 # Keep nested notice evidence byte-exact on Windows; root metadata stays LF.
 apps/desktop/resources/notices/** -text
@@ -19,9 +19,6 @@ apps/desktop/scripts/cd/bytecode.py text eol=lf
 uv.lock text eol=lf
 apps/desktop/scripts/cd/legacy-files.json text eol=lf
 apps/desktop/updater/cmd/setup/legacy-files.json text eol=lf
-
-# Preserve literal CRLF test fixtures in source strings.
-apps/desktop/scripts/cd/__tests__/verification.test.cjs -text
 
 # ACL compiler receipts bind the exact source and generated output bytes.
 apps/desktop/native/security.json text eol=lf

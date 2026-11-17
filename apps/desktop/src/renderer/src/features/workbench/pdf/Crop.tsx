@@ -11,7 +11,7 @@ export function Crop({ image, page }: { image: string; page: number }): React.JS
   const { t } = useTranslation('pdf')
   const [zoom, setZoom] = useState(100)
   const host = useRef<HTMLDivElement>(null)
-  const drag = useRef<{ x: number; y: number; left: number; top: number }>()
+  const drag = useRef<{ x: number; y: number; left: number; top: number } | undefined>(undefined)
   return <div className="flex-none px-4 pt-3">
     <div className="mb-2 flex items-center gap-2 text-xs text-[var(--vds-text-tertiary)]"><span>{t('crop.region')}</span><span>{t('page', { page })}</span><div className="ml-auto flex gap-1"><IconButton size="sm" variant="outline" label={t('crop.zoomOut')} icon={<Minus />} disabled={zoom <= MIN_ZOOM} onClick={() => setZoom(value => value - ZOOM_STEP)} /><Button size="sm" variant="outline" aria-label={t('crop.fit')} onClick={() => setZoom(100)}>{zoom}%</Button><IconButton size="sm" variant="outline" label={t('crop.zoomIn')} icon={<Plus />} disabled={zoom >= MAX_ZOOM} onClick={() => setZoom(value => value + ZOOM_STEP)} /></div></div>
     <div ref={host} role="region" aria-label={t('crop.preview')} className="h-40 cursor-grab overflow-auto rounded-lg border border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)]" onPointerDown={event => { if (!host.current) return; drag.current = { x: event.clientX, y: event.clientY, left: host.current.scrollLeft, top: host.current.scrollTop }; event.currentTarget.setPointerCapture(event.pointerId) }} onPointerMove={event => { if (drag.current && host.current) { host.current.scrollLeft = drag.current.left + drag.current.x - event.clientX; host.current.scrollTop = drag.current.top + drag.current.y - event.clientY } }} onPointerUp={() => { drag.current = undefined }}>

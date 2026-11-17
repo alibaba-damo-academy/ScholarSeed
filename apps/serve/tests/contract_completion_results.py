@@ -23,6 +23,7 @@ from service.chat.service.completions import (
     CompletionCleanupUnknown,
     mount_completion_bridge,
     normalize_response_input,
+    responses_to_chat_request,
 )
 from service.chat.service.models import _codex_provider
 from service.chat.service.rejections import terminal_provider_failure
@@ -782,6 +783,36 @@ class CompletionDisconnectContracts(unittest.IsolatedAsyncioTestCase):
 
 
 class CompletionBridgeContract(unittest.TestCase):
+    def test_transport_failure_recovers_safe_product_classification(self):
+        for category, expected in (
+            ("read_timeout", "timeout"),
+            ("connect_timeout", "timeout"),
+            ("write_timeout", "timeout"),
+            ("pool_timeout", "timeout"),
+            ("protocol_error", "connection_error"),
+            ("connection_reset", "connection_error"),
+            ("read_error", "connection_error"),
+        ):
+            with self.subTest(category=category):
+                fields = {
+                    "phase": "finished",
+                    "upstream_end": "transport_error",
+                    "transport_category": category,
+                    "transport_endpoint": "https://private.example/secret-token",
+                }
+                recovered = terminal_provider_failure(fields)
+                self.assertEqual(recovered.get("error_code"), expected)
+                self.assertEqual(recovered.get("retryability"), "user_retryable")
+                self.assertNotIn("private.example", json.dumps(recovered))
+                self.assertNotIn("provider_http_status", recovered)
+                for override in (
+                    {"phase": "started"},
+                    {"upstream_end": "cancelled"},
+                    {"upstream_end": "eof"},
+                    {"transport_category": "unknown"},
+                ):
+                    self.assertEqual(terminal_provider_failure({**fields, **override}), {})
+
     def invoke(self, response: httpx.Response):
         requests = []
 
@@ -1278,6 +1309,44 @@ class CompletionBridgeContract(unittest.TestCase):
         diagnostic.observe_tools({"tools": [declaration] * (INPUT_SHAPE_LIMIT + 1)})
         self.assertEqual(len(diagnostic.tool_schema_fingerprints), INPUT_SHAPE_LIMIT)
 
+    def test_output_format_diagnostics_match_actual_schema_without_content(self):
+        observed = []
+        schema = {"type": "object", "properties": {"private-content": {"type": "string"}}}
+        expected = json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
+        for payload in (
+            {
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "private-name",
+                        "schema": schema,
+                        "strict": True,
+                    }
+                }
+            },
+            {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "private-name", "schema": schema, "strict": True},
+                }
+            },
+        ):
+            diagnostic = CompletionDiagnostic(
+                "session", "model", notify=lambda _sid, fields: observed.append(fields)
+            )
+            diagnostic.observe_output_format(payload)
+            diagnostic.emit("headers")
+            fields = observed[-1]
+            self.assertEqual(fields["output_format_type"], "json_schema")
+            self.assertEqual(fields["output_schema_sha256"], sha256(expected).hexdigest())
+            self.assertEqual(fields["output_schema_bytes"], len(expected))
+            self.assertIs(fields["output_format_strict"], True)
+            self.assertNotIn("private", json.dumps(fields))
+        diagnostic.observe_output_format({"text": {"format": {"type": "private-format"}}})
+        diagnostic.emit("headers")
+        self.assertEqual(observed[-1]["output_format_type"], "unsupported")
+        self.assertNotIn("private", json.dumps(observed[-1]))
+
     def test_input_diagnostics_correlate_latest_user_message_without_text(self):
         diagnostic = CompletionDiagnostic("session", "model")
         diagnostic.observe_input(
@@ -1508,7 +1577,10 @@ class CompletionBridgeContract(unittest.TestCase):
             },
         )
 
-    def test_observed_subscription_limit_survives_an_invalid_terminal_frame(self):
+    def test_unparseable_terminal_frame_still_releases_whitelisted_quota_code(self):
+        # 工单 88878204 第一轮实测诊断：error 事件的结构化额度码已观测到，response.failed
+        # 帧不可解析使 downstream terminal 为空，但 bridge 已升格 provider_error；放行门
+        # 只认 terminal 会丢码，桌面遂落通用失败文案。
         fields = {
             "phase": "finished",
             "status_code": 200,
@@ -1522,7 +1594,9 @@ class CompletionBridgeContract(unittest.TestCase):
                 "event_count": 5,
                 "error_code": "subscription_sharing_usage_limit_exceeded",
                 "error_type": "invalid_request_error",
-                "error_message": "The ChatGPT user has reached their Subscription Sharing usage limit.",
+                "error_message": (
+                    "The ChatGPT user has reached their Subscription Sharing usage limit."
+                ),
                 "error_seen": True,
                 "invalid_events": 1,
             },
@@ -1903,6 +1977,78 @@ class CompletionBridgeContract(unittest.TestCase):
         self.assertEqual(result["usage"]["input_tokens"], 6)
         self.assertEqual(result["usage"]["output_tokens"], 3)
         self.assertEqual(result["id"], "receipt")
+
+
+class StructuredOutputConversionContract(unittest.TestCase):
+    def test_json_schema_is_preserved_as_chat_response_format(self):
+        schema = {
+            "type": "object",
+            "properties": {"paragraphs": {"type": "array"}},
+            "required": ["paragraphs"],
+        }
+        for strict in (True, False):
+            with self.subTest(strict=strict):
+                original = {
+                    "model": "qwen",
+                    "input": "source",
+                    "text": {
+                        "format": {
+                            "type": "json_schema",
+                            "name": "reading_note",
+                            "schema": schema,
+                            "strict": strict,
+                            "description": "Exact reading contract",
+                        }
+                    },
+                }
+                frozen = copy.deepcopy(original)
+                result = responses_to_chat_request(original)
+                self.assertEqual(
+                    result["response_format"],
+                    {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "reading_note",
+                            "schema": schema,
+                            "strict": strict,
+                            "description": "Exact reading contract",
+                        },
+                    },
+                )
+                self.assertEqual(original, frozen)
+
+    def test_json_object_and_plain_text_requests_keep_their_semantics(self):
+        payload = {"model": "model", "input": "source", "stream": False}
+        result = responses_to_chat_request(payload)
+        self.assertEqual(
+            result,
+            {
+                "model": "model",
+                "messages": [{"role": "user", "content": "source"}],
+                "stream": False,
+            },
+        )
+        self.assertEqual(
+            responses_to_chat_request({**payload, "text": {"format": {"type": "text"}}}), result
+        )
+        self.assertEqual(
+            responses_to_chat_request({**payload, "text": {"format": {"type": "json_object"}}})[
+                "response_format"
+            ],
+            {"type": "json_object"},
+        )
+
+    def test_unsupported_or_malformed_output_format_is_not_silently_dropped(self):
+        for format_ in (
+            {"type": "future_format"},
+            {"type": "json_schema", "name": "draft"},
+            {"type": "json_schema", "schema": {}, "name": "draft", "strict": "true"},
+        ):
+            with (
+                self.subTest(format=format_),
+                self.assertRaisesRegex(ValueError, "model_bridge_invalid_output_format"),
+            ):
+                responses_to_chat_request({"input": "source", "text": {"format": format_}})
 
 
 if __name__ == "__main__":

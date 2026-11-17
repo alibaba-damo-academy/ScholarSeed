@@ -5,7 +5,7 @@ import {
   progressBarClassName,
   progressBarStyleClassName,
   progressCardClassName,
-  progressCardStyleClassName
+  progressCardStyleClassName,
 } from './classes'
 import { cx } from './utils'
 
@@ -23,6 +23,7 @@ function normalizeProgressValue(value: number): number {
 export interface ProgressBarProps extends HTMLAttributes<HTMLDivElement> {
   indeterminate?: boolean
   label?: string
+  showLabel?: boolean
   value?: number
   shape?: 'line' | 'circle'
 }
@@ -39,12 +40,24 @@ export interface ProgressProps extends Omit<ProgressBarProps, 'color'> {
 }
 
 export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
-  ({ className, indeterminate = false, label, shape = 'line', style, value = MIN_PROGRESS, ...props }, ref) => {
+  (
+    {
+      className,
+      indeterminate = false,
+      label,
+      showLabel = true,
+      shape = 'line',
+      style,
+      value = MIN_PROGRESS,
+      ...props
+    },
+    ref
+  ) => {
     const labelId = useId()
     const normalizedValue = normalizeProgressValue(value)
     const rootStyle: CSSProperties | undefined = indeterminate
       ? style
-      : { ...style, '--vds-progress-value': normalizedValue / MAX_PROGRESS } as CSSProperties
+      : ({ ...style, '--vds-progress-value': normalizedValue / MAX_PROGRESS } as CSSProperties)
 
     if (shape === 'circle') {
       return (
@@ -59,8 +72,22 @@ export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
           aria-valuemax={MAX_PROGRESS}
           aria-valuenow={indeterminate ? undefined : normalizedValue}
         >
-          <svg aria-hidden="true" viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} className={cx('size-full -rotate-90', indeterminate && 'animate-spin motion-reduce:animate-none')}>
-            <circle cx={RING_CENTER} cy={RING_CENTER} r={RING_RADIUS} fill="none" stroke="var(--vds-other-overlay-2)" strokeWidth={RING_STROKE_WIDTH} />
+          <svg
+            aria-hidden="true"
+            viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`}
+            className={cx(
+              'size-full -rotate-90',
+              indeterminate && 'animate-spin motion-reduce:animate-none'
+            )}
+          >
+            <circle
+              cx={RING_CENTER}
+              cy={RING_CENTER}
+              r={RING_RADIUS}
+              fill="none"
+              stroke="var(--vds-other-overlay-2)"
+              strokeWidth={RING_STROKE_WIDTH}
+            />
             {(indeterminate || normalizedValue > MIN_PROGRESS) && (
               <circle
                 cx={RING_CENTER}
@@ -72,7 +99,9 @@ export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
                 strokeLinecap="round"
                 pathLength={MAX_PROGRESS}
                 strokeDasharray={`${MAX_PROGRESS} ${MAX_PROGRESS}`}
-                strokeDashoffset={MAX_PROGRESS - (indeterminate ? MAX_PROGRESS / 4 : normalizedValue)}
+                strokeDashoffset={
+                  MAX_PROGRESS - (indeterminate ? MAX_PROGRESS / 4 : normalizedValue)
+                }
                 className="transition-[stroke-dashoffset] duration-[var(--vds-duration-fast)] ease-linear motion-reduce:transition-none"
               />
             )}
@@ -83,12 +112,15 @@ export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
 
     return (
       <div
-        className={cx(progressBarClassName({ className, indeterminate }), progressBarStyleClassName())}
+        className={cx(
+          progressBarClassName({ className, indeterminate }),
+          progressBarStyleClassName()
+        )}
         ref={ref}
         style={rootStyle}
         {...props}
       >
-        {label ? (
+        {label && showLabel ? (
           <span
             className="vds-progress-bar__label [font-family:var(--vds-font-main)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
             id={labelId}
@@ -97,7 +129,8 @@ export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
           </span>
         ) : null}
         <span
-          aria-labelledby={label ? labelId : undefined}
+          aria-label={showLabel ? undefined : label}
+          aria-labelledby={label && showLabel ? labelId : undefined}
           aria-valuemax={MAX_PROGRESS}
           aria-valuemin={MIN_PROGRESS}
           aria-valuenow={indeterminate ? undefined : normalizedValue}
@@ -154,7 +187,10 @@ export const Progress = forwardRef<HTMLDivElement, ProgressProps>(
     }
 
     return (
-      <div className={cx(progressCardClassName({ className }), progressCardStyleClassName())} data-tone={tone}>
+      <div
+        className={cx(progressCardClassName({ className }), progressCardStyleClassName())}
+        data-tone={tone}
+      >
         <div className="vds-progress-card__header flex items-start justify-between gap-[var(--vds-space-3)]">
           <div className="vds-progress-card__copy min-w-0">
             {title ? (

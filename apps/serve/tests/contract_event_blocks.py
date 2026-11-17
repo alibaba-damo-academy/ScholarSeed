@@ -87,7 +87,11 @@ class EventBlocksContract(unittest.TestCase):
         self.connection.rollback()
         self.append(self.event(2, "committed"))
         self.assertEqual(self.rows(), [first, self.event(2, "committed")])
+        orphan = self.database.with_suffix(".blocks") / blocks._name("other")
+        self.assertTrue(blocks.cleanup_needed(self.connection, self.database, lambda: None))
+        self.assertTrue(orphan.is_file())
         self.assertEqual(blocks.cleanup(self.database), 1)
+        self.assertFalse(blocks.cleanup_needed(self.connection, self.database, lambda: None))
         self.assertEqual(blocks.cleanup(self.database), 0)
 
     def test_count_boundary_and_read_filters(self) -> None:

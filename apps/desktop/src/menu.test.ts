@@ -1,7 +1,31 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import * as menu from './menu.ts'
 import * as browser from './browser.ts'
+import { SYSTEM_LANGUAGE_MODE } from './preferences.ts'
+
+test('account language values accept every supported choice but reject other values and kinds', () => {
+  assert.equal(typeof menu.isAccountMenuLanguageValue, 'function')
+  for (const value of ['en', 'zh-CN', SYSTEM_LANGUAGE_MODE])
+    assert.equal(menu.isAccountMenuLanguageValue({ kind: 'choice', value }), true, value)
+  for (const value of ['', 'zh', 'en-US', 'fr', 'auto', 'SYSTEM', 'system '])
+    assert.equal(menu.isAccountMenuLanguageValue({ kind: 'choice', value }), false, value)
+  for (const value of [
+    { kind: 'none' },
+    { kind: 'boolean', value: true },
+    { kind: 'number', value: 1 },
+  ] as const)
+    assert.equal(menu.isAccountMenuLanguageValue(value), false)
+})
+
+test('main registers the shared account language validator for display and execution', () => {
+  const source = readFileSync(new URL('./main/index.ts', import.meta.url), 'utf8')
+  assert.match(
+    source,
+    /menuActions\.register\(MENU_ACTION\.language,\s*\{[^}]*validateValue:\s*isAccountMenuLanguageValue\s*,/
+  )
+})
 
 for (const [index, factor] of browser.PAGE_ZOOM_FACTORS.entries()) {
   test(`zoom steps distinguish configured ${factor} from its conversion noise`, () => {

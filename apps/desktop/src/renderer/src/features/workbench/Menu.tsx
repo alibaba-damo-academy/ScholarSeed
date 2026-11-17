@@ -3,6 +3,7 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 import { MessageCirclePlus } from 'lucide-react'
 
+import { featureRegistry } from '../../app/composition'
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../../components/ui'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
 import { useApp } from '../../store'
@@ -75,8 +76,9 @@ export function WorkbenchTabMenu({
   const documents = useDocumentWorkspace()
   const workspace = useWorkspaceController()
   const page = state.tabs.find((tab) => tab.id === tabId)
-  const splitActions = (['right', 'bottom'] as const).filter((direction) =>
-    workspace.canSplitTab(tabId, direction, false)
+  const viewer = page ? featureRegistry.viewers.get(page.kind) : undefined
+  const splitActions = (['right', 'bottom'] as const).filter(
+    (direction) => viewer?.duplicable !== false && workspace.canSplitTab(tabId, direction, false)
   )
   const moveTargets = workspace.moveTargetsForTab(tabId)
 
@@ -186,8 +188,7 @@ export function DocumentTabMenu({
       </ContextMenuItem>
       <ContextMenuItem
         data-testid="tab-reveal-in-finder"
-        disabled={!fileLocation}
-        onSelect={() => void act.revealActiveDocument()}
+        onSelect={() => void act.revealDocument(session.source)}
       >
         {resourceText(revealLabelKey())}
       </ContextMenuItem>

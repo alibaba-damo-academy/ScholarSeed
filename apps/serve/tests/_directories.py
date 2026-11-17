@@ -20,6 +20,9 @@ from service.platform.storage import (
 )
 
 LEASE_TEST_ROOT_ENV = "SCHOLARSEED_LEASE_TEST_ROOT"
+# 每次套件运行一次性下发，用于绑定 entry 收据的归属；不用进程号，因为 Windows
+# 上 uv 生成的 venv python.exe 是启动器 stub，子进程真实 pid 与 Popen.pid 不同。
+ENTRY_TOKEN_ENV = "SCHOLARSEED_ENTRY_OBSERVATION_TOKEN"
 
 
 def make_directory(prefix: str = "ss-test-", *, parent: Path | None = None) -> Path:

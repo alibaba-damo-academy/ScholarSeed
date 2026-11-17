@@ -75,7 +75,9 @@ function sourceDigest(folders = ['handoff', 'cmd/handoff']) {
   const files = []
   for (const folder of new Set([...folders, 'internal/security'])) {
     for (const name of fs.readdirSync(path.join(MODULE, folder)).sort()) {
-      if (name.endsWith('.go') || name.endsWith('.json') || (folder === 'handoff' && name === 'logo.png')) files.push([`${folder}/${name}`, fileHash(path.join(MODULE, folder, name))])
+      if (name.endsWith('.go') || name.endsWith('.json') ||
+          (folder === 'handoff' && name === 'retirement.ps1') ||
+          (folder === 'handoff' && name === 'logo.png')) files.push([`${folder}/${name}`, fileHash(path.join(MODULE, folder, name))])
     }
   }
   files.push(['go.mod', fileHash(path.join(MODULE, 'go.mod'))])

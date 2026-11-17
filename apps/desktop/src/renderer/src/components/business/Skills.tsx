@@ -2,7 +2,11 @@ import React from 'react'
 import emptyImage from '../../assets/empty_img.webp'
 import { createFormatters } from '../../../../localization/format'
 import {
+  ArrowLeft,
+  Package,
   Ellipsis,
+  ChevronDown,
+  ChevronRight,
   Folders,
   Hammer,
   LockKeyhole,
@@ -30,7 +34,6 @@ import {
   type SkillUploadPreview,
 } from '../../api'
 import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
-import { PluginPreview, PluginPreviewDialog, type PluginPreviewRequest } from './Plugin'
 import type { PluginReport, PluginInstallationReceipt } from '../../../../plugins'
 import { Icon } from '../../icons'
 import {
@@ -53,7 +56,8 @@ import { LoginPrompt } from './LoginPrompt'
 import { useMarketplace, useSkillUpdates } from './marketplace'
 import { Classification } from './Classification'
 import { droppedSkillFiles, packageSkillDirectory } from './skillupload'
-import { Markdown } from '../primitive/Markdown'
+import { Markdown, MarkdownContent } from '../primitive/Markdown'
+import { ConfirmationCard } from '../primitive/Confirmation'
 import { IconFont } from '../primitive/Iconfont'
 import { FileFormatIcon } from '../primitive/FileIcon'
 import {
@@ -108,27 +112,34 @@ import {
 const TAB_MARKETPLACE = 'marketplace'
 const TAB_SYSTEM = 'scholarseed'
 const TAB_USER = 'user'
-const PLUGIN_PREVIEW_VISIBLE = false
-const HIDDEN_SYSTEM_SKILLS: ReadonlySet<string> = new Set(['plugin-create'])
+const TAB_HUB = 'hub'
+const PLUGIN_CREATOR_SKILL = 'plugin-create'
 const SKILL_TABS = [
-  { id: TAB_MARKETPLACE, labelKey: 'groups.all' },
-  { id: TAB_SYSTEM, labelKey: 'groups.scholarseed' },
+  { id: TAB_HUB, labelKey: 'groups.hub' },
   { id: TAB_USER, labelKey: 'groups.user' },
+  { id: TAB_SYSTEM, labelKey: 'groups.scholarseed' },
 ] as const
 const UPLOAD_ACCEPT = '.zip,.md'
 const PAGE_CLASS = 'relative flex h-full min-h-0 w-full min-w-0 flex-col'
 const CONTENT_CLASS =
-  'mx-auto w-full max-w-[calc(var(--vds-skills-content-width)+var(--vds-skills-page-inset,var(--vds-space-0))*2)] px-[var(--vds-skills-page-inset,var(--vds-space-0))]'
-const LIST_SCROLL_CLASS = 'h-full min-h-0 overflow-y-auto'
+  'mx-auto w-full max-w-[calc(var(--vds-skills-content-width)+var(--vds-skills-page-inset,var(--vds-space-0))*2)] [@media(width>1600px)]:max-w-none px-[var(--vds-skills-page-inset,var(--vds-space-0))]'
+const LIST_SCROLL_CLASS = 'h-full min-h-0 flex-1 overflow-y-auto'
 const LOADING_TEXT_CLASS =
   'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]'
 const SEARCH_EMPTY_CLASS =
-  'min-h-[var(--vds-skills-empty-height)] flex-1 w-full content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
-const GRID_CLASS = 'grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2 lg:grid-cols-3'
+  'min-h-[var(--vds-skills-empty-height)] w-full flex-1 content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
+const GRID_CLASS =
+  'grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2 lg:grid-cols-3 [@media(width>1600px)]:[&>*]:max-w-[var(--vds-skills-card-max-width)] [@media(width>1600px)]:grid-cols-[repeat(auto-fill,minmax(var(--vds-skills-card-min-width),1fr))]'
 const CARD_CLASS =
   'group relative isolate flex flex-col gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] !bg-transparent hover:!bg-[var(--vds-bg-gray-default-transparent)] py-[var(--vds-space-3)] !shadow-none'
 const DIALOG_CLASS =
   '!w-[var(--vds-skills-detail-viewport-width)] !max-w-none font-[var(--vds-fw-regular)] [&_*]:!font-[var(--vds-fw-regular)]'
+const DETAIL_DIALOG_CLASS =
+  '!w-[var(--vds-skills-detail-viewport-width)] !max-w-none h-[var(--vds-skills-detail-viewport-height)] !flex flex-col !gap-[var(--vds-space-3)] !px-[var(--vds-space-5)] !pt-[var(--vds-space-3)] !pb-[var(--vds-space-5)] !z-[var(--vds-z-modal-nested)]'
+const DETAIL_META_CLASS =
+  'flex flex-wrap items-center gap-[var(--vds-space-2)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !font-[var(--vds-fw-regular)] !text-[var(--vds-text-tertiary)]'
+const DETAIL_DESCRIPTION_CLASS =
+  'text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]'
 const DOCUMENT_CLASS = [
   'min-h-0 min-w-0 flex-1 overflow-auto rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] p-[var(--vds-space-4)] leading-[var(--vds-lh-body-lv1)] [overflow-wrap:anywhere]',
   'text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] [&_*]:!text-[length:var(--vds-font-body-lv1)] [&_*]:!text-[var(--vds-text-secondary)]',
@@ -136,22 +147,23 @@ const DOCUMENT_CLASS = [
   '[&_pre]:max-w-full [&_pre]:overflow-x-auto',
 ].join(' ')
 
+function SkillVersion({ version }: { version: string | undefined }): React.JSX.Element {
+  const { t } = useTranslation('skills')
+  return (
+    <span className="inline-flex min-w-0 items-center gap-[var(--vds-space-1)] [overflow-wrap:anywhere]">
+      <Folders
+        aria-hidden="true"
+        className="size-[var(--vds-icon-7)] shrink-0"
+        data-testid="detail-version-icon"
+      />
+      <span>{version ? t('version', { version }) : t('noVersion')}</span>
+    </span>
+  )
+}
+
 function groupLabel(skill: SkillInfo, t: TFunction<'skills'>): string {
   const key = SKILL_GROUPS.find((group) => group.id === skill.group)?.labelKey
   return key ? t(key) : ''
-}
-
-function installationLabel(skill: SkillInfo, t: TFunction<'skills'>): string {
-  if (skill.group === TAB_SYSTEM) return t('attribution.official')
-  switch (skill.installationSource) {
-    case 'upload':
-      return t('attribution.uploaded')
-    case 'marketplace':
-    case 'github':
-      return t('marketplace.github')
-    default:
-      return t('attribution.local')
-  }
 }
 
 function SkillUseFailure({
@@ -192,23 +204,54 @@ function SkillAttribution({ skill }: { skill: SkillAttributionInfo }): React.JSX
 
 function AddSkillButton({
   onUpload,
+  onCreate,
   compact = false,
 }: {
   onUpload: () => void
+  onCreate?: () => void
   compact?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('skills')
 
   return (
-    <Button
-      variant={compact ? 'outline' : 'primary'}
-      size={compact ? 'sm' : 'md'}
-      icon={<Icon name="plus" size={14} color="currentColor" />}
-      data-testid={compact ? 'skills-add-empty' : 'skills-add'}
-      onClick={onUpload}
-    >
-      {t('add')}
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant={compact ? 'outline' : 'primary'}
+          size={compact ? 'sm' : 'md'}
+          icon={<Icon name="plus" size={14} color="currentColor" />}
+          data-testid={compact ? 'skills-add-empty' : 'skills-add'}
+        >
+          {t('add')}
+          <ChevronDown aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          className="h-auto"
+          data-testid={compact ? 'skills-create-empty' : 'skills-create'}
+          disabled={!onCreate}
+          onSelect={onCreate}
+        >
+          <IconFont type="icon-shushen" />
+          <span className="flex flex-col">
+            <span>{t('createWithScholarSeed')}</span>
+            <span className="text-[var(--vds-text-tertiary)] text-[length:var(--vds-font-caption)]">
+              {t('createWithScholarSeedDescription')}
+            </span>
+          </span>
+        </DropdownMenuItem>
+        <DropdownMenuItem className="h-auto" onSelect={onUpload}>
+          <Upload aria-hidden="true" />
+          <span className="flex flex-col">
+            <span>{t('uploadSkill')}</span>
+            <span className="text-[var(--vds-text-tertiary)] text-[length:var(--vds-font-caption)]">
+              {t('uploadSkillDescription')}
+            </span>
+          </span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -255,7 +298,7 @@ function SkillLoading(): React.JSX.Element {
   )
 }
 
-export function Skills(): React.JSX.Element {
+export function Skills({ navigation }: { navigation?: React.ReactNode } = {}): React.JSX.Element {
   const { state, act } = useApp()
   const { authenticated, revision } = useAccountAccess(state.backendReady)
   const { t, i18n } = useTranslation('skills')
@@ -273,9 +316,8 @@ export function Skills(): React.JSX.Element {
   const listRef = React.useRef<HTMLDivElement>(null)
   const paginationRef = React.useRef<HTMLDivElement>(null)
   const [loading, setLoading] = React.useState(true)
-  const loaded = React.useRef(false)
+  const [loaded, setLoaded] = React.useState(false)
   const [loadError, setLoadError] = React.useState<SkillPageNotice | null>(null)
-  const loadRequest = React.useRef(0)
   const [notice, setNotice] = React.useState<SkillPageNotice | string | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [toggling, setToggling] = React.useState<ReadonlySet<string>>(new Set())
@@ -286,26 +328,23 @@ export function Skills(): React.JSX.Element {
   const [useProject, setUseProject] = React.useState('')
   const [useDescription, setUseDescription] = React.useState('')
   const [removing, setRemoving] = React.useState<SkillInfo | null>(null)
-  const [preview, setPreview] = React.useState<PluginPreviewRequest | null>(null)
   const [loginSkill, setLoginSkill] = React.useState<string | null>(null)
+  const localGeneration = React.useRef(0)
+  const loadedRef = React.useRef(false)
   const activationRevision = React.useRef(0)
   const activationChanges = React.useRef(
     new Map<string, { enabled: boolean; revision: number; pending: boolean }>()
   )
 
   const load = React.useCallback(async (): Promise<void> => {
-    const request = ++loadRequest.current
+    const request = ++localGeneration.current
     const activation = activationRevision.current
-    setLoading(!loaded.current)
+    setLoading(!loadedRef.current)
     try {
       const rows = await getSkills(SKILL_SURFACE_SETTINGS, language)
-      if (request !== loadRequest.current) return
+      if (request !== localGeneration.current) return
       const next = rows
-        .filter(
-          (row) =>
-            productSkillGroup(row.group) !== null &&
-            !(row.group === TAB_SYSTEM && HIDDEN_SYSTEM_SKILLS.has(row.name))
-        )
+        .filter((row) => productSkillGroup(row.group) !== null)
         .map((row) => {
           const change = activationChanges.current.get(row.name)
           return change && (change.pending || change.revision > activation)
@@ -315,13 +354,14 @@ export function Skills(): React.JSX.Element {
       for (const [name, change] of activationChanges.current) {
         if (!change.pending && change.revision <= activation) activationChanges.current.delete(name)
       }
-      setSkills(next)
-      loaded.current = true
+      loadedRef.current = true
+      setLoaded(true)
       setLoadError(null)
+      setSkills(next)
     } catch (error) {
-      if (request !== loadRequest.current) return
+      if (request !== localGeneration.current) return
       toast({ tone: 'error', title: t('loadFailed') })
-      if (!loaded.current)
+      if (!loadedRef.current)
         setLoadError({
           key: 'loadFailed',
           detail:
@@ -332,12 +372,12 @@ export function Skills(): React.JSX.Element {
                 : undefined,
         })
     } finally {
-      if (request === loadRequest.current) setLoading(false)
+      if (request === localGeneration.current) setLoading(false)
     }
   }, [toast, t, language])
   const updates = useSkillUpdates(skills, load)
   React.useEffect(() => {
-    if (tab === TAB_USER) void load()
+    if (tab === TAB_USER || tab === TAB_HUB) void load()
   }, [tab, load])
   const market = useMarketplace({
     enabled: tab === TAB_MARKETPLACE,
@@ -365,7 +405,7 @@ export function Skills(): React.JSX.Element {
   React.useEffect(() => {
     void load()
     return () => {
-      loadRequest.current += 1
+      localGeneration.current += 1
     }
   }, [load, revision])
 
@@ -396,7 +436,7 @@ export function Skills(): React.JSX.Element {
       setNotice(null)
       toast({
         tone: 'success',
-        title: t(skill.enabled ? 'disabled' : 'enabled', { name: skillName(skill) }),
+        title: t(skill.enabled ? 'disabled' : 'enabled', { name: skillName(skill, language) }),
       })
     } catch (error) {
       setSkills((current) =>
@@ -477,9 +517,6 @@ export function Skills(): React.JSX.Element {
     }
   }
 
-  const openPlugin = (name: string): void =>
-    setPreview({ operation: 'plugin-preview-installed', name })
-
   const keyword = query.trim().toLocaleLowerCase()
   const selectedLabel = tab === TAB_MARKETPLACE ? market.label : ''
   const illustratedEmpty =
@@ -489,10 +526,12 @@ export function Skills(): React.JSX.Element {
       ? []
       : skills.filter(
           (skill) =>
-            skill.group === tab &&
+            (tab === TAB_HUB
+              ? skill.group === TAB_USER && Boolean(skill.hub)
+              : skill.group === tab && (tab !== TAB_USER || !skill.hub)) &&
             (!selectedLabel || skill.labels?.some((label) => label.slug === selectedLabel)) &&
             (!keyword ||
-              `${skill.name}\n${skillDescription(skill, language)}`
+              `${skill.name}\n${skillName(skill, language)}\n${skillDescription(skill, language)}`
                 .toLocaleLowerCase()
                 .includes(keyword))
         )
@@ -502,7 +541,7 @@ export function Skills(): React.JSX.Element {
       ? (skills.find((skill) => skill.name === detail.skill.name) ?? detail.skill)
       : null
   const activeDetail = market.selected ?? detailSkill
-  const detailTitle = market.selected?.name ?? (detailSkill ? skillName(detailSkill) : '')
+  const detailTitle = market.selected?.name ?? (detailSkill ? skillName(detailSkill, language) : '')
   const detailEnabled = detailSkill?.enabled ?? false
   const detailUpdate = !market.selected
     ? updates.available.find((skill) => skill.name === detailSkill?.name)
@@ -525,6 +564,10 @@ export function Skills(): React.JSX.Element {
     setUseDescription('')
     setUsing(skill)
   }
+  const creator = skills.find(
+    (skill) => skill.group === TAB_SYSTEM && skill.name === PLUGIN_CREATOR_SKILL
+  )
+  const createSkill = creator ? () => openSkillUse(creator) : undefined
   const marketInstall = (skill: MarketplaceSkill, compact = false): React.JSX.Element => {
     const local = market.installed(skill)
     if (compact && local) {
@@ -600,7 +643,13 @@ export function Skills(): React.JSX.Element {
           ) : undefined
         }
       />
-      <AddSkillButton onUpload={() => setAdding(true)} />
+      {tab === TAB_MARKETPLACE && (
+        <Button variant="outline" data-testid="skills-installed" onClick={() => setTab(TAB_HUB)}>
+          <Package aria-hidden="true" className="size-[var(--vds-icon-6)]" />
+          {t('marketplace.installedShort')} {skills.length}
+        </Button>
+      )}
+      <AddSkillButton onUpload={() => setAdding(true)} onCreate={createSkill} />
     </>
   )
 
@@ -610,17 +659,41 @@ export function Skills(): React.JSX.Element {
         <div
           className={`${CONTENT_CLASS} mb-[var(--vds-space-4)] flex shrink-0 flex-wrap items-center gap-[var(--vds-space-2)]`}
         >
-          <Tabs value={tab} onValueChange={(value) => setTab(String(value))}>
-            <TabsList aria-label={t('groups.label')}>
-              {SKILL_TABS.map((group) => (
-                <TabsTrigger key={group.id} value={group.id} data-testid={`skills-tab-${group.id}`}>
-                  {t(group.labelKey)}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+          {tab === TAB_MARKETPLACE && navigation}
+          {tab !== TAB_MARKETPLACE && (
+            <Button
+              variant="ghost"
+              className="!pl-0 !text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-medium)] !text-[var(--vds-text-primary)]"
+              onClick={() => setTab(TAB_MARKETPLACE)}
+            >
+              <ArrowLeft
+                aria-hidden="true"
+                className="size-[var(--vds-icon-6)] text-[var(--vds-text-tertiary)]"
+              />
+              {t('groups.installed')}
+            </Button>
+          )}
+          {tab !== TAB_MARKETPLACE && (
+            <Tabs
+              className="order-last w-full"
+              value={tab}
+              onValueChange={(value) => setTab(String(value))}
+            >
+              <TabsList aria-label={t('groups.label')} className="!w-fit">
+                {SKILL_TABS.map((group) => (
+                  <TabsTrigger
+                    key={group.id}
+                    value={group.id}
+                    data-testid={`skills-tab-${group.id}`}
+                  >
+                    {t(group.labelKey)}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          )}
           <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-2)]">
-            {tab === TAB_USER && (
+            {tab === TAB_HUB && (
               <>
                 {updates.available.length > 0 && (
                   <Button
@@ -684,7 +757,7 @@ export function Skills(): React.JSX.Element {
         viewportClassName={LIST_SCROLL_CLASS}
         viewportProps={{ 'data-testid': 'skills-list', 'aria-label': t('groups.label') }}
       >
-        <div className={`${CONTENT_CLASS} flex min-h-full flex-col`}>
+        <div className={`${CONTENT_CLASS} flex min-h-full flex-1 flex-col`}>
           {tab === TAB_MARKETPLACE ? (
             market.loading && !market.catalogue ? (
               <SkillLoading />
@@ -797,7 +870,7 @@ export function Skills(): React.JSX.Element {
             </div>
           ) : (
             <>
-              {loaded.current && !loadError && visible.length === 0 && (
+              {loaded && !loadError && visible.length === 0 && (
                 <div
                   className={
                     illustratedEmpty
@@ -830,17 +903,23 @@ export function Skills(): React.JSX.Element {
                     }
                     action={
                       tab === TAB_USER && !keyword && !selectedLabel ? (
-                        <AddSkillButton compact onUpload={() => setAdding(true)} />
+                        <AddSkillButton
+                          compact
+                          onUpload={() => setAdding(true)}
+                          onCreate={createSkill}
+                        />
                       ) : undefined
                     }
                   />
                 </div>
               )}
               {SKILL_GROUPS.filter(
-                (group) => tab === group.id && visible.some((skill) => skill.group === group.id)
+                (group) =>
+                  (tab === group.id || (tab === TAB_HUB && group.id === TAB_USER)) &&
+                  visible.some((skill) => skill.group === group.id)
               ).map((group) => (
                 <section key={group.id} className="mt-[var(--vds-space-6)] first:mt-0">
-                  <div className="grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2 lg:grid-cols-3">
                     {visible
                       .filter((skill) => skill.group === group.id)
                       .map((skill) => {
@@ -862,7 +941,7 @@ export function Skills(): React.JSX.Element {
                                 className="absolute inset-0 cursor-pointer rounded-[var(--vds-radius-6)] border-0 bg-transparent p-0 focus-visible:shadow-[var(--vds-focus-brand)]"
                                 disabled={busy}
                                 onClick={() => void view(skill)}
-                                aria-label={t('open', { name: skillName(skill) })}
+                                aria-label={t('open', { name: skillName(skill, language) })}
                                 data-testid={`skill-view-${skill.name}`}
                               />
                             </Tooltip>
@@ -870,7 +949,7 @@ export function Skills(): React.JSX.Element {
                               <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
                                 <div className="flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)]">
                                   <CardTitle className="min-w-0 truncate !text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)]">
-                                    {skillName(skill)}
+                                    {skillName(skill, language)}
                                   </CardTitle>
                                   {skill.updateStatus === 'available' &&
                                     skill.group === TAB_USER && (
@@ -890,7 +969,7 @@ export function Skills(): React.JSX.Element {
                                       <IconButton
                                         size="xs"
                                         variant="ghost"
-                                        label={t('more', { name: skillName(skill) })}
+                                        label={t('more', { name: skillName(skill, language) })}
                                         icon={<Ellipsis className="size-[var(--vds-icon-6)]" />}
                                         disabled={busy || Boolean(updates.updating)}
                                         className="hover:!bg-[var(--vds-bg-gray-active)]"
@@ -963,10 +1042,10 @@ export function Skills(): React.JSX.Element {
                                         }
                                         label={
                                           control.disabled
-                                            ? t('alwaysOn', { name: skillName(skill) })
+                                            ? t('alwaysOn', { name: skillName(skill, language) })
                                             : skill.enabled
-                                              ? t('disable', { name: skillName(skill) })
-                                              : t('enable', { name: skillName(skill) })
+                                              ? t('disable', { name: skillName(skill, language) })
+                                              : t('enable', { name: skillName(skill, language) })
                                         }
                                         onCheckedChange={() => void toggle(skill)}
                                         data-testid={`skill-toggle-${skill.name}`}
@@ -981,26 +1060,6 @@ export function Skills(): React.JSX.Element {
                                 {description}
                               </CardDescription>
                             </CardContent>
-                            <CardFooter className="pointer-events-none !mt-0 mx-[var(--vds-space-4)] !justify-start border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-2)]">
-                              {PLUGIN_PREVIEW_VISIBLE && skill.plugin && (
-                                <Button
-                                  variant="ghost"
-                                  className="pointer-events-auto relative z-[var(--vds-z-local-raised)]"
-                                  disabled={!skill.enabled}
-                                  onClick={() => void openPlugin(skill.name)}
-                                >
-                                  {t('plugin.open')}
-                                </Button>
-                              )}
-                              <Badge
-                                size="sm"
-                                variant="secondary"
-                                className="!rounded-[var(--vds-radius-2)] !bg-[var(--vds-bg-gray-default-transparent)] !font-[var(--vds-fw-regular)] !text-[var(--vds-text-tertiary)]"
-                                data-testid={`skill-source-${skill.name}`}
-                              >
-                                {installationLabel(skill, t)}
-                              </Badge>
-                            </CardFooter>
                           </Card>
                         )
                       })}
@@ -1026,7 +1085,7 @@ export function Skills(): React.JSX.Element {
       >
         <DialogPortal>
           <DialogContent
-            className="!w-[var(--vds-skills-detail-viewport-width)] !max-w-none h-[var(--vds-skills-detail-viewport-height)] !flex flex-col !gap-[var(--vds-space-3)] !px-[var(--vds-space-5)] !pt-[var(--vds-space-3)] !pb-[var(--vds-space-5)] !z-[var(--vds-z-modal-nested)]"
+            className={DETAIL_DIALOG_CLASS}
             closeButtonClassName="!top-[var(--vds-space-3)] !right-[var(--vds-space-2)] !p-0"
             overlayClassName="!z-[var(--vds-z-modal-nested-overlay)]"
             overlayProps={{
@@ -1062,8 +1121,8 @@ export function Skills(): React.JSX.Element {
                           }
                           label={
                             detailEnabled
-                              ? t('disable', { name: skillName(activeDetail) })
-                              : t('enable', { name: skillName(activeDetail) })
+                              ? t('disable', { name: skillName(activeDetail, language) })
+                              : t('enable', { name: skillName(activeDetail, language) })
                           }
                           onCheckedChange={() => void toggle(detailSkill)}
                           data-testid={`skill-detail-toggle-${detailSkill.name}`}
@@ -1071,7 +1130,7 @@ export function Skills(): React.JSX.Element {
                       </div>
                     )}
                   </div>
-                  <DialogDescription className="flex flex-wrap items-center gap-[var(--vds-space-2)] !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !font-[var(--vds-fw-regular)] !text-[var(--vds-text-tertiary)]">
+                  <DialogDescription className={DETAIL_META_CLASS}>
                     <span>
                       {market.selected || detail?.skill.hub
                         ? t('marketplace.github')
@@ -1092,14 +1151,7 @@ export function Skills(): React.JSX.Element {
                         />
                       </>
                     )}
-                    <span className="inline-flex items-center gap-[var(--vds-space-1)]">
-                      <Folders
-                        aria-hidden="true"
-                        className="size-[var(--vds-icon-7)] shrink-0"
-                        data-testid="detail-version-icon"
-                      />
-                      {detailVersion ? t('version', { version: detailVersion }) : t('noVersion')}
-                    </span>
+                    <SkillVersion version={detailVersion} />
                     {detailUpdate && (
                       <Tag
                         size="small"
@@ -1111,7 +1163,7 @@ export function Skills(): React.JSX.Element {
                       </Tag>
                     )}
                   </DialogDescription>
-                  <p className="text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
+                  <p className={DETAIL_DESCRIPTION_CLASS}>
                     {market.selected
                       ? market.selected.description
                       : detail
@@ -1191,7 +1243,6 @@ export function Skills(): React.JSX.Element {
           </DialogContent>
         </DialogPortal>
       </Dialog>
-      {preview && <PluginPreviewDialog request={preview} onClose={() => setPreview(null)} />}
       <Dialog
         open={using !== null}
         onOpenChange={(open) => {
@@ -1201,7 +1252,9 @@ export function Skills(): React.JSX.Element {
         <DialogPortal>
           <DialogContent headerLayout="aligned" className={DIALOG_CLASS}>
             <DialogHeader>
-              <DialogTitle>{t('try.title', { name: using ? skillName(using) : '' })}</DialogTitle>
+              <DialogTitle>
+                {t('try.title', { name: using ? skillName(using, language) : '' })}
+              </DialogTitle>
             </DialogHeader>
             <div className="flex flex-col gap-[var(--vds-space-4)]">
               <div className="flex flex-col gap-[var(--vds-space-2)]">
@@ -1254,7 +1307,7 @@ export function Skills(): React.JSX.Element {
                 }
                 onClick={() => {
                   if (!using || !state.projects.some((project) => project.id === useProject)) return
-                  const result = resolveTaskStarterSkill(skills, using.name)
+                  const result = resolveTaskStarterSkill(skills, using.name, language)
                   if (!result.reference) {
                     toast({
                       tone: 'error',
@@ -1288,7 +1341,9 @@ export function Skills(): React.JSX.Element {
           <AlertDialogContent>
             <AlertDialogTitle>{t('enableUse.title')}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t('enableUse.description', { name: enablingUse ? skillName(enablingUse) : '' })}
+              {t('enableUse.description', {
+                name: enablingUse ? skillName(enablingUse, language) : '',
+              })}
             </AlertDialogDescription>
             <AlertDialogFooter>
               <Button variant="outline" disabled={busy} onClick={() => setEnablingUse(null)}>
@@ -1353,7 +1408,7 @@ export function Skills(): React.JSX.Element {
           >
             <AlertDialogTitle>{t('deleteTitle')}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t('deleteDescription', { name: removing ? skillName(removing) : '' })}
+              {t('deleteDescription', { name: removing ? skillName(removing, language) : '' })}
             </AlertDialogDescription>
             <AlertDialogFooter>
               <Button variant="outline" disabled={busy} onClick={() => setRemoving(null)}>
@@ -1375,6 +1430,102 @@ export function Skills(): React.JSX.Element {
   )
 }
 
+type InstallationStatus = 'pending' | 'skipped' | 'failed' | 'installed' | 'unknown' | 'installing'
+
+const INSTALLATION_STATUS_KEYS = {
+  pending: 'installation.states.pending',
+  skipped: 'installation.states.skipped',
+  failed: 'installation.states.failed',
+  installed: 'installation.states.installed',
+  unknown: 'installation.states.unknown',
+  installing: 'installation.states.installing',
+} as const satisfies Record<InstallationStatus, string>
+
+export function PluginInstallationCard({
+  report,
+  status,
+  done,
+  busy,
+  working,
+  error,
+  installed,
+  onAction,
+  onAnswer,
+}: {
+  report: PluginReport
+  status: InstallationStatus
+  done: boolean
+  busy: boolean
+  working: boolean
+  error?: string
+  installed?: PluginInstallationReceipt
+  onAction: (action: 'install' | 'skip' | 'directory') => void
+  onAnswer?: () => void
+}): React.JSX.Element {
+  const { t } = useTranslation('skills')
+  const identity = [report.descriptor?.id, report.descriptor?.version].filter(Boolean).join(' · ')
+  const canReturnResult = Boolean(!done && installed && onAnswer)
+  return (
+    <div data-testid="plugin-installation-card" className="min-w-0">
+      <ConfirmationCard
+        compact
+        wrapDescription
+        title={t('installation.title')}
+        icon={
+          <Package
+            aria-hidden="true"
+            className="size-[var(--vds-icon-8)] text-[var(--vds-text-tertiary)]"
+          />
+        }
+        description={
+          <>
+            {identity && `${identity} · `}
+            <span role="status">{t(INSTALLATION_STATUS_KEYS[status])}</span>
+          </>
+        }
+        descriptionAction={
+          <Button
+            unstyled
+            disabled={busy || working}
+            onClick={() => onAction('directory')}
+            className="inline-flex min-w-0 max-w-full items-center gap-[var(--vds-space-1)] text-start text-[var(--vds-text-primary)] hover:underline focus-visible:shadow-[var(--vds-focus-brand)] disabled:text-[var(--vds-text-tertiary)]"
+          >
+            {t(installed ? 'installation.installedDirectory' : 'installation.generatedDirectory')}
+            <ChevronRight
+              aria-hidden="true"
+              className="size-[var(--vds-icon-7)] text-[var(--vds-text-tertiary)]"
+            />
+          </Button>
+        }
+        disabled={busy || (!installed && working)}
+        allowDisabled={!installed && !report.valid}
+        allowVisible={!installed || canReturnResult}
+        allowLabel={t(
+          installed
+            ? 'installation.returnResult'
+            : status === 'failed'
+              ? 'installation.retry'
+              : status === 'unknown'
+                ? 'installation.reconcile'
+                : 'installation.install'
+        )}
+        denyLabel={t('installation.defer')}
+        onAllow={installed && onAnswer ? onAnswer : () => onAction('install')}
+        onDeny={!done && !installed && status !== 'skipped' ? () => onAction('skip') : undefined}
+      >
+        {error && (
+          <p
+            role="alert"
+            className="m-0 [overflow-wrap:anywhere] text-[length:var(--vds-font-body-lv1)]"
+          >
+            {error}
+          </p>
+        )}
+      </ConfirmationCard>
+    </div>
+  )
+}
+
 export function PluginInstallation({
   report,
   done,
@@ -1382,6 +1533,7 @@ export function PluginInstallation({
   session,
   request,
   onAnswer,
+  onHandled,
 }: {
   report: PluginReport
   done: boolean
@@ -1390,15 +1542,16 @@ export function PluginInstallation({
   request: string
   answer?: string
   onAnswer?: (receipt: PluginInstallationReceipt | null) => Promise<void>
+  onHandled?: () => void
 }): React.JSX.Element {
-  const { t } = useTranslation('skills')
-  const [reviewing, setReviewing] = React.useState(false)
-  const [preview, setPreview] = React.useState(false)
-  const [checked, setChecked] = React.useState(report)
+  const [reviewing, setReviewing] = React.useState<{
+    report: PluginReport
+    preview?: SkillUploadPreview
+  } | null>(null)
   const [working, setWorking] = React.useState(false)
   const [error, setError] = React.useState('')
   const [state, setState] = React.useState<{
-    status: 'pending' | 'skipped' | 'failed' | 'installed' | 'unknown' | 'installing'
+    status: InstallationStatus
     receipt?: PluginInstallationReceipt
     error?: string
   }>({ status: 'unknown' })
@@ -1412,7 +1565,10 @@ export function PluginInstallation({
         action,
       })
       if (response.status >= 400) throw new Error(response.body)
-      return JSON.parse(response.body) as typeof state & { report?: PluginReport }
+      return JSON.parse(response.body) as typeof state & {
+        report?: PluginReport
+        preview?: SkillUploadPreview
+      }
     },
     [session, request]
   )
@@ -1432,7 +1588,10 @@ export function PluginInstallation({
       active = false
     }
   }, [delivery])
-  const act = async (action: 'preview' | 'install' | 'skip' | 'directory'): Promise<void> => {
+  React.useEffect(() => {
+    if (!reviewing && (state.status === 'installed' || state.status === 'skipped')) onHandled?.()
+  }, [onHandled, reviewing, state.status])
+  const act = async (action: 'install' | 'skip' | 'directory'): Promise<void> => {
     if (working || busy) return
     setWorking(true)
     setError('')
@@ -1446,15 +1605,13 @@ export function PluginInstallation({
         return
       }
       if (action === 'directory') return
-      if (result.report) setChecked(result.report)
-      if (action === 'preview' && result.report) setPreview(true)
       if (
         action === 'install' &&
         result.status !== 'unknown' &&
         result.status !== 'installed' &&
         result.report
       )
-        setReviewing(true)
+        setReviewing({ report: result.report, preview: result.preview })
     } catch (reason) {
       setError(String(reason))
     } finally {
@@ -1462,88 +1619,32 @@ export function PluginInstallation({
     }
   }
   const installed = state.status === 'installed' ? state.receipt : undefined
-  const statusLabels = {
-    pending: t('installation.states.pending'),
-    skipped: t('installation.states.skipped'),
-    failed: t('installation.states.failed'),
-    installed: t('installation.states.installed'),
-    unknown: t('installation.states.unknown'),
-    installing: t('installation.states.installing'),
-  }
-  const previewRequest = React.useMemo<PluginPreviewRequest | null>(
-    () =>
-      checked.candidate
-        ? { operation: 'plugin-preview', candidate: checked.candidate, sha256: checked.sha256 }
-        : null,
-    [checked.candidate, checked.sha256]
-  )
   return (
-    <Card data-testid="plugin-installation-card">
-      <CardHeader>
-        <CardTitle>{t('installation.title')}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-[var(--vds-space-3)] break-words">
-        <p>
-          <Button
-            unstyled
-            disabled={working}
-            onClick={() => void act('directory')}
-            className="underline underline-offset-2"
-          >
-            {report.descriptor?.id} · {report.descriptor?.version}
-          </Button>{' '}
-          · {t(installed ? 'installation.installedDirectory' : 'installation.generatedDirectory')}
-        </p>
-        <p role="status">{statusLabels[state.status]}</p>
-        {(error || state.error) && <p role="alert">{error || state.error}</p>}
-        <div className="flex flex-wrap justify-end gap-[var(--vds-space-2)]">
-          {!done && !installed && state.status !== 'skipped' && (
-            <Button variant="outline" disabled={busy || working} onClick={() => void act('skip')}>
-              {t('installation.defer')}
-            </Button>
-          )}
-          {PLUGIN_PREVIEW_VISIBLE && !!report.descriptor?.components.length && (
-            <Button
-              variant="outline"
-              disabled={busy || working}
-              onClick={() => void act('preview')}
-            >
-              {t('plugin.preview')}
-            </Button>
-          )}
-          {!installed && (
-            <Button disabled={busy || working || !report.valid} onClick={() => void act('install')}>
-              {t(
-                state.status === 'failed'
-                  ? 'installation.retry'
-                  : state.status === 'unknown'
-                    ? 'installation.reconcile'
-                    : 'installation.install'
-              )}
-            </Button>
-          )}
-          {!done && installed && onAnswer && (
-            <Button disabled={busy} onClick={() => void onAnswer(installed)}>
-              {t('installation.returnResult')}
-            </Button>
-          )}
-        </div>
-      </CardContent>
-      {preview && previewRequest && (
-        <PluginPreviewDialog request={previewRequest} onClose={() => setPreview(false)} />
-      )}
+    <>
+      <PluginInstallationCard
+        report={report}
+        status={state.status}
+        done={done}
+        busy={busy}
+        working={working}
+        error={error || state.error}
+        installed={installed}
+        onAction={(action) => void act(action)}
+        onAnswer={installed && onAnswer ? () => void onAnswer(installed) : undefined}
+      />
       {reviewing && (
         <SkillAdd
-          initialReport={checked}
+          initialReport={reviewing.report}
+          initialPreview={reviewing.preview}
           onClose={() => {
-            setReviewing(false)
+            setReviewing(null)
             void delivery('status')
               .then(setState)
               .catch((reason) => setError(String(reason)))
           }}
           onDone={async () => undefined}
           onFailure={async (failure) => {
-            setReviewing(false)
+            setReviewing(null)
             setError(failure)
             try {
               const result = await delivery('status')
@@ -1559,12 +1660,12 @@ export function PluginInstallation({
           }}
           onInstalled={async (result) => {
             setState({ status: 'installed', receipt: result })
-            setReviewing(false)
+            setReviewing(null)
             if (!done) await onAnswer?.(result)
           }}
         />
       )}
-    </Card>
+    </>
   )
 }
 
@@ -1572,12 +1673,14 @@ export function SkillAdd({
   onClose,
   onDone,
   initialReport,
+  initialPreview,
   onInstalled,
   onFailure,
 }: {
   onClose: () => void
   onDone: (message: SkillInstallNotice) => Promise<void>
   initialReport?: PluginReport
+  initialPreview?: SkillUploadPreview
   onInstalled?: (receipt: PluginInstallationReceipt) => Promise<void>
   onFailure?: (failure: string) => Promise<void>
 }): React.JSX.Element {
@@ -1590,14 +1693,17 @@ export function SkillAdd({
   const [file, setFile] = React.useState<File | null>(null)
   const [over, setOver] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
-  const [preview, setPreview] = React.useState<PluginPreviewRequest | null>(null)
   const [report, setReport] = React.useState<PluginReport | null>(initialReport ?? null)
   const [slotConflict, setSlotConflict] = React.useState(false)
   const [uploadPreview, setUploadPreview] = React.useState<SkillUploadPreview | null>(null)
   const [error, setError] = React.useState<string | null>(null)
+  const preview = initialReport ? initialPreview : uploadPreview
+  const review =
+    preview && (!preview.plugin || (report?.valid && report.candidate && report.kind !== 'ui'))
+      ? preview
+      : null
   const pick = async (source: readonly File[] | DataTransfer, directory = false): Promise<void> => {
     if ((Array.isArray(source) && !source.length) || busy) return
-    setPreview(null)
     setReport(null)
     setSlotConflict(false)
     setUploadPreview(null)
@@ -1664,10 +1770,7 @@ export function SkillAdd({
       setBusy(false)
     }
   }
-  const pluginOperation = async (
-    operation: 'check' | 'preview' | 'confirm',
-    enable = true
-  ): Promise<void> => {
+  const pluginOperation = async (operation: 'check' | 'confirm', enable = true): Promise<void> => {
     if (busy || (operation === 'check' ? !file : !report?.candidate)) return
     setBusy(true)
     try {
@@ -1678,25 +1781,15 @@ export function SkillAdd({
               filename: file!.name,
               bytes: new Uint8Array(await file!.arrayBuffer()),
             }
-          : operation === 'preview'
-            ? {
-                operation: 'plugin-preview' as const,
-                candidate: report!.candidate!,
-                sha256: report!.sha256,
-              }
-            : {
-                operation: 'plugin-confirm' as const,
-                candidate: report!.candidate!,
-                sha256: report!.sha256,
-                confirmed: true as const,
-                grants: report!.kind === 'ui' ? [] : report!.descriptor!.capabilities,
-                enable,
-                update: report!.update ?? false,
-              }
-      if (request.operation === 'plugin-preview') {
-        setPreview(request)
-        return
-      }
+          : {
+              operation: 'plugin-confirm' as const,
+              candidate: report!.candidate!,
+              sha256: report!.sha256,
+              confirmed: true as const,
+              grants: report!.kind === 'ui' ? [] : report!.descriptor!.capabilities,
+              enable,
+              update: report!.update ?? false,
+            }
       const response = await window.scholarseed.deviceSkills(request)
       if (operation === 'confirm') setSlotConflict(response.status === 409 && !report?.update)
       if (response.status >= 400) throw new Error(response.body)
@@ -1758,7 +1851,11 @@ export function SkillAdd({
     >
       <DialogPortal>
         <DialogContent
-          className="w-[var(--vds-skills-detail-width)] max-h-[var(--vds-skills-add-dialog-max-height)] overflow-y-auto !gap-[var(--vds-space-3)] !px-[var(--vds-space-5)] !pt-[var(--vds-space-3)] !pb-[var(--vds-space-5)] !z-[var(--vds-z-modal-nested)]"
+          className={
+            review
+              ? DETAIL_DIALOG_CLASS
+              : 'w-[var(--vds-skills-detail-width)] max-h-[var(--vds-skills-add-dialog-max-height)] overflow-y-auto !gap-[var(--vds-space-3)] !px-[var(--vds-space-5)] !pt-[var(--vds-space-3)] !pb-[var(--vds-space-5)] !z-[var(--vds-z-modal-nested)]'
+          }
           overlayClassName="!z-[var(--vds-z-modal-nested-overlay)]"
           portalClassName="z-[var(--vds-z-modal-interaction)]"
           data-testid="skill-add-modal"
@@ -1766,10 +1863,36 @@ export function SkillAdd({
           aria-busy={busy}
           hideCloseButton={busy}
         >
-          <DialogHeader className="min-h-[var(--vds-control-height-md)] content-center">
-            <DialogTitle>{t('add')}</DialogTitle>
-          </DialogHeader>
-          {!initialReport && (
+          {review ? (
+            <>
+              <DialogHeader className="shrink-0 max-h-[var(--vds-dialog-list-max-height)] overflow-auto !text-left">
+                <DialogTitle className="[overflow-wrap:anywhere]">{review.name}</DialogTitle>
+                <DialogDescription className={DETAIL_META_CLASS}>
+                  <SkillVersion version={report?.descriptor?.version || review.version} />
+                </DialogDescription>
+                <p className={DETAIL_DESCRIPTION_CLASS}>{review.description}</p>
+              </DialogHeader>
+              <div
+                className={DOCUMENT_CLASS}
+                role="region"
+                aria-label={t('upload.document')}
+                tabIndex={0}
+                data-testid="skill-upload-preview"
+              >
+                <MarkdownContent text={skillDocumentBody(review.document)} />
+              </div>
+              {report?.update && (
+                <p className={DETAIL_DESCRIPTION_CLASS} role="alert">
+                  {t('installation.updateWarning')}
+                </p>
+              )}
+            </>
+          ) : (
+            <DialogHeader className="min-h-[var(--vds-control-height-md)] content-center">
+              <DialogTitle>{t('add')}</DialogTitle>
+            </DialogHeader>
+          )}
+          {!initialReport && !review && (
             <div
               className="grid gap-[var(--vds-space-3)]"
               data-testid="skill-drop-zone"
@@ -1825,19 +1948,24 @@ export function SkillAdd({
                   </Button>
                 )
               )}
-              <Input
-                ref={directoryRef}
-                type="file"
-                {...{ webkitdirectory: '' }}
-                aria-label={t('upload.selectDirectory')}
-                className="hidden"
-                disabled={busy}
-                data-testid="skill-upload-directory"
-                onChange={(event) => {
-                  void pick(Array.from(event.target.files ?? []), true)
-                  event.target.value = ''
-                }}
-              />
+              {file && (
+                <Button
+                  variant="ghost"
+                  disabled={busy}
+                  aria-label={t('upload.remove')}
+                  onClick={() => {
+                    setFile(null)
+                    setUploadPreview(null)
+                    setReport(null)
+                    setSlotConflict(false)
+                    setError(null)
+                    if (inputRef.current) inputRef.current.value = ''
+                    if (directoryRef.current) directoryRef.current.value = ''
+                  }}
+                >
+                  <Icon name="close" size={14} />
+                </Button>
+              )}
               <Input
                 ref={inputRef}
                 type="file"
@@ -1851,9 +1979,22 @@ export function SkillAdd({
                   event.target.value = ''
                 }}
               />
+              <Input
+                ref={directoryRef}
+                type="file"
+                {...{ webkitdirectory: '' }}
+                aria-label={t('upload.selectDirectory')}
+                className="hidden"
+                disabled={busy}
+                data-testid="skill-upload-directory"
+                onChange={(event) => {
+                  void pick(Array.from(event.target.files ?? []), true)
+                  event.target.value = ''
+                }}
+              />
             </div>
           )}
-          {report && (
+          {report && !review && (
             <Card data-testid="plugin-report">
               <CardHeader>
                 <CardTitle>
@@ -1861,19 +2002,15 @@ export function SkillAdd({
                 </CardTitle>
               </CardHeader>
               <CardContent className="max-h-[var(--vds-dialog-list-max-height)] overflow-y-auto break-words">
-                <p>
-                  {report.descriptor?.id} {report.descriptor?.version}
-                </p>
-                <p>{report.sha256}</p>
-                {report.kind === 'ui' ? (
-                  <p>{t('plugin.systemUI')}</p>
-                ) : (
-                  <p>
-                    {t('plugin.grants')}:{' '}
-                    {report.descriptor?.capabilities.join(', ') || t('plugin.none')}
-                  </p>
+                {report.kind === 'ui' && (
+                  <>
+                    <p>
+                      {report.descriptor?.id} {report.descriptor?.version}
+                    </p>
+                    <p>{report.sha256}</p>
+                    <p>{t('plugin.systemUI')}</p>
+                  </>
                 )}
-                {report.kind !== 'ui' && <p>{t('plugin.warning')}</p>}
                 {report.update && <p role="alert">{t('installation.updateWarning')}</p>}
                 {report.issues.map((issue, index) => (
                   <p key={index}>
@@ -1883,25 +2020,13 @@ export function SkillAdd({
               </CardContent>
             </Card>
           )}
-          {preview && <PluginPreview request={preview} />}
           {error && <Alert tone="error" title={error} data-testid="skill-upload-error" />}
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button variant="outline" disabled={busy} onClick={onClose}>
               {ui('cancel')}
             </Button>
             {report?.valid ? (
               <>
-                {PLUGIN_PREVIEW_VISIBLE &&
-                  report.valid &&
-                  Boolean(report.descriptor?.components.length) && (
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() => void pluginOperation('preview')}
-                    >
-                      {t('plugin.preview')}
-                    </Button>
-                  )}
                 <Button
                   disabled={busy || !report.valid || !report.candidate}
                   onClick={() => void pluginOperation('confirm')}

@@ -128,6 +128,13 @@ test('version bindings reject unreviewed inputs and archive bytes', () => {
   assert.throws(() => bindComponentVersions(components, bindings), /binding differs/)
 })
 
+test('reviewed Windows Python revision matches the frozen interpreter version', () => {
+  const bindings = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../runtime/versions.json'), 'utf8'))
+  const distribution = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../../../scripts/vendor/python-build-standalone/manifest.json'), 'utf8'))
+  assert.ok(bindings.components.python.version.startsWith(`${distribution.python}-r`),
+    'Python upgrades require a reviewed Windows component version and measured archive binding')
+})
+
 test('runtime tree evidence survives relocation and detects added, removed or changed files', () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-tree-')))
   try {
@@ -261,10 +268,11 @@ test('static packaged component checks do not require expanded runtime or execut
     const envelope = put('resources/components/runtime.json', JSON.stringify({schema: 1, key_id: '', signature: '', manifest: Buffer.from(JSON.stringify(manifest)).toString('base64')}))
     const current = {resources, executable: put('ScholarSeed.exe'), rg: put('resources/backend/bin/rg.exe'), skillPython: put('resources/backend/bin/skill.cmd')}
     put('resources/renderer/index.html')
-    const config = put('resources/defaults/config.json'), product = put('resources/product.json'), lock = put('resources/backend/skills.lock.json')
+    const config = put('resources/defaults/config.json'), product = put('resources/product.json')
+    put('resources/backend/skills.lock.json')
     const requirements = put('resources/backend/python-requirements.txt'), inventory = put('resources/backend/python-dependencies.json'), verifier = put('resources/backend/dependencies.py')
     const frozen = {runtime: {manifestSha256: sha256FileSync(envelope)}, components: {components: manifest.components},
-      config: {sha256: sha256FileSync(config)}, product: {sha256: sha256FileSync(product)}, lockSha256: sha256FileSync(lock),
+      config: {sha256: sha256FileSync(config)}, product: {sha256: sha256FileSync(product)},
       binaries: {rg: {sha256: sha256FileSync(current.rg)}}, pythonDependencies: {requirements_sha256: sha256FileSync(requirements), inventory_sha256: sha256FileSync(inventory), verifier_sha256: sha256FileSync(verifier)}}
     const result = await verifyComponentArchives(app, frozen, current, {})
     assert.equal(result.imports, null)

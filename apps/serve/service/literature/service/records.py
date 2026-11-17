@@ -13,7 +13,34 @@ from service.literature.persistence.reading import (
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
-from service.platform.records import RECORD_SOURCE_UNAVAILABLE, PdfRecordSnapshot, RecordTarget
+from service.platform.records import (
+    NATIVE_ANNOTATIONS,
+    RECORD_SOURCE_UNAVAILABLE,
+    PdfRecordSnapshot,
+    RecordTarget,
+    record_revision,
+)
+
+
+def attachment_snapshot(
+    catalog: AttachmentRecordCatalog, target: RecordTarget, revision: str, payload: bytes
+) -> PdfRecordSnapshot:
+    """Backfill native records once, using a revision guard against concurrent edits."""
+    existing = catalog.peek(target, revision)
+    if existing is None:
+        return catalog.snapshot(target, revision, embedded_pdf_records(payload))
+    if (
+        NATIVE_ANNOTATIONS in existing.records
+        or record_revision(revision, existing.records) != existing.record_revision
+    ):
+        return existing
+    enriched = embedded_pdf_records(payload, existing.records)
+    if enriched == existing.records:
+        return existing
+    try:
+        return catalog.commit(target, revision, enriched, existing.record_revision)
+    except AttachmentRecordConflict:
+        return catalog.peek(target, revision) or existing
 
 
 class AttachmentRecords:
@@ -28,15 +55,29 @@ class AttachmentRecords:
             payload, _media, revision = self._attachments.read_attachment(
                 target.scope_id, target.subject_id
             )
-            initial = (
-                None if self._catalog.exists(target.subject_id) else embedded_pdf_records(payload)
-            )
-            return self._catalog.snapshot(target, revision, initial)
+            return attachment_snapshot(self._catalog, target, revision, payload)
         except PdfAnnotationError as error:
             raise ContentError("invalid_annotations") from error
         except AttachmentOwnerMismatch as error:
             raise ContentError(RECORD_SOURCE_UNAVAILABLE) from error
         except ContentError as error:
+            raise ContentError(RECORD_SOURCE_UNAVAILABLE) from error
+
+    def peek_target(self, target: RecordTarget) -> PdfRecordSnapshot:
+        try:
+            payload, _media, revision = self._attachments.read_attachment(
+                target.scope_id, target.subject_id, read_only=True
+            )
+            existing = self._catalog.peek(target, revision)
+            if existing is not None:
+                return existing
+            records = embedded_pdf_records(payload)
+            return PdfRecordSnapshot(
+                target, record_revision(revision, records), revision, "available", records
+            )
+        except AttachmentOwnerMismatch as error:
+            raise ContentError("record_owner_mismatch") from error
+        except (PdfAnnotationError, ValueError) as error:
             raise ContentError(RECORD_SOURCE_UNAVAILABLE) from error
 
     def commit_target(

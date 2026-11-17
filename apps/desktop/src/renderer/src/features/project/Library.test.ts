@@ -37,6 +37,7 @@ for (const modulePanelOpen of [false, true]) {
       const dependencies: Record<string, unknown> = {
         react: {
           ...React,
+          useLayoutEffect: () => {},
           useState: (initialValue: unknown) => {
             const index = hook++
             if (!(index in hooks))
@@ -68,12 +69,24 @@ for (const modulePanelOpen of [false, true]) {
         },
         '../../components/business/Library': {
           LibraryToolbarTarget: React.createContext(null),
+          LibraryToolbarTrailing: React.createContext(null),
+          LibraryAction: 'LibraryAction',
           LibrarySelectionChange: React.createContext(null),
         },
         '../../components/ui': Object.fromEntries(
-          ['IconButton', 'Tabs', 'TabsContent', 'TabsList', 'TabsTrigger', 'Tooltip'].map(
-            (name) => [name, name]
-          )
+          [
+            'Button',
+            'Select',
+            'SelectTrigger',
+            'SelectContent',
+            'SelectValue',
+            'SelectItem',
+            'Tabs',
+            'TabsContent',
+            'TabsList',
+            'TabsTrigger',
+            'Tooltip',
+          ].map((name) => [name, name])
         ),
         '../../store': {
           useApp: () => ({

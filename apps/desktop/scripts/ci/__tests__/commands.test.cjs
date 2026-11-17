@@ -16,15 +16,43 @@ test('root dev builds the skill pack before starting the isolated product', () =
   )
 })
 
-test('normal and coverage runs consume the same serial collection without lifecycle recursion', () => {
+test('normal and coverage runs share one serial manifest with explicit native partitioning', () => {
+  assert.equal(suite.TEST_CONCURRENCY, 1)
   const normal = suite.invocation(false)
   const covered = suite.invocation(true)
   assert.equal(normal.executable, process.execPath)
-  assert.deepEqual(covered.args.slice(1), [process.execPath, ...normal.args])
+  assert.deepEqual(covered.args.slice(1), [process.execPath, ...suite.NODE_ARGS,
+    '--test-concurrency=1', ...suite.unitTestFiles()])
   assert.ok(normal.args.includes('--test-concurrency=1'))
   assert.deepEqual(normal.args.slice(3), suite.TEST_FILES)
   assert.equal(new Set(suite.TEST_FILES).size, suite.TEST_FILES.length)
   assert.deepEqual(suite.TEST_FILES.slice(-4), Object.keys(suite.TEST_GLOBS))
+  const collected = suite.testFiles()
+  for (const filename of [
+    '../../packages/ui/build.test.cjs',
+    '../../packages/ui/catalog.test.cjs',
+    '../../packages/ui/plugins.test.cjs',
+    '../../packages/ui/preview/directory.test.mjs',
+    '../../packages/ui/render.test.cjs',
+    '../../packages/ui/research.test.cjs',
+    '../../packages/ui/scope.test.cjs',
+    '../../packages/ui/sdk.test.cjs',
+    '../../packages/ui/statistics.test.ts',
+    '../../packages/ui/templates.test.cjs',
+    'scripts/dev/__tests__/pdfe.test.mjs',
+    'scripts/shared/__tests__/utils.test.cjs',
+    'scripts/shared/__tests__/component-cache.test.cjs',
+    'scripts/cd/__tests__/archive_inventory.test.cjs',
+    'scripts/cd/__tests__/windows-runtime.test.cjs',
+    'native/storage.test.cjs',
+    'scripts/cd/__tests__/updater.test.cjs',
+    'native/shipit/fingerprint.test.cjs',
+  ]) {
+    assert.equal(collected.filter(selected => selected === filename).length, 1)
+  }
+  for (const filename of suite.NATIVE_TEST_FILES) {
+    assert.equal(suite.unitTestFiles().includes(filename), false)
+  }
 })
 
 test('Desktop aliases are removed without deleting the root distribution compatibility contracts', () => {
@@ -69,7 +97,9 @@ test('pretest preserves the ordered fail-fast check chain and Desktop cwd', () =
     [
       [pretest.TOOLCHAIN, 'check'],
       ['--test', ...pretest.CONTRACT_FILES],
+      ['--experimental-transform-types', '--test', 'scripts/ci/__tests__/standards.test.mjs'],
       [pretest.TOOLCHAIN, 'run', 'i18n:test'],
+      [pretest.TOOLCHAIN, 'run', 'i18n:check'],
     ]
   )
   const calls = []
@@ -101,7 +131,7 @@ test('pretest preserves the ordered fail-fast check chain and Desktop cwd', () =
   )
 })
 
-test('explicit pretest arguments reach only the final localization test', () => {
+test('explicit pretest arguments reach only the final localization check', () => {
   const ordinary = pretest.invocations()
   const explicit = pretest.invocations(['--base', 'with spaces'])
   assert.deepEqual(explicit.slice(0, -1), ordinary.slice(0, -1))

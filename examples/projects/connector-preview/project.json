@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "connector-preview",
+  "revision": "1",
+  "name": "连接器预览合成输入",
+  "description": "仅供连接器 JSON 草稿预览的合成输入；不包含可用服务、凭据或执行结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic MCP configuration for manual preview evaluation.",
+    "rights": "Repository synthetic inputs; repository license applies."
+  },
+  "files": [
+    {
+      "id": "connector-preview",
+      "source": "files/connector-preview.json",
+      "target": "connector-preview.json",
+      "mediaType": "application/json",
+      "size": 393,
+      "sha256": "54f746d22f9a57f1551ad727b187e4e744d99cc1aaec9e15b3ee28ddbf45e404"
+    }
+  ]
+}

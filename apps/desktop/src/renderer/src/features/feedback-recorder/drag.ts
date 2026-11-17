@@ -92,7 +92,7 @@ export function useFloatingSurface(
     pointerId: number
     pointerX: number
     pointerY: number
-  }>()
+  } | undefined>(undefined)
   const suppressedClickRef = React.useRef(false)
   const [offset, setOffset] = React.useState<FloatingOffset>({ x: 0, y: 0 })
 

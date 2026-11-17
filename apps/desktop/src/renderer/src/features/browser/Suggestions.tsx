@@ -16,6 +16,7 @@ import {
   CommandList,
   Tooltip,
   TooltipContent,
+  Toast,
 } from '../../components/ui'
 
 const SEARCH_ITEM_ID = 'search'
@@ -76,30 +77,35 @@ export function SuggestionsPanel({
         }
       }}
     >
-      <Command className="min-h-0 overflow-hidden" value={selected} onValueChange={setSelected}>
-        <CommandList aria-label={t('historySuggestions')}>
-          {model.items
-            .filter((item) => item.id !== SEARCH_ITEM_ID)
-            .map((item) => (
-              <CommandItem
-                key={item.id}
-                value={item.id}
-                onFocus={() => setSelected(item.id)}
-                onSelect={() => select(item.id)}
-              >
-                <span className="min-w-0 truncate">
-                  <span className="block truncate">{item.title}</span>
-                  <span className="block truncate text-[var(--vds-text-tertiary)]">
-                    {item.detail}
+      {(model.items.some((item) => item.id !== SEARCH_ITEM_ID) ||
+        !search ||
+        model.status === 'error') && (
+        <Command className="min-h-0 overflow-hidden" value={selected} onValueChange={setSelected}>
+          <CommandList aria-label={t('historySuggestions')}>
+            {model.items
+              .filter((item) => item.id !== SEARCH_ITEM_ID)
+              .map((item) => (
+                <CommandItem
+                  className="focus-visible:![box-shadow:none] focus-visible:outline-none"
+                  key={item.id}
+                  value={item.id}
+                  onFocus={() => setSelected(item.id)}
+                  onSelect={() => select(item.id)}
+                >
+                  <span className="min-w-0 truncate">
+                    <span className="block truncate">{item.title}</span>
+                    <span className="block truncate text-[var(--vds-text-tertiary)]">
+                      {item.detail}
+                    </span>
                   </span>
-                </span>
-              </CommandItem>
-            ))}
-          {model.status !== 'ready' && (
-            <CommandEmpty>{t(STATUS_MESSAGES[model.status].key)}</CommandEmpty>
-          )}
-        </CommandList>
-      </Command>
+                </CommandItem>
+              ))}
+            {model.status !== 'ready' && (
+              <CommandEmpty>{t(STATUS_MESSAGES[model.status].key)}</CommandEmpty>
+            )}
+          </CommandList>
+        </Command>
+      )}
       {search && (
         <Button
           type="button"
@@ -116,6 +122,7 @@ export function SuggestionsPanel({
 }
 
 export function Suggestions({ bridge }: { bridge: SuggestionsBridge }): React.JSX.Element | null {
+  const toastInteraction = useRef({ hovered: false, focused: false })
   const [model, setModel] = useState<BrowserOverlayModel | null>(null)
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null)
   const currentModel = useRef<BrowserOverlayModel | null>(null)
@@ -141,7 +148,7 @@ export function Suggestions({ bridge }: { bridge: SuggestionsBridge }): React.JS
     if (!model) return
     document.documentElement.dataset.theme = model.theme
     document.documentElement.lang = model.language
-    const tooltip = model.tooltip !== undefined
+    const tooltip = model.tooltip !== undefined || model.toast !== undefined
     document.documentElement.classList.toggle('!bg-transparent', tooltip)
     document.body.classList.toggle('!bg-transparent', tooltip)
     document.getElementById('root')?.classList.toggle('overflow-hidden', !tooltip)
@@ -150,16 +157,66 @@ export function Suggestions({ bridge }: { bridge: SuggestionsBridge }): React.JS
   }, [model, localization])
   return model ? (
     <I18nextProvider i18n={localization}>
-      {model.tooltip !== undefined ? (
+      {model.toast ? (
+        <Toast
+          id="browser-native-toast"
+          data-testid="browser-native-toast"
+          title={model.toast.title}
+          tone={model.toast.tone}
+          closeLabel={model.toast.closeLabel}
+          duration={false}
+          className="absolute list-none"
+          style={{
+            left: model.toastBounds!.x,
+            top: model.toastBounds!.y,
+            width: model.toastBounds!.width,
+            height: model.toastBounds!.height,
+          }}
+          onDismiss={() => {
+            void bridge.send({ kind: 'toast-close', revision: model.revision })
+          }}
+          onMouseEnter={() => {
+            toastInteraction.current.hovered = true
+            void bridge.send({ kind: 'toast-hover', revision: model.revision, paused: true })
+          }}
+          onMouseLeave={() => {
+            toastInteraction.current.hovered = false
+            void bridge.send({
+              kind: 'toast-hover',
+              revision: model.revision,
+              paused: toastInteraction.current.focused,
+            })
+          }}
+          onFocusCapture={() => {
+            toastInteraction.current.focused = true
+            void bridge.send({ kind: 'toast-hover', revision: model.revision, paused: true })
+          }}
+          onBlurCapture={() => {
+            toastInteraction.current.focused = false
+            void bridge.send({
+              kind: 'toast-hover',
+              revision: model.revision,
+              paused: toastInteraction.current.hovered,
+            })
+          }}
+        />
+      ) : model.tooltip !== undefined ? (
         <Tooltip
           open
           className="!block !h-full !w-full"
-          onClick={() => {
-            void bridge.send({ kind: 'dismiss', revision: model.revision })
+          onClick={(event) => {
+            if (event.target === event.currentTarget)
+              void bridge.send({ kind: 'dismiss', revision: model.revision })
           }}
         >
           <TooltipContent
             data-testid="browser-native-tooltip"
+            onMouseEnter={() => {
+              void bridge.send({ kind: 'tooltip-hover', revision: model.revision, paused: true })
+            }}
+            onMouseLeave={() => {
+              void bridge.send({ kind: 'tooltip-hover', revision: model.revision, paused: false })
+            }}
             className="!pointer-events-auto !absolute !block !max-w-none !transform-none !translate-x-0 !translate-y-0 !animate-none"
             style={{
               left: model.tooltipBounds!.x,

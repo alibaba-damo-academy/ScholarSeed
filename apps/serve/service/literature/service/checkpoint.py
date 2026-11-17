@@ -23,7 +23,10 @@ from service.literature.persistence.files import (
 )
 from service.literature.service.agentic import prepare_agentic_search
 from service.literature.service.result import (
+    PRECISE_RUN_COLLECTION,
+    PRECISE_RUN_ROOT,
     SEARCH_FILE_BYTES,
+    SEARCH_SELECTION_FILE,
     AuthorizationSource,
     SearchResult,
     prepare_result,
@@ -42,11 +45,14 @@ CARD_FIELD_METADATA = "metadata"
 CARD_FIELD_SELECTION = "selection"
 CARD_FIELD_REPORT = "report"
 CARD_FIELD_FULLTEXT = "fulltext"
-PRECISE_SELECTION_TRIGGERS = (".precise-literature-search/runs/*/selection.json",)
+PRECISE_SELECTION_TRIGGERS = (
+    f"{PRECISE_RUN_ROOT}/{PRECISE_RUN_COLLECTION}/*/{SEARCH_SELECTION_FILE}",
+)
 REVIEW_SELECTION_TRIGGERS = (
     "*/02_retrieval/selected_paper.json",
     "*/*/02_retrieval/selected_paper.json",
 )
+AGENTIC_METADATA_FILE = "metadata.json"
 AGENTIC_METADATA_TRIGGERS = (
     "agentic-search-results/*/metadata.json",
     "*/agentic-search-results/*/metadata.json",
@@ -110,6 +116,7 @@ class CheckpointPolicy:
     task_type: ProductTaskType
     authorization_type: str
     triggers: tuple[str, ...]
+    workspace_trigger: str
     read: CheckpointReader
     # A metadata-only fallback is still useful after rejection; other tasks stop.
     continue_on_reject: bool
@@ -158,6 +165,18 @@ def _precise_selection(workdir: Path, trigger: str) -> CheckpointContent | None:
 
 def _review_selection(workdir: Path, trigger: str) -> CheckpointContent | None:
     workspace = scoped_parent(scoped_parent(trigger))
+    try:
+        request = json.loads(
+            read_scoped_file(
+                workdir,
+                scoped_workspace_path(workspace, "01_input/writing_request.json"),
+                SEARCH_FILE_BYTES,
+            )
+        )
+        if request.get("execution", {}).get("mode") == "quick":
+            return None
+    except FileNotFoundError:
+        pass
     run_id = review_retrieval_run(workdir, workspace)
     prepared = prepare_review_search(workdir, workspace, run_id)
     if not prepared.authorization_refs:
@@ -241,6 +260,7 @@ CHECKPOINT_POLICIES = (
         ProductTaskType.PRECISE_SEARCH,
         PRECISE_SEARCH_FULLTEXT,
         PRECISE_SELECTION_TRIGGERS,
+        SEARCH_SELECTION_FILE,
         _precise_selection,
         continue_on_reject=False,
         requires_task_type=False,
@@ -250,6 +270,7 @@ CHECKPOINT_POLICIES = (
         ProductTaskType.LITERATURE_REVIEW,
         LITERATURE_REVIEW_FULLTEXT,
         REVIEW_SELECTION_TRIGGERS,
+        CORPUS,
         _review_selection,
         continue_on_reject=False,
         requires_task_type=False,
@@ -259,6 +280,7 @@ CHECKPOINT_POLICIES = (
         ProductTaskType.RESEARCH_IDEA,
         RESEARCH_IDEA_FULLTEXT,
         AGENTIC_METADATA_TRIGGERS,
+        AGENTIC_METADATA_FILE,
         agentic_checkpoint,
         continue_on_reject=True,
         requires_task_type=True,
@@ -285,9 +307,20 @@ def active_policies(task_type: str) -> tuple[CheckpointPolicy, ...]:
 
 
 def discover_triggers(
-    workdir: Path, task_type: str
+    workdir: Path, task_type: str, workspace: str | None = None
 ) -> tuple[tuple[CheckpointPolicy, str, int], ...]:
     """List existing regular trigger files; content is validated separately by the policy."""
+
+    if workspace is not None:
+        if task_type not in CHECKPOINT_TASK_TYPES:
+            return ()
+        policy = active_policies(task_type)[0]
+        try:
+            relative = scoped_workspace_path(workspace, policy.workspace_trigger)
+        except ValueError:
+            return ()
+        modified = scoped_modified(workdir, relative, regular=True)
+        return ((policy, relative, modified),) if modified is not None else ()
 
     return tuple(
         (policy, relative, modified)

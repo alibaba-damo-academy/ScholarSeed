@@ -1,13 +1,17 @@
 import { sourceBaseline } from './source.ts'
+import { listenForSetupExit, setupExitPipe } from './overinstall.ts'
+import { ADOPTION_STAGE, reportAdoptionFailure, type AdoptionStage } from './adoption.ts'
 import {
   updateRepairTarget,
   updateRepairSelection,
+  updateRepairMode,
   repairInstalledUpdate,
   UPDATE_REPAIR_WIZARD_ARGUMENT,
 } from './repair.ts'
 import { prepareRepair, runRepairWizard } from './rescue.ts'
 import { verifyApplication } from './terminal.ts'
 import { beginDomains } from '../../native/domains.cjs'
+import { removeLegacyCoordination } from '../../native/registry.cjs'
 import type { RecoveryNative, TerminalRestorationRuntime } from './restoration.ts'
 import { systemCacheDir } from './cachedir.ts'
 import { TRAY_CHANNEL } from '../tray'
@@ -16,7 +20,8 @@ import {
   DEVELOPMENT_CONTROL_TIMEOUT_MS,
   startDevelopmentControl,
 } from './development.ts'
-import { FeedbackSubmissionService, feedbackResponseBytes } from './submission'
+import { FeedbackSubmissionService, collectServeFeedbackBundle } from './submission'
+import { readFeedbackSandboxLog, readFeedbackUpdateLog } from './feedback-log.ts'
 import {
   applicationResources,
   applicationRenderer,
@@ -24,7 +29,12 @@ import {
   applicationInstallation,
   applicationIcon,
 } from './resources.ts'
-import { prepareWindowsVelopack, type PreparedWindowsVelopack } from './velopack.ts'
+import {
+  prepareWindowsVelopack,
+  type PreparedWindowsVelopack,
+  type WindowsPreparationStage,
+} from './velopack.ts'
+import { redactDiagnosticError } from './redaction.ts'
 import { installationFailure } from './family.ts'
 import {
   restoreUpdateDebugPort,
@@ -40,7 +50,7 @@ import {
   NATIVE_UPDATE_LOG_FILE,
   WindowsHandoffExitUnconfirmed,
 } from './transfer.ts'
-import { desktopDirectoryWriter } from './writer'
+import { desktopDirectoryWriter, writePrivateRecord } from './writer'
 import { createPluginHost } from './plugins'
 import { validatePluginBinding } from './skills'
 import {
@@ -53,7 +63,13 @@ import { CoordinationReclamation } from './reclamation'
 import { uncertainRelease, type ReclamationNative } from '../../native/reclamation.cjs'
 import { serveAssets, type AssetServer } from './assets'
 import { bundledWindowsRuntime } from '../../runtime/components.cjs'
-import { STARTUP_CHANNEL, STARTUP_RETRY_CHANNEL, STARTUP_PHASE, StartupState } from '../startup'
+import {
+  STARTUP_CHANNEL,
+  STARTUP_RETRY_CHANNEL,
+  STARTUP_PHASE,
+  SCHEMA_UPGRADE_REQUIRED,
+  StartupState,
+} from '../startup'
 import { resolveStartupAccountBase } from './backend'
 import { OfficeFontFiles } from './fontfiles'
 import {
@@ -64,7 +80,7 @@ import {
   OFFICE_FONT_CACHE_DIRECTORY,
   type NativeFontFace,
 } from '../fonts'
-import { OfficeFontCacheStore } from './fontcache'
+import { desktopPersistence, closeDesktopPersistence } from './persistence'
 import officeManifest from '../renderer/public/office/zeta-20250513/manifest.json'
 import officeFontManifest from '../renderer/public/fonts/sources.json'
 import { userInfo } from 'node:os'
@@ -73,6 +89,7 @@ import {
   explicitUpdateProfile,
   persistUpdateLaunch,
   observeUpdateLaunch,
+  pruneUpdateLaunchDirectories,
   restoreUpdateLaunch,
 } from './relaunch.ts'
 import { SCHOLARSEED_HOME_ENV } from './storage'
@@ -82,6 +99,7 @@ import { formatSystemVersion } from './system'
 import type { CredentialProfile } from './product'
 import { configureNotificationIdentity } from './identity.ts'
 import {
+  NOTIFICATION_PROTOCOL,
   WindowsNotifications,
   findNotificationUrl,
   notificationAttentionId,
@@ -117,6 +135,7 @@ import {
   WINDOWS_PLATFORM,
 } from './window'
 import {
+  BROWSER_DOWNLOAD_NOTICE_CHANNEL,
   BROWSER_FIND_CHANNEL,
   BROWSER_SNAPSHOT_CHANNEL,
   BROWSER_REVEAL_CHANNEL,
@@ -130,14 +149,24 @@ import {
   MENU_ACTION,
   MENU_CHANNEL,
   MENU_ERROR,
+  isAccountMenuLanguageValue,
   sameMenuTarget,
 } from '../menu'
 import { createMenuOwner, MenuActionRegistry, type MenuOwner } from './menuhost'
 import { registerBrowserIpc } from './browseripc'
-import { registerDeliveryIpc } from './delivery'
+import { createPortalHost, createPortalGroup } from './portal'
+import { raiseNativeLayers } from './layers'
+import { SETTINGS_PORTAL } from '../settings'
+import {
+  CONVERSATION_PORTAL,
+  FOREGROUND_PORTAL,
+  RESIZE_PORTAL,
+  RESIZE_PORTAL_CAPACITY,
+  UPDATE_PORTAL,
+} from '../portal'
 import { createBrowserPolicy } from './policy'
 import { createBrowserReadGrants, type BrowserReadScope } from './grant'
-import { runBrowserSearch } from './search'
+import { inspectProductSearchOrigin, runBrowserSearch } from './search'
 import { agentFailureCode, createAgentBrowserController } from './agent'
 import { registerBrowserApprovalIpc, registerBrowserHistoryApprovalIpc } from './approval'
 import { createLegacyBrowserHost, type ActiveBrowserHost } from './browserhost'
@@ -181,6 +210,14 @@ import {
   type McpSettingsResponse,
 } from '../mcp-settings'
 import {
+  TRANSLATION_CHANNEL,
+  TRANSLATION_PATH,
+  TRANSLATION_TIMEOUT_MS,
+  translationRequest,
+  type TranslationRequest,
+  type TranslationReply,
+} from '../translation'
+import {
   SUBSCRIPTION_CHANNEL,
   subscriptionLoginPath,
   subscriptionAuthorizationUrl,
@@ -204,6 +241,7 @@ import {
   requireCleanBackendStop,
   type BackendStopResult,
   runtimeStoreRoot,
+  BACKEND_LOG_FILE,
   LOGS_DIRNAME,
   resolveProductConfig,
   waitForHealth,
@@ -216,7 +254,6 @@ import {
   FEEDBACK_DIAGNOSTICS_CHANNEL,
   FEEDBACK_SUBMIT_CHANNEL,
   FEEDBACK_BUNDLE_PATH,
-  FEEDBACK_LIMITS,
   feedbackSubmissionForm,
   FEEDBACK_CAPTURE_CHANNEL,
   FEEDBACK_SHORTCUT_CHANNEL,
@@ -246,6 +283,7 @@ import { runDrive } from './drive'
 import { runWorkbenchCheck } from './workbench'
 import { runPackageCheck } from './packagecheck'
 import { installContentSecurityPolicy, mainWindowContentSecurityPolicy } from './csp'
+import { installNetworkDiagnostics } from './latency'
 import { finishHeadlessCheck } from './headless'
 import {
   loadRendererPreferences,
@@ -280,6 +318,7 @@ import {
 } from './handoff-inbox'
 import { reportReceipt } from './receipt'
 import { createHandoffCoordinator } from './handoff-local'
+import { listenForLoginCallback } from './loopback'
 import { findCallbackUrl, handoffFingerprint, parseCallbackUrl } from './handoff-url'
 import { callbackTimingLine, findCallbackTiming } from './handoff-timing'
 import { processIntegrityLevel } from './integrity'
@@ -300,12 +339,19 @@ import {
   UPDATE_REPAIR_CHANNEL,
   updateCandidateKey,
 } from '../updates'
-import { PathAuthorizer, isAuthorizationScope } from './authorization'
-import { saveFileCopy } from './save'
+import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
+import { saveFileCopy, savePathCopy, SAVE_COPY_SENDER_ERROR } from './save'
 import { blocksRendererReload, prepareRendererLoad } from './reload'
 import { installOfficeFontPermission } from './fonts'
-import { acquireOfficeImage } from './images'
-import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
+import { acquireOfficeImage, acquireRemoteImage, readSelectedImage } from './images'
+import {
+  OFFICE_IMAGE_CHANNEL,
+  REMOTE_IMAGE_CHANNEL,
+  OfficeImageError,
+  type OfficeImageSource,
+  type OfficeImageResult,
+  type RemoteImageResult,
+} from '../images'
 import {
   protocolClientArguments,
   requiresSingleInstanceLock,
@@ -314,16 +360,19 @@ import {
 import { readOfficeClipboard, writeClipboardContent } from './clipboard'
 import { canCopySelection, SELECTION_COPY_ROLE } from './contextmenu'
 import { openSystemPermission, readSystemPermissions } from './permissions'
-import type { SystemPermissionId } from '../permissions'
+import type { SystemPermissionTarget } from '../permissions'
 import { externalWebUrl } from './external'
 import { DEFAULT_SERVE_URL } from '../../endpoints'
 import { installApplicationMenu } from './menu'
 import { createWindowController } from './tray'
-import { DiagnosticLog, RotatingFileLog, isRendererDiagnostic } from './logfile'
+import { DiagnosticLog, isRendererDiagnostic } from './logfile'
+import { AsyncFileLog } from './logging'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import { nextUpdateCheckAt, UpdateChecks } from './checks.ts'
 import {
   IMPORT_PICKER_TARGET,
+  IMPORT_PICKER_CHANNEL,
+  IMPORT_PICKER_PREVIEW,
   isImportPickerTarget,
   supportsImportPickerTarget,
   type ImportPickerTarget,
@@ -485,7 +534,7 @@ let setLoginWindowVisible: ReturnType<typeof createLoginWindowSizing> | null = n
 let runtimePreparation: AbortController | null = null
 let startupScreen: StartupScreen | null = null
 let startupScreenStartedAt: number | null = null
-let windowLifecycleLog: RotatingFileLog | null = null
+let windowLifecycleLog: AsyncFileLog | null = null
 let windowDiagnostics: DiagnosticLog | null = null
 const WINDOW_LIFECYCLE_LOG_FILENAME = 'window.log'
 const windowController = createWindowController({
@@ -665,10 +714,13 @@ function isMainWindowSender(
 }
 
 function logWindowLifecycle(line: string): void {
-  windowLifecycleLog ??= new RotatingFileLog(
+  windowLifecycleLog ??= new AsyncFileLog(
     join(desktopHome(), LOGS_DIRNAME, WINDOW_LIFECYCLE_LOG_FILENAME),
-    { acquireWriter: () => desktopDirectoryWriter(join(desktopHome(), LOGS_DIRNAME)) }
+    { scope: 'window' }
   )
+  desktopPersistence().diagnostics((entry) => {
+    void windowLifecycleLog?.write(entry, true)
+  })
   windowDiagnostics ??= new DiagnosticLog(windowLifecycleLog, (entry) =>
     writeBackendDiagnostic(backend, entry)
   )
@@ -1058,6 +1110,31 @@ function assertWindowsInstallationIdle(): void {
   }
 }
 
+async function recoverWindowsInstallationBackend(port?: number): Promise<void> {
+  windowsUpdateMaintenanceActive = false
+  backendManaged = true
+  const pending = startManagedBackend(port)
+  const recoveryGeneration = startupState.snapshot().generation
+  const expectedBackend = backend
+  if (!(await pending)) {
+    backendManaged = false
+    throw new Error('Runtime restart failed')
+  }
+  const win = aliveMainWindow()
+  if (!win || !currentStartup(recoveryGeneration, expectedBackend, win))
+    throw new Error('Workbench changed during update recovery')
+  await initializeWindowServices(
+    win,
+    process.env.ELECTRON_RENDERER_URL || rendererBase + ROOT_ROUTE,
+    process.env.ELECTRON_RENDERER_URL,
+    browserStorageWindowGeneration
+  )
+  if (!currentStartup(recoveryGeneration, expectedBackend, win))
+    throw new Error('Workbench changed during update recovery')
+  startupState.complete(recoveryGeneration, apiBase)
+  finalizeStartup('')
+}
+
 async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
   const controller = new AbortController()
   updateInstallAbort = controller
@@ -1091,8 +1168,20 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
     preferencesRequested = true
     await preferenceQuiescence.prepare(undefined, 'maintenance')
     controller.signal.throwIfAborted()
-    if (windowsPrepared !== receipt || backend !== source || desktopHandoff.isBusy())
-      throw new Error('Workbench changed while saving preferences for Windows update')
+    // Complete an already-started rotation before persisting the session for restart.
+    await refreshInflight
+    controller.signal.throwIfAborted()
+    const window = aliveMainWindow()
+    if (!window) throw new Error('Main window unavailable while saving Windows update session')
+    await window.webContents.session.cookies.flushStore()
+    controller.signal.throwIfAborted()
+    if (
+      aliveMainWindow() !== window ||
+      windowsPrepared !== receipt ||
+      backend !== source ||
+      desktopHandoff.isBusy()
+    )
+      throw new Error('Workbench changed while saving Windows update state')
     maintenance = backendUpdateControl(source)
     windowsUpdateMaintenanceActive = true
     clearBackendRestart()
@@ -1176,28 +1265,7 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
         drained = true
       }
       if (drained) {
-        windowsUpdateMaintenanceActive = false
-        backendManaged = true
-        const pending = startManagedBackend(source?.port)
-        const recoveryGeneration = startupState.snapshot().generation
-        const expectedBackend = backend
-        if (!(await pending)) {
-          backendManaged = false
-          throw new Error('Runtime restart failed', { cause: error })
-        }
-        const win = aliveMainWindow()
-        if (!win || !currentStartup(recoveryGeneration, expectedBackend, win))
-          throw new Error('Workbench changed during update recovery')
-        await initializeWindowServices(
-          win,
-          process.env.ELECTRON_RENDERER_URL || rendererBase + ROOT_ROUTE,
-          process.env.ELECTRON_RENDERER_URL,
-          browserStorageWindowGeneration
-        )
-        if (!currentStartup(recoveryGeneration, expectedBackend, win))
-          throw new Error('Workbench changed during update recovery')
-        startupState.complete(recoveryGeneration, apiBase)
-        finalizeStartup('')
+        await recoverWindowsInstallationBackend(source?.port)
       } else if (generation && maintenance && source && !source.stopping) {
         await maintenance.resume(generation)
       } else if (source?.stopping) {
@@ -1248,13 +1316,21 @@ const updatePreparation = new UpdatePreparation(
     requireDesktopWorkbench()
     const { candidate, signal, isCurrent } = attempt
     const updateId = `${candidate.id}-${attempt.generation}`
-    const record = (event: string, result?: string): void =>
+    const record = (
+      event: string,
+      result?: string,
+      evidence?: Pick<
+        Parameters<typeof updater.logUpdateEvent>[1],
+        'stage' | 'diagnostic' | 'httpStatus' | 'expectedBytes' | 'receivedBytes' | 'writtenBytes'
+      >
+    ): void =>
       updater.logUpdateEvent(pushLog, {
         phase: 'preparation',
         event,
         result,
         updateId,
         generation: attempt.generation,
+        ...evidence,
         fromVersion: `${app.getVersion()}-${updater.resolveDesktopConfig(pushLog).buildNumber}`,
         toVersion: `${candidate.version}-${candidate.build_number}`,
       })
@@ -1266,7 +1342,9 @@ const updatePreparation = new UpdatePreparation(
       updateId,
     })
     if (!preparationPolicy) nextPreparationRetryAt = Date.now() + PREPARATION_RETRY_DELAY_MS
-    let errorOrigin: 'download' | 'preparation' = 'download'
+    const windows = process.platform === WINDOWS_PLATFORM
+    let windowsStage: WindowsPreparationStage | 'preview-candidate' = 'preview-candidate'
+    let errorOrigin: 'download' | 'preparation' = windows ? 'preparation' : 'download'
     const progress = (next: UpdateProgress): void => {
       if (next.phase === 'preparing') errorOrigin = 'preparation'
       if (isCurrent()) publishUpdateProgress(next)
@@ -1274,7 +1352,7 @@ const updatePreparation = new UpdatePreparation(
     try {
       await updater.validatePreviewCandidate(candidate, pushLog, signal)
       if (!isCurrent()) return false
-      if (process.platform === WINDOWS_PLATFORM) {
+      if (windows) {
         windowsPrepared = null
         const config = resolveProductConfig(pushLog)
         publishUpdateSnapshot({ phase: 'downloading', currentVersion: app.getVersion(), candidate })
@@ -1287,6 +1365,28 @@ const updatePreparation = new UpdatePreparation(
           appId: config.productId,
           diagnosticFile: join(desktopHome(), LOGS_DIRNAME, NATIVE_UPDATE_LOG_FILE),
           signal,
+          onStage: (stage) => {
+            windowsStage = stage
+            errorOrigin =
+              stage === 'delta-download' || stage === 'full-download' ? 'download' : 'preparation'
+          },
+          onFullDownload: ({ result, ...evidence }) => {
+            if (result === 'failed' && evidence.stage === 'digest') {
+              windowsStage = 'package-verification'
+              errorOrigin = 'preparation'
+            }
+            record('full-download', result, evidence)
+          },
+          onCleanupError: (error) =>
+            record('cleanup', 'failed', {
+              stage: 'cleanup',
+              diagnostic: redactDiagnosticError(error),
+            }),
+          log: (message) =>
+            record('component', undefined, {
+              stage: 'runtime-components',
+              diagnostic: redactDiagnosticError(message.trimEnd()),
+            }),
           onProgress: (percent) => progress({ phase: 'downloading', percent }),
         })
         if (!isCurrent()) return false
@@ -1336,7 +1436,11 @@ const updatePreparation = new UpdatePreparation(
       runBackgroundUpdateCheck()
       return true
     } catch (error) {
-      record('finish', isCurrent() ? 'failed' : 'interrupted')
+      record(
+        'finish',
+        isCurrent() ? 'failed' : 'interrupted',
+        windows ? { stage: windowsStage, diagnostic: redactDiagnosticError(error) } : undefined
+      )
       if (isCurrent()) {
         const retained = preparationPolicy ? retainedUpdateReady() : null
         publishUpdateSnapshot({
@@ -1520,6 +1624,97 @@ let backendQuitFinished = false
 let macMaintenanceUncertain = false
 let macUpdateMaintenanceActive = false
 let developmentControl: Awaited<ReturnType<typeof startDevelopmentControl>> = null
+
+async function connectSetupExit(): Promise<void> {
+  if (process.platform !== WINDOWS_PLATFORM || !app.isPackaged || headless) return
+  let source: typeof backend = null
+  let control: ReturnType<typeof backendUpdateControl> | null = null
+  let generation: string | null = null
+  let attempted = false
+  let drained = false
+  let claimed = false
+  const server = await listenForSetupExit(
+    setupExitPipe(realpathSync.native(applicationInstallation(app).root)),
+    {
+      confirm: async () => {
+        if (
+          appQuitting ||
+          updateInstallationInProgress ||
+          updateInstallAbort ||
+          desktopHandoff.isBusy()
+        )
+          return false
+        const text = mainLocalization().getFixedT(null, 'native')
+        const result = await dialog.showMessageBox({
+          type: 'question',
+          title: text('overinstall.title'),
+          message: text('overinstall.message'),
+          detail: text('overinstall.detail'),
+          buttons: [text('overinstall.confirm'), text('tray.cancel')],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        })
+        return result.response === 0
+      },
+      prepare: async (signal) => {
+        if (
+          appQuitting ||
+          updateInstallationInProgress ||
+          updateInstallAbort ||
+          desktopHandoff.isBusy()
+        )
+          throw new Error('Application maintenance is busy')
+        source = backend
+        control = null
+        generation = null
+        attempted = false
+        drained = false
+        claimed = true
+        setUpdateInstallationInProgress(true)
+        await updatePreparation.stop()
+        signal.throwIfAborted()
+        assertWindowsInstallationIdle()
+        await preferenceQuiescence.prepare(undefined, 'maintenance')
+        signal.throwIfAborted()
+        if (source !== backend || desktopHandoff.isBusy())
+          throw new Error('Workbench changed before installation shutdown')
+        control = backendUpdateControl(source)
+        windowsUpdateMaintenanceActive = true
+        clearBackendRestart()
+        attempted = true
+        generation = await control.prepareUpdate()
+        signal.throwIfAborted()
+        const stopped = await drainManagedBackend()
+        drained = true
+        requireCleanBackendStop(stopped)
+        assertWindowsInstallationIdle()
+        signal.throwIfAborted()
+      },
+      recover: async () => {
+        if (!claimed) return
+        if ((attempted && !generation) || source?.stopping) {
+          await drainManagedBackend()
+          drained = true
+        }
+        if (drained) await recoverWindowsInstallationBackend(source?.port)
+        else if (control && generation) await control.resume(generation)
+        windowsUpdateMaintenanceActive = false
+        setUpdateInstallationInProgress(false)
+        preferenceQuiescence.resume()
+        updatePreparation.resume()
+        claimed = false
+      },
+      exit: () => {
+        updateRestartRequested = true
+        appQuitting = true
+        app.quit()
+      },
+      failed: (error) => pushLog(`[setup] shutdown coordination failed: ${String(error)}\n`),
+    }
+  )
+  app.once('will-quit', () => server.close())
+}
 
 async function connectDevelopmentControl(): Promise<void> {
   let source: typeof backend = null
@@ -1873,13 +2068,19 @@ async function startManagedBackend(
     },
     browserListAuthority: () => browserPolicy?.agentUseRevision() ?? null,
     browserSearchAction: (input) => {
-      if (!browserHost || !browserGrants || !browserAgentController)
+      const host = browserHost
+      const backendOwner = backend
+      if (!host || !backendOwner || !browserGrants || !browserAgentController)
         return Promise.reject(new Error('browser_unavailable'))
       return runBrowserSearch(input, {
-        registry: browserHost.search,
+        registry: host.search,
         grants: browserGrants,
         controller: browserAgentController,
-        enabled: () => browserPolicy?.agentUseEnabled() === true,
+        enabled: () =>
+          !appQuitting &&
+          backend === backendOwner &&
+          !backendOwner.stopping &&
+          browserHost === host,
         onStage: (stage, tabId) =>
           pushLog(
             `[browser-search] ${JSON.stringify({
@@ -2005,6 +2206,11 @@ async function startManagedBackend(
         const controller = browserAgentController
         if (!grants || !controller || !browserPolicy?.agentUseEnabled())
           throw new Error('browser_unavailable')
+        if (
+          !resolveProductConfig(pushLog).features.browserAdvancedSettings &&
+          !browserHost?.agent.isAgentTarget(input.tabId, input.scope.sessionId)
+        )
+          throw new Error('browser_unavailable')
         const proof = grants.prepareNavigate({
           sessionId: input.scope.sessionId,
           turnId: input.scope.turnId,
@@ -2098,7 +2304,7 @@ async function startManagedBackend(
         const grants = browserGrants
         if (!controller || !grants || !browserPolicy?.agentUseEnabled())
           throw new Error('browser_action_unavailable')
-        let proof: ReturnType<typeof controller.prepareAction> | null = null
+        let proof: Awaited<ReturnType<typeof controller.prepareAction>> | null = null
         let stage = 'prepare'
         try {
           if (input.readGrant) {
@@ -2125,7 +2331,7 @@ async function startManagedBackend(
               throw new Error('stale_grant')
             stage = 'bind-observation'
             grants.finishActionObservation(authority, input.snapshotId)
-          } else proof = controller.prepareAction(input)
+          } else proof = await controller.prepareAction(input)
           stage = 'extend-grant'
           grants.extendActionLease(
             {
@@ -2195,17 +2401,19 @@ async function startManagedBackend(
         if (!authority) throw new Error('browser_unavailable')
         return authority.prepare(input)
       },
-      execute: (input) => {
+      execute: async (input) => {
         const authority = browserHost?.historyAgent
         if (!authority) throw new Error('browser_unavailable')
         authority.watchOwner(historyOwner, next.exited)
-        return authority.execute({
+        const request = {
           scope: input.scope,
           requestId: input.grantRequestId,
           proofId: input.proofId,
           owner: historyOwner,
           signal: input.signal,
-        })
+        }
+        await authority.waitForApproval(request)
+        return authority.execute(request)
       },
       cancel: (input) => {
         browserHost?.historyAgent.cancel({
@@ -2241,9 +2449,13 @@ async function startManagedBackend(
       logWindowLifecycle(
         `[shell] backend startup failed pid=${next.proc?.pid ?? null} port=${next.port} failure=${next.error?.kind ?? null}\n`
       )
+      startupState.fail(
+        generation,
+        next.error?.kind ?? 'startupFailed',
+        next.error?.kind !== SCHEMA_UPGRADE_REQUIRED
+      )
       await stopBackend(next)
       if (backend === next) backend = null
-      startupState.fail(generation, next.error?.kind ?? 'startupFailed')
       return false
     }
     apiBase = next.baseUrl || apiBase
@@ -2469,25 +2681,32 @@ async function accountBaseUrlFromServe(signal?: AbortSignal): Promise<string> {
 let refreshInflight: Promise<void> | null = null
 let refreshTimerRegistered = false
 
-function ensureFreshAuth(): void {
+function ensureFreshAuth(startup = false): Promise<void> | undefined {
   // Token rotation changes both remote and local credentials. Native candidates
   // must first commit their current workbench; a timer cannot start this write
   // during warmup or inherit readiness from an earlier backend/document.
-  if (!desktopWorkbenchReady()) return
-  if (refreshInflight) return
-  refreshInflight = (async () => {
+  if (refreshInflight) return refreshInflight
+  if (appQuitting || updateInstallationInProgress || !desktopWorkbenchReady()) return
+  const win = aliveMainWindow()
+  if (!win) return
+  refreshInflight = Promise.resolve().then(async () => {
     try {
-      const win = mainWindow
-      if (!win || win.isDestroyed()) return
       const access = await readAuthCookie(win)
-      if (!access) return
+      if (!access) {
+        if (startup) logWindowLifecycle('[auth] startup renewal skipped: access cookie absent')
+        return
+      }
       const exp = accessExpSeconds(access)
       // Tokens without a JWT expiry do not participate in account refresh.
       if (exp == null) return
       if (exp - Date.now() / 1000 > REFRESH_AHEAD_SECONDS) return
       const refreshToken = loadRefreshToken(refreshNamespace)
       // 存量单 token 登录没有 refresh 文件: 续不了, 到期重登一次即进入新体系
-      if (!refreshToken) return
+      if (!refreshToken) {
+        if (startup)
+          logWindowLifecycle('[auth] startup renewal skipped: refresh credential unavailable')
+        return
+      }
       const accountBase = await accountBaseUrlFromServe()
       if (!accountBase) return
       const outcome = await refreshTokens(accountBase, refreshToken)
@@ -2512,7 +2731,8 @@ function ensureFreshAuth(): void {
     } finally {
       refreshInflight = null
     }
-  })()
+  })
+  return refreshInflight
 }
 
 function registerRefreshTimer(): void {
@@ -2569,20 +2789,27 @@ async function adoptAuthTokens(
   token: string,
   refreshToken: string
 ): Promise<{ ok: boolean; error?: string }> {
+  let stage: AdoptionStage = ADOPTION_STAGE.workbench
   try {
     requireDesktopWorkbench()
+    stage = ADOPTION_STAGE.refreshRead
     const stored = token ? '' : loadRefreshToken(refreshNamespace)
     // 登出: 本地凭据先清干净再通知服务端吊销整族。反过来写的话, 账号服务不可达时
     // 用户点「退出登录」要干等十几秒 (两段 HTTP 超时), 期间进程被杀则本地凭据根本
     // 没清掉 —— 而整族吊销只需要上面已经读出的那个 refresh 值, 与清理顺序无关。
+    stage = ADOPTION_STAGE.refreshWrite
     saveRefreshToken(token ? refreshToken : '', refreshNamespace, pushLog)
+    stage = ADOPTION_STAGE.identity
     desktopReminders?.identityChanged()
+    stage = ADOPTION_STAGE.cookie
     await setAuthCookie(win, token)
+    stage = ADOPTION_STAGE.synchronize
     if (token) desktopReminders?.synchronize()
     if (stored) void revokeFamilyInBackground(stored)
     // 首页只在 renderer 验通本地会话并回执后关闭；写入凭据不等于登录成功。
     return { ok: true }
   } catch (e) {
+    reportAdoptionFailure(logWindowLifecycle, stage, e)
     return { ok: false, error: String(e) }
   }
 }
@@ -2635,12 +2862,18 @@ const desktopHandoff = new DesktopHandoff({
   deviceFields: resolveDeviceInfo,
   adoptTokens: async (token, refreshToken) => {
     const win = mainWindow
-    if (!win || win.isDestroyed()) return false
+    if (!win || win.isDestroyed()) {
+      reportAdoptionFailure(logWindowLifecycle, ADOPTION_STAGE.window, {
+        code: 'ERR_WINDOW_UNAVAILABLE',
+      })
+      return false
+    }
     return (await adoptAuthTokens(win, token, refreshToken)).ok
   },
   publish: publishDesktopAuth,
   revealWindow: (reason) => revealMainWindow(reason),
   openExternal: (url) => shell.openExternal(url),
+  loopback: listenForLoginCallback,
   // 87515374：orphaned/失败相位落身份账（实例 id / app 路径 / home），下次同类反馈能直接
   // 判定「哪份副本、哪个 home 收到深链」。SCHOLARSEED_PROTOCOL 在闭包调用时才求值，
   // 不受其 const 声明位置（文件后部）的 TDZ 影响。
@@ -2772,19 +3005,22 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     isCurrent: () => Boolean(aliveMainWindow()) && !appQuitting,
     sourceBaseline,
     hostDiagnostics: () => logBuffer.join(''),
+    sandboxDiagnostics: () =>
+      readFeedbackSandboxLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE)),
+    updateDiagnostics: () =>
+      readFeedbackUpdateLog(join(desktopHome(), LOGS_DIRNAME, updater.UPDATE_LOG_FILE)),
     fetch,
     collectBundle: async (request, token) => {
       await updater.syncMacUpdateDiagnostics(pushLog).catch(() => undefined)
-      const response = await fetch(apiBase + FEEDBACK_BUNDLE_PATH, {
-        method: 'POST',
-        body: feedbackSubmissionForm(request, false),
-        redirect: 'error',
-        signal: AbortSignal.timeout(FEEDBACK_LIMITS.collectionTimeoutMs),
-        headers: token ? { authorization: `Bearer ${token}` } : {},
-      })
-      if (!response.ok || !response.headers.get('content-type')?.startsWith('application/zip'))
-        throw new Error('feedback_collection_unavailable')
-      return feedbackResponseBytes(response, FEEDBACK_LIMITS.bundleBytes)
+      return collectServeFeedbackBundle((signal) =>
+        fetch(apiBase + FEEDBACK_BUNDLE_PATH, {
+          method: 'POST',
+          body: feedbackSubmissionForm(request, false),
+          redirect: 'error',
+          signal,
+          headers: token ? { authorization: `Bearer ${token}` } : {},
+        })
+      )
     },
   })
   ipcMain.handle(FEEDBACK_SUBMIT_CHANNEL, async (event, request: unknown) => {
@@ -2812,18 +3048,27 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     }
   })
   registerBrowserIpc(ipcMain, {
+    log: (line) => logWindowLifecycle(`${line}\n`),
     enabled: () => resolveProductConfig(pushLog).features.browser,
+    advancedEnabled: () => resolveProductConfig(pushLog).features.browserAdvancedSettings,
 
     contents: () => mainWindow?.webContents ?? null,
     rendererOrigin: () => mainRendererOrigin,
     policy: () => browserPolicy,
     host: () => browserHost,
-    saveAutomationEnabled: (enabled) => {
-      saveBrowserAutomationPreference(enabled)
+    saveAutomationEnabled: async (enabled) => {
+      await saveBrowserAutomationPreference(enabled)
     },
   })
   registerBrowserApprovalIpc(ipcMain, {
-    enabled: () => resolveProductConfig(pushLog).features.browser,
+    enabled: (action) => {
+      const features = resolveProductConfig(pushLog).features
+      return (
+        features.browser &&
+        (features.browserAdvancedSettings ||
+          (features.browserAgentNavigation && action === 'navigate'))
+      )
+    },
 
     contents: () => mainWindow?.webContents ?? null,
     rendererOrigin: () => mainRendererOrigin,
@@ -2903,7 +3148,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     },
   })
   registerBrowserHistoryApprovalIpc(ipcMain, {
-    enabled: () => resolveProductConfig(pushLog).features.browser,
+    enabled: () => {
+      const features = resolveProductConfig(pushLog).features
+      return features.browser && features.browserAdvancedSettings
+    },
 
     contents: () => mainWindow?.webContents ?? null,
     rendererOrigin: () => mainRendererOrigin,
@@ -2979,6 +3227,17 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         // Also runs after the updated application confirms readiness. Busy
         // domains remain untouched; startup provides the interrupted-pass retry.
         coordinationReclamation.run('ready')
+        if (process.platform === 'darwin' && app.isPackaged) {
+          const report = (error: unknown) =>
+            pushLog(`[update] launch directory cleanup failed: ${String(error)}\n`)
+          try {
+            const removed = pruneUpdateLaunchDirectories(storageNative, coordinationRoot(), report)
+            if (removed) pushLog(`[update] removed ${removed} idle launch directories\n`)
+          } catch (error) {
+            report(error)
+            if (uncertainRelease(error)) throw error
+          }
+        }
         updater.startMacDeferredCleanup(pushLog)
         ensureFreshAuth()
         if (backgroundUpdateCheckDeferred) {
@@ -3055,6 +3314,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       channel: desktopConfig.channel,
       developerToolsEnabled,
       browserEnabled: productConfig.features.browser,
+      browserAgentNavigationEnabled: productConfig.features.browserAgentNavigation,
+      browserAdvancedSettingsEnabled: productConfig.features.browserAdvancedSettings,
       feedbackRecorderEnabled: productConfig.features.feedbackRecorder,
       preferences: loadRendererPreferences(),
     }
@@ -3243,6 +3504,30 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return { status: response.status, body: await response.text() }
     }
   )
+  ipcMain.handle(
+    TRANSLATION_CHANNEL,
+    async (event, request: TranslationRequest): Promise<TranslationReply> => {
+      if (!isMainWindowSender(event.sender, event.senderFrame))
+        throw new Error('Translation requires the main application window')
+      const endpoint = new URL(apiBase)
+      if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1')
+        throw new Error('Translation requires the local desktop backend')
+      const init = translationRequest(request)
+      const headers = new Headers(init.headers)
+      headers.set(HOST_PROCESS_HEADER, backendHostProcessKey())
+      try {
+        const response = await event.sender.session.fetch(`${apiBase}${TRANSLATION_PATH}`, {
+          ...init,
+          headers,
+          redirect: 'error',
+          signal: AbortSignal.timeout(TRANSLATION_TIMEOUT_MS),
+        })
+        return { status: response.status, body: await response.text() }
+      } catch {
+        return { status: 503, body: JSON.stringify({ detail: 'network' }) }
+      }
+    }
+  )
   ipcMain.handle(PREFERENCE_SHUTDOWN_CHANNEL.request, (event) => {
     if (!event.senderFrame || !isMainWindowSender(event.sender, event.senderFrame))
       throw new Error('Invalid preference sender')
@@ -3323,22 +3608,37 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     isMainWindowSender(event.sender) ? (requestOfficeFontAccess?.() ?? false) : false
   )
   const officeFonts: OfficeFontFiles = new OfficeFontFiles(() => nativeFonts.enumerateFonts())
-  const officeFontCache = new OfficeFontCacheStore(
-    join(desktopStorage().userData, OFFICE_FONT_CACHE_DIRECTORY),
-    JSON.stringify([officeManifest, officeFontManifest])
+  const officeFontCache = {
+    directory: join(desktopStorage().userData, OFFICE_FONT_CACHE_DIRECTORY),
+    namespace: JSON.stringify([officeManifest, officeFontManifest]),
+  }
+  ipcMain.handle(OFFICE_FONT_CACHE_READ_CHANNEL, async (event, fingerprint: unknown) => {
+    if (!isMainWindowSender(event.sender, event.senderFrame))
+      throw new Error('Invalid Office cache sender')
+    officeFonts.assertFingerprint(fingerprint)
+    const result = await desktopPersistence().request('cache', {
+      ...officeFontCache,
+      fingerprint,
+      mode: 'load',
+    })
+    officeFonts.assertFingerprint(fingerprint)
+    return result
+  })
+  ipcMain.handle(
+    OFFICE_FONT_CACHE_WRITE_CHANNEL,
+    async (event, fingerprint: unknown, cache: unknown) => {
+      if (!isMainWindowSender(event.sender, event.senderFrame))
+        throw new Error('Invalid Office cache sender')
+      officeFonts.assertFingerprint(fingerprint)
+      await desktopPersistence().request('cache', {
+        ...officeFontCache,
+        fingerprint,
+        mode: 'save',
+        value: cache,
+      })
+      officeFonts.assertFingerprint(fingerprint)
+    }
   )
-  ipcMain.handle(OFFICE_FONT_CACHE_READ_CHANNEL, (event, fingerprint: unknown) => {
-    if (!isMainWindowSender(event.sender, event.senderFrame))
-      throw new Error('Invalid Office cache sender')
-    officeFonts.assertFingerprint(fingerprint)
-    return officeFontCache.load(fingerprint)
-  })
-  ipcMain.handle(OFFICE_FONT_CACHE_WRITE_CHANNEL, (event, fingerprint: unknown, cache: unknown) => {
-    if (!isMainWindowSender(event.sender, event.senderFrame))
-      throw new Error('Invalid Office cache sender')
-    officeFonts.assertFingerprint(fingerprint)
-    officeFontCache.save(fingerprint, cache)
-  })
   ipcMain.handle(OFFICE_FONT_CATALOG_CHANNEL, (event) => {
     if (!isMainWindowSender(event.sender, event.senderFrame))
       throw new Error('Invalid Office font sender')
@@ -3350,7 +3650,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     return officeFonts.read(id)
   })
   ipcMain.handle('scholarseed:system-permissions', () => readSystemPermissions())
-  ipcMain.handle('scholarseed:system-permission-open', (event, id: SystemPermissionId) => {
+  ipcMain.handle('scholarseed:system-permission-open', (event, id: SystemPermissionTarget) => {
     if (!isMainWindowSender(event.sender, event.senderFrame)) return false
     return openSystemPermission(id)
   })
@@ -3476,14 +3776,6 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     })
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })
-  registerDeliveryIpc(ipcMain, {
-    window: aliveMainWindow,
-    base: () => (backendManaged ? apiBase : null),
-    headers: () => ({ [HOST_PROCESS_HEADER]: backendHostProcessKey() }),
-    sender: (event) => isMainWindowSender(event.sender, event.senderFrame),
-    title: () => mainLocalization().getFixedT(null, 'native')('dialogs.literatureDelivery'),
-  })
-
   // 写系统剪贴板 (PRD「复制路径」)。
   //
   // 不用渲染层的 `navigator.clipboard.writeText`: 它要求 document 处于聚焦态,
@@ -3495,6 +3787,12 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return { status: 'error', code: 'invalid_sender' } satisfies OfficeImageResult
     }
     return acquireOfficeImage(win, source)
+  })
+  ipcMain.handle(REMOTE_IMAGE_CHANNEL, (event, input: unknown) => {
+    if (!event.senderFrame || !isMainWindowSender(event.sender, event.senderFrame)) {
+      return { status: 'error', code: 'invalid_sender' } satisfies RemoteImageResult
+    }
+    return acquireRemoteImage(input)
   })
   ipcMain.handle('scholarseed:write-clipboard', async (_e, text: string) => {
     try {
@@ -3560,10 +3858,12 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   // 资料导入用的多选文件/文件夹选择器。资料库使用统一入口，
   // 项目设置和文献库仍可通过 target 限定为目录或文件。
   // 返回绝对路径数组; 用户取消返回空数组。
-  ipcMain.handle('scholarseed:pick-import', async (_e, target: unknown) => {
+  ipcMain.handle(IMPORT_PICKER_CHANNEL, async (event, target: unknown, preview: unknown) => {
     const win = aliveMainWindow()
     if (
       !win ||
+      !isMainWindowSender(event.sender, event.senderFrame) ||
+      (preview !== undefined && preview !== IMPORT_PICKER_PREVIEW) ||
       !isImportPickerTarget(target) ||
       !supportsImportPickerTarget(process.platform, target)
     )
@@ -3572,7 +3872,24 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       ...IMPORT_PICKER_DIALOGS[target].options,
       title: mainLocalization().getFixedT(null, 'native')(IMPORT_PICKER_DIALOGS[target].titleKey),
     })
-    return r.canceled ? [] : r.filePaths
+    if (r.canceled || !isMainWindowSender(event.sender, event.senderFrame)) return []
+    if (preview !== IMPORT_PICKER_PREVIEW) return r.filePaths
+    const selected = await Promise.all(
+      r.filePaths.map(async (path) => {
+        try {
+          return { path, imagePreview: await readSelectedImage(path) }
+        } catch (error) {
+          const imagePreview: OfficeImageResult = {
+            status: 'error',
+            ...(error instanceof OfficeImageError
+              ? error.failure
+              : { code: 'read_failed' as const }),
+          }
+          return { path, imagePreview }
+        }
+      })
+    )
+    return isMainWindowSender(event.sender, event.senderFrame) ? selected : []
   })
 
   // 令牌换路径 + 移入废纸篓（proposal 47 §6.6）。
@@ -3667,22 +3984,23 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })
 
-  ipcMain.handle('scholarseed:save-copy', async (_event, payload: unknown) => {
+  ipcMain.handle('scholarseed:save-copy', async (event, payload: unknown) => {
+    if (!isMainWindowSender(event.sender, event.senderFrame))
+      return { ok: false, error: SAVE_COPY_SENDER_ERROR }
     requireDesktopWorkbench()
     const win = aliveMainWindow()
     if (!win) return { ok: false, error: 'window unavailable' }
-    return saveFileCopy(
-      payload,
-      async (suggestedName) => {
-        if (win.isDestroyed() || win.webContents.isDestroyed()) return null
-        const selection = await dialog.showSaveDialog(win, {
-          title: mainLocalization().getFixedT(null, 'native')('dialogs.saveCopy'),
-          defaultPath: suggestedName,
-        })
-        return selection.canceled ? null : selection.filePath || null
-      },
-      (path, bytes) => writeFile(path, bytes)
-    )
+    const pick = async (suggestedName: string): Promise<string | null> => {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) return null
+      const selection = await dialog.showSaveDialog(win, {
+        title: mainLocalization().getFixedT(null, 'native')('dialogs.saveCopy'),
+        defaultPath: suggestedName,
+      })
+      return selection.canceled ? null : selection.filePath || null
+    }
+    if (payload && typeof payload === 'object' && 'sourcePath' in payload)
+      return savePathCopy(payload, pick, (path) => pathAuthorizer.resolveAuthorized(path))
+    return saveFileCopy(payload, pick, (path, bytes) => writeFile(path, bytes))
   })
 
   // 账号服务线的凭据转交: renderer 直连账号服务拿到双 token 后交给主进程 —— access 写
@@ -4215,6 +4533,8 @@ async function createWindow(
   browserGrantPolicySubscription = null
   browserGrantTargetSubscription = null
   browserGrantScopeSubscription = null
+  browserPolicy?.close()
+  browserPolicy = null
   const previousBrowserHost = browserHost
   browserHost = null
   await previousBrowserHost?.dispose()
@@ -4266,8 +4586,53 @@ async function createWindow(
   ).requestAccess
 
   // open target=_blank / external links in the system browser, not a new window
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+  const updateHost = createPortalHost(mainWindow, {
+    surface: UPDATE_PORTAL,
+    ipc: ipcMain,
+    preload: join(__dirname, '../preload/portal.js'),
+    createView: (options) => new WebContentsView(options),
+  })
+  const settingsHost = createPortalHost(mainWindow, {
+    surface: SETTINGS_PORTAL,
+    ipc: ipcMain,
+    preload: join(__dirname, '../preload/portal.js'),
+    createView: (options) => new WebContentsView(options),
+  })
+  const conversationHost = createPortalHost(mainWindow, {
+    surface: CONVERSATION_PORTAL,
+    ipc: ipcMain,
+    preload: join(__dirname, '../preload/portal.js'),
+    createView: (options) => new WebContentsView(options),
+  })
+  const foregroundHost = createPortalHost(mainWindow, {
+    surface: FOREGROUND_PORTAL,
+    ipc: ipcMain,
+    preload: join(__dirname, '../preload/portal.js'),
+    createView: (options) => new WebContentsView(options),
+  })
+  const resizeHost = createPortalGroup(mainWindow, {
+    capacity: RESIZE_PORTAL_CAPACITY,
+    surface: RESIZE_PORTAL,
+    ipc: ipcMain,
+    preload: join(__dirname, '../preload/portal.js'),
+    createView: (options) => new WebContentsView(options),
+  })
+  mainWindow.once('closed', () => {
+    updateHost.dispose()
+    resizeHost.dispose()
+    foregroundHost.dispose()
+    conversationHost.dispose()
+    settingsHost.dispose()
+  })
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    const settings =
+      updateHost.windowOpen(details) ??
+      settingsHost.windowOpen(details) ??
+      conversationHost.windowOpen(details) ??
+      foregroundHost.windowOpen(details) ??
+      resizeHost.windowOpen(details)
+    if (settings) return settings
+    shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -4289,6 +4654,12 @@ async function createWindow(
   // instead open them in the system browser.
   installExternalNavigationGuard(mainWindow)
   installContentSecurityPolicy(mainWindow, mainWindowContentSecurityPolicy(launchAccountBase))
+  const disposeNetworkDiagnostics = installNetworkDiagnostics(
+    mainWindow.webContents,
+    () => apiBase,
+    (message) => logWindowLifecycle(`${message}\n`)
+  )
+  mainWindow.once('closed', disposeNetworkDiagnostics)
 
   const handoff = createStartupWindowHandoff(
     () =>
@@ -4435,11 +4806,22 @@ async function initializeWindowServices(
 ): Promise<void> {
   if (windowServices === browserWindow) return
   if (appQuitting || aliveMainWindow() !== browserWindow) return
-  const browserEnabled = resolveProductConfig(pushLog).features.browser
-  browserPolicy = browserEnabled
-    ? createBrowserPolicy(desktopHome(), backend?.python ?? null)
-    : null
-  if (browserEnabled === true && storageWindowGeneration === browserStorageWindowGeneration) {
+  const {
+    browser: browserEnabled,
+    browserAdvancedSettings,
+    browserAgentNavigation,
+  } = resolveProductConfig(pushLog).features
+  browserPolicy =
+    browserEnabled && (browserAdvancedSettings || browserAgentNavigation)
+      ? createBrowserPolicy(desktopHome(), storageNative, coordinationRoot())
+      : null
+  const windowPolicy = browserPolicy
+  if (windowPolicy) browserWindow.once('closed', () => windowPolicy.close())
+  if (
+    browserEnabled &&
+    browserAdvancedSettings &&
+    storageWindowGeneration === browserStorageWindowGeneration
+  ) {
     const vaultDebug = createVaultDebugPolicy({
       trustedStartup: process.type === 'browser' && app.isReady(),
       argv: process.argv,
@@ -4518,6 +4900,7 @@ async function initializeWindowServices(
   }
   const windowOverlay = browserEnabled
     ? createBrowserOverlay(browserWindow, {
+        log: (line) => logWindowLifecycle(`${line}\n`),
         ipc: ipcMain,
         directory: applicationRenderer(app),
         preload: join(__dirname, '../preload/overlay.js'),
@@ -4532,6 +4915,7 @@ async function initializeWindowServices(
   browserTooltip = browserEnabled
     ? createBrowserOverlay(browserWindow, {
         channels: TOOLTIP_OVERLAY_CHANNEL,
+        log: (line) => logWindowLifecycle(`${line}\n`),
         tooltip: true,
         ipc: ipcMain,
         directory: applicationRenderer(app),
@@ -4551,6 +4935,10 @@ async function initializeWindowServices(
   }
   const nextRegistry = browserEnabled
     ? createBrowserRegistry(browserWindow, {
+        onDownload: (notice) => {
+          if (!browserWindow.isDestroyed() && !browserWindow.webContents.isDestroyed())
+            browserWindow.webContents.send(BROWSER_DOWNLOAD_NOTICE_CHANNEL, notice)
+        },
         onFind: (target) => {
           if (!browserWindow.webContents.isDestroyed())
             browserWindow.webContents.send(BROWSER_FIND_CHANNEL, target)
@@ -4558,8 +4946,15 @@ async function initializeWindowServices(
         onPageFocus: () => {
           windowOverlay?.dismiss()
           browserMenu?.dismiss('target')
+          browserMenu?.prepare()
         },
-        onVisibilityChanged: () => browserMenu?.refreshPresentation(),
+        onVisibilityChanged: () => {
+          raiseNativeLayers(browserWindow)
+        },
+        onLayout: () => {
+          browserMenu?.refreshPresentation()
+          browserMenu?.prepare()
+        },
         apiBase,
         python: backend?.python ?? null,
         historyAgentUseRevision: () => browserPolicy?.agentUseRevision() ?? null,
@@ -4584,7 +4979,7 @@ async function initializeWindowServices(
     : null
   const menuActions = new MenuActionRegistry()
   if (nextRegistry) {
-    for (const actionId of [MENU_ACTION.find, MENU_ACTION.print])
+    for (const actionId of [MENU_ACTION.find, MENU_ACTION.print, MENU_ACTION.browserCopy])
       menuActions.register(actionId, {
         surface: 'browser-menu',
         close: 'before',
@@ -4658,7 +5053,11 @@ async function initializeWindowServices(
         if (!reply.ok) throw new Error(reply.error)
       },
     })
-    for (const actionId of [MENU_ACTION.browserSettings, MENU_ACTION.browserHistory])
+    for (const actionId of [
+      MENU_ACTION.browserSettings,
+      MENU_ACTION.browserHistory,
+      MENU_ACTION.browserData,
+    ])
       menuActions.register(actionId, {
         surface: 'browser-menu',
         close: 'before',
@@ -4676,8 +5075,7 @@ async function initializeWindowServices(
   menuActions.register(MENU_ACTION.language, {
     surface: 'account-menu',
     close: 'keep-open',
-    validateValue: (value) =>
-      value.kind === 'choice' && (value.value === 'en' || value.value === 'zh-CN'),
+    validateValue: isAccountMenuLanguageValue,
     execute: (event) => browserWindow.webContents.send(MENU_CHANNEL.event, event),
   })
   const menuPartition = `${BROWSER_MENU_PARTITION_PREFIX}${randomUUID()}`
@@ -4713,26 +5111,32 @@ async function initializeWindowServices(
   })
   browserMenuTargetSubscription =
     nextRegistry?.onAgentTargetInvalidated(() => browserMenu?.dismiss('target')) ?? null
-  if (nextRegistry && browserPolicy) {
-    const nextBroker = createCdpBroker(nextRegistry, {
-      publish: (automation) => {
-        automationStatus = automation
-        if (!browserWindow.isDestroyed() && !browserWindow.webContents.isDestroyed()) {
-          browserWindow.webContents.send(
-            BROWSER_SNAPSHOT_CHANNEL,
-            nextBrowserHost?.snapshot() ?? { ...nextRegistry.snapshot(), automation }
-          )
-        }
-      },
-      log: (message) => pushLog(`${message}\n`),
-    })
+  if (browserEnabled) browserMenu.prepare()
+  if (nextRegistry) {
+    const nextBroker = browserAdvancedSettings
+      ? createCdpBroker(nextRegistry, {
+          publish: (automation) => {
+            automationStatus = automation
+            if (!browserWindow.isDestroyed() && !browserWindow.webContents.isDestroyed()) {
+              browserWindow.webContents.send(
+                BROWSER_SNAPSHOT_CHANNEL,
+                nextBrowserHost?.snapshot() ?? { ...nextRegistry.snapshot(), automation }
+              )
+            }
+          },
+          log: (message) => pushLog(`${message}\n`),
+        })
+      : null
     nextBrowserHost = createLegacyBrowserHost(nextRegistry, nextBroker, () => automationStatus)
     browserHost = nextBrowserHost
     const grantRegistry = nextBrowserHost.agent
     const grantPolicy = browserPolicy
+    const agentTargetEnabled = (tabId: string): boolean =>
+      browserAdvancedSettings || nextRegistry.isSearchTarget(tabId)
     const grantOwners: Parameters<typeof createBrowserReadGrants>[0] = {
       scope: (sessionId, turnId) => backend?.agentTransport?.activeScope(sessionId, turnId) ?? null,
       target: (tabId) => {
+        if (!agentTargetEnabled(tabId)) return null
         try {
           const target = grantRegistry.agentTarget(tabId)
           return {
@@ -4745,6 +5149,11 @@ async function initializeWindowServices(
         }
       },
       navigateTarget: (tabId) => {
+        if (
+          !agentTargetEnabled(tabId) &&
+          !(browserAgentNavigation && nextRegistry.isAgentTarget(tabId))
+        )
+          return null
         try {
           const target = grantRegistry.agentNavigationTarget(tabId)
           return target.origin === null && target.url !== 'about:blank'
@@ -4758,8 +5167,14 @@ async function initializeWindowServices(
           return null
         }
       },
-      policy: (origin) => grantPolicy.inspect(origin, 'read'),
-      navigatePolicy: (origin) => grantPolicy.inspect(origin, 'interact'),
+      policy: (origin, tabId) =>
+        nextRegistry.isSearchTarget(tabId)
+          ? inspectProductSearchOrigin(origin)
+          : (grantPolicy?.inspect(origin, 'read') ?? { revision: 0, decision: 'block' }),
+      navigatePolicy: (origin, tabId) =>
+        nextRegistry.isSearchTarget(tabId)
+          ? inspectProductSearchOrigin(origin)
+          : (grantPolicy?.inspect(origin, 'interact') ?? { revision: 0, decision: 'block' }),
     }
     if (browserGrants) browserGrants.rebind(grantOwners)
     else browserGrants = createBrowserReadGrants(grantOwners)
@@ -4768,22 +5183,20 @@ async function initializeWindowServices(
       actionFence: browserActionFence,
       validateActionPolicy: (authority, origin) => {
         try {
-          return (
-            grantPolicy.agentUseEnabled() &&
-            grantPolicy.revision() === authority.grantRevision &&
-            grantPolicy.effectiveDecision(origin, 'interact') !== 'block'
-          )
+          // One immediate disk read decides switch, grant revision and rule together.
+          return grantPolicy?.fence(origin, 'interact', authority.grantRevision) ?? false
         } catch {
           return false
         }
       },
     })
     const grantController = browserAgentController
-    browserGrantPolicySubscription = grantPolicy.onChange(() => {
-      browserGrants?.revokeAll()
-      browserHost?.historyAgent.revokeAll()
-      revokeAgentBrowserLeases()
-    })
+    browserGrantPolicySubscription =
+      grantPolicy?.onChange(() => {
+        browserGrants?.revokeAll()
+        browserHost?.historyAgent.revokeAll()
+        revokeAgentBrowserLeases()
+      }) ?? null
     browserGrantTargetSubscription = grantRegistry.onAgentTargetInvalidated(
       (tabId, kind, reason) => {
         browserGrants?.revokeTab(tabId, kind === 'target' && reason === 'navigation')
@@ -4798,7 +5211,7 @@ async function initializeWindowServices(
     browserWindow.once('closed', () => {
       void windowAutomation.stop().catch(() => pushLog('[browser-cdp] shutdown failed\n'))
     })
-    if (loadRendererPreferences().browserAutomationEnabled) {
+    if (nextBroker && loadRendererPreferences().browserAutomationEnabled) {
       void windowAutomation
         .start()
         .catch((error) => pushLog(`[browser-cdp] startup failed: ${String(error)}\n`))
@@ -4816,7 +5229,9 @@ async function initializeWindowServices(
   })
   void desktopReminders.start()
   registerRefreshTimer()
-  void ensureFreshAuth()
+  // Startup mounts the account UI and starts workspace requests at ready.
+  // Publish ready only after a due renewal has updated the shared session.
+  await ensureFreshAuth(true)
 }
 
 async function runStartupHarness(): Promise<void> {
@@ -5197,6 +5612,7 @@ async function startDesktop(): Promise<void> {
       app.exit(0)
     return
   }
+  const repairMode = updateRepairMode(process.argv)
   const repairTarget = updateRepairTarget(process.argv, process.platform, app.isPackaged)
   if (repairTarget) {
     const selection = updateRepairSelection(process.argv)
@@ -5207,6 +5623,7 @@ async function startDesktop(): Promise<void> {
           ...repairBaseScope(),
           application: repairTarget,
           selection,
+          recovery: repairMode,
         },
         repairRuntime()
       )
@@ -5216,6 +5633,14 @@ async function startDesktop(): Promise<void> {
     } catch (error) {
       await reportMacRepair('failed', Boolean(selection), undefined, error)
       throw error
+    }
+  }
+  if (process.platform === 'darwin' || process.platform === 'win32') {
+    const coordinator = coordinationRoot()
+    try {
+      removeLegacyCoordination(coordinator)
+    } catch (error) {
+      pushLog(`[shell] legacy coordination cleanup deferred until next startup: ${String(error)}\n`)
     }
   }
   let updateLaunchContext: ReturnType<typeof observeUpdateLaunch> = null
@@ -5342,10 +5767,15 @@ async function startDesktop(): Promise<void> {
   }
 
   function handoffInboxDeps(): HandoffInboxDependencies {
-    return { home: () => storageSelection.home, log: logWindowLifecycle }
+    return {
+      home: () => storageSelection.home,
+      log: logWindowLifecycle,
+      publish: writePrivateRecord,
+    }
   }
 
   const notificationInboxDeps: HandoffInboxDependencies = {
+    publish: writePrivateRecord,
     home: () => storageSelection.userData,
     log: logWindowLifecycle,
   }
@@ -5456,7 +5886,6 @@ async function startDesktop(): Promise<void> {
           }
         }
         installApplicationMenu(Boolean(process.env['ELECTRON_RENDERER_URL']) && !headless)
-        // 注册 scholarseed:// 协议
         let protocolRegistered: boolean
         let protocolDefault: boolean
         if (process.defaultApp || process.platform === WINDOWS_PLATFORM) {
@@ -5469,24 +5898,27 @@ async function startDesktop(): Promise<void> {
             storageStartup.userData
           )
           protocolRegistered = app.setAsDefaultProtocolClient(
-            SCHOLARSEED_PROTOCOL,
+            NOTIFICATION_PROTOCOL,
             executable,
             arguments_
           )
           protocolDefault =
             process.platform === WINDOWS_PLATFORM && app.isPackaged
-              ? app.isDefaultProtocolClient(SCHOLARSEED_PROTOCOL, executable, arguments_)
-              : app.isDefaultProtocolClient(SCHOLARSEED_PROTOCOL)
+              ? app.isDefaultProtocolClient(NOTIFICATION_PROTOCOL, executable, arguments_)
+              : app.isDefaultProtocolClient(NOTIFICATION_PROTOCOL)
         } else {
-          protocolRegistered = app.setAsDefaultProtocolClient(SCHOLARSEED_PROTOCOL)
-          protocolDefault = app.isDefaultProtocolClient(SCHOLARSEED_PROTOCOL)
+          protocolRegistered = app.setAsDefaultProtocolClient(NOTIFICATION_PROTOCOL)
+          protocolDefault = app.isDefaultProtocolClient(NOTIFICATION_PROTOCOL)
         }
         logWindowLifecycle(
-          `[shell] protocol ${SCHOLARSEED_PROTOCOL} registration=${protocolRegistered} default=${protocolDefault} executable=${applicationExecutable(app)}\n`
+          `[shell] protocol ${NOTIFICATION_PROTOCOL} registration=${protocolRegistered} default=${protocolDefault} executable=${applicationExecutable(app)}\n`
         )
         logWindowLifecycle(`[shell] process integrity=${processIntegrityLevel()}\n`)
         return bootstrap().then(() => {
           if (!appQuitting) startHandoffInboxDrain()
+          void connectSetupExit().catch((error) =>
+            pushLog(`[setup] endpoint unavailable: ${String(error)}\n`)
+          )
           void connectDevelopmentControl().catch(() =>
             pushLog('[dev] private development control unavailable\n')
           )
@@ -5637,12 +6069,17 @@ async function startDesktop(): Promise<void> {
     void Promise.all([
       windowDiagnostics?.end() ?? windowLifecycleLog?.end(),
       updater.closeUpdateLog(),
-    ]).then(() => {
-      logsQuitFinished = true
-      // Let Electron finish processing the cancelled will-quit event first.
-      // An already settled log drain can otherwise re-enter quit too early.
-      setImmediate(() => app.quit())
-    })
+    ])
+      .then(() => closeDesktopPersistence())
+      .then(() => {
+        logsQuitFinished = true
+        // Let Electron finish processing the cancelled will-quit event first.
+        // An already settled log drain can otherwise re-enter quit too early.
+        setImmediate(() => app.quit())
+      })
+      .catch((error) => {
+        console.error('[shell] persistence drain failed; exit remains blocked', error)
+      })
   })
 }
 
@@ -5678,6 +6115,7 @@ app.on('ready', (_event, launchInfo) => {
 })
 
 app.on('will-quit', () => {
+  if (desktopHandoff.isBusy()) desktopHandoff.cancel()
   desktopReminders?.stop()
   windowsNotifications?.dispose(true)
 })

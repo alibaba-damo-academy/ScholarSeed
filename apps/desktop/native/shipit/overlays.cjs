@@ -4,6 +4,7 @@ const SHIPIT_OVERLAYS = [
   'preparation.h', 'preparation.m', 'preparation.patch',
   'readiness.h', 'readiness.m',
   'observation.h',
+  'retirement.h',
   'admission.h', 'admission.patch',
   'binding.h', 'binding.patch', 'authorization.patch', 'recovery.patch',
   'succession.h',

@@ -17,7 +17,8 @@ function packageFixture(directory) {
   fs.cpSync(path.join(root, 'scripts'), path.join(directory, 'scripts'), { recursive: true })
   fs.cpSync(path.join(root, 'apps/desktop/runtime'), path.join(directory, 'apps/desktop/runtime'), { recursive: true })
   fs.cpSync(path.join(root, 'apps/desktop/scripts'), path.join(directory, 'apps/desktop/scripts'), { recursive: true })
-  for (const name of ['package.json', '.node-version', 'pyproject.toml', 'apps/desktop/package.json', 'apps/desktop/.node-version']) {
+  fs.mkdirSync(path.join(directory, 'apps/desktop/native'), { recursive: true })
+  for (const name of ['apps/desktop/native/toolchain.json', 'package.json', '.node-version', 'pyproject.toml', 'apps/desktop/package.json', 'apps/desktop/.node-version']) {
     fs.copyFileSync(path.join(root, name), path.join(directory, name))
   }
   for (const stage of planStages(process.platform)) {

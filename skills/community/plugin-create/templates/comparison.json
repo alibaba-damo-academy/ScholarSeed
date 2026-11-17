@@ -1,0 +1,109 @@
+{
+  "component": {
+    "id": "comparison",
+    "preview": "comparison.json",
+    "openui": {
+      "component": "Conversation",
+      "args": [
+        [
+          {
+            "component": "Table",
+            "args": [
+              [
+                {
+                  "component": "Col",
+                  "args": [
+                    "Item",
+                    {
+                      "field": "items"
+                    }
+                  ]
+                },
+                {
+                  "component": "Col",
+                  "args": [
+                    "Previous",
+                    {
+                      "field": "previous"
+                    }
+                  ]
+                },
+                {
+                  "component": "Col",
+                  "args": [
+                    "Current",
+                    {
+                      "field": "current"
+                    }
+                  ]
+                },
+                {
+                  "component": "Col",
+                  "args": [
+                    "Evidence",
+                    {
+                      "field": "evidence"
+                    }
+                  ]
+                }
+              ]
+            ]
+          }
+        ]
+      ]
+    },
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "previous",
+        "current",
+        "evidence"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "previous": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "current": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "scenario": {
+    "data": {
+      "items": [
+        "Review period"
+      ],
+      "previous": [
+        "10 days"
+      ],
+      "current": [
+        "15 days"
+      ],
+      "evidence": [
+        "Revision §2.1"
+      ]
+    },
+    "responses": {}
+  }
+}

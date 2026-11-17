@@ -2,7 +2,7 @@
 
 ## Run storage
 
-Create each run at `<working-directory>/.precise-literature-search/runs/<YYYYMMDD-HHMMSS-random>/`. Store runtime outputs there, never in the installed skill. Use UTF-8, two-space JSON and atomic JSON replacement. Retain all completed artifacts after failure.
+Create new session runs at `SESSION_DIR/.precise-literature-search/runs/<YYYYMMDD-HHMMSS-random>/`, without an outer work/ layer. SESSION_DIR is the actual conversation directory, not a new skill or topic directory. Resume existing runs at their recorded paths, including previous session work/ and cwd-level layouts; never migrate or recreate them. Keep all skill-generated persistent files and the three delivery reports in the run directory, with no outer-level report copies; publish through the existing result checkpoint. Internal run subdirectories are unchanged. Stage the initial request only as described in SKILL.md, preserving user-owned inputs. Product-managed full texts stay in their product-owned storage. Never write outputs in the installed skill. Use UTF-8, two-space JSON and atomic JSON replacement. Retain all completed artifacts after failure.
 
 ## Interaction modes
 
@@ -52,8 +52,8 @@ are immediate.
 | State | Enter when | Interactive behavior |
 |---|---|---|
 | `INITIALIZED` | A unique run and raw request exist | Yes, to intent drafting |
-| `INTENT_DRAFTED` | A precise restatement/draft exists | No; wait for confirmation |
-| `INTENT_CONFIRMED` | Interactive user confirmation, explicit auto delegation, or the user supplies an already clarified and explicitly confirmed intent | Yes, start search |
+| `INTENT_DRAFTED` | A precise restatement/draft exists | Wait only for an unresolved material fork; otherwise state the scope and continue |
+| `INTENT_CONFIRMED` | Initial scope was clear, the user resolved any material fork or explicitly confirmed scope, or the host resolved it under explicit auto delegation | Yes, start search |
 | `SEARCHING` | A new immutable outer round was allocated | Yes, delegate one Search Agent when available or use the host fallback |
 | `REVIEW_PENDING` | Metadata and the search report for the round exist | No; wait for the user to refine, accept, pause, ask questions, or respond freely |
 | `REFINEMENT_REQUESTED` | Interactive user or auto host supplies retrieval-changing feedback | Yes, start the next round |
@@ -83,7 +83,8 @@ INITIALIZED → INTENT_DRAFTED → INTENT_CONFIRMED → SEARCHING
                           └→ REFINEMENT_REQUESTED → SEARCHING
 ```
 
-When the user supplies an already clarified and explicitly confirmed intent, bypass intent drafting and confirmation without entering auto mode:
+When the initial scope is clear or already explicitly confirmed, materialize
+the intent and begin without a user stop or entering auto mode:
 
 ```text
 INITIALIZED → INTENT_CONFIRMED → SEARCHING
@@ -104,7 +105,7 @@ analysis. Neither path authorizes PDF access.
 
 Stop at these points:
 
-1. After the intent restatement, until the user confirms or modifies it. Skip this stop for a trusted host-confirmed intent; continue to require every later interactive stop.
+1. After asking about a material retrieval fork, until the user resolves it. A clear initial scope or a resolved answer needs no separate confirmation; continue to require every later interactive stop.
 2. After each metadata review, wait for the user to refine the search, accept the result set, pause with the current results, ask questions, or respond freely. Do not require a fixed command or force a listed choice.
 3. After result acceptance, present the candidate list with identity, access status, tier and relevance, and publish the product authorization card (`checkpoint=selection`); the card carries the download subset selection and the full-text authorization, and serve returns the granted subset as `authorization.granted_refs` — never infer it from model text. Do not ask a separate scope question and do not infer download permission from accepting the candidate set.
 4. At `PAID_DOWNLOAD_PENDING`, after internally recording the managed acquisition results, wait until the user confirms downloads for the papers serve reported as failed when that scope was not explicitly included in the selection. Terminal `skipped` papers — ungranted, or without an arXiv/DOI identifier serve can fetch — are not part of that scope and are never download or recovery targets. State that these sources may require login or a subscription; do not expose the backend downloader or call the entire batch paid. Skip this stop when `paid_download_confirmation` is `included_in_selection`.
@@ -148,7 +149,7 @@ deadline; other release formats are rejected. See SKILL.md for commands.
 
 Use the capability matrix in `SKILL.md` and the selected download module's invocation rules. If the download stage is blocked by a missing or inconsistent `downloads/acquire-result.json`, remain in `DOWNLOADING_OPEN`; complete the `scholarseed_bridge` tool calls the script's reason asks for, save the verbatim acquire response, and rerun the stage. Do not relabel the event as an arXiv access failure and do not download inside the sandbox yourself.
 
-In the download-scope prompt, relayed download progress, and consolidated completion summary, describe papers only as `arXiv` or `non-arXiv`; never expose `PaperHub`, `paper-dl`, module IDs, or internal fields. Include verified acquired counts, failure/skip/action-required counts, and verified browser-cleanup status when applicable. After the managed batches finish, call `literature delivery` for the same run to present the product save dialog once. Acquired does not mean saved or added to the library. Only product save receipts establish those outcomes; otherwise report "acquired, not saved" and point to the save card. Never invent a `downloads/papers/` location for managed PDFs. User cancellation does not block authorized reading. Reading proceeds through `pdf read` and caches the text actually used under `work-reading/`. No separate reading-confirmation question is asked. Internal logs may retain backend names.
+Report verified acquisition, failure and skipped counts. Acquired full text is managed evidence for the authorized task, not a saved file or a library entry. Use `pdf read` for the authorized references. Library actions and BibTeX export are available in research results.
 
 ## Paid resume semantics
 

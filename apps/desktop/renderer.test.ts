@@ -11,7 +11,7 @@ import { chromium, type Browser } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer, loadConfigFromFile, normalizePath, type Plugin, type UserConfig } from 'vite'
 
-import { supportedFontSources } from './renderer.ts'
+import { RENDERER_SHARED_DEPENDENCIES, RENDERER_OPTIMIZE_DEPS, supportedFontSources } from './renderer.ts'
 
 const DESKTOP_ROOT = path.dirname(fileURLToPath(import.meta.url))
 const RENDERER_ROOT = path.join(DESKTOP_ROOT, 'src', 'renderer')
@@ -38,14 +38,15 @@ async function reservePort(): Promise<number> {
   })
 }
 
-function probePlugin(modules: Record<string, string>, transformHtml = false): Plugin {
+function probePlugin(modules: Record<string, string>, transformHtml = false, entry?: string): Plugin {
   return {
     name: 'renderer-contract-probe',
     resolveId(id) { if (id in modules) return VIRTUAL_PREFIX + id },
     load(id) { if (id.startsWith(VIRTUAL_PREFIX)) return modules[id.slice(VIRTUAL_PREFIX.length)] },
     configureServer(server) {
       server.middlewares.use(PROBE_PATH, (_request, response, next) => {
-        const html = '<!doctype html><html><body><div id="root"></div></body></html>'
+        const script = entry ? `<script type="module" src="${MODULE_URL_PREFIX}${entry}"></script>` : ''
+        const html = `<!doctype html><html><body><div id="root"></div>${script}</body></html>`
         const transformed = transformHtml ? server.transformIndexHtml(PROBE_PATH, html) : Promise.resolve(html)
         transformed.then(content => {
           response.setHeader('Content-Type', 'text/html')
@@ -83,7 +84,7 @@ for (const configFile of ['electron.vite.config.ts', 'vite.web.config.ts']) {
     let browser: Browser | undefined
     try {
       await server.listen()
-      browser = await chromium.launch()
+      browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
       const page = await browser.newPage()
       await page.goto(new URL(PROBE_PATH, server.resolvedUrls!.local[0]).href)
       const initialUrl = MODULE_URL_PREFIX + INITIAL_ENTRY
@@ -111,6 +112,8 @@ test('viewer boundary isolates lazy/render errors, survives language changes and
     configFile: false,
     root: RENDERER_ROOT,
     cacheDir: cache,
+    resolve: { dedupe: RENDERER_SHARED_DEPENDENCIES },
+    optimizeDeps: RENDERER_OPTIMIZE_DEPS,
     plugins: [react(), probePlugin({
       [BOUNDARY_ENTRY]: `
         import React from 'react'
@@ -141,18 +144,18 @@ test('viewer boundary isolates lazy/render errors, survives language changes and
         }
         createRoot(document.getElementById('root')).render(React.createElement(App))
       `
-    }, true)],
-    server: { host: '127.0.0.1', port: await reservePort(), strictPort: true }
+    }, true, BOUNDARY_ENTRY)],
+    server: { host: '127.0.0.1', port: await reservePort(), strictPort: true,
+      fs: { allow: [DESKTOP_ROOT, path.resolve(DESKTOP_ROOT, '../../packages/ui')] } }
   })
   let browser: Browser | undefined
   try {
     await server.listen()
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
     const page = await browser.newPage()
     const errors: string[] = []
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
     await page.goto(new URL(PROBE_PATH, server.resolvedUrls!.local[0]).href)
-    await page.evaluate(async url => { await import(url) }, MODULE_URL_PREFIX + BOUNDARY_ENTRY)
     await page.getByRole('alert').waitFor()
     assert.match(await page.getByRole('alert').innerText(), /文档视图/)
     assert.equal(await page.getByTestId('healthy-viewer').innerText(), 'sibling.md')

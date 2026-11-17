@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -69,5 +69,24 @@ test('source closure consumes HTML module entries and explicitly reports unresol
     assert.equal(report.sourceModules.length, 2)
     assert.equal(report.unresolvedDynamicImports.length, 1)
     assert.throws(() => verifyProductionPreviewExclusion({ ...options, sourceEntries: [join(root, 'missing.ts')] }), /Missing production source entry/)
+  })
+})
+
+test('development example sources outside preview cannot enter production closure', () => {
+  fixture((root, options) => {
+    const development = join(root, 'examples')
+    mkdirSync(development)
+    writeFileSync(join(development, 'project.cjs'), 'module.exports = {}')
+    writeFileSync(options.sourceEntries[0], 'require("../examples/project.cjs")')
+    assert.throws(() => verifyProductionPreviewExclusion({ ...options, developmentRoots: [development] }), /development module/)
+  })
+})
+
+test('raw example bytes are excluded from every output file type, not just scripts', () => {
+  fixture((root, options) => {
+    const sample = join(root, 'sample.md')
+    writeFileSync(sample, '# Isolated fixture\n')
+    copyFileSync(sample, join(options.outputRoot, 'renderer', 'copied.bin'))
+    assert.throws(() => verifyProductionPreviewExclusion({ ...options, sampleFiles: [sample] }), /Example sample/)
   })
 })

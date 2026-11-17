@@ -17,7 +17,13 @@ import type { TFunction, i18n } from 'i18next'
 
 import type { IconName } from '../icons'
 import type { AssistantContextCandidate, AssistantSourceFilter, ContextRefKind } from './assistant'
-import type { ContentKind, RecordTarget, SelectionAnchor, ViewerKind } from './workbench'
+import type {
+  ContentKind,
+  PdfRecordSnapshot,
+  RecordTarget,
+  SelectionAnchor,
+  ViewerKind,
+} from './workbench'
 import type { ProductTask, ProductTaskPresentation } from './tasks'
 
 export interface TaskSourceContribution {
@@ -27,8 +33,8 @@ export interface TaskSourceContribution {
   /** Present source-owned progress and terminal outcome details in the active language. */
   present: (task: ProductTask, t: TFunction<'tasks'>) => ProductTaskPresentation
   list: () => Promise<ProductTask[]>
-  cancel: (taskId: string) => Promise<ProductTask>
-  retry: (taskId: string) => Promise<ProductTask>
+  cancel?: (taskId: string) => Promise<ProductTask>
+  retry?: (taskId: string) => Promise<ProductTask>
   watch?: (
     task: ProductTask,
     callbacks: {
@@ -116,7 +122,9 @@ export interface ActivityItem {
  * 这样"这份文件能不能编辑"只有一处答案，UI 不会给出点了没反应的按钮。
  */
 export interface ViewerPlugin {
-  dockable?: boolean
+  conversationLayout?: 'non-overlapping' | 'native-floating'
+  dockable?: boolean | ((tabId: string) => boolean)
+  duplicable?: boolean
   /** 与后端 `ViewerKind` 同名，例如 markdown / pdf / table / code / docx。 */
   kind: string
   /** viewer 自带完整工具栏时，由 viewer 接管工作台顶部区域。 */
@@ -191,14 +199,34 @@ export interface DocumentPanelContext {
   tabId: string
 }
 
+export interface DocumentPanelPresentation {
+  headerActionsHost?: HTMLElement | null
+  annotationAction?: (onDirectWrite?: () => void) => ReactNode
+}
+
 /** A business feature that can extend matching documents with one side panel. */
 export interface DocumentPanelContribution {
   id: string
   label: (i18n: i18n) => string
   title: ReactNode
   placement?: 'toolbar' | 'viewer'
+  icon?: ReactNode
+  railPlacement?: 'start' | 'end'
+  activeTone?: 'neutral' | 'brand'
+  headerActions?: 'content'
+  resizable?: boolean
+  headerSeparator?: boolean
   matches: (context: DocumentPanelContext) => boolean
-  render: (context: DocumentPanelContext) => ReactNode
+  render: (context: DocumentPanelContext, presentation?: DocumentPanelPresentation) => ReactNode
+  renderAnnotationAction?: (props: {
+    context: DocumentPanelContext
+    snapshot: PdfRecordSnapshot | null
+    disabled: boolean
+    openPanel: () => void
+    dismissSelection?: () => void
+    placement?: 'annotations' | 'panel'
+    onDirectWrite?: () => void
+  }) => ReactNode
 }
 
 export interface AssistantSourceQuery {
@@ -214,6 +242,7 @@ export interface AssistantBrowseNode {
   id: string
   label: string
   parentId: string | null
+  candidate?: AssistantContextCandidate
 }
 
 export interface AssistantSourceBrowse {
@@ -245,6 +274,8 @@ export interface DisplayCardContribution {
   type: string
   /** Suggestions for a new turn appear only after completion and file delivery. */
   placement?: 'after-artifacts'
+  /** Render alongside adjacent artifact cards in the same turn. */
+  layout?: 'artifact'
   /** Newer cards with the same key replace older snapshots in the visible transcript. */
   supersessionKey?: (content: Record<string, unknown>) => string | null
   /** Keep the first display anchor when updating a card; defaults to the latest position. */
@@ -261,6 +292,7 @@ export interface DisplayCardContribution {
 }
 
 export interface InteractionQuestion {
+  component?: PluginReference
   presentation?: Record<string, unknown>
   id?: string
   header?: string
@@ -268,9 +300,11 @@ export interface InteractionQuestion {
   options: Array<{ label: string; description?: string }>
   multiSelect?: boolean
   papers?: Array<{ id: string; label: string; description?: string }>
+  resultCardId?: string
 }
 
-export type InteractionDirectPresentation = 'options' | 'primary-secondary'
+export type InteractionDirectPresentation =
+  'options' | 'primary-secondary' | 'failure-strip' | 'high-risk'
 
 /** A feature-scoped refinement of an existing question card. Unmatched cards keep the global behavior. */
 export interface InteractionPolicyContribution {
@@ -284,9 +318,25 @@ export interface InteractionPolicyContribution {
   ) => 'respond' | 'cancel'
   /** Optional visual hierarchy for immediate decisions. The default remains the ordinary option list. */
   directPresentation?: InteractionDirectPresentation
+  prepareDecision?: () => Promise<boolean>
+  prepareLabel?: (localization: i18n) => string
+  prepareFailure?: (localization: i18n) => string
   directSelectionRequired?: (option: InteractionQuestion['options'][number]) => boolean
   /** Optional canonical label for immediate decisions whose native protocol adds presentation suffixes. */
   optionLabel?: (option: InteractionQuestion['options'][number]) => string
+  isPrimaryOption?: (option: InteractionQuestion['options'][number]) => boolean
+  selectablePapers?: boolean
+  composerAttached?: boolean
+  showQuestionDetails?: boolean
+  renderReply?: (props: {
+    cancelled?: boolean
+    decisionSource?: string
+    requestId: string
+    questions: InteractionQuestion[]
+    answers: Record<string, string>
+    selectedPaperIds?: string[]
+    timedOut?: boolean
+  }) => ReactNode
   replyTitle?: (
     question: InteractionQuestion,
     answer: string,

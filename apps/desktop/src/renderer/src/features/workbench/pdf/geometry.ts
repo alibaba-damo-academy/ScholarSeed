@@ -12,16 +12,118 @@ export interface Size {
   width: number
   height: number
 }
+
+export function commentPinPosition(
+  point: readonly [number, number],
+  page: Size,
+  size: number,
+  text: readonly Rectangle[]
+): Point {
+  const clampX = (value: number): number => Math.max(0, Math.min(page.width - size, value))
+  const clampY = (value: number): number => Math.max(0, Math.min(page.height - size, value))
+  const origin = { x: clampX(point[0] * page.width), y: clampY(point[1] * page.height) }
+  const candidates = [
+    origin,
+    ...text.flatMap((rect) => [
+      { x: clampX(rect.right), y: origin.y },
+      { x: clampX(rect.left - size), y: origin.y },
+      { x: origin.x, y: clampY(rect.bottom) },
+      { x: origin.x, y: clampY(rect.top - size) },
+    ]),
+  ]
+  const clear = candidates.filter(
+    (candidate) =>
+      !text.some(
+        (rect) =>
+          candidate.x < rect.right &&
+          candidate.x + size > rect.left &&
+          candidate.y < rect.bottom &&
+          candidate.y + size > rect.top
+      )
+  )
+  clear.sort(
+    (left, right) =>
+      Math.hypot(left.x - origin.x, left.y - origin.y) -
+      Math.hypot(right.x - origin.x, right.y - origin.y)
+  )
+  return clear[0] ?? { x: page.width, y: origin.y }
+}
 export interface TextMatch {
   start: number
   end: number
+}
+
+export function commentRailPositions(
+  anchors: readonly number[],
+  height: number,
+  size: number
+): Point[] {
+  const positions: Point[] = []
+  let column = 0
+  let bottom = 0
+  for (const entry of anchors
+    .map((anchor, index) => ({ anchor, index }))
+    .sort((left, right) => left.anchor - right.anchor)) {
+    const preferred = Math.max(0, Math.min(height - size, entry.anchor))
+    let top = Math.max(bottom, preferred)
+    if (top + size > height) {
+      column += 1
+      top = preferred
+    }
+    positions[entry.index] = { x: column * size, y: top }
+    bottom = top + size
+  }
+  return positions
+}
+
+export function commentLayout({
+  anchors,
+  points,
+  page,
+  size,
+  gap,
+  text,
+}: {
+  anchors: readonly number[]
+  points: readonly (readonly [number, number])[]
+  page: Size
+  size: number
+  gap: number
+  text: readonly Rectangle[]
+}): { textPins: Point[]; pointPins: Point[]; railWidth: number } {
+  const pointPins = points.map((point) => commentPinPosition(point, page, size, text))
+  const outsidePoints = pointPins.flatMap((point, index) =>
+    point.x >= page.width ? [{ index, anchor: point.y }] : []
+  )
+  const rail = commentRailPositions(
+    [...anchors, ...outsidePoints.map(({ anchor }) => anchor)],
+    page.height,
+    size
+  )
+  const positions = rail.map((point) => ({ x: page.width + gap + point.x, y: point.y }))
+  outsidePoints.forEach(({ index }, ordinal) => {
+    pointPins[index] = positions[anchors.length + ordinal]
+  })
+  return {
+    textPins: positions.slice(0, anchors.length),
+    pointPins,
+    railWidth: rail.length ? Math.max(...rail.map((point) => point.x)) + size + gap * 2 : 0,
+  }
 }
 export type PdfFitMode = 'page' | 'width' | 'custom'
 export const MIN_SCALE = 0.1
 export const MAX_SCALE = 5
 export const SCALE_STEP = 0.25
 export const PAGE_GUTTER = 32
-export const THUMBNAIL_WIDTH = 112
+export const PDF_WIDE_TRANSLATION_MIN_WIDTH = 1400
+export const PDF_WIDE_TRANSLATION_GUTTER = 40 * 2
+export const THUMBNAIL_WIDTH = 120
+export const THUMBNAIL_HEIGHT = 160
+export const PDF_TRANSLATION_WIDTH_STATE_KEY = 'translationWidthRatio'
+export const PDF_TRANSLATION_MIN_RATIO = 1 / 4
+export const PDF_TRANSLATION_MAX_RATIO = 2
+const PDF_TRANSLATION_DEFAULT_RATIO = 2 / 3
+const PDF_TRANSLATION_RESIZE_PASSES = 32
 const CITATION_LINE_GAP = 2
 const SAME_LINE_OVERLAP = 0.8
 const SAME_LINE_CENTER_OFFSET = 0.5
@@ -156,6 +258,58 @@ export function fittedScale(mode: 'page' | 'width', page: Size, viewport: Size):
 export function nextFitMode(mode: PdfFitMode): Exclude<PdfFitMode, 'custom'> {
   return mode === 'width' ? 'page' : 'width'
 }
+
+export function translationWidthRatio(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(PDF_TRANSLATION_MIN_RATIO, Math.min(PDF_TRANSLATION_MAX_RATIO, value))
+    : PDF_TRANSLATION_DEFAULT_RATIO
+}
+
+export function translationSpreadSize(page: Size, ratio: number): Size {
+  return { width: page.width * (1 + ratio), height: page.height }
+}
+
+export interface PdfTranslationResize {
+  page: Size
+  viewport: Size
+  mode: PdfFitMode
+  ratio: number
+  scale: number
+}
+
+export function resizePdfTranslation(
+  initial: PdfTranslationResize,
+  offset: number
+): { ratio: number; scale: number } {
+  const { page, viewport, mode, ratio, scale } = initial
+  if (!Number.isFinite(offset) || offset === 0) return { ratio, scale }
+  if (mode === 'custom') {
+    const totalScale = scale * (1 + ratio)
+    const minRatio = Math.max(PDF_TRANSLATION_MIN_RATIO, totalScale / MAX_SCALE - 1)
+    const maxRatio = Math.min(PDF_TRANSLATION_MAX_RATIO, totalScale / MIN_SCALE - 1)
+    const sourceWidth = Math.max(page.width * MIN_SCALE, page.width * scale + offset)
+    const nextRatio = Math.max(
+      minRatio,
+      Math.min(maxRatio, (page.width * totalScale) / sourceWidth - 1)
+    )
+    return { ratio: nextRatio, scale: totalScale / (1 + nextRatio) }
+  }
+  const target = (page.width * scale * (1 - ratio)) / 2 + offset
+  let lower = PDF_TRANSLATION_MIN_RATIO
+  let upper = PDF_TRANSLATION_MAX_RATIO
+  for (let pass = 0; pass < PDF_TRANSLATION_RESIZE_PASSES; pass += 1) {
+    const candidate = (lower + upper) / 2
+    const candidateScale = fittedScale(mode, translationSpreadSize(page, candidate), viewport)
+    const divider = (page.width * candidateScale * (1 - candidate)) / 2
+    if (divider > target) lower = candidate
+    else upper = candidate
+  }
+  const nextRatio = (lower + upper) / 2
+  return {
+    ratio: nextRatio,
+    scale: fittedScale(mode, translationSpreadSize(page, nextRatio), viewport),
+  }
+}
 export function percentScale(value: string, fallback: number): number {
   const percent = Number(value.trim().replace(/%$/, '').trim())
   if (!Number.isFinite(percent)) return fallback
@@ -196,6 +350,36 @@ export function matchReadingText(text: string, query: string): TextMatch[] {
     position = source.value.indexOf(needle, position + needle.length)
   }
   return matches
+}
+
+export function searchQuads(
+  host: HTMLElement,
+  query: string,
+  matcher = matchText
+): { quad: number[]; ordinal: number }[] {
+  const parts: { node: Text; start: number; end: number }[] = []
+  let text = ''
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
+  let node = walker.nextNode()
+  while (node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const start = text.length
+      text += node.textContent ?? ''
+      parts.push({ node: node as Text, start, end: text.length })
+    } else if ((node as Element).tagName === 'BR') text += '\n'
+    node = walker.nextNode()
+  }
+  return matcher(text, query).flatMap((match, ordinal) => {
+    const first = parts.find((part) => part.end > match.start)
+    const last = parts.find((part) => part.end >= match.end)
+    if (!first || !last) return []
+    const range = document.createRange()
+    range.setStart(first.node, Math.max(0, match.start - first.start))
+    range.setEnd(last.node, Math.min(last.node.length, match.end - last.start))
+    return clipQuads(Array.from(range.getClientRects()), host.getBoundingClientRect()).map(
+      (quad) => ({ quad, ordinal })
+    )
+  })
 }
 export function clipQuads(rects: Rectangle[], bounds: Rectangle): number[][] {
   const width = bounds.right - bounds.left

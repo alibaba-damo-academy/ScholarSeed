@@ -31,8 +31,8 @@ export const PROJECT_DESCRIPTION_MAX = 100
  * 项目目录布局。
  *
  * `legacy` 是「选一个本地文件夹即项目」的存量形态（资料铺在项目根下），
- * `managed` 是内置双库形态（`resources/`、`literature/`）。UI 要能区分：存量项目
- * 没有双库，把它当 managed 渲染会显示两个不存在的目录。
+ * `managed` 的资料位于 `resources/`；`literature/` 仅为历史位置，不再预建。
+ * UI 按实际布局和磁盘内容展示，不假定逻辑根对应目录必然存在。
  */
 export type ProjectLayout = 'managed' | 'legacy'
 

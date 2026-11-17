@@ -6,7 +6,7 @@ const path = require('node:path')
 const test = require('node:test')
 const { prepareSkillHub } = require('../skillhub.cjs')
 
-function fixture(directory) {
+function fixture(directory, context) {
   const packages = path.join(directory, 'packages')
   fs.mkdirSync(packages)
   const content = Buffer.from('versioned skill package')
@@ -23,19 +23,33 @@ function fixture(directory) {
   fs.writeFileSync(publishToken, 'publish-secret')
   fs.chmodSync(readToken, 0o600)
   fs.chmodSync(publishToken, 0o600)
-  return { SCHOLARSEED_CI_SKILLHUB_CONFIG: config,
+  const tokenModes = new Map([[readToken, 0o600], [publishToken, 0o600]])
+  if (process.platform === 'win32') {
+    // Exercise the POSIX mode policy without depending on Windows' synthetic mode bits.
+    const lstat = fs.lstatSync
+    context.mock.method(fs, 'lstatSync', (filename, ...args) => {
+      const info = lstat(filename, ...args)
+      if (tokenModes.has(filename)) info.mode = (info.mode & ~0o777) | tokenModes.get(filename)
+      return info
+    })
+  }
+  const setReadTokenMode = mode => {
+    tokenModes.set(readToken, mode)
+    fs.chmodSync(readToken, mode)
+  }
+  return { setReadTokenMode, env: { SCHOLARSEED_CI_SKILLHUB_CONFIG: config,
     SCHOLARSEED_CI_SKILLHUB_URL: 'https://hub.example.invalid',
     SCHOLARSEED_CI_SKILLHUB_READ_TOKEN_FILE: readToken,
     SCHOLARSEED_CI_SKILLHUB_PUBLISH_TOKEN_FILE: publishToken,
     SCHOLARSEED_CI_SKILLHUB_PACKAGES: packages,
     SCHOLARSEED_CI_SKILLHUB_MANIFEST: manifest,
-    SCHOLARSEED_CI_SKILLHUB_NAMESPACE: 'ci-run-123' }
+    SCHOLARSEED_CI_SKILLHUB_NAMESPACE: 'ci-run-123' } }
 }
 
-test('SkillHub preflight pins the CI namespace and package bytes', () => {
+test('SkillHub preflight pins the CI namespace and package bytes', context => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-skillhub-test-'))
   try {
-    const env = fixture(directory)
+    const { env } = fixture(directory, context)
     const prepared = prepareSkillHub(directory, env)
     assert.equal(prepared.SCHOLARSEED_CI_SKILLHUB_CACHE, path.join(directory, 'skillhub-cache'))
     assert.equal(prepared.SCHOLARSEED_CI_SKILLHUB_VERSION, 'fixture-v1')
@@ -51,16 +65,16 @@ test('SkillHub preflight pins the CI namespace and package bytes', () => {
   }
 })
 
-test('SkillHub preflight rejects missing or extra packages before network access', () => {
+test('SkillHub preflight rejects missing or extra packages before network access', context => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-skillhub-test-'))
   try {
-    const env = fixture(directory)
+    const { env, setReadTokenMode } = fixture(directory, context)
     fs.writeFileSync(path.join(env.SCHOLARSEED_CI_SKILLHUB_PACKAGES, 'extra.zip'), 'unreviewed')
     assert.throws(() => prepareSkillHub(directory, env), /package set/)
     fs.rmSync(path.join(env.SCHOLARSEED_CI_SKILLHUB_PACKAGES, 'extra.zip'))
-    fs.chmodSync(env.SCHOLARSEED_CI_SKILLHUB_READ_TOKEN_FILE, 0o644)
+    setReadTokenMode(0o644)
     assert.throws(() => prepareSkillHub(directory, env), /owner-only/)
-    fs.chmodSync(env.SCHOLARSEED_CI_SKILLHUB_READ_TOKEN_FILE, 0o600)
+    setReadTokenMode(0o600)
     fs.rmSync(env.SCHOLARSEED_CI_SKILLHUB_READ_TOKEN_FILE)
     assert.throws(() => prepareSkillHub(directory, env), /READ_TOKEN_FILE/)
   } finally {

@@ -16,6 +16,7 @@ import { Outputs } from './Outputs'
 import { isSessionContextCandidate } from './candidates'
 import { NextSteps } from './NextSteps'
 import { NEXT_STEPS_CARD } from './suggestions'
+import { searchRecovery, fileRecovery, saveRecovery, externalReadAuthorization } from './recovery'
 
 const SESSION_CONTEXT_CANDIDATE_LIMIT = 500
 const UNGROUPED_LITERATURE_NODE_ID = 'literature:ungrouped'
@@ -32,6 +33,7 @@ const CANONICAL_UNTITLED_SESSION_LABEL = '未命名对话'
 export function assistantFeature(): FeatureModule {
   return {
     id: 'assistant',
+    interactionPolicies: [searchRecovery, fileRecovery, saveRecovery, externalReadAuthorization],
     viewerPlugins: [{ kind: 'outputs', render: () => <Outputs /> }],
     displayCards: [
       {
@@ -62,7 +64,7 @@ export function assistantFeature(): FeatureModule {
         label: feedback('assistant', 'sources.literature'),
         icon: 'books',
         emptyLabel: feedback('assistant', 'sources.literatureEmpty'),
-        kinds: ['literature'],
+        kinds: ['literature', 'literature_collection'],
         browse: {
           heading: feedback('assistant', 'referencePicker.collections'),
           ungrouped: {
@@ -76,6 +78,14 @@ export function assistantFeature(): FeatureModule {
                 id: collection.id,
                 label: collection.name,
                 parentId: collection.parent_id,
+                candidate: projectId
+                  ? {
+                      kind: 'literature_collection' as const,
+                      source_id: collection.id,
+                      label: collection.name,
+                      origin: 'explicit' as const,
+                    }
+                  : undefined,
               })) ?? null
             )
           },

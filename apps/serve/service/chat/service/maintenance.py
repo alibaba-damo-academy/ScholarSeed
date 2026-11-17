@@ -5,22 +5,30 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import sqlite3
 import time
-from collections.abc import Awaitable, Callable
-from itertools import chain
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import TypeVar
 
 from service.chat.persistence import blocks, journal
 from service.chat.persistence.catalog import SessionCatalogStore
 from service.chat.persistence.events import ProductEventStore
-from service.persistence.project import transaction
-from service.platform.activity import Activities, ActivityPhase, MaintenanceActive
+from service.persistence.project import (
+    SQLITE_PRIMARY_RESULT_MASK,
+    DatabaseMode,
+    database_files,
+    open_database,
+    transaction,
+)
+from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
 
 MAINTENANCE_INTERVAL_SECONDS = 15 * 60
 MAINTENANCE_BUDGET_SECONDS = 2.0
 MIGRATION_RETRY_SECONDS = 60.0
 COMPACTION_BUDGET_SECONDS = 30.0
+PROBE_PROGRESS_OPCODES = 1000
 Result = TypeVar("Result")
 _log = logging.getLogger(__name__)
 
@@ -38,12 +46,14 @@ class SessionMaintenanceService:
         activities: Activities,
         maintain: Callable[[], Awaitable[bool | None]],
         *,
+        probe: Callable[[], bool | None],
         interval: float = MAINTENANCE_INTERVAL_SECONDS,
     ) -> None:
         if not math.isfinite(interval) or interval <= 0:
             raise ValueError("session maintenance interval must be finite and positive")
         self._activities = activities
         self._maintain = maintain
+        self._probe = probe
         self._interval = interval
         self._stopping = False
         self._task: asyncio.Task[None] | None = None
@@ -75,6 +85,12 @@ class SessionMaintenanceService:
                 return
             delay = self._interval
             try:
+                needed = await self._activities.to_thread(ActivityDomain.DIAGNOSTIC, self._probe)
+                if self._stopping or needed is None:
+                    continue
+                if not needed:
+                    _log.info("session_storage_maintenance_skipped reason=no_work")
+                    continue
                 pending = await self._maintain()
                 if pending:
                     delay = min(self._interval, MIGRATION_RETRY_SECONDS)
@@ -111,6 +127,53 @@ class SessionMaintenanceService:
             raise cancellation
 
 
+def _body_references(connection: sqlite3.Connection) -> Iterator[str]:
+    yield from SessionCatalogStore.body_references(connection)
+    yield from ProductEventStore.body_references(connection)
+
+
+def inspect_session_storage(database: Path) -> bool | None:
+    """Look for actionable work on a shared snapshot without acquiring write admission."""
+    deadline = time.monotonic() + MAINTENANCE_BUDGET_SECONDS
+
+    def check_budget() -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("session storage maintenance probe budget expired")
+
+    try:
+        with database_files(database, stable_sidecars=False) as present:
+            if not present:
+                raise FileNotFoundError(database)
+            with closing(
+                open_database(database, mode=DatabaseMode.READ_ONLY, timeout=0.0)
+            ) as connection:
+                connection.execute("PRAGMA temp_store=MEMORY")
+                connection.set_progress_handler(
+                    lambda: int(time.monotonic() >= deadline), PROBE_PROGRESS_OPCODES
+                )
+                connection.execute("BEGIN")
+                needed = (
+                    SessionCatalogStore.has_inline_bodies(connection)
+                    or ProductEventStore.has_legacy_events(connection)
+                    or ProductEventStore.reclaim_needed(connection)
+                    or journal.maintenance_needed(connection, _body_references, check_budget)
+                    or blocks.cleanup_needed(connection, database, check_budget)
+                )
+                check_budget()
+                return needed
+    except TimeoutError:
+        _log.info("session_storage_maintenance_deferred reason=probe_budget")
+    except sqlite3.OperationalError as error:
+        code = getattr(error, "sqlite_errorcode", 0) & SQLITE_PRIMARY_RESULT_MASK
+        if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            _log.info("session_storage_maintenance_deferred reason=probe_busy")
+        elif code == sqlite3.SQLITE_INTERRUPT and time.monotonic() >= deadline:
+            _log.info("session_storage_maintenance_deferred reason=probe_budget")
+        else:
+            raise
+    return None
+
+
 def maintain_session_storage(database: Path) -> bool:
     """Bounded batches under the composition owner's sealed, exclusive domains.
 
@@ -136,10 +199,7 @@ def maintain_session_storage(database: Path) -> bool:
             removed_blocks = blocks.cleanup(database)
             compacted = journal.compact(
                 database,
-                lambda connection: chain(
-                    SessionCatalogStore.body_references(connection),
-                    ProductEventStore.body_references(connection),
-                ),
+                _body_references,
                 deadline=time.monotonic() + COMPACTION_BUDGET_SECONDS,
             )
             reclaimed = ProductEventStore.reclaim(

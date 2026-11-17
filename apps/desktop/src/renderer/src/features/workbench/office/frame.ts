@@ -370,6 +370,8 @@ function onThread(event){
 	  else if(message.cmd==='selection_replaced')post('selection-replaced',{requestId:message.requestId})
 	  else if(message.cmd==='selection_replace_failed')post('selection-replace-failed',{requestId:message.requestId,error:message.error})
   else if(message.cmd==='office_search_result')post('office-search-result',message)
+  else if(message.cmd==='selection_revealed')post('selection-revealed',{requestId:message.requestId})
+  else if(message.cmd==='selection_reveal_failed')post('selection-reveal-failed',{requestId:message.requestId})
   else if(message.cmd==='office_search_failed')post('office-search-failed',{requestId:message.requestId,error:message.error})
   else if(message.cmd==='presentation_state')post('presentation-state',{current:message.current,total:message.total})
   else if(message.cmd==='paste_failed')post('operation-rejected',{message:'office_paste_failed'})
@@ -422,6 +424,7 @@ window.addEventListener('message',event=>{
   }
 	  else if(message.type==='replace-selection')port?.postMessage({cmd:'replace_selection',requestId:message.requestId,locator:message.locator,expectedText:message.expectedText,replacement:message.replacement,undoLabel:config.text.undoPolish});
 	  else if(message.type==='office-search')port?.postMessage({cmd:'office_search',requestId:message.requestId,query:message.query,direction:message.direction});
+	  else if(message.type==='reveal-selection')port?.postMessage({cmd:'reveal_selection',requestId:message.requestId,locator:message.locator,text:message.text,duration:message.duration,reducedMotion:message.reducedMotion});
 	  else if(message.type==='presentation-navigate')port?.postMessage({cmd:'presentation_navigate',direction:message.direction});
 	  else if(message.type==='office-search-visible')searchVisible=Boolean(message.visible);
 	  else if(message.type==='paste-result')port?.postMessage({cmd:'paste',requestId:message.requestId,formats:message.formats,error:message.error});

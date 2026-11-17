@@ -1,3 +1,4 @@
+import type * as React from 'react'
 import {
   ContextMenuTrigger,
   MenuCheckboxItem,
@@ -10,7 +11,7 @@ import {
   MenuRoot,
   MenuSeparator,
   MenuShortcut,
-  MenuSubTrigger
+  MenuSubTrigger,
 } from './Menu'
 import { type ReactNode } from 'react'
 
@@ -22,11 +23,21 @@ export const ContextMenuGroup = MenuGroup
 export const ContextMenuSeparator = MenuSeparator
 export const ContextMenuLabel = MenuLabel
 export const ContextMenuShortcut = MenuShortcut
-export const ContextMenuPortal = ({ children }: { children?: ReactNode }): JSX.Element => <>{children}</>
-export const ContextMenuSub = ({ children, defaultOpen }: { children?: ReactNode; defaultOpen?: boolean }): JSX.Element => (
-  <MenuRoot closeOnSiblingOpen={false} defaultOpen={defaultOpen}>{children}</MenuRoot>
+export const ContextMenuPortal = ({ children }: { children?: ReactNode }): React.JSX.Element => (
+  <>{children}</>
 )
-export const ContextMenuSubContent = (props: MenuContentProps): JSX.Element | null => (
+export const ContextMenuSub = ({
+  children,
+  defaultOpen,
+}: {
+  children?: ReactNode
+  defaultOpen?: boolean
+}): React.JSX.Element => (
+  <MenuRoot closeOnSiblingOpen={false} defaultOpen={defaultOpen} nested>
+    {children}
+  </MenuRoot>
+)
+export const ContextMenuSubContent = (props: MenuContentProps): React.JSX.Element | null => (
   <MenuContent {...props} side="right" />
 )
 export const ContextMenuSubTrigger = MenuSubTrigger

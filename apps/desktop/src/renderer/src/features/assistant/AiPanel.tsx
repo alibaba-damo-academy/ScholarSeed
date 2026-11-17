@@ -12,9 +12,12 @@ import React, {
   useState,
 } from 'react'
 import {
+  Copy,
   EllipsisVertical,
+  TextSelect,
   Maximize2,
   MessageCirclePlus,
+  MessageCircle,
   Minimize2,
   Pencil,
   RotateCcwClock,
@@ -26,7 +29,9 @@ import { getSkills, renameSession, terminateSession, type ServeSession } from '.
 import { createFormatters } from '../../../../localization/format'
 import { Composer } from '../../components/business/Composer'
 import { LoginPrompt } from '../../components/business/LoginPrompt'
-import { ComposerRefChip } from '../../components/business/RefChip'
+import { ReferenceAttachment, SelectionPreview } from '../../components/primitive'
+import { AttachmentList } from '../../components/primitive/AttachmentList'
+import { LiteratureAttachment } from './Literature'
 import { ConversationControls, Stream } from '../../components/business/Stream'
 import { TodoPanel } from '../../components/business/TodoPanel'
 import { TaskStatus } from '../../components/business/TaskStatus'
@@ -47,7 +52,6 @@ import {
   EmptyState,
   HoverCard,
   HoverCardContent,
-  HoverCardTrigger,
   IconButton,
   Input,
   Popover,
@@ -64,11 +68,15 @@ import { pendingAssistantContextRefs } from '../../contracts/assistant'
 import { SESSION_TITLE_MAX_LENGTH } from '../../model'
 import { focusComposer } from '../../reference'
 import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
-import { activeThread, assistantProject, useApp } from '../../store'
+import { activeThread, assistantProject, useApp, type ComposerReference } from '../../store'
+import { DraftAttachments } from './Images'
 import { findSessionNode, serveSessionNode } from '../../tree'
 import { useAttention } from './attention'
 import { AssistantContextQuote } from './Quote'
+import { PdfCommentReference } from './Comment'
 import { AnnotationSummary, annotationDisplay } from './Notes'
+import { draftReferenceGroups } from './grouping'
+import { deletableAnswerAnnotationIds } from './state'
 import { Translation } from './Translation'
 import { TaskOverviewBody } from './Overview'
 import { assistantHeadingScope, truncateProjectName } from './heading'
@@ -178,6 +186,7 @@ export function AiPanel({
   embedded = false,
   compact = false,
   inlineComposer = false,
+  externalConfirmation = false,
   hideHeader = false,
   headerCollapsed = false,
   workspaceLeading,
@@ -189,6 +198,7 @@ export function AiPanel({
   embedded?: boolean
   compact?: boolean
   inlineComposer?: boolean
+  externalConfirmation?: boolean
   hideHeader?: boolean
   headerCollapsed?: boolean
   workspaceLeading?: React.ReactNode
@@ -244,6 +254,7 @@ export function AiPanel({
     previousCompact.current = compact
   }, [compact, inlineComposer])
   // 输入框所在的会话内容列（由 Composer 透传）：历史浮层据此对齐，做到与输入框同宽同左。
+  const [scrollControlTarget, setScrollControlTarget] = useState<HTMLDivElement | null>(null)
   const composerInputBoxRef = useRef<HTMLDivElement | null>(null)
   const [sessionFlyoutBounds, setSessionFlyoutBounds] = useState<{
     left: number
@@ -285,7 +296,11 @@ export function AiPanel({
       return
     }
     if (request !== taskStarterRequest.current) return
-    const result = resolveTaskStarterSkill(skills, starter.skillName)
+    const result = resolveTaskStarterSkill(
+      skills,
+      starter.skillName,
+      i18n.resolvedLanguage || i18n.language
+    )
     if (result.failure === 'login_required') {
       setLoginSkill(t(starter.titleKey))
       setTaskStarterPending(null)
@@ -507,7 +522,11 @@ export function AiPanel({
     if (!ai.open) return
     if (state.activeSession === null && !state.turnLaunch) {
       // 已有草稿就不要覆盖用户正在写的内容。
-      if (composerDraft.getSnapshot().length === 0 && state.composerRefs.length === 0) {
+      if (
+        composerDraft.getSnapshot().length === 0 &&
+        state.composerRefs.length === 0 &&
+        ai.refs.length === 0
+      ) {
         act.startPanelDraft()
       }
     }
@@ -623,116 +642,234 @@ export function AiPanel({
 
   // ContextRefs 属于当前 Session，但视觉上属于“下一次发送”的输入工作区，
   // 因此通过 Composer 插槽渲染在输入框内部，而不是占据面板顶部的一整条工具栏。
-  const visibleRefs = thread.readOnly
-    ? []
-    : pendingAssistantContextRefs(ai.refs, ai.submittedRefIds)
-  const noteRefs = visibleRefs.filter((ref) => ref.kind === 'note')
-  const otherRefs = visibleRefs.filter((ref) => ref.kind !== 'note')
-  const noteAnnotations = noteRefs.flatMap((ref) => {
-    const annotation = ai.annotations.find((item) => item.annotation_id === ref.source_id)
-    return annotation ? [annotationDisplay(annotation)] : []
-  })
-  const contextLabel = (ref: (typeof otherRefs)[number]): string => referenceLabel(ref, t)
-  const contextWorkspaceHasContent =
-    ai.contextState === 'loading' || ai.contextState === 'saving' || visibleRefs.length > 0
-  const contextWorkspace = (
-    <div
-      className={`grid min-w-0 gap-[var(--vds-space-2)]${contextWorkspaceHasContent ? ' mb-1' : ''}`}
-      data-testid="ai-context-workspace"
-    >
-      {ai.contextState === 'loading' || ai.contextState === 'saving' ? (
-        <div
-          className="vds-ai-context-empty px-[var(--vds-space-1)] py-[calc(var(--vds-space-3)+var(--vds-space-half))] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-ai-context-empty-line-height)] text-[var(--wb-muted)]"
-          data-testid="ai-context-loading"
-        >
-          {ai.contextState === 'loading' ? t('panel.loadingContext') : t('panel.savingContext')}
-        </div>
-      ) : visibleRefs.length > 0 ? (
-        <>
-          <AnnotationSummary
-            annotations={noteAnnotations}
-            numberForAnnotation={(annotationId) => {
-              // 与消息列表内联标识同一编排: 单条回答内注释创建顺序(从 1 开始)
-              const raw = ai.annotations.find((item) => item.annotation_id === annotationId)
-              if (!raw) return 1
-              return (
-                ai.annotations
-                  .filter((item) => item.source_item_id === raw.source_item_id)
-                  .findIndex((item) => item.annotation_id === annotationId) + 1
-              )
-            }}
-            onClear={() => {
-              // 输入框内删除注释时同步删除注释实体, 消息列表内联标识随之移除
-              void act.deleteAnswerAnnotations(noteRefs.map((ref) => ref.source_id))
-            }}
-            onEdit={(annotationId, comment) => act.updateAnswerAnnotation(annotationId, comment)}
-            onRemove={(annotationId) => act.deleteAnswerAnnotation(annotationId)}
-            testId="ai-context-ref"
-          />
-          {otherRefs.length > 0 ? (
-            <div className="flex min-w-0 flex-wrap gap-[var(--vds-space-1)]">
-              {otherRefs.map((ref) => {
-                const tag = (
-                  <ComposerRefChip
-                    key={ref.ref_id}
-                    title={contextLabel(ref)}
-                    data-testid="ai-context-ref"
-                    tabIndex={ref.anchor ? 0 : undefined}
-                    icon={
-                      <Icon
-                        name={
-                          ref.anchor
-                            ? 'quote'
-                            : ref.kind === 'literature'
-                              ? 'books'
-                              : ref.kind === 'dir'
-                                ? 'folder'
-                                : 'doc'
-                        }
-                        size={12}
-                      />
-                    }
-                    label={contextLabel(ref)}
-                    suffix={ref.kind === 'dir' ? t('panel.directoryOnDemand') : undefined}
-                    closeLabel={t('panel.remove', { name: contextLabel(ref) })}
-                    onClose={() => void act.detachAiContext(ref.ref_id)}
-                  />
+  const visibleRefs =
+    thread.readOnly || ai.sessionId !== state.activeSession
+      ? []
+      : pendingAssistantContextRefs(ai.refs, ai.submittedRefIds)
+  const attachmentRefs = visibleRefs.filter((ref) => ref.kind === 'file' && !ref.anchor)
+  const contextAttachments: ComposerReference[] = attachmentRefs.map((ref) => ({
+    type: 'file',
+    id: ref.ref_id,
+    path: ref.source_id,
+    title: ref.label,
+    previewSource: {
+      kind: 'project',
+      project: assistantProject(state).projectId,
+      path: ref.source_id,
+    },
+  }))
+  const contextLabel = (ref: (typeof visibleRefs)[number]): string => referenceLabel(ref, t)
+  const deletableAnnotations = deletableAnswerAnnotationIds(
+    state.activeSession,
+    ai,
+    thread.conversation
+  )
+  const referenceGroups = draftReferenceGroups(visibleRefs, ai.annotations, deletableAnnotations)
+  const contextReferences = referenceGroups.map((group) => {
+    const ref = group[0]
+    const canDeleteAnnotation = deletableAnnotations.has(ref.source_id)
+    const removeGroup = (): void => {
+      if (ref.kind === 'note') {
+        const annotationIds = group.map((reference) => reference.source_id)
+        if (canDeleteAnnotation) void act.deleteAnswerAnnotations(annotationIds)
+        else void act.detachAnswerAnnotations(annotationIds)
+      } else {
+        void act.detachAiContext(group.map((reference) => reference.ref_id))
+      }
+    }
+    return {
+      key: `context:${ref.ref_id}`,
+      inline: ref.kind === 'session',
+      attachment: contextAttachments.find((attachment) => attachment.id === ref.ref_id),
+      onRemove: removeGroup,
+      content: (() => {
+        if (ref.kind === 'session')
+          return (
+            <ReferenceAttachment
+              variant="text"
+              className="[&>span:last-of-type]:!text-[var(--vds-brand-bg-default)] hover:[&>span:last-of-type]:!text-[var(--vds-brand-bg-hover)]"
+              icon={<MessageCircle size={12} strokeWidth={1.5} />}
+              label={
+                <Button unstyled onClick={() => void act.openSession(ref.source_id)}>
+                  {contextLabel(ref)}
+                </Button>
+              }
+              closeLabel={t('panel.remove', { name: contextLabel(ref) })}
+              onClose={() => void act.detachAiContext(ref.ref_id)}
+            />
+          )
+        if (attachmentRefs.includes(ref))
+          return (
+            <DraftAttachments
+              refs={contextAttachments.filter((attachment) => attachment.id === ref.ref_id)}
+              sourceLabel={t('queue.kinds.resource')}
+              onRemove={() => void act.detachAiContext(ref.ref_id)}
+              onOpen={act.openFilePreview}
+            />
+          )
+        if (ref.kind === 'note') {
+          const annotation = ai.annotations.find((item) => item.annotation_id === ref.source_id)
+          return annotation ? (
+            <AnnotationSummary
+              className="shrink-0"
+              annotations={group.flatMap((reference) => {
+                const item = ai.annotations.find(
+                  (entry) => entry.annotation_id === reference.source_id
                 )
-                if (!ref.anchor) return tag
-                const sourceLabel = referenceBaseLabel(ref, t)
-                return (
-                  <HoverCard key={ref.ref_id}>
-                    <HoverCardTrigger asChild>{tag}</HoverCardTrigger>
-                    <HoverCardContent
-                      className="!w-80 max-w-[calc(100vw-48px)] p-[var(--vds-space-3)]"
-                      side="top"
-                    >
-                      <AssistantContextQuote
-                        label={sourceLabel}
-                        sourceId={t('panel.selected')}
-                        text={ref.anchor?.preview_text ?? ''}
-                        onOpenSource={() => {
-                          if (ref.kind === 'literature') {
-                            void act.openLiteratureAttachment(
-                              ref.source_id,
-                              ref.anchor?.document_id ?? undefined
-                            )
-                            return
-                          }
-                          act.openResourceFile(
-                            ref.source_id,
-                            state.homeSelectedProjectId ?? undefined
-                          )
-                        }}
-                      />
-                    </HoverCardContent>
-                  </HoverCard>
-                )
+                return item ? [annotationDisplay(item)] : []
               })}
-            </div>
-          ) : null}
-        </>
-      ) : null}
+              numberForAnnotation={(annotationId) => {
+                // 与消息列表内联标识同一编排: 单条回答内注释创建顺序(从 1 开始)
+                const raw = ai.annotations.find((item) => item.annotation_id === annotationId)
+                if (!raw) return 1
+                return (
+                  ai.annotations
+                    .filter((item) => item.source_item_id === raw.source_item_id)
+                    .findIndex((item) => item.annotation_id === annotationId) + 1
+                )
+              }}
+              onClear={removeGroup}
+              onEdit={canDeleteAnnotation ? act.updateAnswerAnnotation : undefined}
+              onRemove={(annotationId) => {
+                if (canDeleteAnnotation) void act.deleteAnswerAnnotation(annotationId)
+                else void act.detachAnswerAnnotation(annotationId)
+              }}
+              testId="ai-context-ref"
+            />
+          ) : null
+        }
+        if (!ref.anchor && ref.kind === 'literature')
+          return (
+            <LiteratureAttachment
+              key={ref.ref_id}
+              id={ref.source_id}
+              referenceId={ref.ref_id}
+              title={contextLabel(ref)}
+              initialFileName={ai.literatureAttachmentNames.get(ref.ref_id)}
+              onRemove={() => void act.detachAiContext(ref.ref_id)}
+            />
+          )
+        if (!ref.anchor && ref.kind === 'resource')
+          return (
+            <AttachmentList
+              key={ref.ref_id}
+              layout="contents"
+              sourceLabel={t('queue.kinds.resource')}
+              refs={[
+                {
+                  type: 'file',
+                  id: ref.ref_id,
+                  path: ref.source_id,
+                  title: contextLabel(ref),
+                },
+              ]}
+              onRemove={() => void act.detachAiContext(ref.ref_id)}
+            />
+          )
+        if (ref.kind === 'pdf_comment')
+          return (
+            <PdfCommentReference
+              id={ref.ref_id}
+              sourceId={ref.source_id}
+              sourceRevision={ref.source_revision}
+              label={contextLabel(ref)}
+              onClear={removeGroup}
+              presentation="draft"
+              testId="ai-context-ref"
+            />
+          )
+        const tag = (
+          <ReferenceAttachment
+            key={ref.ref_id}
+            className="shrink-0"
+            title={ref.anchor ? undefined : contextLabel(ref)}
+            data-testid="ai-context-ref"
+            previewTrigger={Boolean(ref.anchor)}
+            icon={
+              ref.anchor ? (
+                <TextSelect />
+              ) : (
+                <Icon
+                  name={
+                    ref.anchor
+                      ? 'quote'
+                      : ref.kind === 'literature'
+                        ? 'books'
+                        : ref.kind === 'dir'
+                          ? 'folder'
+                          : 'doc'
+                  }
+                  size={12}
+                />
+              )
+            }
+            label={
+              ref.anchor
+                ? t('contextGroups.selections', {
+                    count: group.length,
+                  })
+                : contextLabel(ref)
+            }
+            description={ref.anchor ? referenceBaseLabel(ref, t) : undefined}
+            suffix={ref.kind === 'dir' ? t('panel.directoryOnDemand') : undefined}
+            closeLabel={t('panel.remove', { name: contextLabel(ref) })}
+            onClose={removeGroup}
+          />
+        )
+        if (!ref.anchor) return tag
+        return (
+          <HoverCard key={ref.ref_id}>
+            {tag}
+            <SelectionPreview side="top">
+              <div className="grid gap-[var(--vds-space-1)]">
+                {group.map((selection) => (
+                  <AssistantContextQuote
+                    key={selection.ref_id}
+                    label={referenceBaseLabel(selection, t)}
+                    onRemove={() => void act.detachAiContext(selection.ref_id)}
+                    text={selection.anchor?.snapshot_text || selection.anchor?.preview_text || ''}
+                    onOpenSource={() => {
+                      if (selection.kind === 'literature') {
+                        void act.openLiteratureAttachment(
+                          selection.source_id,
+                          selection.anchor?.document_id ?? undefined,
+                          undefined,
+                          {
+                            selection: {
+                              locator: selection.anchor!.locator,
+                              text:
+                                selection.anchor?.snapshot_text ||
+                                selection.anchor?.preview_text ||
+                                '',
+                              sourceRevision: selection.source_revision,
+                            },
+                          }
+                        )
+                        return
+                      }
+                      act.openResourceFile(
+                        selection.source_id,
+                        state.homeSelectedProjectId ?? undefined,
+                        undefined,
+                        {
+                          locator: selection.anchor!.locator,
+                          text:
+                            selection.anchor?.snapshot_text || selection.anchor?.preview_text || '',
+                          sourceRevision: selection.source_revision,
+                        }
+                      )
+                    }}
+                  />
+                ))}
+              </div>
+            </SelectionPreview>
+          </HoverCard>
+        )
+      })(),
+    }
+  })
+  const contextWorkspace = (
+    <div className="contents" data-testid="ai-context-workspace">
       {ai.contextError && (
         <div
           className="vds-ai-context-empty px-[var(--vds-space-1)] py-[calc(var(--vds-space-3)+var(--vds-space-half))] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-ai-context-empty-line-height)] text-[var(--wb-muted)] is-error"
@@ -851,7 +988,7 @@ export function AiPanel({
               <Tooltip content={t('panel.copyId')} side="bottom" portalled className="shrink-0">
                 <IconButton
                   data-testid="ai-copy-session-id"
-                  icon={<Icon name="copy" />}
+                  icon={<Copy strokeWidth={1.7} />}
                   label={t('panel.copyId')}
                   title={undefined}
                   onClick={() => void window.scholarseed.writeClipboard(thread.sessionId ?? '')}
@@ -1178,7 +1315,7 @@ export function AiPanel({
                 ? 'hidden'
                 : floatingContent
                   ? 'vds-ai-stream flex min-h-0 flex-1 flex-col overflow-hidden'
-                  : 'flex vds-ai-stream min-h-0 flex-1 flex-col overflow-hidden pt-0 pb-[var(--vds-space-2)] [&>.conversation-stream]:!pt-[var(--vds-space-4)] [&>.conversation-stream]:!pb-0'
+                  : 'flex vds-ai-stream min-h-0 flex-1 flex-col overflow-hidden has-[[data-scroll-control-overlay]]:overflow-visible pt-0 pb-[var(--vds-space-2)] [&>.conversation-stream]:!pt-[var(--vds-space-4)] [&>.conversation-stream]:!pb-0'
             }
             id={contentId}
             data-testid="ai-stream"
@@ -1222,7 +1359,11 @@ export function AiPanel({
                 </div>
               </div>
             ) : (
-              <Stream />
+              <Stream
+                scrollControlTarget={
+                  externalConfirmation || thread.readOnly ? null : scrollControlTarget
+                }
+              />
             )}
           </div>
 
@@ -1234,7 +1375,10 @@ export function AiPanel({
                 className="mx-[var(--vds-space-3)] h-[var(--vds-border-width-1)] shrink-0 bg-[var(--vds-divider-default)]"
               />
             )}
-            <ConversationControls>
+            <ConversationControls
+              externalConfirmation={externalConfirmation}
+              floatingComposer={inlineComposer}
+            >
               {thread.readOnly && (
                 <p className="mx-auto w-full max-w-[var(--vds-conversation-content-width)] px-[var(--vds-conversation-inline-gutter)] text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]">
                   {componentText('taskArchive.readonly')}
@@ -1246,6 +1390,7 @@ export function AiPanel({
                 data-testid="conversation-input-controls"
               >
                 <Composer
+                  contextReferences={contextReferences}
                   surface="assistant"
                   inline={inlineComposer}
                   showModelHint={!inlineComposer || !compact}
@@ -1253,7 +1398,10 @@ export function AiPanel({
                     !compact &&
                     !inlineComposer && (
                       <div className="box-border px-[var(--vds-conversation-inline-gutter)]">
-                        <div className="mx-auto box-border w-full min-w-0 max-w-[var(--vds-conversation-content-width)]">
+                        <div
+                          ref={setScrollControlTarget}
+                          className="relative z-[var(--vds-z-scroll-control)] mx-auto box-border w-full min-w-0 max-w-[var(--vds-conversation-content-width)] [&_[data-testid=todo-toggle]]:pointer-events-auto"
+                        >
                           <TodoPanel
                             compact
                             currentTurnOnly
@@ -1264,11 +1412,7 @@ export function AiPanel({
                       </div>
                     )
                   }
-                  contextTray={
-                    thread.readOnly || (inlineComposer && !contextWorkspaceHasContent)
-                      ? undefined
-                      : contextWorkspace
-                  }
+                  contextTray={thread.readOnly || !ai.contextError ? undefined : contextWorkspace}
                   inputBoxRef={composerInputBoxRef}
                 />
               </fieldset>

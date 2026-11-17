@@ -1,15 +1,104 @@
 {
+  "validation": {
+    "required": "此项为必填项",
+    "choice": "请至少选择一项",
+    "email": "请输入有效的邮箱地址",
+    "url": "请输入有效的网址",
+    "numeric": "请输入数字",
+    "minLength": "请至少输入 {{value}} 个字符",
+    "maxLength": "最多可输入 {{value}} 个字符",
+    "min": "请输入不小于 {{value}} 的数值",
+    "max": "请输入不大于 {{value}} 的数值"
+  },
+  "authorization": {
+    "renewed": "已重新授权，继续原任务。"
+  },
+  "composition": {
+    "evidenceNotice": "这里展示传入的摘录与位置说明，不代表已经取得独立核验的引用回执。",
+    "artifactNotice": "这里是内容预览；文件是否可用、打开和保存以宿主产物回执为准。",
+    "continue": "按所选内容继续",
+    "cancel": "取消",
+    "saving": "正在保存选择",
+    "failed": "选择尚未保存，请重试后继续。",
+    "done": "此卡片不再接收选择",
+    "empty": "请选择内容后继续"
+  },
+  "dataTable": {
+    "title": "数据表格",
+    "filter": "筛选数据行",
+    "selection": "选择",
+    "selectRow": "选择数据行 {{id}}",
+    "empty": "没有匹配的数据",
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{current}} / {{total}} 页"
+  },
+  "plot": {
+    "copyImage": "复制图表图片",
+    "copyData": "复制原始数据",
+    "exportSVG": "导出 SVG",
+    "exportSuccess": "SVG 已导出。",
+    "exportCanceled": "已取消保存，未导出文件。",
+    "exportFailed": "SVG 导出失败，请重试。",
+    "version": "版本",
+    "figureTab": "图形",
+    "dataTab": "数据",
+    "enlarge": "放大",
+    "invalid": "图表数据或字段映射无效，未推断或补造结果。",
+    "figure": "查看图形",
+    "data": "查看原始数据",
+    "selected": "已选择 {{count}} 条原始数据",
+    "sources": "来源",
+    "script": "制图脚本",
+    "bins": "等宽分为 {{count}} 组，最后一组包含上界。"
+  },
+  "answer": {
+    "empty": "模型没有返回内容。",
+    "retry": "重新生成",
+    "retryPrompt": "刚才没有取得有效回答，请保留当前上下文，重新回答上一条问题。",
+    "retryFailed": "尚未确认重新生成，请重试。",
+    "retryUnavailable": "仅可在会话空闲且草稿为空时，重新生成最近一轮空回答。"
+  },
+  "canvas": {
+    "title": "画布",
+    "expandPreview": "展开画布预览",
+    "collapsePreview": "收起画布预览",
+    "rollback": "撤销",
+    "cancel": "取消",
+    "submit": "提交",
+    "submitting": "正在等待提交确认",
+    "finished": "本次交互已结束",
+    "failed": "画布操作失败，当前改动已保留",
+    "reopen": "请从所属对话打开画布以恢复内容。",
+    "open": "在工作台打开",
+    "openFailed": "未能打开画布，预览内容已保留。可重试打开。"
+  },
+  "diagram": {
+    "title": "流程图",
+    "figure": "图形",
+    "source": "源码",
+    "expand": "放大",
+    "failed": "流程图未能渲染，原始源码已保留。",
+    "details": "查看错误详情",
+    "loading": "正在绘制流程图"
+  },
+  "suggestions": {
+    "title": "下一步",
+    "dismiss": "关闭本轮建议"
+  },
   "process": {
+    "duration": "用时 {{minutes}} 分 {{seconds}} 秒",
     "running": "进行中",
     "completed": "已完成",
-    "incomplete": "未完成",
+    "failed": "失败",
     "interrupted": "已中断",
     "unknown": "结果待确认"
   },
   "sandbox": {
     "toolProbeFailed": "Windows 安全运行环境的内置工具检查失败，消息尚未发送。请提交问题反馈，并附上工具检查日志以便定位原因。",
     "policyRejected": "Windows 安全运行环境未通过安全检查。请提交问题反馈以检查安装和权限；重复授权无法解决此问题。",
-    "setupCancelled": "Windows 安全运行环境的系统授权已取消。请重新发送，并在系统请求时完成授权。"
+    "setupCancelled": "Windows 安全运行环境的系统授权已取消。请重新发送，并在系统请求时完成授权。",
+    "passwordPolicyRejected": "Windows 拒绝了沙箱账户密码（错误 2245）：密码不符合系统策略。消息尚未发送，已停止自动重试。可主动重新发送以再次初始化；若仍失败，请联系管理员核查密码策略或提交反馈，不要降低安全策略。"
   },
   "toolOutcome": {
     "noMatches": "未找到匹配内容",
@@ -21,10 +110,13 @@
     "unknown": "命令未成功完成，原因尚不明确。",
     "toolFailed": "此工具步骤未成功完成。",
     "failedHelp": "此步骤可能影响任务结果；AI 可以继续尝试处理。原始信息仅供排查。",
+    "recovered": "已恢复",
+    "recoveredHelp": "后续成功的计划操作已确认请求的目标状态。原失败尝试和技术详情仍保留。",
     "technicalDetails": "技术详情",
     "exitCode": "退出码：{{code}}"
   },
   "queue": {
+    "sessionOpenUnknown": "无法确认会话是否已创建，已暂停发送以避免重复执行。消息已保留；可核对状态。若仍未确认，请通过问题反馈提交诊断，确认结果前不要重发。",
     "permissionDenied": "系统拒绝读取项目文件「{{path}}」，本条消息尚未提交。请检查该文件及所在目录的访问权限；如果是云盘文件，请确认已下载到本地。处理后再重新发送。",
     "projectFile": "访问受限的文件",
     "baselineFailed": "项目文件检查失败，本条消息尚未提交。请检查项目文件是否可访问，并查看诊断日志了解具体原因。处理后再重新发送。"
@@ -75,6 +167,8 @@
     "retry": "连接未完成，正在重试（{{attempt}}/{{maximum}}）…",
     "reconnected": "会话已重新连接",
     "stopped": "会话恢复未成功，这不表示任务已结束。请检查登录、版本或网络后重新连接。",
+    "modelUnavailable": "会话所用模型不可用。请恢复模型连接或选择其他模型，然后重新连接。",
+    "modelSelectionUnknown": "模型切换结果未确认，已暂停会话恢复。请完整退出并重新打开书深后检查模型设置。",
     "retrying": "会话暂时无法恢复，正在重试（{{attempt}}/{{maximum}}）"
   },
   "preflight": {
@@ -120,7 +214,8 @@
       "codex_thread_closed": "Agent 会话连接已关闭",
       "codex_repeated_tool_loop": "本轮连续执行相同工具并得到相同结果，已自动停止。可更换模型或补充资料后重试",
       "codex_repeated_tool_interrupt_failed": "检测到重复工具调用，但自动停止失败。请手动停止本轮并重试",
-      "credit_balance_exhausted": "积分余额已用尽，本次生成已停止"
+      "credit_balance_exhausted": "积分余额已用尽，本次生成已停止",
+      "windows_sandbox_password_policy_rejected": "Windows 拒绝了沙箱账户密码（错误 2245）：密码不符合系统策略。已停止自动重试，可主动重新连接以再次初始化；若仍失败，请联系管理员核查密码策略或提交反馈，不要降低安全策略。原请求不会自动重发。"
     },
     "closed": "✓ 已终止整个会话，历史已保留；此会话不能继续发送。",
     "legacyNotice": "Agent 运行时提示：{{detail}}",
@@ -162,10 +257,17 @@
     "continueUnconfirmed": "Service 未确认继续操作。"
   },
   "reply": {
-    "title": "明确研究关键问题",
+    "confirmedSummary": "明确研究关键问题，用户已确认",
+    "skippedSummary": "明确研究关键问题，用户已跳过",
+    "expiredSummary": "明确关键研究问题，请求已过期",
+    "title": "明确研究需求",
     "toggleDetails": "展开或收起此前回答",
     "readOnly": "此前回答仅供查看，无法修改",
-    "skipped": "已跳过",
+    "emptyText": "未填写",
+    "skipped": "未作答",
+    "submitted": "已提交",
+    "decision": "你的决定",
+    "cancelled": "已取消",
     "answerLabel": "对“{{question}}”的回答：{{answer}}"
   },
   "card": {
@@ -208,16 +310,16 @@
     "frame": "模型服务返回了无法识别的错误。",
     "runtime": "请求未能到达 Codex Runtime。",
     "quota": {
-      "message": "模型分配额度已用完。",
-      "action": "内置模型按积分计费，积分用完后将无法继续任务；请前往“剩余积分”查看余额并获取更多积分，或切换模型。"
+      "message": "模型限流",
+      "action": "请稍后重试或切换模型。"
     },
     "credits": {
       "message": "积分余额已用尽，本次生成已停止。",
-      "action": "请前往“剩余积分”或积分页查看余额并获取更多积分后再试；本轮问题和上下文已保留。"
+      "action": "已生成的内容、本轮问题和上下文已保留。获取更多积分或切换到可用模型后，可重新发起生成。"
     },
     "rateLimit": {
-      "message": "模型请求过于频繁，请稍后再试。",
-      "action": "本轮问题和上下文已保留。"
+      "message": "模型限流",
+      "action": "请求过于频繁（429），稍后重试或换一个模型。"
     },
     "auth": {
       "message": "模型服务认证失败。",
@@ -230,6 +332,16 @@
       "exhausted": "模型服务暂时不可用，已自动重试 {{count}} 次",
       "action": "模型服务或网络连接暂时不可用，已保留本轮问题和上下文。"
     },
+    "timeout": {
+      "message": "模型响应超时，本次生成未完成。",
+      "action": "已生成的内容、本轮问题和上下文已保留。可以重试或切换模型。"
+    },
+    "connection": {
+      "message": "连接中断，本次生成未完成。",
+      "action": "已生成的内容已保留。检查网络后可以继续生成。"
+    },
+    "switchModel": "切换模型",
+    "retry": "重试",
     "overloaded": {
       "message": "上游模型服务返回过载。",
       "exhausted": "上游模型服务返回过载，自动尝试 {{count}} 次后仍未恢复。",
@@ -261,6 +373,7 @@
     "timeout": "请求超时",
     "unavailable": "请求未能到达后端。",
     "invalidRecovery": "会话恢复快照无效，执行状态尚未确认。恢复不会自动重放任务或回答。",
+    "stopStateUnconfirmed": "任务状态暂时无法确认，请稍后重试。",
     "failed": "请求失败",
     "authentication": "请先登录",
     "resourceReviewRequired": "本轮产生了待审阅的文件改动。请先处理待审阅改动，再重新生成。",
@@ -308,5 +421,49 @@
       "unconfirmed": "应用在任务结束前中断，部分操作可能已完成。"
     }
   },
-  "queuePosition": "{{current}} / {{total}}"
+  "queuePosition": "{{current}} / {{total}}",
+  "clarification": {
+    "recommended": "推荐",
+    "scrollHint": "上下滑动查看题目",
+    "single": "单选",
+    "multiple": "可多选",
+    "supplement": "其他或补充说明（选填）",
+    "directReply": "也可以直接在输入框里回复",
+    "skipped": "已跳过",
+    "previous": "上一项",
+    "next": "下一项",
+    "submit": "提交",
+    "editing": "自动继续已取消，等待提交修改意见",
+    "editingFailed": "取消自动继续未获确认，点击重试",
+    "useCard": "请在对应澄清卡中回答；直接回复不支持附件、多请求未指定或授权确认。",
+    "timedOutTitle": "大纲确认已超时",
+    "timedOut": "5 分钟内未收到回复，已按当前大纲和输出设置继续；未记为用户确认。"
+  },
+  "message": {
+    "expand": "展开更多",
+    "collapse": "收起"
+  },
+  "fork": {
+    "label": "分支自：",
+    "source": "来源会话",
+    "loadFailed": "无法检查来源状态，请点击重试。",
+    "reason": {
+      "deleted": "来源会话已删除，分支历史已保留。",
+      "forbidden": "无权访问来源会话，分支历史已保留。",
+      "archived": "来源会话已归档，暂不能返回。",
+      "anchor_unavailable": "来源分叉位置已不可定位，分支历史已保留。",
+      "unavailable": "来源会话暂不可用，分支历史已保留。"
+    }
+  },
+  "generationPreview": {
+    "label": "生成预览",
+    "streaming": "生成中，未保存",
+    "generated": "预览已生成，尚未校验保存",
+    "unavailable": "暂时无法显示预览，未保存",
+    "failed": "生成失败，预览未保存",
+    "cancelled": "生成已取消，预览未保存",
+    "timeout": "生成超时，预览未保存",
+    "unverified": "以下是未校验的草稿，正式内容以最终文件为准。",
+    "waiting": "正在等待正文段落。"
+  }
 }

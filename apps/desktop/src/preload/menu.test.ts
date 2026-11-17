@@ -8,6 +8,7 @@ import { build as bundle } from 'esbuild'
 import { build } from 'vite'
 import { resolveConfig } from 'electron-vite'
 import { _electron } from '@playwright/test'
+import { nativeFixture } from '../test-helpers/native.ts'
 
 test(
   'actual sandboxed menu has only model events paint and seed and acknowledges painted native view',
@@ -15,7 +16,9 @@ test(
   async (context) => {
     const directory = fileURLToPath(new URL('../../', import.meta.url))
     const temporary = mkdtempSync(join(tmpdir(), 'menu-sandbox-'))
-    context.after(() => rmSync(temporary, { recursive: true, force: true }))
+    const fixture = nativeFixture(context, () =>
+      rmSync(temporary, { recursive: true, force: true })
+    )
     const config = await resolveConfig(
       { root: directory, configFile: join(directory, 'electron.vite.config.ts') },
       'build',
@@ -104,7 +107,9 @@ test(
       )
     )
     delete environment.ELECTRON_RUN_AS_NODE
-    const application = await _electron.launch({ args: [entry], env: environment })
+    const application = await fixture.launch(() =>
+      _electron.launch({ args: [entry], env: environment })
+    )
     try {
       const result = await application.evaluate(async () => {
         const state = globalThis as unknown as {
@@ -235,8 +240,7 @@ test(
         }))
       )
     } finally {
-      await application.close()
-      rmSync(temporary, { recursive: true, force: true })
+      await fixture.close()
     }
   }
 )

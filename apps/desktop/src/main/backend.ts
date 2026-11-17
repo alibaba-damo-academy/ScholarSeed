@@ -7,7 +7,7 @@ import {
   type ProcessFamily,
   type FamilyNative,
 } from './family.ts'
-import { desktopDirectoryMaintenance, desktopDirectoryWriter } from './writer'
+import { desktopDirectoryMaintenance, desktopDirectoryWriter, type DirectoryWriter } from './writer'
 import { BackendControl } from './backend-control.ts'
 // backend.ts — spawn + supervise the Python agent backend (`service.cli.serve`).
 //
@@ -65,8 +65,9 @@ import {
   pythonExecutableDirectories,
   standardExecutablePath,
 } from './environment'
-import { LineTimestamper, RotatingFileLog } from './logfile'
-import type { BackendFailure } from './failure'
+import { LineTimestamper } from './logfile'
+import { AsyncFileLog } from './logging'
+import { classifyBackendFailure, type BackendFailure } from './failure'
 import { redactDiagnosticError } from './redaction.ts'
 import { projectCodexRuntimeEnvironment } from './runtime'
 import { bundledCodex, CACHE_VALIDATION, resolveVendoredCodex } from '../../runtime/codex.cjs'
@@ -97,6 +98,7 @@ import {
   prepareTexliveEnvironment,
   rebuildTexliveEnvironment,
   texliveEnvironmentCurrent,
+  texliveLegacyCacheAliases,
   type TexliveEnvironmentOptions,
   texliveExecutionResources,
 } from '../../runtime/texlive.cjs'
@@ -333,15 +335,20 @@ export interface BackendLaunch {
 // Environment can contain credentials. Keep it out of enumerable handles and diagnostics.
 const backendFamilies = new WeakMap<BackendHandle, ProcessFamily>()
 const backendLaunches = new WeakMap<ChildProcess, Readonly<BackendLaunch>>()
-const backendDiagnosticWriters = new WeakMap<BackendHandle, (line: string) => boolean>()
+const backendDiagnosticWriters = new WeakMap<BackendHandle, (line: string) => Promise<boolean>>()
 let activeBackendLaunch: Readonly<BackendLaunch> | null = null
 /** Exact spawned child only; this observation grants no data or activation authority. */
 export function backendLaunch(handle: BackendHandle): Readonly<BackendLaunch> | null {
   return handle.proc ? (backendLaunches.get(handle.proc) ?? null) : null
 }
 
-export function writeBackendDiagnostic(handle: BackendHandle | null, line: string): boolean {
-  return handle ? (backendDiagnosticWriters.get(handle)?.(line) ?? false) : false
+export function writeBackendDiagnostic(
+  handle: BackendHandle | null,
+  line: string
+): Promise<boolean> {
+  return handle
+    ? (backendDiagnosticWriters.get(handle)?.(line) ?? Promise.resolve(false))
+    : Promise.resolve(false)
 }
 
 export interface BackendHandle {
@@ -398,6 +405,7 @@ interface BackendPaths {
   cwd: string
   hookBin: string | null
   skillBin: string
+  bundledSkillLock?: string
   toolResources?: string
   windowsRuntime?: ReturnType<typeof bundledWindowsRuntime>
 }
@@ -442,18 +450,21 @@ const SHUTDOWN_SECONDS = 30
 const SHUTDOWN_FINALIZATION_MS = 5_000
 const SHUTDOWN_DEADLINE_MS = SHUTDOWN_SECONDS * 1_000 + SHUTDOWN_FINALIZATION_MS
 const BACKEND_STARTUP_DIAGNOSTIC_CHARS = 1200
-const BACKEND_LOG_FILE = 'backend.log'
+export const BACKEND_LOG_FILE = 'backend.log'
 // 后端日志必须落在产品家目录的 logs/ 下, 而不是 Electron 的 app.getPath('logs')
 // (macOS 上是 ~/Library/Logs/<appName>/)。后者在 SCHOLARSEED_HOME 之外, 问题反馈的
 // 日志打包只遍历家目录, 收不到它 —— 而它恰好是唯一一份实时后端日志。
 // 导出给主进程其它模块（如 updater 的 update.log）复用同一个 logs/ 目录约定。
 export const LOGS_DIRNAME = 'logs'
 const BACKEND_DIR = 'backend'
+const BUNDLED_SKILL_LOCK_FILE = 'skills.lock.json'
+const BUNDLED_SKILL_LOCK_ENV = 'SCHOLARSEED_BUNDLED_SKILL_LOCK'
 const HOOK_BIN_DIR = 'bin'
 const DEV_SKILL_BIN_DIRECTORY = ['tmp', 'desktop-backend', 'bin'] as const
 const NODE_SHIM = process.platform === 'win32' ? 'node.cmd' : 'node'
 const SCHOLARSEED_CODEX_EXECUTABLE_ENV = 'SCHOLARSEED_CODEX_EXECUTABLE'
 const SCHOLARSEED_PYTHON_ENV = 'SCHOLARSEED_PYTHON'
+const SCHOLARSEED_SKILL_PYTHON_ENV = 'SCHOLARSEED_SKILL_PYTHON'
 const PYTHON_DONT_WRITE_BYTECODE_ENV = 'PYTHONDONTWRITEBYTECODE'
 const PATH_ENV = 'PATH'
 const PYTHONPATH_ENV = 'PYTHONPATH'
@@ -509,7 +520,7 @@ export interface BackendExit {
   signal: NodeJS.Signals | null
 }
 
-async function resolveBackendPaths(): Promise<BackendPaths> {
+export async function resolveBackendPaths(): Promise<BackendPaths> {
   const bundledPython = process.platform === 'win32' ? WINDOWS_PYTHON : POSIX_PYTHON
   const venvPython = process.platform === 'win32' ? WINDOWS_VENV_PYTHON : POSIX_VENV_PYTHON
   if (app.isPackaged) {
@@ -517,6 +528,10 @@ async function resolveBackendPaths(): Promise<BackendPaths> {
     // The scholarseed package is pip-installed into it, so cwd can be the bundle dir.
     const bundled = join(applicationResources(app), BACKEND_DIR)
     const bundledPy = join(bundled, ...bundledPython)
+    const bundledSkillLock =
+      process.env[SCHOLARSEED_PYTHON_ENV] || process.env.SCHOLARSEED_REPO
+        ? undefined
+        : join(bundled, BUNDLED_SKILL_LOCK_FILE)
     const hookBin = join(bundled, HOOK_BIN_DIR)
     const bundledNode = join(hookBin, NODE_SHIM)
     if (process.platform === 'win32') {
@@ -527,6 +542,7 @@ async function resolveBackendPaths(): Promise<BackendPaths> {
         cwd: process.env.SCHOLARSEED_REPO || bundled,
         hookBin: existsSync(bundledNode) ? hookBin : null,
         skillBin: hookBin,
+        bundledSkillLock,
         windowsRuntime,
         toolResources:
           !process.env[SCHOLARSEED_PYTHON_ENV] && !process.env.SCHOLARSEED_REPO
@@ -548,6 +564,7 @@ async function resolveBackendPaths(): Promise<BackendPaths> {
       cwd: process.env.SCHOLARSEED_REPO || (hasBundled ? bundled : REPO_FALLBACK),
       hookBin: existsSync(bundledNode) ? hookBin : null,
       skillBin: hookBin,
+      bundledSkillLock: hasBundled ? bundledSkillLock : undefined,
       toolResources:
         hasBundled && !process.env[SCHOLARSEED_PYTHON_ENV] && !process.env.SCHOLARSEED_REPO
           ? bundledToolResources(process.platform, hookBin, bundledPy)
@@ -699,6 +716,12 @@ const backendDrains = new WeakMap<BackendHandle, Promise<void>>()
 const backendControls = new WeakMap<BackendHandle, BackendControl>()
 const backendStopLogs = new WeakMap<BackendHandle, LogSink>()
 const backendPreparationStops = new WeakMap<BackendHandle, AbortController>()
+const backendTexCacheGuards = new WeakMap<BackendHandle, DirectoryWriter>()
+
+function releaseBackendTexCache(handle: BackendHandle): void {
+  backendTexCacheGuards.get(handle)?.close()
+  backendTexCacheGuards.delete(handle)
+}
 export enum BackendStopKind {
   Clean = 'clean',
   FailedExit = 'failed-exit',
@@ -949,7 +972,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     } catch (error) {
       startupError = error
       const detail = error instanceof Error ? error.message : String(error)
-      handle.error = { kind: 'startupFailed', detail }
+      handle.error = classifyBackendFailure({ kind: 'startupFailed', detail })
       log(`[shell] ERROR Skill Python launcher setup failed: ${detail}\n`)
       return false
     }
@@ -1051,10 +1074,10 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     ]
 
     enterPhase(BACKEND_STARTUP_PHASE.log)
-    let logFile: RotatingFileLog | null = null
+    let logFile: AsyncFileLog | null = null
     try {
-      logFile = new RotatingFileLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE), {
-        acquireWriter: () => desktopDirectoryWriter(join(desktopHome(), LOGS_DIRNAME)),
+      logFile = new AsyncFileLog(join(desktopHome(), LOGS_DIRNAME, BACKEND_LOG_FILE), {
+        scope: 'backend',
         // Parent log writes qualify HOME ancestors. Startup must first finish
         // the child's exclusive configuration/database initialization.
         deferred: true,
@@ -1063,7 +1086,8 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       /* logging to file is best-effort */
     }
     const stamper = logFile ? new LineTimestamper((line) => logFile?.write(line)) : null
-    if (logFile) backendDiagnosticWriters.set(handle, (line) => logFile?.write(line) ?? false)
+    if (logFile)
+      backendDiagnosticWriters.set(handle, (line) => logFile?.write(line) ?? Promise.resolve(false))
     finishLog = async () => {
       stamper?.flush()
       // Called only after the owned output pipes close (or no child was spawned).
@@ -1084,7 +1108,11 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
           options.browserNavigateActions,
           options.browserActionActions,
           options.browserHistoryActions,
-          options.browserSearchAction
+          options.browserSearchAction,
+          {
+            advancedEnabled: productConfig.features.browserAdvancedSettings,
+            navigationEnabled: productConfig.features.browserAgentNavigation,
+          }
         )
       : null
     handle.agentTransport = agentTransport
@@ -1107,6 +1135,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       PYTHONIOENCODING: 'utf-8',
       [SCHOLARSEED_DESKTOP_ENV]: '1',
       [SOURCE_BASELINE_ENV]: sourceIdentity || '',
+      [BUNDLED_SKILL_LOCK_ENV]: backendPaths.bundledSkillLock ?? '',
       [SCHOLARSEED_APP_VERSION_ENV]: clientVersion(
         applicationIdentity.version,
         applicationIdentity.buildNumber
@@ -1114,7 +1143,8 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       [SCHOLARSEED_LOG_LEVEL_ENV]: logLevel,
       [SCHOLARSEED_ACCOUNT_BASE_URL_ENV]: accountBase,
       [SCHOLARSEED_CODEX_EXECUTABLE_ENV]: codexExecutable,
-      [SCHOLARSEED_PYTHON_ENV]: python,
+      [SCHOLARSEED_PYTHON_ENV]: backendPaths.python,
+      [SCHOLARSEED_SKILL_PYTHON_ENV]: skillPythonLauncherPath(skillBin),
       [SCHOLARSEED_BRIDGE_DIR_ENV]: skillBin ?? '',
       [SCHOLARSEED_HOST_PROCESS_KEY_ENV]: hostProcessKey,
       [TOOL_RESOURCES_ENV]: backendPaths.toolResources ?? '',
@@ -1126,6 +1156,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
           : '',
     }
     enterPhase(BACKEND_STARTUP_PHASE.texlive)
+    const maintainsTexliveCache = process.platform === 'darwin' || process.platform === 'win32'
     let texliveEnvironmentReady = false
     let texliveOptions: TexliveEnvironmentOptions | undefined
     if (texliveExecutableDirectory) {
@@ -1138,24 +1169,44 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
           writableRoot,
           environment: env,
         }
-        const rebuild = process.platform === 'darwin' && !texliveEnvironmentCurrent(texliveOptions)
+        const rebuild =
+          (process.platform === 'darwin' ||
+            (process.platform === 'win32' && existsSync(writableRoot))) &&
+          !texliveEnvironmentCurrent(texliveOptions)
         const writer = rebuild
           ? desktopDirectoryMaintenance(writableRoot)
           : desktopDirectoryWriter(writableRoot)
+        const publishCache = process.platform === 'win32' ? writer.publishCache : undefined
         try {
           // Recheck after qualification: another launch may have prepared it.
           if (rebuild && !texliveEnvironmentCurrent(texliveOptions)) {
-            Object.assign(env, rebuildTexliveEnvironment(texliveOptions))
+            if (process.platform === 'win32') {
+              writer.clearCache(texliveLegacyCacheAliases(writableRoot))
+              Object.assign(env, prepareTexliveEnvironment(texliveOptions, publishCache))
+            } else {
+              Object.assign(env, rebuildTexliveEnvironment(texliveOptions))
+            }
             persist(
               `[shell] TeX version cache rebuilt under exclusive maintenance cache=${writableRoot}\n`
             )
           } else {
-            Object.assign(env, prepareTexliveEnvironment(texliveOptions))
+            Object.assign(env, prepareTexliveEnvironment(texliveOptions, publishCache))
           }
         } finally {
-          // Serve acquires the long-lived ancestor domain. Verify the receipt
-          // again after that handoff and before admitting any tool execution.
           writer.close()
+        }
+        if (app.isPackaged && process.platform === 'win32') {
+          // Hold through the original backend Job, even if the Serve leader
+          // exits before its tool processes. Serve independently pins this root.
+          const guard = desktopDirectoryWriter(writableRoot)
+          try {
+            if (!texliveEnvironmentCurrent(texliveOptions))
+              throw new Error('TeX cache changed before runtime admission')
+          } catch (error) {
+            guard.close()
+            throw error
+          }
+          backendTexCacheGuards.set(handle, guard)
         }
         texliveEnvironmentReady = true
         persist(
@@ -1208,6 +1259,14 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       '--shutdown-timeout-seconds',
       String(SHUTDOWN_SECONDS)
     )
+    if (
+      app.isPackaged &&
+      process.platform === 'win32' &&
+      texliveEnvironmentReady &&
+      texliveOptions
+    ) {
+      args.push('--tex-cache-root', texliveOptions.writableRoot)
+    }
     const storageHome = env[SCHOLARSEED_HOME_ENV]
     handle.storageLaunch =
       productConfig.features.browser === true && storageHome
@@ -1285,8 +1344,11 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     })
     // exit can precede the final stdout/stderr data. close is the owned-pipe
     // barrier, and log end additionally joins buffered IO and compression.
-    proc.once('close', () => {
-      void finish()
+    const pipesClosed = new Promise<void>((resolve) => {
+      proc.once('close', () => {
+        resolve()
+        void finish()
+      })
     })
 
     if (process.platform === 'win32' && proc.pid !== undefined) {
@@ -1306,24 +1368,32 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     }
     proc.stdin.write(bootstrap, () => bootstrap.fill(0))
 
-    const skillPythonStarted = Date.now()
-    persist('[shell] Skill Python probe started alongside backend imports\n')
-    const skillPythonReceipt = probeSkillPython(
-      python,
-      skillBin,
-      cwd,
-      env,
-      preparationStop.signal,
-      persist
-    )
-      .catch((error: unknown) => {
-        preparationFailure = error
-        throw error
-      })
-      .then(async (ready) => {
+    const skillPythonReceipt = control
+      .whenAuthenticated()
+      .then(async () => {
+        if (handle.stopping || preparationStop.signal.aborted) return false
+        const skillPythonStarted = Date.now()
+        persist('[shell] Skill Python probe started after backend authentication\n')
+        const ready = await probeSkillPython(
+          python,
+          skillBin,
+          cwd,
+          env,
+          preparationStop.signal,
+          persist
+        ).catch((error: unknown) => {
+          // A started probe owns resources whose uncertain cleanup must block
+          // shutdown. Authentication failure starts no probe and owns no such
+          // resources; its rejection remains a startup/notification failure.
+          preparationFailure = error
+          throw error
+        })
         persist(
           `[shell] Skill Python probe ready=${ready} elapsed=${Date.now() - skillPythonStarted}ms\n`
         )
+        return ready
+      })
+      .then(async (ready) => {
         if (handle.stopping || preparationStop.signal.aborted) return
         await control.skillPython(ready)
       })
@@ -1337,7 +1407,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     const toolchainReceipt = texlivePreparation
       .then(async (ready) => {
         if (handle.stopping || preparationStop.signal.aborted) return
-        if (process.platform === 'darwin' && texliveEnvironmentReady && texliveOptions) {
+        if (maintainsTexliveCache && texliveEnvironmentReady && texliveOptions) {
           if (!(await handle.ready) || handle.stopping) return
           texliveEnvironmentReady = texliveEnvironmentCurrent(texliveOptions)
           if (!texliveEnvironmentReady)
@@ -1373,13 +1443,16 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       handle.exited.then((exit) => ({ kind: 'exit' as const, exit })),
     ])
     if (startup.kind === 'exit') {
+      // Exit can precede the final exception line. Join only the pipe barrier:
+      // preparation cleanup may depend on ready and must not hide this cause.
+      await pipesClosed
       const detail = startupDiagnostic.trim()
-      handle.error = {
+      handle.error = classifyBackendFailure({
         kind: 'exited',
         code: startup.exit.code,
         signal: startup.exit.signal,
         detail,
-      }
+      })
       return false
     }
     if (!startup.ok) {
@@ -1414,14 +1487,20 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       startupError = error
       backendControls.get(handle)?.close()
       const detail = String(error)
-      handle.error = { kind: 'startupFailed', detail }
+      handle.error = classifyBackendFailure({ kind: 'startupFailed', detail })
       log(`[shell] ERROR backend startup failed: ${detail}\n`)
       return false
     })
     .finally(async () => {
       if (handle.error) diagnostic('failed')
       if (!handle.proc || handle.stopping) await handle.agentTransport?.close()
-      if (!handle.proc) await finish()
+      if (!handle.proc) {
+        try {
+          releaseBackendTexCache(handle)
+        } finally {
+          await finish()
+        }
+      }
     })
 
   return handle
@@ -1475,9 +1554,13 @@ async function finishBackendStop(handle: BackendHandle): Promise<BackendStopResu
     await handle.ready
     await backendDrains.get(handle)
     await handle.agentTransport?.close()
-    if (!proc || proc.pid === undefined) return NO_BACKEND_STOP
+    if (!proc || proc.pid === undefined) {
+      releaseBackendTexCache(handle)
+      return NO_BACKEND_STOP
+    }
     if (proc.exitCode === null && proc.signalCode === null)
       throw new Error('backend process exit was not observed')
+    releaseBackendTexCache(handle)
     const result: BackendStopResult = Object.freeze({
       kind:
         familyClean && proc.exitCode === 0 && proc.signalCode === null

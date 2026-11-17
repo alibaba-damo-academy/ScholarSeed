@@ -10,18 +10,21 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
-from typing import Never, Protocol, overload
+from pathlib import Path
+from typing import Never, Protocol, cast, overload
 
 from service.platform.guardian import GuardianQualificationError
 from service.platform.guardian import from_environment as directory_guardian
 from service.platform.locator import DirectoryLocator, directory_locator, pin_directory
+from service.platform.registry import REGISTRY_DIRECTORY, RegistryNative
 from service.platform.storage import DirectoryRole
 
 _IDENTITY = re.compile(r"(?:posix:[a-f0-9]{16}:[a-f0-9]{16}|windows:[a-f0-9]{16}:[a-f0-9]{32})")
@@ -30,6 +33,7 @@ _NATIVE_RELEASE = "ERR_LEASE_RELEASE"
 _DOMAIN_RELEASE = "ERR_DOMAIN_RELEASE"
 _FAMILY_INDEX = "domains-v1"
 _MUTATION_INDEX = "mutations-v1"
+_DARWIN_MUTATION_KEY = re.compile(r"posix-([a-f0-9]{16})-([a-f0-9]{16})")
 _MUTATION_GATE_SUFFIX = "-mutations"
 _FAMILY_SELF = "self"
 _FAMILY_DESCENDANTS = "descendants"
@@ -628,6 +632,13 @@ def pinned_inspection(
     _release(native, pins)
 
 
+def _coordination_native(native: DomainNative, path: str) -> DomainNative:
+    root = Path(path)
+    if root.name == REGISTRY_DIRECTORY and not isinstance(native, RegistryNative):
+        return cast(DomainNative, RegistryNative(native, root))
+    return native
+
+
 def _acquire(
     native: DomainNative,
     coordinator: object,
@@ -690,6 +701,8 @@ class Domains:
         _created: _CreatedRoot | None = None,
         isolate_qualification: bool = False,
     ) -> None:
+        if isinstance(coordinator_path, str):
+            native = _coordination_native(native, coordinator_path)
         if (
             isinstance(busy_timeout, bool)
             or not isinstance(busy_timeout, (int, float))
@@ -1196,6 +1209,37 @@ def _check_index_records(
     # root for every ancestor index makes admission quadratic in the root count.
     _revalidate(native, bindings)
     coordinator = bindings[0]
+    if sys.platform == "darwin" and index_name == _MUTATION_INDEX:
+        index = os.path.join(coordinator.path, index_name)
+        try:
+            index_pin = native.pin(index, False)
+        except BaseException as error:
+            if getattr(error, "code", None) != "ERR_LEASE_MISSING":
+                raise
+        else:
+            try:
+                index_binding = _binding(native, index_pin, index)
+                if coordinator.identity not in index_binding.ancestors:
+                    raise DomainChangedError("mutation index escaped its retained coordinator")
+                expected_index = (coordinator, index_binding)
+                _revalidate(native, expected_index)
+                aliases: dict[str, list[str]] = {}
+                for entry in os.listdir(index):
+                    match = _DARWIN_MUTATION_KEY.fullmatch(entry)
+                    if match:
+                        aliases.setdefault(match[2], []).append(entry.replace("-", ":"))
+                _revalidate(native, expected_index)
+                # Older records only prove an inode, so retain the barrier for
+                # matching inodes even if their previous mount IDs differ.
+                plan = tuple(
+                    dict.fromkeys(
+                        (candidate, mode)
+                        for identity, mode in plan
+                        for candidate in (identity, *aliases.get(identity.rsplit(":", 1)[-1], ()))
+                    )
+                )
+            finally:
+                native.release(index_pin)
     for identity, mode in plan:
         encoded = identity.replace(":", "-")
         gates: list[object] = []
@@ -1263,6 +1307,7 @@ def _create_directory(
     expected_parent: str | None = None,
     role: DirectoryRole = DirectoryRole.PRIVATE,
 ) -> Iterator[str]:
+    native = _coordination_native(native, coordinator_path)
     pins: list[object] = []
     coordination: list[object] = []
     admission: list[object] = []
@@ -1442,6 +1487,33 @@ class DomainOwner:
         ):
             raise ValueError("only a new admitted qualification may be retained")
         self._additional.append(domains)
+
+    @contextmanager
+    def runtime_descriptors(self) -> Iterator[tuple[int, ...]]:
+        """Keep occupied Darwin lock descriptions alive in a launched runtime."""
+        if self._domains is None:
+            raise DomainReleaseError("storage qualification is unavailable")
+        with ExitStack() as copies:
+            descriptors = []
+            for domains in (self._domains, *self._additional):
+                with domains._operation():
+                    # Startup can warm the runtime while the shared writer
+                    # still holds admission. Transfer only occupancy leases.
+                    if domains._maintenance or domains._state not in (
+                        _State.OCCUPIED,
+                        _State.ADMITTED,
+                    ):
+                        raise DomainReleaseError("runtime launch requires shared storage occupancy")
+                    duplicate_lease = getattr(domains._native, "duplicate_lease", None)
+                    if duplicate_lease is None:
+                        raise DomainReleaseError(
+                            "runtime descriptor transfer requires Darwin storage"
+                        )
+                    for handle in domains._occupancy:
+                        descriptor = duplicate_lease(handle)
+                        copies.callback(os.close, descriptor)
+                        descriptors.append(descriptor)
+            yield tuple(descriptors)
 
     def release(self, domains: Domains) -> None:
         """Release one unpublished addition; uncertain close retains ownership."""

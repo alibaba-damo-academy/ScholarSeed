@@ -65,6 +65,26 @@ func TestSandboxRecoveryACLRequiresNativeDenyAndTrustedOwner(t *testing.T) {
 	}
 }
 
+func TestSandboxProfileAccessDoesNotRelaxPrivateStorage(t *testing.T) {
+	user, group, other := "S-1-5-21-1-2-3-1001", "S-1-5-21-1-2-3-1002", "S-1-5-21-1-2-3-1003"
+	for _, mask := range []uint32{sandboxUserMask, sandboxUserMask | sandboxDeleteChild, sandboxDenyMask, sandboxUserMask | toolWriteDACL, sandboxUserMask | sandboxWriteOwner, toolFullAccess} {
+		acl := sandboxTestAppendACE(t, sandboxTestACL(t, user, group), other, 0, toolInheritChildren, mask)
+		snapshot := sandboxSecurity{owner: sandboxSystemSID, acl: acl}
+		for _, mode := range []sandboxACLMode{sandboxProfileACL, sandboxAncestorACL, sandboxPrivateACL, sandboxRepairACL} {
+			accepted := mode == sandboxProfileACL && mask == sandboxUserMask
+			if err := validateSandboxACL(snapshot, user, group, mode); (err == nil) != accepted {
+				t.Fatalf("mode=%d mask=%x accepted=%t: %v", mode, mask, accepted, err)
+			}
+		}
+		if mask == sandboxUserMask {
+			snapshot.owner = other
+			if validateSandboxACL(snapshot, user, group, sandboxProfileACL) == nil {
+				t.Fatal("profile access trusted an unrelated owner")
+			}
+		}
+	}
+}
+
 func sandboxTestAppendACE(t *testing.T, acl []byte, principal string, kind, flags byte, mask uint32) []byte {
 	t.Helper()
 	sid, err := syscall.StringToSid(principal)

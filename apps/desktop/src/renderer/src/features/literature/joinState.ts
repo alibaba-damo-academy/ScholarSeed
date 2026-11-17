@@ -4,6 +4,15 @@ import { catalogue } from './catalog'
 
 const listeners = new Set<() => void>()
 let receipts: ReadonlyMap<string, JoinDestination> = new Map()
+export function expireJoinedPapers(scopes?: readonly string[]): void {
+  const next = scopes
+    ? new Map([...receipts].filter(([key]) => !scopes.includes((JSON.parse(key) as [string])[0])))
+    : new Map<string, JoinDestination>()
+  if (next.size === receipts.size) return
+  receipts = next
+  listeners.forEach((listener) => listener())
+}
+
 export function recordJoined(keys: string[], destination: JoinDestination): void {
   receipts = new Map([...receipts, ...keys.map((key) => [key, destination] as const)])
   listeners.forEach((listener) => listener())

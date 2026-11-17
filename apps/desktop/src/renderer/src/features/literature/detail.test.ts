@@ -204,7 +204,7 @@ test('metadata sync is offered for every identifier and confirms title matches',
 
 test('basic information saves update one row without reloading the literature list', () => {
   const saveBlock = detailSource.match(
-    /const save = async \(update: LiteratureUpdate\): Promise<void> => \{[\s\S]*?\n {2}\}/
+    /const save = async \(update: LiteratureUpdate\): Promise<boolean> => \{[\s\S]*?\n {2}\}/
   )?.[0]
   assert.ok(saveBlock)
   assert.match(saveBlock, /acceptUpdatedItem\(updated\)/)

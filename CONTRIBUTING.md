@@ -67,7 +67,24 @@ Provide a small, reproducible package of information:
 
 Review generated code before sharing it. Exclude API keys, passwords, signing credentials, `.env` files, login caches, and private research data. Preserve the [Apache-2.0 license](LICENSE) and applicable third-party notices. Sharing a plugin does not by itself install it for other users or publish it to a marketplace.
 
+For extension developers, [developer-docs/](developer-docs/README.md) contains public guides and offline pages.
+Repository architecture and engineering knowledge remain in [docs/](docs/index.md).
+
 ## Environment Setup
+
+The source checkout is self-contained for public engineering: read [AGENTS.md](AGENTS.md),
+the relevant local rules, [knowledge index](docs/index.md) and [Skill ownership](docs/skills/README.md).
+Independent clones and native Git worktrees do not require a private document parent or paired SHA.
+Run documentation, Desktop standards and product-Skill gates from this root with `pnpm ops ci check docs workspace`,
+`pnpm ops ci check docs desktop` and `pnpm ops ci check skills product --mode source`, in addition to
+the tests and real acceptance appropriate to the change. Private platform access is not a prerequisite.
+
+If Git checks out symlinks as placeholder files (for example with `core.symlinks=false`), run
+`pnpm ops pre repair links` and `pnpm ops pre doctor --scope links` before the standards and Skill checks.
+The repair verifies tracked targets and stops on conflicts; it does not change global Git settings.
+
+Project rules use `AGENTS.md`. Development workflow Skills and their discovery configuration live
+in private supplements, not this checkout; keep personal host configuration outside the repository.
 
 | Tool | Requirement |
 | --- | --- |
@@ -78,6 +95,8 @@ Review generated code before sharing it. Exclude API keys, passwords, signing cr
 | Native tools | macOS: Xcode Command Line Tools or a working full Xcode toolchain; Windows x64: the scripts prepare the pinned LLVM-MinGW compiler |
 
 The desktop commands download the pinned Python runtime and prepare `.venv`; you do not need to install Python separately for this setup. Runtime assets are downloaded from the reviewed HTTPS URLs in the manifests, verified by size and SHA-256, and cached locally. Git LFS is not required. The first setup needs internet access for JavaScript/Python dependencies and runtime assets.
+
+This upgrade candidate pins standard-GIL CPython 3.14.10; library packages retain their separate Python >=3.12 compatibility contract. macOS dependency selection and native wheel repair target the product's 13.0 floor. Source builds require the platform compiler; a passing build or static minimum-version check does not replace native platform and Desktop acceptance.
 
 ### macOS
 
@@ -263,7 +282,7 @@ pnpm --dir apps/desktop run typecheck
 
 Select tests relevant to your changes and exercise the affected flow in the real application. A passing build or type check does not prove that model calls, login, or tools work. Real-model tests require your own authorized credentials and may incur charges.
 
-Research skills live in `skills/community/`. Build them with `pnpm ops cd build local --target skills`. For the developer-preview plugin interfaces, see the [plugin guide](doc/plugins.md).
+Research skills live in `skills/community/`. Build them with `pnpm ops cd build local --target skills`. For the developer-preview plugin interfaces, see the [plugin guide](developer-docs/plugins.md).
 
 ## Packaging
 

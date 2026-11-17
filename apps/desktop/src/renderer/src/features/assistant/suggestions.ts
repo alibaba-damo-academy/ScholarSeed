@@ -9,7 +9,7 @@ const LIMITS = {
   free_text_label: 200,
   submit_label: 100,
 } as const
-const MIN_OPTIONS = 2
+const MIN_OPTIONS = 1
 const MAX_OPTIONS = 3
 
 export interface NextStepOption {

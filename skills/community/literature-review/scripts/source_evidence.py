@@ -8,6 +8,21 @@ DIMENSION = re.compile(r'(?i)\b(?:\d+|two|three|four|five|six|seven|eight|nine|t
 EXPERIMENT = re.compile(r'(?i)experiment|benchmark|environment|evaluat')
 
 
+def bind_statements(text, mapping):
+    indexed = dict(sentences(text))
+    fields = {}
+    used = set()
+    for field, identifiers in mapping.items():
+        if not isinstance(field, str) or not isinstance(identifiers, list):
+            raise ValueError('source mapping requires field names and sentence-ID arrays')
+        if any(type(identity) is not int or str(identity) not in indexed for identity in identifiers):
+            raise ValueError('source mapping names a sentence absent from the actual extraction input: ' + field)
+        fields[field] = list(dict.fromkeys(identifiers))
+        used.update(str(identity) for identity in identifiers)
+    return {'sentences': {identity: indexed[identity] for identity in indexed if identity in used},
+            'fields': fields, 'scope': 'Selected verbatim source statements; not exhaustive and not an entailment verdict.'}
+
+
 def sentences(text):
     if not isinstance(text, str):
         return []

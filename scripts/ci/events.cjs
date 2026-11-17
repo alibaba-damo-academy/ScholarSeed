@@ -5,6 +5,7 @@ const SCHEMA_VERSION = 1
 const EVENTS = new Set(['test:start', 'test:pass', 'test:fail', 'test:summary'])
 const RESULTS = new Set(['test:pass', 'test:fail'])
 const CANCELLED = new Set(['cancelledByParent', 'testTimeoutFailure', 'testAborted'])
+const ABRUPT_FILE_EXIT = { errorCode: 'ERR_TEST_FAILURE', failureType: 'testCodeFailure' }
 const STATUSES = ['passed', 'failed', 'cancelled', 'skipped', 'todo']
 const COUNT_KEYS = ['tests', ...STATUSES, 'suites', 'topLevel']
 
@@ -132,6 +133,12 @@ function parseNodeEvents(output, stageId) {
     const fileResult = record.nesting === 0 && record.line === 1 && record.column === 1 &&
       (source === title || source?.endsWith('/' + title))
     if (!fileResult) pending.push(record)
+    else if (record.status === 'failed' && record.failureType === ABRUPT_FILE_EXIT.failureType &&
+        data.details.errorCode === ABRUPT_FILE_EXIT.errorCode) {
+      ensure(pending.every(item => item.declaredSource?.replaceAll('\\', '/') === source),
+        'unattributed results before failed file')
+      pending = []
+    }
   }
   ensure(cumulative !== null && active.length === 0, 'missing totals or unfinished cases')
   ensure(pending.length === 0, 'missing file completion summary')

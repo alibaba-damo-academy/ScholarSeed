@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { session, type WebContents, type WebFrameMain } from 'electron'
 import {
+  PLUGIN_FRAME_PHASES,
   PLUGIN_MAX_FRAMES,
   PLUGIN_MAX_PENDING_REQUESTS,
+  PLUGIN_MAX_PLOT_BYTES,
   PLUGIN_REQUEST_TIMEOUT_MS,
   PLUGIN_MESSAGE_CHANNEL,
+  PLUGIN_GESTURE_SECRET_BYTES,
   PLUGIN_REVOKED_CHANNEL,
   PLUGIN_SCHEME,
   PLUGIN_UI_RESOURCE_PREFIX,
@@ -51,24 +54,52 @@ function resource(snapshot: PluginSnapshot, path: string): string | undefined {
   const key = official ? path.slice(PLUGIN_UI_RESOURCE_PREFIX.length) : path
   return files && Object.hasOwn(files, key) ? files[key] : undefined
 }
-function container(entry: string, lease: string, runtime?: string): string {
+export function container(entry: string, lease: string, runtime?: string): string {
   const bootstrap = `(() => {
+    const post = parent.postMessage.bind(parent);
+    const clock = Date.now.bind(Date);
+    const secret = Array.from(crypto.getRandomValues(new Uint8Array(${PLUGIN_GESTURE_SECRET_BYTES})), value => value.toString(16).padStart(2, '0')).join('');
     let state; let sequence = 0; const requestPrefix = ${JSON.stringify(randomUUID())}; const listeners = new Set(); const pending = new Map();
-    const send = payload => parent.postMessage({channel:${JSON.stringify(PLUGIN_MESSAGE_CHANNEL)},lease:${JSON.stringify(lease)},...payload}, '*');
+    const envelope = payload => ({channel:${JSON.stringify(PLUGIN_MESSAGE_CHANNEL)},lease:${JSON.stringify(lease)},...payload});
+    const send = payload => post(envelope(payload), '*');
+    const phases = ${JSON.stringify(PLUGIN_FRAME_PHASES)};
+    const root = document.getElementById('root');
+    send({phase:phases.document});
+    addEventListener('error', event => {
+      if (event instanceof ErrorEvent) send({phase:phases.script});
+    });
+    let rendered = false;
+    addEventListener('unhandledrejection', () => {
+      if (!rendered) send({phase:phases.script});
+    });
+    const render = new MutationObserver(() => {
+      if (!root.firstChild) return;
+      render.disconnect();
+      rendered = true;
+      send({phase:phases.ready});
+    });
+    render.observe(root, {childList:true});
+    let gestureSequence = 0;
+    send({gesture:'init',secret});
+    addEventListener('click', event => { if (event.isTrusted) send({gesture:'proof',secret,sequence:++gestureSequence,issued:clock()}); }, true);
     Object.defineProperty(window, 'plugin', { value: Object.freeze({
       onState(callback) { listeners.add(callback); if (state) callback(state); return () => listeners.delete(callback); },
       submit(action, values) { send({action, values}); },
       setCopyContent(content) { return request({copy:content,revision:state?.revision ?? 0}); },
+      copyText(text) { return request({copyText:text,revision:state?.revision ?? 0}); },
+      exportPlot(plot) { return request({exportPlot:plot,revision:state?.revision ?? 0}, null, ${PLUGIN_MAX_PLOT_BYTES}); },
+      copyPlot(plot) { return request({copyPlot:plot,revision:state?.revision ?? 0}, undefined, ${PLUGIN_MAX_PLOT_BYTES}); },
       save(values = {}) { return this.request(undefined, values); },
       request(action, values = {}) {
         return request(action === undefined ? {draft:values} : {action,values});
       }
     }) });
-    function request(payload) {
+    function request(payload, timeout = ${PLUGIN_REQUEST_TIMEOUT_MS}, maxBytes) {
         if (pending.size >= ${PLUGIN_MAX_PENDING_REQUESTS}) return Promise.reject(new Error('plugin_request_limit'));
         const requestId = requestPrefix + '_' + String(++sequence);
+        if (maxBytes && new TextEncoder().encode(JSON.stringify(envelope({requestId,...payload}))).length > maxBytes) return Promise.reject(new Error('plugin_request_limit'));
         return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => { pending.delete(requestId); reject(new Error('plugin_request_timeout')); }, ${PLUGIN_REQUEST_TIMEOUT_MS});
+          const timer = timeout === null ? undefined : setTimeout(() => { pending.delete(requestId); reject(new Error('plugin_request_timeout')); }, timeout);
           pending.set(requestId, {resolve, reject, timer}); send({requestId,...payload});
         });
     }
@@ -87,9 +118,22 @@ function container(entry: string, lease: string, runtime?: string): string {
   })();`
   const scripts = [runtime, entry]
     .filter((path): path is string => Boolean(path))
-    .map((path) => `<script src="/${path.split('/').map(encodeURIComponent).join('/')}"></script>`)
-    .join('')
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div><script>${bootstrap}</script>${scripts}</body></html>`
+    .map((path) => `/${path.split('/').map(encodeURIComponent).join('/')}`)
+  const load = `addEventListener('DOMContentLoaded', async () => {
+    try {
+      for (const path of ${JSON.stringify(scripts)}) await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.onload = resolve; script.onerror = reject;
+        script.src = path; document.head.append(script);
+      });
+    } catch {
+      parent.postMessage({
+        channel:${JSON.stringify(PLUGIN_MESSAGE_CHANNEL)}, lease:${JSON.stringify(lease)},
+        phase:${JSON.stringify(PLUGIN_FRAME_PHASES.resource)}
+      }, '*');
+    }
+  }, {once:true});`
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div><script>${bootstrap}${load}</script></body></html>`
 }
 export function createPluginHost(): {
   open: (
@@ -170,13 +214,22 @@ export function createPluginHost(): {
       : details.referrer
     const sameInstance =
       source.startsWith(`${PLUGIN_SCHEME}:`) && new URL(source).hostname === target
-    callback({
-      cancel:
-        !instance ||
-        instance.owner.isDestroyed() ||
-        instance.owner.id !== details.webContentsId ||
-        (fromPlugin ? !sameInstance : details.resourceType !== 'subFrame'),
-    })
+    const cancel =
+      !instance ||
+      instance.owner.isDestroyed() ||
+      instance.owner.id !== details.webContentsId ||
+      (fromPlugin ? !sameInstance : details.resourceType !== 'subFrame')
+    if (cancel)
+      console.warn('[plugin-resource-blocked]', {
+        resourceType: details.resourceType,
+        valid: Boolean(instance),
+        owner: instance?.owner.id === details.webContentsId,
+        fromPlugin,
+        sameInstance,
+        framePlugin: Boolean(details.frame?.url.startsWith(`${PLUGIN_SCHEME}:`)),
+        referrerPlugin: details.referrer.startsWith(`${PLUGIN_SCHEME}:`),
+      })
+    callback({ cancel })
   })
   return {
     reference(owner, lease) {
@@ -202,6 +255,7 @@ export function createPluginHost(): {
       const fixed = structuredClone(snapshot)
       const components = fixed.descriptor.components.filter(
         (component) =>
+          !component.openui &&
           (!component.public || component.entry) &&
           (!reference || component.id === reference.component)
       )
@@ -214,13 +268,21 @@ export function createPluginHost(): {
       if (!observed.has(owner.id)) {
         observed.add(owner.id)
         const ownerId = owner.id
+        const discardDocument = (): void => {
+          for (const [lease, instance] of instances)
+            if (instance.owner.id === ownerId) instances.delete(lease)
+        }
+        owner.on('did-start-navigation', (details) => {
+          if (details.isMainFrame && details.frame === owner.mainFrame && !details.isSameDocument)
+            discardDocument()
+        })
+        owner.on('render-process-gone', discardDocument)
         owner.on('will-frame-navigate', (event) => {
           if (pluginFrame(event.frame)) event.preventDefault()
         })
         owner.once('destroyed', () => {
           observed.delete(ownerId)
-          for (const [lease, instance] of instances)
-            if (instance.owner.id === ownerId) instances.delete(lease)
+          discardDocument()
         })
       }
       const frames: PluginMount['frames'] = {}

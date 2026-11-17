@@ -7,7 +7,71 @@
     "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
     "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
   ],
+  "connections": {
+    "scholarseed-gateway:qwen3.8-flash": {
+      "responses_reasoning_summary": true,
+      "provenance": {"reasoning": "gateway-probed"},
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses",
+        "retrieved": "2026-11-09"
+      },
+      "notes": [
+        "The verified connection emits public summary text as reasoning_text events and completes it in item.summary. Other connections and models retain their declared response semantics."
+      ]
+    },
+    "scholarseed-gateway:qwen3.8-max": {
+      "responses_reasoning_summary": true,
+      "provenance": {"reasoning": "gateway-probed"},
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses",
+        "retrieved": "2026-11-08"
+      },
+      "notes": [
+        "The verified connection emits public summary text as reasoning_text events and completes it in item.summary. Other connections and models retain their declared response semantics."
+      ]
+    }
+  },
   "models": {
+    "qwen4-max": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": ["text", "image", "video"],
+        "output": ["text"]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": ["low", "high", "xhigh"],
+            "default": "high",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/en/model-studio/qwen4-max",
+        "retrieved": "2026-11-16"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": ["The documented 262144-token thinking limit includes both reasoning and the final answer."]
+    },
     "qwen3-next-80b-a3b-thinking": {
       "limits": {
         "context": 131072,

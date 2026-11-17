@@ -2,6 +2,9 @@
 
 @import './design/index.css';
 @import 'tailwindcss';
+@source '../../../../../packages/ui/painter.tsx';
+@source '../../../../../packages/ui/preview/page.jsx';
+@source '../../../../../packages/ui/preview/bindings.jsx';
 
 :root[data-theme='dark'] {
   --bg: oklch(0.205 0.012 250);
@@ -1355,11 +1358,6 @@ a:active {
 .vds-icon {
   color: var(--text-3);
 }
-.vds-selection-actions {
-  position: fixed;
-  z-index: 90;
-}
-
 .vds-selection-action-result {
   display: grid;
   gap: 10px;

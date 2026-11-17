@@ -172,9 +172,7 @@ class CodexRpcContract(unittest.IsolatedAsyncioTestCase):
 
     async def test_writer_preserves_json_line_and_rejects_detached_generation(self):
         written = []
-        stream = SimpleNamespace(
-            is_closing=lambda: False, write=written.append, drain=AsyncMock()
-        )
+        stream = SimpleNamespace(is_closing=lambda: False, write=written.append, drain=AsyncMock())
         writer = JsonLineWriter()
         writer.attach(stream, 2)
         writer.detach(1)

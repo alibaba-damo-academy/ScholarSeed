@@ -9,11 +9,24 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
+RESOURCE_BASELINE_FAILED = "resource_baseline_failed"
+
 
 class SessionTitleFallback(str, Enum):
     """Explicit provenance for an application-generated session title."""
 
     NEW_SESSION = "new_session"
+
+
+class FollowUpMode(str, Enum):
+    QUEUE = "queue"
+    STEER = "steer"
+
+
+FOLLOW_UP_MODE_KEY = "follow_up_mode"
+FOLLOW_UP_REVISION_KEY = "follow_up_revision"
+FOLLOW_UP_CONFLICT = "follow_up_revision_conflict"
+INVALID_FOLLOW_UP_MODE = "invalid_follow_up_mode"
 
 
 HARNESS_ENV = "SCHOLARSEED_HARNESS"
@@ -23,6 +36,8 @@ PRODUCT_SESSION_STATE_STARTING = "starting"
 PRODUCT_SESSION_STATE_IDLE = "idle"
 PRODUCT_SESSION_STATE_FAILED = "failed"
 PRODUCT_RECOVERY_BLOCKED_KEY_PREFIX = "recovery-blocked"
+PRODUCT_SETTLEMENT_ACTIVITY_UNAVAILABLE = "turn_settlement_activity_unavailable"
+PRODUCT_SETTLEMENT_FINISHED_KEY_PREFIX = "settlement-finished"
 PRODUCT_SESSION_STATE_RUNNING = "running"
 PRODUCT_SESSION_STATE_WAITING = "waiting"
 PRODUCT_SESSION_STATE_INTERRUPTED = "interrupted"
@@ -46,6 +61,7 @@ PRODUCT_EVENT_TURN_COMPLETED = "turn_completed"
 PRODUCT_EVENT_TURN_FAILED = "turn_failed"
 PRODUCT_EVENT_TURN_INTERRUPTED = "turn_interrupted"
 PRODUCT_EVENT_MESSAGE_DELTA = "message_delta"
+PRODUCT_EVENT_GENERATION_PREVIEW = "generation_preview"
 PRODUCT_EVENT_ANSWER_SOURCES = "answer_sources"
 PRODUCT_EVENT_NATIVE_SOURCES = "native_sources"
 PRODUCT_EVENT_REASONING_DELTA = "reasoning_delta"
@@ -76,6 +92,7 @@ PRODUCT_EVENT_FILE_CHANGED = "file_changed"
 #: 不带条目, 消费方按域整片重取。语义与取舍见 service/chat/service/invalidation.py。
 PRODUCT_EVENT_PRODUCT_DATA_CHANGED = "product_data_changed"
 PRODUCT_EVENT_DISPLAY_CARD = "display_card"
+RETIRED_DISPLAY_CARD_TYPES = frozenset(("literature-references",))
 PRODUCT_EVENT_ARTIFACT_CHANGED = "artifact_changed"
 PRODUCT_EVENT_ARTIFACT_PUBLISHED = "artifact_published"
 PRODUCT_EVENT_ARTIFACT_LIBRARY_LINKED = "artifact_library_linked"
@@ -84,6 +101,10 @@ PRODUCT_EVENT_ARTIFACT_FAILED = "artifact_failed"
 PRODUCT_EVENT_REVIEW_READY = "review_ready"
 PRODUCT_EVENT_HIL_REQUESTED = "hil_requested"
 PRODUCT_INTERACTION_BLOCKING = "blocking"
+PRODUCT_INTERACTION_MANUAL = "requires_user_confirmation"
+PRODUCT_INTERACTION_HOST_RESPONSE = "requires_host_response"
+PRODUCT_DECISION_SOURCE = "decision_source"
+PRODUCT_DECISION_USER = "user_explicit"
 PRODUCT_EVENT_HIL_RESOLVED = "hil_resolved"
 PRODUCT_EVENT_USAGE_UPDATED = "usage_updated"
 PRODUCT_EVENT_CONTEXT_COMPACTED = "context_compacted"
@@ -129,9 +150,15 @@ QUEUED_REFERENCES = "queued_references"
 USER_MESSAGE_ORIGIN_TURN = "turn"
 USER_MESSAGE_ORIGIN_STEER = "steer"
 USER_MESSAGE_ORIGIN_RECOVERY = "recovery"
+USER_MESSAGE_ORIGIN_AUTHORIZATION = "authorization"
 AUTOMATIC_RECOVERY_MESSAGE = "Automatic recovery continuation (system-generated)."
 USER_MESSAGE_ORIGINS = frozenset(
-    (USER_MESSAGE_ORIGIN_TURN, USER_MESSAGE_ORIGIN_STEER, USER_MESSAGE_ORIGIN_RECOVERY)
+    (
+        USER_MESSAGE_ORIGIN_TURN,
+        USER_MESSAGE_ORIGIN_STEER,
+        USER_MESSAGE_ORIGIN_RECOVERY,
+        USER_MESSAGE_ORIGIN_AUTHORIZATION,
+    )
 )
 
 PRODUCT_TURN_OUTCOME_COMPLETED = "completed"
@@ -142,6 +169,7 @@ PRODUCT_TURN_OUTCOME_CONFIRMED = "unknown_confirmed"
 TURN_OUTCOME_UNCONFIRMED = "turn_outcome_unconfirmed"
 TURN_UNKNOWN_CONFIRM_DECISION = "continue_without_replay"
 TURN_CONTROLLED_INTERRUPT_RESOLUTION = "controlled_interrupt"
+TURN_INTERRUPT_USER_REQUESTED = "user_requested"
 TURN_UNKNOWN_CONFIRM_INVALID = "turn_unknown_confirmation_invalid"
 TURN_UNKNOWN_NOT_FOUND = "turn_unknown_not_found"
 
@@ -199,6 +227,8 @@ SESSION_DELETE_STOP_FAILED = "session_delete_stop_failed"
 SESSION_DELETE_MISSING_ERROR = "session_not_found"
 SESSION_RENAME_EMPTY_ERROR = "session_title_required"
 SESSION_RENAME_MAX_LENGTH = 150
+SESSION_FORK_FIRST_NUMBER = 2
+SESSION_FORK_TITLE_SUFFIX = "({number})"
 SESSION_TITLE_DEFAULT = "新对话"
 SESSION_TITLE_ELLIPSIS = "…"
 SESSION_NOT_FOUND_ERROR = "session not found"
@@ -228,6 +258,7 @@ SESSION_PERMISSION_SWITCH_REQUIRES_HIL_RESOLUTION_ERROR = (
 SESSION_RUNNING_ERROR = "session_running"
 SESSION_ARCHIVED_ERROR = "session_archived"
 SESSION_ARCHIVE_STOP_FAILED = "session_archive_stop_failed"
+SESSION_ARCHIVE_STOP_REQUIRED = "session_archive_stop_required"
 SESSION_ARCHIVE_STOP_TIMEOUT_SECONDS = 30.0
 SESSION_ARCHIVE_POLL_SECONDS = 0.1
 SESSION_TERMINATED = "session_terminated"

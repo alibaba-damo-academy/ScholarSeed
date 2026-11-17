@@ -42,6 +42,10 @@ from service.literature.persistence.delivery import DeliveryStore  # noqa: E402
 from service.literature.persistence.files import LiteratureFileBatch, payload_revision  # noqa: E402
 from service.literature.persistence.store import LiteratureRepository, connect  # noqa: E402
 from service.literature.schema import LiteratureItem  # noqa: E402
+from service.literature.service.agentic import (  # noqa: E402
+    prepare_agentic_search,
+    project_agentic_papers,
+)
 from service.literature.service.result import (  # noqa: E402
     AGENTIC_SEARCH_ORIGIN,
     SEARCH_CARD,
@@ -49,6 +53,7 @@ from service.literature.service.result import (  # noqa: E402
     AuthorizedFulltext,
     prepare_final_delivery,
     prepare_result,
+    project_papers,
     validate_search_card,
 )
 from service.literature.service.status import (  # noqa: E402
@@ -196,6 +201,15 @@ class LiteratureResultContract(unittest.TestCase):
         for name in ("final_report.md", "paper_summary.md", "read_report.md"):
             (self.run / name).write_text(f"# {name}\nverified content\n", encoding="utf-8")
 
+    def test_search_projections_preserve_supplied_arxiv_identifiers(self) -> None:
+        paper = {**self.paper, "arxiv_id": "1706.03762"}
+        for complete in (False, True):
+            for projected in (
+                project_papers([paper], complete=complete),
+                project_agentic_papers({"papers": [paper]}, complete=complete),
+            ):
+                self.assertEqual(projected[0].model_dump()["arxiv_id"], "1706.03762")
+
     def test_precise_skill_requires_selected_list_before_one_click_authorization(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
@@ -260,32 +274,55 @@ class LiteratureResultContract(unittest.TestCase):
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
 
-        self.assertIn("Before starting — mandatory confirmation", skill)
-        self.assertIn("Then STOP and wait for an explicit affirmative response", skill)
+        self.assertIn("Before starting", skill)
         self.assertIn(
             "Intent clarification is not authorization to start, download,",
             RESEARCH_GUIDANCE_SKILL.read_text(encoding="utf-8"),
         )
         self.assertIn(
-            "Host context never bypasses the mandatory start confirmation", " ".join(skill.split())
+            "Starting does not confirm the research scope or authorize auto mode",
+            " ".join(skill.split()),
         )
         self.assertNotIn("skip its additional clarification and confirmation", prompt)
 
-    def test_precise_start_confirmation_uses_the_product_question_card(self) -> None:
+    def test_literature_skill_package_and_plugin_versions_match(self) -> None:
+        for directory in (
+            PRECISE_SKILL.parent,
+            PRECISE_SKILL.parent.parent / "scholarseed-product-operations",
+        ):
+            with self.subTest(skill=directory.name):
+                version = (directory / "VERSION").read_text(encoding="utf-8").strip()
+                descriptor = directory / ".scholarseed-plugin.json"
+                self.assertEqual(
+                    json.loads(descriptor.read_text(encoding="utf-8"))["version"], version
+                )
+
+    def test_precise_start_notice_does_not_require_confirmation(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
-        confirmation = skill.split("## Before starting — mandatory confirmation", 1)[1]
-        confirmation = " ".join(confirmation.split("## Complete workflow", 1)[0].split())
+        startup = skill.split("## Before starting", 1)[1].split("## Complete workflow", 1)[0]
+        notice = " ".join(startup.split())
 
         for requirement in (
-            "request_user_input",
-            "开始检索",
-            "暂不开始",
-            "host-confirmed card answer",
-            "Do not ask the user to type",
-            "Skipped, cancelled, timed-out or unanswered cards are not approval",
-            "do not initialize a run",
+            "Before initializing the run or asking a scope question",
+            "user-visible duration notice",
+            "may take a while",
+            "without waiting for a reply",
+            "A large requested set may take longer",
+            "cross-study comparison or full-text evidence",
         ):
-            self.assertIn(requirement, confirmation)
+            self.assertIn(requirement, notice)
+        self.assertNotIn("confirm-search-start", startup)
+        self.assertNotIn("request_user_input", startup)
+
+    def test_precise_search_start_endpoint_is_not_available(self) -> None:
+        app = FastAPI()
+        sessions = SimpleNamespace(bridge_caller=lambda _session_id: None)
+        register_result_routes(
+            app, sessions, SimpleNamespace(), SimpleNamespace(), activities=Activities()
+        )
+        with TestClient(app) as client:
+            response = client.post("/api/internal/bridge/literature/confirm-search-start", json={})
+        self.assertEqual(response.status_code, 404)
 
     def test_precise_skill_owns_search_publication_and_authorization_recovery(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
@@ -300,7 +337,9 @@ class LiteratureResultContract(unittest.TestCase):
         clarification = (PRECISE_SKILL.parent / "modules/intent/clarification.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Explicit auto mode does not waive that confirmation", clarification)
+        self.assertIn("not whether the user approves the whole scope", clarification)
+        self.assertIn("confirmation_source: request_clear", clarification)
+        self.assertIn("state the understood scope in a user-visible message", clarification)
         self.assertIn("one 1–3 question card", clarification)
         self.assertIn("at most one conflict-resolution follow-up", clarification)
         self.assertNotIn("Ask one question per turn", clarification)
@@ -1233,6 +1272,54 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertEqual(failed_publication.status_code, 400, failed_publication.text)
         self.assertFalse(failed_publication.json()["ok"])
 
+    def test_reauthorization_uses_catalog_access_check_and_scoped_record(self) -> None:
+        catalog = SessionCatalogStore(self.root / "reauthorization.sqlite3")
+        catalog.register(
+            "s1",
+            SessionPrincipal("local"),
+            runtime_id="codex",
+            vendor_thread_id="s1",
+            vendor_session_id=None,
+            runtime_workdir=str(self.root),
+            project_path=None,
+            output_root=str(self.root / "outputs"),
+            codex_version="contract",
+            model_id="contract",
+            policy_id="on-request",
+            status=SessionStatus.READY,
+            title="contract",
+            created_at=1.0,
+        )
+        calls = []
+        live = SimpleNamespace(id="s1")
+
+        async def retry(session, question_id, *, context_revision):
+            calls.append((session, question_id, context_revision))
+            return {"ok": True, "request_id": "renewed"}
+
+        app = FastAPI()
+        register_result_routes(
+            app,
+            SimpleNamespace(is_readonly=lambda _: False, interaction_session=lambda _: live),
+            catalog,
+            SimpleNamespace(),
+            activities=Activities(),
+            fulltext_gate=SimpleNamespace(retry=retry),
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/sessions/s1/literature/authorizations/question/retry",
+                json={"assistant_context_revision": 7},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json(), {"ok": True, "request_id": "renewed"})
+            missing = client.post(
+                "/api/sessions/private/literature/authorizations/question/retry",
+                json={"assistant_context_revision": 7},
+            )
+            self.assertEqual(missing.status_code, 404)
+        self.assertEqual(calls, [(live, "question", 7)])
+
     def test_full_result_is_durable_scoped_and_not_preview_limited(self) -> None:
         database = self.root / "sessions.sqlite3"
         catalog = SessionCatalogStore(database)
@@ -1278,10 +1365,14 @@ class LiteratureResultContract(unittest.TestCase):
             for index in range(25)
         ]
         self.write(self.work.parent / "metadata.json", self.metadata)
+        search = prepare_result(self.root, "run", "search")
+        self.assertEqual(
+            [paper.id for paper in search.card.papers], [f"p{index}" for index in range(25)]
+        )
         selected_ids = [f"p{index}" for index in range(12)]
         self.write_selection(selected_ids)
         prepared = prepare_result(self.root, "run", "selection")
-        self.assertEqual(len(prepared.card.papers), 3)
+        self.assertEqual([paper.id for paper in prepared.card.papers], selected_ids)
         self.assertEqual(prepared.card.papers[0].authors, authors[:20])
         self.assertEqual(prepared.card.papers[0].abstract, abstract[:SEARCH_TEXT])
         self.assertEqual(len(prepared.card.papers[0].reasons), 10)
@@ -1392,6 +1483,18 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "display_card_requires_domain_publication")
 
+    def test_agentic_search_card_contains_all_papers_in_order(self) -> None:
+        metadata = self.root / "agentic-search-results/topic/metadata.json"
+        metadata.parent.mkdir(parents=True)
+        paper_ids = [f"p{index}" for index in range(8)]
+        self.write(
+            metadata,
+            {"papers": [{"paper_id": paper_id, "title": paper_id} for paper_id in paper_ids]},
+        )
+        result = prepare_agentic_search(self.root, metadata.relative_to(self.root).as_posix())
+        content = validate_search_card(result.card.model_dump(mode="json"))
+        self.assertEqual([paper["id"] for paper in content["papers"]], paper_ids)
+
     def test_idea_candidates_checkpoint_waits_in_turn(self) -> None:
         topic = self.root / "agentic-search-results/topic"
         topic.mkdir(parents=True)
@@ -1417,6 +1520,8 @@ class LiteratureResultContract(unittest.TestCase):
 
         async def request_product_input(question, **kwargs):
             questions.append((question, kwargs))
+            self.assertIsNone(kwargs.get("automatic_decision"))
+            self.assertTrue(question["requires_user_confirmation"])
             return {"answers": {question["id"]: "一键授权"}}
 
         live = SimpleNamespace(
@@ -1443,7 +1548,7 @@ class LiteratureResultContract(unittest.TestCase):
                 scope_digest="scope-digest",
                 question_id="research-idea-fulltext:opaque",
                 turn_id="t1",
-                refs=("literature:r1",),
+                refs=("paper:a1",),
             )
         )
         app = FastAPI()
@@ -1462,7 +1567,7 @@ class LiteratureResultContract(unittest.TestCase):
                     turn_granted_refs=lambda **_scope: (),
                     task_key=lambda *_scope: "",
                     effective_scope=lambda **scope: SimpleNamespace(
-                        allowed=("literature:r1",) if questions else (),
+                        allowed=("paper:a1",) if questions else (),
                         denied=(),
                         unknown=() if questions else scope.get("refs", ()),
                         authorizations=(),
@@ -1493,6 +1598,7 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertNotIn("authorization", metadata.json())
         self.assertEqual(missing_skill.status_code, 400)
         self.assertEqual(len(questions), 1)
+        self.assertEqual(prepare_authorization.call_args.kwargs["refs"], ("paper:a1",))
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(wrong_task.status_code, 400, wrong_task.text)
         authorization = response.json()["authorization"]

@@ -34,6 +34,7 @@ from service.workbench.domain.model import (
 )
 from service.workbench.service.records import PdfRecordStore
 
+from .pdf import PageFixture, build_pdf
 from .records import pdf_records
 
 PASS = 0
@@ -79,6 +80,17 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 def main() -> int:
     formats = WorkbenchFormatPolicy()
+    check(
+        "conversation and workbench image formats include BMP",
+        all(
+            FORMAT_BY_SUFFIX[suffix].viewer == ViewerKind.IMAGE
+            for suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp")
+        ),
+    )
+    check(
+        "TIFF remains a file rather than a previewable image",
+        all(suffix not in FORMAT_BY_SUFFIX for suffix in (".tif", ".tiff")),
+    )
     check(
         "current known version formats are explicitly allowlisted",
         all(
@@ -624,7 +636,9 @@ def main() -> int:
         )
 
         moving_pdf = resources / "moving.pdf"
-        moving_pdf.write_bytes(b"%PDF-1.4\nmove with annotations\n")
+        moving_pdf.write_bytes(
+            build_pdf(PageFixture(), PageFixture(), title="move with annotations")
+        )
         empty_moving_annotations = annotation_store.snapshot(project.id, "resources/moving.pdf")
         annotation_store.commit(
             project.id,
@@ -664,7 +678,7 @@ def main() -> int:
         pdf_tree = resources / "pdf-tree"
         pdf_tree.mkdir()
         nested_pdf = pdf_tree / "nested.pdf"
-        nested_pdf.write_bytes(b"%PDF-1.4\ndirectory move\n")
+        nested_pdf.write_bytes(build_pdf(PageFixture(), PageFixture(), title="directory move"))
         empty_nested_annotations = annotation_store.snapshot(
             project.id, "resources/pdf-tree/nested.pdf"
         )

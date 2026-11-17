@@ -390,6 +390,7 @@ async def search_by_title(
     timeout: float = PLAIN_TOTAL_TIMEOUT_SECONDS,
     transport: httpx.AsyncBaseTransport | None = None,
     environ: Mapping[str, str] | None = None,
+    require_unique: bool = False,
 ) -> dict[str, Any]:
     """按标题检索 OpenAlex 并归一化相关性最高的一条; 失败一律折成稳定 code。
 
@@ -434,6 +435,8 @@ async def search_by_title(
     if not results:
         # 空结果才是「没这篇」; 结果非空但首条不是对象属于上游形状违约, 折成 502。
         raise BibliographyError(NOT_FOUND, HTTP_NOT_FOUND)
+    if require_unique and _mapping(payload.get(META_FIELD)).get(COUNT_FIELD) != 1:
+        return {"success": False, "reason": "title_identity_ambiguous"}
     work = results[0]
     if not isinstance(work, dict):
         raise BibliographyError(UPSTREAM_FAILED, HTTP_BAD_GATEWAY)

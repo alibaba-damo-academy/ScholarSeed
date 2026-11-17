@@ -359,6 +359,8 @@ Planned work is separate from the current capabilities above. Scope and availabi
 | In-workbench LaTeX editor with library citation support | Planned |
 | Linux build | Exploring |
 
+Plugins are currently in developer preview. See the [plugin guide](developer-docs/plugins.md) for development and installation.
+
 ### ScholarStack — Reusable research knowledge · Coming soon
 
 Research often requires revisiting the same papers and reconstructing earlier comparisons. ScholarStack explores how to organize source-grounded facts, domain concepts, and cross-paper syntheses into reusable research assets, with provenance and scope preserved.
@@ -368,6 +370,8 @@ The [ScholarStack paper](https://arxiv.org/abs/2609.23735v3), *Layered Research 
 **ScholarStack has not yet been fully integrated into this repo.** Today's workbench keeps project materials and conversations available for later use; systematic reuse through ScholarStack's structured assets is coming-soon work.
 
 ---
+
+The AI invokes these operations following the Skill; ScholarSeed checks the current project scope and permissions. Cards do not inherit all application permissions or automatically approve sensitive actions. See the [plugin API guide](developer-docs/plugins/api.md) for available operations.
 
 ## Community & contributing
 
@@ -391,7 +395,7 @@ ScholarSeed stands on a lot of other people's work. Thank you to:
 | Office preview | [docx-preview](https://github.com/VolodymyrBaydalka/docxjs) · [ExcelJS](https://github.com/exceljs/exceljs) · [pptx-renderer](https://github.com/aiden0z/pptx-renderer) · [emf-converter](https://github.com/ChristopherVR/emf-converter) · [ZetaOffice](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md) (wasm) with [Fontconfig](https://www.freedesktop.org/wiki/Software/fontconfig/) and [FreeType](https://freetype.org) |
 | Writing | [TeX Live](https://tug.org/texlive/) 2026 · [Milkdown](https://milkdown.dev) · [CodeMirror](https://codemirror.net) |
 | Desktop | [Electron](https://www.electronjs.org) 44 · [React](https://react.dev) · [Vite](https://vite.dev) / [electron-vite](https://electron-vite.org) · [electron-builder](https://www.electron.build) · [Velopack](https://velopack.io) (Windows updates) · [Tailwind CSS](https://tailwindcss.com) · [i18next](https://www.i18next.com) · [Playwright](https://playwright.dev) |
-| Backend | [FastAPI](https://fastapi.tiangolo.com) · [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython 3.12 · [uv](https://github.com/astral-sh/uv) · [DuckDB](https://duckdb.org) · [httpx](https://www.python-httpx.org) · [Pydantic](https://pydantic.dev) · [truststore](https://github.com/sethmlarson/truststore) |
+| Backend | [FastAPI](https://fastapi.tiangolo.com) · [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython 3.14 · [uv](https://github.com/astral-sh/uv) · [DuckDB](https://duckdb.org) · [httpx](https://www.python-httpx.org) · [Pydantic](https://pydantic.dev) · [truststore](https://github.com/sethmlarson/truststore) |
 | Tools shipped in the package | [ripgrep](https://github.com/BurntSushi/ripgrep) · [PowerShell](https://github.com/PowerShell/PowerShell) 7.6 (Windows) |
 | Fonts | [IBM Plex Mono](https://github.com/IBM/plex) · [Newsreader](https://github.com/productiontype/Newsreader) · [Noto Serif SC](https://fonts.google.com/noto) |
 | README logos | [Simple Icons](https://simpleicons.org) (CC0; marks remain their owners' trademarks) |

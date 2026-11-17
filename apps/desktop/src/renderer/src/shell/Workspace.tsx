@@ -26,6 +26,8 @@ import { sessionNeedsAttention } from '../attention'
 import { IconFont } from '../components/primitive'
 import { SessionDropdownMenu } from '../components/business/SessionContextMenu'
 import { TaskStatus } from '../components/business/TaskStatus'
+import { pendingConversationConfirmations } from '../components/business/confirmation'
+import { PendingHilDock } from '../components/business/Stream'
 import {
   cx,
   Divider,
@@ -42,28 +44,39 @@ import { AssistantPanel } from '../features/assistant/Panel'
 import { TaskOverview, TaskOverviewLayout } from '../features/assistant/Overview'
 import { useAttention } from '../features/assistant/attention'
 import { Workbench } from '../features/workbench/Workbench'
-import { newProjectTab, tabMatchesProject, workbenchTabVisible } from '../features/workbench/tabs'
+import {
+  newProjectTab,
+  tabMatchesProject,
+  workbenchTabVisible,
+  documentTabsVisibleInView,
+} from '../features/workbench/tabs'
 import { useDocumentWorkspace, useWorkspaceController } from '../features/workbench/workspace'
 import { NewTabButton } from '../features/workbench/Pages'
 import { hasSplitPanes } from '../features/workbench/layout'
-import { activeThread, useApp } from '../store'
+import { archivedTaskForProject } from '../session'
+import { activeThread, selectedProject, useApp } from '../store'
 import { findSessionNode } from '../tree'
-import { changeProjectLayout } from '../../../layout'
+import { changeProjectLayout, projectConversationMode } from '../../../layout'
 import { TabBar } from './TabBar'
 import { Motion } from './Motion'
+import { FloatingOverlay, FloatingPortal, useFloatingPortal } from './Floating'
+import { Divider as NativeDivider } from './Divider'
+import { RESIZE_PORTAL_CAPACITY } from '../../../portal'
 import {
   MODULE_PANEL_DEFAULT_WIDTH,
   MODULE_PANEL_MAX_WIDTH,
   MODULE_PANEL_WIDTH_STEP,
   constrainFloatingPanel,
   floatingPanelDockPosition,
+  floatingPanelDockStyle,
   nearestFloatingPanelDock,
   resizeFloatingPanel,
   type FloatingPanelBounds,
   type FloatingPanelDock,
 } from './geometry'
 
-const CONTENT_MIN_WIDTH = 260
+const CONTENT_MIN_WIDTH = 360
+const SPLIT_MIN_WIDTH = CONTENT_MIN_WIDTH * 2
 const CONTENT_MAX_WIDTH = 75
 const BUBBLE_DRAG_THRESHOLD = 4
 const CONVERSATION_DRAG_THRESHOLD = 4
@@ -81,9 +94,17 @@ export function Workspace({
   const { state, set, act } = useApp()
   const { t } = useTranslation('layout')
   const { t: shellText } = useTranslation('shell')
-  const { t: assistantText } = useTranslation('assistant')
   const [tabOverflowTarget, setTabOverflowTarget] = useState<HTMLSpanElement | null>(null)
+  const activeViewer = featureRegistry.viewers.get(
+    state.tabs.find((tab) => tab.id === state.activeTab)?.kind ?? ''
+  )
   const layout = state.workbenchLayout
+  const conversationMode = projectConversationMode(
+    layout,
+    activeViewer?.conversationLayout === 'native-floating'
+      ? Boolean(window.scholarseed?.conversationPortal)
+      : activeViewer?.conversationLayout !== 'non-overlapping'
+  )
   const documents = useDocumentWorkspace()
   const workspace = useWorkspaceController()
   const workspaceActionSize = hasSplitPanes(documents.layout) ? 'xs' : 'md'
@@ -93,9 +114,9 @@ export function Workspace({
         tab.kind !== 'overview' &&
         availabilityPolicy.tabAvailable(tab) &&
         tabMatchesProject(tab, state.homeSelectedProjectId) &&
-        workbenchTabVisible(tab, state.mainView)
+        workbenchTabVisible(tab, state.mainView, state.activeSession)
     ).length +
-    (state.mainView === 'resource' || state.mainView === 'literature'
+    (documentTabsVisibleInView(state.mainView)
       ? Object.values(documents.tabs).filter(
           (tab) => !tab.embedded && documents.sessions[tab.sessionId]
         ).length
@@ -154,13 +175,40 @@ export function Workspace({
   }, [state.activeTab, state.homeSelectedProjectId, workspaceTabCount, set])
   const conversationFull = layout.conversationFull
   const fullSurface = layout.full || conversationFull
-  const showConversationDivider = layout.open && !fullSurface
+  const [canSplit, setCanSplit] = useState(true)
+  const [openingSplit, setOpeningSplit] = useState<{
+    projectId: typeof state.homeSelectedProjectId
+    navigationWidth: number
+  } | null>(null)
+  const openingNavigationWidth =
+    openingSplit && openingSplit.projectId === state.homeSelectedProjectId
+      ? openingSplit.navigationWidth
+      : null
+  const splitAvailable = canSplit || openingNavigationWidth !== null
+  const workspaceOpen = layout.open && (fullSurface || splitAvailable)
+  const workspaceVisible = workspaceOpen && !conversationFull
+  const showConversationDivider = workspaceOpen && !fullSurface
+  useLayoutEffect(() => {
+    if (!layout.open || fullSurface || splitAvailable) return
+    set((current) =>
+      current.homeSelectedProjectId === state.homeSelectedProjectId &&
+      current.workbenchLayout.open &&
+      !current.workbenchLayout.full &&
+      !current.workbenchLayout.conversationFull
+        ? { workbenchLayout: { ...current.workbenchLayout, open: false } }
+        : {}
+    )
+  }, [layout.open, fullSurface, splitAvailable, state.homeSelectedProjectId, set])
   const conversationPinnedOut = layout.full && !layout.taskTab
-  const floating = conversationPinnedOut && !conversationFull
+  const floating = conversationMode === 'floating'
   const minimized = floating && layout.floating === 'minimized'
+  const floatingConfirmation =
+    floating &&
+    !archivedTaskForProject(state.archivedSession, selectedProject(state)?.path) &&
+    pendingConversationConfirmations(thread).length > 0
   const compact = (floating || conversationFull) && layout.floating !== 'expanded'
   const conversationHeaderLeading =
-    conversationFull || (!layout.full && (!layout.open || !layout.swapped))
+    conversationFull || (!layout.full && (!workspaceOpen || !layout.swapped))
   const sidebarToggle = !state.modulePanelOpen && (
     <Tooltip content={shellText('chrome.expandSidebar')} side="bottom" portalled>
       <IconButton
@@ -175,8 +223,57 @@ export function Workspace({
     </Tooltip>
   )
   const hostRef = useRef<HTMLDivElement>(null)
+  const navigationRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const measure = (): void => {
+      const fits = host.clientWidth >= SPLIT_MIN_WIDTH
+      setCanSplit(fits)
+      if (
+        openingNavigationWidth !== null &&
+        (fits ||
+          host.clientWidth + (navigationRef.current?.offsetWidth ?? 0) - openingNavigationWidth <
+            SPLIT_MIN_WIDTH)
+      ) {
+        setOpeningSplit(null)
+      }
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(host)
+    return () => observer.disconnect()
+  }, [openingNavigationWidth])
   const conversationRef = useRef<HTMLDivElement>(null)
   const bubbleRef = useRef<HTMLDivElement>(null)
+  const confirmationRef = useRef<HTMLDivElement>(null)
+  const nativeFloating = floating && activeViewer?.conversationLayout === 'native-floating'
+  const [overlayCount, setOverlayCount] = useState(0)
+  const [overlayFailed, setOverlayFailed] = useState(false)
+  const nativeOverlay = !overlayFailed && activeViewer?.conversationLayout === 'native-floating'
+  const registerOverlay = useCallback(() => {
+    setOverlayCount((count) => count + 1)
+    return () => setOverlayCount((count) => count - 1)
+  }, [])
+  const floatingPortal = useFloatingPortal({
+    enabled: nativeFloating || (nativeOverlay && overlayCount > 0),
+    host: hostRef,
+    regions: nativeFloating ? [conversationRef, bubbleRef, confirmationRef] : [],
+    onFailure: () => {
+      setOverlayFailed(true)
+      if (nativeFloating) patch({ full: false, taskTab: false })
+    },
+  })
+  const conversationPortal = { ...floatingPortal, native: nativeFloating && floatingPortal.native }
+  const renderOverlay = (children: React.ReactNode): React.ReactNode => (
+    <FloatingOverlay
+      native={nativeOverlay}
+      presentation={floatingPortal}
+      register={registerOverlay}
+    >
+      {children}
+    </FloatingOverlay>
+  )
   const [floatingActive, setFloatingActive] = useState(false)
   const floatingInteraction = useRef<Event | null>(null)
   useEffect(() => {
@@ -185,10 +282,18 @@ export function Workspace({
     const outside = (event: Event): void => {
       setFloatingActive(
         event === floatingInteraction.current ||
-          (event.target instanceof Node && Boolean(conversationRef.current?.contains(event.target)))
+          (event.target instanceof
+            (conversationRef.current?.ownerDocument.defaultView?.Node ?? Node) &&
+            Boolean(conversationRef.current?.contains(event.target)))
       )
     }
-    const deactivate = (): void => setFloatingActive(false)
+    const deactivate = (): void => {
+      if (!floatingPortal.surface?.document.hasFocus()) setFloatingActive(false)
+    }
+    const nativeWindow = floatingPortal.surface?.document.defaultView
+    nativeWindow?.addEventListener('pointerdown', outside)
+    nativeWindow?.addEventListener('focusin', outside)
+    nativeWindow?.addEventListener('blur', deactivate)
     window.addEventListener('pointerdown', outside)
     window.addEventListener('focusin', outside)
     window.addEventListener('blur', deactivate)
@@ -196,14 +301,18 @@ export function Workspace({
       window.removeEventListener('pointerdown', outside)
       window.removeEventListener('focusin', outside)
       window.removeEventListener('blur', deactivate)
+      nativeWindow?.removeEventListener('pointerdown', outside)
+      nativeWindow?.removeEventListener('focusin', outside)
+      nativeWindow?.removeEventListener('blur', deactivate)
     }
-  }, [floating, minimized])
+  }, [floating, minimized, floatingPortal.surface])
   const dragRef = useRef<{
     pointerId: number
     offsetX: number
     offsetY: number
     startX: number
     startY: number
+    restorePosition: { left: number; top: number } | null
   } | null>(null)
   const conversationDragged = useRef(false)
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
@@ -212,40 +321,6 @@ export function Workspace({
   const [floatingWidth, setFloatingWidth] = useState<number | null>(null)
   const floatingResize = useRef<{ left: number; width: number; minimumWidth: number } | null>(null)
   const floatingResized = useRef(false)
-  useEffect(() => {
-    setFloatingWidth(null)
-    floatingResize.current = null
-    floatingResized.current = false
-  }, [state.homeSelectedProjectId])
-  const startFloatingResize = (): void => {
-    const panel = conversationRef.current
-    const host = hostRef.current
-    if (!panel || !host) return
-    floatingResize.current = {
-      left: panel.getBoundingClientRect().left - host.getBoundingClientRect().left,
-      width: panel.offsetWidth,
-      minimumWidth: Number.parseFloat(
-        getComputedStyle(host).getPropertyValue('--vds-floating-conversation-width')
-      ),
-    }
-  }
-  const resizeFloating = (edge: 'left' | 'right', delta: number): void => {
-    const initial = floatingResize.current
-    const host = hostRef.current
-    if (!initial || !host) return
-    const inset = Number.parseFloat(getComputedStyle(host).getPropertyValue('--vds-space-4'))
-    const next = resizeFloatingPanel(
-      initial,
-      edge,
-      delta,
-      host.clientWidth,
-      initial.minimumWidth,
-      inset
-    )
-    floatingResized.current = true
-    setFloatingWidth(next.width)
-    setPosition((current) => (current ? { ...current, left: next.left } : current))
-  }
   const floatingBounds = useCallback((): FloatingPanelBounds | null => {
     const host = hostRef.current
     const panel = minimized ? bubbleRef.current : conversationRef.current
@@ -267,6 +342,34 @@ export function Workspace({
       inset,
     }
   }, [floating, minimized])
+  const startFloatingResize = (): void => {
+    const host = hostRef.current
+    const bounds = floatingBounds()
+    if (!host || !bounds) return
+    floatingResize.current = {
+      left: position?.left ?? floatingPanelDockPosition(floatingDock, bounds).left,
+      width: bounds.panelWidth,
+      minimumWidth: Number.parseFloat(
+        getComputedStyle(host).getPropertyValue('--vds-floating-conversation-width')
+      ),
+    }
+  }
+  const resizeFloating = (edge: 'left' | 'right', delta: number): void => {
+    const initial = floatingResize.current
+    const host = hostRef.current
+    if (!initial || !host) return
+    const next = resizeFloatingPanel(
+      initial,
+      edge,
+      delta,
+      host.clientWidth,
+      initial.minimumWidth,
+      Number.parseFloat(getComputedStyle(host).getPropertyValue('--vds-space-4'))
+    )
+    floatingResized.current = true
+    setFloatingWidth(next.width)
+    setPosition((current) => (current ? { ...current, left: next.left } : current))
+  }
   const [bubblePosition, setBubblePosition] = useState<{ left: number; top: number } | null>(null)
   const bubbleDrag = useRef<{
     pointerId: number
@@ -348,11 +451,14 @@ export function Workspace({
     bubbleDrag.current = null
     bubbleDragged.current = false
     setBubblePosition(null)
+    setFloatingWidth(null)
+    floatingResize.current = null
+    floatingResized.current = false
   }, [state.homeSelectedProjectId])
   useLayoutEffect(() => {
-    if (!floating || minimized) floatingResize.current = null
     if (!floating) {
       dragRef.current = null
+      floatingResize.current = null
       return
     }
     const host = hostRef.current
@@ -396,16 +502,24 @@ export function Workspace({
     const composer = panel.querySelector<HTMLElement>('.vds-ai-composer-host')
     if (composer) observer.observe(composer)
     return () => observer.disconnect()
-  }, [floating, minimized, floatingDock, floatingBounds])
+  }, [floating, minimized, floatingDock, floatingBounds, floatingPortal.surface])
   const startDrag = (event: React.PointerEvent<HTMLDivElement>): void => {
-    if (!floating || event.button !== 0 || !(event.target instanceof Element)) return
+    if (
+      !floating ||
+      event.button !== 0 ||
+      !(event.target instanceof event.currentTarget.ownerDocument.defaultView!.Element)
+    )
+      return
     const handle = event.target.closest<HTMLElement>('[data-workspace-drag-handle]')
     if (!handle) return
     const panel = conversationRef.current
-    if (!panel) return
+    const host = hostRef.current
+    if (!panel || !host) return
     const bounds = panel.getBoundingClientRect()
+    const hostBounds = host.getBoundingClientRect()
     dragRef.current = {
       pointerId: event.pointerId,
+      restorePosition: position,
       offsetX: event.clientX - bounds.left,
       offsetY: event.clientY - bounds.top,
       startX: event.clientX,
@@ -413,6 +527,7 @@ export function Workspace({
     }
     conversationDragged.current = false
     handle.setPointerCapture(event.pointerId)
+    setPosition({ left: bounds.left - hostBounds.left, top: bounds.top - hostBounds.top })
   }
   const moveDrag = (event: React.PointerEvent<HTMLDivElement>): void => {
     const drag = dragRef.current
@@ -449,7 +564,12 @@ export function Workspace({
     if (drag?.pointerId !== event.pointerId) return
     const host = hostRef.current
     const bounds = floatingBounds()
-    if (host && bounds && conversationDragged.current) {
+    conversationDragged.current ||=
+      Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >=
+      CONVERSATION_DRAG_THRESHOLD
+    if (!conversationDragged.current) {
+      setPosition(drag.restorePosition)
+    } else if (host && bounds) {
       const hostBounds = host.getBoundingClientRect()
       const dock =
         event.type === 'pointerup'
@@ -478,6 +598,28 @@ export function Workspace({
     })
     patch({ open: true, taskTab: false })
   }
+  const openWorkspaceTabs = (): void => {
+    const host = hostRef.current
+    if (!host) return
+    const open = workspaceTabCount
+      ? () => patch({ open: true, full: false, taskTab: false })
+      : openNewTab
+    const missingWidth = SPLIT_MIN_WIDTH - host.clientWidth
+    if (missingWidth <= 0) {
+      setCanSplit(true)
+      open()
+      return
+    }
+    const nextNavigationWidth = (navigationRef.current?.offsetWidth ?? 0) - missingWidth
+    if (nextNavigationWidth < MODULE_PANEL_DEFAULT_WIDTH) return
+    // Keep the split open while the navigation is still making room.
+    setOpeningSplit({
+      projectId: state.homeSelectedProjectId,
+      navigationWidth: nextNavigationWidth,
+    })
+    onNavigationWidthChange(`${nextNavigationWidth}px`)
+    open()
+  }
   const workspaceToggle = (
     <Tooltip content={t(workspaceTabCount ? 'openTabs' : 'newTabAction')} side="bottom">
       <IconButton
@@ -485,7 +627,7 @@ export function Workspace({
         size="md"
         label={t(workspaceTabCount ? 'openTabs' : 'newTabAction')}
         title={undefined}
-        aria-expanded={layout.open}
+        aria-expanded={workspaceOpen}
         icon={
           workspaceTabCount ? (
             <span className="relative inline-flex size-[var(--vds-icon-button-glyph)] items-center justify-center">
@@ -498,7 +640,7 @@ export function Workspace({
             <SquarePlus />
           )
         }
-        onClick={workspaceTabCount ? () => changeLayout('toggleWorkspace') : openNewTab}
+        onClick={openWorkspaceTabs}
         data-testid="workspace-open"
       />
     </Tooltip>
@@ -598,7 +740,7 @@ export function Workspace({
                 )}
                 {t(conversationPinnedOut ? 'dockConversation' : 'enterFloating')}
               </DropdownMenuItem>
-              {layout.open && (
+              {workspaceOpen && (
                 <DropdownMenuItem
                   onSelect={() =>
                     changeLayout(layout.swapped ? 'moveConversationLeft' : 'moveConversationRight')
@@ -611,7 +753,7 @@ export function Workspace({
             </>
           }
         >
-          <Tooltip content={t('moreActions')} side="bottom" portalled>
+          <Tooltip content={t('moreActions')} side="bottom" align="end" portalled>
             <IconButton
               variant="ghostIcon"
               size="md"
@@ -641,7 +783,7 @@ export function Workspace({
           />
         </Tooltip>
       )}
-      {!floating && !conversationFull && !layout.open && (
+      {!floating && !conversationFull && !workspaceOpen && (
         <>
           <Divider
             orientation="vertical"
@@ -679,7 +821,7 @@ export function Workspace({
     <Motion
       project={state.homeSelectedProjectId}
       dragging={Boolean(dragRef.current || bubbleDrag.current || floatingResize.current)}
-      revision={`${layout.full}:${layout.taskTab}:${conversationFull}:${layout.swapped}:${layout.floating}:${floatingDock}`}
+      revision={`${layout.full}:${layout.taskTab}:${conversationFull}:${layout.swapped}:${layout.floating}:${floatingDock}:${workspaceOpen}`}
       className={`flex h-full min-h-0 min-w-0 flex-1${(!state.modulePanelOpen || conversationFull) && window.scholarseed?.platform === 'darwin' ? (conversationHeaderLeading ? ' [&_.vds-ai-head]:!pl-[var(--vds-layout-overview-title-inset)]' : ' [&_[data-navigation-leading]]:!pl-[var(--vds-layout-overview-title-inset)]') : ''}`}
       data-testid="project-workspace"
     >
@@ -688,12 +830,21 @@ export function Workspace({
         className={String.raw`min-h-0 min-w-0 flex-1 [&>.vds-resizable-split\_\_handle]:!mx-[calc(var(--vds-resizable-handle-active-size)/-2)]`}
         isLeftCollapsed={!state.modulePanelOpen || conversationFull}
         resizeEnabled={state.modulePanelOpen && !conversationFull}
+        renderHandle={
+          nativeOverlay && window.scholarseed?.resizePortal?.maxInstances === RESIZE_PORTAL_CAPACITY
+            ? (handle) => <NativeDivider>{handle}</NativeDivider>
+            : undefined
+        }
         leftWidth={navigationWidth}
         minLeftWidth={MODULE_PANEL_DEFAULT_WIDTH}
         maxLeftWidth={MODULE_PANEL_MAX_WIDTH}
         leftWidthStep={MODULE_PANEL_WIDTH_STEP}
         onWidthChangeEnd={onNavigationWidthChange}
-        leftPanel={<div className="flex h-full min-h-0 flex-col">{navigation?.render()}</div>}
+        leftPanel={
+          <div ref={navigationRef} className="flex h-full min-h-0 flex-col">
+            {navigation?.render()}
+          </div>
+        }
         rightPanel={
           <div
             className="relative flex h-full min-h-0 min-w-0 flex-1"
@@ -703,7 +854,7 @@ export function Workspace({
             <ResizablePanel
               animated
               className={cx(
-                String.raw`h-full min-h-0 min-w-0 flex-1 [&>.vds-resizable-split\_\_panel--left]:!overflow-visible`,
+                String.raw`h-full min-h-0 min-w-0 flex-1 [&>.vds-resizable-split\_\_panel--left]:!overflow-visible [&>.vds-resizable-split\_\_handle]:!mx-[calc(var(--vds-resizable-handle-active-size)/-2)]`,
                 fullSurface &&
                   String.raw`[&>.vds-resizable-split\_\_panel--left]:!w-0 [&>.vds-resizable-split\_\_panel--left]:!min-w-0 [&>.vds-resizable-split\_\_panel--left]:!flex-none [&>.vds-resizable-split\_\_panel--right]:!w-full [&>.vds-resizable-split\_\_panel--right]:!flex-1`,
                 !showConversationDivider &&
@@ -712,145 +863,158 @@ export function Workspace({
               reversed={layout.swapped}
               leftWidth={`${layout.conversationWidth}px`}
               resizeEnabled={showConversationDivider}
+              renderHandle={
+                nativeOverlay ? (handle) => <NativeDivider>{handle}</NativeDivider> : undefined
+              }
               onWidthChangeEnd={(width) =>
                 !layout.full && patch({ conversationWidth: Number.parseFloat(width) })
               }
               minLeftWidth={fullSurface ? 0 : CONTENT_MIN_WIDTH}
               minRightWidth={CONTENT_MIN_WIDTH}
               maxLeftWidth={CONTENT_MAX_WIDTH}
-              isCollapsed={!layout.open && !conversationFull}
+              isCollapsed={!workspaceOpen && !conversationFull}
               leftPanel={
-                <div
-                  className={cx(
-                    !floating &&
-                      '[&_.vds-ai-head]:[-webkit-app-region:drag] [&_.vds-ai-head_button]:[-webkit-app-region:no-drag] [&_.vds-ai-head_[tabindex]]:[-webkit-app-region:no-drag]',
-                    conversationFull
-                      ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col'
-                      : layout.full
-                        ? layout.taskTab
-                          ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col pt-[var(--vds-workbench-header-height)]'
-                          : 'absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-floating-panel)] flex h-[var(--vds-workspace-ai-panel-height)] max-h-[var(--vds-workspace-ai-panel-max-height)] w-[var(--vds-workspace-ai-panel-width)] flex-col overflow-hidden rounded-[var(--vds-radius-5)] border border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-3-center)]'
-                        : 'flex h-full min-h-0 w-full flex-col',
-                    floating &&
-                      '!h-auto !w-[var(--vds-floating-conversation-width)] max-w-[calc(100%-var(--vds-space-8))] !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [&_.vds-ai-panel]:!bg-transparent [&_.vds-ai-composer-host]:!px-0 [&_.vds-ai-head]:!h-[var(--vds-space-10)] [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-[var(--vds-bg-white-default)] [&_.vds-ai-head]:!px-[var(--vds-space-2)] [&_.vds-ai-session]:overflow-hidden [&_.vds-ai-session]:font-[var(--vds-fw-regular)] [&_.vds-ai-session]:text-[length:var(--vds-font-body-lv1)] [&_.vds-ai-head-actions]:gap-0',
-                    floating &&
-                      '[&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!font-[var(--vds-fw-regular)] [&_.vds-ai-session_*]:!font-[var(--vds-fw-regular)]',
-                    floating &&
-                      compact &&
-                      '!overflow-visible [&_.vds-ai-head]:absolute [&_.vds-ai-head]:inset-x-0 [&_.vds-ai-head]:bottom-full [&_.vds-ai-head]:rounded-t-[var(--vds-radius-6)]',
-                    floating &&
-                      compact &&
-                      floatingActive &&
-                      "!rounded-t-none [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:border-[length:var(--vds-border-width-1)] [&_.vds-ai-head]:border-solid [&_.vds-ai-head]:border-[var(--vds-border-default)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!tracking-[var(--vds-letter-spacing-normal)] [&_.vds-ai-session_span]:!text-[var(--vds-text-secondary)] [&_[data-testid=composer-drop-zone]]:!rounded-t-none [&_[data-testid=composer-drop-zone]]:!rounded-b-[var(--vds-radius-6)] [&_[data-testid=composer-drop-zone]]:!border-[length:var(--vds-border-width-1)] [&_[data-testid=composer-drop-zone]]:!border-t-transparent [&_[data-testid=composer-drop-zone]]:!border-[var(--vds-border-default)]",
-                    floating &&
-                      !compact &&
-                      "!overflow-visible !bg-transparent !shadow-none [&_.vds-ai-head]:!relative [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-transparent [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_[data-testid=composer-drop-zone]]:!border-0 [&_[data-testid=composer-drop-zone]]:!rounded-none [&_[data-testid=composer-drop-zone]]:!shadow-none"
-                  )}
-                  data-workbench-motion={
-                    !minimized && !(floating && !compact) ? 'conversation' : undefined
-                  }
-                  data-testid="workspace-conversation"
-                  data-floating-active={floating ? floatingActive : undefined}
-                  data-floating-dock={floating ? floatingDock : undefined}
-                  data-mode={
-                    conversationFull
-                      ? 'fullscreen'
-                      : layout.full
-                        ? layout.taskTab
-                          ? 'tab'
-                          : 'floating'
-                        : 'split'
-                  }
-                  ref={conversationRef}
-                  data-content-collapsed={compact}
-                  style={
-                    minimized
-                      ? { display: 'none' }
-                      : floating
-                        ? {
-                            ...(position ? { ...position, right: 'auto', bottom: 'auto' } : {}),
-                            height: 'auto',
-                            ...(floatingWidth !== null
-                              ? { '--vds-floating-conversation-width': `${floatingWidth}px` }
-                              : {}),
-                          }
-                        : undefined
-                  }
-                  onFocusCapture={(event) => {
-                    floatingInteraction.current = event.nativeEvent
-                    if (floating) setFloatingActive(true)
-                  }}
-                  onPointerDownCapture={(event) => {
-                    floatingInteraction.current = event.nativeEvent
-                    if (floating) setFloatingActive(true)
-                  }}
-                  onPointerDown={startDrag}
-                  onPointerMove={moveDrag}
-                  onPointerUp={stopDrag}
-                  onPointerCancel={stopDrag}
-                  onLostPointerCapture={() => {
-                    if (dragRef.current) {
-                      const bounds = floatingBounds()
-                      if (bounds) setPosition(floatingPanelDockPosition(floatingDock, bounds))
+                <FloatingPortal presentation={conversationPortal} renderOverlay={renderOverlay}>
+                  <div
+                    className={cx(
+                      !floating &&
+                        '[&_.vds-ai-head]:[-webkit-app-region:drag] [&_.vds-ai-head_button]:[-webkit-app-region:no-drag] [&_.vds-ai-head_[tabindex]]:[-webkit-app-region:no-drag]',
+                      conversationFull
+                        ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col'
+                        : layout.full
+                          ? layout.taskTab
+                            ? 'absolute inset-0 z-[var(--vds-z-local-raised)] flex min-h-0 flex-col pt-[var(--vds-workbench-header-height)]'
+                            : 'absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-floating-panel)] flex h-[var(--vds-workspace-ai-panel-height)] max-h-[var(--vds-workspace-ai-panel-max-height)] w-[var(--vds-workspace-ai-panel-width)] flex-col overflow-hidden rounded-[var(--vds-radius-5)] border border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-3-center)]'
+                          : 'flex h-full min-h-0 w-full flex-col',
+                      floating &&
+                        '!h-auto !w-[var(--vds-floating-conversation-width)] max-w-[calc(100%-var(--vds-space-8))] !rounded-[var(--vds-radius-6)] !border-0 !bg-[var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [&_.vds-ai-panel]:!bg-transparent [&_.vds-ai-composer-host]:!px-0 [&_.vds-ai-head]:!h-[var(--vds-space-10)] [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-[var(--vds-bg-white-default)] [&_.vds-ai-head]:!px-[var(--vds-space-2)] [&_.vds-ai-session]:overflow-hidden [&_.vds-ai-session]:font-[var(--vds-fw-regular)] [&_.vds-ai-session]:text-[length:var(--vds-font-body-lv1)] [&_.vds-ai-head-actions]:gap-0',
+                      floating &&
+                        '[&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!font-[var(--vds-fw-regular)] [&_.vds-ai-session_*]:!font-[var(--vds-fw-regular)]',
+                      floating &&
+                        compact &&
+                        '!overflow-visible [&_.vds-ai-head]:absolute [&_.vds-ai-head]:inset-x-0 [&_.vds-ai-head]:bottom-full [&_.vds-ai-head]:rounded-t-[var(--vds-radius-6)]',
+                      floating &&
+                        compact &&
+                        floatingActive &&
+                        "!rounded-t-none [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:border-[length:var(--vds-border-width-1)] [&_.vds-ai-head]:border-solid [&_.vds-ai-head]:border-[var(--vds-border-default)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_.vds-ai-session]:!text-[length:var(--vds-font-body-lv2)] [&_.vds-ai-session]:!leading-[var(--vds-lh-body-lv2)] [&_.vds-ai-session]:!tracking-[var(--vds-letter-spacing-normal)] [&_.vds-ai-session_span]:!text-[var(--vds-text-secondary)] [&_[data-testid=composer-drop-zone]]:!rounded-t-none [&_[data-testid=composer-drop-zone]]:!rounded-b-[var(--vds-radius-6)] [&_[data-testid=composer-drop-zone]]:!border-[length:var(--vds-border-width-1)] [&_[data-testid=composer-drop-zone]]:!border-t-transparent [&_[data-testid=composer-drop-zone]]:!border-[var(--vds-border-default)]",
+                      floating &&
+                        !compact &&
+                        "!overflow-visible !bg-transparent !shadow-none [&_.vds-ai-head]:!relative [&_.vds-ai-head]:!h-auto [&_.vds-ai-head]:!shrink-0 [&_.vds-ai-head]:!bg-transparent [&_.vds-ai-head]:!px-[var(--vds-space-3)] [&_.vds-ai-head]:!pt-[var(--vds-space-3)] [&_.vds-ai-head]:!pb-[var(--vds-space-2)] [&_.vds-ai-head]:!gap-[var(--vds-space-2)] [&_.vds-ai-head]:border-b-0 [&_.vds-ai-head]:after:absolute [&_.vds-ai-head]:after:inset-x-[var(--vds-space-3)] [&_.vds-ai-head]:after:bottom-0 [&_.vds-ai-head]:after:h-[var(--vds-border-width-1)] [&_.vds-ai-head]:after:bg-[var(--vds-divider-default)] [&_.vds-ai-head]:after:content-[''] [&_[data-testid=composer-drop-zone]]:!border-0 [&_[data-testid=composer-drop-zone]]:!rounded-none [&_[data-testid=composer-drop-zone]]:!shadow-none"
+                    )}
+                    data-workbench-motion={
+                      !minimized && !(floating && !compact) ? 'conversation' : undefined
                     }
-                    dragRef.current = null
-                  }}
-                >
-                  {floating &&
-                    !minimized &&
-                    (['left', 'right'] as const).map((edge) => (
-                      <ResizableHandle
-                        key={edge}
-                        appearance="invisible"
-                        aria-label={t('resizeFloatingConversation')}
-                        aria-valuenow={floatingWidth ?? floatingMetrics?.panelWidth}
-                        className={cx(
-                          '!absolute inset-y-0 z-[var(--vds-z-local-control)] !h-auto !w-[var(--vds-resizable-handle-active-size)] !flex-none !bg-transparent touch-none select-none !cursor-ew-resize [-webkit-app-region:no-drag]',
-                          edge === 'left' ? 'left-0 -translate-x-1/2' : 'right-0 translate-x-1/2'
-                        )}
-                        data-testid={`floating-conversation-resize-${edge}`}
-                        onResizeStart={startFloatingResize}
-                        onOffsetChange={(delta) => resizeFloating(edge, delta)}
-                        onResizeEnd={() => {
-                          floatingResize.current = null
-                        }}
-                      />
-                    ))}
-                  <div className={cx('flex min-h-0 flex-1 flex-col', floating && 'isolate')}>
-                    <TaskOverviewLayout
-                      reserveSpace={!floating && (conversationFull || !layout.open)}
-                    >
-                      <AssistantPanel
-                        embedded
-                        hideHeader={layout.full && layout.taskTab && !conversationFull}
-                        headerCollapsed={floating && compact && !floatingActive}
-                        compact={compact}
-                        inlineComposer={floating}
-                        onToggleContent={
-                          floating ? () => changeLayout('toggleFloating') : undefined
-                        }
-                        floatingContent={
-                          floating
-                            ? (floatingContent ?? {
-                                side: 'top',
-                                height: 0,
-                                anchorHeight: 0,
-                                headingHeight: 0,
-                              })
-                            : undefined
-                        }
-                        workspaceLeading={
-                          floating
-                            ? minimizeControl
-                            : conversationHeaderLeading
-                              ? sidebarToggle
+                    data-testid="workspace-conversation"
+                    data-floating-active={floating ? floatingActive : undefined}
+                    data-floating-dock={floating ? floatingDock : undefined}
+                    data-mode={
+                      conversationFull
+                        ? 'fullscreen'
+                        : layout.full
+                          ? layout.taskTab
+                            ? 'tab'
+                            : 'floating'
+                          : 'split'
+                    }
+                    ref={conversationRef}
+                    data-content-collapsed={compact}
+                    style={
+                      minimized || conversationMode === 'hidden' || floatingConfirmation
+                        ? { display: 'none' }
+                        : floating
+                          ? {
+                              ...(position
+                                ? !dragRef.current &&
+                                  !floatingResize.current &&
+                                  !floatingResized.current &&
+                                  floatingMetrics
+                                  ? floatingPanelDockStyle(floatingDock, floatingMetrics)
+                                  : { ...position, right: 'auto', bottom: 'auto' }
+                                : {}),
+                              height: 'auto',
+                              ...(floatingWidth !== null
+                                ? { '--vds-floating-conversation-width': `${floatingWidth}px` }
+                                : {}),
+                            }
+                          : undefined
+                    }
+                    onFocusCapture={(event) => {
+                      floatingInteraction.current = event.nativeEvent
+                      if (floating) setFloatingActive(true)
+                    }}
+                    onPointerDownCapture={(event) => {
+                      floatingInteraction.current = event.nativeEvent
+                      if (floating) setFloatingActive(true)
+                    }}
+                    onPointerDown={startDrag}
+                    onPointerMove={moveDrag}
+                    onPointerUp={stopDrag}
+                    onPointerCancel={stopDrag}
+                    onLostPointerCapture={() => {
+                      if (dragRef.current) {
+                        const bounds = floatingBounds()
+                        if (bounds) setPosition(floatingPanelDockPosition(floatingDock, bounds))
+                      }
+                      dragRef.current = null
+                    }}
+                  >
+                    {floating &&
+                      !minimized &&
+                      (['left', 'right'] as const).map((edge) => (
+                        <ResizableHandle
+                          key={edge}
+                          appearance="invisible"
+                          aria-label={t('resizeFloatingConversation')}
+                          aria-valuenow={floatingWidth ?? floatingMetrics?.panelWidth}
+                          className={cx(
+                            '!absolute inset-y-0 z-[var(--vds-z-local-control)] !h-auto !w-[var(--vds-resizable-handle-active-size)] !flex-none !bg-transparent touch-none select-none !cursor-ew-resize [-webkit-app-region:no-drag]',
+                            edge === 'left' ? 'left-0 -translate-x-1/2' : 'right-0 translate-x-1/2'
+                          )}
+                          data-testid={`floating-conversation-resize-${edge}`}
+                          onResizeStart={startFloatingResize}
+                          onOffsetChange={(delta) => resizeFloating(edge, delta)}
+                          onResizeEnd={() => {
+                            floatingResize.current = null
+                          }}
+                        />
+                      ))}
+                    <div className={cx('flex min-h-0 flex-1 flex-col', floating && 'isolate')}>
+                      <TaskOverviewLayout
+                        reserveSpace={!floating && (conversationFull || !workspaceOpen)}
+                      >
+                        <AssistantPanel
+                          embedded
+                          hideHeader={layout.full && layout.taskTab && !conversationFull}
+                          headerCollapsed={floating && compact && !floatingActive}
+                          compact={compact}
+                          inlineComposer={floating}
+                          externalConfirmation={floatingConfirmation}
+                          onToggleContent={
+                            floating ? () => changeLayout('toggleFloating') : undefined
+                          }
+                          floatingContent={
+                            floating
+                              ? (floatingContent ?? {
+                                  side: 'top',
+                                  height: 0,
+                                  anchorHeight: 0,
+                                  headingHeight: 0,
+                                })
                               : undefined
-                        }
-                        workspaceActions={workspaceControls}
-                      />
-                    </TaskOverviewLayout>
+                          }
+                          workspaceLeading={
+                            floating
+                              ? minimizeControl
+                              : conversationHeaderLeading
+                                ? sidebarToggle
+                                : undefined
+                          }
+                          workspaceActions={workspaceControls}
+                        />
+                      </TaskOverviewLayout>
+                    </div>
                   </div>
-                </div>
+                </FloatingPortal>
               }
               rightPanel={
                 <section
@@ -858,7 +1022,7 @@ export function Workspace({
                   aria-label={t('workspace')}
                   data-testid="workspace-content"
                   data-workbench-motion="workspace"
-                  style={conversationFull ? { visibility: 'hidden' } : undefined}
+                  style={workspaceVisible ? undefined : { visibility: 'hidden' }}
                 >
                   <header className="drag relative z-[var(--vds-z-local-control)] flex h-[var(--vds-workbench-header-height)] min-w-0 shrink-0 items-center [background:linear-gradient(to_bottom,transparent_calc(100%_-_var(--vds-navigation-tab-outline-width)),var(--vds-divider-default)_0),var(--vds-bg-gray-default)] [&_button]:[-webkit-app-region:no-drag] [&_svg]:[stroke-width:var(--vds-project-header-icon-stroke)]">
                     <div className="drag min-w-0 flex-1 self-stretch">
@@ -872,18 +1036,21 @@ export function Workspace({
                             data-testid="workbench-actions"
                             data-ob={PROJECT_GUIDE_ANCHORS.workspace}
                           >
-                            {layout.full && layout.taskTab && !conversationFull && (
-                              <>
+                            {layout.full &&
+                              layout.taskTab &&
+                              !conversationFull &&
+                              workspaceControls}
+                            {conversationMode === 'hidden' && (
+                              <Tooltip content={t('expandConversation')} side="bottom">
                                 <IconButton
                                   variant="ghostIcon"
                                   size="md"
-                                  label={assistantText('panel.new')}
+                                  label={t('expandConversation')}
                                   icon={<MessageCircle />}
-                                  onClick={() => act.startPanelDraft()}
-                                  data-testid="ai-new-session"
+                                  onClick={() => patch({ full: false, taskTab: false })}
+                                  data-testid="workspace-expand-conversation"
                                 />
-                                {workspaceControls}
-                              </>
+                              </Tooltip>
                             )}
                             <span
                               ref={setTabOverflowTarget}
@@ -893,9 +1060,9 @@ export function Workspace({
                             <Tooltip content={t(layout.full ? 'exitFull' : 'full')} side="bottom">
                               <IconButton
                                 variant="ghostIcon"
+                                size="md"
                                 title={undefined}
                                 label={t(layout.full ? 'exitFull' : 'full')}
-                                size={workspaceActionSize}
                                 icon={layout.full ? <Minimize2 /> : <Maximize2 />}
                                 onClick={() => changeLayout('toggleFull')}
                                 data-testid="workspace-full"
@@ -904,9 +1071,9 @@ export function Workspace({
                             <Tooltip content={t('hideTabs')} side="bottom">
                               <IconButton
                                 variant="ghostIcon"
+                                size="md"
                                 title={undefined}
                                 label={t('hideTabs')}
-                                size={workspaceActionSize}
                                 icon={<PanelRight />}
                                 aria-expanded={layout.open}
                                 aria-pressed={layout.open}
@@ -929,55 +1096,74 @@ export function Workspace({
                 </section>
               }
             />
-            {minimized && (
-              <div
-                ref={bubbleRef}
-                data-workbench-motion="conversation"
-                data-workbench-motion-kind="entry"
-                className="absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] size-[var(--vds-floating-conversation-entry-size)] z-[var(--vds-z-floating-panel)]"
-                style={
-                  bubblePosition ? { ...bubblePosition, right: 'auto', bottom: 'auto' } : undefined
-                }
-              >
-                <IconButton
-                  variant="ghostIcon"
-                  label={t('restoreConversation')}
-                  icon={
-                    <img
-                      src={aiAssistantIcon}
-                      alt=""
-                      draggable={false}
-                      className="size-[var(--vds-icon-10)]"
-                    />
+            {floatingConfirmation && (
+              <FloatingPortal presentation={conversationPortal}>
+                <div
+                  ref={confirmationRef}
+                  className="absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-floating-panel)] flex max-h-[calc(100%-var(--vds-workbench-header-height)-var(--vds-space-4))] w-[var(--vds-floating-conversation-width)] max-w-[calc(100%-var(--vds-space-8))] flex-col"
+                  style={floatingWidth === null ? undefined : { width: floatingWidth }}
+                  data-testid="workspace-floating-confirmation"
+                >
+                  <PendingHilDock floating />
+                </div>
+              </FloatingPortal>
+            )}
+            {minimized && !floatingConfirmation && (
+              <FloatingPortal presentation={conversationPortal}>
+                <div
+                  ref={bubbleRef}
+                  data-workbench-motion="conversation"
+                  data-workbench-motion-kind="entry"
+                  className="absolute bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] size-[var(--vds-floating-conversation-entry-size)] z-[var(--vds-z-floating-panel)]"
+                  style={
+                    bubblePosition
+                      ? { ...bubblePosition, right: 'auto', bottom: 'auto' }
+                      : undefined
                   }
-                  className="!size-[var(--vds-floating-conversation-entry-size)] !min-w-0 touch-none !rounded-[var(--vds-radius-6)] ![border:var(--vds-border-width-1)_solid_var(--vds-border-default)] ![background:var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [--vds-icon-button-glyph:var(--vds-icon-10)]"
-                  data-testid="workspace-restore-conversation"
-                  onPointerDown={startBubbleDrag}
-                  onPointerMove={moveBubbleDrag}
-                  onPointerUp={stopBubbleDrag}
-                  onPointerCancel={stopBubbleDrag}
-                  onLostPointerCapture={() => {
-                    if (bubbleDrag.current) {
-                      const bounds = floatingBounds()
-                      if (bounds) setBubblePosition(floatingPanelDockPosition(floatingDock, bounds))
+                >
+                  <IconButton
+                    variant="ghostIcon"
+                    label={t('restoreConversation')}
+                    icon={
+                      <img
+                        src={aiAssistantIcon}
+                        alt=""
+                        draggable={false}
+                        className="size-[var(--vds-icon-10)]"
+                      />
                     }
-                    bubbleDrag.current = null
-                  }}
-                  onClick={(event) => {
-                    if (bubbleDragged.current && event.detail !== 0) return
-                    changeLayout('restoreConversation')
-                  }}
-                />
-                {minimizedSession && (
-                  <div className="absolute -right-[var(--vds-radius-3)] -top-[var(--vds-radius-3)]">
-                    <TaskStatus
-                      node={minimizedSession}
-                      unread={sessionNeedsAttention(reminders.by_session[minimizedSession.id] ?? 0)}
-                      variant="badge"
-                    />
-                  </div>
-                )}
-              </div>
+                    className="!size-[var(--vds-floating-conversation-entry-size)] !min-w-0 touch-none !rounded-[var(--vds-radius-6)] ![border:var(--vds-border-width-1)_solid_var(--vds-border-default)] ![background:var(--vds-bg-white-default)] !shadow-[var(--vds-shadow-aidialog-2)] [--vds-icon-button-glyph:var(--vds-icon-10)]"
+                    data-testid="workspace-restore-conversation"
+                    onPointerDown={startBubbleDrag}
+                    onPointerMove={moveBubbleDrag}
+                    onPointerUp={stopBubbleDrag}
+                    onPointerCancel={stopBubbleDrag}
+                    onLostPointerCapture={() => {
+                      if (bubbleDrag.current) {
+                        const bounds = floatingBounds()
+                        if (bounds)
+                          setBubblePosition(floatingPanelDockPosition(floatingDock, bounds))
+                      }
+                      bubbleDrag.current = null
+                    }}
+                    onClick={(event) => {
+                      if (bubbleDragged.current && event.detail !== 0) return
+                      changeLayout('restoreConversation')
+                    }}
+                  />
+                  {minimizedSession && (
+                    <div className="absolute -right-[var(--vds-radius-3)] -top-[var(--vds-radius-3)]">
+                      <TaskStatus
+                        node={minimizedSession}
+                        unread={sessionNeedsAttention(
+                          reminders.by_session[minimizedSession.id] ?? 0
+                        )}
+                        variant="badge"
+                      />
+                    </div>
+                  )}
+                </div>
+              </FloatingPortal>
             )}
           </div>
         }

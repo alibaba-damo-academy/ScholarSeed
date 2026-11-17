@@ -1,7 +1,10 @@
 package handoff
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
+	"slices"
 	"syscall"
 )
 
@@ -24,6 +27,7 @@ const (
 	sandboxStageWorker        = "worker"
 	sandboxStagePrivilege     = "worker_privilege"
 	sandboxStageVerification  = "verification"
+	sandboxStageMetadata      = "metadata"
 	sandboxReasonPolicy       = "policy_rejected"
 	sandboxReasonAccess       = "access_denied"
 	sandboxReasonPrivilege    = "privilege_missing"
@@ -34,14 +38,85 @@ const (
 	sandboxNotAssigned        = syscall.Errno(1300)
 	sandboxPrivilegeDenied    = syscall.Errno(1314)
 	sandboxDiagnosticExitBase = 4000
+	sandboxLogLimit           = 90
 )
+
+const (
+	sandboxRuleDescriptor    = "invalid_descriptor"
+	sandboxRuleACL           = "invalid_acl"
+	sandboxRuleACE           = "unsupported_ace"
+	sandboxRuleDeny          = "deny_ace"
+	sandboxRuleOwnerRights   = "owner_rights_mask"
+	sandboxRulePrincipal     = "unknown_principal"
+	sandboxRuleGroupMask     = "native_group_mask"
+	sandboxRuleOwner         = "untrusted_owner"
+	sandboxRuleMaintenance   = "maintenance_owner"
+	sandboxRuleACLBound      = "acl_limit"
+	sandboxRuleDrift         = "security_drift"
+	sandboxRulePostcondition = "postcondition_drift"
+	sandboxRuleReparse       = "reparse_point"
+	sandboxRuleType          = "object_type"
+	sandboxRuleHardlink      = "hardlink"
+	sandboxRuleLogBound      = "daily_log_limit"
+	sandboxRuleNativeDeny    = "native_deny"
+	sandboxRuleMask          = "permission_mask"
+	sandboxRulePrivate       = "private_policy"
+	sandboxRuleUnknown       = "unknown"
+	sandboxObjectProfile     = "profile"
+	sandboxObjectProduct     = "product"
+	sandboxObjectHome        = "codex"
+	sandboxObjectBin         = "sandbox_bin"
+	sandboxObjectMetadata    = "metadata"
+	sandboxObjectLog         = "daily_log"
+)
+
+var sandboxDiagnosticRules = []string{
+	sandboxRuleDescriptor, sandboxRuleACL, sandboxRuleACE, sandboxRuleDeny,
+	sandboxRuleOwnerRights, sandboxRulePrincipal, sandboxRuleGroupMask, sandboxRuleOwner,
+	sandboxRuleMaintenance, sandboxRuleACLBound, sandboxRuleDrift, sandboxRulePostcondition,
+	sandboxRuleReparse, sandboxRuleType, sandboxRuleHardlink, sandboxRuleLogBound,
+	sandboxRuleNativeDeny, sandboxRuleMask, sandboxRulePrivate, sandboxRuleUnknown,
+}
+
+var sandboxDiagnosticObjects = []string{
+	sandboxObjectProfile, sandboxObjectProduct, sandboxObjectHome,
+	sandboxObjectBin, sandboxObjectMetadata, sandboxObjectLog,
+}
+
+type sandboxCheckError struct {
+	cause  error
+	rule   string
+	object string
+	count  int
+}
+
+func (failure *sandboxCheckError) Error() string { return "sandbox metadata check failed" }
+func (failure *sandboxCheckError) Unwrap() error { return failure.cause }
+
+func sandboxCheckFailure(rule string, cause error) error {
+	return &sandboxCheckError{cause: cause, rule: rule}
+}
+
+func sandboxMetadataFailure(object string, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	var previous *sandboxCheckError
+	if errors.As(cause, &previous) {
+		if previous.object != "" {
+			return cause
+		}
+		return &sandboxCheckError{cause: cause, rule: previous.rule, object: object, count: previous.count}
+	}
+	return &sandboxCheckError{cause: cause, rule: sandboxRuleUnknown, object: object}
+}
 
 var sandboxDiagnosticStages = [...]string{
 	sandboxStagePolicy, sandboxStageArguments, sandboxStageVersion, sandboxStageCoordinator,
 	sandboxStageInstallation, sandboxStageRuntime, sandboxStageIdentity, sandboxStageLocation,
 	sandboxStageProfile, sandboxStageProduct, sandboxStageHome, sandboxStageTarget,
 	sandboxStageOwner, sandboxStageElevation, sandboxStageWorker, sandboxStagePrivilege,
-	sandboxStageVerification,
+	sandboxStageVerification, sandboxStageMetadata,
 }
 
 var sandboxDiagnosticReasons = [...]string{
@@ -54,6 +129,9 @@ type sandboxDiagnostic struct {
 	Stage       string `json:"stage"`
 	Reason      string `json:"reason"`
 	SystemError uint32 `json:"system_error,omitempty"`
+	Object      string `json:"object,omitempty"`
+	Rule        string `json:"rule,omitempty"`
+	Count       int    `json:"count,omitempty"`
 }
 
 type sandboxDiagnosticError struct {
@@ -84,11 +162,33 @@ func sandboxFailure(stage string, cause error) error {
 			diagnostic.Reason = sandboxReasonSystem
 		}
 	}
+	var check *sandboxCheckError
+	if stage == sandboxStageMetadata && errors.As(cause, &check) {
+		if slices.Contains(sandboxDiagnosticObjects, check.object) {
+			diagnostic.Object = check.object
+			diagnostic.Rule = sandboxRuleUnknown
+			if slices.Contains(sandboxDiagnosticRules, check.rule) {
+				diagnostic.Rule = check.rule
+			}
+			if diagnostic.Rule == sandboxRuleLogBound && check.count == sandboxLogLimit+1 {
+				diagnostic.Count = check.count
+			}
+		}
+	}
 	return &sandboxDiagnosticError{diagnostic}
 }
 
 func SandboxDiagnostic(cause error) sandboxDiagnostic {
 	return sandboxFailure(sandboxStagePolicy, cause).(*sandboxDiagnosticError).diagnostic
+}
+
+func WriteSandboxDiagnostic(stdout, stderr io.Writer, cause error) {
+	diagnostic := SandboxDiagnostic(cause)
+	if diagnostic.Object != "" {
+		_ = json.NewEncoder(stderr).Encode(diagnostic)
+	}
+	diagnostic.Object, diagnostic.Rule, diagnostic.Count = "", "", 0
+	_ = json.NewEncoder(stdout).Encode(diagnostic)
 }
 
 func SandboxExitCode(cause error) int {

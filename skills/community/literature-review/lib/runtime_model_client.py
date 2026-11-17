@@ -154,8 +154,10 @@ class RuntimeTextClient:
 
 
 class RuntimeProcessingClient(RuntimeTextClient):
-    async def chat(self,system,user,max_tokens=None,json_mode=False):
-        capture={}
+    supports_processing_capture=True
+
+    async def chat(self,system,user,max_tokens=None,json_mode=False,_capture=None):
+        capture={} if _capture is None else _capture
         options={'max_tokens':max_tokens or self.default_max_tokens,'_capture':capture}
         if json_mode:options['response_format']={'type':'json_object'}
         text=await self.chat_stream([{'role':'system','content':system},{'role':'user','content':user}],**options)

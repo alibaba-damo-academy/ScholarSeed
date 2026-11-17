@@ -1,11 +1,18 @@
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AppWindow, ChevronDown } from 'lucide-react'
+import { AppWindow, ChevronDown, ExternalLink } from 'lucide-react'
 
-import { openPathWith, openSystemPath, type OpenWithApp } from '../../api'
+import {
+  openPathWith,
+  openSystemPath,
+  resolveSessionReferenceLocation,
+  type OpenWithApp,
+} from '../../api'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
 import {
   Button,
+  IconButton,
+  Tooltip,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -15,6 +22,8 @@ import {
 } from '../../components/ui'
 import { listOpenWithApps, revealInFinder, revealLabelKey, type OpenContext } from '../../fileOpen'
 import { resolveRevealTarget } from '../resources/api'
+import { resolveDocumentLocation, isLocatedDocumentSource } from './api'
+import { isHtmlDocument } from './html'
 import { useWorkspaceController, type DocumentSession, type DocumentWorkspace } from './workspace'
 
 type ExternalOpenError = {
@@ -34,13 +43,72 @@ interface ExternalOpenResult {
   error?: ExternalOpenError
 }
 
+export function DocumentFallbackActions({
+  session,
+}: {
+  session: DocumentSession
+}): React.JSX.Element | null {
+  const { t } = useTranslation('workbench')
+  const { toast } = useToast()
+  const [busy, setBusy] = useState(false)
+  const source = session.source
+  const available =
+    isLocatedDocumentSource(source) || (source.kind === 'session-file' && !source.citation)
+  if (!available) return null
+  const run = async (save: boolean): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    try {
+      let path: string | undefined
+      if (isLocatedDocumentSource(source)) {
+        const location = await resolveDocumentLocation(source)
+        if (location.ok) path = location.absolute
+      } else if (source.kind === 'session-file') {
+        const location = await resolveSessionReferenceLocation(source.sessionId, source.path)
+        if (
+          location.ok &&
+          location.kind === 'file' &&
+          location.path &&
+          (await window.scholarseed?.addAuthorizedRoot('session', location.path))
+        )
+          path = location.path
+      }
+      if (!path) throw new Error('document_original_unavailable')
+      const result = save
+        ? await window.scholarseed.saveFileCopy({ sourcePath: path, suggestedName: session.title })
+        : await openSystemPath(path)
+      if (!result.ok && !('canceled' in result && result.canceled))
+        throw new Error('document_action_failed')
+    } catch {
+      toast({ title: t('dock.openFailed'), tone: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="flex flex-wrap justify-center gap-[var(--vds-space-2)]">
+      <Button disabled={busy} onClick={() => void run(false)}>
+        {t('dock.openExternal')}
+      </Button>
+      <Button disabled={busy} variant="outline" onClick={() => void run(true)}>
+        {t('dock.saveAsExternal')}
+      </Button>
+    </div>
+  )
+}
+
 export function canOpenDocumentExternally(
   session: DocumentSession | null | undefined
 ): session is DocumentSession {
   return Boolean(
-    session?.source.kind === 'project' &&
-    (session.viewer === 'office' ||
-      (!session.capabilities.can_edit && session.viewer === 'spreadsheet'))
+    session &&
+    ((session.source.kind === 'session-artifact' &&
+      Boolean(session.source.absolutePath) &&
+      isHtmlDocument(session)) ||
+      (session.source.kind === 'project' &&
+        (isHtmlDocument(session) ||
+          session.viewer === 'office' ||
+          (!session.capabilities.can_edit && session.viewer === 'spreadsheet'))))
   )
 }
 
@@ -79,10 +147,15 @@ async function prepareDocumentExternalPath(
   workspace: DocumentWorkspace,
   session: DocumentSession
 ): Promise<ExternalOpenResult> {
+  if (session.source.kind === 'session-artifact' && isHtmlDocument(session)) {
+    if (session.dirty || !session.source.absolutePath)
+      return { ok: false, error: { key: 'dock.notSaved' } }
+    return { ok: true, path: session.source.absolutePath }
+  }
   if (session.source.kind !== 'project') return { ok: false, error: { key: 'dock.notProject' } }
   const saved = await saveDocumentIfNeeded(workspace, session)
   if (!saved.ok) return saved
-  const resolved = await resolveRevealTarget(session.source.path, session.source.project)
+  const resolved = await resolveDocumentLocation(session.source)
   if (!resolved.ok || !resolved.absolute)
     return { ok: false, error: { key: 'dock.resolvePath', detail: resolved.error } }
   return { ok: true, path: resolved.absolute }
@@ -141,7 +214,7 @@ export function DocumentExternalOpen({
 }: {
   session: DocumentSession
 }): React.JSX.Element | null {
-  const { t } = useTranslation(['workbench', 'resources'])
+  const { t } = useTranslation(['workbench', 'resources', 'browser'])
   const { toast } = useToast()
   const workspace = useWorkspaceController()
   const [externalOpening, setExternalOpening] = useState(false)
@@ -204,10 +277,25 @@ export function DocumentExternalOpen({
   }
 
   useEffect(() => {
-    if (canOpenDocumentExternally(session)) void loadExternalApps()
+    if (canOpenDocumentExternally(session) && !isHtmlDocument(session)) void loadExternalApps()
   }, [session.id])
 
   if (!canOpenDocumentExternally(session)) return null
+  if (isHtmlDocument(session))
+    return (
+      <Tooltip content={t('browser:openExternal')} portalled>
+        <IconButton
+          label={t('browser:openExternal')}
+          title={undefined}
+          icon={<ExternalLink />}
+          variant="ghost"
+          size="sm"
+          disabled={externalOpening || session.saveState === 'saving'}
+          data-testid="html-open-external"
+          onClick={() => void runExternalAction(() => openDocumentExternally(workspace, session))}
+        />
+      </Tooltip>
+    )
   return (
     <div className="inline-flex shrink-0" data-testid="external-open-split-button">
       <Button

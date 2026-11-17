@@ -16,12 +16,6 @@
 .vds-pdf-reader.has-sidebar {
   grid-template-columns: minmax(140px, 190px) minmax(0, 1fr);
 }
-.vds-pdf-sidebar {
-  overflow: auto;
-  border-right: 1px solid var(--border-soft);
-  background: var(--bg-1);
-  padding: 8px;
-}
 .vds-pdf-sidebar nav {
   display: flex;
   flex-direction: column;

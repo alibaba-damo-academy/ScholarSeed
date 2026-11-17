@@ -73,14 +73,16 @@ export function projectTasks(
         eventSeq: task.eventSeq,
         title: taskTitleText(task.title, t),
         status: task.status,
-        progress: taskProgressPresentation(task, t),
+        progress: source?.present(task, t).progress ?? taskProgressPresentation(task, t),
         error: taskErrorText(task, sources, t),
         failures: (source?.present(task, t).failures ?? []).map((failure) => ({
           name: failure.name,
           reason: failure.reason,
         })),
-        canCancel: ACTION_STATUSES[TASK_ACTION.cancel].includes(task.status),
-        canRetry: ACTION_STATUSES[TASK_ACTION.retry].includes(task.status),
+        canCancel:
+          Boolean(source?.cancel) && ACTION_STATUSES[TASK_ACTION.cancel].includes(task.status),
+        canRetry:
+          Boolean(source?.retry) && ACTION_STATUSES[TASK_ACTION.retry].includes(task.status),
         action: {
           ...(actions.get(rowKey(task.sourceId, task.id)) ?? { pending: false, error: null }),
         },
@@ -112,13 +114,14 @@ export function createTaskDispatcher(ports: TaskDispatcherPorts): {
       if (!task || task.eventSeq !== parsed.row.eventSeq)
         return { ok: false, error: TASK_ERROR.stale }
       const source = ports.sources().find((candidate) => candidate.id === task.sourceId)
-      if (!source) return { ok: false, error: TASK_ERROR.unavailable }
+      const operate = source?.[parsed.kind]
+      if (!operate) return { ok: false, error: TASK_ERROR.unavailable }
       if (!ACTION_STATUSES[parsed.kind].includes(task.status))
         return { ok: false, error: TASK_ERROR.ineligible }
       actions.set(key, { pending: true, error: null })
       ports.changed()
       try {
-        const updated = await source[parsed.kind](task.id)
+        const updated = await operate(task.id)
         if (disposed) return { ok: false, error: TASK_ERROR.revoked }
         ports.accept(updated)
         if (disposed) return { ok: false, error: TASK_ERROR.revoked }

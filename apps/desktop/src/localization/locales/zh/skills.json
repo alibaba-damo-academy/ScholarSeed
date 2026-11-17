@@ -95,7 +95,8 @@
     "title": "连接器",
     "scope": "连接器范围",
     "market": "市场",
-    "mine": "我的",
+    "mine": "已添加",
+    "addedTitle": "已添加连接器",
     "install": "安装",
     "authorize": "授权",
     "reauthorize": "授权",
@@ -240,8 +241,10 @@
   },
   "groups": {
     "all": "技能广场",
+    "hub": "来自广场",
+    "installed": "已安装技能",
     "scholarseed": "系统预置",
-    "user": "我添加的",
+    "user": "用户上传",
     "label": "技能分类"
   },
   "loginRequired": "需登录",
@@ -334,6 +337,7 @@
   "deleting": "删除中…",
   "confirmDelete": "确定删除",
   "upload": {
+    "document": "技能正文",
     "formats": "支持 SKILL.md、.zip 或包含 SKILL.md 的文件夹",
     "selectDirectory": "选择文件夹",
     "directoryFailed": "无法读取技能文件夹，请选择单个文件夹（最多 5000 个文件、64 MiB），并确保其中的文件可读取。",
@@ -355,6 +359,14 @@
   },
   "installed": "已安装 {{name}}，已加入“我的”并启用。",
   "plugin": {
+    "frameFailure": {
+      "load": "插件页面未加载。",
+      "mount": "插件已加载，但未能显示内容。",
+      "resource": "插件脚本加载失败。",
+      "script": "插件运行时发生错误。"
+    },
+    "expandPreview": "展开插件预览",
+    "collapsePreview": "收起插件预览",
     "copy": "复制卡片",
     "copyUnavailable": "卡片尚未提供可复制文本",
     "copyMissing": "[此卡片尚未提供可复制文本]",
@@ -372,11 +384,10 @@
     "check": "检查插件",
     "preview": "对话交互预览",
     "confirm": "授权并安装",
-    "open": "预览交互",
     "report": "插件检查报告",
     "grants": "申请的原生能力",
     "none": "无",
-    "warning": "只安装可信来源的包。UI 隔离不会沙箱化 Skill 脚本；预览不能调用原生能力。检查通过不等于运行验收通过。",
+    "warning": "只安装可信来源的包。UI 隔离不会沙箱化 Skill 脚本。检查通过不等于运行验收通过。",
     "enableFailed": "文件已安装，但启用失败，请在技能列表重新启用。",
     "sample": "对话预览 · 样例数据，不执行真实操作",
     "nativeDetails": "原生操作与详情",
@@ -387,6 +398,7 @@
     "confirmAction": "确认选择",
     "reset": "重置预览",
     "unavailable": "插件组件不可用或已变更，未提交操作。",
+    "conversationContentFailed": "这段对话内容无法显示。",
     "loading": "加载组件…"
   },
   "installation": {
@@ -403,7 +415,7 @@
       "installing": "正在安装"
     },
     "title": "安装生成的技能",
-    "checked": "宿主检查通过，尚未安装。可先预览交互，再审阅权限并授权安装。",
+    "checked": "宿主检查通过，尚未安装。请审阅权限后授权安装。",
     "install": "安装到书深",
     "defer": "暂不安装",
     "declined": "安装流程已结束；未收到安装成功回执。",

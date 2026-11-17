@@ -533,12 +533,12 @@ def _maintenance_connection(database: Path) -> sqlite3.Connection:
 def _collect_live(
     connection: sqlite3.Connection,
     references: Callable[[sqlite3.Connection], Iterable[str]],
-    deadline: float | None,
+    check_budget: Callable[[], None],
 ) -> int:
     connection.execute(f"CREATE TEMP TABLE IF NOT EXISTS {LIVE_TABLE}(digest TEXT PRIMARY KEY)")
     connection.execute(f"DELETE FROM {LIVE_TABLE}")
     for reference in references(connection):
-        _check_deadline(deadline)
+        check_budget()
         connection.execute(
             f"INSERT OR IGNORE INTO {LIVE_TABLE}(digest) VALUES (?)", (_digest(reference),)
         )
@@ -551,6 +551,33 @@ def _collect_live(
         f"SELECT COALESCE(SUM(body.length),0) FROM {LIVE_TABLE} AS live "
         f"JOIN {BODY_TABLE} AS body ON body.digest=live.digest"
     ).fetchone()[0]
+
+
+def _compaction_due(
+    connection: sqlite3.Connection,
+    references: Callable[[sqlite3.Connection], Iterable[str]],
+    body_bytes: int,
+    extent: int,
+    check_budget: Callable[[], None],
+) -> bool:
+    dead_bytes = body_bytes - _collect_live(connection, references, check_budget)
+    if dead_bytes < 0:
+        raise RuntimeError("overlapping session body extents")
+    return dead_bytes >= COMPACT_MIN_BYTES and dead_bytes * COMPACT_DEAD_DIVISOR >= extent
+
+
+def maintenance_needed(
+    connection: sqlite3.Connection,
+    references: Callable[[sqlite3.Connection], Iterable[str]],
+    check_budget: Callable[[], None],
+) -> bool:
+    if connection.execute(f"SELECT 1 FROM {GENERATION_TABLE} LIMIT 1").fetchone():
+        return True
+    generation, extent, _, token = _state(connection)
+    body_bytes = max(0, extent - len(_header(generation, token)))
+    if body_bytes < COMPACT_MIN_BYTES or body_bytes * COMPACT_DEAD_DIVISOR < extent:
+        return False
+    return _compaction_due(connection, references, body_bytes, extent, check_budget)
 
 
 def cleanup(database: Path, *, deadline: float | None = None) -> int:
@@ -639,11 +666,13 @@ def compact(
                 connection.execute("BEGIN IMMEDIATE")
                 generation, extent, target, token = _state(connection)
                 target_token = uuid4().hex
-                live_bytes = _collect_live(connection, live_references, deadline)
-                dead_bytes = max(0, extent - len(_header(generation, token))) - live_bytes
-                if dead_bytes < 0:
-                    raise RuntimeError("overlapping session body extents")
-                if dead_bytes < COMPACT_MIN_BYTES or dead_bytes * COMPACT_DEAD_DIVISOR < extent:
+                if not _compaction_due(
+                    connection,
+                    live_references,
+                    max(0, extent - len(_header(generation, token))),
+                    extent,
+                    lambda: _check_deadline(deadline),
+                ):
                     connection.rollback()
                     return False
                 connection.execute(
@@ -661,7 +690,7 @@ def compact(
                 connection.execute("BEGIN IMMEDIATE")
                 if _state(connection)[:2] != (generation, extent):
                     raise RuntimeError("session journal changed before compaction")
-                _collect_live(connection, live_references, deadline)
+                _collect_live(connection, live_references, lambda: _check_deadline(deadline))
                 connection.execute(
                     f"CREATE TEMP TABLE {COPY_TABLE}(digest TEXT PRIMARY KEY,offset INTEGER,length INTEGER)"
                 )

@@ -19,7 +19,7 @@ Accept UTF-8 request text, or a JSON object with `original_request` or `request`
 
 ## Output
 
-Write `intent.json` conforming to `references/schemas/intent.schema.json`. Interactive mode starts with `schema_version: 1.0` and `confirmed: false`, and only the user's explicit confirmation or correction may set it to `true`. An explicit auto request may write schema `1.1` and set `confirmed: true` with `confirmation_source: auto_delegated` after a conservative interpretation.
+Write `intent.json` conforming to `references/schemas/intent.schema.json` (schema `1.1`). Start with `confirmed: false`; resolve the scope and record `request_clear`, `user_explicit` or `auto_delegated` as specified by [clarification.md](clarification.md) before setting `confirmed: true`.
 
 Always include all 11 required fields, including empty arrays and nullable year bounds. Use `language: null` and `max_results: null` when the user did not specify them; do not invent an English-only condition or a requested paper count. The positive `search-request.max_results` is a separate execution budget (default 20 when unspecified), which must be disclosed as a tool limit and must not exceed an explicit user result limit. Nested search requests validate the same full intent contract.
 
@@ -35,9 +35,9 @@ Retain the clarification gate and JSON contract when replacing the prompt or add
 
 - Follow the entry clarification gate before retrieval.
 - Ask only about seriously plausible readings that materially change results.
-- In interactive mode, ask one question per turn and obtain one explicit final confirmation.
+- For a clear initial request, state the scope and continue; if needed, ask only about concrete retrieval forks and do not reconfirm resolved scope.
 - Build `precise_intent` from the original request and explicitly approved facts; in auto mode disclose conservative assumptions without inventing concrete criteria.
 - Preserve uncertainty as nulls or empty arrays.
-- Keep confirmation under interactive user control or explicit initial auto delegation.
+- Distinguish scope resolved from the request, explicit user decisions, and explicitly delegated assumptions.
 - Avoid network or credential use unless explicitly documented and authorized.
 - Pass contract and smoke tests.

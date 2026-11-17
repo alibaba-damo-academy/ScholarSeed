@@ -6,7 +6,8 @@ import {
   displayTodos,
   isLatestUserTurn,
   planElapsedMilliseconds,
-  planSkillEstimate,
+  planEstimateElapsedMilliseconds,
+  planExecutionEstimate,
   planStatus,
   stepDisplayMilliseconds,
   type TodoDisplayItem,
@@ -53,7 +54,7 @@ export function TodoPanel({
   const { state } = useApp()
   const thread = activeThread(state)
   const [now, setNow] = React.useState(Date.now())
-  const estimatedSkill = planSkillEstimate(thread)
+  const estimatedSkill = planExecutionEstimate(thread)
   const activePlanTurnId =
     thread.todoTurnId && thread.turnOutcomes?.[thread.todoTurnId] === 'running'
       ? thread.todoTurnId
@@ -101,12 +102,17 @@ export function TodoPanel({
     return () => window.clearInterval(timer)
   }, [turnRunning, timing])
   const elapsedMilliseconds = planElapsedMilliseconds(thread, timingTurnId, now)
-  const elapsedSeconds =
-    elapsedMilliseconds !== null ? Math.floor(elapsedMilliseconds / MILLISECONDS_PER_SECOND) : null
+  const elapsedSeconds = Math.floor(
+    planEstimateElapsedMilliseconds(thread, timingTurnId ?? undefined, now) /
+      MILLISECONDS_PER_SECOND
+  )
   const estimate = estimatedSkill?.estimate
+  const estimateOverrun = Boolean(
+    estimate && elapsedSeconds !== null && elapsedSeconds >= estimate.upperSeconds
+  )
   const estimateLabel =
     estimate && planRunning
-      ? elapsedSeconds !== null && elapsedSeconds >= estimate.upperSeconds
+      ? estimateOverrun
         ? t('todo.estimate.overrun')
         : elapsedSeconds !== null && elapsedSeconds >= SECONDS_PER_MINUTE
           ? t('todo.estimate.remaining', {
@@ -118,26 +124,29 @@ export function TodoPanel({
               upper: estimateMinutes(estimate.upperSeconds),
             })
       : ''
-  const estimateTitle = estimate
-    ? t('todo.estimate.basis', {
-        source:
-          estimate.basis === 'historical_skill_turns'
-            ? t('todo.estimate.source.history', { count: estimate.sampleCount })
-            : t('todo.estimate.source.baseline'),
-        confidence: t(ESTIMATE_CONFIDENCE_KEYS[estimate.confidence]),
-        model: estimate.modelId || thread.runtime?.model_id || t('todo.estimate.unknownModel'),
-        effort:
-          estimate.reasoningEffort ||
-          thread.runtime?.active_reasoning_effort ||
-          t('todo.estimate.unknownEffort'),
-      })
-    : undefined
+  const estimateTitle =
+    estimate?.basis === 'execution_plan'
+      ? t('todo.estimate.source.plan')
+      : estimate
+        ? t('todo.estimate.basis', {
+            source:
+              estimate.basis === 'historical_skill_turns'
+                ? t('todo.estimate.source.history', { count: estimate.sampleCount })
+                : t('todo.estimate.source.baseline'),
+            confidence: t(ESTIMATE_CONFIDENCE_KEYS[estimate.confidence]),
+            model: estimate.modelId || thread.runtime?.model_id || t('todo.estimate.unknownModel'),
+            effort:
+              estimate.reasoningEffort ||
+              thread.runtime?.active_reasoning_effort ||
+              t('todo.estimate.unknownEffort'),
+          })
+        : undefined
   const estimateTooltip = estimateLabel
     ? estimateTitle
       ? `${estimateLabel} · ${estimateTitle}`
       : estimateLabel
     : undefined
-  if (currentTurnOnly && !isLatestUserTurn(thread, presentedTurnId)) return null
+  if (currentTurnOnly && (total === 0 || !isLatestUserTurn(thread, presentedTurnId))) return null
   if (total === 0 && !estimateLabel) return null
 
   const currentLabel = total > 0 ? summaryLabel : t('todo.summary.preparing')
@@ -158,6 +167,16 @@ export function TodoPanel({
     !thread.terminated &&
     isLatestUserTurn(thread, presentedTurnId)
   )
+  const planSteps = preparingSkill ? [] : (thread.todos ?? [])
+  const blockingIssue =
+    (presentedTurnId && thread.turnOutcomes?.[presentedTurnId] === 'failed') ||
+    planSteps.some((item) => item.status === 'blocked')
+  const issue = blockingIssue
+    ? 'error'
+    : summary.messageKey === 'todo.summary.ended' ||
+        planSteps.some((item) => item.status === 'failed' || item.status === 'partial')
+      ? 'warning'
+      : undefined
   return (
     <Plan
       id={`${thread.sessionId}:${thread.todoTurnId}`}
@@ -167,11 +186,13 @@ export function TodoPanel({
         label: summaryLabel,
         paused: summary.messageKey === 'todo.summary.interrupted',
         danger: summary.messageKey === 'todo.summary.ended',
+        issue,
       }}
       activeLabel={stepLabel}
       elapsedMilliseconds={elapsedMilliseconds}
       estimateLabel={estimateLabel}
       estimateTooltip={estimateTooltip}
+      estimateOverrun={estimateOverrun}
       running={planRunning}
       compact={compact}
       canContinue={canContinue}

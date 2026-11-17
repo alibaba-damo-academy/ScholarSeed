@@ -3,8 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.ui import public_snapshot
 
 
 def snapshot(name="comparison", revision="one", slot="research.comparison"):
@@ -22,6 +24,121 @@ def snapshot(name="comparison", revision="one", slot="research.comparison"):
 
 
 class ComponentRegistryContract(unittest.TestCase):
+    def test_large_copy_content_is_preserved_without_byte_truncation(self):
+        self.registry.publish([snapshot()])
+        reference = self.registry.resolve(
+            "research.comparison", session_id="session", turn_id="turn", user_id="user"
+        )
+        content = {"text": "x" * 300000, "markdown": "y" * 300000}
+        self.registry.copy_content(
+            reference, session_id="session", user_id="user", expected_revision=0, content=content
+        )
+        self.assertEqual(self.registry.answer_markdown("session", "turn"), (content["markdown"],))
+
+    def test_answer_markdown_is_session_turn_and_revision_bound(self):
+        self.registry.publish([snapshot()])
+        reference = self.registry.resolve(
+            "research.comparison", session_id="session", turn_id="turn", user_id="user"
+        )
+        self.registry.copy_content(
+            reference,
+            session_id="session",
+            user_id="user",
+            expected_revision=0,
+            content={"text": "table", "markdown": "| value | [1](https://example.org) |"},
+        )
+        self.assertEqual(
+            self.registry.answer_markdown("session", "turn"),
+            ("| value | [1](https://example.org) |",),
+        )
+        self.assertEqual(self.registry.answer_markdown("other", "turn"), ())
+        self.assertEqual(self.registry.answer_markdown("session", "other"), ())
+        self.registry.draft(
+            reference,
+            session_id="session",
+            user_id="user",
+            values={"changed": True},
+            expected_revision=0,
+        )
+        self.assertEqual(self.registry.answer_markdown("session", "turn"), ())
+
+    def test_new_display_contract_coexists_with_the_previous_immutable_host_revision(self):
+        old = public_snapshot("conversation.ui")
+        old["fingerprint"] = "host-v2"
+        old["descriptor"]["version"] = "host-v2"
+        old["descriptor"]["components"] = [
+            item for item in old["descriptor"]["components"] if item["slot"] != "literature.outline"
+        ]
+        next(item for item in old["descriptor"]["components"] if item["slot"] == "conversation.ui")[
+            "actions"
+        ] = [{"id": "choose", "capability": "interaction.answer"}]
+        with patch("service.capabilities.service.components.public_snapshot", return_value=old):
+            previous = self.registry.resolve(
+                "conversation.ui", session_id="session", turn_id="old", user_id="user"
+            )
+        self.registry.bind_data(previous, {"retained": "old content"})
+        current = self.registry.resolve(
+            "conversation.ui", session_id="session", turn_id="new", user_id="user"
+        )
+        self.assertNotEqual(current["fingerprint"], previous["fingerprint"])
+        self.assertEqual(
+            self.registry.snapshot(previous, user_id="user")["interaction"]["data"],
+            {"retained": "old content"},
+        )
+        descriptor = self.registry.snapshot(current, user_id="user")["descriptor"]
+        self.assertEqual(
+            next(item for item in descriptor["components"] if item["slot"] == "conversation.ui")[
+                "actions"
+            ],
+            [],
+        )
+
+    def test_declarative_public_surface_needs_no_executable_resource(self):
+        reference = self.registry.resolve(
+            "conversation.ui", session_id="session", turn_id="turn", user_id="user"
+        )
+        self.assertIsNotNone(reference)
+        mounted = self.registry.snapshot(reference, user_id="user")
+        self.assertNotIn("ui", mounted)
+        self.assertEqual(mounted["files"], {})
+        self.assertTrue(
+            all("entry" not in component for component in mounted["descriptor"]["components"])
+        )
+
+    def test_document_updates_preserve_draft_and_require_separate_ordered_revision(self):
+        reference = self.registry.resolve(
+            "conversation.ui", session_id="session", turn_id="turn", user_id="user"
+        )
+        first = {
+            "format": "openui-lang",
+            "version": 1,
+            "source": 'root = Conversation([TextContent("one")])',
+        }
+        second = {**first, "source": 'root = Conversation([TextContent("two")])'}
+        publish = lambda data, revision: self.registry.publish_document(
+            reference, session_id="session", user_id="user", data=data, content_revision=revision
+        )
+        publish(first, 0)
+        self.registry.draft(
+            reference,
+            session_id="session",
+            user_id="user",
+            values={"name": "draft"},
+            expected_revision=0,
+        )
+        publish(second, 1)
+        publish(second, 1)
+        restored = self.registry.snapshot(reference, user_id="user")["interaction"]
+        self.assertEqual(restored["data"], second)
+        self.assertEqual(restored["state"], {"name": "draft"})
+        self.assertEqual((restored["revision"], restored["content_revision"]), (1, 1))
+        for data, revision in [(first, 1), (first, 0), (second, 3)]:
+            with self.assertRaisesRegex(ValueError, "component_content_changed"):
+                publish(data, revision)
+        self.registry.finish(reference)
+        with self.assertRaisesRegex(ValueError, "component_interaction_finished"):
+            publish(first, 2)
+
     def test_preflight_observes_occupied_and_reserved_slots_without_granting_access(self):
         self.registry.publish([snapshot()])
         self.registry.authorize = lambda _plugin, _user: False

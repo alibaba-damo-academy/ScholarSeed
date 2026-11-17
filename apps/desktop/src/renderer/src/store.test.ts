@@ -4,9 +4,29 @@ import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { transformSync } from 'esbuild'
 import { block } from '../../test-helpers/source-contract.ts'
+import { DEFAULT_RENDERER_PREFERENCES, defaultRendererPreferences } from '../../preferences.ts'
+import { defaultSelectionPrompts, sanitizeSelectionPrompts } from '../../prompts.ts'
+import { sanitizeOnboarding } from '../../onboarding.ts'
 
 import { StoreContext } from './storeContext.ts'
-import { literatureNavigation, synchronizeWorkbenchTab } from './features/workbench/tabs.ts'
+import {
+  composerDraftKey,
+  createComposerDraftStore,
+  readComposerDrafts,
+  serializeComposerDrafts,
+} from './draft.ts'
+import { changeProjectLayout, DEFAULT_PROJECT_LAYOUT } from '../../layout.ts'
+import {
+  closeTab,
+  mainViewForWorkbenchTab,
+  newProjectTab,
+  openFixedTab,
+  OVERVIEW_TAB,
+  type WorkbenchTab,
+  literatureNavigation,
+  synchronizeWorkbenchTab,
+  shouldRestoreDocumentFocus,
+} from './features/workbench/tabs.ts'
 import {
   DocumentWorkspace,
   documentNavigationView,
@@ -14,19 +34,343 @@ import {
 } from './features/workbench/workspace.ts'
 import { resolveDocumentWorkspaceProject } from './features/workbench/scope.ts'
 import { LITERATURE_EXCERPT_VIEW_STATE_KEY } from './contracts/resources.ts'
-import { documentIdFor } from './features/workbench/api.ts'
+import { documentIdFor, isDocumentLoadFailure } from './features/workbench/api.ts'
 import { expandedResourceAncestors } from './features/resources/lifecycle.ts'
 import { observeNavigation, navigationDiagnostic, type NavigationCause } from './navigation.ts'
+import { findSessionNode, upsertSessionNode } from './tree.ts'
+import type { SessionNode, SessionStatus, Thread } from './model.ts'
 
-/**
- * store.tsx 是 JSX，`node --experimental-transform-types` 只剥类型不转 JSX，运行时
- * import 它会以 `Unknown file extension ".tsx"` 失败；仓库既有做法（resources.test.ts、
- * features/workbench/scope.test.ts、contracts/tasks.test.ts）是把 .tsx 当契约文本钉住。
- * 所以这里分两段：
- * - storeContext.ts 能被真实 import，它的行为用真断言（context 默认值、Provider 可用性）；
- * - store.tsx 的初值、reducer 与 selector 不变量用源码契约钉住，改一处就要同时改断言。
- */
 const storeSource = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
+
+test('opening an empty composer with attached context does not replace its draft identity', () => {
+  const panel = readFileSync(new URL('./features/assistant/AiPanel.tsx', import.meta.url), 'utf8')
+  const effect = block(panel, 'useEffect(() => {\n    if (!ai.open)', 'const sessionTitle')
+  for (const attached of [false, true]) {
+    let resets = 0
+    runInNewContext(effect, {
+      useEffect: (callback: () => void) => callback(),
+      ai: { open: true, refs: attached ? [{}] : [] },
+      state: { activeSession: null, turnLaunch: null, composerRefs: [] },
+      composerDraft: createComposerDraftStore(),
+      act: {
+        startPanelDraft: () => {
+          resets += 1
+        },
+      },
+    })
+    assert.equal(resets, attached ? 0 : 1)
+  }
+})
+
+test('preparing task input preserves the workspace visibility without losing its draft or task type', () => {
+  for (const open of [false, true]) {
+    for (const taskType of [undefined, 'precise_search', 'literature_review', 'research_idea']) {
+      let state = {
+        aiPanel: { open: false },
+        composerTaskType: '',
+        workbenchLayout: {
+          ...DEFAULT_PROJECT_LAYOUT,
+          open,
+          swapped: true,
+          conversationWidth: 420,
+        },
+      }
+      const composerDraft = { current: createComposerDraftStore() }
+      const actions = {} as { askAiFromPanel: (text: string, taskType?: string) => void }
+      runInNewContext(
+        transformSync(
+          `Object.assign(actions, {${block(storeSource, 'askAiFromPanel: (text, taskType) => {', 'prepareContextConversation:')}})`,
+          { loader: 'ts' }
+        ).code,
+        {
+          actions,
+          composerDraft,
+          changeProjectLayout,
+          setState: (update: (current: typeof state) => typeof state) => {
+            state = update(state)
+          },
+        }
+      )
+      actions.askAiFromPanel('Prepared task', taskType)
+      assert.equal(state.workbenchLayout.open, open)
+      assert.equal(state.workbenchLayout.swapped, true)
+      assert.equal(state.workbenchLayout.conversationWidth, 420)
+      assert.equal(state.aiPanel.open, true)
+      assert.equal(state.composerTaskType, taskType ?? '')
+      assert.equal(composerDraft.current.getSnapshot(), 'Prepared task')
+    }
+  }
+})
+
+test('context conversation handoff reveals its composer and preserves drafts without crossing targets', async () => {
+  for (const mode of ['ready', 'rejected', 'switched', 'project', 'reset', 'typing', 'failed']) {
+    let state = {
+      activeSession: 'original',
+      homeSelectedProjectId: 'project',
+      aiPanel: { open: false },
+      workbenchLayout: { ...DEFAULT_PROJECT_LAYOUT, open: true, full: true, floating: 'minimized' },
+    }
+    const composerDraft = { current: createComposerDraftStore('Existing draft') }
+    const target = () => ({
+      sessionId: state.activeSession,
+      projectId: state.homeSelectedProjectId,
+      draftScope: composerDraft.current.getScope(),
+    })
+    const actions = {
+      captureContextTarget: target,
+      addContext: async () => {
+        if (mode === 'failed') throw new Error('offline')
+        if (mode === 'switched') state = { ...state, activeSession: 'other' }
+        if (mode === 'project') state = { ...state, homeSelectedProjectId: 'other' }
+        if (mode === 'reset') composerDraft.current.reset()
+        if (mode === 'typing') composerDraft.current.set('Typed while waiting')
+        return { accepted_ref_ids: mode === 'rejected' ? [] : ['reference'] }
+      },
+    } as {
+      captureContextTarget: typeof target
+      addContext: () => Promise<{ accepted_ref_ids: string[] }>
+      prepareContextConversation: (candidate: unknown, text: string) => Promise<boolean>
+    }
+    runInNewContext(
+      transformSync(
+        `Object.assign(actions, {${block(storeSource, 'askAiFromPanel: (text, taskType) => {', 'attachActiveFileToAi:')}})`,
+        { loader: 'ts' }
+      ).code,
+      {
+        actions,
+        composerDraft,
+        actRef: { current: actions },
+        setState: (update: (current: typeof state) => typeof state) => {
+          state = update(state)
+        },
+        changeProjectLayout,
+      }
+    )
+    if (mode === 'failed')
+      await assert.rejects(actions.prepareContextConversation({}, 'Summary'), /offline/)
+    else {
+      const ready = await actions.prepareContextConversation({}, 'Summary')
+      assert.equal(ready, mode === 'ready' || mode === 'typing')
+      if (ready) {
+        assert.equal(state.aiPanel.open, true)
+        assert.equal(state.workbenchLayout.open, true)
+        assert.equal(state.workbenchLayout.full, false)
+        assert.notEqual(state.workbenchLayout.floating, 'minimized')
+        assert.equal(
+          composerDraft.current.getSnapshot(),
+          `${mode === 'typing' ? 'Typed while waiting' : 'Existing draft'}\n\nSummary`
+        )
+      } else
+        assert.equal(composerDraft.current.getSnapshot(), mode === 'reset' ? '' : 'Existing draft')
+    }
+  }
+})
+
+test('unavailable navigation does not suspend current draft persistence', () => {
+  let suspended = false
+  const action = block(storeSource, 'openWorkbenchView: (view, options) =>', 'toggleModulePanel:')
+  const compiled = transformSync(
+    `const actions = {${action}}; actions.openWorkbenchView('unavailable')`,
+    { loader: 'ts' }
+  ).code
+  runInNewContext(compiled, {
+    availabilityPolicy: { routeAvailable: () => false },
+    rememberSessionDraft: () => {
+      suspended = true
+    },
+    setState: () => {},
+  })
+  assert.equal(suspended, false)
+})
+
+function sessionDraftHarness() {
+  const reference = {
+    type: 'file' as const,
+    id: 'local-file',
+    referenceId: 'registered-file',
+    path: '/original/draft.txt',
+    title: 'draft.txt',
+  }
+  const original: SessionNode = { id: 'original', title: 'Original', status: 'dormant' }
+  const other: SessionNode = { id: 'other', title: 'Other', status: 'dormant' }
+  let state = {
+    activeSession: 'original' as string | null,
+    composerRefs: [reference],
+    composerSubmitRequested: false,
+    mainView: 'resource',
+    draftGeneration: 0,
+    homeSelectedProjectId: 'project',
+    tabs: [],
+    aiPanel: {
+      open: true,
+      sessionMenuOpen: false,
+      refs: [],
+      projectPolicy: 'auto_project',
+      searchScope: 'academic',
+    },
+    sessions: [original, other],
+    threads: {},
+    recentSessions: [],
+  }
+  const composerDraft = { current: createComposerDraftStore('Unsent original draft') }
+  const saved = new Map<string, string>()
+  const storage = {
+    getItem: (key: string) => saved.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      saved.set(key, value)
+    },
+  }
+  const listeners = new Map<string, () => void>()
+  let restore = () => {}
+  const result = {} as {
+    startPanelDraft: () => void
+    openPanelSession: (node: SessionNode) => void
+    clearSessionSelection: () => void
+    openWorkbenchView: (view: string) => void
+    activate: (node: SessionNode) => void
+  }
+  const compiled = transformSync(
+    `${block(storeSource, 'function assistantSessionView', 'function currentScopeKey')}
+     ${block(storeSource, 'const sessionDrafts =', 'const expandedAssistantReturns')}
+     Object.assign(result, {
+       ${block(storeSource, 'startPanelDraft: (seed = {}) => {', 'activateTab:')}
+       ${block(storeSource, 'openPanelSession: (node, focus) => {', 'returnHome:')}
+       ${block(storeSource, 'clearSessionSelection: () => {', 'captureSettingsSurface:')}
+       ${block(storeSource, 'openWorkbenchView: (view, options) =>', 'toggleModulePanel:')}
+       activate: (node) => setState(current => activateSession(current, node, 'assistant')),
+     })`,
+    { loader: 'ts' }
+  ).code
+  runInNewContext(compiled, {
+    result,
+    composerDraft,
+    composerDraftKey,
+    readComposerDrafts,
+    serializeComposerDrafts,
+    INITIAL_PREFERENCES: {},
+    INITIAL_AI_PANEL_STATE: { projectPolicy: 'explicit_only', searchScope: 'web' },
+    preferenceWriter: {
+      current: {
+        submit: ({ composerDrafts }: { composerDrafts: string }) =>
+          storage.setItem('drafts', composerDrafts),
+      },
+    },
+    window: {
+      localStorage: storage,
+      addEventListener: (name: string, callback: () => void) => {
+        listeners.set(name, callback)
+      },
+      removeEventListener: (name: string) => {
+        listeners.delete(name)
+      },
+    },
+    state,
+    stateRef: {
+      get current() {
+        return state
+      },
+    },
+    useRef: (value: unknown) => ({ current: value }),
+    useCallback: (callback: unknown) => callback,
+    useEffect: (callback: () => unknown) => {
+      callback()
+    },
+    useLayoutEffect: (callback: () => void) => {
+      restore = callback
+    },
+    setState: (update: (current: typeof state) => typeof state) => {
+      update(state)
+      state = update(state)
+    },
+    rememberScopeConversation: () => {},
+    rememberOpenedConversation: () => {},
+    conversationScopePath: () => null,
+    currentScopeKey: () => null,
+    touchRecentSession: (recent: unknown) => recent,
+    upsertSessionNode,
+    sessionTitleFallback: () => null,
+    availabilityPolicy: { routeAvailable: () => true },
+    fixedTabForView: () => null,
+    activeTabForWorkbenchView: () => 'skills',
+    documentWorkspaces: { forProject: () => ({ getSnapshot: () => ({ tabs: {} }) }) },
+    assistantProject: (current: typeof state) => ({ projectId: current.homeSelectedProjectId }),
+    assistantScopeReset: () => ({ activeSession: null, composerRefs: [] }),
+    LITERATURE_SCOPE_KEY: 'literature',
+    ASSISTANT_FALLBACK_VIEW: 'resource',
+    SURFACE_RESET: {},
+    COMPOSER_RESET: { composerRefs: [], composerSubmitRequested: false },
+    HOME_RESET: { activeSession: null, composerRefs: [], composerSubmitRequested: false },
+  })
+  const navigate = (action: () => void) => {
+    action()
+    restore()
+    restore()
+  }
+  return {
+    result,
+    composerDraft: composerDraft.current,
+    storage,
+    reference,
+    original,
+    other,
+    navigate,
+    get state() {
+      return state
+    },
+  }
+}
+
+test('leaving for a new task restores the same session draft and registered attachment without sending', () => {
+  const harness = sessionDraftHarness()
+  harness.navigate(() => harness.result.startPanelDraft())
+  assert.equal(harness.composerDraft.getSnapshot(), '')
+  assert.equal(harness.state.composerRefs.length, 0)
+  harness.navigate(() => harness.result.openPanelSession(harness.original))
+  assert.equal(harness.composerDraft.getSnapshot(), 'Unsent original draft')
+  assert.equal(harness.state.composerRefs[0], harness.reference)
+  assert.equal(harness.state.composerRefs[0].path, '/original/draft.txt')
+  assert.equal(harness.state.composerRefs[0].referenceId, 'registered-file')
+  assert.equal(harness.state.composerSubmitRequested, false)
+})
+
+test('panel session switches isolate drafts and remember the latest text and explicit clearing', () => {
+  const harness = sessionDraftHarness()
+  harness.navigate(() => harness.result.openPanelSession(harness.other))
+  assert.equal(harness.composerDraft.getSnapshot(), '')
+  assert.equal(harness.state.composerRefs.length, 0)
+  harness.composerDraft.set('Other draft')
+  harness.navigate(() => harness.result.openPanelSession(harness.original))
+  assert.equal(harness.composerDraft.getSnapshot(), 'Unsent original draft')
+  harness.composerDraft.set('Edited original draft')
+  harness.navigate(() => harness.result.openPanelSession(harness.original))
+  assert.equal(harness.composerDraft.getSnapshot(), 'Edited original draft')
+  harness.navigate(() => harness.result.openPanelSession(harness.other))
+  assert.equal(harness.composerDraft.getSnapshot(), 'Other draft')
+  harness.composerDraft.set('')
+  harness.navigate(() => harness.result.openPanelSession(harness.original))
+  assert.equal(harness.composerDraft.getSnapshot(), 'Edited original draft')
+  harness.navigate(() => harness.result.openPanelSession(harness.other))
+  assert.equal(harness.composerDraft.getSnapshot(), '')
+})
+
+test('clearing selection retains the draft for implicit conversation activation', () => {
+  const harness = sessionDraftHarness()
+  harness.navigate(() => harness.result.clearSessionSelection())
+  assert.equal(harness.composerDraft.getSnapshot(), '')
+  harness.navigate(() => harness.result.activate(harness.original))
+  assert.equal(harness.composerDraft.getSnapshot(), 'Unsent original draft')
+  assert.equal(harness.state.composerRefs[0], harness.reference)
+})
+
+test('scope navigation preserves the original draft when React evaluates the state updater twice', () => {
+  const harness = sessionDraftHarness()
+  harness.navigate(() => harness.result.openWorkbenchView('skills'))
+  assert.equal(harness.composerDraft.getSnapshot(), '')
+  assert.equal(harness.state.composerRefs.length, 0)
+  harness.navigate(() => harness.result.activate(harness.original))
+  assert.equal(harness.composerDraft.getSnapshot(), 'Unsent original draft')
+  assert.equal(harness.state.composerRefs[0], harness.reference)
+})
 
 test('project literature entry preserves conversation and opens the files literature category', () => {
   const action = block(storeSource, 'openWorkbenchView: (view, options) =>', 'toggleModulePanel:')
@@ -45,6 +389,7 @@ test('project literature entry preserves conversation and opens the files litera
   }
   runInNewContext(compiled, {
     availabilityPolicy: { routeAvailable: () => true },
+    rememberSessionDraft: () => {},
     literatureNavigation,
     SURFACE_RESET: {},
     setState: (update: (current: typeof state) => typeof state) => {
@@ -58,6 +403,63 @@ test('project literature entry preserves conversation and opens the files litera
   assert.equal(state.workbenchLayout.open, true)
   assert.equal(state.workbenchLayout.swapped, true)
   assert.deepEqual(state.tabs, literatureNavigation([], 'project').tabs)
+})
+
+test('browser navigation preserves layout for in-page links and reveals split layout for web sources', () => {
+  const action = block(storeSource, 'openWorkbenchView: (view, options) =>', 'toggleModulePanel:')
+  for (const [preserveLayout, swapped] of [
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ]) {
+    const compiled = transformSync(
+      `const actions = {${action}}; actions.openWorkbenchView('browser', { preserveProject: true, browserPageId: 'source-page', browserPageOwned: true ${preserveLayout ? ', preserveLayout: true' : ''} })`,
+      { loader: 'ts', format: 'cjs' }
+    ).code
+    for (const full of [false, true]) {
+      let state = {
+        mainView: 'resource',
+        homeSelectedProjectId: 'project',
+        activeSession: 'session',
+        composerText: 'unsent draft',
+        tabs: [] as WorkbenchTab[],
+        activeTab: 'conversation',
+        workbenchLayout: {
+          ...DEFAULT_PROJECT_LAYOUT,
+          open: preserveLayout,
+          swapped,
+          full,
+          conversationFull: !preserveLayout && full,
+          taskTab: full,
+        },
+      }
+      runInNewContext(compiled, {
+        availabilityPolicy: { routeAvailable: () => true },
+        rememberSessionDraft: () => {},
+        fixedTabForView: () => ({ id: 'browser', kind: 'browser', title: 'Browser' }),
+        openFixedTab,
+        activeTabForWorkbenchView: () => 'browser',
+        documentWorkspaces: { forProject: () => ({ getSnapshot: () => ({ tabs: {} }) }) },
+        assistantProject: () => ({ projectId: 'project' }),
+        SURFACE_RESET: {},
+        LITERATURE_SCOPE_KEY: 'literature',
+        setState: (update: (current: typeof state) => typeof state) => {
+          state = update(state)
+        },
+      })
+      assert.equal(state.workbenchLayout.open, true)
+      assert.equal(state.workbenchLayout.full, preserveLayout && full)
+      assert.equal(state.workbenchLayout.conversationFull, false)
+      assert.equal(state.workbenchLayout.taskTab, preserveLayout && full)
+      assert.equal(state.workbenchLayout.swapped, swapped)
+      assert.equal(state.activeSession, 'session')
+      assert.equal(state.composerText, 'unsent draft')
+      assert.equal(state.homeSelectedProjectId, 'project')
+      assert.equal(state.activeTab, 'browser')
+      assert.equal(state.tabs[0].browserPageId, 'source-page')
+    }
+  }
 })
 
 const literatureSource = {
@@ -237,6 +639,8 @@ test('attachment opening refreshes reused navigation without losing page, view s
     { loader: 'ts' }
   ).code
   let metadataGate: Promise<void> = Promise.resolve()
+  workspace.synchronizePageTabs(['library'])
+  const activatedTabs: string[] = []
   const open = async (page?: number) => {
     const result: { promise?: Promise<boolean> } = {}
     runInNewContext(compiled, {
@@ -246,6 +650,8 @@ test('attachment opening refreshes reused navigation without losing page, view s
       resolveDocumentWorkspaceProject,
       LITERATURE_EXCERPT_VIEW_STATE_KEY,
       LITERATURE_EXCERPT_SOURCE_KIND: 'literature',
+      CITATION_VIEW_STATE_KEY: 'citationFocus',
+      ANNOTATION_VIEW_STATE_KEY: 'annotationFocus',
       OVERVIEW_TAB: { id: 'overview' },
       assistantProject: () => ({ projectId: 'project' }),
       actRef: { current: { patchLiterature: () => {}, noticeLiterature: () => {} } },
@@ -264,16 +670,33 @@ test('attachment opening refreshes reused navigation without losing page, view s
         }
       },
       resourceNameParts: (name: string) => ({ basename: name }),
+      literatureText: (key: string) => key,
       documentWorkspaces: { forProject: () => workspace },
       setState: (update: (state: typeof stateRef.current) => typeof stateRef.current) => {
         stateRef.current = update(stateRef.current)
+        activatedTabs.push(stateRef.current.activeTab)
       },
     })
     return result.promise!
   }
   assert.equal(await open(3), true)
   const id = stateRef.current.activeTab
+  assert.deepEqual(activatedTabs, [id])
   const first = workspace.getSnapshot().tabs[id]
+  workspace.focusTab('library')
+  const workbench = readFileSync(
+    new URL('./features/workbench/Workbench.tsx', import.meta.url),
+    'utf8'
+  )
+  const focusEffect = block(workbench, 'useLayoutEffect(() => {', 'const visibleTabs')
+  const compiledFocus = transformSync(focusEffect, { loader: 'ts' }).code
+  runInNewContext(compiledFocus, {
+    useLayoutEffect: (callback: () => void) => callback(),
+    workspace,
+    pageIds: JSON.stringify(['library']),
+    state: stateRef.current,
+  })
+  assert.equal(workspace.getSnapshot().focusedTabId, id)
   workspace.setTabViewState(id, { ...first.viewState, custom: 'retained' })
   for (const mainView of ['resource', 'literature']) {
     stateRef.current = { ...stateRef.current, mainView }
@@ -351,6 +774,7 @@ test('foreground split focus, moves and close fallback synchronize once without 
   const state = {
     mainView: 'resource',
     activeTab: literatureId,
+    tabs: [],
     aiPanel: { cover: false },
     resource: {
       selected: '',
@@ -397,6 +821,7 @@ test('foreground split focus, moves and close fallback synchronize once without 
       state,
       workspace,
       documentNavigationView,
+      shouldRestoreDocumentFocus,
       React: {
         useRef: () => [previousFocus, synchronizedResourceFile][refIndex++],
         useEffect: (effect: () => void) => effect(),
@@ -525,6 +950,7 @@ test('closing a citation document returns to the fullscreen assistant without re
       state: stateRef.current,
       workspace,
       documentNavigationView,
+      shouldRestoreDocumentFocus,
       React: {
         useRef: () => [previousFocus, synchronizedResourceFile][refIndex++],
         useEffect: (effect: () => void) => effect(),
@@ -543,12 +969,9 @@ test('closing a citation document returns to the fullscreen assistant without re
     'utf8'
   )
   runInNewContext(
-    transformSync(
-      block(workbench, '  useEffect(() => {', '  if (documents.tabs[state.activeTab]'),
-      {
-        loader: 'ts',
-      }
-    ).code,
+    transformSync(block(workbench, '  useEffect(() => {', '  const dockActive ='), {
+      loader: 'ts',
+    }).code,
     {
       state: stateRef.current,
       activeTabNeedsSync: !workspace.getSnapshot().tabs[stateRef.current.activeTab],
@@ -583,6 +1006,200 @@ test('business tab closing uses the focused literature reading surface as its fa
       documentWorkspaces: { forProject: () => workspace },
     })
     assert.equal(result.value?.viewFallbackId, mainView === 'resource' ? id : null)
+  }
+})
+
+interface ClosingWorkbenchState {
+  mainView: string
+  homeSelectedProjectId: string | null
+  activeSession: string | null
+  activeTab: string
+  tabs: WorkbenchTab[]
+  resource: { webSearches: Record<string, unknown> }
+}
+
+function closeWorkbenchForTest(
+  workspaces: ReadonlyMap<string | null, DocumentWorkspace>,
+  initial: ClosingWorkbenchState,
+  closingId: string
+): ClosingWorkbenchState {
+  const stateRef = { current: initial }
+  const helper = block(storeSource, 'function closeTabContext', '/**')
+  const action = block(storeSource, 'closeWorkbenchTab: (id) => {', 'completeResourceReview:')
+  runInNewContext(
+    transformSync(`${helper}; const actions = {${action}}; actions.closeWorkbenchTab(closingId)`, {
+      loader: 'ts',
+    }).code,
+    {
+      closingId,
+      stateRef,
+      closeTab,
+      mainViewForWorkbenchTab,
+      newProjectTab,
+      openFixedTab,
+      OVERVIEW_TAB,
+      documentNavigationView,
+      assistantProject: () => ({ projectId: null }),
+      documentWorkspaces: {
+        forProject: (projectId: string | null) => {
+          const workspace = workspaces.get(projectId)
+          assert.ok(workspace, `unexpected workspace ${projectId}`)
+          return workspace
+        },
+      },
+      beginNavigation: () => ({}),
+      webSearchInvocations: { current: new Map() },
+      setState: (update: (state: ClosingWorkbenchState) => ClosingWorkbenchState) => {
+        stateRef.current = update(stateRef.current)
+      },
+    }
+  )
+  return stateRef.current
+}
+
+const closingBrowser: WorkbenchTab = {
+  id: 'browser-to-close',
+  kind: 'browser',
+  title: 'Browser',
+  closable: true,
+}
+
+function browserClosingState(
+  tabs: WorkbenchTab[] = [OVERVIEW_TAB, closingBrowser]
+): ClosingWorkbenchState {
+  return {
+    mainView: 'browser',
+    homeSelectedProjectId: 'project',
+    activeSession: null,
+    activeTab: closingBrowser.id,
+    tabs,
+    resource: { webSearches: {} },
+  }
+}
+
+test('closing a browser restores the focused document and its navigation without losing edits', async () => {
+  for (const view of ['resource', 'literature'] as const) {
+    for (const source of [
+      { kind: 'project' as const, project: 'project', path: 'notes.md' },
+      literatureSource,
+    ]) {
+      if (source.kind === 'project' && view === 'literature') continue
+      const workspace = new DocumentWorkspace({
+        ...documentLoader,
+        async load(source) {
+          const loaded = await documentLoader.load(source)
+          assert.ok(!isDocumentLoadFailure(loaded))
+          return {
+            ...loaded,
+            text: 'Original body',
+            capabilities: { ...loaded.capabilities, can_edit: true },
+          }
+        },
+      })
+      const id = await workspace.open(source, 'edit')
+      workspace.setTabNavigationView(id, view)
+      workspace.setTabViewState(id, { page: 4 })
+      workspace.updateText(workspace.getSnapshot().tabs[id].sessionId, 'Unsaved document body')
+      const before = workspace.getSnapshot()
+      const state = closeWorkbenchForTest(
+        new Map([['project', workspace]]),
+        browserClosingState(),
+        closingBrowser.id
+      )
+      assert.equal(state.activeTab, id)
+      assert.equal(state.mainView, view)
+      assert.equal(workspace.getSnapshot(), before)
+      assert.equal(before.sessions[before.tabs[id].sessionId].text, 'Unsaved document body')
+      assert.equal(before.sessions[before.tabs[id].sessionId].dirty, true)
+      assert.equal(before.tabs[id].viewState?.page, 4)
+    }
+  }
+})
+
+test('closing the last browser without a document opens a scoped new tab instead of an invisible overview', () => {
+  const workspace = new DocumentWorkspace(documentLoader)
+  for (const projectId of ['project', null]) {
+    const initial = { ...browserClosingState(), homeSelectedProjectId: projectId }
+    const state = closeWorkbenchForTest(
+      new Map([[projectId, workspace]]),
+      initial,
+      closingBrowser.id
+    )
+    const active = state.tabs.find((tab) => tab.id === state.activeTab)
+    assert.equal(active?.kind, 'new_tab')
+    assert.equal(active?.projectId, projectId)
+    assert.equal(state.mainView, 'resource')
+    assert.equal(
+      state.tabs.some((tab) => tab.id === closingBrowser.id),
+      false
+    )
+  }
+})
+
+test('browser closing does not recover another project document', async () => {
+  const own = new DocumentWorkspace(documentLoader)
+  const other = new DocumentWorkspace(documentLoader)
+  const otherId = await other.open(
+    { kind: 'project', project: 'other', path: 'private.md' },
+    'edit'
+  )
+  const state = closeWorkbenchForTest(
+    new Map([
+      ['project', own],
+      ['other', other],
+    ]),
+    browserClosingState(),
+    closingBrowser.id
+  )
+  assert.notEqual(state.activeTab, otherId)
+  assert.equal(state.tabs.find((tab) => tab.id === state.activeTab)?.kind, 'new_tab')
+  assert.equal(other.getSnapshot().focusedTabId, otherId)
+})
+
+test('closing an inactive browser preserves the active document navigation and focus', async () => {
+  const workspace = new DocumentWorkspace(documentLoader)
+  const id = await workspace.open(literatureSource, 'edit')
+  workspace.setTabNavigationView(id, 'resource')
+  const initial = { ...browserClosingState(), mainView: 'resource', activeTab: id }
+  const state = closeWorkbenchForTest(new Map([['project', workspace]]), initial, closingBrowser.id)
+  assert.equal(state.activeTab, id)
+  assert.equal(state.mainView, 'resource')
+  assert.equal(workspace.getSnapshot().focusedTabId, id)
+})
+
+test('browser closing resolves a same-pane document to its owning view', async () => {
+  const workspace = new DocumentWorkspace(documentLoader)
+  const id = await workspace.open(literatureSource, 'edit')
+  workspace.setTabNavigationView(id, 'resource')
+  workspace.openPageTab(closingBrowser.id)
+  workspace.focusTab(closingBrowser.id)
+  const state = closeWorkbenchForTest(
+    new Map([['project', workspace]]),
+    browserClosingState(),
+    closingBrowser.id
+  )
+  assert.equal(state.activeTab, id)
+  assert.equal(state.mainView, 'resource')
+})
+
+test('browser closing restores the last focused split without altering the document layout', async () => {
+  const workspace = new DocumentWorkspace(documentLoader)
+  const first = await workspace.open(literatureSource, 'edit')
+  workspace.setTabNavigationView(first, 'resource')
+  const split = await workspace.splitTab(first, 'right', false)
+  assert.ok(split)
+  const snapshot = workspace.getSnapshot()
+  for (const focused of [split, first]) {
+    workspace.focusTab(focused)
+    const state = closeWorkbenchForTest(
+      new Map([['project', workspace]]),
+      browserClosingState(),
+      closingBrowser.id
+    )
+    assert.equal(state.activeTab, focused)
+    assert.equal(state.mainView, 'resource')
+    assert.deepEqual(workspace.getSnapshot().layout.areas, snapshot.layout.areas)
+    assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 2)
   }
 })
 
@@ -622,6 +1239,9 @@ test('an exact draft checks its source before changing the existing draft and se
         },
         composerDraft: {
           current: {
+            reset: (value: string) => {
+              draft = value
+            },
             set: (value: string) => {
               draft = value
             },
@@ -630,6 +1250,7 @@ test('an exact draft checks its source before changing the existing draft and se
         HOME_RESET: { activeSession: null, draftModelId: null },
         assistantSessionView: () => 'resource',
         rememberScopeConversation: () => {},
+        rememberSessionDraft: () => {},
         currentScopeKey: () => null,
         setState: (update: (current: typeof state) => typeof state) => {
           state = update(state)
@@ -810,6 +1431,9 @@ test('a skill task retains its description through workbench tab synchronization
       },
       composerDraft: {
         current: {
+          reset: (value: string) => {
+            draft = value
+          },
           set: (value: string) => {
             draft = value
           },
@@ -822,6 +1446,7 @@ test('a skill task retains its description through workbench tab synchronization
       window: { localStorage: {} },
       readContinuityRecord: () => ({}),
       rememberContinuity: () => ({}),
+      rememberSessionDraft: () => {},
     })
     const result = state as typeof state & {
       homeSelectedProjectId: string
@@ -867,6 +1492,7 @@ test('contextual skill navigation preserves the draft and session; global naviga
       documentWorkspaces: { forProject: () => ({ getSnapshot: () => ({ tabs: {} }) }) },
       rememberScopeConversation: () => {},
       assistantProject: () => ({ projectId: 'project' }),
+      rememberSessionDraft: () => {},
       assistantScopeReset: () => ({ activeSession: null, composerRefs: [] }),
       composerDraft: {
         current: {
@@ -947,7 +1573,7 @@ test('the context lives in its own module so store.tsx stays a single Fast Refre
   assert.doesNotMatch(storeSource, /createContext/)
   assert.match(
     storeSource,
-    /<StoreContext\.Provider value=\{value\}>\s*<NavigationRecoveryContext\.Provider value=\{act\.returnHome\}>\s*\{children\}\s*<\/NavigationRecoveryContext\.Provider>\s*<\/StoreContext\.Provider>/
+    /<StoreContext\.Provider value=\{value\}>\s*<NavigationRecoveryContext\.Provider value=\{act\.returnHome\}>\s*<WebNavigationContext\.Provider value=\{navigateWebPage\}>\s*\{children\}\s*<\/WebNavigationContext\.Provider>\s*<\/NavigationRecoveryContext\.Provider>\s*<\/StoreContext\.Provider>/
   )
   assert.match(storeSource, /const value = useContext\(StoreContext\)/)
   assert.match(storeSource, /if \(!value\) throw new Error\('useApp outside StoreProvider'\)/)
@@ -1049,31 +1675,86 @@ test('permission, collaboration and usage defaults initialize consistently', () 
 })
 
 test('persisted UX state is rehydrated from the host bridge instead of being hardcoded', () => {
-  assert.match(
-    storeSource,
-    /const INITIAL_PREFERENCES = window\.scholarseed\?\.preferences \?\? DEFAULT_RENDERER_PREFERENCES/
-  )
-  assert.match(storeSource, /setActiveShortcutOverrides\(INITIAL_PREFERENCES\.shortcutOverrides\)/)
-  for (const field of [
-    'theme: INITIAL_PREFERENCES.theme',
-    'lang: INITIAL_PREFERENCES.language',
-    'sidebarOpen: INITIAL_PREFERENCES.sidebarOpen',
-    'shortcutOverrides: INITIAL_PREFERENCES.shortcutOverrides',
-    'dataSharingMode: INITIAL_PREFERENCES.dataSharingMode',
-    'desktopNotifications: INITIAL_PREFERENCES.desktopNotifications',
-    'soundAlerts: INITIAL_PREFERENCES.soundAlerts',
-    'autoSave: INITIAL_PREFERENCES.autoSave',
-    'formatOnSave: INITIAL_PREFERENCES.formatOnSave',
-    'editorWordWrap: INITIAL_PREFERENCES.editorWordWrap',
-    'recentFiles: INITIAL_PREFERENCES.recentFiles',
-    'recentLiterature: INITIAL_PREFERENCES.recentLiterature',
-    'recentSessions: INITIAL_PREFERENCES.recentSessions',
-    'sessionActivityInitialized: INITIAL_PREFERENCES.sessionActivityInitialized',
-    'sessionActivitySeen: INITIAL_PREFERENCES.sessionActivitySeen',
-  ]) {
-    assert.match(initialBlock, new RegExp(field.replace(/[.?]/g, '\\$&')))
+  const initializer = block(storeSource, 'const INITIAL_PREFERENCES =', 'const MENU_KEYS')
+  const compiled = transformSync(`${initializer}\nresult.state = INITIAL`, { loader: 'ts' }).code
+  for (const language of ['en', 'zh', undefined] as const) {
+    const saved = language && {
+      ...defaultRendererPreferences(language),
+      theme: 'dark',
+      sidebarOpen: false,
+      desktopNotifications: false,
+      soundAlerts: false,
+      autoSave: false,
+      formatOnSave: true,
+      editorWordWrap: false,
+      shortcutOverrides: { 'code.save': { key: 's', modifiers: ['primary', 'shift'] } },
+      recentFiles: [{ projectId: 'project', path: 'paper.pdf', openedAt: 7 }],
+      recentLiterature: [{ id: 'paper', openedAt: 8 }],
+      recentSessions: [{ id: 'session', openedAt: 9 }],
+      sessionActivityInitialized: true,
+      sessionActivitySeen: { session: 10 },
+      reasoningPreferences: language === 'en' ? { model: 'high' } : undefined,
+      selectionPrompts: { explain: 'Custom instruction', translate: ' ', polish: 42 },
+      onboarding: { seen: { home: true, project: false }, recentProjectId: 'project' },
+    }
+    const preferences = saved ?? DEFAULT_RENDERER_PREFERENCES
+    const result: { state: Record<string, unknown> } = { state: {} }
+    const shortcuts: unknown[] = []
+    runInNewContext(compiled, {
+      result,
+      window: saved ? { scholarseed: { preferences: saved } } : {},
+      DEFAULT_RENDERER_PREFERENCES,
+      sanitizeSelectionPrompts,
+      sanitizeOnboarding,
+      setActiveShortcutOverrides: (value: unknown) => shortcuts.push(value),
+      DEFAULT_GLOBAL_PERMISSION_MODE: 'unused',
+      DEFAULT_WORKDIR: { name: 'unused' },
+      EMPTY_USAGE: {},
+      EMPTY_CATALOG: {},
+      INITIAL_CREDITS_STATE: {},
+      INITIAL_RESOURCE_STATE: {},
+      INITIAL_LITERATURE_STATE: {},
+      INITIAL_AI_PANEL_STATE: {},
+      DEFAULT_PROJECT_LAYOUT: {},
+      OVERVIEW_TAB: { id: 'overview' },
+    })
+    const { state } = result
+    for (const field of [
+      'theme',
+      'sidebarOpen',
+      'shortcutOverrides',
+      'dataSharingMode',
+      'desktopNotifications',
+      'soundAlerts',
+      'autoSave',
+      'formatOnSave',
+      'editorWordWrap',
+      'recentFiles',
+      'recentLiterature',
+      'recentSessions',
+      'sessionActivityInitialized',
+      'sessionActivitySeen',
+    ] as const) {
+      assert.equal(state[field], preferences[field], `${language ?? 'fallback'}: ${field}`)
+    }
+    assert.equal(state.lang, preferences.language)
+    assert.deepEqual(shortcuts, [preferences.shortcutOverrides])
+    assert.deepEqual(
+      state.onboarding,
+      saved ? { seen: { home: true }, recentProjectId: 'project' } : { seen: {} }
+    )
+    assert.deepEqual(
+      state.selectionPrompts,
+      saved
+        ? { ...defaultSelectionPrompts(preferences.language), explain: 'Custom instruction' }
+        : defaultSelectionPrompts('zh')
+    )
+    if (preferences.reasoningPreferences) {
+      assert.equal(state.reasoningPreferences, preferences.reasoningPreferences)
+    } else {
+      assert.equal(Object.keys(state.reasoningPreferences as object).length, 0)
+    }
   }
-  // 落库前还要过一遍归一：偏好文件可能是旧版本或被人手改过。
   assert.match(initialBlock, /onboarding: sanitizeOnboarding\(INITIAL_PREFERENCES\.onboarding\)/)
   assert.match(
     initialBlock,
@@ -1124,7 +1805,7 @@ test('set routes composer text to its isolated store before merging the remainin
   const setBlock = block(storeSource, 'const set = useCallback', 'const closeMenus = useCallback')
   assert.match(
     setBlock,
-    /const delta = availabilityPolicy\.navigationPatch\(\s*current,\s*typeof patch === 'function' \? patch\(current\) : patch\s*\)/
+    /const requested = typeof patch === 'function' \? patch\(current\) : patch\s*if \(requested === current\) return current\s*const delta = availabilityPolicy\.navigationPatch\(current, requested\)/
   )
   assert.match(setBlock, /Object\.prototype\.hasOwnProperty\.call\(delta, 'composerText'\)/)
   assert.match(setBlock, /composerDraft\.current!\.set\(delta\.composerText \?\? ''\)/)
@@ -1147,29 +1828,112 @@ test('patchThread is a no-op for a missing id or unknown thread and never invent
 })
 
 test('thread status and title changes project onto the session tree together', () => {
-  const patchThread = block(
-    storeSource,
-    'const patchThread = useCallback',
-    'const appendThread = useCallback'
-  ).replace(/\s+/g, ' ')
-  assert.match(patchThread, /findSessionNode\(current\.sessions, thread\.sessionId \?\? id\)/)
-  assert.match(patchThread, /let sessions = current\.sessions/)
-  assert.match(
-    patchThread,
-    /if \(node && \('status' in delta \|\| 'running' in delta \|\| titleChanged\)\)/
-  )
-  assert.match(patchThread, /if \(nextThread\.status === 'waiting'\) status = 'waiting'/)
-  assert.match(
-    patchThread,
-    /else if \(nextThread\.running === true \|\| nextThread\.status === 'running'\) status = 'running'/
-  )
-  // 收尾态要区分「用户正在看的会话」：当前会话回 dormant，其它会话才是 done。
-  assert.match(patchThread, /status = current\.activeSession === id \? 'dormant' : 'done'/)
-  assert.match(patchThread, /sessions = upsertSessionNode\(sessions, \{\s*\.\.\.node, status,/)
-  assert.ok(patchThread.includes('...(titleChanged ? {'))
-  assert.ok(
-    patchThread.includes('title: nextThread.title, title_fallback: nextThread.title_fallback')
-  )
+  const compiled = transformSync(
+    `${block(storeSource, 'const patchThread = useCallback', 'const appendThread = useCallback')}\nresult.patchThread = patchThread`,
+    { loader: 'ts' }
+  ).code
+  const initial = () => ({
+    activeSession: 'thread' as string | null,
+    sessionCatalogRevision: 7,
+    threads: {
+      thread: {
+        sessionId: 'session',
+        title: 'New conversation',
+        title_fallback: 'new_session',
+        status: 'dormant',
+        running: false,
+      } as Pick<Thread, 'sessionId' | 'title' | 'title_fallback' | 'status' | 'running'>,
+    },
+    sessions: [
+      {
+        id: 'parent',
+        title: 'Parent',
+        status: 'dormant',
+        children: [
+          {
+            id: 'session',
+            title: 'New conversation',
+            title_fallback: 'new_session',
+            status: 'dormant',
+          },
+        ],
+      },
+      { id: 'unrelated', title: 'Unrelated', status: 'waiting' },
+    ] as SessionNode[],
+  })
+  type Snapshot = ReturnType<typeof initial>
+  type Patch = Partial<Thread> | ((thread: Thread) => Partial<Thread>)
+  let state = initial()
+  let updates = 0
+  const result: { patchThread?: (id: string | null, patch: Patch) => void } = {}
+  runInNewContext(compiled, {
+    result,
+    useCallback: (callback: unknown) => callback,
+    setState: (update: (current: Snapshot) => Snapshot) => {
+      updates += 1
+      state = update(state)
+    },
+    findSessionNode,
+    upsertSessionNode,
+  })
+  const patchThread = result.patchThread
+  assert.ok(patchThread)
+  for (const [patch, active, status, revision] of [
+    [{ title: 'Named conversation', title_fallback: null, status: 'waiting' }, true, 'waiting', 8],
+    [{ title: 'Named conversation' }, true, 'dormant', 8],
+    [{ title_fallback: null }, true, 'dormant', 8],
+    [{ title: 'New conversation', title_fallback: 'new_session' }, true, 'dormant', 7],
+    [{ status: 'waiting', running: true }, true, 'waiting', 7],
+    [{ running: true }, true, 'running', 7],
+    [{ status: 'running' }, true, 'running', 7],
+    [{ status: 'done' }, true, 'dormant', 7],
+    [{ status: 'done' }, false, 'done', 7],
+    [{ status: 'failed' }, true, 'failed', 7],
+  ] satisfies [Partial<Thread>, boolean, SessionStatus, number][]) {
+    state = initial()
+    updates = 0
+    if (!active) state.activeSession = 'another-thread'
+    const previous = state
+    const before = JSON.stringify(previous)
+    patchThread('thread', patch)
+    const thread = state.threads.thread
+    const node = findSessionNode(state.sessions, 'session')!
+    assert.equal(updates, 1)
+    for (const [key, value] of Object.entries(patch))
+      assert.equal(thread[key as keyof typeof thread], value)
+    assert.equal(node.status, status)
+    assert.equal(node.title, thread.title)
+    assert.equal(node.title_fallback, thread.title_fallback)
+    assert.equal(state.sessionCatalogRevision, revision)
+    assert.equal(JSON.stringify(previous), before)
+    assert.equal(state.sessions[1], previous.sessions[1])
+    if (revision === 7 && !('status' in patch) && !('running' in patch))
+      assert.equal(state.sessions, previous.sessions)
+  }
+  state = initial()
+  const previous = state
+  patchThread(null, { title: 'Not created' })
+  patchThread('missing', { title: 'Not created' })
+  patchThread('thread', () => previous.threads.thread)
+  assert.equal(state, previous)
+  patchThread('thread', () => ({ title: 'Functional rename', title_fallback: null }))
+  assert.equal(findSessionNode(state.sessions, 'session')!.title, 'Functional rename')
+  assert.equal(state.sessionCatalogRevision, 8)
+  state = initial()
+  state.sessions = [state.sessions[1]]
+  const sessions = state.sessions
+  patchThread('thread', { title: 'Not in tree', title_fallback: null })
+  assert.equal(state.sessions, sessions)
+  assert.equal(findSessionNode(state.sessions, 'session'), undefined)
+  assert.equal(state.threads.thread.title, 'Not in tree')
+  assert.equal(state.sessionCatalogRevision, 8)
+  state = initial()
+  state.threads.thread.sessionId = null
+  state.sessions[0].children![0].id = 'thread'
+  patchThread('thread', { title: 'Temporary session' })
+  assert.equal(findSessionNode(state.sessions, 'thread')!.title, 'Temporary session')
+  assert.equal(findSessionNode(state.sessions, 'session'), undefined)
+  assert.equal(state.sessionCatalogRevision, 8)
 })
 
 test('appendThread appends to an existing thread conversation without mutating it', () => {
@@ -1235,11 +1999,11 @@ test('reset bundles compose so returning home cannot keep stale metadata or surf
   }
 
   const clearSession = block(storeSource, 'clearSessionSelection: () => {', 'openSettings:')
-  assert.match(clearSession, /composerDraft\.current!\.set\(''\)/)
+  assert.match(clearSession, /composerDraft\.current!\.reset\(\)/)
   const startPanelDraft = block(storeSource, 'startPanelDraft: (seed = {}) => {', 'activateTab:')
   const startDraft = block(storeSource, 'startDraft: (seed = {}) => {', 'applyModelCatalog:')
   for (const draftStart of [startPanelDraft, startDraft]) {
-    assert.match(draftStart, /composerDraft\.current!\.set\(seed\.composerText \?\? ''\)/)
+    assert.match(draftStart, /composerDraft\.current!\.reset\(seed\.composerText \?\? ''\)/)
     assert.doesNotMatch(draftStart, /composerText: seed\.composerText/)
   }
 })

@@ -25,6 +25,7 @@ import re
 import sys
 from pathlib import Path
 from bibliography_contract import is_bibliography_title
+from paper_materials import evidence_records, is_quick
 
 # Section-title vocabulary. The pipeline is bilingual, so every structural rule
 # that keys on a section's role has to recognise both spellings.
@@ -132,10 +133,10 @@ def load_whitelist(workspace: Path) -> tuple[list[str], dict[str, str], str | No
         except (json.JSONDecodeError, OSError):
             cite_index = {}
 
-    if not path.is_file():
+    if not path.is_file() and not is_quick(workspace):
         return [], cite_index, f"paper_cards.json not found at {path}"
     try:
-        cards = json.loads(path.read_text(encoding="utf-8"))
+        cards = evidence_records(workspace)
     except (json.JSONDecodeError, OSError) as exc:
         return [], cite_index, f"paper_cards.json unreadable: {exc}"
     if not isinstance(cards, dict):
@@ -333,7 +334,7 @@ def validate(outline: dict, allowed: set[str], limits: dict,
         want, position = spec["title"], spec.get("position", "any")
         # An explicit request for front matter must be checkable too. "First"
         # for ordinary body sections still means after an optional abstract.
-        ordered = tree if _title_matches(want, _ABSTRACT_WORDS) else [s for s,r in zip(tree,roles) if r!='abstract']
+        ordered = tree if _title_matches(want, _ABSTRACT_WORDS) or position.startswith('after:') else [s for s,r in zip(tree,roles) if r!='abstract']
         ordered_norm = [_normalise_title(s.get('title')) for s in ordered]
         target = _normalise_title(want)
         if target not in ordered_norm:

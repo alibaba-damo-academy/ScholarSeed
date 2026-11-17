@@ -8,7 +8,13 @@ import { checkProjectCalls } from './calls.mjs'
 const DESKTOP_PATH = 'apps/desktop'
 // Electron imports the repository-owned Python launcher contract. Snapshot it
 // from the index too, so staged checks never borrow working-tree dependencies.
-const INPUT_PATHS = [DESKTOP_PATH, 'scripts']
+const INPUT_PATHS = [
+  DESKTOP_PATH,
+  'scripts',
+  'packages/ui',
+  'skills/community/literature-review/components/outline.json',
+  'skills/community/literature-review/components/review.json',
+]
 
 /** Check a coherent index tree; never mix staged calls with unstaged resources/types. */
 export function checkStaged({ root = resolve(DESKTOP, '../..'), dependencies = resolve(DESKTOP, 'node_modules') } = {}) {

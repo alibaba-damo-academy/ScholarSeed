@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { chromium, expect, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 async function fixture(run: (page: Page) => Promise<void>): Promise<void> {
-  const server = await createServer({
+  const server = await servers.create({
+    cacheKey: 'prompts',
     configFile: false,
     root: ROOT,
     plugins: [react()],
@@ -35,6 +39,19 @@ async function fixture(run: (page: Page) => Promise<void>): Promise<void> {
     await server.close()
   }
 }
+
+test('disabled prompt restore buttons show their tooltip on hover', async () => {
+  await fixture(async (page) => {
+    const restore = page.getByTestId('selection-prompt-restore-explain')
+    await expect(restore).toBeDisabled()
+    await restore.hover()
+    await expect(page.getByRole('tooltip')).toHaveText('恢复初始配置')
+    const tooltip = page.getByRole('tooltip')
+    await expect(tooltip).toHaveAttribute('data-side', 'top')
+    await expect(tooltip).toHaveClass(/!z-\[var\(--vds-z-modal-nested-flyout\)\]/)
+    assert.equal(await tooltip.evaluate((element) => element.parentElement?.tagName), 'BODY')
+  })
+})
 
 test('prompt resets use the current language as an unsaved draft and saving changes the actual instruction', async () => {
   await fixture(async (page) => {

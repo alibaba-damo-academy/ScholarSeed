@@ -10,7 +10,13 @@ from urllib.parse import parse_qsl, urlsplit
 
 from pydantic import TypeAdapter
 
-from service.platform.mcp import McpHttpServer, McpServer, McpStdioServer
+from service.platform.mcp import (
+    McpHttpServer,
+    McpRemoteServer,
+    McpServer,
+    McpSseServer,
+    McpStdioServer,
+)
 from service.settings.connectors.catalog import SECRET_PREFIX
 
 CUSTOM_PREFIX = "custom-"
@@ -38,7 +44,7 @@ CUSTOM_FIELDS = frozenset(
 CUSTOM_QUERY_CREDENTIALS = frozenset(
     {"token", "api_key", "apikey", "access_token", "password", "secret", "key"}
 )
-SERVER_ADAPTER = TypeAdapter(McpServer)
+SERVER_ADAPTER: TypeAdapter[McpHttpServer | McpSseServer | McpStdioServer] = TypeAdapter(McpServer)
 
 
 def prepare(values: dict, previous: dict | None = None) -> dict:
@@ -100,13 +106,13 @@ def prepare(values: dict, previous: dict | None = None) -> dict:
         private[reference] = secret
     config[bindings_field] = bindings
     server = SERVER_ADAPTER.validate_json(json.dumps(config))
-    if isinstance(server, McpHttpServer):
+    if isinstance(server, McpRemoteServer):
         if any(
             name.lower().replace("-", "_") in CUSTOM_QUERY_CREDENTIALS
             for name, _ in parse_qsl(urlsplit(server.url).query)
         ):
             raise ValueError(CUSTOM_INVALID)
-        McpHttpServer(
+        type(server)(
             url=server.url,
             id=identifier,
             header_secrets={name: private[ref] for name, ref in bindings.items() if ref in private},

@@ -1,28 +1,135 @@
 import { useState } from 'react'
+import highlight from 'highlight.js'
 import { I18nextProvider } from 'react-i18next'
 import { createLocalization } from '../../../localization/engine'
 import zhAssistant from '../../../localization/locales/zh/assistant.json'
 import enAssistant from '../../../localization/locales/en/assistant.json'
 import zhUi from '../../../localization/locales/zh/ui.json'
 import enUi from '../../../localization/locales/en/ui.json'
+import zhConversation from '../../../localization/locales/zh/conversation.json'
+import enConversation from '../../../localization/locales/en/conversation.json'
+import zhLiterature from '../../../localization/locales/zh/literature.json'
+import enLiterature from '../../../localization/locales/en/literature.json'
 import { FloatingWindow } from './primitive/FloatingWindow'
+import { EmptyAnswer } from './primitive/Fallback'
+import { Code } from './primitive/Code'
+import { Formula } from './primitive/Formula'
+import { Diagram } from './primitive/Diagram'
+import { Plot } from './primitive/Plot'
+import { Tabulation } from './primitive/Tabulation'
 import { Button, ToastProvider } from './ui'
 import { StoreProvider } from '../store'
 import { DocumentWorkspaceContext, documentWorkspaces } from '../features/workbench/workspace'
 import { createRoot } from 'react-dom/client'
+import { WebNavigationContext } from '../contracts/navigation'
+import { openWebPage } from '../app/links'
 
 import '../styles.css'
-import { Markdown } from './primitive/Markdown'
+import { Markdown, MarkdownContent } from './primitive/Markdown'
 import { sourceOffsetRect } from './markdown/source'
 import { CitationSources, WebCitationLink } from '../features/assistant/Citations'
-import { Summary } from '../features/workbench/pdf/Summary'
+import { CitationSources as SourceDirectory } from './business/Citation'
+import { CitationLink as ReceiptCitation } from './business/Citation'
+import { Summary } from './business/Summary'
+import { CitationSources as CitationDirectory } from './business/Citation'
+import type { CitationResolution } from '../contracts/citations'
 import { answerProjectSource, projectSource } from '../features/assistant/sources'
 
 Object.assign(window, { sourceOffsetRect })
 
+highlight.addPlugin({
+  'before:highlight': ({ code }) => {
+    if (code === 'render-failure-probe') throw new Error('Fixture highlighter failure')
+  },
+})
+
+function HighlightRecovery() {
+  const [failed, setFailed] = useState(false)
+  return (
+    <div data-testid="fallback-highlighter">
+      <Button onClick={() => setFailed(true)}>触发高亮异常</Button>
+      <Button onClick={() => setFailed(false)}>恢复正常代码</Button>
+      <Code
+        code={failed ? 'render-failure-probe' : 'print(1)'}
+        language="python"
+        onCopy={async (source) => {
+          document.body.dataset.copiedRecovery = source
+        }}
+      />
+    </div>
+  )
+}
+
+function RenderRecovery() {
+  const [failed, setFailed] = useState(false)
+  const text = failed
+    ? '回答原文 [来源](https://example.com/recovery)\n\n<!-- scholarseed-ref private -->\n\n<script>window.__recoveryExecuted = true</script>'
+    : '正常内容已恢复。'
+  return (
+    <div data-testid="fallback-renderer">
+      <Button onClick={() => setFailed(true)}>触发解析异常</Button>
+      <Button onClick={() => setFailed(false)}>恢复正常正文</Button>
+      <MarkdownContent
+        text={text}
+        renderSourceLink={() => {
+          throw new Error('Fixture renderer failure')
+        }}
+        onCopy={async (source) => {
+          document.body.dataset.copiedRecoverySource = source
+        }}
+      />
+    </div>
+  )
+}
+
+async function loadRemoteFixtureImage(url: string): Promise<Uint8Array> {
+  document.body.dataset.remoteReads = String(Number(document.body.dataset.remoteReads ?? 0) + 1)
+  if (url.endsWith('/failed')) throw new Error('fixture image unavailable')
+  if (url.endsWith('/invalid')) return new Uint8Array([0])
+  if (url.endsWith('/slow')) await new Promise((resolve) => setTimeout(resolve, 200))
+  const response = await fetch('/assets/icon-img.png')
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  document.body.dataset.remoteCompleted = url
+  return bytes
+}
+
+function RemoteAnswerFixture() {
+  const [source, setSource] = useState('https://example.com/figure.jpg')
+  const [mounted, setMounted] = useState(true)
+  return (
+    <div data-testid="remote-answer-image">
+      <Button onClick={() => setSource('https://example.com/slow')}>Slow remote</Button>
+      <Button onClick={() => setSource('https://example.com/replacement')}>Replace remote</Button>
+      <Button onClick={() => setSource('https://example.com/failed')}>Failed remote</Button>
+      <Button onClick={() => setSource('https://example.com/invalid')}>Invalid remote</Button>
+      <Button onClick={() => setSource('http://example.com/unsafe')}>Unsafe remote</Button>
+      <Button onClick={() => setMounted(false)}>Remove remote</Button>
+      {mounted && (
+        <MarkdownContent
+          text={`![Remote figure](${source})`}
+          loadRemoteImage={loadRemoteFixtureImage}
+        />
+      )}
+    </div>
+  )
+}
+
 const localization = createLocalization(
   'zh',
-  { zh: { assistant: zhAssistant, ui: zhUi }, en: { assistant: enAssistant, ui: enUi } },
+  {
+    zh: {
+      assistant: zhAssistant,
+      ui: zhUi,
+      conversation: zhConversation,
+      literature: zhLiterature,
+    },
+    en: {
+      assistant: enAssistant,
+      ui: enUi,
+      conversation: enConversation,
+      literature: enLiterature,
+    },
+  },
   { report: () => undefined, escapeValue: false }
 )
 
@@ -102,12 +209,250 @@ const appendixReferences =
   '- [9] https://example.com/source\r\n- [10] <https://example.com/second>\r\n\r\n[9] https://example.com/second\r\n\r\n[9] [官网](https://example.com/source)\r\n\r\n`[9] https://example.com/source`'
 
 function Fixture() {
+  const [fallbackPending, setFallbackPending] = useState(true)
+  const [imageRecovered, setImageRecovered] = useState(false)
+  const [emptyAttempts, setEmptyAttempts] = useState(0)
   const [revision, setRevision] = useState(0)
   const [citationComplete, setCitationComplete] = useState(false)
   const [streamRevision, setStreamRevision] = useState(0)
   const [windowOpen, setWindowOpen] = useState(false)
+  const [copiedTable, setCopiedTable] = useState('')
+  const directoryReceipt: CitationResolution = {
+    handle: 'directory-receipt',
+    pages: [],
+    source_kind: 'literature',
+    source_id: 'paper',
+    content_level: 'fulltext',
+    project_id: 'project',
+    path: 'paper.pdf',
+    title: 'Local source',
+    revision: 'revision',
+    quote: 'Deferred evidence',
+    version_bound: true,
+    state: 'source_only',
+    can_open_pdf: false,
+    matches: [],
+    presentation: {
+      version: 1,
+      mode: 'structured_text',
+      precision: 'source',
+      text: 'Deferred evidence',
+      quality_reasons: [],
+      manual_check: false,
+    },
+  }
+  if (new URLSearchParams(window.location.search).has('citationBoundary')) {
+    const boundaryText =
+      'This synthetic test fixture holds one English sentence of exactly two hundred forty ASCII characters so a reader can verify character level quote boundaries and no other sentence punctuation appears anywhere inside this single line of text.'
+    return (
+      <>
+        <Button onClick={() => void localization.changeLanguage('en')}>English</Button>
+        <Button onClick={() => void localization.changeLanguage('zh')}>中文</Button>
+        {['First\nSecond\nThird', 'First\nSecond\nThird\nFourth', boundaryText.repeat(20)].map(
+          (text, index) => {
+            const receipt = {
+              ...directoryReceipt,
+              handle: `boundary-${index}`,
+              title: `Boundary ${index}.pdf`,
+              quote: text,
+              presentation: { ...directoryReceipt.presentation, text },
+            }
+            return (
+              <div key={receipt.handle} data-testid={`citation-boundary-${index}`}>
+                <ReceiptCitation
+                  resolve={async () => receipt}
+                  reveal={async (source) => {
+                    document.body.dataset.boundaryOpened = source.handle
+                  }}
+                  previewUrl={() => ''}
+                  references={
+                    index === 1
+                      ? [
+                          {
+                            source: receipt,
+                            resolve: async () => receipt,
+                            excerpts: [
+                              { source: receipt, resolve: async () => receipt },
+                              {
+                                source: { ...directoryReceipt, handle: 'boundary-short' },
+                                resolve: async () => ({
+                                  ...directoryReceipt,
+                                  handle: 'boundary-short',
+                                }),
+                              },
+                            ],
+                          },
+                          {
+                            source: { ...directoryReceipt, handle: 'boundary-other' },
+                            resolve: async () => ({
+                              ...directoryReceipt,
+                              handle: 'boundary-other',
+                            }),
+                            excerpts: [],
+                          },
+                        ]
+                      : undefined
+                  }
+                >
+                  {index + 1}
+                </ReceiptCitation>
+              </div>
+            )
+          }
+        )}
+      </>
+    )
+  }
   return (
     <>
+      <div data-testid="literature-citation">
+        {[
+          { authors: 'Alexandria Example-With-A-Very-Long-Name, Jamie Example', year: '2024' },
+          { authors: '', year: '2025' },
+          { authors: '', year: '' },
+        ].map(({ authors, year }, index) => {
+          const source: CitationResolution = {
+            ...directoryReceipt,
+            handle: `literature-${index}`,
+            source_kind: 'literature',
+            title: `Paper ${index + 1}`,
+            bibliography: {
+              version: 1,
+              title: '',
+              authors,
+              year,
+              publication: 'Journal',
+              url: '',
+              doi: '',
+            },
+          }
+          const resolve = async () => source
+          const target = { source, resolve, excerpts: [] }
+          const other = { ...directoryReceipt, handle: 'mixed-file' }
+          return (
+            <ReceiptCitation
+              key={source.handle}
+              identity={source}
+              resolve={resolve}
+              reveal={async () => undefined}
+              previewUrl={() => ''}
+              references={
+                index === 0
+                  ? [target, { source: other, resolve: async () => other, excerpts: [] }]
+                  : undefined
+              }
+            >
+              {source.title}
+            </ReceiptCitation>
+          )
+        })}
+      </div>
+      <div data-testid="grouped-file-citation">
+        <ReceiptCitation
+          resolve={async () => directoryReceipt}
+          reveal={async (source) => {
+            document.body.dataset.groupedCitation = source.handle
+          }}
+          previewUrl={() => ''}
+          references={Array.from({ length: 3 }, (_, index) => {
+            const title = `Source ${index + 1}.pdf`
+            const excerpts = [
+              'First cited excerpt.',
+              'Second cited excerpt.',
+              'Third cited excerpt.',
+            ].map((text, excerptIndex) => {
+              const source = {
+                ...directoryReceipt,
+                handle: `source-${index}-excerpt-${excerptIndex}`,
+                title,
+                pages: excerptIndex < 2 ? [{ page: excerptIndex + 1, quads: [] }] : [],
+                presentation: { ...directoryReceipt.presentation, text },
+              }
+              return { source, resolve: async () => source }
+            })
+            return {
+              ...excerpts[0],
+              excerpts,
+            }
+          })}
+        >
+          Grouped files
+        </ReceiptCitation>
+      </div>
+      <div data-testid="direct-file-citation">
+        <ReceiptCitation
+          identity={{ title: 'Initial.pdf', path: 'Initial.pdf' }}
+          resolve={async () => ({
+            ...directoryReceipt,
+            state: 'exact',
+            can_open_pdf: true,
+            pages: [{ page: 2, quads: [] }],
+          })}
+          reveal={async (source) => {
+            document.body.dataset.directCitation = source.handle
+          }}
+          previewUrl={() => ''}
+        >
+          Local source
+        </ReceiptCitation>
+      </div>
+      <div data-testid="missing-file-citation">
+        <ReceiptCitation
+          resolve={async () => ({
+            ...directoryReceipt,
+            state: 'unavailable',
+            source_missing: true,
+          })}
+          reveal={async () => {
+            throw new Error('missing source must not open')
+          }}
+          previewUrl={() => ''}
+        >
+          Missing source
+        </ReceiptCitation>
+      </div>
+      <div data-testid="mixed-citation-directory">
+        <CitationDirectory
+          sourceKey="directory"
+          loadSources={async () => ({ count: 1, sources: [directoryReceipt] })}
+          resolveSource={async (handle) => {
+            document.body.dataset.directoryResolves = String(
+              Number(document.body.dataset.directoryResolves ?? 0) + 1
+            )
+            document.body.dataset.directoryHandle = handle
+            return directoryReceipt
+          }}
+          reveal={async () => {
+            throw new Error('read-only fixture cannot open original')
+          }}
+          previewUrl={() => ''}
+          openWebSource={(url) => {
+            document.body.dataset.directoryWeb = url
+          }}
+          answerSources={[
+            { kind: 'receipt', number: 1, handle: directoryReceipt.handle, citation_urls: [] },
+            {
+              kind: 'searched',
+              number: 2,
+              title: 'Web source',
+              url: 'https://example.com/directory',
+              citation_urls: [],
+              search_kind: 'web',
+              search_id: 'directory-search',
+            },
+          ]}
+        />
+      </div>
+      <div data-testid="tabulation-copy">
+        <Tabulation
+          caption="Table caption"
+          copyText="Original table"
+          onCopy={async (text) => setCopiedTable(text)}
+        >
+          <span>Table content</span>
+        </Tabulation>
+        <output>{copiedTable}</output>
+      </div>
       <Button onClick={() => setRevision((value) => value + 1)}>刷新父组件 {revision}</Button>
       <Button onClick={() => setCitationComplete(true)}>结束引用流式</Button>
       <Button onClick={() => setStreamRevision((value) => value + 1)}>追加引用文本</Button>
@@ -230,7 +575,6 @@ function Fixture() {
       </div>
       <div data-testid="named-title-citation">
         <WebCitationLink
-          named
           source={{
             kind: 'searched',
             number: 2,
@@ -264,6 +608,53 @@ function Fixture() {
           sourceMapped
           citationUrls={['https://example.com/']}
           renderCitation={() => <span data-testid="slash-citation">[1]</span>}
+        />
+      </div>
+      <div data-testid="mixed-project-source-directory">
+        <SourceDirectory
+          sourceKey="mixed-project"
+          resolveSource={async () => {
+            throw new Error('navigation_is_not_a_receipt')
+          }}
+          reveal={async () => undefined}
+          previewUrl={() => ''}
+          openWebSource={() => undefined}
+          renderProjectSource={(source) => (
+            <Button onClick={() => document.body.setAttribute('data-directory-open', source.url)}>
+              {source.title}
+            </Button>
+          )}
+          answerSources={[
+            {
+              kind: 'project',
+              number: 1,
+              source_kind: 'resource',
+              project_id: 'p',
+              path: 'report.md',
+              title: 'report.md',
+              url: '/api/resource/raw?project=p&path=report.md',
+              citation_urls: [],
+            },
+            {
+              kind: 'project',
+              number: 2,
+              source_kind: 'resource',
+              project_id: 'p',
+              path: 'report.md',
+              title: 'report.md',
+              url: '/api/resource/raw?project=p&path=report.md',
+              citation_urls: [],
+            },
+            {
+              kind: 'searched',
+              number: 3,
+              title: '公开论文',
+              url: 'https://example.test/paper',
+              search_kind: 'paper',
+              search_id: 'read',
+              citation_urls: [],
+            },
+          ]}
         />
       </div>
       <div data-testid="cited-source-list">
@@ -572,11 +963,166 @@ function Fixture() {
           renderCitation={() => <span data-testid="incorrect-citation">[1]</span>}
         />
       </div>
+      <div data-testid="fallback-table">
+        <Markdown text={'| 研究 | 效率变化 |\n| --- |\n| Noy & Zhang | -40% |'} />
+      </div>
+      <div data-testid="fallback-links" className="w-[var(--vds-preview-width)]">
+        <MarkdownContent
+          text={
+            'https://example.com/research/appendix?query=' +
+            'long'.repeat(80) +
+            '\n\n[原文](https://example.com/paper "来源标题")'
+          }
+          onOpenExternal={(url) => {
+            document.body.dataset.openedFallbackLink = url
+          }}
+          onCopy={async (value) => {
+            document.body.dataset.copiedFallbackLink = value
+          }}
+        />
+      </div>
+      <div data-testid="fallback-image">
+        <Button onClick={() => setImageRecovered(true)}>更新图片来源</Button>
+        <MarkdownContent
+          text={'![研究图](outputs/missing-figure.png)'}
+          resolveImage={() =>
+            imageRecovered
+              ? (new URLSearchParams(location.search).get('imageSource') ?? '/assets/icon-img.png')
+              : '/fixture-missing-figure.png'
+          }
+          onOpenSessionFile={(path) => {
+            document.body.dataset.openedFallbackImage = path
+          }}
+        />
+      </div>
+      <RemoteAnswerFixture />
+      <div data-testid="fallback-empty">
+        <EmptyAnswer
+          onRetry={async () => {
+            setEmptyAttempts((value) => value + 1)
+            return false
+          }}
+        />
+        <output>{emptyAttempts}</output>
+      </div>
+      <div data-testid="fallback-unavailable">
+        <EmptyAnswer />
+      </div>
+      <HighlightRecovery />
+      <RenderRecovery />
+      <div data-testid="fallback-theme">
+        <MarkdownContent text={'```mermaid\ngraph LR\nA[Input] --> B[Output]\n```'} />
+      </div>
+      <div data-testid="fallback-nonstandard" className="min-w-0 max-w-[var(--vds-preview-width)]">
+        <MarkdownContent
+          sourceMapped
+          text={[
+            '```unknown-research-language',
+            '<unsafe>value</unsafe>',
+            '```',
+            '',
+            'doi:' + 'long'.repeat(120),
+            '',
+            '<div class="note">仅供参考</div>',
+            '',
+            '<script>window.__formatExecuted = true</script>',
+          ].join('\n')}
+          onCopy={async (value) => {
+            document.body.dataset.copiedFallbackCode = value
+          }}
+        />
+      </div>
+      <div data-testid="fallback-streaming">
+        <Button onClick={() => setFallbackPending(false)}>完成格式测试轮次</Button>
+        <Markdown
+          math
+          sourceMapped
+          pending={fallbackPending}
+          text={[
+            '| 研究 | 效率变化 |',
+            '| --- |',
+            '| A | 1 |',
+            '',
+            '$$',
+            '\\missingCommand{x}',
+            '$$',
+            '',
+            '行内 $\\missingCommand{x}$',
+            '',
+            '```mermaid',
+            'not a valid diagram',
+            '```',
+          ].join('\n')}
+        />
+      </div>
       <div data-testid="tilde-markdown">
         <Markdown text={tildeSource} />
       </div>
       <div data-testid="tilde-markdown-math">
         <Markdown text={tildeSource} math />
+      </div>
+      <div data-testid="formula-style">
+        <Formula source="a+b" caption="Formula" onCopy={async () => {}} />
+      </div>
+      <div data-testid="card-headers">
+        <Formula source="a+b" caption="Formula" onCopy={async () => {}} />
+        <Code
+          code={Array.from({ length: 23 }, (_, index) => `const value${index} = ${index}`).join(
+            '\n'
+          )}
+          language="js"
+          onCopy={async () => {}}
+        />
+        <Diagram source="graph LR; A-->B" title="Diagram" onCopy={async () => {}} />
+        <Plot
+          title="Chart"
+          model={{
+            kind: 'bar',
+            dataset: {
+              columns: [
+                { key: 'name', label: 'Name' },
+                { key: 'score', label: 'Score' },
+              ],
+              rows: [{ id: 'a', values: ['A', 2] }],
+            },
+            x: 0,
+            y: [1],
+          }}
+          onCopy={async () => {}}
+        />
+      </div>
+      <div data-testid="standalone-formula-copy">
+        <MarkdownContent
+          text={'$$\\frac{F}{k}=x$$'}
+          math
+          onCopy={async (text, html) => {
+            document.body.dataset.copiedFormulaText = text
+            document.body.dataset.copiedFormulaHtml = html ?? ''
+          }}
+        />
+      </div>
+      <div data-testid="formula-selection-copy">
+        <MarkdownContent
+          text={[
+            'Before the formula',
+            String.raw`$$\mathrm{NDVI}=\frac{\rho_{NIR}-\rho_{Red}}{\rho_{NIR}+\rho_{Red}}$$`,
+            'After the formula',
+            String.raw`$$\begin{cases}x^2 & x<0\\x & x\ge 0\end{cases}$$`,
+          ].join('\n\n')}
+          math
+        />
+      </div>
+      <div data-testid="standalone-formula-layout" className="w-[328px]">
+        <MarkdownContent
+          text={[
+            '**MSE**',
+            '$$x^2$$',
+            '**Long aligned formula**',
+            String.raw`$$\begin{aligned} S &= ${'x_i+'.repeat(40)}y \\ T &= z \end{aligned}$$`,
+          ].join('\n')}
+          math
+          sourceMapped
+        />
       </div>
       <div data-testid="tex-delimiter-math">
         <Markdown text={'公式 \\(x^2\\) 与 \\[a+b\\]。'} math />
@@ -677,7 +1223,7 @@ function Fixture() {
             text: '1. **依赖LLM生成质量**：需要核查。\n2. **超参数敏感性**：需要调优。',
           },
         }}
-        onSource={(page, text) => {
+        onSource={({ page, quote: text }) => {
           document.body.dataset.summarySource = `${page}:${text}`
         }}
       />
@@ -697,7 +1243,19 @@ createRoot(document.getElementById('root')!).render(
     <ToastProvider>
       <StoreProvider assistantSources={[]}>
         <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
-          <Fixture />
+          <WebNavigationContext.Provider
+            value={(url) => {
+              void openWebPage(url, {
+                available: true,
+                dispatch: (command) => window.scholarseed.browser.dispatch(command),
+                reveal: (options) => {
+                  document.body.dataset.openedBrowserPage = options.browserPageId
+                },
+              })
+            }}
+          >
+            <Fixture />
+          </WebNavigationContext.Provider>
         </DocumentWorkspaceContext.Provider>
       </StoreProvider>
     </ToastProvider>

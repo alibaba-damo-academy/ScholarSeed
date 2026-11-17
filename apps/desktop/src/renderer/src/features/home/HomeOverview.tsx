@@ -60,10 +60,7 @@ export function HomeOverview(): React.JSX.Element {
   useEffect(() => {
     let active = true
     setPhase((current) => (current === 'ready' ? current : 'loading'))
-    void listAllSessions(
-      { scope: 'all', limit: HOME_TASK_LIMIT, includeAgentReplyAt: true },
-      () => active
-    ).then((rows) => {
+    void listAllSessions({ scope: 'all', limit: HOME_TASK_LIMIT }, () => active).then((rows) => {
       if (!active) return
       if (!rows) {
         setPhase('error')
@@ -114,9 +111,7 @@ export function HomeOverview(): React.JSX.Element {
         scroll="content"
         className="px-[var(--vds-layout-page-padding)] pt-[var(--vds-layout-home-content-padding-top)] pb-[var(--vds-space-6)]"
       >
-        <div
-          className={`mx-auto grid w-full min-w-0 gap-[var(--vds-space-6)] ${emptyProjects ? 'max-w-[var(--vds-layout-home-empty-content-width)]' : 'max-w-[var(--vds-layout-home-content-width)]'}`}
-        >
+        <div className="mx-auto grid w-full min-w-0 gap-[var(--vds-space-6)] max-w-[var(--vds-layout-home-content-width)] [@media(width>1600px)]:max-w-none">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-[var(--vds-space-3)]">
             <h1 className="flex items-center gap-[var(--vds-space-3)] font-[family-name:var(--vds-font-serif)] text-[length:var(--vds-font-display-lv4)] leading-[var(--vds-lh-display-lv4)] font-[var(--vds-fw-semibold)]">
               <img src={brandMark} alt="" className="size-[var(--vds-space-10)] shrink-0" />
@@ -330,7 +325,11 @@ export function HomeOverview(): React.JSX.Element {
                     />
                   </div>
                 </div>
-                {phase === 'loading' && <Spinner />}
+                {phase === 'loading' && (
+                  <div className="grid min-h-[var(--vds-layout-home-empty-height)] place-items-center">
+                    <Spinner />
+                  </div>
+                )}
                 {phase === 'error' && (
                   <Alert>
                     {t('loadFailed')}
@@ -340,6 +339,7 @@ export function HomeOverview(): React.JSX.Element {
                   </Alert>
                 )}
                 <Card
+                  hidden={phase === 'loading'}
                   padding="none"
                   className="min-w-0 overflow-hidden !bg-transparent !shadow-none [--vds-card-radius:var(--vds-radius-6)]"
                   data-testid="home-tasks-list"

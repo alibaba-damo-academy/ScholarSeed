@@ -67,8 +67,8 @@ before any relation that depends on it.
 
 **Relations.** One combined subject, or separate parallel topics? — read
 from connectives and context, never from word order. A preposition (`for` /
-`in` / `of` / `用于`) binds, and is clear. Bare juxtaposition is ambiguous.
-A coordinator (`and` / `+` / 顿号) usually reads separate — but is
+`in` / `of`) binds, and is clear. Bare juxtaposition is ambiguous.
+A coordinator (`and` / `+`) usually reads separate — but is
 ambiguous when the two are fields with a large shared intersection (their
 overlap vs. each separately), and a *dominant* overlap reading is NOT
 grounds to skip asking: the more obvious the overlap, the easier it is to

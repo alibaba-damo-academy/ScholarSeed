@@ -84,7 +84,13 @@ export function useEffort() {
         if (sessionId) {
           const selected = current.threads[sessionId]?.runtime
           if (selected?.model_id !== modelKey || selected.reasoning_effort !== effort) {
-            const result = await setSessionModel(sessionId, modelKey, effort)
+            const result = await setSessionModel(
+              sessionId,
+              modelKey,
+              effort,
+              false,
+              current.serviceInstanceId
+            )
             if (!selectionCurrent()) return
             if (result?.session_id === sessionId && result.runtime) {
               patchThread(sessionId, (thread) => ({

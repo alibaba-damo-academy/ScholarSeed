@@ -89,8 +89,8 @@ def item_provenance(item: Mapping[str, Any]) -> dict[str, Any] | None:
                 start, end = annotation.get("start_index"), annotation.get("end_index")
                 if (
                     source is None
-                    or type(start) is not int
-                    or type(end) is not int
+                    or (not isinstance(start, int) or isinstance(start, bool))
+                    or (not isinstance(end, int) or isinstance(end, bool))
                     or not 0 <= start <= end <= len(part_text)
                 ):
                     invalid += 1

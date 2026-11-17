@@ -72,7 +72,7 @@ const SEARCH_PROVIDERS = new Map([
       resultsWaitMs: 1_500,
       homeOrigins: ['https://www.bing.com', 'https://cn.bing.com'],
       input: '#sb_form_q',
-      submit: '#search_icon',
+      submit: '#search_icon, #sb_form_go[hidden]:not(form:has(#search_icon) *)',
       submitter: { name: 'search', value: '' },
       fields: { form: { pattern: '^[A-Za-z0-9_-]{1,32}$', maxLength: 32 } },
       cards: '#b_results .b_algo',
@@ -88,6 +88,16 @@ interface SearchCard {
   title: string
   href: string
   description: string
+}
+
+export function inspectProductSearchOrigin(origin: string): {
+  revision: number
+  decision: 'allow' | 'block'
+} {
+  const allowed = [...SEARCH_PROVIDERS.values()].some((provider) =>
+    provider.homeOrigins.includes(origin)
+  )
+  return { revision: 0, decision: allowed ? 'allow' : 'block' }
 }
 interface SearchPage {
   url: string

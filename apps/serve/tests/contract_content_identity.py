@@ -141,9 +141,9 @@ def main() -> int:
     created = content.create_project("我的 研究/项目 2026")
     directory = Path(created.root)
     check(
-        "新建项目磁盘上出现内置双库",
+        "新建项目只预建资料根，不预建文献根",
         (directory / MANAGED_RESOURCES_ROOT_RELATIVE).is_dir()
-        and (directory / MANAGED_LITERATURE_ROOT_RELATIVE).is_dir(),
+        and not (directory / MANAGED_LITERATURE_ROOT_RELATIVE).exists(),
     )
     check("新建项目落在工作区根下", directory.parent == workspace)
     check("新建项目布局是 MANAGED", created.layout is ProjectLayout.MANAGED)
@@ -154,7 +154,7 @@ def main() -> int:
     )
     check(
         "root() 按种类回相对路径, 不泄露绝对路径",
-        content.root(created.id, RootKind.LITERATURE).path == MANAGED_LITERATURE_ROOT_RELATIVE
+        content.root_path(created.id, RootKind.LITERATURE) == MANAGED_LITERATURE_ROOT_RELATIVE
         and content.root(legacy_ref.id, RootKind.LITERATURE).path == LITERATURE_ROOT_RELATIVE,
     )
 

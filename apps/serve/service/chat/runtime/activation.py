@@ -25,12 +25,15 @@ from scholarseed_runtime.contract.resource import (
     RESOURCE_RESERVATION_INVALID,
     RESOURCE_THREAD_CAPACITY,
     RESOURCE_WAIT_TIMEOUT,
+    ResourcePolicy,
     ResourcePurpose,
     ResourceReceipt,
     ResourceRequest,
     ResourceState,
 )
 from scholarseed_runtime.contract.sandbox import SANDBOX_STARTUP_ERRORS
+from scholarseed_runtime.contract.session import RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS
+from service.chat.persistence.catalog import OpenState, SessionCatalogStore
 from service.chat.provenance import ModelRun
 from service.chat.runtime.live import PENDING_HIL_BLOCKER, SUSPEND_CLOSING_BLOCKER, LiveSession
 from service.chat.runtime.timing import ActivationStage
@@ -65,6 +68,19 @@ ACTIVATION_SAFE_ERRORS = frozenset(
 )
 RESOURCE_SWEEP_INTERVAL_SECONDS = 1.0
 TURN_ATTACHMENT_REFRESH = "turn_attachment_refresh"
+
+
+def _wait_deadline(policy: ResourcePolicy) -> float:
+    return time.time() + policy.wait_seconds
+
+
+def session_open_retry_error(catalog: SessionCatalogStore, session_id: str) -> str | None:
+    """Read durable uncertainty without activating or clearing the open fence."""
+    activation = catalog.activation(session_id)
+    if activation is not None and activation.open_state is OpenState.OPEN_UNKNOWN:
+        return SESSION_OPEN_UNKNOWN
+    return None
+
 
 ResourceWaitObserver = Callable[[ResourceReceipt, float], Awaitable[None]]
 
@@ -190,10 +206,13 @@ class SessionActivation:
                     purpose is ResourcePurpose.TURN
                     and live.runtime_session is not None
                     and not live.running
-                    and self._provider(live.runtime_id).resource_policy.refresh_before_turn
                 ):
-                    live.trace_resource(TURN_ATTACHMENT_REFRESH)
-                    await self.wait_until_suspended(live, deadline=expires)
+                    policy = self._provider(live.runtime_id).resource_policy
+                    if policy.refresh_before_turn:
+                        live.trace_resource(TURN_ATTACHMENT_REFRESH)
+                        if expires is None:
+                            expires = _wait_deadline(policy)
+                        await self.wait_until_suspended(live, deadline=expires)
                 while True:
                     async with AsyncExitStack() as lifecycle_scope:
                         with timing.measure(ActivationStage.LIFECYCLE_LOCK_WAIT):
@@ -227,7 +246,7 @@ class SessionActivation:
                             plan = self._build(live)
                             plan = replace(plan, request=replace(plan.request, timing=timing))
                     if expires is None:
-                        expires = time.time() + plan.provider.resource_policy.wait_seconds
+                        expires = _wait_deadline(plan.provider.resource_policy)
                     # A fresh opaque admission id prevents a changed configuration from
                     # being mistaken for a retry of the former reservation fingerprint.
                     admission_id = f"{request_id or live.id}:{uuid.uuid4().hex}"
@@ -284,7 +303,7 @@ class SessionActivation:
     ) -> None:
         expires = deadline
         if expires is None:
-            expires = time.time() + self._provider(live.runtime_id).resource_policy.wait_seconds
+            expires = _wait_deadline(self._provider(live.runtime_id).resource_policy)
         while True:
             if self._closed or live.terminated or live.terminating:
                 raise SessionActivationError(SESSION_ACTIVATION_CLOSED)
@@ -296,10 +315,11 @@ class SessionActivation:
                 raise SessionActivationError(RESOURCE_WAIT_PENDING_HIL)
             if kind == SUSPEND_CLOSING_BLOCKER:
                 raise SessionActivationError(RESOURCE_WAIT_BLOCKED)
-            if getattr(live, "suspend_blockers", ()):
+            blockers = set(getattr(live, "suspend_blockers", ()))
+            if blockers - RUNTIME_TRANSIENT_ACTIVITY_BLOCKERS:
                 error = (
                     RESOURCE_WAIT_PENDING_HIL
-                    if PENDING_HIL_BLOCKER in live.suspend_blockers
+                    if PENDING_HIL_BLOCKER in blockers
                     else RESOURCE_WAIT_BLOCKED
                 )
                 raise SessionActivationError(error)

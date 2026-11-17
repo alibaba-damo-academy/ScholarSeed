@@ -47,8 +47,9 @@ function run(spec) {
   }
   const stdout = fs.openSync(spec.stdout, 'w')
   const stderr = fs.openSync(spec.stderr, 'w')
+  const deadlineSignal = spec.timeout > 0 ? AbortSignal.timeout(spec.timeout) : undefined
   const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: process.env,
-    shell: spec.shell, timeout: spec.timeout, windowsHide: true })
+    shell: spec.shell, signal: deadlineSignal, windowsHide: true })
   let error
   const counts = { stdout: 0, stderr: 0 }
   for (const [name, fd] of [['stdout', stdout], ['stderr', stderr]]) {
@@ -69,7 +70,7 @@ function run(spec) {
     try { poll() } catch (value) { error = { code: 'EPROGRESS', message: value.message } }
     fs.closeSync(stdout)
     fs.closeSync(stderr)
-    if (signal === 'SIGTERM' && !error) error = { code: 'ETIMEDOUT', message: 'stage terminated' }
+    if (deadlineSignal?.aborted || (signal === 'SIGTERM' && !error)) error = { code: 'ETIMEDOUT', message: 'stage terminated' }
     if (error) log(`runner failed code=${error.code}: ${error.message}`)
     if (error || status !== 0) {
       try { await forwardFailure(spec) } catch (value) {

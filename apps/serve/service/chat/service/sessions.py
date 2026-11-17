@@ -12,25 +12,26 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import asdict, is_dataclass
-from enum import Enum
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
+from dataclasses import asdict, dataclass, field, is_dataclass
+from enum import Enum, StrEnum
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 from scholarseed_runtime.contract import (
     AppliedState,
     CapabilityState,
     CommandState,
     ModelThinking,
+    RuntimeBinding,
     RuntimeCapabilityName,
     RuntimeConfigurationIntent,
     RuntimeControlKind,
     RuntimeControlRequest,
     RuntimePermissionMode,
 )
-from scholarseed_runtime.contract.history import MessagePhase
 from scholarseed_runtime.contract.input import InputKind
 from scholarseed_runtime.contract.mcp import McpTrustDecision
 from scholarseed_runtime.contract.permission import PermissionUpdatePreview, PermissionUpdateScope
@@ -46,7 +47,8 @@ from scholarseed_runtime.contract.session import (
     TurnConfirmationReceipt,
     TurnConfirmationTarget,
 )
-from service.capabilities.domain import COMPONENT_ANSWER_CAPABILITY
+from service.capabilities.service.canvas import validate_canvas_submission
+from service.capabilities.service.declarative import CANVAS_SLOT, OPENUI_SLOT
 from service.capabilities.service.delivery import INSTALLATION_FIELD
 from service.capabilities.service.descriptor import (
     ComponentValidationError,
@@ -59,12 +61,15 @@ from service.chat.constants import (
     AUTOMATIC_CRASH_RETRY,
     BYPASS_PERMISSION_MODE,
     HIL_STATE_STALE,
+    PRODUCT_DECISION_SOURCE,
     PRODUCT_EVENT_HIL_RESOLVED,
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_EVENT_SESSION_TITLE_UPDATED,
     PRODUCT_EVENT_TURN_INTERRUPTED,
     PRODUCT_EVENT_TURN_UNKNOWN,
     PRODUCT_EVENT_USER_MESSAGE,
+    PRODUCT_INTERACTION_HOST_RESPONSE,
+    PRODUCT_INTERACTION_MANUAL,
     PRODUCT_REFERENCE_FILE,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
     PRODUCT_SESSION_STATE_INTERRUPTED,
@@ -75,6 +80,7 @@ from service.chat.constants import (
     SAFE_AUTO_PERMISSION_MODE,
     SESSION_ARCHIVE_POLL_SECONDS,
     SESSION_ARCHIVE_STOP_FAILED,
+    SESSION_ARCHIVE_STOP_REQUIRED,
     SESSION_ARCHIVE_STOP_TIMEOUT_SECONDS,
     SESSION_ARCHIVED_ERROR,
     SESSION_DELETE_STOP_FAILED,
@@ -107,7 +113,9 @@ from service.chat.persistence.catalog import (
     SessionCatalogStore,
     SessionHilRecord,
     SessionListScope,
+    SessionListState,
     SessionModelState,
+    SessionOrderPlacement,
     SessionPrincipal,
     SessionStateConflictError,
     SessionStatus,
@@ -118,6 +126,7 @@ from service.chat.persistence.events import (
     SESSION_FORK_EVENT,
     SESSION_FORK_IMPORTED_KEY,
     SESSION_FORK_KEY,
+    SESSION_FORK_NATIVE_FIELD,
     SESSION_FORK_SOURCE_CHANGED,
     WORKSPACE_BOUND_EVENT,
     WORKSPACE_ORIGIN_UNAVAILABLE,
@@ -128,6 +137,7 @@ from service.chat.runtime.activation import (
     RESOURCE_WAIT_BLOCKED,
     ResourceWaitObserver,
     SessionActivationError,
+    session_open_retry_error,
 )
 from service.chat.runtime.composition import LiveSessionService
 from service.chat.runtime.interaction import (
@@ -153,6 +163,12 @@ from service.chat.runtime.reconfiguration import (
     PreparationError,
 )
 from service.chat.schema import thinking_from_payload
+from service.chat.service.artifacts import ArtifactReadError
+from service.chat.service.attachments import (
+    ATTACHMENT_FORBIDDEN,
+    ATTACHMENT_NOT_FOUND,
+    AttachmentService,
+)
 from service.chat.service.completions import BRIDGE_BINDING_REBUILD_LIMIT, bridge_fingerprint
 from service.chat.service.handoff import (
     CONTINUATION_BUSY,
@@ -164,17 +180,33 @@ from service.chat.service.handoff import (
     continuation_snapshot,
 )
 from service.chat.service.models import RETIRED_NATIVE_MODEL_KEY, SessionModelUnavailableError
+from service.chat.service.retry import (
+    RECOVERY_EVENT_KINDS,
+    RECOVERY_STALE,
+    recover_search,
+    search_recovery_command,
+)
+from service.chat.service.search import SearchService
 from service.chat.service.settings import SettingsService
+from service.chat.service.utils import ResumeStage, artifact_directory, resume_stage
 from service.chat.service.workspaces import SessionWorkspaceService
-from service.chat.utils import parse_session_list_cursor, session_list_cursor
+from service.chat.utils import (
+    SESSION_FORK_COPIED_FIELD,
+    copied_session_path,
+    copy_session_files,
+    parse_session_list_cursor,
+    session_list_cursor,
+)
 from service.identity.service.skill_credentials import (
     CredentialAdmissionError,
     SkillCredentialService,
 )
+from service.inference.source import ContentSource
 from service.paths import (
     SESSION_ATTACHMENT_DIRNAME,
     SESSION_OUTPUT_DIRNAME,
     SESSION_RUNTIME_DIR,
+    session_attachment_root,
 )
 from service.platform.activity import (
     Activities,
@@ -194,8 +226,21 @@ from service.platform.files import (
     read_file_raw,
     resolve_child,
 )
+from service.platform.vocabulary import (
+    COMPONENT_ANSWER_CAPABILITY,
+)
 
 HTTP_OK = 200
+PREDICTION_SOURCE_UNAVAILABLE = "prediction_source_unavailable"
+PREDICTION_MAX_CHARACTERS = 500
+PREDICTION_PROMPT = (
+    "Suggest exactly one concise message the user might naturally send next in this conversation. "
+    "Write in the language of the user's latest message, from the user's perspective. "
+    "Output only the proposed message, without quotes, labels, markdown or an answer. "
+    "Do not use tools or perform actions. Do not introduce permissions or commitments. "
+    "Use at most 500 characters. Return no text if there is no useful next message."
+)
+HTTP_ACCEPTED = 202
 HTTP_BAD_REQUEST = 400
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
@@ -208,13 +253,17 @@ SESSION_OPEN_TIMING_EVENT = "session_open_timing"
 # INFO 放行名单内 (root=WARNING 会丢弃其 INFO, 见 cli/serve.py 的 namespace setLevel), 用独立
 # logger 才能保证埋点在生产日志里必达。
 SESSION_OPEN_TIMING_LOGGER = logging.getLogger(__name__).getChild("open_timing")
+SESSION_LIST_TIMING_LOGGER = logging.getLogger(__name__).getChild("list_timing")
+SESSION_LIST_TIMING_MILLISECONDS = 1000
+
+
 RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS = 3.0
 SESSION_REQUIRED_CAPABILITIES_FIELD = "required_capabilities"
 SESSION_REQUIRED_CAPABILITIES_INVALID_ERROR = "invalid_required_capabilities"
 SESSION_RESUME_FAILED_ERROR = "harness_session_resume_failed"
-SESSION_OUTPUT_UNAVAILABLE_ERROR = "session_output_unavailable"
 SESSION_DELETION_UNAVAILABLE = "session_deletion_unavailable"
 SESSION_DELETION_FAILED = "session_deletion_failed"
+SESSION_WORKSPACE_UNAVAILABLE_ERROR = "session_workspace_unavailable"
 SESSION_MODEL_UNAVAILABLE_ERROR = "session_model_unavailable"
 SESSION_MODEL_SWITCH_FAILED_ERROR = "session_model_switch_failed"
 SESSION_PERMISSION_SWITCH_FAILED_ERROR = "session_permission_switch_failed"
@@ -226,9 +275,10 @@ SESSION_PERMISSION_STOP_PENDING = "session_permission_stop_pending"
 SESSION_PERMISSION_CONTINUATION_STALE = "session_permission_continuation_stale"
 SESSION_PERMISSION_STOP_TIMEOUT_SECONDS = 30.0
 SESSION_PERMISSION_STOP_POLL_SECONDS = 0.1
-SESSION_PERMISSION_CONTINUATION_TEXT = (
-    "继续刚才中断的任务。先核对已完成操作和产物，不重复已产生副作用的步骤。"
-)
+SESSION_PERMISSION_CONTINUATION_TEXT = {
+    "zh": "继续刚才中断的任务。先核对已完成操作和产物，不重复已产生副作用的步骤。",
+    "en": "Continue the interrupted task. First check completed actions and outputs; do not repeat steps that have already caused side effects.",
+}
 
 
 class PermissionApplication(str, Enum):
@@ -269,7 +319,6 @@ SESSION_LIST_DEFAULT_LIMIT = 60
 SESSION_LIST_MAX_LIMIT = 500
 SESSION_SEARCH_QUERY_MAX_LENGTH = 200
 SESSION_SEARCH_EXCERPT_CONTEXT_LENGTH = 36
-SESSION_LOCAL_PATH_REFERENCE_LIMIT = 32
 MCP_LIST_DEFAULT_LIMIT = 100
 MCP_LIST_MAX_LIMIT = 500
 MCP_OPERATION_SNAPSHOT = "snapshot"
@@ -304,7 +353,29 @@ SESSION_FORK_FIELDS = frozenset({"fork_session_id", "fork_turn_id"})
 SESSION_FORK_INVALID = "session_fork_invalid"
 SESSION_FORK_UNAVAILABLE = "session_fork_unavailable"
 SESSION_FORK_INCOMPLETE = "session_fork_turn_incomplete"
-SESSION_FORK_TITLE_SUFFIX = " · 分支"
+SESSION_FORK_COPY_FAILED = "session_fork_copy_failed"
+
+
+class ForkOriginStatus(str, Enum):
+    AVAILABLE = "available"
+    DELETED = "deleted"
+    FORBIDDEN = "forbidden"
+    ARCHIVED = "archived"
+    ANCHOR_UNAVAILABLE = "anchor_unavailable"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class SessionForkOrigin:
+    session_id: str
+    vendor_thread_id: str
+    vendor_turn_id: str | None
+    product_seq: int
+    native_fork: bool
+    source: SessionCatalogRecord
+    binding: RuntimeBinding
+
+
 PRODUCT_PERMISSION_MODES = (
     ASK_PERMISSION_MODE,
     SAFE_AUTO_PERMISSION_MODE,
@@ -353,6 +424,94 @@ def workspace_allows(active_workspace: Path, session_workspace: Path | None) -> 
     return requested == active or active in requested.parents
 
 
+@dataclass(frozen=True)
+class SessionListEntry:
+    record: SessionCatalogRecord
+    state: SessionListState
+    match: dict[str, Any] | None
+    last_agent_reply_at: float | None
+
+
+class SessionListPhase(StrEnum):
+    CATALOG = "catalog"
+    SEARCH = "search"
+    STATES = "states"
+    REPLIES = "replies"
+    RECOVERY = "recovery"
+    PROJECTION = "projection"
+
+
+class SessionListTimingEvent(StrEnum):
+    WORKER_FINISHED = "worker_finished"
+    FINISHED = "finished"
+
+
+@dataclass
+class SessionListTiming:
+    request_id: str | None = None
+    client_request_id: str | None = None
+    submitted_at: float = field(default_factory=time.perf_counter)
+    queue_ms: float | None = None
+    worker_completed: bool = False
+    phases: dict[SessionListPhase, float] = field(default_factory=dict)
+    counts: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def create(
+        cls, request_id: str | None, client_request_id: str | None
+    ) -> SessionListTiming | None:
+        level = logging.INFO if client_request_id is not None else logging.DEBUG
+        if not SESSION_LIST_TIMING_LOGGER.isEnabledFor(level):
+            return None
+        return cls(request_id, client_request_id)
+
+    @contextmanager
+    def measure(self, phase: SessionListPhase) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = (time.perf_counter() - started) * SESSION_LIST_TIMING_MILLISECONDS
+            self.phases[phase] = self.phases.get(phase, 0.0) + elapsed
+
+    def run(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        self.queue_ms = (time.perf_counter() - self.submitted_at) * SESSION_LIST_TIMING_MILLISECONDS
+        error_type = ""
+        try:
+            return operation(*args, **kwargs)
+        except BaseException as error:
+            error_type = type(error).__name__
+            raise
+        finally:
+            self.worker_completed = True
+            self.report(SessionListTimingEvent.WORKER_FINISHED, error_type)
+
+    def report(self, event: SessionListTimingEvent, error_type: str = "") -> None:
+        SESSION_LIST_TIMING_LOGGER.log(
+            logging.INFO if self.client_request_id is not None else logging.DEBUG,
+            json.dumps(
+                {
+                    "event": event.value,
+                    "request_id": self.request_id,
+                    "client_request_id": self.client_request_id,
+                    "elapsed_ms": round(
+                        (time.perf_counter() - self.submitted_at)
+                        * SESSION_LIST_TIMING_MILLISECONDS,
+                        3,
+                    ),
+                    "queue_ms": self.queue_ms,
+                    "worker_completed": self.worker_completed,
+                    "phases_ms": {
+                        phase.value: round(value, 3) for phase, value in self.phases.copy().items()
+                    },
+                    "counts": self.counts.copy(),
+                    "error_type": error_type,
+                },
+                separators=(",", ":"),
+            ),
+        )
+
+
 class SessionService:
     """Own product ids, durable vendor bindings, resume, and user controls."""
 
@@ -378,8 +537,12 @@ class SessionService:
         # 这里存一个 provider 而不是 import content: 会话域不依赖文件域的实现,
         # 未绑定时回空集合 = 只有 cwd 可写, 等价改造前的行为。
         self._writable_roots: Callable[[Path], tuple[Path, ...]] = lambda _path: ()
-        self._output_directory: Callable[[Path, str], Path] | None = None
+        self._artifact_roots: Callable[[Path], tuple[Path, ...]] = lambda _path: ()
+        self._session_directory: Callable[[Path, str], Path] | None = None
         self._project_relocation: Callable[[str, sqlite3.Connection], bool] | None = None
+        self._fork_snapshots: (
+            Callable[[str, str, Mapping[str, Any], sqlite3.Connection], str | None] | None
+        ) = None
         self._access = access
         self._events = events
         self._runtime = runtime
@@ -400,6 +563,14 @@ class SessionService:
 
     def bind_task_documents(self, provider: Callable[[str, str], tuple[dict, ...]]) -> None:
         self._task_documents = provider
+
+    def bind_artifact_roots(self, provider: Callable[[Path], tuple[Path, ...]]) -> None:
+        self._artifact_roots = provider
+
+    def bind_fork_snapshots(
+        self, provider: Callable[[str, str, Mapping[str, Any], sqlite3.Connection], str | None]
+    ) -> None:
+        self._fork_snapshots = provider
 
     def bind_deletion(self, callback: Callable[[SessionCatalogRecord], None]) -> None:
         self._deletion = callback
@@ -467,6 +638,10 @@ class SessionService:
             resolved,
         )
         return resolved
+
+    def interaction_session(self, session_id: str) -> LiveSession | None:
+        live = self._sessions.get(session_id)
+        return live if live is not None and not live.terminating and not live.terminated else None
 
     def bridge_caller(self, session_id: str) -> LiveSession | None:
         """An active, non-interrupted product caller; each route validates its capability."""
@@ -561,10 +736,12 @@ class SessionService:
         """Read persisted requests without activating or requiring a live session."""
         if self._access.get(session_id) is None:
             return {"ok": False, "error": "session_not_found"}, HTTP_NOT_FOUND
+        retry_error = session_open_retry_error(self._access, session_id)
         return {
             "ok": True,
             "messages": [
-                queued_message_payload(row) for row in self._access.queued_messages(session_id)
+                queued_message_payload(row, retry_blocked_error=retry_error)
+                for row in self._access.queued_messages(session_id)
             ],
         }, HTTP_OK
 
@@ -662,11 +839,9 @@ class SessionService:
             return {"ok": False, "error": str(error)}, HTTP_BAD_REQUEST
         resume_id = str(body.get("resume_session_id") or "").strip()
         if SESSION_FORK_FIELDS.intersection(body) and (
-            set(body) != SESSION_FORK_FIELDS
-            or any(
-                not isinstance(body.get(name), str) or not body[name].strip()
-                for name in SESSION_FORK_FIELDS
-            )
+            "fork_session_id" not in body
+            or not set(body).issubset(SESSION_FORK_FIELDS)
+            or any(not isinstance(body.get(name), str) or not body[name].strip() for name in body)
         ):
             return {"ok": False, "error": SESSION_FORK_INVALID}, HTTP_BAD_REQUEST
         if resume_id:
@@ -745,17 +920,50 @@ class SessionService:
                     return {"ok": False, "error": SESSION_RUNNING_ERROR}, HTTP_CONFLICT
             record = self._access.get(source_id)
             binding = self._access.runtime_binding(source_id)
-            terminal = self._events.turn_completed(
-                source_id, vendor_turn_id=str(body["fork_turn_id"]).strip()
+            turn_id = str(body.get("fork_turn_id") or "").strip()
+            terminal = (
+                self._events.turn_completed(source_id, vendor_turn_id=turn_id) if turn_id else None
             )
             if record is None or binding is None or record.runtime_id != self._runtime.runtime_id:
                 return {"ok": False, "error": SESSION_FORK_UNAVAILABLE}, HTTP_CONFLICT
             if record.archived:
                 return {"ok": False, "error": SESSION_ARCHIVED_ERROR}, HTTP_CONFLICT
-            if terminal is None:
+            if turn_id and (
+                terminal is None or terminal.payload.get("status") != PRODUCT_TURN_OUTCOME_COMPLETED
+            ):
                 return {"ok": False, "error": SESSION_FORK_INCOMPLETE}, HTTP_CONFLICT
-            if terminal.vendor_thread_id != binding.opaque_session_ref:
+            inherited = terminal is not None and terminal.idempotency_key.startswith(
+                f"{SESSION_FORK_KEY}:"
+            )
+            if (
+                terminal is not None
+                and not inherited
+                and terminal.vendor_thread_id != binding.opaque_session_ref
+            ):
                 return {"ok": False, "error": SESSION_FORK_SOURCE_CHANGED}, HTTP_CONFLICT
+            source_origin = self._events.by_key(source_id, SESSION_FORK_KEY)
+            native_fork = bool(turn_id) and (
+                not inherited
+                or source_origin is not None
+                and source_origin.payload.get(
+                    SESSION_FORK_NATIVE_FIELD, bool(source_origin.payload.get("source_turn_id"))
+                )
+            )
+            if (
+                source_live is not None
+                and source_live.running
+                and not (native_fork and record.project_path == record.runtime_workdir)
+            ):
+                return {"ok": False, "error": SESSION_RUNNING_ERROR}, HTTP_CONFLICT
+            origin = SessionForkOrigin(
+                source_id,
+                binding.opaque_session_ref,
+                turn_id or None,
+                terminal.product_seq if terminal is not None else record.last_product_seq,
+                native_fork,
+                record,
+                binding,
+            )
             state = self._model_state(source_id)
             activation = self._access.activation(source_id)
             fork_body = {
@@ -772,22 +980,111 @@ class SessionService:
             actor_id,
             skill_environment,
             required_capabilities=required_capabilities,
-            fork_origin=terminal,
+            fork_origin=origin,
+            display_parent_session_id=record.display_parent_session_id or source_id,
         )
 
-    async def _restore_fork_history(self, live: LiveSession) -> None:
+    def _validate_fork_origin(self, origin: SessionForkOrigin) -> SessionCatalogRecord:
+        source = self._access.get(origin.session_id)
+        if source is None or source.archived:
+            raise ValueError(SESSION_FORK_UNAVAILABLE)
+        if (
+            source.principal_id != origin.source.principal_id
+            or source.runtime_id != origin.source.runtime_id
+            or source.project_path != origin.source.project_path
+            or source.runtime_workdir != origin.source.runtime_workdir
+            or source.output_root != origin.source.output_root
+            or self._access.runtime_binding(origin.session_id) != origin.binding
+        ):
+            raise ValueError(SESSION_FORK_SOURCE_CHANGED)
+        if origin.vendor_turn_id:
+            terminal = self._events.turn_completed(
+                origin.session_id, vendor_turn_id=origin.vendor_turn_id
+            )
+            if (
+                terminal is None
+                or terminal.product_seq != origin.product_seq
+                or terminal.payload.get("status") != PRODUCT_TURN_OUTCOME_COMPLETED
+            ):
+                raise ValueError(SESSION_FORK_SOURCE_CHANGED)
+        return source
+
+    async def _copy_fork_workspace(self, origin: SessionForkOrigin, target: Path) -> str | None:
+        async with AsyncExitStack() as guards:
+            source_live = self._sessions.get(origin.session_id)
+            if source_live is not None:
+                await guards.enter_async_context(source_live.lifecycle_lock)
+                if source_live.closing:
+                    raise ValueError(SESSION_RUNNING_ERROR)
+            source = self._validate_fork_origin(origin)
+            shared = source.project_path == source.runtime_workdir == str(target)
+            if (
+                source_live is not None
+                and source_live.running
+                and not (shared and origin.native_fork and origin.vendor_turn_id)
+            ):
+                raise ValueError(SESSION_RUNNING_ERROR)
+            if shared:
+                return None
+            source_root = Path(source.runtime_workdir)
+            await self._activities.finish(
+                ActivityDomain.RESOURCE,
+                lambda: self._activities.to_thread(
+                    ActivityDomain.RESOURCE, copy_session_files, source_root, target
+                ),
+            )
+            return str(source_root)
+
+    async def _restore_fork_history(
+        self, live: LiveSession, *, expected_origin: SessionForkOrigin | None = None
+    ) -> None:
         origin = self._events.by_key(live.id, SESSION_FORK_KEY)
-        if origin is None or self._events.by_key(live.id, SESSION_FORK_IMPORTED_KEY) is not None:
+        imported = self._events.by_key(live.id, SESSION_FORK_IMPORTED_KEY) is not None
+        fork_snapshots = self._fork_snapshots
+        if origin is None or (imported and fork_snapshots is None):
             return
         await self._runtime.ensure_active(live)
         target = self._access.get(live.id)
         if target is None:
             raise RuntimeError(SESSION_FORK_UNAVAILABLE)
-        self._events.inherit_history(
-            str(origin.payload["source_session_id"]),
-            target,
-            int(origin.payload["source_product_seq"]),
+        copied_workdir = (
+            Path(target.runtime_workdir) if origin.payload.get(SESSION_FORK_COPIED_FIELD) else None
         )
+        async with AsyncExitStack() as guards:
+            if expected_origin is not None:
+                source_live = self._sessions.get(expected_origin.session_id)
+                if source_live is not None:
+                    await guards.enter_async_context(source_live.lifecycle_lock)
+                    if source_live.closing:
+                        raise ValueError(SESSION_RUNNING_ERROR)
+                self._validate_fork_origin(expected_origin)
+            with self._events.transaction() as connection:
+                self._events.inherit_history(
+                    str(origin.payload["source_session_id"]),
+                    target,
+                    int(origin.payload["source_product_seq"]),
+                    copied_workdir=copied_workdir,
+                    connection=connection,
+                    inherit_snapshot=(
+                        (
+                            lambda payload, current: fork_snapshots(
+                                str(origin.payload["source_session_id"]), live.id, payload, current
+                            )
+                        )
+                        if fork_snapshots is not None
+                        else None
+                    ),
+                    snapshots_only=imported,
+                )
+                if not imported:
+                    self._artifacts.inherit_history(
+                        str(origin.payload["source_session_id"]),
+                        live.id,
+                        int(origin.payload["source_product_seq"]),
+                        copied_workdir=copied_workdir,
+                        connection=connection,
+                    )
+        live.restore_local_input_paths()
 
     async def _create(
         self,
@@ -796,7 +1093,8 @@ class SessionService:
         actor_id: str,
         skill_environment: Mapping[str, str] | None = None,
         required_capabilities: tuple[RuntimeCapabilityName, ...] = (),
-        fork_origin: ProductEventRecord | None = None,
+        fork_origin: SessionForkOrigin | None = None,
+        display_parent_session_id: str | None = None,
     ) -> tuple[dict[str, Any], int]:
         session_id = uuid.uuid4().hex
         supported = {
@@ -824,6 +1122,7 @@ class SessionService:
                     session_id,
                     body.get("project_path"),
                     principal,
+                    fork_origin,
                 ),
             )
         except ValueError as exc:
@@ -837,10 +1136,20 @@ class SessionService:
         ).strip()
         if permission_mode not in PRODUCT_PERMISSION_MODES:
             return {"ok": False, "error": "invalid_permission_mode"}, HTTP_BAD_REQUEST
+        copied_source = None
+        if fork_origin is not None:
+            try:
+                copied_source = await self._copy_fork_workspace(fork_origin, runtime_workdir)
+            except ValueError as error:
+                return {"ok": False, "error": str(error)}, HTTP_CONFLICT
+            except OSError:
+                self._logger.exception(SESSION_FORK_COPY_FAILED)
+                return {"ok": False, "error": SESSION_FORK_COPY_FAILED}, HTTP_CONFLICT
         if project_path is None:
             runtime_workdir.mkdir(parents=True, exist_ok=True)
             output_root.mkdir(parents=True, exist_ok=True)
         live: LiveSession | None = None
+        allocated: SessionCatalogRecord | None = None
         try:
             selected_model = str(body.get("model_id") or self._settings.runtime_model()).strip()
             reasoning_effort = str(body.get("reasoning_effort") or "").strip()
@@ -886,6 +1195,7 @@ class SessionService:
                 status=SessionStatus.READY,
                 title=SESSION_TITLE_DEFAULT,
                 title_fallback=SessionTitleFallback.NEW_SESSION,
+                display_parent_session_id=display_parent_session_id,
                 created_at=time.time(),
                 required_capabilities=required_capabilities,
                 reasoning_effort=reasoning_effort,
@@ -905,19 +1215,17 @@ class SessionService:
                         "source_thread_id": fork_origin.vendor_thread_id,
                         "source_turn_id": fork_origin.vendor_turn_id,
                         "source_product_seq": fork_origin.product_seq,
+                        SESSION_FORK_NATIVE_FIELD: fork_origin.native_fork,
+                        SESSION_FORK_COPIED_FIELD: copied_source,
                     },
                     idempotency_key=SESSION_FORK_KEY,
                 )
             await live.activate()
             if fork_origin is not None:
-                await self._restore_fork_history(live)
+                await self._restore_fork_history(live, expected_origin=fork_origin)
                 source = self._access.get(fork_origin.session_id)
                 if source is not None:
-                    self._access.rename(
-                        session_id,
-                        principal,
-                        (source.title + SESSION_FORK_TITLE_SUFFIX)[:SESSION_RENAME_MAX_LENGTH],
-                    )
+                    self._access.name_fork(session_id, source.session_id, principal)
             self._sessions[session_id] = live
         except SessionModelUnavailableError as exc:
             if live is not None:
@@ -938,7 +1246,67 @@ class SessionService:
                 exc_info=True,
             )
             return failure, 500
+        finally:
+            if (
+                fork_origin is not None
+                and allocated is not None
+                and session_id not in self._sessions
+            ):
+                self._access.set_archived(session_id, principal, True)
         return self._snapshot(live, readiness=readiness), HTTP_OK
+
+    def fork_origin(
+        self, session_id: str, principal: SessionPrincipal
+    ) -> tuple[dict[str, Any], int]:
+        self._access.require(session_id, principal)
+        requested = self._events.by_key(session_id, SESSION_FORK_KEY)
+        imported = self._events.by_key(session_id, SESSION_FORK_IMPORTED_KEY)
+        if requested is None or imported is None:
+            return {"origin": None}, HTTP_OK
+        source_id = str(requested.payload["source_session_id"])
+        inherited = self._events.portable_history(session_id, through_seq=imported.product_seq)
+        anchors = [{"turn_id": entry.turn_id, "item_id": entry.item_id} for entry in inherited]
+        origin = {
+            "source_session_id": source_id,
+            "source_product_seq": requested.payload["source_product_seq"],
+            "source_turn_id": requested.payload.get("source_turn_id"),
+            "inherited_messages": anchors,
+            "anchor": anchors[-1] if anchors else None,
+            "title": None,
+            "title_fallback": None,
+            "navigation": None,
+            "status": ForkOriginStatus.UNAVAILABLE,
+        }
+        source = self._access.get(source_id)
+        if source is None:
+            origin["status"] = ForkOriginStatus.DELETED
+        else:
+            try:
+                self._access.require(source_id, principal)
+            except SessionAccessError:
+                origin["status"] = ForkOriginStatus.FORBIDDEN
+            else:
+                origin.update(self._title_projection(source))
+                if source.archived:
+                    origin["status"] = ForkOriginStatus.ARCHIVED
+                elif not anchors:
+                    origin["status"] = ForkOriginStatus.ANCHOR_UNAVAILABLE
+                else:
+                    source_messages = self._events.portable_history(
+                        source_id, through_seq=int(requested.payload["source_product_seq"])
+                    )
+                    anchor = anchors[-1]
+                    if not any(
+                        entry.item_id == anchor["item_id"] and entry.turn_id == anchor["turn_id"]
+                        for entry in source_messages
+                    ):
+                        origin["status"] = ForkOriginStatus.ANCHOR_UNAVAILABLE
+                    else:
+                        navigation, status = self.navigation(source_id, principal)
+                        if status == HTTP_OK:
+                            origin["navigation"] = navigation
+                            origin["status"] = ForkOriginStatus.AVAILABLE
+        return {"origin": origin}, HTTP_OK
 
     def navigation(
         self, session_id: str, principal: SessionPrincipal
@@ -963,6 +1331,7 @@ class SessionService:
             **self._title_projection(record),
             "runtime_workdir": record.runtime_workdir,
             "project_path": record.project_path,
+            "display_parent_session_id": record.display_parent_session_id,
             "runtime_id": record.runtime_id,
             "running": bool(live is not None and live.running),
         }, HTTP_OK
@@ -974,28 +1343,31 @@ class SessionService:
         actor_id: str,
         skill_environment: Mapping[str, str] | None = None,
     ) -> tuple[dict[str, Any], int]:
-        try:
-            self._access.require(session_id, principal)
-        except SessionAccessError:
-            return {"ok": False, "error": "session_not_found"}, HTTP_NOT_FOUND
-        record = self._access.get(session_id)
+        with resume_stage(session_id, ResumeStage.ACCESS):
+            try:
+                self._access.require(session_id, principal)
+            except SessionAccessError:
+                return {"ok": False, "error": "session_not_found"}, HTTP_NOT_FOUND
+            record = self._access.get(session_id)
         if record is None:
             return {"ok": False, "error": "session_not_found"}, HTTP_NOT_FOUND
         if record.archived:
             return {"ok": False, "error": SESSION_ARCHIVED_ERROR}, HTTP_CONFLICT
-        try:
-            self._require_registered_project(
-                Path(record.project_path) if record.project_path else None
-            )
-        except ValueError as error:
-            return {"ok": False, "error": str(error)}, HTTP_CONFLICT
+        with resume_stage(session_id, ResumeStage.PROJECT):
+            try:
+                self._require_registered_project(
+                    Path(record.project_path) if record.project_path else None
+                )
+            except ValueError as error:
+                return {"ok": False, "error": str(error)}, HTTP_CONFLICT
         existing = self._sessions.get(session_id)
         if existing is not None:
             executable = self._settings.runtime_executable()
-            readiness = await self._runtime.readiness(
-                runtime_id=existing.runtime_id,
-                executable=executable,
-            )
+            with resume_stage(session_id, ResumeStage.READINESS):
+                readiness = await self._runtime.readiness(
+                    runtime_id=existing.runtime_id,
+                    executable=executable,
+                )
             try:
                 await self._runtime.realign_metering_identity(existing, actor_id)
             except (RuntimeError, ValueError) as error:
@@ -1008,43 +1380,50 @@ class SessionService:
         if record.runtime_id == LEGACY_RUNTIME_ID or activation is None:
             return {"ok": False, "error": "legacy_session_readonly"}, HTTP_CONFLICT
         executable = self._settings.runtime_executable()
-        readiness = await self._runtime.readiness(
-            runtime_id=record.runtime_id,
-            executable=executable,
-        )
+        with resume_stage(session_id, ResumeStage.READINESS):
+            readiness = await self._runtime.readiness(
+                runtime_id=record.runtime_id,
+                executable=executable,
+            )
         if not readiness.ready:
             return self._readiness_error(readiness), HTTP_UNAVAILABLE
         was_inflight = record.status in {SessionStatus.RUNNING, SessionStatus.WAITING_HIL}
         recovery_hil = self._access.pending_hil(record.session_id) if was_inflight else ()
         mode = record.policy_id or ASK_PERMISSION_MODE
-        resume_state = self._model_state(session_id)
-        # 登出会让会话存量选择指向被门禁置灰的内置模型；resume 时把会话选择修复到
-        # 目录解析出的生效模型（未登录时为第一个可用模型），避免整条会话卡在不可执行键上。
-        resume_model = self._recover_selected_model(session_id, principal, resume_state, actor_id)
+        with resume_stage(session_id, ResumeStage.MODEL):
+            resume_state = self._model_state(session_id)
+            # 登出会让会话存量选择指向被门禁置灰的内置模型；resume 时把会话选择修复到
+            # 目录解析出的生效模型（未登录时为第一个可用模型），避免整条会话卡在不可执行键上。
+            resume_model = self._recover_selected_model(
+                session_id, principal, resume_state, actor_id
+            )
         live: LiveSession | None = None
         try:
-            live = await self._runtime.open(
-                session_id=record.session_id,
-                runtime_id=record.runtime_id,
-                cwd=Path(record.runtime_workdir),
-                project_path=Path(record.project_path) if record.project_path else None,
-                output_root=Path(record.output_root),
-                resume_vendor_thread_id=record.vendor_thread_id or "",
-                permission_mode=mode,
-                model_id=resume_model,
-                reasoning_effort=resume_state.selected_reasoning_effort,
-                thinking=resume_state.selected_thinking,
-                executable=readiness.executable or executable,
-                process_environment=skill_environment,
-                user_id=actor_id,
-                writable_roots=self._writable_roots(
-                    Path(record.project_path)
-                    if record.project_path
-                    else Path(record.runtime_workdir)
-                ),
-            )
-            await live.activate()
-            await self._restore_fork_history(live)
+            with resume_stage(session_id, ResumeStage.OPEN):
+                live = await self._runtime.open(
+                    session_id=record.session_id,
+                    runtime_id=record.runtime_id,
+                    cwd=Path(record.runtime_workdir),
+                    project_path=Path(record.project_path) if record.project_path else None,
+                    output_root=Path(record.output_root),
+                    resume_vendor_thread_id=record.vendor_thread_id or "",
+                    permission_mode=mode,
+                    model_id=resume_model,
+                    reasoning_effort=resume_state.selected_reasoning_effort,
+                    thinking=resume_state.selected_thinking,
+                    executable=readiness.executable or executable,
+                    process_environment=skill_environment,
+                    user_id=actor_id,
+                    writable_roots=self._writable_roots(
+                        Path(record.project_path)
+                        if record.project_path
+                        else Path(record.runtime_workdir)
+                    ),
+                )
+            with resume_stage(session_id, ResumeStage.ACTIVATE):
+                await live.activate()
+            with resume_stage(session_id, ResumeStage.FORK):
+                await self._restore_fork_history(live)
             self._sessions[session_id] = live
             if self._access.pending_turn_settlement(session_id) is not None:
                 if self._settlement_resume is None:
@@ -1053,6 +1432,15 @@ class SessionService:
             elif was_inflight:
                 await self._publish_recovery(live, record, recovery_hil)
         except Exception as exc:
+            if isinstance(exc, SessionModelUnavailableError) and live is None:
+                failure = _runtime_failure_payload(exc, operation="resume")
+                self._logger.info(
+                    "%s session_id=%s code=%s",
+                    SESSION_RESUME_FAILED_ERROR,
+                    session_id,
+                    failure["code"],
+                )
+                return failure, HTTP_CONFLICT
             self._access.mark_turn_recovery_blocked(session_id, True)
             if live is not None:
                 await live.aclose()
@@ -1068,7 +1456,8 @@ class SessionService:
                 exc_info=True,
             )
             return failure, 500
-        return self._snapshot(live, readiness=readiness), HTTP_OK
+        with resume_stage(session_id, ResumeStage.SNAPSHOT):
+            return self._snapshot(live, readiness=readiness), HTTP_OK
 
     async def check_recovery(
         self,
@@ -1080,7 +1469,8 @@ class SessionService:
     ) -> tuple[dict[str, Any], int]:
         pending = self._access.pending_turn_settlement(session_id)
         if pending is None:
-            return {"ok": True, "recovery_blocked": False, "recovery_pending": False}, HTTP_OK
+            return self._recovery_check_state(session_id), HTTP_OK
+        client_turn_id = pending.client_turn_id
         live = self._sessions.get(session_id)
         if live is None:
             _, status = await self.open(
@@ -1091,62 +1481,54 @@ class SessionService:
             )
             live = self._sessions.get(session_id)
             if status != HTTP_OK or live is None:
-                return {
-                    "ok": False,
-                    "recovery_blocked": True,
-                    "recovery_pending": True,
-                    "error": "turn_recovery_blocked",
-                }, HTTP_OK
+                return (
+                    self._recovery_check_state(session_id, failed_turn_id=client_turn_id),
+                    HTTP_OK,
+                )
         try:
             await self._runtime.ensure_active(live)
-            session = live.runtime_session
-            if session is None:
-                raise RuntimeError("runtime session is unavailable")
-            activity = await session.activity()
         except Exception as exc:
-            self._access.mark_turn_recovery_blocked(session_id, True)
             self._logger.warning(
                 "turn_recovery_check_failed session_id=%s failure_type=%s",
                 session_id,
                 type(exc).__name__,
                 exc_info=True,
             )
-            return {
-                "ok": False,
-                "recovery_blocked": True,
-                "recovery_pending": True,
-                "error": "turn_recovery_blocked",
-            }, HTTP_OK
-        if not activity.execution_tree_complete:
-            self._access.mark_turn_recovery_blocked(session_id, True)
-            return {
-                "ok": False,
-                "recovery_blocked": True,
-                "recovery_pending": True,
-                "error": "turn_recovery_blocked",
-            }, HTTP_OK
-        self._access.mark_turn_recovery_blocked(session_id, activity.execution_tree_idle)
-        if self._settlement_resume is None:
-            raise RuntimeError("pending turn settlement has no recovery owner")
-        if live.current_task is None or live.current_task.done():
-            self._settlement_resume(live)
-        if activity.execution_tree_idle and live.current_task is not None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(live.current_task),
-                    timeout=RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                pass
-        return {
-            "ok": True,
-            "recovery_blocked": bool(
-                (pending := self._access.pending_turn_settlement(session_id))
-                and pending.recovery_blocked
-            ),
+            return self._recovery_check_state(session_id, failed_turn_id=client_turn_id), HTTP_OK
+        current = self._access.pending_turn_settlement(session_id)
+        if (
+            current is not None
+            and current.client_turn_id == client_turn_id
+            and self._sessions.get(session_id) is live
+            and not live.closing
+        ):
+            if self._settlement_resume is None:
+                raise RuntimeError("pending turn settlement has no recovery owner")
+            if live.current_task is None or live.current_task.done():
+                self._settlement_resume(live)
+            task = live.current_task
+            if task is not None:
+                live.settlement_recheck.set()
+                await asyncio.wait((task,), timeout=RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS)
+        return self._recovery_check_state(session_id), HTTP_OK
+
+    def _recovery_check_state(
+        self, session_id: str, *, failed_turn_id: str | None = None
+    ) -> dict[str, Any]:
+        pending = self._access.pending_turn_settlement(session_id)
+        live = self._sessions.get(session_id)
+        blocked = pending is not None and (live is None or pending.recovery_blocked)
+        failed = blocked or (pending is not None and pending.client_turn_id == failed_turn_id)
+        result: dict[str, Any] = {
+            "ok": not failed,
+            "recovery_blocked": blocked,
             "recovery_pending": pending is not None,
-            "activity_active": not activity.execution_tree_idle,
-        }, HTTP_OK
+        }
+        if failed:
+            result["error"] = "turn_recovery_blocked"
+        if not blocked and live is not None and (pending is not None or live.turn_active):
+            result["activity_active"] = live.turn_active
+        return result
 
     async def _publish_recovery(
         self,
@@ -1219,6 +1601,7 @@ class SessionService:
         session_id: str,
         requested_project: object,
         principal: SessionPrincipal,
+        fork_origin: SessionForkOrigin | None = None,
     ) -> tuple[Path, Path | None, Path]:
         if requested_project is None or not str(requested_project).strip():
             runtime_workdir = (SESSION_RUNTIME_DIR / session_id).resolve()
@@ -1232,20 +1615,33 @@ class SessionService:
             requested_workspace=project,
         ):
             raise ValueError(SESSION_PROJECT_NOT_AUTHORIZED_ERROR)
-        directory = self._project_output_directory(project, session_id)
-        return directory, project, directory
+        source = self._access.get(fork_origin.session_id) if fork_origin is not None else None
+        return self._project_paths(
+            session_id,
+            project,
+            session_scoped=bool(
+                source is not None
+                and source.project_path
+                and source.runtime_workdir != source.project_path
+            ),
+        )
 
-    def bind_output_directory(self, provider: Callable[[Path, str], Path]) -> None:
-        self._output_directory = provider
+    def bind_session_directory(self, provider: Callable[[Path, str], Path]) -> None:
+        self._session_directory = provider
+
+    def _project_paths(
+        self, session_id: str, project: Path, *, session_scoped: bool
+    ) -> tuple[Path, Path, Path]:
+        if not session_scoped:
+            return project, project, project
+        if self._session_directory is None:
+            raise ValueError(SESSION_WORKSPACE_UNAVAILABLE_ERROR)
+        directory = self._session_directory(project, session_id)
+        return directory, project, directory
 
     def bind_project_relocation(self, callback: Callable[[str, sqlite3.Connection], bool]) -> None:
         """Compose mutable project-scoped selection changes with catalog rebinding."""
         self._project_relocation = callback
-
-    def _project_output_directory(self, project: Path, session_id: str) -> Path:
-        if self._output_directory is None:
-            raise ValueError(SESSION_OUTPUT_UNAVAILABLE_ERROR)
-        return self._output_directory(project, session_id)
 
     def _readiness_error(self, readiness: Any) -> dict[str, Any]:
         return {
@@ -1307,6 +1703,7 @@ class SessionService:
             "workdir": str(live.runtime_workdir),
             "runtime_workdir": str(live.runtime_workdir),
             "project_path": str(live.project_path) if live.project_path else None,
+            "display_parent_session_id": record.display_parent_session_id if record else None,
             "resumed": live.resumed,
             "last_seq": live.last_seq,
             "pending_hil": live.pending_hil_snapshot(blocking_only=False),
@@ -1346,9 +1743,14 @@ class SessionService:
                 continue
             self._access.require(session_id, principal)
             live = self._sessions.get(session_id)
-            row = self._list_row(record)
-            row.pop("last_seq", None)
             pending = self._access.pending_turn_settlement(session_id)
+            state = SessionListState(
+                self._access.runtime_binding(session_id), self._model_state(session_id), pending
+            )
+            row = self._list_row(record, state)
+            if row["recovery_blocked"] and pending is not None:
+                row.update(self._events.recovery_snapshot(session_id, pending.native_turn_id))
+            row.pop("last_seq", None)
             pending_running = pending is not None and not (
                 record.last_turn_id == pending.native_turn_id
                 and record.status
@@ -1379,7 +1781,10 @@ class SessionService:
                     ],
                     "interrupting": bool(live and live.interrupting),
                     "queued_messages": [
-                        queued_message_payload(item)
+                        queued_message_payload(
+                            item,
+                            retry_blocked_error=session_open_retry_error(self._access, session_id),
+                        )
                         for item in self._access.queued_messages(session_id)
                     ],
                     "acknowledged_queue_ids": [
@@ -1403,7 +1808,70 @@ class SessionService:
         cursor: str = "",
         archived: bool = False,
         include_last_agent_reply: bool = False,
+        timing: SessionListTiming | None = None,
     ) -> dict[str, Any]:
+        error_type = ""
+        operation = partial(timing.run, self._read_list_page) if timing else self._read_list_page
+        try:
+            entries, total, next_cursor = await self._activities.observe_thread(
+                operation,
+                limit,
+                principal,
+                scope=scope,
+                project_path=project_path,
+                query=query,
+                history=history,
+                cursor=cursor,
+                archived=archived,
+                include_last_agent_reply=include_last_agent_reply,
+                timing=timing,
+            )
+            sessions = []
+            for entry in entries:
+                record, state = entry.record, entry.state
+                with timing.measure(SessionListPhase.PROJECTION) if timing else nullcontext():
+                    row = self._list_row(record, state)
+                    if entry.match is not None:
+                        row["match"] = entry.match
+                    if include_last_agent_reply:
+                        row["last_agent_reply_at"] = entry.last_agent_reply_at
+                if row["recovery_blocked"] and state.pending is not None:
+                    with timing.measure(SessionListPhase.RECOVERY) if timing else nullcontext():
+                        row.update(
+                            await self._activities.observe_thread(
+                                self._events.recovery_snapshot,
+                                record.session_id,
+                                state.pending.native_turn_id,
+                            )
+                        )
+                sessions.append(row)
+            return {
+                "sessions": sessions,
+                "total": total,
+                "runtime_id": self._runtime.runtime_id,
+                "next_cursor": next_cursor,
+            }
+        except BaseException as error:
+            error_type = type(error).__name__
+            raise
+        finally:
+            if timing:
+                timing.report(SessionListTimingEvent.FINISHED, error_type)
+
+    def _read_list_page(
+        self,
+        limit: int,
+        principal: SessionPrincipal,
+        *,
+        scope: SessionListScope,
+        project_path: str | None,
+        query: str | None,
+        history: Callable[[str], tuple[Any, ...]] | None,
+        cursor: str,
+        archived: bool,
+        include_last_agent_reply: bool,
+        timing: SessionListTiming | None = None,
+    ) -> tuple[builtins.list[SessionListEntry], int, str | None]:
         bounded = min(SESSION_LIST_MAX_LIMIT, max(1, int(limit or SESSION_LIST_DEFAULT_LIMIT)))
         normalized_query = str(query or "").strip()[:SESSION_SEARCH_QUERY_MAX_LENGTH]
         normalized_project: str | None = None
@@ -1420,55 +1888,69 @@ class SessionService:
                 raise SessionAccessError("project not found")
             normalized_project = str(project)
         scan_limit = SESSION_LIST_MAX_LIMIT if normalized_query else bounded
-        rows = self._access.listed(
-            principal,
-            runtime_id=self._runtime.runtime_id,
-            scope=scope,
-            project_path=normalized_project,
-            limit=scan_limit + 1,
-            after=parse_session_list_cursor(cursor),
-            archived=archived,
-        )
-        total = min(len(rows), scan_limit)
-        sessions = []
+        with timing.measure(SessionListPhase.CATALOG) if timing else nullcontext():
+            rows = self._access.listed(
+                principal,
+                runtime_id=self._runtime.runtime_id,
+                scope=scope,
+                project_path=normalized_project,
+                limit=scan_limit + 1,
+                after=parse_session_list_cursor(cursor),
+                archived=archived,
+            )
+        selected = []
         scanned = 0
         for record in rows[:scan_limit]:
             scanned += 1
-            match = (
-                self._search_match(
-                    record,
-                    normalized_query,
-                    history or self._access.portable_history,
+            with timing.measure(SessionListPhase.SEARCH) if timing else nullcontext():
+                match = (
+                    self._search_match(
+                        record,
+                        normalized_query,
+                        history or self._access.portable_history,
+                    )
+                    if normalized_query
+                    else None
                 )
-                if normalized_query
-                else None
-            )
             if normalized_query and match is None:
                 continue
-            row = self._list_row(record)
-            if match is not None:
-                row["match"] = match
-            sessions.append(row)
-            if include_last_agent_reply:
-                row["last_agent_reply_at"] = await asyncio.to_thread(
-                    self._events.last_agent_reply_at, record.session_id
-                )
-            if len(sessions) >= bounded:
+            selected.append((record, match))
+            if len(selected) >= bounded:
                 break
-        return {
-            "sessions": sessions,
-            "total": total,
-            "runtime_id": self._runtime.runtime_id,
-            "next_cursor": (
-                session_list_cursor(
-                    rows[scanned - 1].updated_at,
-                    rows[scanned - 1].session_id,
-                    rows[scanned - 1].pinned if scope is SessionListScope.PROJECT else None,
-                )
-                if scanned and scanned < len(rows)
-                else None
-            ),
-        }
+        session_ids = [record.session_id for record, _ in selected]
+        with timing.measure(SessionListPhase.STATES) if timing else nullcontext():
+            states = self._access.list_states(
+                session_ids, default_model_id=RETIRED_NATIVE_MODEL_KEY
+            )
+        with timing.measure(SessionListPhase.REPLIES) if timing else nullcontext():
+            reply_times = (
+                self._events.last_agent_reply_times(session_ids) if include_last_agent_reply else {}
+            )
+        if timing:
+            timing.counts.update(
+                catalog_rows=len(rows),
+                scanned_rows=scanned,
+                selected_rows=len(selected),
+                reply_sessions=len(reply_times),
+            )
+        entries = [
+            SessionListEntry(
+                record,
+                states[record.session_id],
+                match,
+                reply_times.get(record.session_id),
+            )
+            for record, match in selected
+        ]
+        next_cursor = None
+        if scanned and scanned < len(rows):
+            anchor = rows[scanned - 1]
+            next_cursor = session_list_cursor(
+                anchor.updated_at,
+                anchor.session_id,
+                anchor.pinned if scope is SessionListScope.PROJECT else None,
+            )
+        return entries, min(len(rows), scan_limit), next_cursor
 
     async def search_project(
         self,
@@ -1545,11 +2027,11 @@ class SessionService:
             )
         )["sessions"]
 
-    def _list_row(self, record: SessionCatalogRecord) -> dict[str, Any]:
+    def _list_row(self, record: SessionCatalogRecord, state: SessionListState) -> dict[str, Any]:
         live = self._sessions.get(record.session_id)
-        binding = self._access.runtime_binding(record.session_id)
-        model_state = self._model_state(record.session_id)
-        pending = self._access.pending_turn_settlement(record.session_id)
+        binding = state.binding
+        model_state = state.model
+        pending = state.pending
         recovery_blocked = pending is not None and (live is None or pending.recovery_blocked)
         pending_running = pending is not None and not (
             record.last_turn_id == pending.native_turn_id
@@ -1588,6 +2070,8 @@ class SessionService:
             "created_at": record.created_at,
             "mtime": record.updated_at,
             "pinned": record.pinned,
+            "display_parent_session_id": record.display_parent_session_id,
+            "detached_parent_session_id": record.detached_parent_session_id,
             "archived": record.archived,
             "last_seq": record.last_product_seq,
             "last_turn_status": record.last_turn_status,
@@ -1601,11 +2085,6 @@ class SessionService:
             and not recovery_blocked,
             "recovery_blocked": recovery_blocked,
             "recovery_pending": pending is not None,
-            **(
-                self._events.recovery_snapshot(record.session_id, pending.native_turn_id)
-                if recovery_blocked and pending
-                else {}
-            ),
             "unknown_outcome": (
                 live.ledger.has_unknown_outcome
                 if live is not None
@@ -1638,7 +2117,7 @@ class SessionService:
             ):
                 return {"ok": True, "idle": True, "interrupting": False}
         try:
-            await live.interrupt(cleanup_background_processes=True)
+            await live.interrupt(cleanup_background_processes=True, user_requested=True)
             if not live.running:
                 await live.recover_runtime_projection()
         except Exception as exc:
@@ -1853,7 +2332,12 @@ class SessionService:
             record = self._access.hil(request_id)
             return any(
                 isinstance(question, Mapping)
-                and bool(question.get("component") or question.get(INSTALLATION_FIELD))
+                and bool(
+                    question.get("component")
+                    or question.get(INSTALLATION_FIELD)
+                    or question.get(PRODUCT_INTERACTION_MANUAL) is True
+                    or question.get(PRODUCT_INTERACTION_HOST_RESPONSE) is True
+                )
                 for question in record.payload.get("questions", [])
             ) or record.method in {
                 BROWSER_APPROVAL_METHOD,
@@ -1876,7 +2360,12 @@ class SessionService:
             if stored.session_id != session_id:
                 return {"ok": False, "error": "hil_request_stale"}, HTTP_CONFLICT
             if stored.status is HilStatus.RESOLVED and any(
-                isinstance(question, Mapping) and question.get("component")
+                isinstance(question, Mapping)
+                and (
+                    question.get("component")
+                    or question.get(PRODUCT_INTERACTION_MANUAL) is True
+                    or question.get(PRODUCT_INTERACTION_HOST_RESPONSE) is True
+                )
                 for question in stored.payload.get("questions", [])
             ):
                 for question in stored.payload.get("questions", []):
@@ -1885,7 +2374,11 @@ class SessionService:
                         snapshot = live.component_registry.snapshot(reference, user_id=live.user_id)
                         if snapshot["interaction"]["session_id"] != session_id:
                             raise ValueError("component_binding_invalid")
-                if dict(stored.decision or {}) != dict(body):
+                stored_answer = dict(stored.decision or {})
+                incoming_answer = dict(body)
+                stored_answer.pop(PRODUCT_DECISION_SOURCE, None)
+                incoming_answer.pop(PRODUCT_DECISION_SOURCE, None)
+                if stored_answer != incoming_answer:
                     return {"ok": False, "error": "hil_response_conflict"}, HTTP_CONFLICT
                 return {
                     "ok": True,
@@ -1921,7 +2414,12 @@ class SessionService:
                         if not isinstance(answers, Mapping) or set(answers) != {question["id"]}:
                             raise ValueError("component_answer_invalid")
                         answer = json.loads(answers[question["id"]])
-                        if not isinstance(answer, dict) or set(answer) != {"action", "values"}:
+                        fields = (
+                            {"action", "values", "content_revision"}
+                            if reference.get("component") == OPENUI_SLOT
+                            else {"action", "values"}
+                        )
+                        if not isinstance(answer, dict) or set(answer) != fields:
                             raise ValueError("component_answer_invalid")
                         snapshot = live.component_registry.snapshot(reference, user_id=live.user_id)
                         action = component_action(
@@ -1937,14 +2435,21 @@ class SessionService:
                         validate_component_submission(
                             definition, answer["action"], answer["values"]
                         )
+                        if reference.get("component") == CANVAS_SLOT:
+                            validate_canvas_submission(
+                                question["component_data"], answer["action"], answer["values"]
+                            )
             except ComponentValidationError as error:
                 return {"ok": False, "error": str(error), "detail": error.detail}, HTTP_CONFLICT
             except (SessionAccessError, ValueError, OSError, KeyError, TypeError) as error:
                 return {"ok": False, "error": str(error)}, HTTP_CONFLICT
             if live.interactions.is_product_request(request_id):
-                interaction = await live.interactions.resolve(
-                    None, request_id, body, active_turn_id=live.ledger.active_turn_id
-                )
+                try:
+                    interaction = await live.interactions.resolve(
+                        None, request_id, body, active_turn_id=live.ledger.active_turn_id
+                    )
+                except (ValueError, KeyError, TypeError) as error:
+                    return {"ok": False, "error": str(error)}, HTTP_CONFLICT
             else:
                 async with self._runtime.operation(live, request_id=request_id) as session:
                     interaction = await live.interactions.resolve(session, request_id, body)
@@ -2190,6 +2695,7 @@ class SessionService:
         *,
         actor_id: str,
         skill_environment: Mapping[str, str] | None = None,
+        stop_running: bool = True,
     ) -> tuple[dict[str, Any], int]:
         async with self._open_lock:
             self.require_access(session_id, principal)
@@ -2201,6 +2707,8 @@ class SessionService:
             if archived and await self._archive_if_idle(record, principal):
                 return {"ok": True, "session_id": session_id, "archived": archived}, HTTP_OK
             if archived:
+                if not stop_running:
+                    return {"ok": False, "error": SESSION_ARCHIVE_STOP_REQUIRED}, HTTP_CONFLICT
                 payload, status = await self._stop_for_removal(
                     record, principal, actor_id, skill_environment
                 )
@@ -2275,6 +2783,49 @@ class SessionService:
             return await self.terminate(session_id, require_idle=True)
         return {"ok": True}, HTTP_OK
 
+    def detach(self, session_id: str, principal: SessionPrincipal) -> dict[str, Any]:
+        record = self._access.set_display_parent(session_id, principal, None)
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "display_parent_session_id": record.display_parent_session_id,
+        }
+
+    def display_children(self, session_id: str, principal: SessionPrincipal) -> dict[str, Any]:
+        return {
+            "session_id": session_id,
+            "child_count": self._access.display_child_count(session_id, principal),
+        }
+
+    def restore_parent(
+        self, session_id: str, principal: SessionPrincipal, parent_session_id: str
+    ) -> dict[str, Any]:
+        record = self._access.set_display_parent(
+            session_id, principal, parent_session_id, restore=True
+        )
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "display_parent_session_id": record.display_parent_session_id,
+        }
+
+    def reorder(
+        self,
+        session_id: str,
+        principal: SessionPrincipal,
+        target_session_id: str,
+        placement: SessionOrderPlacement,
+    ) -> dict[str, Any]:
+        record = self._access.reorder(
+            session_id, principal, target_session_id=target_session_id, placement=placement
+        )
+        return {
+            "ok": True,
+            "session_id": record.session_id,
+            "target_session_id": target_session_id,
+            "placement": placement.value,
+        }
+
     def set_pinned(
         self,
         session_id: str,
@@ -2329,7 +2880,13 @@ class SessionService:
             return {"ok": False, "error": SESSION_RUNNING_ERROR}, HTTP_CONFLICT
         try:
             self._preflight_workspace(record)
-            target_output = self._project_output_directory(target, session_id)
+            target_workdir, _, target_output = self._project_paths(
+                session_id,
+                target,
+                session_scoped=bool(
+                    record.project_path and record.runtime_workdir != record.project_path
+                ),
+            )
         except ValueError as error:
             return {"ok": False, "error": str(error)}, HTTP_CONFLICT
         if live is None:
@@ -2337,7 +2894,7 @@ class SessionService:
                 assigned = self._relocate_record(
                     session_id,
                     principal,
-                    runtime_workdir=str(target_output),
+                    runtime_workdir=str(target_workdir),
                     project_path=str(target),
                     output_root=str(target_output),
                 )
@@ -2393,7 +2950,7 @@ class SessionService:
                 try:
                     await self._runtime.rebind(
                         live,
-                        cwd=target_output,
+                        cwd=target_workdir,
                         project_path=target,
                         output_root=target_output,
                         writable_roots=self._writable_roots(target),
@@ -2405,7 +2962,7 @@ class SessionService:
                         assigned = self._relocate_record(
                             session_id,
                             principal,
-                            runtime_workdir=str(target_output),
+                            runtime_workdir=str(target_workdir),
                             project_path=str(target),
                             output_root=str(target_output),
                         )
@@ -2451,27 +3008,9 @@ class SessionService:
             else:
                 self._runtime.recover_publications(session_id)
         detached = live is None or live.runtime_session is None
-        durable_history = self._events.portable_history(session_id) if detached else ()
+        durable_history = self._events.history_payload(session_id) if detached else []
         return {
-            "turns": (
-                live.history()
-                if live is not None and not detached
-                else [
-                    {
-                        "kind": (
-                            "user"
-                            if entry.role == "user"
-                            else ("thinking" if entry.phase == MessagePhase.COMMENTARY else "text")
-                        ),
-                        "role": entry.role,
-                        "text": entry.text,
-                        "turn_id": entry.turn_id,
-                        "item_id": entry.item_id,
-                        "phase": entry.phase.value if entry.phase is not None else None,
-                    }
-                    for entry in durable_history
-                ]
-            ),
+            "turns": (live.history() if live is not None and not detached else durable_history),
             "recovery_blocked": bool(
                 (pending := self._access.pending_turn_settlement(session_id))
                 and (live is None or pending.recovery_blocked)
@@ -2497,10 +3036,13 @@ class SessionService:
     ) -> dict[str, Any]:
         """Browse the immutable workdir bound to one product session."""
 
-        root = self._session_root(session_id)
+        root, path = self._session_file_path(session_id, path)
+        session_record = self._access.get(session_id)
+        if outputs_only and session_record is not None and session_record.project_path == str(root):
+            return self._output_files(session_record, path, offset)
         directory = resolve_child(root, path)
         input_root = root / SESSION_ATTACHMENT_DIRNAME
-        hidden_names = SESSION_BROWSER_HIDDEN_NAMES
+        hidden_names: tuple[str, ...] = SESSION_BROWSER_HIDDEN_NAMES
         if outputs_only and directory == root:
             hidden_names = (*hidden_names, SESSION_ATTACHMENT_DIRNAME)
         listing = list_directory(
@@ -2603,7 +3145,51 @@ class SessionService:
                     has_files = True
                     break
         listing["has_files"] = has_files
+        listing["directory_path"] = self._artifact_directory(session_record)
         return listing
+
+    def _artifact_directory(self, record: SessionCatalogRecord | None) -> str | None:
+        if record is None:
+            return None
+        root = self._session_root(record.session_id)
+        return artifact_directory(
+            self._artifacts.list_session(record.session_id),
+            root,
+            self._artifact_roots(Path(record.project_path) if record.project_path else root),
+        )
+
+    def _output_files(self, record: SessionCatalogRecord, path: str, offset: int) -> dict[str, Any]:
+        root = Path(record.runtime_workdir)
+        artifacts = self._artifacts.list_session(record.session_id)
+        directory = resolve_child(root, path)
+        items = {}
+        for artifact in artifacts:
+            target = Path(artifact.canonical_path)
+            if not target.is_relative_to(directory) or not target.is_file() or target.is_symlink():
+                continue
+            relative = target.relative_to(directory).as_posix()
+            if any(part.startswith(".") for part in Path(relative).parts):
+                continue
+            metadata = target.stat()
+            items[relative] = {
+                "name": relative,
+                "dir": False,
+                "size": metadata.st_size,
+                "updated_at": metadata.st_mtime,
+                "artifact": artifact_snapshot_payload((artifact,))[0],
+            }
+        visible = sorted(items.values(), key=lambda item: str(item["name"]))
+        return {
+            "root": str(root),
+            "path": path,
+            "project_path": "",
+            "items": visible[offset : offset + MAX_DIRECTORY_ITEMS],
+            "total": len(visible),
+            "artifacts": artifact_snapshot_payload(artifacts),
+            "literature": [],
+            "has_files": bool(visible),
+            "directory_path": self._artifact_directory(record),
+        }
 
     def file_content(self, session_id: str, path: str) -> dict[str, Any]:
         local_file = self._authorized_local_file(session_id, path)
@@ -2619,9 +3205,26 @@ class SessionService:
 
     def _session_file_path(self, session_id: str, path: str) -> tuple[Path, str]:
         root = self._session_root(session_id)
+        origin = self._events.by_key(session_id, SESSION_FORK_KEY)
+        if origin is not None and origin.payload.get(SESSION_FORK_COPIED_FIELD):
+            path = copied_session_path(path, Path(origin.payload[SESSION_FORK_COPIED_FIELD]), root)
         candidate = Path(path)
+        record = self._access.get(session_id)
+        if record is not None and candidate.is_absolute():
+            attachments = session_attachment_root(
+                session_id, root, Path(record.project_path) if record.project_path else None
+            )
+            if candidate.is_relative_to(attachments):
+                return attachments, candidate.relative_to(attachments).as_posix()
         if candidate.is_absolute() and candidate.is_relative_to(root):
             path = candidate.relative_to(root).as_posix()
+        elif candidate.is_absolute() and record is not None and record.project_path == str(root):
+            authorized = Path(
+                AttachmentService(self._access, self._events).source_path(
+                    session_id, str(candidate)
+                )
+            )
+            return authorized.parent, authorized.name
         return root, path
 
     def _authorized_local_file(self, session_id: str, path: str) -> Path | None:
@@ -2656,19 +3259,22 @@ class SessionService:
         safe_name = Path(filename).name.strip()
         if not safe_name or safe_name in {".", ".."}:
             raise ValueError("attachment filename is invalid")
-        attachment_root = (live.runtime_workdir / SESSION_ATTACHMENT_DIRNAME).resolve()
+        attachment_root = session_attachment_root(live.id, live.runtime_workdir, live.project_path)
         attachment_root.mkdir(parents=True, exist_ok=True)
         target = (attachment_root / f"{uuid.uuid4().hex}-{safe_name}").resolve()
         try:
             target.relative_to(attachment_root)
-            target.relative_to(live.runtime_workdir)
         except ValueError as exc:
             raise ValueError("attachment path escapes the session workspace") from exc
         target.write_bytes(content)
         return {
             "path": str(target),
             "absolute_path": str(target),
-            "relative_path": target.relative_to(live.runtime_workdir).as_posix(),
+            "relative_path": (
+                target.relative_to(live.runtime_workdir).as_posix()
+                if target.is_relative_to(live.runtime_workdir)
+                else str(target)
+            ),
             "name": safe_name,
             "media_type": media_type or guess_media_type(safe_name) or "",
             "sha256": sha256(content).hexdigest(),
@@ -2685,7 +3291,7 @@ class SessionService:
         live = self._sessions.get(session_id)
         if live is None:
             raise ValueError("session_not_live")
-        if not paths or len(paths) > SESSION_LOCAL_PATH_REFERENCE_LIMIT:
+        if not paths:
             raise ValueError("local_file_reference_count_invalid")
         canonical_paths: list[tuple[Path, InputKind]] = []
         seen: set[Path] = set()
@@ -2721,6 +3327,200 @@ class SessionService:
                 reference["size"] = path.stat().st_size
             references.append(reference)
         return references
+
+    def reference_location(self, session_id: str, reference_id: str) -> dict[str, Any]:
+        live = self._sessions.get(session_id)
+        path: Path | None = None
+        kind = InputKind.FILE
+        if live is not None:
+            for registered_kind in (InputKind.FILE, InputKind.DIRECTORY):
+                path = live.resolve_local_input_path(reference_id, registered_kind)
+                if path is not None:
+                    kind = registered_kind
+                    break
+            if path is None and Path(reference_id).is_absolute():
+                path = live.authorized_local_input_file(Path(reference_id))
+            if path is None:
+                selected = Path(reference_id)
+                selected = selected if selected.is_absolute() else live.runtime_workdir / selected
+                attachment_root = session_attachment_root(
+                    live.id, live.runtime_workdir, live.project_path
+                )
+                if selected.is_relative_to(attachment_root):
+                    if selected.resolve() != selected:
+                        raise ArtifactReadError(ATTACHMENT_FORBIDDEN)
+                    if selected.is_file():
+                        path = selected
+        if path is None:
+            identifier = Path(reference_id)
+            if not identifier.is_absolute() and len(identifier.parts) > 1:
+                reference_id = str(self._session_root(session_id) / identifier)
+            path = Path(
+                AttachmentService(self._access, self._events).source_path(session_id, reference_id)
+            )
+            kind = InputKind.DIRECTORY if path.is_dir() else InputKind.FILE
+        if path.resolve() != path or path.is_symlink() or path.is_junction():
+            raise ArtifactReadError(ATTACHMENT_FORBIDDEN)
+        if not (path.is_dir() if kind == InputKind.DIRECTORY else path.is_file()):
+            raise ArtifactReadError(ATTACHMENT_NOT_FOUND)
+        return {"path": str(path), "kind": kind.value, "name": path.name}
+
+    async def predict_message(
+        self, session_id: str, turn_id: str, principal: SessionPrincipal
+    ) -> dict[str, Any]:
+        self.require_access(session_id, principal)
+        live = self._sessions.get(session_id)
+        record = self._access.get(session_id)
+        if (
+            live is not None
+            and record is not None
+            and record.last_turn_id == turn_id
+            and record.last_turn_status == PRODUCT_TURN_OUTCOME_COMPLETED
+            and not live.turn_active
+            and live.current_task is not None
+        ):
+            await asyncio.shield(live.current_task)
+        if (
+            live is None
+            or record is None
+            or record.archived
+            or live.running
+            or live.active_product_turn_id
+            or live.terminating
+            or live.terminated
+            or record.last_turn_id != turn_id
+            or record.last_turn_status != PRODUCT_TURN_OUTCOME_COMPLETED
+            or live.runtime_session is None
+        ):
+            raise ValueError(PREDICTION_SOURCE_UNAVAILABLE)
+        session = live.runtime_session
+        if not any(
+            item.name == RuntimeCapabilityName.TEXT_SAMPLE.value
+            and item.state is CapabilityState.SUPPORTED
+            for item in session.capabilities.entries
+        ):
+            raise ValueError(RUNTIME_CAPABILITY_UNAVAILABLE)
+        if live.prediction_turn_id == turn_id and live.prediction_result is not None:
+            return dict(live.prediction_result)
+        if live.prediction_task is not None:
+            raise ValueError(PREDICTION_SOURCE_UNAVAILABLE)
+        live.prediction_task = asyncio.current_task()
+        request_id = uuid.uuid4().hex
+        live.auxiliary_model_request_id = request_id
+        live.auxiliary_model_source = ContentSource(PREDICTION_PROMPT)
+        started = time.monotonic()
+        try:
+            applied = await session.control(
+                RuntimeControlRequest(
+                    command_id=request_id,
+                    kind=RuntimeControlKind.TEXT_SAMPLE,
+                    values={"source_turn_id": turn_id, "prompt": PREDICTION_PROMPT},
+                )
+            )
+            if applied.state is not CommandState.APPLIED or not isinstance(applied.values, Mapping):
+                raise ValueError(PREDICTION_SOURCE_UNAVAILABLE)
+            sampled = applied.values
+            current = self._access.get(session_id)
+            if (
+                current is None
+                or current.last_turn_id != turn_id
+                or live.running
+                or live.active_product_turn_id
+                or live.runtime_session is not session
+                or live.terminating
+                or live.terminated
+                or sampled.get("source_turn_id") != turn_id
+            ):
+                raise ValueError(PREDICTION_SOURCE_UNAVAILABLE)
+            text = sampled.get("text")
+            suggestion = text.strip() if isinstance(text, str) else ""
+            if len(suggestion) > PREDICTION_MAX_CHARACTERS:
+                suggestion = ""
+            result = {"source_turn_id": turn_id, "text": suggestion or None}
+            live.prediction_turn_id = turn_id
+            live.prediction_result = result
+            self._logger.info(
+                "composer_prediction session_id=%s turn_id=%s latency_ms=%d input_tokens=%s cached_input_tokens=%s output_tokens=%s suggested=%s",
+                session_id,
+                turn_id,
+                round((time.monotonic() - started) * 1000),
+                sampled.get("input_tokens"),
+                sampled.get("cached_input_tokens"),
+                sampled.get("output_tokens"),
+                bool(suggestion),
+            )
+            return dict(result)
+        finally:
+            live.auxiliary_model_request_id = ""
+            live.auxiliary_model_source = None
+            live.prediction_task = None
+
+    def recoverable_tools(self, session_id: str, turn_id: str) -> builtins.list[str]:
+        records = self._events.turn_records(session_id, turn_id, None, kinds=RECOVERY_EVENT_KINDS)
+        targets = []
+        for record in records:
+            tool_id = record.payload.get("tool_id")
+            if not isinstance(tool_id, str) or tool_id in targets:
+                continue
+            try:
+                search_recovery_command(records, tool_id)
+            except ValueError:
+                continue
+            targets.append(tool_id)
+        return targets
+
+    async def retry_tool(
+        self,
+        session_id: str,
+        *,
+        turn_id: str,
+        tool_id: str,
+        request_id: str,
+        searches: SearchService,
+        can_search: Callable[[str, str], bool],
+    ) -> dict[str, Any]:
+        live = self._sessions.get(session_id)
+        if live is None:
+            raise ValueError(RECOVERY_STALE)
+        async with live.activation_lock:
+            record = self._access.get(session_id)
+            if record is None or record.archived or live.running or live.closing or live.terminated:
+                raise ValueError(RECOVERY_STALE)
+            generation = live.interrupt_generation
+            attachment = live.attachment_generation
+            latest_turn = record.last_turn_id
+            mode = live.applied_permission_mode
+
+            def current() -> bool:
+                current_record = self._access.get(session_id)
+                return (
+                    self._sessions.get(session_id) is live
+                    and not live.running
+                    and not live.closing
+                    and not live.terminated
+                    and live.interrupt_generation == generation
+                    and live.attachment_generation == attachment
+                    and live.applied_permission_mode == mode
+                    and current_record is not None
+                    and not current_record.archived
+                    and current_record.last_turn_id == latest_turn
+                    and can_search(session_id, turn_id)
+                )
+
+            with self._activities.enter(ActivityDomain.TURN, root=True):
+                return await self._activities.finish(
+                    ActivityDomain.TURN,
+                    lambda: recover_search(
+                        live,
+                        self._events,
+                        searches,
+                        self._activities,
+                        turn_id=turn_id,
+                        tool_id=tool_id,
+                        request_id=request_id,
+                        current=current,
+                    ),
+                )
 
     async def mcp_snapshot(self, session_id: str, *, request_id: str = "") -> dict[str, Any]:
         snapshot, correlation_id = await self._run_mcp_control(
@@ -3167,12 +3967,17 @@ class SessionService:
                     continue
                 operation = await manager.wait(operation["request_id"], None, actor_id)
                 if operation["state"] != CommandState.APPLIED.value:
-                    raise ValueError(operation["error"] or RESOURCE_HOST_CONTEXT_REQUIRED)
+                    raise PreparationError(
+                        operation["error"] or RESOURCE_HOST_CONTEXT_REQUIRED,
+                        state=CommandState(operation["state"]),
+                    )
                 lease = self._activities.enter(domain, root=True)
             except MaintenanceActive:
                 if not manager.pending:
                     raise PreparationError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN) from None
                 continue
+            except PreparationError:
+                raise
             except (ValueError, RuntimeError) as error:
                 raise PreparationError(str(getattr(error, "safe_error", "") or error)) from error
             break
@@ -3272,19 +4077,20 @@ class SessionService:
         thinking: ModelThinking | None = None,
         remember_default: bool = False,
     ) -> tuple[dict[str, Any], int]:
-        with self._activities.enter(ActivityDomain.RUNTIME, root=True):
-            return await self._activities.finish(
-                ActivityDomain.RUNTIME,
-                lambda: self._set_model(
-                    session_id,
-                    principal,
-                    model_id,
-                    actor_id=actor_id,
-                    reasoning_effort=reasoning_effort,
-                    thinking=thinking,
-                    remember_default=remember_default,
-                ),
-            )
+        async with self._open_lock:
+            with self._activities.enter(ActivityDomain.RUNTIME, root=True):
+                return await self._activities.finish(
+                    ActivityDomain.RUNTIME,
+                    lambda: self._set_model(
+                        session_id,
+                        principal,
+                        model_id,
+                        actor_id=actor_id,
+                        reasoning_effort=reasoning_effort,
+                        thinking=thinking,
+                        remember_default=remember_default,
+                    ),
+                )
 
     async def _set_model(
         self,
@@ -3337,8 +4143,12 @@ class SessionService:
             self._settings.set_runtime_model(target)
         if apply_now and live is not None:
             try:
-                await self.prepare_turn(live, purpose=ResourcePurpose.SESSION)
+                await self._prepare_turn(live, purpose=ResourcePurpose.SESSION)
             except Exception as error:
+                conflict = getattr(error, "safe_error", "") == RESOURCE_HOST_CONFIGURATION_CONFLICT
+                if conflict and self._schedule_reconfiguration(live):
+                    # The drain can finish only after this request releases its activity lease.
+                    return {"ok": True, **self.model(session_id)}, HTTP_ACCEPTED
                 return (
                     {
                         **_runtime_failure_payload(error, operation="model_switch"),
@@ -3372,7 +4182,13 @@ class SessionService:
                         if (
                             not Path(str(ref.get("path") or ""))
                             .resolve()
-                            .is_relative_to(root / SESSION_ATTACHMENT_DIRNAME)
+                            .is_relative_to(
+                                session_attachment_root(
+                                    record.session_id,
+                                    root,
+                                    Path(record.project_path) if record.project_path else None,
+                                )
+                            )
                         ):
                             raise ValueError(WORKSPACE_ORIGIN_UNAVAILABLE)
 
@@ -3448,20 +4264,21 @@ class SessionService:
                 self._schedule_reconfiguration(live)
             raise
 
-    def _schedule_reconfiguration(self, live: LiveSession) -> None:
+    def _schedule_reconfiguration(self, live: LiveSession) -> bool:
         try:
             if not self._runtime.reconfiguration_supported:
-                return
+                return False
             record = self._access.get(live.id)
             if record is None:
-                return
-            self._reconfigure_host(
+                return False
+            operation = self._reconfigure_host(
                 live.id,
                 SessionPrincipal(record.principal_id),
                 actor_id=live.user_id,
                 request_id=str(uuid.uuid4()),
                 model_id=self.model(live.id)["model_id"],
             )
+            return operation["state"] == CommandState.ACCEPTED.value
         except Exception as error:
             self._logger.warning(
                 "runtime_host_reconfiguration_not_scheduled session_id=%s failure_type=%s code=%s",
@@ -3469,6 +4286,7 @@ class SessionService:
                 type(error).__name__,
                 getattr(error, "safe_error", "") or RESOURCE_HOST_CONTEXT_REQUIRED,
             )
+            return False
 
     async def _prepare_turn(
         self,
@@ -3480,6 +4298,9 @@ class SessionService:
         purpose: ResourcePurpose = ResourcePurpose.TURN,
     ) -> None:
         """Apply current intent and admit execution without holding locks during resource waits."""
+        if live.prediction_task is not None and live.prediction_task is not asyncio.current_task():
+            live.prediction_task.cancel()
+            await asyncio.gather(live.prediction_task, return_exceptions=True)
         self._require_registered_project(live.project_path)
         try:
             desired = await self._credentials.admission_environment(live.user_id)
@@ -3575,6 +4396,11 @@ class SessionService:
                             thinking=model_state.selected_thinking,
                             preserve_selection=True,
                         )
+        # A connection/credential revocation can land between the entry binding check
+        # and this commit point (activation may wait on resources). Recheck here:
+        # rebuild once through the same suspend/reactivate path (a revoked connection
+        # then surfaces its reauth error), and a still-dead binding fails with a named
+        # error instead of committing the turn against a bridge URL that would 404.
         bridge_rebuild_attempts = 0
         while True:
             if restart or retained_product_turn:
@@ -3662,6 +4488,8 @@ class SessionService:
                 await live.suspend_runtime()
             raise
         if purpose is ResourcePurpose.TURN:
+            # Permission reconfiguration and settlement waits follow the activation
+            # recheck; a revocation landing there must not reach the committed turn.
             binding = self._runtime.held_binding_state(live.id)
             if bool(binding["bridge_backed"]) and not bool(binding["alive"]):
                 self._logger.info(

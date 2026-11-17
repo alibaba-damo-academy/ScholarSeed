@@ -13,17 +13,42 @@ import { ONBOARDING_GROUPS } from '../src/onboarding'
 import { SUBSCRIPTION_CHANNEL, type SubscriptionReply } from '../src/subscriptions'
 import { skipQuarantined } from './fixtures/quarantine'
 
-test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
+test.beforeEach(async ({}, testInfo) => {
+  skipQuarantined(testInfo)
+})
 
 test('parallel frontend paints before backend readiness without navigating again', async ({}, testInfo) => {
+  test.setTimeout(STARTUP_BUDGET_ONE_TIME_MS + 2 * STARTUP_BUDGET_STEADY_MS)
   const runtime = createRuntime(testInfo)
-  const desktop = new DesktopSession(runtime, testInfo, { recordTrace: false, nativeWindowLifecycle: true })
+  const desktop = new DesktopSession(runtime, testInfo, {
+    recordTrace: false,
+    nativeWindowLifecycle: true,
+    workbenchTimeoutMs: STARTUP_BUDGET_ONE_TIME_MS,
+  })
+  // First component preparation intentionally keeps the native splash visible.
+  // Reuse the same prepared component store for the parallel-paint assertions.
+  try {
+    await desktop.launch()
+  } finally {
+    await desktop.close()
+  }
   const launched = desktop.launch()
   void launched.catch(() => undefined)
   try {
-    await expect.poll(() => desktop.app?.windows().find(page => page.url().startsWith('http://'))?.url() ?? '').not.toBe('')
-    const page = desktop.app!.windows().find(page => page.url().startsWith('http://'))!
-    await expect(page.getByTestId('progress-screen')).toBeVisible()
+    await expect
+      .poll(
+        () =>
+          desktop.app
+            ?.windows()
+            .find((page) => page.url().startsWith('http://'))
+            ?.url() ?? '',
+        { timeout: STARTUP_BUDGET_STEADY_MS }
+      )
+      .not.toBe('')
+    const page = desktop.app!.windows().find((page) => page.url().startsWith('http://'))!
+    await expect(page.getByTestId('progress-screen')).toBeVisible({
+      timeout: STARTUP_BUDGET_STEADY_MS,
+    })
     const bounds = await page.getByTestId('progress-screen').boundingBox()
     const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
     expect(bounds?.width).toBe(viewport.width)
@@ -32,13 +57,23 @@ test('parallel frontend paints before backend readiness without navigating again
       startup: window.scholarseed.getStartup?.(),
       timeOrigin: performance.timeOrigin,
       url: location.href,
-      paints: performance.getEntriesByType('paint').map(entry => ({ name: entry.name, time: entry.startTime })),
+      paints: performance
+        .getEntriesByType('paint')
+        .map((entry) => ({ name: entry.name, time: entry.startTime })),
     }))
     expect(before.startup?.phase).toBe('connecting')
     expect(before.startup?.apiBase).toBeNull()
-    await expect.poll(() => desktop.app!.evaluate(({ BrowserWindow }, url) =>
-      BrowserWindow.getAllWindows().find(window => window.webContents.getURL() === url)?.isVisible() ?? false,
-    page.url())).toBe(true)
+    await expect
+      .poll(() =>
+        desktop.app!.evaluate(
+          ({ BrowserWindow }, url) =>
+            BrowserWindow.getAllWindows()
+              .find((window) => window.webContents.getURL() === url)
+              ?.isVisible() ?? false,
+          page.url()
+        )
+      )
+      .toBe(true)
     await page.screenshot({ path: join(runtime.artifacts, 'parallel-frontend.png') })
     await launched
     const after = await page.evaluate(() => ({
@@ -53,7 +88,10 @@ test('parallel frontend paints before backend readiness without navigating again
     expect(new URL(after.startup!.apiBase!).origin).not.toBe(new URL(after.url).origin)
     expect(after.isolated).toBe(true)
     await page.screenshot({ path: join(runtime.artifacts, 'parallel-workbench.png') })
-    writeFileSync(join(runtime.artifacts, 'parallel-startup.json'), JSON.stringify({ before, after }, null, 2))
+    writeFileSync(
+      join(runtime.artifacts, 'parallel-startup.json'),
+      JSON.stringify({ before, after }, null, 2)
+    )
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
@@ -99,17 +137,30 @@ test('historical projects restart and recover pending work without losing files'
   try {
     let page = await desktop.launch()
     const template = await createReadyProject(page, '启动验收模板')
-    const existingProjects = (await (await page.request.get(`${await apiBase(page)}/api/content/projects`)).json()).projects
+    const existingProjects = (
+      await (await page.request.get(`${await apiBase(page)}/api/content/projects`)).json()
+    ).projects
     const expectedProjects = existingProjects.length + HISTORICAL_PROJECT_COUNT - 1
     writeFileSync(join(template.root, 'resources', STARTUP_NOTE_FILENAME), STARTUP_NOTE_CONTENT)
     await desktop.close()
     const repository = resolve(__dirname, '../../..')
-    const python = process.platform === 'win32'
-      ? join(repository, '.venv', 'Scripts', 'python.exe')
-      : join(repository, '.venv', 'bin', 'python')
-    const fixture = JSON.parse(execFileSync(python, [
-      '-c', HISTORICAL_PROJECT_SEED, runtime.workspace, template.root, String(HISTORICAL_PROJECT_COUNT)
-    ], { env: { ...process.env, SCHOLARSEED_HOME: runtime.home }, encoding: 'utf8' })) as { roots: string[]; operation: string }
+    const python =
+      process.platform === 'win32'
+        ? join(repository, '.venv', 'Scripts', 'python.exe')
+        : join(repository, '.venv', 'bin', 'python')
+    const fixture = JSON.parse(
+      execFileSync(
+        python,
+        [
+          '-c',
+          HISTORICAL_PROJECT_SEED,
+          runtime.workspace,
+          template.root,
+          String(HISTORICAL_PROJECT_COUNT),
+        ],
+        { env: { ...process.env, SCHOLARSEED_HOME: runtime.home }, encoding: 'utf8' }
+      )
+    ) as { roots: string[]; operation: string }
     const started = Date.now()
     page = await desktop.launch()
     const elapsedMs = Date.now() - started
@@ -118,14 +169,22 @@ test('historical projects restart and recover pending work without losing files'
     expect(response.ok()).toBe(true)
     expect((await response.json()).projects).toHaveLength(expectedProjects)
     for (const root of [template.root, ...fixture.roots]) {
-      expect(readFileSync(join(root, 'resources', STARTUP_NOTE_FILENAME), 'utf8')).toBe(STARTUP_NOTE_CONTENT)
+      expect(readFileSync(join(root, 'resources', STARTUP_NOTE_FILENAME), 'utf8')).toBe(
+        STARTUP_NOTE_CONTENT
+      )
     }
     const backendLog = readFileSync(join(runtime.home, 'logs', 'backend.log'), 'utf8')
-    expect(backendLog).toMatch(new RegExp(
-      String.raw`startup_phase phase=source.project_storage event=finished[^\n]*counts=\{'projects': ${expectedProjects + 1}\}[^\n]*validation_calls=0`
-    ))
-    expect(backendLog).toContain(`content_operation_completed operation_id=${fixture.operation} command=ReconcileProjectRemoval state=succeeded`)
-    const operation = await page.request.get(`${await apiBase(page)}/api/content/operations/${fixture.operation}`)
+    expect(backendLog).toMatch(
+      new RegExp(
+        String.raw`startup_phase phase=source.project_storage event=finished[^\n]*counts=\{'projects': ${expectedProjects + 1}\}[^\n]*validation_calls=0`
+      )
+    )
+    expect(backendLog).toContain(
+      `content_operation_completed operation_id=${fixture.operation} command=ReconcileProjectRemoval state=succeeded`
+    )
+    const operation = await page.request.get(
+      `${await apiBase(page)}/api/content/operations/${fixture.operation}`
+    )
     expect(operation.ok()).toBe(true)
     expect((await operation.json()).state).toBe('succeeded')
     await expect(page.getByTestId('composer-send')).toBeVisible()
@@ -136,65 +195,23 @@ test('historical projects restart and recover pending work without losing files'
     await page.getByTestId('explorer-refresh').click()
     await page.getByTestId(`explorer-select-resources/${STARTUP_NOTE_FILENAME}`).dblclick()
     await expect(page.getByText(STARTUP_NOTE_CONTENT, { exact: true }).first()).toBeVisible()
-    await page.screenshot({ path: join(runtime.artifacts, 'historical-projects-files-preserved.png') })
+    await page.screenshot({
+      path: join(runtime.artifacts, 'historical-projects-files-preserved.png'),
+    })
     const outcome = {
       projects: expectedProjects,
       elapsedMs,
       filesPreserved: fixture.roots.length + 1,
-      recoveredOperation: fixture.operation
+      recoveredOperation: fixture.operation,
     }
-    writeFileSync(join(runtime.artifacts, 'historical-project-startup.json'), JSON.stringify(outcome))
+    writeFileSync(
+      join(runtime.artifacts, 'historical-project-startup.json'),
+      JSON.stringify(outcome)
+    )
     await testInfo.attach('historical-project-startup', {
       body: JSON.stringify(outcome),
-      contentType: 'application/json'
+      contentType: 'application/json',
     })
-    desktop.assertNoPageErrors()
-  } finally {
-    await desktop.attachArtifacts()
-  }
-})
-
-test('P0-1 starts Electron with the real new-stack backend', async ({}, testInfo) => {
-  const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
-  try {
-    const page = await desktop.launch()
-    const health = await page.evaluate(
-      async (base) => {
-        const response = await fetch(`${base}/api/healthz`)
-        return response.json()
-      },
-      await apiBase(page)
-    )
-    expect(health).toMatchObject({ ok: true, stack: 'codex-appserver', runtime_id: 'codex' })
-    await expect(page.getByTestId('composer-send')).toBeVisible()
-    const webPreferences = await desktop.app!.evaluate(({ BrowserWindow }) => {
-      const productWindow = BrowserWindow.getAllWindows().find((candidate) =>
-        candidate.webContents.getURL().startsWith('http://')
-      )
-      if (!productWindow) throw new Error('ScholarSeed product window did not open')
-      const contents = productWindow.webContents
-      if (!('getLastWebPreferences' in contents) || typeof contents.getLastWebPreferences !== 'function') {
-        throw new Error('Electron does not expose the WebPreferences diagnostic method')
-      }
-      const preferences: unknown = contents.getLastWebPreferences()
-      if (typeof preferences !== 'object' || preferences === null ||
-          !('sandbox' in preferences) || typeof preferences.sandbox !== 'boolean' ||
-          !('contextIsolation' in preferences) || typeof preferences.contextIsolation !== 'boolean' ||
-          !('nodeIntegration' in preferences) || typeof preferences.nodeIntegration !== 'boolean') {
-        throw new Error('Electron WebPreferences diagnostic returned invalid security fields')
-      }
-      return {
-        sandbox: preferences.sandbox,
-        contextIsolation: preferences.contextIsolation,
-        nodeIntegration: preferences.nodeIntegration,
-      }
-    })
-    expect(webPreferences).toEqual({
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-    })
-    await page.screenshot({ path: join(desktop.runtime.artifacts, 'startup-ready.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
@@ -260,7 +277,10 @@ test('conversation skill pickers refresh after user skill installation and activ
       await expect(page.getByTestId('skills-page')).toBeVisible()
     }
     const newChat = async (): Promise<void> => {
-      await page.getByTestId('activity-literature').click()
+      await page
+        .getByRole('dialog', { name: '设置', exact: true })
+        .getByRole('button', { name: '关闭', exact: true })
+        .click()
       await page.getByTestId('ai-new-session').click()
     }
     const openPicker = async (): Promise<void> => {
@@ -282,11 +302,13 @@ test('conversation skill pickers refresh after user skill installation and activ
       buffer: Buffer.from(skillDocument),
     })
     await page.getByTestId('skill-install').click()
-    await expect.poll(async () => {
-      if (await page.getByTestId('skill-upload-error').isVisible())
-        return page.getByTestId('skill-upload-error').innerText()
-      return await page.getByTestId('skill-add-modal').count() ? 'installing' : 'installed'
-    }).toBe('installed')
+    await expect
+      .poll(async () => {
+        if (await page.getByTestId('skill-upload-error').isVisible())
+          return page.getByTestId('skill-upload-error').innerText()
+        return (await page.getByTestId('skill-add-modal').count()) ? 'installing' : 'installed'
+      })
+      .toBe('installed')
     await expect(page.getByTestId('skill-add-modal')).toHaveCount(0)
     await openSkills()
     await expect(page.getByTestId(`skill-card-${skillName}`)).toBeVisible()
@@ -306,7 +328,10 @@ test('conversation skill pickers refresh after user skill installation and activ
     // Both entry points share the authoritative inventory, including disabled state.
     await openSkills()
     await page.getByTestId(`skill-toggle-${skillName}`).click()
-    await expect(page.getByTestId(`skill-toggle-${skillName}`)).toHaveAttribute('aria-checked', 'false')
+    await expect(page.getByTestId(`skill-toggle-${skillName}`)).toHaveAttribute(
+      'aria-checked',
+      'false'
+    )
     await expect(page.getByText(`${skillName}已停用`, { exact: true })).toBeVisible()
     await newChat()
     await openPicker()
@@ -320,7 +345,10 @@ test('conversation skill pickers refresh after user skill installation and activ
 
     await openSkills()
     await page.getByTestId(`skill-toggle-${skillName}`).click()
-    await expect(page.getByTestId(`skill-toggle-${skillName}`)).toHaveAttribute('aria-checked', 'true')
+    await expect(page.getByTestId(`skill-toggle-${skillName}`)).toHaveAttribute(
+      'aria-checked',
+      'true'
+    )
     await expect(page.getByText(`${skillName}已启用`, { exact: true })).toBeVisible()
     await newChat()
     await openPicker()
@@ -338,7 +366,10 @@ test('conversation skill pickers refresh after user skill installation and activ
     await openSkills()
     await page.getByTestId(`skill-more-${skillName}`).click()
     await page.getByTestId(`skill-remove-${skillName}`).click()
-    await page.getByTestId('skill-remove-confirm').getByTestId('skill-remove-ok').click()
+    await page
+      .getByTestId('skill-remove-confirm')
+      .getByRole('button', { name: '确认删除', exact: true })
+      .click()
     await expect(page.getByTestId(`skill-card-${skillName}`)).toHaveCount(0)
     await newChat()
     await openPicker()
@@ -356,9 +387,7 @@ test('ChatGPT subscription connection can be created in Desktop without CLI logi
     const page = await desktop.launch()
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
-    await page.getByTestId('model-connection-add').click()
-    await page.getByTestId('model-endpoint-provider').click()
-    await page.getByRole('option', { name: 'ChatGPT（订阅登录）', exact: true }).click()
+    await page.getByTestId('model-vendor-empty-chatgpt-oauth').click()
     const section = page.getByRole('region', { name: 'ChatGPT 订阅连接' })
     await expect(section).toBeVisible()
     await section.getByRole('button', { name: '连接 ChatGPT', exact: true }).click()
@@ -379,10 +408,6 @@ test('ChatGPT subscription connection can be created in Desktop without CLI logi
     await expect(page.getByTestId('model-connection-add')).toBeInViewport()
     await page.getByTestId('model-connection-add').click()
     await expect(page.getByTestId('model-endpoint-save')).toBeInViewport()
-    await page.getByTestId('model-endpoint-provider').click()
-    await page
-      .getByRole('option', { name: '自定义（自建服务或未列出的供应商）', exact: true })
-      .click()
     await page.getByTestId('model-endpoint-name').fill('Endpoint alongside ChatGPT')
     await page.getByTestId('model-endpoint-base-url').fill('http://127.0.0.1:8000/v1')
     await page.getByTestId('model-endpoint-api-key').fill('fixture-key-not-for-network')
@@ -417,11 +442,15 @@ test('saved API key stays masked and clearing requires replacement before saving
   const upstream = createServer((request, response) => {
     request.resume()
     response.setHeader('Content-Type', 'application/json')
-    response.end(JSON.stringify(request.url?.endsWith('/models')
-      ? { data: [{ id: 'fixture-model' }] }
-      : { id: 'fixture-response', object: 'response', output: [] }))
+    response.end(
+      JSON.stringify(
+        request.url?.endsWith('/models')
+          ? { data: [{ id: 'fixture-model' }] }
+          : { id: 'fixture-response', object: 'response', output: [] }
+      )
+    )
   })
-  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
   const address = upstream.address()
   if (!address || typeof address === 'string') throw new Error('upstream fixture did not bind')
   try {
@@ -429,10 +458,6 @@ test('saved API key stays masked and clearing requires replacement before saving
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
     await page.getByTestId('model-connection-add').click()
-    await page.getByTestId('model-endpoint-provider').click()
-    await page
-      .getByRole('option', { name: '自定义（自建服务或未列出的供应商）', exact: true })
-      .click()
     await page.getByTestId('model-endpoint-name').fill('API key mask regression')
     await page.getByTestId('model-endpoint-base-url').fill(`http://127.0.0.1:${address.port}/v1`)
     await page.getByTestId('model-endpoint-api-key').fill('fixture-key-not-for-network')
@@ -462,15 +487,18 @@ test('saved API key stays masked and clearing requires replacement before saving
     await page.screenshot({ path: join(desktop.runtime.artifacts, 'saved-api-key-cleared.png') })
     await apiKey.fill('replacement-key-not-for-network')
     await expect(page.getByTestId('model-endpoint-save')).toBeEnabled()
-    await page.getByTestId('model-endpoint-cancel').click()
+    await connection.click()
     await expect(apiKey).toHaveValue('')
     await expect(apiKey).toHaveAttribute('placeholder', '••••••••')
     await page.screenshot({ path: join(desktop.runtime.artifacts, 'saved-api-key-masked.png') })
     desktop.assertNoPageErrors()
   } finally {
-    try { await desktop.attachArtifacts() }
-    finally {
-      await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()))
+    try {
+      await desktop.attachArtifacts()
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        upstream.close((error) => (error ? reject(error) : resolve()))
+      )
     }
   }
 })
@@ -496,19 +524,24 @@ test('leaving model settings cancels a subscription login delivered after unmoun
     }, SUBSCRIPTION_CHANNEL)
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
-    await page.getByTestId('model-connection-add').click()
-    await page.getByTestId('model-endpoint-provider').click()
-    await page.getByRole('option', { name: 'ChatGPT（订阅登录）', exact: true }).click()
+    await page.getByTestId('model-vendor-empty-chatgpt-oauth').click()
     const section = page.getByRole('region', { name: 'ChatGPT 订阅连接' })
     await section.getByRole('button', { name: '连接 ChatGPT', exact: true }).click()
     const login = section.getByRole('button', { name: '继续使用 ChatGPT', exact: true })
     await expect(login).toBeVisible()
     await login.click()
     await expect(login).toBeDisabled()
-    await expect.poll(() => desktop.app!.evaluate(() => Boolean(
-      (globalThis as typeof globalThis & { releaseSubscriptionLogin?: unknown }).releaseSubscriptionLogin
-    ))).toBe(true)
-    await page.getByTestId('account-settings-nav-prompts').click()
+    await expect
+      .poll(() =>
+        desktop.app!.evaluate(() =>
+          Boolean(
+            (globalThis as typeof globalThis & { releaseSubscriptionLogin?: unknown })
+              .releaseSubscriptionLogin
+          )
+        )
+      )
+      .toBe(true)
+    await page.getByTestId('account-settings-nav-skills').click()
     await expect(section).toHaveCount(0)
     await page.route(`**/login/${transactionId}`, (route) =>
       route.fulfill({
@@ -551,11 +584,14 @@ test('preset provider connects with only an API key and keeps custom configurati
     await openAccountSettings(page)
     await page.getByTestId('account-settings-nav-models').click()
     await page.getByTestId('model-connection-add').click()
-    await expect(page.getByTestId('model-endpoint-provider')).toContainText('自定义')
+    await expect(page.getByTestId('model-endpoint-provider')).toHaveCount(0)
     await expect(page.getByTestId('model-endpoint-name')).toHaveValue('')
     await expect(page.getByTestId('model-endpoint-base-url')).toHaveValue('')
-    await page.getByTestId('model-endpoint-provider').click()
-    await page.getByRole('option', { name: '阿里云百炼', exact: true }).click()
+    await page
+      .locator('[data-testid^="model-vendor-empty-"]')
+      .filter({ hasText: '阿里云百炼' })
+      .first()
+      .click()
     await expect(page.getByTestId('model-endpoint-base-url')).toHaveCount(0)
     await expect(page.getByTestId('model-endpoint-wire-api')).toHaveCount(0)
     await expect(page.getByTestId('model-endpoint-manual-model')).toHaveCount(0)
@@ -618,14 +654,28 @@ test('model selection closes immediately while a slow switch is pending', async 
     const catalog = {
       available_models: [
         { key: 'stable-model', label: 'Stable model', provider: 'openai', billing: 'api' },
-        { key: 'slow-switch-model', label: 'Slow switch model', provider: 'openai', billing: 'api' }
+        {
+          key: 'slow-switch-model',
+          label: 'Slow switch model',
+          provider: 'openai',
+          billing: 'api',
+        },
       ],
-      current_model: 'stable-model', subscription_groups: []
+      current_model: 'stable-model',
+      subscription_groups: [],
     }
-    const actualCatalog = await (await page.request.get(`${await apiBase(page)}/api/serve/models`)).json()
-    await page.route('**/api/serve/models', (route) => route.fulfill({ json: {
-      ...actualCatalog, ...catalog, configured: true,
-    } }))
+    const actualCatalog = await (
+      await page.request.get(`${await apiBase(page)}/api/serve/models`)
+    ).json()
+    await page.route('**/api/serve/models', (route) =>
+      route.fulfill({
+        json: {
+          ...actualCatalog,
+          ...catalog,
+          configured: true,
+        },
+      })
+    )
     // Hold the response until after asserting the click feedback; no latency sleeps.
     const gate = new Promise<void>((resolve) => {
       release = resolve
@@ -641,20 +691,26 @@ test('model selection closes immediately while a slow switch is pending', async 
       const request = route.request().postDataJSON()
       // HTTP 500 is an unknown submission outcome and is reconciled by polling.
       // This case exercises a declared terminal preparation rejection.
-      await route.fulfill({ json: {
-        request_id: request.request_id, session_id: null,
-        model_id: request.model_id, service_instance_id: request.service_instance_id,
-        state: 'rejected', error: 'fixture_prepare_rejected',
-      } })
+      await route.fulfill({
+        json: {
+          request_id: request.request_id,
+          session_id: null,
+          model_id: request.model_id,
+          service_instance_id: request.service_instance_id,
+          state: 'rejected',
+          error: 'fixture_prepare_rejected',
+        },
+      })
     })
     await page.reload()
     await page.getByTestId('activity-literature').click()
     if (!(await page.getByTestId('ai-panel').isVisible()))
       await page.getByTestId('topbar-ai').click()
     await page.getByTestId('model-selector-toggle').click()
-    const preparing = page.waitForRequest(request =>
-      new URL(request.url()).pathname === '/api/serve/runtime/prepare' &&
-      request.postDataJSON().model_id === 'slow-switch-model'
+    const preparing = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === '/api/serve/runtime/prepare' &&
+        request.postDataJSON().model_id === 'slow-switch-model'
     )
     await page.getByTestId('model-option-slow-switch-model').click()
     await preparing

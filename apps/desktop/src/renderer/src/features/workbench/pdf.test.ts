@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import ts from 'typescript'
 
 import { PDFDocument, PDFName, PDFString } from 'pdf-lib'
 import { createInstance } from 'i18next'
@@ -16,6 +17,571 @@ const documentExpressions = expressions(
   readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
 )
 
+test('selection explanation and translation share the toolbar and can fill the PDF reader', () => {
+  const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const viewer = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+
+  assert.match(
+    reading,
+    /selectionResultKind =\s*floating === 'selection_translation' \|\| floating === 'selection_explanation'/
+  )
+  assert.match(
+    reading,
+    /selectionResultFillsReader \|\| selectionResultMark \? null : \(\s*selectionResultPanel\s*\)/
+  )
+  assert.match(
+    reading,
+    /expandedSelectionResult: selectionResultFillsReader \? selectionResultPanel : null/
+  )
+  assert.match(viewer, /data-testid="pdf-selection-result-expanded"/)
+})
+
+function readingExpression<Result>(
+  source: string,
+  select: (node: ts.Node) => boolean,
+  bindings: Record<string, unknown>
+): Result {
+  const root = ts.createSourceFile(
+    'Reading.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  )
+  const found: ts.Node[] = []
+  const visit = (node: ts.Node): void => {
+    if (select(node)) found.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(root)
+  assert.equal(found.length, 1, 'expected one production expression')
+  const compiled = ts.transpileModule(`return (${found[0].getText(root)})`, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2020,
+      module: ts.ModuleKind.None,
+      jsx: ts.JsxEmit.React,
+    },
+  }).outputText
+  return new Function(...Object.keys(bindings), compiled)(...Object.values(bindings)) as Result
+}
+
+test('PDF Escape clears temporary selections and active marking tools', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  for (const scenario of [
+    { activeTool: null, selections: [{}], activeMark: null },
+    { activeTool: null, selections: [], activeMark: 'saved-mark' },
+    { activeTool: 'highlight', selections: [{}], activeMark: null },
+    { activeTool: 'underline', selections: [{}], activeMark: null },
+  ]) {
+    let listener: ((event: unknown) => void) | undefined
+    const changes: unknown[] = []
+    const effect = readingExpression<() => (() => void) | undefined>(
+      source,
+      (node) =>
+        ts.isArrowFunction(node) &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression.getText() === 'useEffect' &&
+        node.getText().includes('const onEscape ='),
+      {
+        ...scenario,
+        active: true,
+        analysis: { figure: false },
+        controller: { getSnapshot: () => ({ focusedTabId: 'pdf' }) },
+        tabId: 'pdf',
+        window: {
+          addEventListener: (_type: string, callback: typeof listener) => {
+            listener = callback
+          },
+          removeEventListener: () => {
+            listener = undefined
+          },
+        },
+        setActiveTool: (value: unknown) => changes.push(['tool', value]),
+        setSelectionDragSpan: (value: unknown) => changes.push(['drag', value]),
+        clearSelection: () => changes.push('selection'),
+        exitFigureSelection: () => changes.push('figure'),
+      }
+    )
+    const cleanup = effect()
+    assert.ok(listener, JSON.stringify(scenario))
+    listener({ key: 'Escape', defaultPrevented: false, target: null, preventDefault: () => {} })
+    assert.deepEqual(changes, [['tool', null], ['drag', null], 'selection'])
+    cleanup?.()
+    assert.equal(listener, undefined)
+  }
+})
+
+test('PDF Escape respects focused documents, editable surfaces and consumed events', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  for (const scenario of ['other-tab', 'editable', 'consumed', 'composing', 'other-key']) {
+    let listener: ((event: unknown) => void) | undefined
+    const changes: unknown[] = []
+    const effect = readingExpression<() => (() => void) | undefined>(
+      source,
+      (node) =>
+        ts.isArrowFunction(node) &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression.getText() === 'useEffect' &&
+        node.getText().includes('const onEscape ='),
+      {
+        activeTool: 'highlight',
+        selections: [{}],
+        activeMark: null,
+        active: true,
+        analysis: { figure: false },
+        tabId: 'pdf',
+        controller: {
+          getSnapshot: () => ({ focusedTabId: scenario === 'other-tab' ? 'other' : 'pdf' }),
+        },
+        window: {
+          addEventListener: (_type: string, callback: typeof listener) => {
+            listener = callback
+          },
+          removeEventListener: () => {},
+        },
+        setActiveTool: () => changes.push('tool'),
+        setSelectionDragSpan: () => changes.push('drag'),
+        clearSelection: () => changes.push('selection'),
+        exitFigureSelection: () => changes.push('figure'),
+      }
+    )
+    effect()
+    listener?.({
+      key: scenario === 'other-key' ? 'Enter' : 'Escape',
+      defaultPrevented: scenario === 'consumed',
+      isComposing: scenario === 'composing',
+      target: scenario === 'editable' ? { closest: () => ({}) } : null,
+      preventDefault: () => {},
+    })
+    assert.deepEqual(changes, [], scenario)
+  }
+})
+
+test('collapsed PDF viewports retain their last readable geometry', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const host = { clientWidth: 600, clientHeight: 740, offsetWidth: 600 }
+  const sizes: unknown[] = []
+  let resize: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {}
+  const effect = readingExpression<() => (() => void) | undefined>(
+    source,
+    (node) =>
+      ts.isArrowFunction(node) &&
+      ts.isCallExpression(node.parent) &&
+      node.parent.expression.getText() === 'useLayoutEffect' &&
+      node.getText().includes('setSize(') &&
+      node.getText().includes('new ResizeObserver('),
+    {
+      viewportRef: { current: host },
+      setSize: (size: unknown) => sizes.push(size),
+      ResizeObserver: class {
+        constructor(callback: typeof resize) {
+          resize = callback
+        }
+        observe(): void {}
+        disconnect(): void {}
+      },
+    }
+  )
+  effect()
+  resize([{ contentRect: { width: 568, height: 708 } }])
+  host.clientWidth = 32
+  host.offsetWidth = 32
+  resize([{ contentRect: { width: 0, height: 708 } }])
+  assert.deepEqual(sizes, [{ width: 600, height: 740, outerWidth: 600 }])
+  host.clientWidth = 520
+  host.offsetWidth = 520
+  resize([{ contentRect: { width: 488, height: 708 } }])
+  assert.deepEqual(sizes.at(-1), { width: 520, height: 740, outerWidth: 520 })
+})
+
+test('PDF offscreen anchors remain usable only while the reader boundary has space', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  let boundary = { left: 20, right: 580, top: 20, bottom: 720 }
+  const viewport = readingExpression<
+    (host: unknown, selections: unknown[]) => { visible: boolean; point: { y: number } }
+  >(
+    source,
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'persistedSelectionViewport',
+    {
+      pdfSelectionBoundary: () => boundary,
+      enclosingRectangle: (rects: unknown[]) => rects[0],
+      selectionViewport: (rect: unknown, point: unknown, visible: boolean) => ({
+        rect,
+        point,
+        visible,
+      }),
+    }
+  )
+  for (const top of [-1000, 1500]) {
+    const host = {
+      querySelectorAll: () => [
+        {
+          dataset: { page: '1' },
+          getBoundingClientRect: () => ({ left: 0, top, width: 600, height: 800 }),
+        },
+      ],
+    }
+    const selections = [{ page: 1, quads: [[0.1, 0.1, 0.5, 0.2]] }]
+    assert.equal(viewport(host, selections).visible, true)
+    const readableBoundary = boundary
+    boundary = { ...boundary, right: boundary.left }
+    assert.equal(viewport(host, selections).visible, false)
+    boundary = readableBoundary
+  }
+})
+
+test('PDF selection visibility follows viewport resize and activation without clearing the selection', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  for (const active of [true, false]) {
+    const selection = { status: 'exact', locator: { kind: 'pdf' } }
+    const boundary = { left: 20, right: 580, top: 20, bottom: 720 }
+    let hostBoundary = boundary
+    const presentation = { point: { x: 100, y: 100 }, visible: true, boundary }
+    let viewport: typeof presentation | null = presentation
+    const published: { selection: unknown; visible: boolean }[] = []
+    const synchronize = readingExpression<() => void>(
+      source,
+      (node) =>
+        ts.isArrowFunction(node) &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression.getText() === 'useCallback' &&
+        node.getText().includes('persistedSelectionViewport'),
+      {
+        active,
+        viewportRef: { current: {} },
+        selections: [{}],
+        sessionId: 'session',
+        tabId: 'tab',
+        persistedSelectionViewport: () => viewport,
+        pdfSelectionBoundary: () => hostBoundary,
+        controller: {
+          getSnapshot: () => ({
+            sessions: { session: { selection } },
+            selectionPresentations: { tab: presentation },
+          }),
+          setSelection: (_tabId: string, selected: unknown, next: typeof presentation) =>
+            published.push({ selection: selected, visible: next.visible }),
+        },
+      }
+    )
+    let resize = (): void => {}
+    let windowResize: (() => void) | undefined
+    let disconnected = false
+    const effect = readingExpression<() => (() => void) | undefined>(
+      source,
+      (node) =>
+        ts.isArrowFunction(node) &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression.getText() === 'useLayoutEffect' &&
+        node.getText().includes('new ResizeObserver(syncSelectionViewport)'),
+      {
+        viewportRef: { current: {} },
+        syncSelectionViewport: synchronize,
+        window: {
+          addEventListener: (_name: string, callback: () => void) => {
+            windowResize = callback
+          },
+          removeEventListener: (_name: string, callback: () => void) => {
+            assert.equal(callback, windowResize)
+            windowResize = undefined
+          },
+        },
+        ResizeObserver: class {
+          constructor(callback: () => void) {
+            resize = callback
+          }
+          observe(): void {}
+          disconnect(): void {
+            disconnected = true
+          }
+        },
+      }
+    )
+    const cleanup = effect()
+    assert.deepEqual(published.at(-1), { selection, visible: active })
+    viewport = { ...presentation, visible: false }
+    resize()
+    assert.deepEqual(published.at(-1), { selection, visible: active })
+    hostBoundary = { ...boundary, right: boundary.left }
+    viewport = { ...presentation, boundary: hostBoundary }
+    windowResize?.()
+    assert.deepEqual(published.at(-1), { selection, visible: false })
+    viewport = null
+    resize()
+    assert.deepEqual(published.at(-1), { selection, visible: false })
+    hostBoundary = boundary
+    windowResize?.()
+    assert.deepEqual(published.at(-1), { selection, visible: active })
+    viewport = presentation
+    resize()
+    assert.deepEqual(published.at(-1), { selection, visible: active })
+    cleanup?.()
+    assert.equal(disconnected, true)
+    assert.equal(windowResize, undefined)
+  }
+})
+
+test('resizable document panels expand independently of content-owned header actions', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  let expanded: string | null = null
+  const toggle = readingExpression<(() => void) | undefined>(
+    source,
+    (node) =>
+      Boolean(node.parent) &&
+      ts.isJsxExpression(node.parent) &&
+      ts.isJsxAttribute(node.parent.parent) &&
+      node.parent.parent.name.getText() === 'onToggleExpanded' &&
+      node.getText().includes('activeDocumentPanel'),
+    {
+      activeDocumentPanel: { id: 'notes', headerActions: 'content', resizable: true },
+      setExpandedPanel: (update: (value: string | null) => string | null) => {
+        expanded = update(expanded)
+      },
+      preserveReadingPosition: () => {},
+    }
+  )
+  assert.equal(typeof toggle, 'function')
+  toggle?.()
+  assert.equal(expanded, 'notes')
+  toggle?.()
+  assert.equal(expanded, null)
+})
+
+test('PDF split layout includes opted-in document panels without changing fixed panels', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const value = <Result>(name: string, bindings: Record<string, unknown>): Result =>
+    readingExpression<Result>(
+      source,
+      (node) =>
+        Boolean(node.parent) &&
+        ts.isVariableDeclaration(node.parent) &&
+        node.parent.initializer === node &&
+        node.parent.name.getText() === name,
+      bindings
+    )
+  for (const scenario of [
+    { resizable: true, panel: null, expandedPanel: null, open: true, expanded: false },
+    { resizable: true, panel: null, expandedPanel: 'notes', open: true, expanded: true },
+    { resizable: false, panel: null, expandedPanel: null, open: false, expanded: false },
+    { resizable: true, panel: 'interpretation', expandedPanel: null, open: true, expanded: false },
+    {
+      resizable: true,
+      panel: 'document_translation',
+      expandedPanel: null,
+      open: false,
+      expanded: false,
+    },
+  ]) {
+    const bindings = {
+      activeDocumentPanel: { id: 'notes', resizable: scenario.resizable },
+      analysis: { panel: scenario.panel, panelExpanded: false, expandedSelectionResult: null },
+      expandedPanel: scenario.expandedPanel,
+    }
+    const resizableDocumentPanel = value<boolean>('resizableDocumentPanel', bindings)
+    assert.equal(
+      value<boolean>('readingPanelOpen', { ...bindings, resizableDocumentPanel }),
+      scenario.open
+    )
+    assert.equal(
+      value<boolean>('readingPanelExpanded', { ...bindings, resizableDocumentPanel }),
+      scenario.expanded
+    )
+  }
+  const feature = readFileSync(new URL('../literature/feature.tsx', import.meta.url), 'utf8')
+  const resizable = readingExpression<boolean>(
+    feature,
+    (node) =>
+      Boolean(node.parent) &&
+      ts.isPropertyAssignment(node.parent) &&
+      node.parent.name.getText() === 'resizable' &&
+      node.parent.initializer === node &&
+      node.parent.parent.getText().includes('id: LITERATURE_NOTES_PANEL_ID'),
+    {}
+  )
+  assert.equal(resizable, true)
+})
+
+test('a new PDF selection closes selection results without closing figure results', () => {
+  const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  for (const previous of [
+    'selection_translation',
+    'selection_explanation',
+    'figure_explanation',
+    null,
+  ]) {
+    let floating = previous
+    const effect = readingExpression<() => void>(
+      source,
+      (node) =>
+        ts.isArrowFunction(node) &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression.getText() === 'useEffect' &&
+        node.getText().includes('setSelectionExplanationSnapshot([])') &&
+        node.parent.getText().endsWith('[selectionIdentity])'),
+      {
+        selection: [{ page: 1, text: 'new selection' }],
+        setSelectionResultMark: () => {},
+        SELECTION_ACTIONS: new Set(['selection_translation', 'selection_explanation']),
+        setFloating: (update: (current: typeof floating) => typeof floating) => {
+          floating = update(floating)
+        },
+        setSelectionExplanationOpen: () => {},
+        setSelectionExplanationDraft: () => {},
+        setSelectionExplanationSnapshot: () => {},
+        setResults: () => {},
+      }
+    )
+    effect()
+    assert.equal(floating, previous === 'figure_explanation' ? previous : null)
+  }
+})
+
+test('comment editor persistence replaces only the requested annotation comments and preserves record identities', async () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const records = {
+    schema_version: 3,
+    marks: [
+      { id: 'selected', style: 'highlight' },
+      { id: 'other', style: 'comment' },
+    ],
+    comments: [
+      { id: 'first', mark_id: 'selected', body: 'original', created_at: 11 },
+      { id: 'second', mark_id: 'selected', body: 'another', created_at: 12 },
+      { id: 'unrelated', mark_id: 'other', body: 'keep', created_at: 13 },
+    ],
+    notes: [{ id: 'note', body: 'keep note' }],
+  }
+  const writes: Array<{ records: typeof records; focus: unknown }> = []
+  let succeeds = true
+  const update = readingExpression<
+    (markId: string, drafts: Array<{ id: string; body: string }>) => Promise<boolean>
+  >(
+    source,
+    (node) =>
+      Boolean(node.parent) &&
+      ts.isVariableDeclaration(node.parent) &&
+      node.parent.name.getText() === 'updateMarkComments' &&
+      node.parent.initializer === node,
+    {
+      sidecar: { records },
+      persistRecords: async (next: typeof records, { focus }: { focus: unknown }) => {
+        writes.push({ records: next, focus })
+        return succeeds
+      },
+    }
+  )
+  assert.equal(await update('selected', [{ id: 'first', body: ' edited ' }]), true)
+  assert.deepEqual(writes[0].records.comments, [
+    { id: 'first', mark_id: 'selected', body: 'edited', created_at: 11 },
+    records.comments[1],
+    records.comments[2],
+  ])
+  assert.equal(writes[0].records.comments[1], records.comments[1])
+  assert.equal(writes[0].records.comments[2], records.comments[2])
+  assert.equal(writes[0].records.marks, records.marks)
+  assert.equal(writes[0].records.notes, records.notes)
+  assert.equal(writes[0].records.schema_version, records.schema_version)
+  assert.equal(writes[0].focus, records.marks[0])
+  assert.equal(records.comments[0].body, 'original')
+  for (const [markId, drafts] of [
+    ['selected', [{ id: 'unrelated', body: 'wrong owner' }]],
+    ['selected', [{ id: 'missing', body: 'deleted comment' }]],
+    ['missing', [{ id: 'first', body: 'missing annotation' }]],
+    ['selected', [{ id: 'first', body: '  ' }]],
+    ['selected', []],
+  ] as const) {
+    assert.equal(await update(markId, [...drafts]), false)
+  }
+  assert.equal(writes.length, 1)
+  succeeds = false
+  assert.equal(await update('selected', [{ id: 'first', body: 'not saved' }]), false)
+  assert.equal(records.comments[0].body, 'original')
+})
+
+test('reader merge preserves target translation without task-specific display extensions', () => {
+  const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const document = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(
+    reading,
+    /literatureTranslationPreferences|setLiteratureTranslationChoice|readTranslationTypography|translationRefreshPending|TranslationLayout|translationControlsOpen/
+  )
+  assert.doesNotMatch(
+    document,
+    /automaticTranslationSelection|handleTextLayer|translationColumnMinimum/
+  )
+  assert.match(reading, /run\(\s*'document_translation'/)
+  assert.match(reading, /translationDirty\(value, appliedTranslations\[kind\]\)/)
+  assert.match(reading, /pdfSelectionRefreshPending/)
+  assert.match(document, /onCommentRail=\{handleCommentRail\}/)
+  assert.match(document, /const consumedAnnotationFocus/)
+})
+
+test('PDF toolbar uses the target preference owner when available and local fallback otherwise', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const evaluate = <Result>(name: string, bindings: Record<string, unknown>): Result =>
+    readingExpression<Result>(
+      source,
+      (node) =>
+        Boolean(node.parent) &&
+        ts.isVariableDeclaration(node.parent) &&
+        node.parent.name.getText() === name &&
+        node.parent.initializer === node,
+      bindings
+    )
+  for (const backendAvailable of [false, true]) {
+    for (const toolbar of [false, true]) {
+      for (const fallback of [false, true]) {
+        const updates: unknown[] = []
+        const localUpdates: boolean[] = []
+        const bindings = {
+          translationBackend: backendAvailable
+            ? { update: (patch: unknown) => updates.push(patch) }
+            : null,
+          translationSettings: backendAvailable ? { toolbar, preferencesReady: true } : null,
+          appState: { pdfSelectionToolbarEnabled: fallback },
+          appActions: {
+            setPdfSelectionToolbarEnabled: (value: boolean) => localUpdates.push(value),
+          },
+        }
+        assert.equal(
+          evaluate('selectionToolbarEnabled', bindings),
+          backendAvailable ? toolbar : fallback
+        )
+        const selectionToolbarDisabled = evaluate<boolean>('selectionToolbarDisabled', bindings)
+        assert.equal(selectionToolbarDisabled, false)
+        const update = evaluate<(value: boolean) => void>('setSelectionToolbarEnabled', {
+          ...bindings,
+          selectionToolbarDisabled,
+          useCallback: (callback: unknown) => callback,
+        })
+        update(false)
+        assert.deepEqual(updates, backendAvailable ? [{ toolbar: false }] : [])
+        assert.deepEqual(localUpdates, backendAvailable ? [] : [false])
+      }
+    }
+  }
+  for (const settings of [
+    { preferencesReady: false },
+    { preferencesReady: true, preferencesSaving: true },
+  ]) {
+    const updates: unknown[] = []
+    const bindings = {
+      translationBackend: { update: (patch: unknown) => updates.push(patch) },
+      translationSettings: settings,
+      appActions: { setPdfSelectionToolbarEnabled: () => assert.fail('wrong owner') },
+    }
+    const selectionToolbarDisabled = evaluate<boolean>('selectionToolbarDisabled', bindings)
+    assert.equal(selectionToolbarDisabled, true)
+    const update = evaluate<(value: boolean) => void>('setSelectionToolbarEnabled', {
+      ...bindings,
+      selectionToolbarDisabled,
+      useCallback: (callback: unknown) => callback,
+    })
+    update(true)
+    assert.deepEqual(updates, [])
+  }
+})
+
 test('PDF evidence navigation groups duplicate pages without losing supporting quotes', () => {
   const anchors = [
     { page: 2, quote: 'B' },
@@ -29,6 +595,23 @@ test('PDF evidence navigation groups duplicate pages without losing supporting q
   ])
   assert.equal(anchors.length, 4)
   assert.deepEqual(evidencePages(), [])
+})
+
+test('note source annotation focus requires a current exact mark and preserves right panels', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const focus = source.slice(
+    source.indexOf('const consumedAnnotationFocus'),
+    source.indexOf('if (query.trim())')
+  )
+  assert.match(source, /reading\?\.\[ANNOTATION_VIEW_STATE_KEY\]/)
+  assert.match(focus, /annotationFocus\.revision !== session\?\.revision/)
+  assert.match(focus, /sidecar\?\.source_revision !== session\.revision/)
+  assert.match(focus, /candidate\.id === annotationFocus\.markId/)
+  assert.match(focus, /candidate\.page === annotationFocus\.page/)
+  assert.match(focus, /candidate\.anchor_state === 'anchored'/)
+  assert.match(focus, /setActiveMark\(mark.id\)/)
+  assert.match(focus, /requestFocus\(\{ kind: 'annotation', page: mark\.page, id: mark\.id \}\)/)
+  assert.doesNotMatch(focus, /closeDocumentPanel|setPanel|setSelection/)
 })
 
 test('figure explanation omits page navigation while other reading outputs retain it', () => {
@@ -51,17 +634,23 @@ test('PDF rail actions are icon-only and side panels can fill the PDF area', () 
     new URL('../../components/primitive/FloatingWindow.tsx', import.meta.url),
     'utf8'
   )
-  assert.match(
-    document,
-    /data-testid="pdf-annotation-toggle"[^>]*label=\{t\('pdfAnnotation\.records'\)\}/
-  )
+  assert.doesNotMatch(document, /data-testid="pdf-annotation-toggle"/)
+  assert.match(document, /data-testid="pdf-annotations-tab"/)
   assert.match(document, /<nav\s+aria-label=\{t\('pdfToolbar\.toolbar'\)\}[^>]*items-center/)
   assert.match(document, /const label = panel\.label\(i18n\)/)
+  assert.ok(
+    document.indexOf("{documentPanelActions('start')}") < document.indexOf('{analysis.railActions}')
+  )
+  assert.ok(
+    document.indexOf('{analysis.railActions}') < document.indexOf("{documentPanelActions('end')}")
+  )
+  assert.match(document, /icon=\{panel\.icon \?\? <NotepadText/)
+  assert.doesNotMatch(document, /literature-information/)
   assert.match(
     document,
     /<Tooltip key=\{panel\.id\} portalled content=\{label\} side="left">[\s\S]*data-testid=\{`document-panel-toggle-\$\{panel\.id\}`\}[\s\S]*label=\{label\}[\s\S]*title=\{undefined\}/
   )
-  assert.match(
+  assert.doesNotMatch(
     document,
     /<Tooltip portalled content=\{t\('pdfAnnotation\.records'\)\} side="left">/
   )
@@ -80,7 +669,7 @@ test('PDF rail actions are icon-only and side panels can fill the PDF area', () 
   )
   assert.match(
     panel,
-    /className="flex min-h-\[var\(--vds-workbench-header-height\)\] items-center justify-between gap-\[var\(--vds-space-2\)\][^"\n]*px-\[var\(--vds-space-3\)\] py-\[var\(--vds-space-2\)\]"/
+    /className=\{`flex min-h-\[var\(--vds-workbench-header-height\)\] items-center justify-between gap-\[var\(--vds-space-2\)\][^\n]*headerSeparator \? 'px-\[var\(--vds-space-3\)\]' : 'px-\[var\(--vds-space-4\)\]'[^\n]*py-\[var\(--vds-space-2\)\]/
   )
   assert.match(panel, /icon=\{<Icon name="close" size=\{14\} \/>\}/)
   assert.match(floatingWindow, /data-testid="floating-window-toggle-size"/)
@@ -126,9 +715,9 @@ test('figure explanation keeps a stable toolbar button and replaces in-flight st
   assert.match(en.reading.figureUnavailable, /current model.*image input/i)
   assert.match(
     reading,
-    /action !== 'figure_explanation' &&\s*action !== 'document_translation' &&\s*action !== 'formula_latex' &&\s*jobBusy\(job\)/
+    /action !== 'figure_explanation' &&\s*action !== 'document_translation' &&\s*action !== 'selection_translation' &&\s*action !== 'selection_explanation' &&\s*action !== 'formula_latex' &&\s*jobBusy\(job\)/
   )
-  assert.match(reading, /floating !== 'figure_explanation' && canAnnotate/)
+  assert.match(reading, /selectionResultKind \? \(\s*<section/)
   assert.match(reading, /<FigureGuide t=\{t\}/)
   assert.match(reading, /const FIGURE_GUIDE_SCALE = 4 \/ 7/)
   assert.match(
@@ -137,9 +726,14 @@ test('figure explanation keeps a stable toolbar button and replaces in-flight st
   )
   assert.match(reading, /zoom: FIGURE_GUIDE_SCALE/)
   assert.match(reading, /gridTemplateColumns: '220px minmax\(0, 1fr\)'/)
-  assert.match(reading, /variant=\{figure \? 'primary' : 'outline'\}/)
+  assert.match(
+    reading,
+    /<IconButton\s+data-testid="pdf-figure-explanation"[\s\S]*?aria-pressed=\{figure\}[\s\S]*?variant="ghostIcon"/
+  )
+  assert.match(reading, /<Button\s+data-testid="pdf-figure-explanation"/)
+  assert.match(reading, /\{t\('reading.figure'\)\}\s*<\/Button>/)
   expressions(reading)(
-    "() => { setFloating(null); if (floating === 'figure_explanation') { void cancel('figure_explanation'); exitFigureSelection() } }"
+    "() => { setFloating(null); void cancel('figure_explanation'); exitFigureSelection() }"
   )
   assert.match(reading, /figurePromptGuide/)
   assert.match(reading, /<HoverCardTrigger\s+asChild\s+onClick=/)
@@ -241,7 +835,7 @@ test('PDF surfaces exit figure selection through one transition', () => {
   )
   assert.match(
     reading,
-    /toggleDocumentTranslation[\s\S]*exitFigureSelection\(\)[\s\S]*onExclusiveSurfaceOpen\(\)/
+    /changeTranslationMenu[\s\S]*exitFigureSelection\(\)[\s\S]*onExclusiveSurfaceOpen\(\)/
   )
   assert.match(
     viewer,
@@ -255,12 +849,15 @@ test('PDF surfaces exit figure selection through one transition', () => {
     viewer,
     /data-testid=\{`document-panel-toggle-\$\{panel\.id\}`\}[\s\S]*exitFigureSelection\(\)[\s\S]*documentPanels\.toggle\(panel\.id\)/
   )
-  assert.match(viewer, /data-testid="pdf-annotation-toggle"[\s\S]*exitFigureSelection\(\)/)
+  assert.match(viewer, /<TabsContent value="annotations"[\s\S]*<PdfAnnotations/)
 })
 
 test('literature AI actions expose independent persisted model selectors', () => {
   const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
-  const viewer = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const shared = readFileSync(
+    new URL('../../components/business/Reading.tsx', import.meta.url),
+    'utf8'
+  )
   assert.match(
     source,
     /import \{ ModelMenu \} from '\.\.\/\.\.\/\.\.\/components\/business\/ModelMenu'/
@@ -269,9 +866,14 @@ test('literature AI actions expose independent persisted model selectors', () =>
   assert.match(source, /state\.literatureAiModels/)
   assert.match(source, /actions\.setLiteratureAiModel\(kind, model\.key\)/)
   assert.match(source, /modelControl\('figure_explanation', true\)/)
-  assert.match(source, /modelControl\('document_translation'\)/)
-  assert.match(source, /modelControl\('interpretation'\)/)
-  assert.match(source, /modelControl\('selection_explanation'\)/)
+  assert.match(source, /modelControl\('document_translation', false, 'engine'\)/)
+  assert.match(shared, /act\.setLiteratureAiModel\('interpretation', model\.key\)/)
+  assert.match(shared, /testIdPrefix="pdf-interpretation-model"/)
+  assert.match(
+    source,
+    /floating === 'selection_translation' \|\| floating === 'selection_explanation'/
+  )
+  assert.match(source, /modelControl\(selectionResultKind\)/)
   assert.match(source, /new Set<PdfAction>\(LITERATURE_AI_MODEL_ACTIONS\)/)
   assert.match(source, /data-testid=\{`pdf-\$\{floating\}-regenerate`\}/)
   assert.match(
@@ -280,12 +882,33 @@ test('literature AI actions expose independent persisted model selectors', () =>
   )
   assert.match(source, /modelFilter=\{multimodal \? MULTIMODAL_MODEL_FILTER : undefined\}/)
   assert.match(source, /kind === 'formula_latex' \? 'figure_explanation' : kind/)
-  assert.match(source, /const modelKey = actionModelKey\(kind\)/)
+  const modelKey = (choice: { engine: string } | null): string =>
+    readingExpression<string>(
+      source,
+      (node) =>
+        ts.isConditionalExpression(node) &&
+        ts.isVariableDeclaration(node.parent) &&
+        node.parent.name.getText() === 'modelKey',
+      {
+        choice,
+        AI_ENGINE_PREFIX: 'ai:',
+        kind: 'selection_explanation',
+        state: { catalog: { models: [{ key: 'available', disabled: false }] } },
+        actionModelKey: (kind: string) => `action:${kind}`,
+        translationModelKey: (value: { engine: string }, available: string[]) => {
+          assert.deepEqual(available, ['available'])
+          return value.engine
+        },
+      }
+    )
+  assert.equal(modelKey(null), 'action:selection_explanation')
+  assert.equal(modelKey({ engine: 'ai:' }), 'action:selection_explanation')
+  assert.equal(modelKey({ engine: 'ai:chosen' }), 'ai:chosen')
   assert.match(source, /model_key: modelKey,\s*kind/)
   assert.match(source, /literature_id: literatureId,\s*attachment_id: attachmentId/)
-  assert.match(
-    viewer,
-    /usePdfAnalysis\(\{\s*active,\s*literatureId,\s*literatureTitle: excerptSource\?\.literatureId === literatureId \? excerptSource\.title : '',\s*attachmentId/
+  documentExpressions(
+    "excerptSource?.literatureId === literatureId ? excerptSource.title : ''",
+    'analysis'
   )
 })
 
@@ -295,7 +918,11 @@ test('PDF explanation requests follow the committed interface language', () => {
 
   assert.match(source, /pdfResponseLanguage\(i18n\.resolvedLanguage \|\| i18n\.language\)/)
   assert.match(source, /response_language: responseLanguage/)
-  assert.match(source, /data\.interpretation\.response_language !== responseLanguage/)
+  const shared = readFileSync(
+    new URL('../../components/business/Reading.tsx', import.meta.url),
+    'utf8'
+  )
+  assert.match(shared, /startsWith\('en'\) \? 'en' : 'zh'/)
   assert.match(analysis, /startsWith\('en'\) \? 'en' : 'zh'/)
 })
 
@@ -313,19 +940,28 @@ const BROKEN_CONTENTS_PDF = new URL(
   import.meta.url
 )
 
-test('selection actions replace in-flight work and never present a previous selection result', () => {
+test('selection actions hide previous results while generating explanation or translation', () => {
   const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
-  assert.match(
-    source,
-    /lastRequest.current\?\.kind === 'selection_translation'\s*\? lastRequest.current.text/
-  )
-  assert.match(source, /<p>\{translationSource\}<\/p>/)
+  assert.match(source, /selectionRefreshPending/)
+  expressions(source)('(model) => actions.setLiteratureAiModel(kind, model.key)', {
+    attribute: 'onModelSelect',
+  })
   assert.match(source, /REPLACEABLE_ACTIONS\.has\(kind\)/)
   assert.match(source, /const \{ \[kind\]: _stale, \.\.\.remaining \} = previous/)
-  assert.match(
-    source,
-    /const floatingResult = floating && !busy \? results\[floating\] : undefined/
-  )
+  for (const floating of ['selection_explanation', 'selection_translation']) {
+    for (const busy of [false, true]) {
+      const previous = { text: 'previous result' }
+      const result = readingExpression(
+        source,
+        (node) =>
+          ts.isConditionalExpression(node) &&
+          ts.isVariableDeclaration(node.parent) &&
+          node.parent.name.getText() === 'floatingResult',
+        { floating, busy, results: { [floating]: previous } }
+      )
+      assert.equal(result, !busy ? previous : undefined)
+    }
+  }
   assert.doesNotMatch(source, /reading\.previousSource/)
   assert.doesNotMatch(source, /previousTranslation/)
 })
@@ -336,10 +972,29 @@ test('PDF actions isolate requests and allow a new selection to replace busy wor
   assert.doesNotMatch(source, /disabled=\{isBusy\('selection_explanation'\)\}/)
   assert.doesNotMatch(source, /disabled=\{isBusy\('selection_translation'\)\}/)
   assert.match(source, /REPLACEABLE_ACTIONS\.has\(kind\)/)
-  assert.match(source, /feedback\(panel\)/)
-  assert.match(source, /feedback\(floating\)/)
+  assert.match(source, /<PaperReading\s/)
+  assert.match(source, /feedback\(selectionResultKind\)/)
   assert.match(source, /cancel\(kind\)/)
   assert.doesNotMatch(source, /if \(busy\) return/)
+})
+
+test('hidden remembered document panels do not reserve PDF track width', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  for (const panel of [null, 'document_translation', 'interpretation']) {
+    const activeDocumentPanelId = 'reader-notes'
+    const analysis = { panel, sidePanel: panel === 'interpretation' ? {} : null }
+    const open = readingExpression<boolean>(
+      source,
+      (node) =>
+        Boolean(node.parent) &&
+        ts.isVariableDeclaration(node.parent) &&
+        node.parent.name.getText() === 'rightPanelOpen' &&
+        node.parent.initializer === node,
+      { analysis, activeDocumentPanelId }
+    )
+    assert.equal(open, panel !== 'document_translation')
+    assert.equal(activeDocumentPanelId, 'reader-notes')
+  }
 })
 
 test('document translation pairs every PDF page with a same-scale translation page in one scroll flow', () => {
@@ -348,24 +1003,6 @@ test('document translation pairs every PDF page with a same-scale translation pa
   const panelSource = readFileSync(new URL('./pdf/Panel.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /data-testid="pdf-document-translation"/)
-  assert.match(source, /checked=\{automaticTranslation\}/)
-  assert.match(
-    source,
-    /onCheckedChange=\{\(checked\) => changeAutomaticTranslation\(checked, sourcePage\)\}/
-  )
-  assert.match(source, /onClick=\{\(\) => runTranslationPage\(sourcePage\)\}/)
-  assert.match(
-    source,
-    /<Tooltip\s+portalled\s+content=\{content \? t\('reading\.retranslate'\) : t\('reading\.translatePage'\)\}\s+side="top"\s*>/
-  )
-  assert.match(
-    source,
-    /page === sourcePage \? \(\s*<Tooltip\s+portalled\s+content=\{content \? t\('reading\.retranslate'\) : t\('reading\.translatePage'\)\}/
-  )
-  assert.match(
-    source,
-    /data-testid=\{`pdf-translation-retry-\$\{sourcePage\}`\}[\s\S]*className="ml-auto"[\s\S]*icon=\{<RefreshCw size=\{14\} \/>\}[\s\S]*size="sm"[\s\S]*variant="ghostIcon"/
-  )
   assert.match(
     source,
     /className="box-border flex flex-col overflow-hidden rounded-none! !\[border:0\] bg-\[var\(--vds-bg-white-default\)\] !\[box-shadow:none\]"/
@@ -376,78 +1013,65 @@ test('document translation pairs every PDF page with a same-scale translation pa
   )
   assert.match(
     source,
-    /<CardHeader className="relative mb-0 border-b border-\[var\(--vds-border-default\)\] bg-transparent/
+    /<CardHeader className="relative mb-0 flex! flex-wrap items-center justify-between border-b/
   )
-  assert.match(source, /className="grid min-w-0 gap-\[var\(--vds-space-2\)\]"/)
-  assert.equal(
-    source
-      .slice(
-        source.indexOf('const translationPage ='),
-        source.indexOf('const interpretationCanGenerate =')
-      )
-      .match(/className="flex min-w-0 items-center gap-\[var\(--vds-space-2\)\]"/g)?.length,
-    2
+  const translationPage = source.slice(
+    source.indexOf('const translationPage ='),
+    source.indexOf('function modelControl')
   )
-  assert.match(
-    source,
-    /className="shrink-0 text-\[length:var\(--vds-font-body-lv1\)\]! leading-\[var\(--vds-lh-body-lv1\)\]!"/
-  )
-  assert.match(
-    source,
-    /data-testid=\{`pdf-translation-close-\$\{sourcePage\}`\}[\s\S]*icon=\{<X size=\{14\} \/>\}[\s\S]*size="sm"[\s\S]*className="ml-auto"/
-  )
-  assert.doesNotMatch(
-    source,
-    /data-testid=\{`pdf-translation-auto-\$\{sourcePage\}`\}[\s\S]*variant="text"/
-  )
-  assert.match(
-    source,
-    /shrink-0 \[&_button\]:!w-auto \[&_button\]:!min-w-0 \[&_button\]:!px-\[var\(--vds-space-2\)\]/
-  )
-  assert.doesNotMatch(source, /w-\[var\(--vds-layout-pdf-translation-language-width\)\]/)
-  assert.match(source, /<Translation\s+sentences=\{content\.blocks\}[\s\S]*?compact\s+\/>/)
+  const pageHeader = translationPage.slice(0, translationPage.indexOf('</CardHeader>'))
+  assert.match(pageHeader, /\{sourcePage\}\/\{pageCount\}/)
+  assert.match(pageHeader, /reading\.retranslatePage/)
+  assert.match(pageHeader, /reading\.copyTranslationPage/)
+  assert.match(pageHeader, /reading\.hideTranslationPage/)
+  assert.doesNotMatch(pageHeader, /<Switch|modelControl\(/)
+  assert.match(translationPage, /waiting \|\| pageBusy/)
+  assert.match(translationPage, /setTranslationPageClosed\(sourcePage, false\)/)
+  assert.match(translationPage, /reading\.openTranslationPage/)
+  assert.match(translationPage, /onClick=\{\(\) => runTranslationPage\(sourcePage\)\}/)
+  assert.match(source, /<Translation\s+sentences=\{content\.blocks\}[\s\S]*?compact\s+sections/)
   const translation = readFileSync(new URL('./pdf/Translation.tsx', import.meta.url), 'utf8')
   assert.match(
     translation,
-    /compact \? 'text-\[length:var\(--vds-font-body-lv2\)\] font-\[var\(--vds-fw-regular\)\] leading-\[var\(--vds-pdf-translation-line-height\)\]' : 'text-sm leading-\[var\(--vds-pdf-reading-content-line-height\)\]'/
+    /compact \? 'text-\[length:var\(--vds-pdf-translation-body-font-size\)\] font-\[var\(--vds-fw-regular\)\] leading-\[var\(--vds-pdf-translation-line-height\)\]' : 'text-sm leading-\[var\(--vds-pdf-reading-content-line-height\)\]'/
   )
-  assert.match(translation, /sentence\.heading === true && !compact \? 'font-semibold' : ''/)
-  assert.match(translation, /compact \? 'block h-\[var\(--vds-space-1\)\]' : 'block h-4'/)
-  assert.match(source, /setAutomaticTranslation\(true\)/)
-  assert.match(source, /runTranslationPage\(page, next\)/)
-  assert.match(source, /aria-pressed=\{automaticTranslation\}/)
-  assert.match(source, /variant=\{automaticTranslation \? 'primary' : 'ghost'\}/)
+  assert.match(translation, /sentence\.heading \? 'font-\[var\(--vds-fw-semibold\)\]' : ''/)
+  assert.match(translation, /data-translation-paragraph=\{node\.id\}/)
+  const menu = source.slice(source.indexOf('<Popover open={translationMenuOpen}'))
+  assert.match(menu, /aria-pressed=\{panel === 'document_translation'\}/)
+  assert.match(menu, /onCheckedChange=\{changeDocumentTranslation\}/)
+  assert.match(menu, /checked=\{automaticTranslation\}/)
   assert.match(
-    source,
-    /onCheckedChange=\{\(checked\) => changeAutomaticTranslation\(checked, sourcePage\)\}/
+    menu,
+    /localStorage\.setItem\(\s*PDF_AUTOMATIC_TRANSLATION_PREFERENCE,\s*checked \? 'on' : 'off'\s*\)/
   )
+  assert.match(menu, /modelControl\('document_translation', false, 'languages'\)/)
   const automaticToggle = source.slice(
     source.indexOf('const changeAutomaticTranslation'),
     source.indexOf('useEffect(() => {', source.indexOf('const changeAutomaticTranslation'))
   )
-  assert.match(automaticToggle, /if \(!checked\) return/)
+  assert.match(automaticToggle, /if \(!checked\) \{\s+setAutomaticTranslation\(false\)/)
+  assert.match(automaticToggle, /automaticTranslationRequest\.current && isBusy/)
+  assert.match(automaticToggle, /reading\.automaticTranslationPaused/)
   assert.doesNotMatch(automaticToggle, /setPanel\(null\)/)
-  const documentToggle = source.slice(
-    source.indexOf('const toggleDocumentTranslation'),
+  const openMenu = source.slice(
+    source.indexOf('const changeTranslationMenu'),
     source.indexOf('const selectPanel')
   )
-  assert.match(documentToggle, /changeAutomaticTranslation\(!automaticTranslation, page\)/)
-  assert.doesNotMatch(documentToggle, /setPanel\(null\)/)
+  assert.match(openMenu, /setPanel\('document_translation'\)/)
+  assert.match(openMenu, /localStorage\.getItem\(PDF_AUTOMATIC_TRANSLATION_PREFERENCE\) !== 'off'/)
   assert.match(source, /translationOpen: panel === 'document_translation'/)
   assert.match(source, /translationPage,/)
   assert.match(
     source,
     /style=\{\{ width: pageSize\.width, height: pageSize\.height, zoom: pageScale \}\}/
   )
-  assert.match(
-    source,
-    /<CardContent className="min-h-0 flex-1 overflow-y-auto p-\[var\(--vds-space-5\)\]">/
-  )
+  assert.match(source, /<CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain /)
   assert.match(source, /data-testid=\{`pdf-translation-page-\$\{sourcePage\}`\}/)
   assert.match(documentSource, /data-testid=\{`pdf-page-pair-\$\{number\}`\}/)
   assert.match(
     documentSource,
-    /shadow-\[var\(--vds-shadow-2-center\)\][\s\S]*\[&>\.vds-pdf-page\]:m-0 \[&>\.vds-pdf-page\]:!\[box-shadow:none\]/
+    /shadow-\[var\(--vds-shadow-2-center\)\][\s\S]*\[&>\.vds-pdf-page-frame\]:m-0 \[&_\.vds-pdf-page\]:!\[box-shadow:none\]/
   )
   assert.match(
     documentSource,
@@ -455,47 +1079,58 @@ test('document translation pairs every PDF page with a same-scale translation pa
   )
   assert.match(
     documentSource,
-    /'--pdf-source-page-width': `\$\{estimatedPageSize\.width \* scale\}px`/
+    /'--pdf-source-page-width': `\$\{translationSourceWidth \* scale\}px`/
   )
-  assert.match(documentSource, /TRANSLATION_COLUMN_RATIO/)
+  assert.match(documentSource, /hideCommentPins=\{analysis\.translationOpen\}/)
+  assert.match(documentSource, /bg-transparent! before:invisible hover:before:visible/)
+  assert.match(
+    documentSource,
+    /translationWidthRatio\(reading\?\.\[PDF_TRANSLATION_WIDTH_STATE_KEY\]\)/
+  )
+  assert.match(documentSource, /translationSpreadSize\(translationSourceSize, translationRatio\)/)
+  assert.match(documentSource, /size\.outerWidth > PDF_WIDE_TRANSLATION_MIN_WIDTH/)
+  assert.match(documentSource, /size\.outerWidth - PDF_WIDE_TRANSLATION_GUTTER/)
+  assert.match(documentSource, /data-testid=\{`pdf-translation-resize-\$\{number\}`\}/)
   documentExpressions(
     '(open: boolean): void => { setTranslationLayoutOpen(open); if (open) set({ modulePanelOpen: false }) }',
     'handleDocumentTranslationChange'
   )
   assert.match(documentSource, /onDocumentTranslationChange: handleDocumentTranslationChange/)
   documentExpressions(
-    'analysis.translationPage(number, { width: estimatedPageSize.width * scale * TRANSLATION_COLUMN_RATIO, height: estimatedPageSize.height * scale }, 1)'
+    'analysis.translationPage(number, { width: translationSourceWidth * scale * translationRatio, height: loadedPage?.getViewport({ scale }).height ?? estimatedPageSize.height * scale }, 1)'
   )
   assert.match(
     documentSource,
-    /gridTemplateColumns: `\$\{estimatedPageSize\.width \* scale\}px \$\{estimatedPageSize\.width \* scale \* TRANSLATION_COLUMN_RATIO\}px`/
+    /gridTemplateColumns: `var\(--pdf-source-page-width\) \$\{translationSourceWidth \* scale \* translationRatio\}px`/
   )
   assert.doesNotMatch(documentSource, /items-start gap-\[var\(--vds-space-4\)\]/)
   assert.match(
     documentSource,
-    /const rightPanelOpen = Boolean\(analysis\.sidePanel \|\| recordsOpen \|\| activeDocumentPanelId\)/
+    /const rightPanelOpen = Boolean\(analysis\.sidePanel \|\| \(activeDocumentPanelId && !analysis\.panel\)\)/
   )
   assert.doesNotMatch(source, /translationPanelRef|pdf-translation-panel|translationCard\(page\)/)
   assert.doesNotMatch(panelSource, /layout\?: 'overlay' \| 'split'|vds-pdf-panel--split/)
   assert.doesNotMatch(source, /reading\.translateAll/)
 })
 
-test('AI interpretation opens idle and starts only from the summary action', () => {
+test('AI interpretation opens saved state and generates only on explicit action', () => {
   const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
-
+  const shared = readFileSync(
+    new URL('../../components/business/Reading.tsx', import.meta.url),
+    'utf8'
+  )
   const toggle = source.slice(
     source.indexOf('const toggleInterpretation'),
-    source.indexOf('const toggleDocumentTranslation')
+    source.indexOf('const changeTranslationMenu')
   )
-  assert.doesNotMatch(toggle, /run\('interpretation'\)/)
   assert.match(source, /data-testid="pdf-interpretation"/)
-  assert.match(source, /data-testid="pdf-generate-summary"[\s\S]*run\('interpretation'\)/)
   assert.doesNotMatch(source, /reading\.documentScope/)
-  assert.match(
-    source,
-    /: \(\s*!isBusy\('interpretation'\) && \(\s*<div className="grid gap-\[var\(--vds-space-5\)\] p-\[var\(--vds-space-5\)\]">/
-  )
-  assert.match(source, /footer=\{\s*<footer/)
+  assert.match(source, /<FloatingWindow[\s\S]*footer=\{/)
+  assert.doesNotMatch(toggle, /run\('interpretation'\)|generateReading/)
+  assert.match(source, /<PaperReading\s/)
+  assert.match(shared, /void readReading\(/)
+  assert.match(shared, /data-testid="pdf-generate-summary"[\s\S]*onClick=\{\(\) => void run\(\)\}/)
+  assert.match(shared, /return generateReading\(/)
 })
 
 test('the Electron PDF adapter uses the legacy-compatible PDF.js entry and matching worker', () => {
@@ -512,16 +1147,44 @@ test('PDF pages expose URI annotations through the default-browser bridge', () =
   assert.match(source, /window\.scholarseed\.openExternal\(link\.url\)/)
 })
 
-test('PDF toolbar uses S controls with visible and ghost group spacing', () => {
+test('PDF toolbar uses 32px icon controls with visible and ghost group spacing', () => {
   const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
   const tools = readFileSync(new URL('./pdf/Tools.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /vds-pdf-tools[^"\n]*min-h-12/u)
-  assert.match(source, /justify-self-start[^"\n]*gap-\[var\(--vds-space-2\)\]/u)
-  assert.match(source, /justify-self-end[^"\n]*gap-\[var\(--vds-space-2\)\]/u)
+  assert.ok(source.includes('[&_.vds-icon-button]:!size-[var(--vds-control-height-md)]'))
+  assert.ok(source.includes('[&_button[role=tab]]:!size-[var(--vds-control-height-md)]'))
+
+  assert.match(
+    source,
+    /vds-pdf-tools[^"\n]*min-h-\[var\(--vds-library-toolbar-height\)\][^"\n]*flex-wrap/u
+  )
+  assert.match(
+    source,
+    /flex min-w-0 flex-1 flex-wrap items-center justify-center gap-\[var\(--vds-toolbar-icon-gap\)\]/u
+  )
+  assert.match(source, /!absolute left-\[var\(--vds-space-3\)\] top-\[var\(--vds-space-2\)\]/u)
   assert.match(source, /size="sm"[^>]*data-testid="pdf-sidebar-toggle"/u)
   assert.doesNotMatch(source, /data-testid="pdf-search-open"/u)
   assert.match(tools, /gap-\[var\(--vds-toolbar-icon-gap\)\][^>]*data-pdf-annotation-tools/u)
+})
+
+test('PDF sidebar toggle uses primary text when active and secondary text on inactive hover', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  assert.match(
+    source,
+    /data-testid="pdf-sidebar-toggle"\s+className="hover:!text-\[var\(--vds-text-secondary\)\] aria-pressed:!text-\[var\(--vds-text-primary\)\] hover:\[&_svg\]:!text-\[var\(--vds-text-secondary\)\] aria-pressed:\[&_svg\]:!text-\[var\(--vds-text-primary\)\] aria-pressed:hover:!text-\[var\(--vds-text-primary\)\] aria-pressed:hover:\[&_svg\]:!text-\[var\(--vds-text-primary\)\]"\s+aria-pressed=\{sidebar\}/u
+  )
+})
+
+test('PDF mark-only tools do not render a trailing divider', () => {
+  const source = readFileSync(new URL('./pdf/Tools.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /compact && section !== 'comment' && \(\s*<Divider/u)
+  assert.equal((source.match(/compact && section === 'all' && \(\s*<Divider/gu) ?? []).length, 2)
+  const document = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  assert.match(
+    document,
+    /actions: \(\s*<>\s*<PdfTools\s+section="marks"[\s\S]*?\/>\s*<Divider\s+orientation="vertical"/u
+  )
 })
 
 test('PDF page number uses a plain numeric text input without stepper controls', () => {
@@ -529,6 +1192,10 @@ test('PDF page number uses a plain numeric text input without stepper controls',
 
   assert.match(source, /data-testid="pdf-page-input"[^>]*type="text"[^>]*inputMode="numeric"/u)
   assert.doesNotMatch(source, /data-testid="pdf-page-input"[^>]*type="number"/u)
+  assert.match(
+    source,
+    /<span className="[^"]*text-\[length:var\(--vds-font-body-lv1\)\][^"]*\[font-weight:var\(--vds-fw-regular\)\][^"]*text-\[var\(--vds-text-tertiary\)\][^"]*">\s*\/ \{pageCount/u
+  )
 })
 
 test('PDF selection is tab-scoped and clears the shared selection when the DOM selection is empty', () => {
@@ -597,8 +1264,12 @@ test('PDF records use explicit marks, comments and notes and export underlines',
   const contract = readFileSync(new URL('../../contracts/workbench.ts', import.meta.url), 'utf8')
   const exporter = readFileSync(new URL('./pdf/export.ts', import.meta.url), 'utf8')
 
-  assert.match(contract, /interface PdfMarkRecord/)
-  assert.match(contract, /style: 'highlight' \| 'underline' \| 'strikethrough'/)
+  assert.match(contract, /type PdfMarkRecord = PdfTextMarkRecord \| PdfPointMarkRecord/)
+  assert.match(contract, /type PdfTextMarkStyle = 'highlight' \| 'underline' \| 'strikethrough'/)
+  assert.match(
+    contract,
+    /interface PdfPointMarkRecord[\s\S]*style: 'comment'[\s\S]*point: \[number, number\][\s\S]*quads: \[\][\s\S]*text: ''/
+  )
   assert.match(contract, /interface PdfCommentRecord/)
   assert.match(contract, /interface PdfNoteRecord/)
   assert.match(contract, /interface PdfRecordSnapshot/)
@@ -636,21 +1307,34 @@ test('PDF preserves selection mark actions and owns a literature-only annotation
   assert.match(tools, /pdfAnnotation\.addStrikethrough/)
   assert.match(tools, /onApply\(tool\.style, colors\[tool\.style\]\)/)
   assert.match(source, /id: 'pdf-records'/)
-  assert.match(source, /className="vds-selection-action-result"/)
+  assert.match(
+    source,
+    /className="vds-selection-action-result !border-t-0 !gap-\[var\(--vds-space-3\)\] !p-\[var\(--vds-space-3\)\]"/
+  )
   assert.match(source, /<CopyButton/)
   assert.match(source, /<PdfAnnotations/)
   assert.doesNotMatch(source, /写入笔记|添加到笔记/)
-  assert.match(annotations, /bodyTestId="pdf-annotation-list"/)
+  assert.match(annotations, /'data-testid': 'pdf-annotation-list'/)
+  assert.match(
+    source,
+    /<TabsTrigger\s+value="outline"[\s\S]*<TabsTrigger\s+value="pages"[\s\S]*<TabsTrigger\s+value="annotations"[\s\S]*<TabsTrigger\s+value="search"/
+  )
+  assert.match(source, /update\(\{ records: false, sidebar: true, sidebarTab: 'annotations' \}\)/)
+  assert.match(
+    source,
+    /activeDocumentPanel &&\s*!analysis\.panel &&\s*!analysis\.expandedSelectionResult &&\s*documentPanels/
+  )
+  assert.doesNotMatch(source, /recordsOpen|PDF_RECORDS_PANEL_ID/)
   assert.match(annotations, /filterMarks/)
   assert.match(annotations, /<Tabs value=\{filter\}/)
   assert.match(annotations, /<TabsTrigger\s+key=\{category\}\s+value=\{category\}/)
   assert.match(annotations, /groupMarksByPage/)
   assert.match(page, /<Popover/)
   assert.match(page, /renderAnnotation/)
-  assert.match(annotation, /PDF_MARK_PALETTE\.map/)
-  assert.match(annotation, /comments\.length > 0/)
-  assert.match(annotation, /pdfAnnotation\.commentedLocation/)
-  assert.match(annotation, /pdfAnnotation\.commentStatus/)
+  assert.match(annotation, /<PdfTools/)
+  assert.match(annotation, /comments\.length \? onUpdateComments/)
+  assert.match(annotation, /<PdfCommentEditor/)
+  assert.match(annotation, /<PdfSelectionActions>/)
   for (const key of ['comment', 'copy', 'delete']) {
     assert.match(annotation, new RegExp(`pdfAnnotation\\.${key}`))
   }
@@ -684,12 +1368,12 @@ test('PDF annotation inspector groups controls and silently persists direct edit
 
   assert.match(
     annotation,
-    /data-testid="pdf-annotation-styles"[\s\S]*data-testid="pdf-annotation-colors"[\s\S]*data-testid="pdf-annotation-actions"[\s\S]*data-testid="pdf-annotation-delete"/
+    /data-testid="pdf-annotation-actions"[\s\S]*<PdfSelectionActions>[\s\S]*<PdfTools[\s\S]*data-testid="pdf-annotation-delete"/
   )
-  assert.match(annotation, /data-testid="pdf-annotation-styles"[^>]*grid-cols-3/)
+  assert.match(annotation, /data-testid="pdf-annotation-actions"[^>]*flex flex-nowrap items-center/)
   assert.match(
     annotation,
-    /data-testid="pdf-annotation-actions"[^>]*grid[^>]*>[\s\S]*pdfAnnotation\.comment[\s\S]*pdfAnnotation\.explain[\s\S]*pdfAnnotation\.translate[\s\S]*pdfAnnotation\.copy/
+    /pdfAnnotation\.explain[\s\S]*pdfAnnotation\.translate[\s\S]*pdfAnnotation\.copy[\s\S]*pdfAnnotation\.comment[\s\S]*pdfAnnotation\.delete/
   )
   assert.doesNotMatch(annotation, /grid-cols-2|col-start-|col-span-|row-start-/)
   assert.match(source, /statusCode\?: PdfResultCode/)
@@ -703,13 +1387,14 @@ test('saved PDF annotation AI actions keep their own immutable selection snapsho
   const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
 
   assert.match(annotation, /<section[^>]*onMouseUp=\{\(event\) => event\.stopPropagation\(\)\}/)
-  assert.match(documentSource, /renderAnnotation=\{\(mark, close\) => (?:\(\s*)?<PdfAnnotation/)
+  assert.match(documentSource, /renderAnnotation=\{renderAnnotation\}/)
+  assert.match(documentSource, /const renderAnnotation = \(\s*mark: PdfMark,\s*close: \(\) => void/)
   documentExpressions(
-    '(instruction) => { analysis.explainSelection({ page: mark.page, text: mark.text, quads: mark.quads }, instruction); close(); setActiveMark(null) }',
+    "(instruction) => { if (mark.style === 'comment') return\n analysis.explainSelection({ page: mark.page, text: mark.text, quads: mark.quads }, instruction, mark.id) }",
     { attribute: 'onExplain' }
   )
   documentExpressions(
-    '() => { analysis.translateSelection({ page: mark.page, text: mark.text, quads: mark.quads }); close(); setActiveMark(null) }',
+    "() => { if (mark.style === 'comment') return\n analysis.translateSelection({ page: mark.page, text: mark.text, quads: mark.quads }, mark.id) }",
     { attribute: 'onTranslate' }
   )
   assert.match(reading, /const run = async \(/)
@@ -722,13 +1407,39 @@ test('saved PDF annotation AI actions keep their own immutable selection snapsho
     reading,
     /const canAnalyzeSelection = Boolean\(literatureId \|\| \(projectId && path\)\)/
   )
-  assert.match(reading, /canAnalyzeSelection,\s*selectionAnalyzing:/)
+  assert.match(reading, /annotationResult:\s*selectionResultMark && selectionResultKind/)
   expressions(reading)(
-    "(target?: PdfSelection, requirement = '') => { void run('selection_explanation', 'summary', undefined, undefined, undefined, undefined, target ? [target] : selection, selectionInstruction(state.selectionPrompts, 'explain', requirement)) }"
+    "(target?: PdfSelection, requirement = '', markId?: string) => { setSelectionResultMark(markId ?? null); void run('selection_explanation', 'summary', undefined, undefined, undefined, undefined, target ? [target] : selection, selectionInstruction(state.selectionPrompts, 'explain', requirement)) }"
   )
-  expressions(reading)(
-    "(target?: PdfSelection) => { void run('selection_translation', 'summary', undefined, undefined, undefined, undefined, target ? [target] : selection) }"
+  const snapshot: Readonly<{ page: number; text: string; quads: readonly (readonly number[])[] }> =
+    Object.freeze({
+      page: 4,
+      text: 'saved annotation',
+      quads: Object.freeze([Object.freeze([0, 0, 0.4, 0.2])]),
+    })
+  const selection = [
+    { page: 9, text: 'unrelated current selection', quads: [[0.1, 0.1, 0.3, 0.3]] },
+  ]
+  const calls: unknown[][] = []
+  const invoke = readingExpression<(target?: typeof snapshot) => void>(
+    reading,
+    (node) =>
+      ts.isArrowFunction(node) &&
+      ts.isPropertyAssignment(node.parent) &&
+      node.parent.name.getText() === 'translateSelection',
+    {
+      selection,
+      setSelectionResultMark: () => {},
+      run: (...args: unknown[]) => calls.push(args),
+    }
   )
+  invoke(snapshot)
+  assert.equal(calls[0][0], 'selection_translation')
+  assert.deepEqual(calls[0][6], [snapshot])
+  assert.equal((calls[0][6] as unknown[])[0], snapshot)
+  assert.equal(calls[0][4], undefined)
+  invoke()
+  assert.equal(calls[1][6], selection)
   assert.doesNotMatch(
     reading,
     /if \(selection\.length \|\| !selectionResult\) return[\s\S]*setFloating\(null\)/
@@ -738,30 +1449,26 @@ test('saved PDF annotation AI actions keep their own immutable selection snapsho
 test('PDF explanations accept optional instructions and link to prompt settings', () => {
   const annotation = readFileSync(new URL('./pdf/Annotation.tsx', import.meta.url), 'utf8')
   const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const explanation = readFileSync(new URL('./pdf/Explanation.tsx', import.meta.url), 'utf8')
   const guide = readFileSync(
     new URL('../../components/business/PromptSettingsGuide.tsx', import.meta.url),
     'utf8'
   )
 
-  assert.match(annotation, /<Textarea[^>]*autoFocus[^>]*pdfAnnotation\.explainPrompt/)
-  assert.match(annotation, /onExplain\(explanationDraft\.trim\(\)\)/)
+  assert.match(annotation, /<PdfExplanation/)
+  assert.match(explanation, /<Textarea[^>]*autoFocus[^>]*reading\.explanationPrompt/)
+  assert.match(annotation, /onExplain\?\.\(explanationDraft\.trim\(\)\)/)
   assert.doesNotMatch(annotation, /if \(!explanationDraft\.trim\(\)\) return/)
   assert.doesNotMatch(annotation, /disabled=\{!explanationDraft\.trim\(\) \|\| analyzing\}/)
-  assert.match(
-    annotation,
-    /<PromptSettingsGuide[^>]*prefix=\{t\('pdfAnnotation\.promptGuide'\)\}[^>]*linkPrefix=\{t\('pdfAnnotation\.promptGuideLinkPrefix'\)\}/
-  )
+  assert.match(annotation, /onOpenSettings=\{\(\) => onOpenSettings\?\.\(\)\}/)
   assert.match(reading, /selectionExplanationOpen/)
   assert.match(reading, /selectionExplanationSnapshot/)
-  assert.match(reading, /<Textarea[^>]*autoFocus[^>]*reading\.explanationPrompt/)
-  assert.match(reading, /labelClassName="!text-\[length:var\(--vds-font-body-lv2\)\]"/)
+  assert.match(reading, /<PdfExplanation/)
+  assert.match(explanation, /labelClassName="sr-only"/)
+  assert.match(explanation, /reading\.selectionPromptSettings/)
   assert.match(
     reading,
-    /<PromptSettingsGuide\s+className="!text-\[length:var\(--vds-font-body-lv2\)\]/
-  )
-  assert.match(
-    reading,
-    /<Button[^>]*size="sm"\s+disabled=\{!selectionExplanationSnapshot\.length\}\s+onClick=\{submitSelectionExplanation\}/
+    /disabled=\{!selectionExplanationSnapshot\.length\}\s+onSubmit=\{submitSelectionExplanation\}/
   )
   assert.match(
     reading,
@@ -772,12 +1479,9 @@ test('PDF explanations accept optional instructions and link to prompt settings'
     /if \(!requirement \|\| !selectionExplanationSnapshot\.length\) return/
   )
   assert.doesNotMatch(reading, /disabled=\{!selectionExplanationDraft\.trim\(\)\}/)
-  assert.match(
-    reading,
-    /<PromptSettingsGuide[^>]*prefix=\{t\('reading\.explanationPromptGuide'\)\}[^>]*linkPrefix=\{t\('reading\.promptGuideLinkPrefix'\)\}/
-  )
+  assert.match(reading, /onOpenSettings=\{\(\) => actions\.openSettings\('prompts'\)\}/)
   assert.match(reading, /floating === 'selection_translation'[\s\S]*PromptSettingsGuide/)
-  assert.match(reading, /expanded: selectionExplanationOpen/)
+  assert.match(reading, /expanded:\s*selectionExplanationOpen/)
   assert.match(guide, /linkPrefix\?: ReactNode/)
   assert.match(guide, /whitespace-nowrap/)
 })
@@ -793,7 +1497,8 @@ test('PDF side panels share a fixed-width drawer without a resizer', () => {
   assert.match(panel, /max-w-\[calc\(100%-var\(--vds-layout-pdf-rail-width\)\)\]/)
   assert.match(panel, /expanded \? ' left-0 max-w-none'/)
   assert.match(panel, /onClick=\{onToggleExpanded\}/)
-  assert.match(annotations, /<PdfPanel[\s\S]*testId="pdf-annotations"/)
+  assert.doesNotMatch(annotations, /<PdfPanel/)
+  assert.match(annotations, /<section[\s\S]*data-testid="pdf-annotations"/)
   assert.match(document, /<PdfPanel[\s\S]*testId=\{`document-panel-/)
   assert.match(reading, /<PdfPanel[\s\S]*testId="pdf-reading-panel"/)
 })
@@ -801,21 +1506,24 @@ test('PDF side panels share a fixed-width drawer without a resizer', () => {
 test('PDF annotation list copies source text and each comment independently', () => {
   const annotations = readFileSync(new URL('./pdf/Annotations.tsx', import.meta.url), 'utf8')
 
-  assert.match(annotations, /value=\{mark\.text\}[\s\S]*pdfAnnotation\.copySource/)
   assert.match(
     annotations,
-    /className="mt-\[var\(--vds-space-2\)\] flex flex-wrap items-center gap-\[var\(--vds-space-1\)\]">[\s\S]*markComments\.map\(\(comment\) => \(\s*<CopyButton[\s\S]*value=\{comment\.body\}[\s\S]*pdfAnnotation\.copyComment[\s\S]*value=\{mark\.text\}/
+    /onSelect=\{\(\) => void writeClipboard\(mark\.text\)\}[\s\S]*pdfAnnotation\.copySource/
+  )
+  assert.match(
+    annotations,
+    /markComments\.map\(\(comment\) =>[\s\S]*data-testid="pdf-annotation-comment-caption"[\s\S]*<CopyButton[\s\S]*value=\{comment\.body\}[\s\S]*pdfAnnotation\.copyComment/
   )
   assert.doesNotMatch(annotations, /markComments[\s\S]*\.join\(/)
 })
 
-test('PDF annotation comments do not repeat source text above the source block', () => {
+test('PDF annotation cards separate source text and independently expandable comments', () => {
   const annotations = readFileSync(new URL('./pdf/Annotations.tsx', import.meta.url), 'utf8')
 
-  assert.match(annotations, /const hasComments = markComments\.length > 0/)
-  assert.match(annotations, /\{!hasComments \? \(/)
-  assert.match(annotations, /\{!hasComments && expandable \? \(/)
-  assert.match(annotations, /pdfAnnotation\.sourceLabel/)
+  assert.match(annotations, /\{mark\.style !== 'comment' \? \(/)
+  assert.match(annotations, /\{mark\.style !== 'comment' && expandable \? \(/)
+  assert.match(annotations, /markComments\.map\(\(comment\) =>/)
+  assert.match(annotations, /const commentExpanded = expandedComments\.has\(comment\.id\)/)
 })
 
 test('PDF AI results no longer expose an add-to-note action', () => {
@@ -834,27 +1542,28 @@ test('PDF selection AI result windows survive selection dismissal and keep expli
 
   assert.doesNotMatch(reading, /[Ff]loatingPinned/)
   assert.doesNotMatch(reading, /onPinnedChange=/)
-  assert.doesNotMatch(reading, /documentSelectionInteractionProps/)
-  assert.doesNotMatch(reading, /selection\.length[\s\S]*setFloating\(null\)/)
-  assert.match(reading, /<FloatingWindow[\s\S]*title=\{LABELS\[floating\]\}[\s\S]*onClose=/)
-  assert.match(
+  assert.match(reading, /documentSelectionInteractionProps/)
+  const autoSelectionIdentity = { current: 'selected' }
+  const clearSelection = readingExpression<() => void>(
     reading,
-    /initialHorizontalCenterRef=\{\s*floating === 'selection_translation' \|\| floating === 'figure_explanation'\s*\? viewportRef\s*: undefined\s*\}/
+    (node) =>
+      ts.isArrowFunction(node) &&
+      ts.isCallExpression(node.parent) &&
+      node.parent.expression.getText() === 'useEffect' &&
+      node.getText().includes("autoSelectionIdentity.current = ''"),
+    {
+      selection: [],
+      autoSelectionIdentity,
+      setFloating: () => assert.fail('clearing selection must not close its result'),
+    }
   )
-  assert.match(reading, /variant=\{floating === 'figure_explanation' \? 'outline' : 'ghost'\}/)
+  clearSelection()
+  assert.equal(autoSelectionIdentity.current, '')
+  assert.match(reading, /floating === 'figure_explanation' \? \(\s*<FloatingWindow/)
+  assert.match(reading, /initialHorizontalCenterRef=\{viewportRef\}/)
   assert.match(floatingWindow, /aria-pressed=\{pinned\}/)
-  assert.match(reading, /ghostIconHeader=\{floating === 'figure_explanation'\}/)
-  assert.match(reading, /plainFooter=\{floating === 'figure_explanation'\}/)
-  assert.match(reading, /size=\{floating === 'figure_explanation' \? 'default' : 'sm'\}/)
-  assert.match(reading, /stableLabelWidth=\{floating !== 'figure_explanation'\}/)
-  assert.match(
-    reading,
-    /<CardTitle className="!text-\[length:var\(--vds-font-body-lv2\)\] !leading-\[var\(--vds-lh-body-lv2\)\]">/
-  )
-  assert.match(
-    reading,
-    /icon=\{floating === 'figure_explanation' \? <Copy \/> : <Icon name="copy" size=\{14\} \/>\}/
-  )
+  assert.match(reading, /ghostIconHeader\s+plainFooter/)
+  assert.match(reading, /stableLabelWidth=\{false\}\s*icon=\{<Copy \/>\}/)
   assert.match(floatingWindow, /const headerIconVariant = ghostIconHeader \? 'ghostIcon' : 'ghost'/)
   assert.match(floatingWindow, /plainFooter \? '' : ' bg-\[var\(--vds-surface-muted\)\]'/)
   assert.match(floatingWindow, /floating-window-toggle-size[\s\S]*?variant=\{headerIconVariant\}/)
@@ -883,7 +1592,10 @@ test('PDF AI generated bodies remain text-selectable across markdown, summary, a
     new URL('../../components/primitive/Markdown.tsx', import.meta.url),
     'utf8'
   )
-  const summary = readFileSync(new URL('./pdf/Summary.tsx', import.meta.url), 'utf8')
+  const summary = readFileSync(
+    new URL('../../components/business/Summary.tsx', import.meta.url),
+    'utf8'
+  )
   const translation = readFileSync(new URL('./pdf/Translation.tsx', import.meta.url), 'utf8')
 
   assert.match(reading, /cursor-text select-text/)
@@ -905,21 +1617,150 @@ test('PDF AI annotation reuses the captured selection text and quads', () => {
   assert.match(reading, /reading\.addToAnnotation/)
 })
 
-test('PDF selection AI result actions have one primary follow-up and stable secondary controls', () => {
+test('PDF selection results share copy, expansion and conversation actions', () => {
   const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
 
+  assert.match(reading, /<CopyButton\s+iconOnly[\s\S]*?value=\{resultText\}/)
+  assert.match(reading, /icon=\{selectionResultFillsReader \? <Minimize2[^>]*> : <Maximize2/)
   assert.match(
     reading,
-    /<Button[^>]*variant="outline"[^>]*size="sm"[^>]*icon=\{\s*annotationIdentity === annotatedResult \? \(\s*<Check[^>]*>\s*\) : \(\s*<Icon name="annotation"/
+    /variant="primary"\s*icon=\{resultAnnotated \? <Check[^>]*> : <MessageSquareText/
   )
-  assert.match(
-    reading,
-    /<CopyButton[\s\S]*?size=\{floating === 'figure_explanation' \? 'default' : 'sm'\}[\s\S]*?variant=\{floating === 'figure_explanation' \? 'outline' : 'ghost'\}[\s\S]*?icon=\{floating === 'figure_explanation' \? <Copy \/> : <Icon name="copy"/
+  assert.match(reading, /data-testid="pdf-selection-translation-settings"/)
+  const resultActions = reading.slice(
+    reading.indexOf('const selectionResultActions ='),
+    reading.indexOf('const submitSelectionExplanation =')
   )
-  assert.match(
-    reading,
-    /<Button[^>]*size="sm"[^>]*variant="primary"[^>]*icon=\{<Icon name="talk"[^>]*>\}[^>]*onClick=\{quote\}/
-  )
+  assert.doesNotMatch(resultActions, /reading\.cancel|cancel\(floating\)/)
+  assert.match(reading, /max-w-full px-\[var\(--vds-space-3\)\] \[overflow-wrap:anywhere\]/)
+})
+
+test('completed PDF translations and explanations add their original and result to a draft', async () => {
+  const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  interface ActionNode {
+    type: string
+    props: Record<string, unknown>
+    children: unknown[]
+  }
+  const buttons = (node: unknown): ActionNode[] => {
+    if (!node || typeof node !== 'object' || !('children' in node)) return []
+    const element = node as ActionNode
+    return [...(element.type === 'Button' ? [element] : []), ...element.children.flatMap(buttons)]
+  }
+  for (const language of ['zh', 'en']) {
+    const locale = createInstance()
+    await locale.init({
+      lng: language,
+      fallbackLng: false,
+      interpolation: { escapeValue: false },
+      resources: {
+        [language]: {
+          pdf: JSON.parse(
+            readFileSync(
+              new URL(`../../../../localization/locales/${language}/pdf.json`, import.meta.url),
+              'utf8'
+            )
+          ),
+        },
+      },
+    })
+    const translate = locale.getFixedT(language, 'pdf')
+    for (const floating of ['selection_translation', 'selection_explanation']) {
+      for (const state of ['ready', 'busy', 'empty', 'missing']) {
+        const floatingResult =
+          state === 'missing'
+            ? null
+            : {
+                kind: floating,
+                page: 3,
+                revision: 'revision-1',
+                selected_text: 'Original text <source> & {{untouched}}',
+                text: state === 'empty' ? '' : '结果与译文 <result> & {{source}}',
+              }
+        const drafts: unknown[][] = []
+        const quote = readingExpression<() => void>(
+          source,
+          (node) =>
+            ts.isArrowFunction(node) &&
+            ts.isVariableDeclaration(node.parent) &&
+            node.parent.name.getText() === 'quote',
+          {
+            floatingResult,
+            assistantTitle: 'Test paper',
+            t: translate,
+            openDocumentChat: (...args: unknown[]) => drafts.push(args),
+          }
+        )
+        const resultReady = readingExpression<boolean>(
+          source,
+          (node) =>
+            ts.isCallExpression(node) &&
+            ts.isVariableDeclaration(node.parent) &&
+            node.parent.name.getText() === 'resultReady',
+          { Boolean, floatingResult, busy: state === 'busy' }
+        )
+        const footer = readingExpression<unknown>(
+          source,
+          (node) =>
+            ts.isBinaryExpression(node) &&
+            ts.isJsxExpression(node.parent) &&
+            node.left.getText() === 'resultReady' &&
+            node.getText().includes('onClick={quote}'),
+          {
+            React: {
+              createElement: (
+                type: string,
+                props: Record<string, unknown>,
+                ...children: unknown[]
+              ) => ({ type, props, children }),
+            },
+            Button: 'Button',
+            MessageCirclePlus: 'MessageCirclePlus',
+            Check: 'Check',
+            MessageSquareText: 'MessageSquareText',
+            floating,
+            floatingResult,
+            resultReady,
+            selectionResultName:
+              floating === 'selection_translation' ? 'translation' : 'explanation',
+            quote,
+            t: translate,
+            resultAnnotated: false,
+            annotating: false,
+            busy: state === 'busy',
+            canAnnotate: true,
+          }
+        )
+        const conversation = buttons(footer).filter((button) => button.props.onClick === quote)
+        assert.equal(
+          conversation.length,
+          state === 'ready' ? 1 : 0,
+          `${language}/${floating}/${state}`
+        )
+        if (state !== 'ready' || !floatingResult) continue
+        assert.equal(conversation[0].props.disabled, false)
+        assert.equal(
+          conversation[0].props['data-testid'],
+          `pdf-selection-${floating === 'selection_translation' ? 'translation' : 'explanation'}-conversation`
+        )
+        assert.deepEqual(conversation[0].children, [translate('selectionAddConversation')])
+        ;(conversation[0].props.onClick as () => void)()
+        assert.equal(drafts.length, 1)
+        assert.deepEqual(drafts[0], [
+          translate('reading.selectionDraft', {
+            literatureId: 'Test paper',
+            page: 3,
+            revision: 'revision-1',
+            source: floatingResult.selected_text,
+            result: floatingResult.text,
+          }),
+          false,
+        ])
+        assert.ok(String(drafts[0][0]).includes(floatingResult.selected_text))
+        assert.ok(String(drafts[0][0]).endsWith(floatingResult.text))
+      }
+    }
+  }
 })
 
 test('literature follow-ups attach the current document before entering chat', () => {
@@ -931,7 +1772,10 @@ test('literature follow-ups attach the current document before entering chat', (
     readFileSync(new URL('../../../../localization/locales/en/pdf.json', import.meta.url), 'utf8')
   )
 
-  assert.match(source, /const openDocumentChat = async \(text: string\): Promise<void> =>/)
+  assert.match(
+    source,
+    /const openDocumentChat = async \(text: string, focus = true\): Promise<void> =>/
+  )
   assert.match(source, /const context = await actions\.addContext\(\{/)
   assert.match(source, /kind: 'literature'/)
   assert.match(source, /source_id: literatureId/)
@@ -944,11 +1788,11 @@ test('literature follow-ups attach the current document before entering chat', (
   assert.match(source, /literatureId: assistantTitle/)
   assert.match(source, /source: floatingResult\.selected_text/)
   assert.match(source, /result: floatingResult\.text/)
+  assert.match(source, /<Button[\s\S]*?disabled=\{!floatingResult\}\s*onClick=\{quote\}/)
   assert.match(
     source,
-    /floating !== 'figure_explanation' && \(\s*<Button\s+disabled=\{!floatingResult\}[\s\S]*?onClick=\{quote\}/
+    /onChat=\{\(text\) => \{[\s\S]*void openDocumentChat\(\s*t\('reading\.summaryDraft', \{ literatureId: assistantTitle, summary: text \}\)/
   )
-  assert.match(source, /void openDocumentChat\(\s*summary\?\.text/)
   assert.match(source, /focusComposer\(\)/)
   for (const draft of [zh.reading.selectionDraft, en.reading.selectionDraft]) {
     assert.match(draft, /\{\{source\}\}/)
@@ -976,7 +1820,7 @@ test('PDF navigation and annotation inspector reuse compact design-system contro
   const icons = readFileSync(new URL('../../icons.tsx', import.meta.url), 'utf8')
 
   for (const value of ['outline', 'pages', 'search']) {
-    assert.match(source, new RegExp(`<TabsTrigger value="${value}"`))
+    assert.match(source, new RegExp(`<TabsTrigger\\s+value="${value}"`))
   }
   assert.doesNotMatch(source, /role="search" aria-label="搜索 PDF"/)
   assert.match(readFileSync(new URL('./pdf/Tools.tsx', import.meta.url), 'utf8'), /<Popover/)
@@ -994,11 +1838,12 @@ test('PDF navigation and annotation inspector reuse compact design-system contro
   assert.match(source, /<Textarea[^>]*data-testid="pdf-search"/)
   assert.doesNotMatch(source, /<Input[^>]*data-testid="pdf-search"/)
   assert.match(layout, /--vds-layout-pdf-rail-width:/)
-  assert.match(source, /PDF_NAVIGATION_DEFAULT_WIDTH_PX = 190/)
+  assert.match(source, /PDF_NAVIGATION_DEFAULT_WIDTH_PX = 260/)
   assert.match(source, /PDF_NAVIGATION_MIN_WIDTH_PX = 190/)
   assert.match(source, /PDF_NAVIGATION_MAX_WIDTH_PX = 360/)
   assert.match(source, /<ResizablePanel/)
   assert.match(source, /data-testid="pdf-navigation-resizable"/)
+  assert.doesNotMatch(source, /className="vds-pdf-sidebar[^"]*\bborder-r\b/u)
   assert.match(source, /leftWidth=\{`\$\{navigationWidth\}px`\}/)
   documentExpressions('(width) => update({ navigationWidth: Number.parseFloat(width) })', {
     attribute: 'onWidthChange',
@@ -1007,25 +1852,24 @@ test('PDF navigation and annotation inspector reuse compact design-system contro
     source,
     /style=\{\{ marginLeft: sidebar \? `\$\{navigationWidth\}px` : undefined \}\}/
   )
-  assert.match(source, /const fitViewportWidth = size\.width \+ \(sidebar \? navigationWidth : 0\)/)
-  assert.match(source, /translationLayoutOpen[\s\S]*?width: natural\.width \* 2/)
-  documentExpressions(
-    'fittedScale(mode, fittedPageSize, { width: Math.max(1, fitViewportWidth - PAGE_GUTTER), height: Math.max(1, size.height - PAGE_GUTTER) })'
-  )
+  // The reading split measures the PDF viewport itself; navigation is outside it.
+  documentExpressions('size.width - activeCommentRail - PAGE_GUTTER')
+  assert.match(source, /observer\.observe\(host\)/)
+  documentExpressions('fittedScale(mode, fittedPageSize, fitViewport)')
   assert.match(
     source,
-    /const rightPanelOpen = Boolean\(analysis\.sidePanel \|\| recordsOpen \|\| activeDocumentPanelId\)/
+    /const rightPanelOpen = Boolean\(analysis\.sidePanel \|\| \(activeDocumentPanelId && !analysis\.panel\)\)/
   )
   assert.match(source, /data-testid="pdf-pages-track"/)
   assert.match(
     source,
-    /rightPanelOpen \? ' min-w-\[calc\(100%\+var\(--vds-layout-pdf-panel-width\)\)\] pr-\[var\(--vds-layout-pdf-panel-width\)\]'/
+    /rightPanelOpen && !readingPanelOpen \? ' min-w-\[calc\(100%\+var\(--vds-layout-pdf-panel-width\)\)\] pr-\[var\(--vds-layout-pdf-panel-width\)\]'/
   )
   assert.match(source, /overflow-x-hidden/)
-  assert.match(source, /bg-\[var\(--vds-bg-white-default\)\]!/)
+  assert.match(source, /bg-\[var\(--vds-bg-gray-light-default\)\]!/)
   assert.match(panel, /absolute inset-y-0 right-\[var\(--vds-layout-pdf-rail-width\)\]/)
   assert.match(panel, /expanded \? ' left-0 max-w-none'/)
-  assert.match(annotations, /<PdfPanel/)
+  assert.doesNotMatch(annotations, /<PdfPanel/)
   assert.match(reading, /<PdfPanel/)
   for (const panelSource of [source, panel]) {
     assert.match(panelSource, /bg-\[var\(--vds-bg-white-default\)\]/)
@@ -1039,7 +1883,7 @@ test('PDF navigation and annotation inspector reuse compact design-system contro
     source,
     /<mark\s+className="rounded-\[var\(--vds-radius-2\)\] bg-\[var\(--vds-brand-bg-light\)\] px-\[var\(--vds-space-half\)\] text-inherit"/
   )
-  assert.match(outline, /<Collapsible[^>]*defaultOpen/)
+  assert.doesNotMatch(outline, /<Collapsible[^>]*defaultOpen/)
   assert.match(outline, /<CollapsibleTrigger asChild>/)
   assert.match(outline, /data-testid=\{`pdf-outline-toggle-/)
   assert.match(outline, /data-testid=\{`pdf-outline-row-/)
@@ -1113,7 +1957,7 @@ test('literature PDF opening preserves attachment identity and record ownership'
 
   assert.match(
     store,
-    /openLiteratureAttachment: \(\s*id: string,\s*attachmentId\?: string,\s*page\?: number,\s*options\?: \{ projectId\?: string \| null \}\s*\) => Promise<boolean>/
+    /openLiteratureAttachment: \(\s*id: string,\s*attachmentId\?: string,\s*page\?: number,\s*options\?: \{\s*projectId\?: string \| null;?\s*citation\?: Omit<CitationFocus, 'sequence'>;?\s*annotation\?: Omit<AnnotationFocus, 'sequence'>;?\s*selection\?: SelectionReveal\s*\}\s*\) => Promise<boolean>/
   )
   assert.match(
     store,
@@ -1232,14 +2076,16 @@ test('PDF selection annotation save action aligns to the right below the draft',
   const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
   assert.match(
     source,
-    /<Textarea[\s\S]*?value=\{commentDraft\}[\s\S]*?<Button\s+className="justify-self-end"[\s\S]*?\{t\('saveAnnotation'\)\}/
+    /<PdfCommentInput[\s\S]*?rows=\{3\}[\s\S]*?value=\{commentDraft\}[\s\S]*?<Button\s+className="justify-self-end"[\s\S]*?\{t\('pdfAnnotation.kind.comment'\)\}/
   )
+  assert.match(source, /vds-selection-action-result !border-t-0/)
+  assert.doesNotMatch(source, /label=\{t\('writeComment'\)\}/)
 })
 
 test('PDF selection controls update their locale without replacing document or draft state', () => {
   const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
   documentExpressions(
-    '[activeMark, addAiComment, commentDraft, commentFormOpen, highlightOpen, markColors, saving, selections, session?.capabilities.can_annotate, session?.revision, sessionId, sidecar, t]',
+    '[selectionToolbarEnabled, activeMark, addAiComment, commentDraft, commentFormOpen, toggleSelectionComment, highlightOpen, markColors, selectionColor, saving, selections, session?.capabilities.can_annotate, session?.revision, sessionId, sidecar, t]',
     'selectionContribution'
   )
   assert.match(source, /id: 'pdf-copy'/)

@@ -34,10 +34,27 @@ from datetime import date
 from functools import partial
 from pathlib import Path
 import review_timeout
-from task_contract import json_input
+import planning
+import receipts
+from task_contract import configure, json_input, preview_request, publication_view
+from task_contract import read_request
+from strategy import policy, QUICK
+from budget import measure, search_finished, timing
+from response import import_outline
 from platform_io import run_stream
-from platform_runtime import runtime_info, utf8_env
+from platform_runtime import runtime_info, utf8_env, discover_python
 from citation_styles import style_ids
+from usage import accumulate
+from lifecycle import STOPPED_STATUSES, OperationBlocked, operation, read_status
+from recovery import code_revision, dependency_key, reusable, receipt
+from workspace_binding import bind
+from figure_dependencies import wait_contexts
+from tracker import transition, STATES, PROTOCOLS, FLAT
+from preflight import CHECK_SCOPES, FULL_SCOPE
+from manuscript_publication import publication_source, deliverable_path
+from input_contracts import describe_init
+from local_papers import import_pdfs, load_local, budget as material_budget, validate_files
+from materials import import_materials
 
 TERMINAL_STATUSES = ("SUCCESS", "PARTIAL_SUCCESS", "FAILED")
 
@@ -134,6 +151,11 @@ def stage_env(profile: str, workspace: Path) -> dict:
     env["SLR_PROFILE"] = profile
     env["SLR_WORKSPACE"] = str(workspace)
     env["PYTHONUNBUFFERED"] = "1"
+    module_paths = [str(directory) for component in ('lib', 'scripts')
+                    for directory in slr_paths.module_dirs(component, profile)]
+    if env.get("PYTHONPATH"):
+        module_paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(module_paths)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     return env
 
@@ -147,9 +169,41 @@ def run_command(command: list[str], workspace: Path, log_path: Path,
 # ----------------------------------------------------------------- commands --
 
 def cmd_run(args) -> int:
+    if args.stage not in ('generation_publish','verify_postcheck','verify_audit'):
+        planning.require_plan(_resolve_workspace(args))
+    workspace = Path(args.workspace).resolve() if args.workspace else slr_paths.workspace()
+    if args.dry_run or not workspace.is_dir():
+        return _cmd_run(args)
+    # Validate before using a stage name as a status/lock path.
+    find_stage(args.profile or slr_paths.resolve_profile(), args.stage)
+    try:
+        with operation(workspace, args.stage) as attempt:
+            return _cmd_run(args, attempt)
+    except OperationBlocked as exc:
+        emit(exc.value, getattr(args, 'full', False))
+        return 1
+    except (KeyboardInterrupt, Exception):
+        emit(read_status(workspace, args.stage), getattr(args, 'full', False))
+        return 1
+
+
+def _cmd_run(args, attempt=None) -> int:
     profile = args.profile or slr_paths.resolve_profile()
     workspace = Path(args.workspace).resolve() if args.workspace else slr_paths.workspace()
     stage = find_stage(profile, args.stage)
+
+    if (workspace/'01_input/writing_request.json').exists():
+        selected_policy=policy(read_request(workspace))
+        if args.stage in selected_policy.get('blocked_stages', ()):
+            raise ValueError('Quick does not read or download full text; use processing for abstracts, or recommend Standard.')
+        override=selected_policy.get('stage_scripts',{}).get(args.stage)
+        if override:
+            command=[sys.executable,str(slr_paths.HOME/override[0]),override[1],str(workspace)]
+            stage={**stage,'steps':[command], 'status':{'kind':'trailing_json'}}
+            stage.pop('progress_file',None)
+            outputs=selected_policy.get('stage_outputs',{}).get(args.stage)
+            if outputs is not None:
+                stage['writes']=list(outputs)
 
     commands = [substitute(c, workspace) for c in (stage.get("steps") or [stage["command"]])]
 
@@ -171,44 +225,95 @@ def cmd_run(args) -> int:
     env = stage_env(profile, workspace)
     timeout = stage.get('timeout_sec', 3600)
     started = time.time()
+    status_path = workspace / '_status' / f'{args.stage}.json'
+    previous = attempt.previous if attempt else _read_json_status(status_path)
     if args.stage not in ('generation_publish','verify_postcheck','verify_audit'):
         from task_contract import sync_views
         sync_views(workspace)
     returncode, stdout = 0, ''
     step_results = []
+    checkpoints = dict(previous.get('checkpoints', {}))
+    policies = stage.get('resume_steps', {})
+    revision = code_revision(slr_paths.HOME) if policies else None
     for index, command in enumerate(commands, 1):
-        returncode, stdout = run_command(command, workspace, log_path, env, timeout)
-        payload = extract_trailing_json(stdout) or {}
+        rule = policies.get(str(index))
+        key = dependency_key(workspace, rule, command, revision) if rule else None
+        payload = reusable(workspace, rule, key, checkpoints.get(rule['id'])) if rule else None
+        reused = payload is not None
+        if reused:
+            returncode, stdout = 0, json.dumps(payload)
+        else:
+            with measure(workspace):
+                returncode, stdout = run_command(command, workspace, log_path, env, timeout)
+            payload = extract_trailing_json(stdout) or {}
+            if rule and not returncode and payload.get('status') in ('SUCCESS', 'PARTIAL_SUCCESS'):
+                if key != dependency_key(workspace, rule, command, revision):
+                    returncode = 1
+                    payload = {'status': 'FAILED', 'code': 'MATERIAL_INPUTS_CHANGED',
+                               'message': 'Inputs changed during this step; completed evidence is preserved.',
+                               'next_action': 'Check current inputs before resuming the same stage.'}
+                    stdout = json.dumps(payload)
+                else:
+                    saved = receipt(workspace, rule, key, payload)
+                    if saved:
+                        checkpoints[rule['id']] = saved
         step_results.append({'step':index,'command':command[1] if len(command)>1 else command[0],
                              'returncode':returncode,'status':payload.get('status','SUCCESS' if returncode==0 else 'FAILED'),
-                             'detail':payload})
-        if returncode != 0:
+                             'reused': reused, 'detail':payload})
+        if attempt:
+            attempt.save(steps=step_results, checkpoints=checkpoints)
+        if returncode != 0 or payload.get('status') in STOPPED_STATUSES:
             if len(commands) > 1:
                 stdout += f"\n[slr] step {index}/{len(commands)} failed"
             break
 
     status, reason = resolve_status(stage, workspace, stdout, returncode)
+    blocking_failure = next((item['detail'] for item in step_results
+                             if item['detail'].get('retryable') is False
+                             and (item['returncode'] != 0 or item['status'] == 'FAILED')), {})
     readiness_result = {}
-    if returncode != 0 and not (stage.get('optional') and status=='PARTIAL_SUCCESS' and returncode in (2,3)):
+    stopped = next((step['status'] for step in step_results if step['status'] in STOPPED_STATUSES), None)
+    if stopped:
+        status = stopped
+    elif returncode != 0 and not (stage.get('optional') and status=='PARTIAL_SUCCESS' and returncode in (2,3)):
         status = 'FAILED'
-    elif status != 'FAILED' and any(x['status'] not in ('SUCCESS','SKIPPED') for x in step_results):
+    elif status not in STOPPED_STATUSES and any(x['status'] not in ('SUCCESS','SKIPPED') for x in step_results):
         status = 'PARTIAL_SUCCESS'
         reason = reason or 'One or more substeps did not complete; inspect steps and downstream readiness.'
+    execution_failed = status in STOPPED_STATUSES
     if args.stage == 'processing':
         from paper_materials import readiness
-        readiness_result = readiness(workspace)
-        if not readiness_result['ready_for_outline']:
+        try:
+            readiness_result = readiness(workspace)
+        except (ValueError, OSError) as exc:
+            if not execution_failed:
+                raise
+            # A secondary inspection failure must not replace the command's
+            # original error. Preserve both diagnoses independently.
+            readiness_result = {'status': 'FAILED', 'ready_for_outline': False,
+                                'message': str(exc)}
+        if not execution_failed and not readiness_result['ready_for_outline'] and not blocking_failure:
             status = readiness_result['status']
             reason = 'Required paper evidence or citation identities are incomplete.'
+        if blocking_failure:
+            status = 'FAILED'
     writes = stage.get("writes", [])
     spec_path = workspace / "04_outline/output_spec.json"
     if spec_path.exists() and json.loads(spec_path.read_text()).get("format") == "markdown":
-        writes = [re.sub(r"full_draft_v([123])\.tex$", r"full_draft_v\1.md", w)
-                  .replace("06_output/survey.pdf", "06_output/survey.md") for w in writes]
+        writes = [re.sub(r"full_draft_v([123])\.tex$", r"full_draft_v\1.md", artifact) for artifact in writes]
     if args.stage in ('verify_postcheck','generation_publish'):
-        from manuscript_publication import publication_source
-        if publication_source(workspace).suffix=='.md':
-            writes=[w.replace('06_output/survey.pdf','06_output/survey.md') for w in writes if w!='07_verifier/postcheck/pages/']
+        source=publication_source(workspace)
+        settings=_read_json_status(source.parent/'publication.json')
+        requested=(read_request(workspace).get('publication',{})
+                   if (workspace/'01_input/writing_request.json').exists() else {})
+        output_format=requested.get('format') or settings.get('format') or ('markdown' if source.suffix=='.md' else 'latex_pdf')
+        final=deliverable_path(workspace,source,output_format).relative_to(workspace).as_posix()
+        replacements={'06_output/survey.pdf':final,
+                      '06_output/survey.md':deliverable_path(workspace,source,'markdown').relative_to(workspace).as_posix()}
+        if source.suffix=='.md':
+            replacements['06_output/survey.tex']=replacements['06_output/survey.md']
+            writes=[artifact for artifact in writes if artifact!='07_verifier/postcheck/pages/']
+        writes=list(dict.fromkeys(replacements.get(artifact,artifact) for artifact in writes))
     produced = [w for w in writes if (workspace / w).exists()]
     missing = [w for w in writes if not (workspace / w).exists()]
     compile_result = {}
@@ -228,8 +333,13 @@ def cmd_run(args) -> int:
         "log": str(log_path),
         "artifacts_written": produced,
         "artifacts_missing": missing,
+        "processing_time": timing(workspace),
     }
     result['steps'] = step_results
+    result['checkpoints'] = checkpoints
+    for step in step_results:
+        if step['detail'].get('task') == 'BIBLIOGRAPHY_PREFLIGHT':
+            result['bibliography_preflight'] = step['detail']
     if args.stage == 'fulltext' and step_results:
         for key in ('material_counts', 'unresolved_ids', 'resolved', 'total',
                     'coverage_by_relevance_level', 'by_outcome', 'sources_enabled'):
@@ -241,21 +351,38 @@ def cmd_run(args) -> int:
                     'visual_review_complete', 'inspection_scope', 'report', 'deliverable'):
             if key in detail:
                 result[key] = detail[key]
-    if args.stage == 'retrieval_adapt' and status != 'FAILED':
+    if args.stage == 'retrieval_adapt' and status not in STOPPED_STATUSES:
         from workflow import retrieval_summary
         result['retrieval'] = retrieval_summary(workspace)
-    result.update({k:v for k,v in readiness_result.items() if k not in ('status','stage')})
+    readiness_excluded = {'status', 'stage'}
+    if execution_failed:
+        readiness_excluded.update(('code', 'message', 'status_reason', 'issues', 'next_action'))
+    result.update({k:v for k,v in readiness_result.items() if k not in readiness_excluded})
+    if readiness_result:
+        result['material_readiness'] = readiness_result
     from task_contract import atomic_json
     if compile_result:
         result["compile"] = compile_result
-    if status == "FAILED":
-        result['code'] = 'LATEX_COMPILE_ERROR' if reason.startswith('LATEX_COMPILE_ERROR') else 'STAGE_FAILED'
+    if status in STOPPED_STATUSES:
+        failed_step = next((step for step in step_results
+                            if step['returncode'] or step['status'] in STOPPED_STATUSES), {})
+        failure = failed_step.get('detail', {})
+        result['failed_substep'] = {key: failed_step[key] for key in ('step', 'command', 'returncode') if key in failed_step}
+        result.update({key: failure[key] for key in ('code', 'message', 'status_reason', 'issues', 'next_action', 'metadata_repair') if key in failure})
+        result.setdefault('code', 'LATEX_COMPILE_ERROR' if reason.startswith('LATEX_COMPILE_ERROR') else 'STAGE_FAILED')
         tail = stdout.splitlines()[-args.tail:] if args.tail else []
         result["log_tail"] = tail
-    # The same object the agent reads, appended to the audit trail. One line per
-    # invocation, so a re-run after a failure is two lines rather than one
-    # overwritten one -- the retry is the interesting part.
-    atomic_json(workspace/'_status'/f'{args.stage}.json', result)
+    if args.stage == 'processing' and blocking_failure:
+        result.pop('next_action', None)
+        for key in ('code', 'message', 'location', 'retryable', 'next_action'):
+            if key in blocking_failure:
+                result[key] = blocking_failure[key]
+    # Retain invocation history in the existing status file across retries.
+    if attempt:
+        result = attempt.finish(result)
+    else:
+        result.update(accumulate(previous, result, time.time() - started))
+        atomic_json(status_path, result)
     emit(result, getattr(args, 'full', False))
     return 0 if status in ("SUCCESS", "PARTIAL_SUCCESS") and readiness_result.get("ready_for_outline",True) else 1
 
@@ -430,6 +557,9 @@ _WORKSPACE_DIRS = (
 )
 
 
+INIT_LANGUAGE_ALIASES = {'en': 'ENGLISH', 'english': 'ENGLISH', 'zh': 'CHINESE', 'zh-cn': 'CHINESE', 'chinese': 'CHINESE'}
+
+
 def _intent_language(intent: str, requested: str) -> str:
     if requested != "auto":
         return requested.upper()
@@ -447,10 +577,64 @@ def cmd_init(args) -> int:
     reason for it to be built by whoever happens to need it.
     """
     workspace = _resolve_workspace(args)
-    intent = (args.intent or "").strip()
+    runtime = discover_python(slr_paths.HOME, os.environ.get('SCHOLARSEED_PYTHON'),
+                              workspace if (workspace/'.slr-binding.json').exists() else None)
+    if Path(runtime['python']).absolute() != Path(sys.executable).absolute():
+        raise ValueError('Initialize with the bound product Python returned by doctor --scope runtime.')
+    supplied = json_input(args.request) if getattr(args, 'request', None) else None
+    if supplied is not None and not isinstance(supplied, dict):
+        raise ValueError('init request must be a writing request object')
+    original = args.intent if args.intent is not None else (supplied or {}).get('intent', '')
+    if not isinstance(original, str):
+        raise ValueError('init intent must be the original task text')
+    intent = original.strip()
     if args.intent is not None and not intent:
         print("init: --intent must contain a non-empty precise sentence", file=sys.stderr)
         return 2
+    if getattr(args,'request',None) and not intent:
+        raise ValueError('init requires original intent in --intent or the request; for an existing task use its bound launcher with writing configure')
+    initial_request = None
+    if intent and not workspace.is_relative_to(Path.cwd()):
+        raise ValueError('Initialize from the session working directory with a workspace inside it; use the installed launcher by its full locator without changing into the Skill directory.')
+    if intent:
+        task_path = workspace / '01_input/writing_request.json'
+        if task_path.exists():
+            raise ValueError(f'task already exists at {workspace}; restore a missing launcher with init --workspace for this exact directory, '
+                             'without --intent or --request; then use the bound launcher with writing configure to update the task')
+        current_year = date.today().year
+        defaults = {'intent':intent, 'language':_intent_language(intent,args.language),
+            'execution': {'mode': getattr(args,'mode','standard')},
+            'retrieval': {'temporal_policy': {'constraint':'soft',
+                'explicit_range_source':'query_text_if_present',
+                'default_if_unspecified':{'label':'recent_five_calendar_years',
+                    'start_year':current_year-4,'end_year':current_year},
+                'allow_earlier_foundational_work':True}}}
+        if supplied is not None and supplied.get('intent', intent) != intent:
+            raise ValueError('original intent is immutable; the initial request cannot replace --intent')
+        initial = {**defaults, **(supplied or {})}
+        for key in ('execution', 'retrieval'):
+            if key in (supplied or {}):
+                if not isinstance(supplied[key], dict):
+                    raise ValueError(key + ' must be an object')
+                initial[key] = {**defaults[key], **supplied[key]}
+        language = initial.get('language')
+        if isinstance(language, str):
+            initial['language'] = INIT_LANGUAGE_ALIASES.get(language.casefold(), language)
+        deliverable = initial.get('deliverable')
+        unit = deliverable.get('unit') if isinstance(deliverable, dict) else None
+        if unit and 'output_scope' not in initial:
+            initial['output_scope'] = 'survey' if unit == 'document' else 'section'
+        if initial.get('local_pdfs'):
+            local_files = validate_files(initial['local_pdfs'])
+            for item in local_files:
+                source = Path(item['path']).expanduser()
+                source = (Path.cwd() / source).resolve()
+                if not source.exists():
+                    raise ValueError('local PDF input does not exist relative to the session working directory: ' + str(source))
+                item['path'] = str(source)
+            initial['local_pdfs'] = local_files
+        initial_request = preview_request(None, initial)
+        publication_view(initial_request)
 
     occupied_before = sorted(
         rel for rel in ("01_input", "02_retrieval", "03_process", "04_outline",
@@ -464,45 +648,39 @@ def cmd_init(args) -> int:
         path.mkdir(parents=True, exist_ok=True)
 
     inputs_written: list[str] = []
-    if intent:
-        from task_contract import configure
-        task_path = workspace / '01_input/writing_request.json'
-        if task_path.exists():
-            raise ValueError('task already exists; use writing configure to update it')
-        current_year = date.today().year
-        configure(workspace, {'intent':intent, 'language':_intent_language(intent,args.language),
-            'retrieval': {'temporal_policy': {'constraint':'soft',
-                'explicit_range_source':'query_text_if_present',
-                'default_if_unspecified':{'label':'recent_five_calendar_years',
-                    'start_year':current_year-4,'end_year':current_year},
-                'allow_earlier_foundational_work':True}}})
+    if initial_request is not None:
+        configure(workspace, initial_request)
         inputs_written = ['01_input/writing_request.json', '01_input/query.json', '04_outline/output_spec.json']
-    from workspace_binding import bind
+    local_materials = import_pdfs(workspace) if initial_request and initial_request.get('local_pdfs') else None
     entry = bind(workspace, slr_paths.HOME)
+    binding=json.loads((workspace/'.slr-binding.json').read_text(encoding='utf-8'))
 
     # An existing workspace with artefacts in it is the one thing worth
     # stopping for: `01_input/` … `06_output/` are fixed names, so a second
     # survey run here overwrites the first.
-    print(json.dumps({
+    emit({
         "command": "init",
         "status": "SUCCESS",
         "workspace": str(workspace),
         "created": created, "entrypoint": str(entry), "python": sys.executable,
         "runtime": runtime_info(slr_paths.HOME,workspace),
+        "activation_request": {'task_type':'literature_review','skill_name':'literature-review',
+                               'skill_version':binding['version'],'skill_path':binding['skill'],
+                               'workspace':workspace.relative_to(Path.cwd()).as_posix() if workspace.is_relative_to(Path.cwd()) else None},
         "already_present": existing,
         "inputs_written": inputs_written,
+        "local_materials": local_materials,
         "non_empty_before_init": occupied_before,
         "note": ("this workspace already holds artefacts from an earlier run; "
                  "do not start a second survey in it" if occupied_before else
-                 "scaffold and exact framework intent ready; start retrieval"),
-    }, ensure_ascii=False, indent=2))
+                 "complete request bound; activate the task and obtain its execution agreement before execution"),
+    }, getattr(args, 'full', False))
     return 0
 
 
 def cmd_evidence(args) -> int:
     if not args.view:raise ValueError('evidence build requires --view outline or writing')
     from evidence import build
-    from task_contract import json_input
     result=build(_resolve_workspace(args),args.view,json_input(args.request) if args.request else None)
     emit(result,getattr(args,'full',False))
     return 0
@@ -510,6 +688,9 @@ def cmd_evidence(args) -> int:
 
 def cmd_outline(args) -> int:
     workspace = _resolve_workspace(args)
+    if args.action == 'import':
+        emit(import_outline(workspace,json_input(args.request)),getattr(args,'full',False))
+        return 0
     if args.action == 'configure':
         if not args.request:raise ValueError('outline configure requires a complete outline --request FILE or -')
         sys.path.insert(0,str(slr_paths.HOME/'scripts'))
@@ -602,12 +783,21 @@ def _compile_summary(data: dict) -> dict:
         "verdict", "final_pass_rc", "fatal_errors", "error_contexts", "log_path") if key in diagnosis}}
 
 
+def cmd_progress(args) -> int:
+    result=transition(json_input(args.request),args.item_id,args.state,
+                      read_request(_resolve_workspace(args)).get('language','CHINESE'),args.complete,
+                      protocol=args.protocol,reason=args.reason)
+    print(json.dumps(result,ensure_ascii=False,indent=2))
+    return 0
+
+
 def cmd_figures(args) -> int:
+    if args.action != 'statistics' and read_request(_resolve_workspace(args)).get('execution',{}).get('mode') == QUICK:
+        raise ValueError('Quick does not generate figures; recommend Standard')
     if args.action == 'context':
         if not args.ids:raise ValueError('figures context requires --ids F1 ...')
         sys.path.insert(0,str(slr_paths.HOME/'scripts'))
-        from figure_dependencies import context
-        print(json.dumps({'figures':[context(_resolve_workspace(args),fid) for fid in args.ids]},ensure_ascii=False,indent=2))
+        print(json.dumps(wait_contexts(_resolve_workspace(args),args.ids,args.wait_seconds),ensure_ascii=False,indent=2))
         return 0
     if args.action == 'statistics':
         return _exec_tool([sys.executable,str(slr_paths.HOME/'scripts/generation/figures/_fast/compute_chart_data.py'),'--list','--workspace',str(_resolve_workspace(args))])
@@ -694,10 +884,17 @@ def cmd_status(args):
     ws=_resolve_workspace(args)
     if args.stage=='processing':
         from paper_materials import readiness
-        value=readiness(ws)
+        value=read_status(ws, args.stage)
+        if value.get('status') == 'NOT_STARTED':
+            value=readiness(ws)
+        else:
+            try:
+                value['material_readiness']=readiness(ws)
+            except (ValueError, OSError) as exc:
+                value['material_readiness']={'status':'FAILED','message':str(exc)}
     else:
         path=ws/('_status/workflow.json' if args.stage=='workflow' else '_status/writing.json')
-        value=json.loads(path.read_text()) if path.exists() else {'stage':args.stage,'status':'NOT_STARTED'}
+        value=read_status(ws, 'workflow') if args.stage=='workflow' else json.loads(path.read_text()) if path.exists() else {'stage':args.stage,'status':'NOT_STARTED'}
         if args.stage=='writing':
             value['requests']=[json.loads(p.read_text()) for p in (ws/'_status/llm_requests').glob('*.json')]
         value['report'] = str(path)
@@ -709,7 +906,14 @@ def cmd_papers(args):
     sys.path.insert(0,str(slr_paths.HOME/'scripts'))
     from operator_cli import papers
     from task_contract import json_input
-    print(json.dumps(papers(_resolve_workspace(args),args.action,args.ids,json_input(args.request) if args.request else None),ensure_ascii=False,indent=2))
+    workspace = _resolve_workspace(args)
+    reference = getattr(args, 'receipt', None)
+    if reference and (args.action != 'import-selected' or args.request):
+        raise ValueError('--receipt is exclusive with --request and belongs to import-selected')
+    value = receipts.read(workspace, reference, receipts.ACTIVATION) if reference else json_input(args.request) if args.request else None
+    if args.action == 'import-selected' and isinstance(value, dict) and 'items' in value:
+        raise ValueError('legacy per-paper receipt import is retired; preserve existing material snapshots; activate the task and use --receipt for prepared selections')
+    print(json.dumps(papers(workspace,args.action,args.ids,value),ensure_ascii=False,indent=2))
     return 0
 
 
@@ -748,6 +952,7 @@ def cmd_info(args) -> int:
 
 def cmd_doctor(args) -> int:
     command = [sys.executable, str(slr_paths.HOME / "scripts" / "preflight.py")]
+    command += ['--scope', args.scope]
     if args.profile:
         command += ["--profile", args.profile]
     if args.no_network:
@@ -776,14 +981,51 @@ def cmd_manuscript(args) -> int:
 
 def cmd_workflow(args):
     from workflow import advance
-    result = advance(_resolve_workspace(args), args.phase, args.start)
+    result = advance(_resolve_workspace(args), args.phase, args.start, resume=getattr(args, 'resume', False))
     emit(result, getattr(args, 'full', False))
-    return 1 if result['status'] == 'FAILED' else 0
+    return 1 if result['status'] in STOPPED_STATUSES else 0
 
 
 def cmd_writing(args) -> int:
+    reference = getattr(args, 'receipt', None)
+    response = None
+    if reference:
+        operations = {'plan-packet': receipts.ACTIVATION, 'plan-resolve': receipts.PLAN,
+                      'review-complete': receipts.OUTLINE, 'approve': receipts.OUTLINE}
+        if args.action not in operations or (args.request and args.action != 'approve'):
+            raise ValueError('--receipt belongs to plan-packet, plan-resolve, review-complete or approve; only approve accepts publication amendments in --request')
+        response = receipts.read(_resolve_workspace(args), reference, operations[args.action])
+    if args.action != 'plan-resolve' and (args.plan_action is not None or args.patch is not None):
+        raise ValueError('--action and --patch belong to writing plan-resolve')
+    if args.action == 'plan-resolve':
+        result = planning.resolve(_resolve_workspace(args), response if reference else json_input(args.request), args.plan_action,
+                                  json_input(args.patch) if args.patch is not None else None,
+                                  source_reference=reference)
+        emit(result, getattr(args, 'full', False))
+        return 0
+    if args.action == 'plan-packet':
+        workspace = _resolve_workspace(args)
+        preparation = None
+        if args.request or reference:
+            activation = response if reference else json_input(args.request)
+            if not isinstance(activation, dict) or activation.get('ok') is not True:
+                raise ValueError('plan-packet requires the unchanged successful task activation response')
+            if 'selected_sources' in activation:
+                preparation = import_materials(workspace, activation)
+            elif read_request(workspace).get('sources', {}).get('refs'):
+                raise ValueError('selected-source preparation missing from activation; activate the current task again')
+        if (preparation and preparation.get('status') == 'WAITING_MATERIALS'
+                and read_request(workspace).get('sources', {}).get('policy') == 'provided_only'
+                and not load_local(workspace)):
+            emit(preparation, getattr(args, 'full', False))
+            return 0
+        result = planning.packet(workspace, source_summary=material_budget(workspace))
+        if preparation is not None:
+            result['materials'] = preparation
+        emit(result, getattr(args, 'full', False))
+        return 0
     if args.action.startswith('review-'):
-        value=json_input(args.request) if args.request else {}
+        value=response['confirmation'] if reference else json_input(args.request) if args.request else {}
         if not isinstance(value,dict):raise ValueError('review input must be an object')
         for field in ('packet_id','wait_seconds'):
             supplied=getattr(args,field,None)
@@ -794,10 +1036,11 @@ def cmd_writing(args) -> int:
         emit(result,getattr(args,'full',False))
         return 0
     if args.action in ('configure','approve'):
-        if not args.request:raise ValueError(args.action+' requires --request FILE or -')
+        if not args.request and not reference:raise ValueError(args.action+' requires --request FILE or --receipt REF')
         from task_contract import configure
         from operator_cli import approve
-        result=(configure if args.action=='configure' else approve)(_resolve_workspace(args),json_input(args.request))
+        value = receipts.approval(response, json_input(args.request) if args.request else None) if reference else json_input(args.request)
+        result=(configure if args.action=='configure' else approve)(_resolve_workspace(args),value)
         emit(result,getattr(args,'full',False))
         return 0
     command = [sys.executable, str(slr_paths.HOME / "scripts/writing.py"),
@@ -815,6 +1058,8 @@ def cmd_writing(args) -> int:
 
 
 def cmd_import_search(args) -> int:
+    planning.require_plan(_resolve_workspace(args))
+    search_finished(_resolve_workspace(args))
     return subprocess.call([
         sys.executable,
         str(slr_paths.HOME / "scripts/retrieval/import_search_output.py"),
@@ -841,13 +1086,17 @@ def main() -> int:
 
     workflow = sub.add_parser('workflow', help='advance existing stages to a main-agent decision boundary')
     workflow.add_argument('phase', choices=['evidence', 'publish'])
-    workflow.add_argument('--from', dest='start', choices=['retrieval_adapt', 'fulltext', 'processing', 'outline', 'review-packet'])
+    workflow_entry = workflow.add_mutually_exclusive_group()
+    workflow_entry.add_argument('--from', dest='start', choices=['retrieval_adapt', 'fulltext', 'processing', 'outline', 'review-packet'])
+    workflow_entry.add_argument('--resume', action='store_true', help='resume the recorded evidence boundary under the existing execution lock')
     workflow.add_argument('--workspace')
     workflow.set_defaults(func=cmd_workflow)
 
     doctor = sub.add_parser("doctor", help="check the environment")
     doctor.add_argument("--no-network", action="store_true")
     doctor.add_argument("--workspace", help="inspect an existing workspace runtime binding")
+    doctor.add_argument('--scope', choices=CHECK_SCOPES, default=FULL_SCOPE,
+                        help='runtime launch identity before agreement; full execution checks after approval')
     doctor.set_defaults(func=cmd_doctor)
 
     info = sub.add_parser("info", help="print resolved paths and configuration")
@@ -890,7 +1139,10 @@ def main() -> int:
     init.add_argument("--intent",
                       help="framework-supplied precise one-sentence research intent")
     init.add_argument("--language", choices=("auto", "english", "chinese"), default="auto")
-    init.set_defaults(func=cmd_init)
+    init.add_argument('--mode',choices=('quick','standard'),default='standard')
+    init.add_argument('--request',help='complete initial writing request JSON, including original intent unless --intent supplies it')
+    init.add_argument('--field',help='exact input field path for --describe-input, e.g. constraints.values.required_section')
+    init.set_defaults(func=cmd_init,input_operation='init')
 
     evidence = sub.add_parser('evidence', help='build deterministic outline or writing evidence')
     evidence.add_argument('action', choices=['build'])
@@ -900,7 +1152,7 @@ def main() -> int:
     evidence.set_defaults(func=cmd_evidence)
 
     outline = sub.add_parser("outline", help="render or check the outline")
-    outline.add_argument("action", choices=("generate", "configure", "render", "check", "review-packet"))
+    outline.add_argument("action", choices=("generate", "configure", "import", "render", "check", "review-packet"))
     outline.add_argument('--request')
     outline.add_argument("--workspace")
     outline.add_argument("--min-figures", type=int, default=None)
@@ -936,6 +1188,7 @@ def main() -> int:
     figures.add_argument("--ids",nargs="+")
     figures.add_argument("--workspace")
     figures.add_argument("--concurrency", type=int, default=4)
+    figures.add_argument('--wait-seconds',type=float,default=0)
     figures.set_defaults(func=cmd_figures)
 
     manuscript = sub.add_parser("manuscript", help="generate native chapters and refine v1 into editable v2; publish current source")
@@ -948,11 +1201,15 @@ def main() -> int:
     manuscript.set_defaults(func=cmd_manuscript)
 
     writing = sub.add_parser("writing", help="configure the task and record actual publication decisions")
-    writing.add_argument("action", choices=("configure", "approve", "review-complete", "review-start","review-status","review-wait","review-response","review-timeout",
+    writing.add_argument("action", choices=("configure", "approve", "plan-packet", "plan-resolve", "review-complete", "review-start","review-status","review-wait","review-response","review-timeout",
                                           "corpus", "context", "draft", "produce", "review", "apply"),
-                        metavar=None if legacy_help else '{configure,approve,review-start,review-status,review-wait,review-response,review-timeout}')
+                        metavar=None if legacy_help else '{configure,plan-packet,plan-resolve,approve,review-complete}')
     writing.add_argument("--workspace")
     writing.add_argument("--request")
+    writing.add_argument('--receipt', help='product receipt_ref; read the original response without copying JSON')
+    writing.add_argument('--action', dest='plan_action', choices=tuple(planning.DECISIONS),
+                         help='plan-resolve interpretation of an actual reply; omit for product timeout/cancellation')
+    writing.add_argument('--patch', help='plan-resolve requested amendments JSON; preserve actual user follow-up history')
     writing.add_argument("--packet-id",help="current review packet ID for review-* operations")
     writing.add_argument("--wait-seconds",type=int,help="review-wait polling duration, 0..30 seconds")
     compatibility_help = 'compatibility authoring option' if legacy_help else argparse.SUPPRESS
@@ -973,17 +1230,28 @@ def main() -> int:
     status.add_argument('--stage',choices=['processing','writing','workflow'],default='processing')
     status.set_defaults(func=cmd_status)
     papers = sub.add_parser('papers',help='inspect papers, import local PDFs or obtain the search budget')
-    papers.add_argument('action',choices=['show','import-local','budget'])
+    papers.add_argument('action',choices=['show','import-local','import-selected','budget','retry-extraction'])
     papers.add_argument('--workspace')
     papers.add_argument('--request',help='import-local JSON containing files')
-    papers.add_argument('--ids',nargs='+',help='required for show')
+    papers.add_argument('--receipt',help='import-selected product activation receipt_ref')
+    papers.add_argument('--ids',nargs='+',help='required for show and retry-extraction')
     papers.set_defaults(func=cmd_papers)
 
-    for parser in (writing,outline,evidence,figures,papers):
+    progress = sub.add_parser('progress',help='build one host plan mutation from the unchanged current plan/get response')
+    progress.add_argument('--workspace')
+    progress.add_argument('--request')
+    progress.add_argument('--item-id')
+    progress.add_argument('--state',choices=STATES)
+    progress.add_argument('--protocol',choices=PROTOCOLS,default=FLAT,help='match the actually declared tool schema')
+    progress.add_argument('--reason',help='observed reason for a pause, block, failure or partial result')
+    progress.add_argument('--complete',help='flat: finish this leaf only, then read get and start the next; legacy: combine boundary')
+    progress.set_defaults(func=cmd_progress,input_operation='progress')
+
+    for parser in (init,writing,outline,evidence,figures,papers,progress):
         parser.add_argument('--describe-input',action='store_true',
                             help='print input fields and valid examples without calling models or changing files')
     if not legacy_help:
-        hidden = {'resume', 'compile', 'finalize'}
+        hidden = {'resume', 'compile', 'finalize', 'progress'}
         # Preserve explicit compatibility calls; argparse has no public method
         # to hide a subcommand from default help while retaining its parser.
         sub._choices_actions = [a for a in sub._choices_actions if a.dest not in hidden]
@@ -994,10 +1262,19 @@ def main() -> int:
         return 0
     try:
         if getattr(args,'describe_input',False):
+            if args.command == 'init':
+                emit(describe_init(args.mode, args.field), True)
+                return 0
             from input_contracts import describe_input
-            emit(describe_input(args.command+'.'+args.action,_resolve_workspace(args)),True)
+            operation=getattr(args,'input_operation',args.command+'.'+getattr(args,'action',''))
+            emit(describe_input(operation,_resolve_workspace(args)),True)
             return 0
+        if args.command == 'init' and args.field:
+            raise ValueError('--field is a read-only selector; use it with --describe-input')
         return args.func(args)
+    except OperationBlocked as exc:
+        emit(exc.value, True)
+        return 1
     except (ValueError, OSError, KeyError, TypeError) as exc:
         from input_contracts import input_error
         emit(input_error(args.command+'.'+getattr(args,'action',''),exc),True)

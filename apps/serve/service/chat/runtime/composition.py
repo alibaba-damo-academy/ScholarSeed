@@ -7,11 +7,12 @@ import hashlib
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from contextlib import AbstractContextManager, asynccontextmanager
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, cast
 
 from scholarseed_runtime.contract import (
     CallbackAudience,
@@ -58,15 +59,19 @@ from scholarseed_runtime.contract.inventory import ModelInventory, SkillInventor
 from scholarseed_runtime.contract.mcp import RuntimeMcpConfiguration
 from scholarseed_runtime.contract.provider import (
     RUNTIME_HOST_RECONFIGURATION_COMMAND,
+    RUNTIME_HOST_WARMUP_COMMAND,
     RuntimeHostReconfiguration,
+    RuntimeHostRetirement,
     RuntimeHostWarmup,
     RuntimeOpenNotAppliedError,
 )
 from scholarseed_runtime.contract.resource import (
+    RESOURCE_CANCELLED,
     RESOURCE_HOST_BUSY,
     RESOURCE_HOST_CONFIGURATION_CONFLICT,
     RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
     RESOURCE_HOST_CONTEXT_REQUIRED,
+    ResourceLease,
     ResourcePurpose,
     ResourceRequest,
 )
@@ -102,10 +107,13 @@ from service.chat.persistence.catalog import (
     SessionCatalogStore,
 )
 from service.chat.persistence.events import (
+    SESSION_FORK_IMPORTED_KEY,
     SESSION_FORK_KEY,
+    SESSION_FORK_NATIVE_FIELD,
     SESSION_FORK_SOURCE_CHANGED,
     ProductEventStore,
 )
+from service.chat.persistence.worker import PersistenceWorker
 from service.chat.runtime.activation import (
     SESSION_OPEN_UNKNOWN,
     ActivationPlan,
@@ -127,17 +135,20 @@ from service.chat.runtime.projection import (
 from service.chat.runtime.reconfiguration import RECONFIGURATION_STALE, HostReconfiguration
 from service.chat.runtime.secrets import _launch_secret_contract
 from service.chat.runtime.selection import RuntimeDiscovery, RuntimeGateway
-from service.chat.runtime.timing import ActivationStage
+from service.chat.runtime.timing import ActivationStage, InvocationTiming
 from service.chat.runtime.tools import (
     SERVICE_BRIDGE_TOOL,
     SESSION_SERVICE_TOOLS,
     execute_service_tool,
 )
+from service.chat.runtime.utils import runtime_failure
 from service.chat.service.cards import CardRegistry
 from service.chat.service.coverage import CitationCoverage
-from service.chat.service.models import ModelService, SessionModelSpec
+from service.chat.service.models import ModelService, SessionModelSpec, SessionModelUnavailableError
 from service.chat.service.publication import PublicationService
 from service.chat.service.recording import RecordingService
+from service.chat.utils import SESSION_FORK_COPIED_FIELD
+from service.identity.service.scope import ExecutionIdentity
 from service.identity.utils import LOCAL_USER_ID
 from service.inference.reasoning import minimum_effort, require_declared_effort
 from service.paths import SERVICE_SKILL_ROOTS
@@ -185,12 +196,19 @@ class OneShotRuntimeResult:
     model_key: str
     turn: RuntimeTurnResult
     vendor_thread_id: str = ""
+    timings: dict[str, object] = field(default_factory=dict)
 
 
 class OneShotRuntimeError(RuntimeError):
     """Safe action failure classified by whether a vendor turn may have started."""
 
-    def __init__(self, *, submitted: bool, safe_error: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        submitted: bool,
+        safe_error: str = "",
+        diagnostic: Mapping[str, object] | None = None,
+    ) -> None:
         self.safe_error = (
             safe_error
             if not submitted
@@ -205,6 +223,7 @@ class OneShotRuntimeError(RuntimeError):
             else ONE_SHOT_RUNTIME_FAILURE_CODE
         )
         super().__init__(self.safe_error)
+        self.diagnostic = dict(diagnostic or {})
         self.retryability = (
             RuntimeRetryability.UNKNOWN_OUTCOME if submitted else RuntimeRetryability.USER_RETRYABLE
         )
@@ -234,6 +253,15 @@ class RuntimeOpening:
     directories: tuple[Path, ...] = ()
 
 
+@dataclass(frozen=True)
+class _RuntimeProcessLease:
+    activity: ActivityLease
+    runtime_descriptors: Callable[[], AbstractContextManager[tuple[int, ...]]]
+
+    def close(self) -> None:
+        self.activity.close()
+
+
 class LiveSessionService:
     """Open typed Codex adapters and expose runtime readiness."""
 
@@ -250,8 +278,12 @@ class LiveSessionService:
         gateway: RuntimeGateway | None = None,
         discovery: RuntimeDiscovery | None = None,
         resource_changes: AgentResourceChangeSink | None = None,
+        resource_drains: tuple[Callable[[str], Awaitable[tuple[str, ...]]], ...] = (),
+        runtime_descriptors: Callable[[], AbstractContextManager[tuple[int, ...]]] | None = None,
     ) -> None:
         self._activities = activities
+        self._resource_drains = resource_drains
+        self._runtime_descriptors = runtime_descriptors
         self.toolchain = ToolchainReadiness()
         self._uncertain_attachments: dict[str, RuntimeOpening] = {}
         self._skill_configuration_lock = asyncio.Lock()
@@ -311,6 +343,7 @@ class LiveSessionService:
             activities=activities, drain=self.drain_for_update, logger=logger
         )
         self._host_models: dict[str, str] = {}
+        self.execution_identity = ExecutionIdentity()
 
     def bind_host_warmup(
         self,
@@ -326,6 +359,18 @@ class LiveSessionService:
     @property
     def reconfiguration_wait_seconds(self) -> float:
         return self._gateway.provider(self.runtime_id).resource_policy.wait_seconds
+
+    def retire_execution_scope(self, scope: str) -> None:
+        for runtime_id in self._gateway.catalog.runtime_ids():
+            provider = self._gateway.provider(runtime_id)
+            if isinstance(provider, RuntimeHostRetirement):
+                provider.retire_execution_scope(scope)
+
+    def _execution_scope(self, user_id: str) -> str:
+        scope = self.execution_identity.scope(user_id)
+        if scope is None:
+            raise SessionActivationError(RESOURCE_CANCELLED)
+        return scope
 
     @property
     def reconfiguration_supported(self) -> bool:
@@ -353,7 +398,10 @@ class LiveSessionService:
             process_environment=process_environment,
             timing=timing,
         ) as host:
-            receipt = await self._gateway.provider(self.runtime_id).prewarm(host)
+            provider = self._gateway.provider(self.runtime_id)
+            if not isinstance(provider, RuntimeHostWarmup):
+                raise SessionActivationError(RESOURCE_HOST_CONTEXT_REQUIRED)
+            receipt = await provider.prewarm(host)
             if receipt.state is not CommandState.APPLIED or not receipt.correlation_id:
                 raise SessionActivationError(receipt.safe_error or RESOURCE_HOST_CONTEXT_REQUIRED)
             yield host, receipt.correlation_id
@@ -372,6 +420,7 @@ class LiveSessionService:
     ) -> AsyncIterator[HostWarmupRequest]:
         if not user_id.strip() or self._host_environment is None:
             raise ValueError(RESOURCE_HOST_CONTEXT_REQUIRED)
+        scope = self._execution_scope(user_id)
         provider = self._gateway.provider(self.runtime_id)
         required = {
             RuntimeCapabilityName.HOST_WARMUP.value,
@@ -404,7 +453,7 @@ class LiveSessionService:
             host = HostWarmupRequest(
                 request_id=request_id,
                 cwd=cwd.expanduser().resolve(),
-                process_sharing_scope=user_id,
+                process_sharing_scope=scope,
                 model=intent,
                 credential_port=credential_port,
                 launch_secrets=launch_secrets,
@@ -427,23 +476,45 @@ class LiveSessionService:
         provider = self._gateway.provider(self.runtime_id)
         if not isinstance(provider, RuntimeHostWarmup):
             return CommandReceipt(RUNTIME_HOST_RECONFIGURATION_COMMAND, CommandState.UNSUPPORTED)
-        async with self._host_intent(
-            cwd=resolved,
-            user_id=user_id,
-            model_id=model_id,
-            catalog_activity=owner,
-            expected_model_id=model_id,
-        ) as host:
-            receipt = await provider.prewarm(host)
-            if receipt.state is CommandState.APPLIED:
-                if not receipt.correlation_id:
-                    raise RuntimeError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
-                self._host_models[user_id] = model_id
-            return receipt
+        if self.execution_identity.scope(user_id) is None:
+            return CommandReceipt(
+                RUNTIME_HOST_WARMUP_COMMAND, CommandState.REJECTED, safe_error=RESOURCE_CANCELLED
+            )
+        host_started = False
+        try:
+            async with self._host_intent(
+                cwd=resolved,
+                user_id=user_id,
+                model_id=model_id,
+                catalog_activity=owner,
+                expected_model_id=model_id,
+            ) as host:
+                host_started = True
+                receipt = await provider.prewarm(host)
+                if receipt.state is CommandState.APPLIED:
+                    if not receipt.correlation_id:
+                        raise RuntimeError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
+                    self._host_models[user_id] = model_id
+                return receipt
+        except SessionModelUnavailableError as error:
+            if host_started:
+                raise
+            # A rejected model projection never invoked the shared host. Its
+            # temporary registration has already been released by _host_intent.
+            self._logger.info("runtime_host_preflight_rejected code=%s", error.safe_error)
+            return CommandReceipt(
+                RUNTIME_HOST_WARMUP_COMMAND, CommandState.REJECTED, safe_error=error.safe_error
+            )
 
     async def reconfigure_host(
         self, *, user_id: str, model_id: str, owner: ActivityLease, cwd: Path | None = None
     ) -> CommandReceipt:
+        if self.execution_identity.scope(user_id) is None:
+            return CommandReceipt(
+                RUNTIME_HOST_RECONFIGURATION_COMMAND,
+                CommandState.REJECTED,
+                safe_error=RESOURCE_CANCELLED,
+            )
         resolved = cwd if cwd is not None else self._host_warmup_cwd
         if resolved is None:
             raise ValueError(RESOURCE_HOST_CONTEXT_REQUIRED)
@@ -612,9 +683,12 @@ class LiveSessionService:
             )
         return readiness
 
-    def _runtime_resource_lease(self) -> ActivityLease:
+    def _runtime_resource_lease(self) -> ResourceLease:
         self.toolchain.require_ready()
-        return self._activities.enter(ActivityDomain.RESOURCE, allow_startup_probe=False)
+        activity = self._activities.enter(ActivityDomain.RESOURCE, allow_startup_probe=False)
+        if self._runtime_descriptors is None:
+            return activity
+        return _RuntimeProcessLease(activity, self._runtime_descriptors)
 
     def schedule_readiness(self) -> None:
         if (
@@ -1139,7 +1213,21 @@ class LiveSessionService:
         blocked_runtimes.update(
             opening.runtime_id for opening in self._uncertain_attachments.values()
         )
-        return tuple(sorted(blocked_runtimes))
+        if blocked_runtimes:
+            return tuple(sorted(blocked_runtimes))
+        # Composition-owned resources (such as idle connector transports) outlive
+        # provider attachments. Retire them only after those owners confirm exit.
+        for drain in self._resource_drains:
+            snapshot = self._activities.snapshot()
+            if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
+                raise MaintenanceStale("update_maintenance_stale")
+            blocked = await drain(generation)
+            snapshot = self._activities.snapshot()
+            if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
+                raise MaintenanceStale("update_maintenance_stale")
+            if blocked:
+                return blocked
+        return ()
 
     async def drain_resources(self, generation: str) -> tuple[str, ...]:
         """Release idle provider pools after attachments; never authorizes restart.
@@ -1247,13 +1335,16 @@ class LiveSessionService:
         deadline: float | None = None,
         on_wait: ResourceWaitObserver | None = None,
     ) -> None:
+        self._execution_scope(live.user_id)
         binding = self._catalog.runtime_binding(live.id)
-        if (
-            binding is not None
-            and self._events.rejected_turns(live.id, binding.opaque_session_ref)
-            and live.runtime_session is not None
-            and not await live.suspend_runtime()
-        ):
+        rejected = (
+            await live.persistence.run(
+                self._events.rejected_turns, live.id, binding.opaque_session_ref
+            )
+            if binding is not None
+            else frozenset()
+        )
+        if rejected and live.runtime_session is not None and not await live.suspend_runtime():
             raise SessionActivationError(SESSION_OPEN_UNKNOWN)
         await self.activation.ensure_active(
             live, purpose=purpose, request_id=request_id, deadline=deadline, on_wait=on_wait
@@ -1304,6 +1395,7 @@ class LiveSessionService:
                 live.lifecycle_lock.release()
                 continue
             try:
+                self._execution_scope(live.user_id)
                 yield session
             finally:
                 live.lifecycle_lock.release()
@@ -1337,7 +1429,10 @@ class LiveSessionService:
             if project_path is not None and self._project_id_for_path is not None
             else ""
         )
-        live = LiveSession(
+        live: LiveSession
+        created: list[LiveSession] = []
+        factory = partial(
+            LiveSession,
             recording=self.recording,
             recover_empty=lambda proof: self._recover_empty(live, proof),
             rebuild_thread=lambda target: self._rebuild_thread(live, target),
@@ -1376,14 +1471,46 @@ class LiveSessionService:
                 process_environment=live.process_environment,
             ),
         )
-        live.runtime_binding = self._catalog.runtime_binding(session_id)
-        live.vendor_thread_id = resume_vendor_thread_id
-        live.resumed = bool(resume_vendor_thread_id)
-        live.writable_roots = tuple(writable_roots)
-        live.applied_permission_mode = ""
-        if live.runtime_binding is not None:
-            live.recover_publications()
-        return live
+
+        def construct() -> LiveSession:
+            session = factory()
+            created.append(session)
+            return session
+
+        try:
+            live = await self._activities.finish(
+                ActivityDomain.RUNTIME,
+                lambda: self._activities.to_thread(ActivityDomain.RUNTIME, construct),
+            )
+            live.runtime_binding = await live.persistence.run(
+                self._catalog.runtime_binding, session_id
+            )
+            live.vendor_thread_id = resume_vendor_thread_id
+            live.resumed = bool(resume_vendor_thread_id)
+            live.writable_roots = tuple(writable_roots)
+            live.applied_permission_mode = ""
+            if live.runtime_binding is not None:
+                await live.persistence.run(live.recover_publications)
+            return live
+        except BaseException as construction_error:
+            if created:
+
+                async def dispose() -> list[BaseException]:
+                    failures: list[BaseException] = []
+                    for abandoned in created:
+                        try:
+                            await abandoned.persistence.close()
+                            await asyncio.to_thread(abandoned._trace.close)
+                        except BaseException as error:
+                            failures.append(error)
+                    return failures
+
+                failures = await PersistenceWorker._finish(asyncio.create_task(dispose()))
+                if failures:
+                    raise BaseExceptionGroup(
+                        "session construction and cleanup failed", [construction_error, *failures]
+                    ) from None
+            raise
 
     def _activation_revision(self, live: LiveSession) -> tuple[object, ...]:
         record = self._catalog.get(live.id)
@@ -1458,10 +1585,12 @@ class LiveSessionService:
                 if live.interrupt_generation != generation:
                     raise SessionActivationError(SESSION_OPEN_UNKNOWN)
                 live.restore_admitted_user(proof.command_id)
-                session = live.runtime_session
+                session, driver = cast(
+                    tuple[RuntimeSession | None, RuntimeDriver | None],
+                    (live.runtime_session, live.runtime_driver),
+                )
                 if session is None:
                     raise SessionActivationError(SESSION_OPEN_UNKNOWN)
-                driver = live.runtime_driver
                 if driver is None:
                     raise SessionActivationError(SESSION_OPEN_UNKNOWN)
                 while True:
@@ -1697,6 +1826,7 @@ class LiveSessionService:
             OpenState.OPEN_UNKNOWN,
         }:
             raise SessionActivationError(SESSION_OPEN_UNKNOWN)
+        scope = self._execution_scope(live.user_id)
         revision = self._activation_revision(live)
         model_state = self._catalog.model_state(live.id)
         effort = model_state.selected_reasoning_effort
@@ -1727,13 +1857,27 @@ class LiveSessionService:
         permission = live.permission_intent(RuntimePermissionMode(mode))
         base = base_instructions()
         instructions = developer_instructions(
-            output_directory=live.output_root.relative_to(live.runtime_workdir).as_posix(),
+            output_directory=(
+                ""
+                if live.project_path == live.runtime_workdir
+                else live.output_root.relative_to(live.runtime_workdir).as_posix()
+            ),
             project_context=(
                 self._publications.project_context(live.project_id, live.runtime_workdir)
                 if self._publications
                 else ""
             ),
         )
+        fork_origin = self._events.by_key(live.id, SESSION_FORK_KEY)
+        if fork_origin is not None and fork_origin.payload.get(SESSION_FORK_COPIED_FIELD):
+            instructions += (
+                "\nThis conversation is an independent fork. Working files were copied from "
+                f"{fork_origin.payload[SESSION_FORK_COPIED_FIELD]} to {live.runtime_workdir}. "
+                "Keep relative paths unchanged. Historical absolute paths under the old working "
+                "directory refer to provenance, not the active files: use their corresponding paths "
+                "under the current working directory for reading and editing. Never modify the source "
+                "session's working files. File bytes reflect fork creation time, not a historical turn."
+            )
         binding = self._catalog.runtime_binding(live.id)
         service_tools = SESSION_SERVICE_TOOLS
         replaces = (
@@ -1756,7 +1900,7 @@ class LiveSessionService:
                 binding=binding,
                 cwd=live.runtime_workdir,
                 execution_scope=live.id,
-                process_sharing_scope=live.user_id,
+                process_sharing_scope=scope,
                 execution_environment=execution_environment,
                 model=model_intent,
                 credential_port=credential_port,
@@ -1774,7 +1918,14 @@ class LiveSessionService:
         else:
             fork_source = None
             origin = self._events.by_key(live.id, SESSION_FORK_KEY)
-            if origin is not None and replaces is None:
+            native_fork = origin is not None and origin.payload.get(
+                SESSION_FORK_NATIVE_FIELD, bool(origin.payload.get("source_turn_id"))
+            )
+            unimported_fork = (
+                origin is not None
+                and self._events.by_key(live.id, SESSION_FORK_IMPORTED_KEY) is None
+            )
+            if native_fork and origin is not None and replaces is None:
                 source = self._catalog.runtime_binding(str(origin.payload["source_session_id"]))
                 if (
                     source is None
@@ -1791,7 +1942,7 @@ class LiveSessionService:
                 product_session_id=live.id,
                 cwd=live.runtime_workdir,
                 execution_scope=live.id,
-                process_sharing_scope=live.user_id,
+                process_sharing_scope=scope,
                 execution_environment=execution_environment,
                 model=model_intent,
                 credential_port=credential_port,
@@ -1807,10 +1958,28 @@ class LiveSessionService:
                 required_capabilities=activation.required_capabilities,
                 fork_source=fork_source,
                 initial_history=(
-                    self._events.portable_history(live.id, exclude_rejected=True)
+                    self._events.portable_history(
+                        (
+                            str(origin.payload["source_session_id"])
+                            if unimported_fork and origin is not None
+                            else live.id
+                        ),
+                        exclude_rejected=True,
+                        include_references=True,
+                        through_seq=(
+                            int(origin.payload["source_product_seq"])
+                            if unimported_fork and origin is not None
+                            else None
+                        ),
+                    )
                     if (proof is None or isinstance(proof, ThreadReplacementProof))
-                    and replaces is not None
-                    and activation.open_state is not OpenState.UNSUBMITTED
+                    and (
+                        (origin is not None and not native_fork)
+                        or (
+                            replaces is not None
+                            and activation.open_state is not OpenState.UNSUBMITTED
+                        )
+                    )
                     else ()
                 ),
             )
@@ -2018,6 +2187,9 @@ class LiveSessionService:
         ephemeral: bool = False,
         minimum_reasoning: bool = False,
         permission: PermissionIntent | None = None,
+        thinking: ModelThinking | None = None,
+        output_schema: dict[str, RuntimeValue] | None = None,
+        generation_only: bool = False,
     ) -> OneShotRuntimeResult:
         """Run one isolated turn through the configured surface runtime.
 
@@ -2033,6 +2205,7 @@ class LiveSessionService:
 
         if self._closed:
             raise RuntimeError("runtime service is closed")
+        scope = self._execution_scope(user_id)
         if invocation_id in self._one_shot_close_failures:
             raise RuntimeError("one-shot invocation cleanup was not confirmed")
         if invocation_id in self._one_shot_tasks:
@@ -2056,9 +2229,14 @@ class LiveSessionService:
         opening_record: RuntimeOpening | None = None
         release_opening = False
         service_callbacks: set[asyncio.Task[None]] = set()
+        invocation_timing = InvocationTiming()
+        result_timings: dict[str, object] = {}
+        persistence = PersistenceWorker(session_id=invocation_id)
+        failure_phase = ActivationStage.READINESS.value
         try:
             trace = SessionTrace(invocation_id, cwd, runtime_id=self.runtime_id)
-            trace.invocation_started(
+            await persistence.run(
+                trace.invocation_started,
                 purpose=purpose,
                 requested_model_key=model_id,
                 permission_mode=permission_mode.value,
@@ -2069,7 +2247,9 @@ class LiveSessionService:
                 required_capabilities=tuple(item.value for item in required_capabilities),
                 optional_capabilities=tuple(item.value for item in optional_capabilities),
             )
-            timing = trace.activation(invocation_id)
+            timing = trace.activation(
+                invocation_id, observer=invocation_timing.activation, dispatch=persistence.enqueue
+            )
 
             async def respond_service(callback: RuntimeCallbackRequest) -> None:
                 active_session = runtime_session
@@ -2088,6 +2268,7 @@ class LiveSessionService:
                             session_id=invocation_id,
                             token=bridge_token,
                             local_socket=self._local_socket,
+                            workdir=cwd,
                             callback_request_id=callback.request_id,
                             callback_turn_id=callback.native_turn_id,
                         )
@@ -2118,14 +2299,23 @@ class LiveSessionService:
                     task.add_done_callback(service_callbacks.discard)
                     return
                 if isinstance(observation, RuntimeEvent):
+                    payload = (
+                        observation.payload if isinstance(observation.payload, Mapping) else {}
+                    )
+                    if (
+                        observation.kind is RuntimeEventKind.CONTENT_DELTA
+                        and payload.get("role", "assistant") == "assistant"
+                        and (payload.get("text") or payload.get("delta"))
+                    ):
+                        invocation_timing.assistant_delta()
                     if observation.kind is RuntimeEventKind.RUNTIME_EVIDENCE:
                         process, rpc = decode_evidence(observation)
                         for process_event in process:
-                            trace.runtime_process_event(process_event)
+                            await persistence.run(trace.runtime_process_event, process_event)
                         for rpc_event in rpc:
-                            trace.runtime_rpc_evidence(rpc_event)
+                            await persistence.run(trace.runtime_rpc_evidence, rpc_event)
                     else:
-                        trace.runtime_event(observation)
+                        await persistence.run(trace.runtime_event, observation)
                 if observer is not None:
                     await observer(observation)
 
@@ -2135,6 +2325,7 @@ class LiveSessionService:
                 if not readiness.ready:
                     raise RuntimeError(readiness.safe_error or "harness_runtime_not_ready")
                 launch_environment = dict(process_environment or {})
+                failure_phase = ActivationStage.PLAN.value
                 with timing.measure(ActivationStage.PLAN):
                     model, _options, _environment = self._session_options(
                         model_id=model_id,
@@ -2144,8 +2335,15 @@ class LiveSessionService:
                         user_id=user_id,
                         turn_id_provider=_invocation_turn_identity,
                         source_text=input_text,
+                        allow_tools=not generation_only,
+                        reasoning_effort=None if minimum_reasoning else (reasoning_effort or None),
+                        thinking=thinking,
                     )
-                    model_intent, credential_port = model.runtime_model()
+                    model_intent, credential_port = (
+                        model.runtime_model()
+                        if thinking is None
+                        else model.runtime_model(thinking=thinking)
+                    )
                     if minimum_reasoning:
                         # 声明优先：我们在这条坐标上知道有哪些档；只有压根没声明档位形态时，
                         # 才退回 runtime 上报的清单兜底（订阅模型等我们未登记的情况）。
@@ -2183,7 +2381,7 @@ class LiveSessionService:
                     model_intent = replace(
                         model_intent,
                         reasoning_effort=reasoning_effort,
-                        service_tier=service_tier,
+                        service_tier=service_tier or model_intent.service_tier,
                     )
                 await self._activities.finish(
                     ActivityDomain.RUNTIME,
@@ -2208,7 +2406,7 @@ class LiveSessionService:
                     product_session_id=invocation_id,
                     cwd=cwd,
                     execution_scope=invocation_id,
-                    process_sharing_scope=user_id,
+                    process_sharing_scope=scope,
                     model=model_intent,
                     credential_port=credential_port,
                     launch_secrets=launch_secrets,
@@ -2223,15 +2421,17 @@ class LiveSessionService:
                     base_instructions=base_instructions,
                     developer_instructions=developer_instructions,
                     service_tools=(SERVICE_BRIDGE_TOOL,) if bridge_token else (),
-                    skill_roots=SERVICE_SKILL_ROOTS,
+                    skill_roots=() if generation_only else SERVICE_SKILL_ROOTS,
                     skill_policy=SkillPolicy.DENY if ephemeral else SkillPolicy.INHERIT,
                     skill_configurations=skill_configurations,
                     timing=timing,
                     ephemeral=ephemeral,
+                    generation_only=generation_only,
                     required_capabilities=required_capabilities,
                     optional_capabilities=optional_capabilities,
                 )
                 provider = self._gateway.provider(self.runtime_id)
+                failure_phase = ActivationStage.ADMISSION.value
                 with timing.measure(ActivationStage.ADMISSION):
                     receipt = await self.activation.acquire(
                         provider,
@@ -2242,6 +2442,7 @@ class LiveSessionService:
                             request,
                         ),
                     )
+                failure_phase = ActivationStage.ATTACH.value
                 with timing.measure(ActivationStage.ATTACH):
                     try:
                         opening_record = RuntimeOpening(
@@ -2265,12 +2466,20 @@ class LiveSessionService:
             driver.start()
             self._one_shot_drivers[invocation_id] = (owner_id, driver)
             submitted = True
+            failure_phase = "turn.start"
+            invocation_timing.dispatch()
             result = await driver.submit(
-                TurnRequest(command_id=invocation_id, items=items or (input_text,))
+                TurnRequest(
+                    command_id=invocation_id,
+                    items=items or (input_text,),
+                    output_schema=output_schema,
+                )
             )
+            invocation_timing.complete()
             if service_callbacks:
                 await asyncio.gather(*service_callbacks)
-            trace.invocation_completed(
+            await persistence.run(
+                trace.invocation_completed,
                 purpose=purpose,
                 model_key=model.key,
                 vendor_thread_id=runtime_session.binding.opaque_session_ref,
@@ -2287,13 +2496,20 @@ class LiveSessionService:
                 model_key=model.key,
                 turn=result,
                 vendor_thread_id=runtime_session.binding.opaque_session_ref,
+                timings=result_timings,
             )
         except Exception as exc:
+            diagnostic = runtime_failure(exc, phase=failure_phase)
+            self._logger.warning(
+                "one_shot_failed invocation_id=%s diagnostic=%s", invocation_id, diagnostic
+            )
             if trace is not None:
-                trace.invocation_failed(
+                await persistence.run(
+                    trace.invocation_failed,
                     purpose=purpose,
                     requested_model_key=model_id,
                     failure_type=type(exc).__name__,
+                    diagnostic=diagnostic,
                 )
             # Retry hints do not prove a turn never ran: a timeout may only have sent
             # an interrupt request. Only a returned SurfaceTurnResult confirms a terminal
@@ -2301,8 +2517,10 @@ class LiveSessionService:
             raise OneShotRuntimeError(
                 submitted=submitted,
                 safe_error=str(getattr(exc, "safe_error", "") or exc),
+                diagnostic=diagnostic,
             ) from exc
         finally:
+            invocation_timing.begin_cleanup()
             failures: list[BaseException] = []
             for task in tuple(service_callbacks):
                 task.cancel()
@@ -2334,9 +2552,16 @@ class LiveSessionService:
                     self._models.release_session(invocation_id)
             except BaseException as error:
                 failures.append(error)
+            invocation_timing.close()
+            result_timings.update(invocation_timing.payload())
             if trace is not None:
                 try:
-                    trace.close()
+                    await persistence.run(trace.invocation_timing, result_timings)
+                except BaseException as error:
+                    failures.append(error)
+                try:
+                    await persistence.close()
+                    await asyncio.to_thread(trace.close)
                 except BaseException as error:
                     failures.append(error)
             self._one_shot_tasks.pop(invocation_id, None)
@@ -2541,6 +2766,7 @@ class LiveSessionService:
         thinking: ModelThinking | None = None,
         turn_id_provider: Callable[[str], str] | None = None,
         source_text: str | None = None,
+        allow_tools: bool = True,
     ) -> tuple[SessionModelSpec, dict[str, Any], dict[str, str]]:
         """Resolve the model spec plus the surface options and env for one session.
 
@@ -2563,6 +2789,7 @@ class LiveSessionService:
             user_id=user_id,
             turn_id_provider=turn_id_provider,
             source_text=source_text,
+            allow_tools=allow_tools,
         )
         del executable
         return model, {}, dict(process_environment or {})

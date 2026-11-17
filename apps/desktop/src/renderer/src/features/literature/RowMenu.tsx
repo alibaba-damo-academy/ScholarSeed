@@ -1,6 +1,6 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Eye, Info, Paperclip, PenLine, Trash } from 'lucide-react'
+import { Copy, Eye, Info, Paperclip, PenLine, Sparkles, Trash } from 'lucide-react'
 
 import {
   ContextMenu,
@@ -25,6 +25,7 @@ export interface RowMenuActions {
   copyTitle: () => void
   /** 打开文献详情（基本信息）。 */
   viewInfo: () => void
+  readAi: () => void
   /** 打开详情并直接进入新建笔记。 */
   addNote: () => void
   /** 打开详情并直接唤起附件选择器。 */
@@ -70,6 +71,15 @@ export function LiteratureRowMenu({
         >
           <Eye aria-hidden="true" size={MENU_ICON_SIZE} />
           {literature('list.rowMenu.viewPdf')}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={
+            primaryAttachment === null || primaryAttachment.media_type !== 'application/pdf'
+          }
+          onSelect={actions.readAi}
+        >
+          <Sparkles aria-hidden="true" size={MENU_ICON_SIZE} />
+          {literature('reading.title')}
         </ContextMenuItem>
         <ContextMenuItem disabled={item.title.trim() === ''} onSelect={actions.copyTitle}>
           <Copy aria-hidden="true" size={MENU_ICON_SIZE} />

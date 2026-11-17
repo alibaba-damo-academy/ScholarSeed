@@ -412,16 +412,24 @@ class ReplacementContracts(unittest.TestCase):
         with self.assertRaises(SessionBindingConflictError):
             self.catalog.begin_replacement(self.proof, "revision", "automatic")
         self.catalog.fail_queued_submission(
-            "product", "command", safe_error="runtime_turn_not_submitted", unknown=False
+            "product",
+            "command",
+            safe_error="runtime_turn_not_submitted",
+            safe_error_details={"reason": "old failure"},
+            unknown=False,
         )
         with closing(sqlite3.connect(self.catalog.database)) as connection, connection:
             connection.execute(f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET deadline = ?", (1.0,))
         self.catalog.authorize_replacement_retry("product", "command")
-        self.assertIsNone(self.catalog.queued_message("product", "command").deadline)
-        self.assertIs(
-            self.catalog.queued_message("product", "command").state,
-            QueuedMessageState.WAITING_RESOURCES,
-        )
+        authorized = self.catalog.queued_message("product", "command")
+        waiting = self.catalog.begin_resource_wait("product", "command", purpose="turn")
+        self.assertIsNotNone(waiting)
+        assert waiting is not None
+        self.assertEqual(waiting, authorized)
+        self.assertIsNone(waiting.deadline)
+        self.assertIs(waiting.state, QueuedMessageState.WAITING_RESOURCES)
+        self.assertEqual(waiting.safe_error, "")
+        self.assertEqual(waiting.safe_error_details, {})
         proof = self.catalog.manual_replacement_proof("product", "command")
         self.assertIsNotNone(proof)
         self.catalog.begin_replacement(proof, "manual-revision", "manual-reservation", manual=True)
@@ -662,7 +670,25 @@ class ProofContracts(unittest.IsolatedAsyncioTestCase):
             await driver.close()
 
     async def test_replacement_resubmits_frozen_runtime_context_and_nonterminal_projection(self):
-        live = object.__new__(LiveSession)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        database = root / "sessions.sqlite3"
+        live = LiveSession(
+            session_id="replacement-proof",
+            runtime_id="codex",
+            runtime_workdir=root,
+            project_path=None,
+            output_root=root,
+            model_id="frozen-model",
+            catalog=SessionCatalogStore(database),
+            events=ProductEventStore(database),
+            artifacts=Mock(),
+            skills=Mock(),
+            logger=Mock(),
+            trace=Mock(),
+        )
+        self.addAsyncCleanup(live.persistence.close)
         live.runtime_driver = SimpleNamespace(submit=AsyncMock(return_value="result"))
         live.model_run = None
         live._trace = SimpleNamespace(runtime_event=Mock())

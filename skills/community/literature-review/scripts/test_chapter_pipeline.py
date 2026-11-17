@@ -8,10 +8,10 @@ import test_native_pipeline as native
 from chapter_plan import compile_plan
 from figure_dependencies import context
 from manuscript import prepare
-from task_contract import atomic_json
+from task_contract import atomic_json, configure
 from chapter_pipeline import chapter_system
 from templates import LATEX_AUTHORING_GUIDANCE
-from native_document import load_renderer
+from native_document import load_renderer, extension
 
 
 class PacketTest(unittest.TestCase):
@@ -67,6 +67,30 @@ class PacketTest(unittest.TestCase):
         self.assertIn("conditional mechanism", p["evidence"])
         self.assertEqual(len(p["confirmed_full_outline"]["outline_tree"]), 3)
 
+    def test_chapters_keep_business_evidence_without_copying_it_to_refinement(self):
+        card_path = self.ws / "03_process/paper_cards.json"
+        cards = json.loads(card_path.read_text())
+        for card in cards.values():
+            card["card"]["qualified_result"] = "21 percent on D with 40 labels; only under A"
+            card["source_evidence"] = {"sentences": {"1": "LOCAL_SOURCE_SENTINEL"},
+                                       "field_sources": {"card.qualified_result": [1]}}
+            card["source_coverage"] = {"complete": False, "omissions": [
+                {"reason": "LOCAL_REGION_SENTINEL", "page": 1}] * 100}
+        atomic_json(card_path, cards)
+        before = card_path.read_bytes()
+        prepare(self.ws)
+        paths = list((self.ws / "05_generation/_internal/chapter_packets").glob("*.json"))
+        for path in paths:
+            packet = json.loads(path.read_text())
+            self.assertIn("21 percent on D with 40 labels; only under A", packet["evidence"])
+            self.assertNotIn("LOCAL_SOURCE_SENTINEL", packet["evidence"])
+            self.assertNotIn("LOCAL_REGION_SENTINEL", packet["evidence"])
+            self.assertIn("Some original content was unavailable.", packet["evidence"])
+        contract = json.loads((self.ws / "05_generation/_internal/manuscript_contract.json").read_text())
+        self.assertNotIn("evidence", contract)
+        self.assertNotIn("writing_evidence", contract)
+        self.assertEqual(card_path.read_bytes(), before)
+
     def test_dependency_cycle_rejected_before_call(self):
         outline = copy.deepcopy(self.fixture.outline)
         outline["outline_tree"][1]["depends_on"] = ["2"]
@@ -74,6 +98,13 @@ class PacketTest(unittest.TestCase):
             compile_plan(outline, {"p1"})
 
     def test_figure_context_reads_completed_native_chapter(self):
+        self.assert_figure_context('latex_pdf')
+
+    def test_figure_context_reads_docx_markdown_prerequisites(self):
+        self.assert_figure_context('docx')
+
+    def assert_figure_context(self, output_format):
+        configure(self.ws, {'publication': {'format': output_format}})
         outline = self.fixture.outline
         outline["outline_tree"][0]["role"] = "foundation"
         outline["outline_tree"][0]["paper_ids"] = ["p1"]
@@ -99,7 +130,7 @@ class PacketTest(unittest.TestCase):
         atomic_json(self.ws / "04_outline/outline.json", outline)
         prepare(self.ws)
         self.assertEqual(context(self.ws, "F1")["status"], "WAITING")
-        p = self.ws / "05_generation/chapters/0.tex"
+        p = self.ws / ('05_generation/chapters/0.' + extension(output_format))
         p.parent.mkdir(parents=True)
         p.write_text("Actual prerequisite prose.")
         result = context(self.ws, "F1")

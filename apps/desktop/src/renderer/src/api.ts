@@ -3,6 +3,7 @@ import { resolveContentResponse } from './app/api/content.ts'
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
 import { flushApiDiagnostics, reportApiFailure } from './app/api/diagnostics.ts'
+import { readApiJson, reportCatalogReady, reportCatalogFailure } from './app/api/timing.ts'
 import {
   MODEL_PROFILES_PATH,
   MODEL_PROVIDERS_PATH,
@@ -12,6 +13,7 @@ import {
 } from '../../requests.ts'
 import { sessionTitleFallback } from './session.ts'
 import { ATTENTION_PATH } from '../../attention.ts'
+import { modelSelectionBlocked, modelSelectionGuard } from './modelselection.ts'
 import { FEEDBACK_LIMITS, type FeedbackSubmissionResult } from '../../feedback.ts'
 import type { SessionTitleFallback } from './session'
 import type { ContextLabelFallback } from './contracts/assistant'
@@ -24,6 +26,7 @@ import type {
   ApplicationRequestFailure,
   AnswerSource,
   AnswerCoverage,
+  HilAnswerDetails,
   SearchSource,
   EvidenceAnnotation,
   ModelRun,
@@ -50,10 +53,15 @@ import {
 
 const FAILURE_CODES = {
   invalidRecoveryCheck: 'invalid_recovery_check',
+  attachmentUnavailable: 'session_attachment_not_found',
 } as const
 import {
   RECONFIGURATION_REQUEST_TIMEOUT_MS,
+  isReconfigurationState,
+  readReconfigurationFailureState,
   readRuntimeReconfiguration,
+  ReconfigurationQueryError,
+  type ReconfigurationFailureState,
   type ReconfigurationOperation,
 } from '../../reconfiguration.ts'
 
@@ -65,6 +73,10 @@ import {
 // 取值与同仓参考客户端 apps/serve/service/cli/serve.py 对同一端点用的 timeout=120 对齐为单一口径;
 // 「渲染端截止 >= 服务端自预算」这一不变量由 tests/contract_resume_deadline.py 守卫, 防止两侧再漂移。
 const RESUME_REQUEST_TIMEOUT_MS = 120_000
+const SESSION_MODEL_REQUEST_TIMEOUT_MS = 120_000
+const MODEL_SELECTION_GUARD_UNAVAILABLE = 'model_selection_guard_unavailable'
+export const SESSION_MODEL_OUTCOME_UNKNOWN_EVENT = 'scholarseed:session-model-outcome-unknown'
+export const MODEL_SELECTION_UNCONFIRMED = 'model_selection_unconfirmed'
 const SESSION_LIST_DEFAULT_LIMIT = 60
 const SESSION_LIST_DEFAULT_SCOPE: SessionListScope = 'all'
 const REQUEST_TIMEOUT_MESSAGE = 'request_timeout'
@@ -186,6 +198,7 @@ const SESSION_TURN_STATUSES = [
 const SESSION_TURN_STATUS_VALUES: ReadonlySet<string> = new Set(SESSION_TURN_STATUSES)
 export type SessionTurnStatus = (typeof SESSION_TURN_STATUSES)[number]
 export interface OpenResp {
+  display_parent_session_id?: string | null
   title?: string
   title_fallback?: SessionTitleFallback
   session_id: string
@@ -835,6 +848,8 @@ export async function openSession(
 }
 
 export interface ServeSession {
+  display_parent_session_id?: string | null
+  detached_parent_session_id?: string | null
   archived?: boolean
   last_turn_status?: SessionTurnStatus | null
   title_fallback?: SessionTitleFallback
@@ -951,6 +966,7 @@ export interface SessionCatalogFailure {
   kind: SessionCatalogFailureKind
   retryable: boolean
   status?: number
+  code?: string
 }
 
 export type SessionCatalogLoadResult =
@@ -971,6 +987,8 @@ export interface SessionListOptions {
 const SESSION_CATALOG_REQUEST_TIMEOUT_STATUS = 408
 const SESSION_CATALOG_RATE_LIMIT_STATUS = 429
 const SESSION_CATALOG_SERVER_ERROR_MIN_STATUS = 500
+const SESSION_CATALOG_CURSOR_INVALID_STATUS = 422
+const SESSION_CATALOG_CURSOR_INVALID_CODE = 'session_list_cursor_invalid'
 
 export function sessionCatalogHttpFailure(status: number): SessionCatalogFailure {
   return {
@@ -1027,11 +1045,25 @@ async function requestSessionCatalog(
       // 「没登录」与「别的故障」, 并据此把动作换成登录而不是无用的重新加载。
       if (response.status === 401)
         window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
-      return { ok: false, failure: sessionCatalogHttpFailure(response.status) }
+      const failure = sessionCatalogHttpFailure(response.status)
+      if (
+        response.status === SESSION_CATALOG_CURSOR_INVALID_STATUS &&
+        options.scope === 'project' &&
+        options.cursor
+      ) {
+        try {
+          const payload: unknown = await response.json()
+          if (isRecord(payload) && payload.detail === SESSION_CATALOG_CURSOR_INVALID_CODE)
+            failure.code = SESSION_CATALOG_CURSOR_INVALID_CODE
+        } catch {
+          return { ok: false, failure }
+        }
+      }
+      return { ok: false, failure }
     }
     let payload: unknown
     try {
-      payload = await response.json()
+      payload = await readApiJson(response)
     } catch (error) {
       reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'decode', error)
       if (
@@ -1043,16 +1075,20 @@ async function requestSessionCatalog(
     }
     const catalog = parseSessionCatalogResult(payload)
     if (!catalog) {
+      reportCatalogFailure(response, 'schema')
       reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'schema')
       return { ok: false, failure: { kind: 'schema', retryable: false } }
     }
     if (synchronizeRoots) syncSessionRoots(catalog.sessions)
+    reportCatalogReady(response, catalog.sessions.length)
     return { ok: true, catalog }
   } catch (error) {
     // apiFetch owns HTTP/transport diagnostics. A received response distinguishes
     // subsequent client processing failures without logging its body or paths.
-    if (response)
+    if (response) {
+      reportCatalogFailure(response, 'projection', error)
       reportApiFailure(SESSION_CATALOG_PATH, 'GET', response.status, startedAt, 'projection', error)
+    }
     return { ok: false, failure: { kind: 'transport', retryable: true } }
   }
 }
@@ -1078,16 +1114,28 @@ export async function listAllSessions(
   const sessions = new Map<string, ServeSession>()
   const cursors = new Set<string>()
   let cursor = options.cursor
-  do {
+  let restarted = false
+  for (;;) {
     const result = await requestSessionCatalog({ ...options, cursor })
-    if (!active() || !result.ok) return null
+    if (!active()) return null
+    if (!result.ok) {
+      if (result.failure.code === SESSION_CATALOG_CURSOR_INVALID_CODE && cursor && !restarted) {
+        restarted = true
+        sessions.clear()
+        cursors.clear()
+        cursor = undefined
+        continue
+      }
+      return null
+    }
     for (const session of result.catalog.sessions) {
       if (!sessions.has(session.session_id)) sessions.set(session.session_id, session)
     }
     cursor = result.catalog.next_cursor || undefined
+    if (!cursor) break
     if (cursor && cursors.has(cursor)) return null
     if (cursor) cursors.add(cursor)
-  } while (cursor)
+  }
   const rows = [...sessions.values()]
   try {
     if (behavior.synchronizeRoots !== false) syncSessionRoots(rows)
@@ -1139,17 +1187,19 @@ export interface HistoryMessageReference {
   anchor?: {
     document_id?: string
     preview_text?: string
+    snapshot_text?: string
     locator?: Record<string, unknown>
   } | null
 }
 
 export interface HistoryTurn {
+  sent_at?: number
   model_run?: ModelRun
   turn_id?: string
   item_id?: string
   kind: string // thinking | text | tool | user
   role?: string
-  origin?: 'turn' | 'steer' | 'recovery'
+  origin?: 'turn' | 'steer' | 'recovery' | 'authorization'
   phase?: 'commentary' | 'final_answer' | null
   name?: string
   text?: string
@@ -1297,6 +1347,10 @@ export interface TurnResponse {
   queued_depth?: number
   issues?: AssistantContextFailureIssue[]
   preparation_error?: boolean
+  preparation_state?: ReconfigurationFailureState
+  steered?: boolean
+  retained?: boolean
+  safe_error?: string
 }
 
 export interface SideTurnResponse {
@@ -1448,6 +1502,8 @@ export interface TurnContextAdmission {
   selectedLiteratureIds?: string[]
   expectedModelId?: string
   serviceInstanceId?: string
+  followUpMode?: FollowUpMode
+  expectedTurnId?: string
 }
 
 export type ActiveDocument =
@@ -1460,6 +1516,13 @@ export async function postTurn(
   collaborationMode: CollaborationMode = 'default',
   admission?: TurnContextAdmission
 ): Promise<TurnResponse | null> {
+  if (modelSelectionBlocked(admission?.serviceInstanceId, sid))
+    return {
+      ok: false,
+      error: MODEL_SELECTION_UNCONFIRMED,
+      code: MODEL_SELECTION_UNCONFIRMED,
+      submissionOutcome: 'rejected',
+    }
   try {
     const r = await apiFetch(`/api/serve/sessions/${sid}/turns`, {
       method: 'POST',
@@ -1478,6 +1541,8 @@ export async function postTurn(
               selected_literature_ids: admission.selectedLiteratureIds,
               expected_model_id: admission.expectedModelId,
               service_instance_id: admission.serviceInstanceId,
+              follow_up_mode: admission.followUpMode,
+              expected_turn_id: admission.expectedTurnId,
             }
           : {}),
       }),
@@ -1486,12 +1551,18 @@ export async function postTurn(
       const preparation = (await r
         .clone()
         .json()
-        .catch(() => null)) as { preparation_error?: boolean; error?: string } | null
+        .catch(() => null)) as {
+        preparation_error?: boolean
+        preparation_state?: unknown
+        error?: string
+      } | null
       if (preparation?.preparation_error) {
+        const state = readReconfigurationFailureState(preparation.preparation_state)
         return {
           ok: false,
           error: preparation.error,
           preparation_error: true,
+          ...(state === undefined ? {} : { preparation_state: state }),
           submissionOutcome: 'rejected',
         }
       }
@@ -1531,14 +1602,19 @@ export async function postTurn(
 
 export async function postSide(
   sid: string,
-  queuedMessageId: string
+  queuedMessageId: string,
+  expectedTurnId: string,
+  serviceInstanceId?: string | null
 ): Promise<SideTurnResponse | null> {
+  if (modelSelectionBlocked(serviceInstanceId, sid))
+    return { ok: false, reason: MODEL_SELECTION_UNCONFIRMED }
   try {
     const r = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/side`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         queued_message_id: queuedMessageId,
+        expected_turn_id: expectedTurnId,
       }),
     })
     if (!r.ok) {
@@ -1566,8 +1642,11 @@ export async function postSide(
 
 export async function sendQueuedMessage(
   sid: string,
-  queuedMessageId: string
+  queuedMessageId: string,
+  serviceInstanceId?: string | null
 ): Promise<QueuedMessageSendResponse | null> {
+  if (modelSelectionBlocked(serviceInstanceId, sid))
+    return { ok: false, error: MODEL_SELECTION_UNCONFIRMED }
   try {
     const r = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sid)}/queue/${encodeURIComponent(queuedMessageId)}/send`,
@@ -1630,6 +1709,29 @@ export interface QueuedMessagePayload {
   safe_error?: string
   native_turn_id?: string
   safe_error_details?: Record<string, string>
+  retry_blocked_error?: string | null
+}
+
+export async function updateQueuedMessage(
+  sid: string,
+  queuedMessageId: string,
+  text: string
+): Promise<QueuedMessagePayload | null> {
+  try {
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sid)}/queue/${encodeURIComponent(queuedMessageId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }
+    )
+    if (!response.ok) return null
+    const result = (await response.json()) as { message: QueuedMessagePayload }
+    return result.message
+  } catch {
+    return null
+  }
 }
 
 export type SubmissionMode = 'direct' | 'queued'
@@ -1748,6 +1850,60 @@ export async function refreshSkillCredential(): Promise<boolean> {
     return r.ok
   } catch {
     return false
+  }
+}
+
+export interface ToolRecoveryResult {
+  ok: boolean
+  status: 'completed' | 'failed' | 'outcome_unknown'
+  tool_id: string
+}
+
+const TOOL_RECOVERY_TIMEOUT_MS = 210_000
+const TOOL_RECOVERY_REJECTED_STATUSES = new Set([400, 401, 403, 404, 409, 422])
+
+export async function recoverableTools(sid: string, turnId: string): Promise<string[]> {
+  const result = await getJson<{ tool_ids?: unknown }>(
+    `/api/serve/sessions/${encodeURIComponent(sid)}/tools/recovery?turn_id=${encodeURIComponent(turnId)}`
+  )
+  return Array.isArray(result?.tool_ids)
+    ? result.tool_ids.filter((value): value is string => typeof value === 'string')
+    : []
+}
+
+export async function retryExecutionTool(
+  sid: string,
+  turnId: string,
+  toolId: string,
+  requestId: string
+): Promise<ToolRecoveryResult | null> {
+  try {
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sid)}/tools/recovery`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          turn_id: turnId,
+          tool_id: toolId,
+          request_id: requestId,
+          approved: true,
+        }),
+        signal: AbortSignal.timeout(TOOL_RECOVERY_TIMEOUT_MS),
+      }
+    )
+    if (TOOL_RECOVERY_REJECTED_STATUSES.has(response.status))
+      return { ok: false, status: 'failed', tool_id: toolId }
+    if (!response.ok) return null
+    const result = (await response.json()) as ToolRecoveryResult
+    return result &&
+      typeof result.ok === 'boolean' &&
+      typeof result.tool_id === 'string' &&
+      ['completed', 'failed', 'outcome_unknown'].includes(result.status)
+      ? result
+      : null
+  } catch {
+    return null
   }
 }
 
@@ -1873,9 +2029,7 @@ async function runtimePreparationRequest(
     typeof payload.service_instance_id !== 'string' ||
     !payload.service_instance_id ||
     typeof payload.error !== 'string' ||
-    !['accepted', 'applied', 'rejected', 'restart_required', 'unsupported'].includes(
-      payload.state ?? ''
-    ) ||
+    !isReconfigurationState(payload.state) ||
     (options &&
       (payload.model_id !== options.modelId ||
         payload.service_instance_id !== options.serviceInstanceId))
@@ -1913,10 +2067,7 @@ export async function getSharedRuntimeReconfiguration(
   if (
     !result ||
     typeof result.service_instance_id !== 'string' ||
-    (result.state !== null &&
-      !['accepted', 'applied', 'rejected', 'restart_required', 'unsupported'].includes(
-        result.state
-      ))
+    (result.state !== null && !isReconfigurationState(result.state))
   ) {
     throw new Error('runtime_reconfiguration_unknown')
   }
@@ -1931,8 +2082,23 @@ export async function currentRuntimeReconfiguration(
     { timeoutMs: RECONFIGURATION_REQUEST_TIMEOUT_MS }
   )
   if (response.status === 204) return undefined
-  if (!response.ok) throw new Error('runtime_reconfiguration_unknown')
-  return readRuntimeReconfiguration(await response.json(), sessionId)
+  return readSessionReconfiguration(response, sessionId)
+}
+
+async function readSessionReconfiguration(
+  response: Response,
+  sessionId: string,
+  requestId?: string
+): Promise<ReconfigurationOperation> {
+  if (!response.ok) throw new ReconfigurationQueryError(response.status)
+  let value: unknown
+  try {
+    value = await response.json()
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new ReconfigurationQueryError()
+    throw error
+  }
+  return readRuntimeReconfiguration(value, sessionId, requestId)
 }
 
 export async function getRuntimeReconfiguration(
@@ -1943,33 +2109,57 @@ export async function getRuntimeReconfiguration(
     `/api/serve/sessions/${encodeURIComponent(sessionId)}/runtime/reconfigure/${encodeURIComponent(requestId)}`,
     { timeoutMs: RECONFIGURATION_REQUEST_TIMEOUT_MS }
   )
-  if (!response.ok) throw new Error('runtime_reconfiguration_unknown')
-  return readRuntimeReconfiguration(await response.json(), sessionId, requestId)
+  return readSessionReconfiguration(response, sessionId, requestId)
 }
 
 export async function setSessionModel(
   sid: string,
   modelId: string,
   reasoningEffort = '',
-  rememberDefault = false
+  rememberDefault = false,
+  serviceInstanceId?: string | null
 ): Promise<SessionModelResponse | null> {
   const path = `/api/serve/sessions/${encodeURIComponent(sid)}/model`
+  let marker: string
+  try {
+    if (!serviceInstanceId) throw new Error('service_instance_unavailable')
+    marker = modelSelectionGuard().begin(serviceInstanceId, sid)
+  } catch {
+    // Never send a mutation that cannot be fenced across a renderer reload.
+    return { ok: false, session_id: sid, model_id: '', error: MODEL_SELECTION_GUARD_UNAVAILABLE }
+  }
+  const finish = (confirmed: boolean): void => {
+    if (modelSelectionGuard().finish(marker, confirmed)) return
+    window.dispatchEvent(
+      new CustomEvent(SESSION_MODEL_OUTCOME_UNKNOWN_EVENT, {
+        detail: { sessionId: sid, serviceInstanceId },
+      })
+    )
+  }
   try {
     const response = await apiFetch(path, {
       method: 'POST',
+      timeoutMs: SESSION_MODEL_REQUEST_TIMEOUT_MS,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model_id: modelId,
+        service_instance_id: serviceInstanceId,
         reasoning_effort: reasoningEffort,
         ...(rememberDefault ? { remember_default: true } : {}),
       }),
     })
     if (response.status === 401) {
+      finish(true)
       window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
       return null
     }
     if (!response.ok) {
       const failure = await serviceErrorDetail(response)
+      const unknown =
+        (response.status >= 500 || response.status === 408) &&
+        failure.code !== 'update_maintenance' &&
+        failure.message !== 'update_maintenance'
+      finish(!unknown)
       return sessionModelFailure(
         sid,
         failure.code ?? failure.message,
@@ -1977,8 +2167,11 @@ export async function setSessionModel(
         failure.applicationFailure
       )
     }
-    return (await response.json()) as SessionModelResponse
+    const result = (await response.json()) as SessionModelResponse
+    finish(true)
+    return result
   } catch (error) {
+    finish(false)
     return sessionModelFailure(sid, error instanceof Error ? error.message : String(error))
   }
 }
@@ -2006,7 +2199,7 @@ export async function setMode(
   sid: string,
   mode: string,
   application: PermissionApplication = 'auto',
-  continuation?: TurnContextAdmission
+  continuation?: TurnContextAdmission & { locale: string }
 ): Promise<ModeChangeResult> {
   try {
     const response = await apiFetch(`/api/serve/sessions/${sid}/mode`, {
@@ -2018,6 +2211,7 @@ export async function setMode(
         ...(continuation
           ? {
               continuation_context: {
+                locale: continuation.locale,
                 client_user_message_id: continuation.clientUserMessageId,
                 assistant_context_revision: continuation.assistantContextRevision,
                 active_document: continuation.activeDocument,
@@ -2060,6 +2254,21 @@ export interface ModeChangeResult {
 export const GLOBAL_PERMISSION_MODES = ['ask', 'safe_auto', 'bypassPermissions'] as const
 export type GlobalPermissionMode = (typeof GLOBAL_PERMISSION_MODES)[number]
 export const DEFAULT_GLOBAL_PERMISSION_MODE: GlobalPermissionMode = 'safe_auto'
+
+export const FOLLOW_UP_MODES = ['queue', 'steer'] as const
+export type FollowUpMode = (typeof FOLLOW_UP_MODES)[number]
+export const DEFAULT_FOLLOW_UP_MODE: FollowUpMode = 'queue'
+export interface FollowUpPreference {
+  mode: FollowUpMode
+  revision: number
+}
+export const getFollowUpPreference = (): Promise<FollowUpPreference | null> =>
+  getJson('/api/serve/settings/follow-up')
+export const setFollowUpPreference = (
+  mode: FollowUpMode,
+  expectedRevision: number
+): Promise<FollowUpPreference | null> =>
+  postJson('/api/serve/settings/follow-up', { mode, expected_revision: expectedRevision })
 
 export interface GlobalPermissionModeInfo {
   mode: GlobalPermissionMode
@@ -2106,7 +2315,9 @@ export async function respondHil(
     option_id?: string
     decision?: 'deny' | 'allow_once'
     answers?: Record<string, string>
+    answer_details?: HilAnswerDetails
     free_text?: string
+    editing?: boolean
     values?: Record<string, unknown>
     state_version?: number
     cancelled?: boolean
@@ -2164,7 +2375,11 @@ export async function respondHil(
       interaction: result.interaction,
     }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      outcome: 'unknown',
+    }
   }
 }
 
@@ -2308,10 +2523,14 @@ interface ProductEventBase<TType extends string, TData> {
 }
 
 export interface ProductHilQuestion {
+  requires_user_confirmation?: boolean
+  requires_host_response?: boolean
+  cancel_timeout_on_edit?: boolean
   presentation?: Record<string, unknown>
   plugin_installation?: PluginReport
   component?: PluginReference
   component_data?: Record<string, unknown>
+  component_revision?: number
   id?: string
   name?: string
   header?: string
@@ -2319,11 +2538,17 @@ export interface ProductHilQuestion {
   options?: { id?: string; label: string; description?: string }[]
   multiSelect?: boolean
   papers?: { id: string; label: string; description?: string }[]
+  result_card_id?: string
 }
 
 export interface ProductHilData {
+  decision_source?: string
   session_id?: string
   request_id: string
+  state?: 'pending' | 'resolved' | 'cancelled' | 'stale' | 'unknown'
+  answers?: Record<string, string>
+  answer_details?: HilAnswerDetails
+  selected_paper_ids?: string[]
   lifetime?: 'turn' | 'session'
   blocking?: boolean
   kind: string
@@ -2333,10 +2558,16 @@ export interface ProductHilData {
   questions?: ProductHilQuestion[]
   options?: { id: string; label: string; description?: string }[]
   allow_free_text?: boolean
+  cancel_timeout_on_edit?: boolean
+  timeout_seconds?: number
+  timeout_cancelled?: boolean
+  free_text?: string
+  timed_out?: boolean
   command?: string
   cwd?: string
   path?: string
   diff?: string
+  changes?: Record<string, unknown>[]
   network_target?: string
   permissions?: Record<string, unknown>
   safety_tags?: string[]
@@ -2344,6 +2575,7 @@ export interface ProductHilData {
   suggested_prefix?: string
   prefix_kind?: string
   requested_at?: number
+  created_at?: number
   method?: string
   tab_id?: string
   proof_id?: string
@@ -2446,7 +2678,16 @@ export interface ProductDataChangedData {
   scopes: string[]
 }
 
+export interface GenerationPreviewData {
+  preview_id: string
+  revision: number
+  status: 'streaming' | 'generated' | 'unavailable' | 'failed' | 'cancelled' | 'timeout'
+  blocks: { id: string; kind: 'heading1' | 'heading2' | 'paragraph'; text: string }[]
+  verified: false
+}
+
 export type ProductEvent =
+  | ProductEventBase<'generation_preview', GenerationPreviewData>
   | ProductEventBase<
       'session_state',
       {
@@ -2470,7 +2711,7 @@ export type ProductEvent =
         refs: HistoryMessageReference[]
         client_turn_id: string
         binding: 'admitted' | 'bound' | 'cancelled'
-        origin?: 'turn' | 'steer' | 'recovery'
+        origin?: 'turn' | 'steer' | 'recovery' | 'authorization'
       }
     >
   | ProductEventBase<
@@ -2508,19 +2749,31 @@ export type ProductEvent =
       'plan_snapshot',
       {
         items: TodoItemUI[]
+        explanation?: string | null
         plan?: {
           source: 'structured' | 'released'
           plan_id: string
           revision: number
           timing_policy?: string
+          estimate?: { lower_seconds: number; upper_seconds: number } | null
         }
       }
     >
-  | ProductEventBase<'tool_started', { tool_id: string; name: string; input?: unknown }>
+  | ProductEventBase<
+      'tool_started',
+      { tool_id: string; name: string; input?: unknown; batch_id?: string; retry_of?: string }
+    >
   | ProductEventBase<'tool_output_delta', { tool_id: string; delta: string }>
   | ProductEventBase<
       'tool_completed',
-      { tool_id: string; name?: string; output?: string; success: boolean; exit_code?: number }
+      {
+        tool_id: string
+        name?: string
+        output?: string
+        success: boolean
+        exit_code?: number
+        resolved_tool_ids?: string[]
+      }
     >
   | ProductEventBase<
       'web_search_started',
@@ -2537,6 +2790,17 @@ export type ProductEvent =
       }
     >
   | ProductEventBase<'paper_search_started', { search_id: string; query: string }>
+  | ProductEventBase<
+      'source_candidates',
+      {
+        search_id: string
+        query: string
+        purpose?: string
+        provider?: string
+        results?: WebSearchResult[]
+        result_count?: number
+      }
+    >
   | ProductEventBase<'paper_search_completed', { search_id: string; query: string }>
   | ProductEventBase<'skill_started', ProductSkillActivityData>
   | ProductEventBase<'skill_completed', ProductSkillActivityData>
@@ -2603,6 +2867,7 @@ export type ProductEvent =
         answer?: string
         answers?: Record<string, string>
         decision_scope?: string
+        selected_paper_ids?: string[]
         decision?: 'deny' | 'allow_once'
         reason?: string
         resolved_at?: number | null
@@ -3180,7 +3445,13 @@ export interface PersonalApiProfile {
   pdf_input?: boolean
   authentication?: 'api_key' | 'oauth'
   oauth_provider?: string
-  oauth?: { state: string; account_label: string; billing: string; error?: string }
+  oauth?: {
+    state: string
+    account_label: string
+    billing: string
+    registered?: boolean
+    error?: string
+  }
   id: string
   /** Resolved label: preview_name when set, otherwise the first selected model id. */
   name: string
@@ -3345,7 +3616,7 @@ export const updatePersonalApiProfile = (
 export const setPersonalApiProfileEnabled = (
   id: string,
   enabled: boolean
-): Promise<PersonalApiResult<ModelSelectionResp>> =>
+): Promise<PersonalApiResult<PersonalApiProfilesResp>> =>
   profileRequest('POST', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}/enabled`, { enabled })
 export const setPersonalApiModelVisibility = (
   id: string,
@@ -3356,7 +3627,7 @@ export const setPersonalApiModelVisibility = (
     model_id: modelId,
     hidden,
   })
-export const deletePersonalApiProfile = (id: string): Promise<ModelSelectionResp | null> =>
+export const deletePersonalApiProfile = (id: string): Promise<PersonalApiProfilesResp | null> =>
   deleteJson(`${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`)
 
 export interface SkillAttribution {
@@ -3383,6 +3654,7 @@ export interface SkillInfo extends SkillAttributionInfo {
   name: string
   requires_login?: boolean
   display_name?: string
+  display_names?: Record<string, string> | null
   version?: string
   fingerprint?: string
   description?: string
@@ -3764,6 +4036,53 @@ export async function deleteSession(sid: string): Promise<{ ok: boolean; status:
   }
 }
 
+export async function sessionChildCount(sid: string): Promise<number | null> {
+  try {
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sid)}/display-children`
+    )
+    if (!response.ok) return null
+    const payload: unknown = await response.json()
+    return isRecord(payload) &&
+      payload.session_id === sid &&
+      typeof payload.child_count === 'number' &&
+      Number.isSafeInteger(payload.child_count) &&
+      payload.child_count >= 0
+      ? payload.child_count
+      : null
+  } catch {
+    return null
+  }
+}
+
+export async function restoreSessionParent(
+  sid: string,
+  parentSessionId: string
+): Promise<{ ok: boolean; status: number }> {
+  try {
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sid)}/display-parent`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_session_id: parentSessionId }),
+      }
+    )
+    if (!response.ok) return { ok: false, status: response.status }
+    const payload: unknown = await response.json()
+    return {
+      ok:
+        isRecord(payload) &&
+        payload.ok === true &&
+        payload.session_id === sid &&
+        payload.display_parent_session_id === parentSessionId,
+      status: response.status,
+    }
+  } catch {
+    return { ok: false, status: 0 }
+  }
+}
+
 export async function terminateSession(sid: string): Promise<{ ok: boolean; status: number }> {
   try {
     const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/terminate`, {
@@ -3775,18 +4094,33 @@ export async function terminateSession(sid: string): Promise<{ ok: boolean; stat
   }
 }
 
+const SESSION_ARCHIVE_STOP_REQUIRED = 'session_archive_stop_required'
+const SESSION_ARCHIVE_CONFLICT_STATUS = 409
+
 export async function setSessionArchived(
   sid: string,
-  archived: boolean
-): Promise<{ ok: boolean; status: number }> {
+  archived: boolean,
+  stopRunning?: boolean
+): Promise<{ ok: boolean; status: number; stopRequired?: boolean }> {
   try {
     const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/archive`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ archived }),
+      body: JSON.stringify({ archived, stop_running: stopRunning }),
       timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
     })
-    if (!response.ok) return { ok: false, status: response.status }
+    if (!response.ok) {
+      const failure: unknown = await response.json().catch(() => null)
+      return {
+        ok: false,
+        status: response.status,
+        ...(response.status === SESSION_ARCHIVE_CONFLICT_STATUS &&
+        isRecord(failure) &&
+        failure.error === SESSION_ARCHIVE_STOP_REQUIRED
+          ? { stopRequired: true }
+          : {}),
+      }
+    }
     const payload: unknown = await response.json()
     return {
       ok:
@@ -3794,6 +4128,61 @@ export async function setSessionArchived(
         payload.ok === true &&
         payload.session_id === sid &&
         payload.archived === archived,
+      status: response.status,
+    }
+  } catch {
+    return { ok: false, status: 0 }
+  }
+}
+
+export async function detachSession(sid: string): Promise<{ ok: boolean; status: number }> {
+  try {
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sid)}/display-parent`,
+      { method: 'DELETE' }
+    )
+    if (!response.ok) return { ok: false, status: response.status }
+    const payload: unknown = await response.json()
+    return {
+      ok:
+        isRecord(payload) &&
+        payload.ok === true &&
+        payload.session_id === sid &&
+        payload.display_parent_session_id === null,
+      status: response.status,
+    }
+  } catch {
+    return { ok: false, status: 0 }
+  }
+}
+
+export const SESSION_ORDER_PLACEMENTS = { before: 'before', after: 'after' } as const
+export type SessionOrderPlacement =
+  (typeof SESSION_ORDER_PLACEMENTS)[keyof typeof SESSION_ORDER_PLACEMENTS]
+
+export async function reorderSession(
+  sid: string,
+  targetSessionId: string,
+  placement: SessionOrderPlacement
+): Promise<{ ok: boolean; status: number }> {
+  try {
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sid)}/display-order`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target_session_id: targetSessionId, placement }),
+      }
+    )
+    if (!response.ok) return { ok: false, status: response.status }
+    const payload: unknown = await response.json()
+    return {
+      ok:
+        isRecord(payload) &&
+        payload.ok === true &&
+        payload.session_id === sid &&
+        payload.target_session_id === targetSessionId &&
+        payload.placement === placement,
       status: response.status,
     }
   } catch {
@@ -3863,6 +4252,7 @@ export interface FileItem {
 }
 export interface FilesResp {
   root: string
+  directory_path?: string | null
   path: string
   crumbs: string[]
   items: FileItem[]
@@ -3912,7 +4302,8 @@ export async function getSessionFiles(
     `/api/serve/sessions/${encodeURIComponent(sessionId)}/files` + (query.size ? `?${query}` : ''),
     timeoutMs
   )
-  if (result?.root) void window.scholarseed.addAuthorizedRoot('session', result.root)
+  if (result?.root)
+    await window.scholarseed?.addAuthorizedRoot?.('session', result.root).catch(() => false)
   return result
 }
 
@@ -4185,6 +4576,30 @@ export async function registerLocalPaths(
   }
 }
 
+export async function resolveSessionReferenceLocation(
+  sessionId: string,
+  referenceId: string
+): Promise<{
+  ok: boolean
+  path?: string
+  kind?: 'file' | 'directory'
+  error?: string
+}> {
+  try {
+    const query = new URLSearchParams({ reference_id: referenceId })
+    const response = await apiFetch(
+      `/api/serve/sessions/${encodeURIComponent(sessionId)}/file-references/location?${query}`,
+      { cache: 'no-store' }
+    )
+    const result = await response.json()
+    if (!response.ok || !result.ok || typeof result.path !== 'string')
+      return { ok: false, error: result.error || FAILURE_CODES.attachmentUnavailable }
+    return result
+  } catch {
+    return { ok: false, error: FAILURE_CODES.attachmentUnavailable }
+  }
+}
+
 /** 浏览器降级和无真实路径的合成 File 仍可上传；Electron 本地文件走上面的直接引用。 */
 export interface UploadedAttachment {
   path: string
@@ -4304,6 +4719,27 @@ export const createSubscriptionProfile = (): Promise<PersonalApiResult<PersonalA
     oauth_provider: 'chatgpt',
     selected_models: [],
   })
+export interface SubscriptionRegistration {
+  id: string
+  label: string
+  reference: string
+}
+export const subscriptionRegistrations = (
+  id: string
+): Promise<PersonalApiResult<{ registrations: SubscriptionRegistration[] }>> =>
+  profileRequest('GET', `/api/settings/model-connections/${encodeURIComponent(id)}/registrations`)
+export const claimSubscriptionRegistration = (
+  id: string,
+  source: string
+): Promise<PersonalApiResult<unknown>> =>
+  profileRequest(
+    'POST',
+    `/api/settings/model-connections/${encodeURIComponent(id)}/registrations/${encodeURIComponent(source)}`
+  )
+export const deleteSubscriptionProfile = (
+  id: string
+): Promise<PersonalApiResult<PersonalApiProfilesResp & { warning?: string }>> =>
+  profileRequest('DELETE', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`)
 export const saveSubscriptionModels = (
   id: string,
   models: PersonalApiModel[]

@@ -1,7 +1,7 @@
 import type { ComposerReference } from '../../contracts/assistant'
 import { isDocumentLoadFailure, loadDocument, type DocumentSource } from '../workbench/api.ts'
 import type { SessionArtifact } from '../../model'
-import { imageMediaType } from '../workbench/image.ts'
+import { imageMediaType, supportsImagePreview } from '../workbench/image.ts'
 import { sha256Bytes } from './anchors.ts'
 
 export type ImageReference = Extract<ComposerReference, { type: 'file' }>
@@ -10,6 +10,12 @@ export interface ImageAsset {
   title: string
   source: DocumentSource
   sha256?: string
+}
+
+export async function loadAnswerImage(url: string): Promise<Uint8Array> {
+  const result = await window.scholarseed?.readRemoteImage?.(url)
+  if (result?.status !== 'image') throw new Error('answer_image_unavailable')
+  return result.bytes
 }
 
 export function sentImageAsset(sessionId: string, reference: ImageReference): ImageAsset {
@@ -46,13 +52,6 @@ export function loadImageAsset(
 ): Promise<{ blob: Blob | null; error: string | null }> {
   return loadImageSource(asset.source, asset.title, asset.sha256)
 }
-const SUPPORTED_IMAGES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif',
-  'image/svg+xml',
-])
 const HASH_PREFIX = 'sha256:'
 const CHANGED = 'session_attachment_changed'
 const UNAVAILABLE = 'session_attachment_not_found'
@@ -62,9 +61,7 @@ const ARTIFACT_UNAVAILABLE = 'session_artifact_not_found'
 export function imageReference(reference: ComposerReference): reference is ImageReference {
   return (
     reference.type === 'file' &&
-    SUPPORTED_IMAGES.has(
-      imageMediaType(reference.title || reference.path, reference.mediaType ?? '')
-    )
+    supportsImagePreview(reference.title || reference.path, reference.mediaType)
   )
 }
 

@@ -6,10 +6,15 @@ import ts from 'typescript'
 import { DESKTOP, GENERATED_TYPES, generateTypes, loadResources, validateResources } from '../resources.mjs'
 import { checkMessageCalls } from '../calls.mjs'
 
-const fixture = JSON.parse(readFileSync(new URL('../examples.fixture.json', import.meta.url), 'utf8'))
-const source = fixture.source
+const document = readFileSync(resolve(DESKTOP, 'docs/architecture/localization.md'), 'utf8')
+function block(language, marker) {
+  const match = document.match(new RegExp('```' + language + ' ' + marker + '\\n([\\s\\S]*?)\\n```'))
+  assert.ok(match, `Missing executable documentation block ${marker}`)
+  return match[1]
+}
+const source = block('tsx', 'i18n-example')
 const resources = loadResources()
-for (const language of ['zh', 'en']) resources[language].example = fixture.resources[language]
+for (const language of ['zh', 'en']) resources[language].example = JSON.parse(block('json', `i18n-example-${language}`))
 
 function check(code) {
   const filename = resolve(DESKTOP, 'src/localization/documentation.tsx')

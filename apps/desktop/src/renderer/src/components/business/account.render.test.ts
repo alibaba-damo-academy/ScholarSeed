@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import test from 'node:test'
-import { chromium, expect } from '@playwright/test'
+import test, { after } from 'node:test'
+import { chromium, expect, type Request } from '@playwright/test'
 import react from '@vitejs/plugin-react'
-import { createServer } from 'vite'
+
 import type { Dispatch, SetStateAction } from 'react'
 import type { AccountMenuView, MenuValue } from '../../../../menu'
+import { renderServers } from '../../../../test-helpers/render.ts'
+
+const servers = renderServers({ after })
 
 interface AccountRenderTestWindow extends Window {
   setAccountView: Dispatch<SetStateAction<AccountMenuView>>
@@ -16,11 +19,38 @@ interface AccountRenderTestWindow extends Window {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
+function isBusinessRequest(request: Pick<Request, 'resourceType' | 'url'>): boolean {
+  const resourceType = request.resourceType()
+  if (resourceType === 'xhr' || resourceType === 'fetch') return true
+  const pathname = new URL(request.url()).pathname
+  return pathname === '/api' || pathname.startsWith('/api/')
+}
+
+test('account request classification excludes module scripts but preserves all business transports', () => {
+  const request = (resourceType: string, pathname: string) => ({
+    resourceType: () => resourceType,
+    url: () => `https://example.invalid${pathname}`,
+  })
+  assert.equal(isBusinessRequest(request('script', '/app/api/client.ts')), false)
+  assert.equal(isBusinessRequest(request('script', '/app/api/diagnostics.ts')), false)
+  assert.equal(isBusinessRequest(request('stylesheet', '/styles.css')), false)
+  for (const resourceType of ['xhr', 'fetch']) {
+    for (const pathname of ['/api/account', '/app/api/client.ts', '/graphql'])
+      assert.equal(isBusinessRequest(request(resourceType, pathname)), true)
+  }
+  for (const resourceType of ['document', 'script', 'other']) {
+    for (const pathname of ['/api', '/api/account', '/api/account.ts?method=POST'])
+      assert.equal(isBusinessRequest(request(resourceType, pathname)), true)
+  }
+  assert.equal(isBusinessRequest(request('script', '/apiary/module.js')), false)
+})
+
 test(
   'account feedback displays the platform shortcut in both languages',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'account',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -73,7 +103,8 @@ test(
   'logout busy disables every action including language submenu',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'account',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -112,7 +143,8 @@ test(
   'account_panel_has_no_business_fetch, credit_error_is_not_zero_balance and logout_failure_keeps_error',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'account',
       configFile: false,
       root: ROOT,
       plugins: [react()],
@@ -124,7 +156,7 @@ test(
       const page = await browser.newPage()
       const businessRequests: string[] = []
       page.on('request', (request) => {
-        if (request.url().includes('/api/')) businessRequests.push(request.url())
+        if (isBusinessRequest(request)) businessRequests.push(request.url())
       })
       await page.goto(
         new URL('/components/business/account.render.fixture.html', server.resolvedUrls!.local[0])
@@ -159,7 +191,8 @@ test(
   'language_submenu_escape uses real Menu semantics and preserves the root on selection',
   { timeout: 60_000 },
   async () => {
-    const server = await createServer({
+    const server = await servers.create({
+      cacheKey: 'account',
       configFile: false,
       root: ROOT,
       plugins: [react()],

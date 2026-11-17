@@ -1,12 +1,26 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
-import { join, resolve } from 'path'
+import { isAbsolute, join, relative, resolve, sep } from 'path'
 import type { TestInfo } from '@playwright/test'
 import { ONBOARDING_GROUPS } from '../../src/onboarding.ts'
 
 const CONFIG_FILE = 'config.json'
 const MODEL_PROFILES_FILE = 'model_profiles.json'
 const SERVICE_SETTINGS_FILE = 'settings.json'
+const RUNTIME_OWNER_FILE = '.e2e-owner.json'
+const RUNTIME_ADOPTION_FILE = '.adopted-from-veda'
+const RUNTIME_ADOPTION_CONTENT = 'isolated Playwright runtime\n'
+const RUNTIME_OWNERSHIP_ERROR = 'isolated runtime source ownership cannot be verified'
 
 /**
  * 界面语言偏好的落盘文件名，与 `src/main/preferences.ts` 里的同名常量保持一致。
@@ -62,9 +76,45 @@ export interface RuntimePaths {
 export function seedRendererPreferences(userData: string): void {
   writeFileSync(
     join(userData, RENDERER_PREFERENCES_FILE),
-    JSON.stringify({ language: E2E_INTERFACE_LANGUAGE, browserAutomationEnabled: false,
-      onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map((group) => [group, true])) } })
+    JSON.stringify({
+      language: E2E_INTERFACE_LANGUAGE,
+      browserAutomationEnabled: false,
+      onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map((group) => [group, true])) },
+    })
   )
+}
+
+export function assertRuntimeSourceOwnership(home: string, workspace: string): void {
+  if (!isAbsolute(home) || !isAbsolute(workspace)) throw new Error(RUNTIME_OWNERSHIP_ERROR)
+  const homeEntry = lstatSync(home)
+  const workspaceEntry = lstatSync(workspace)
+  const ownerPath = join(home, RUNTIME_OWNER_FILE)
+  const adoptionPath = join(home, RUNTIME_ADOPTION_FILE)
+  if (
+    !homeEntry.isDirectory() ||
+    !workspaceEntry.isDirectory() ||
+    !lstatSync(ownerPath).isFile() ||
+    !lstatSync(adoptionPath).isFile()
+  )
+    throw new Error(RUNTIME_OWNERSHIP_ERROR)
+  const owner: unknown = JSON.parse(readFileSync(ownerPath, 'utf8'))
+  if (
+    !owner ||
+    typeof owner !== 'object' ||
+    Array.isArray(owner) ||
+    !('root' in owner) ||
+    typeof owner.root !== 'string' ||
+    !isAbsolute(owner.root) ||
+    !('artifacts' in owner) ||
+    typeof owner.artifacts !== 'string' ||
+    !isAbsolute(owner.artifacts) ||
+    resolve(owner.artifacts) !== join(resolve(owner.root), 'artifacts') ||
+    readFileSync(adoptionPath, 'utf8') !== RUNTIME_ADOPTION_CONTENT
+  )
+    throw new Error(RUNTIME_OWNERSHIP_ERROR)
+  const location = relative(realpathSync.native(home), realpathSync.native(workspace))
+  if (!location || location === '..' || location.startsWith('..' + sep) || isAbsolute(location))
+    throw new Error(RUNTIME_OWNERSHIP_ERROR)
 }
 
 export function createRuntime(testInfo: TestInfo): RuntimePaths {
@@ -82,14 +132,19 @@ export function createRuntime(testInfo: TestInfo): RuntimePaths {
   Object.values(paths).forEach((path) => mkdirSync(path, { recursive: true }))
   // The public desktop migration treats this marker as an already initialized home.
   // Pre-seeding runtime state avoids reading or adopting the developer's real ~/.scholarseed.
-  writeFileSync(join(paths.home, '.adopted-from-veda'), 'isolated Playwright runtime\n')
-  writeFileSync(join(paths.home, '.e2e-owner.json'), JSON.stringify({ root, artifacts: paths.artifacts }))
+  writeFileSync(join(paths.home, RUNTIME_ADOPTION_FILE), RUNTIME_ADOPTION_CONTENT)
+  writeFileSync(
+    join(paths.home, RUNTIME_OWNER_FILE),
+    JSON.stringify({ root, artifacts: paths.artifacts })
+  )
   seedRendererPreferences(paths.userData)
   return paths
 }
 
-export async function withIsolatedRuntime<T>(testInfo: TestInfo,
-  operation: (runtime: RuntimePaths) => Promise<T>): Promise<T> {
+export async function withIsolatedRuntime<T>(
+  testInfo: TestInfo,
+  operation: (runtime: RuntimePaths) => Promise<T>
+): Promise<T> {
   const runtime = createRuntime(testInfo)
   try {
     return await operation(runtime)
@@ -100,27 +155,34 @@ export async function withIsolatedRuntime<T>(testInfo: TestInfo,
 
 /** Configure a local host for skill management tests that never invoke a model. */
 export function seedSkillHost(paths: RuntimePaths): void {
-  writeFileSync(join(paths.home, CONFIG_FILE), JSON.stringify({
-    selected_model_key: 'personal-fixture:fixture-skill-model',
-  }))
-  writeFileSync(join(paths.home, MODEL_PROFILES_FILE), JSON.stringify({
-    active_profile_id: 'personal-fixture',
-    profiles: {
-      'personal-fixture': {
-        id: 'personal-fixture',
-        owner_id: 'local',
-        enabled: true,
-        preview_name: 'Isolated skill host',
-        provider: 'openai',
-        wire_api: 'responses',
-        base_url: 'http://127.0.0.1:9/v1',
-        api_key: 'fixture-skill-host',
-        headers: {},
-        model_name: 'fixture-skill-model',
-        selected_models: [{ id: 'fixture-skill-model' }],
+  writeFileSync(
+    join(paths.home, CONFIG_FILE),
+    JSON.stringify({
+      selected_model_key: 'personal-fixture:fixture-skill-model',
+    })
+  )
+  writeFileSync(
+    join(paths.home, MODEL_PROFILES_FILE),
+    JSON.stringify({
+      active_profile_id: 'personal-fixture',
+      profiles: {
+        'personal-fixture': {
+          id: 'personal-fixture',
+          owner_id: 'local',
+          enabled: true,
+          preview_name: 'Isolated skill host',
+          provider: 'openai',
+          wire_api: 'responses',
+          base_url: 'http://127.0.0.1:9/v1',
+          api_key: 'fixture-skill-host',
+          headers: {},
+          model_name: 'fixture-skill-model',
+          selected_models: [{ id: 'fixture-skill-model' }],
+        },
       },
-    },
-  }), { mode: 0o600 })
+    }),
+    { mode: 0o600 }
+  )
 }
 
 export function seedLiveConfig(paths: RuntimePaths): string | null {

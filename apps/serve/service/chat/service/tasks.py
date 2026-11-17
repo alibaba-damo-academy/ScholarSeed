@@ -112,6 +112,32 @@ def task_failure_action(reason: str) -> str:
     )
 
 
+def authorization_task_current(live: Any, task_type: ProductTaskType) -> bool:
+    policy = TASK_ACTIVATION_POLICIES.get(task_type)
+    current_task = getattr(live, "current_task", None)
+    if (
+        policy is None
+        or current_task is None
+        or current_task.done()
+        or getattr(live, "active_task_type", "") != task_type.value
+        or not getattr(live, "active_product_turn_id", "")
+        or getattr(live, "interrupting", False)
+        or getattr(live, "terminating", False)
+        or getattr(live, "terminated", False)
+    ):
+        return False
+    if not policy.authorization_lease:
+        return True
+    lease = getattr(live, "active_task_lease", None)
+    return bool(
+        lease is not None
+        and lease.task_type is task_type
+        and lease.turn_id == live.active_product_turn_id
+        and lease.generation == getattr(live, "product_turn_generation", None)
+        and lease.run_id
+    )
+
+
 def verified_authorization_context(
     live: Any,
     task_type: ProductTaskType,
@@ -124,16 +150,7 @@ def verified_authorization_context(
         return None
     lease = getattr(live, "active_task_lease", None)
     current_task = getattr(live, "current_task", None)
-    if (
-        lease is None
-        or current_task is None
-        or current_task.done()
-        or lease.task_type is not task_type
-        or getattr(live, "active_task_type", "") != task_type.value
-        or lease.turn_id != getattr(live, "active_product_turn_id", "")
-        or lease.generation != getattr(live, "product_turn_generation", None)
-        or not lease.run_id
-    ):
+    if lease is None or not authorization_task_current(live, task_type):
         logger.warning(
             "task_authorization_rejected session_id=%s task_type=%s "
             "lease_present=%s task_present=%s task_done=%s lease_type_matches=%s "

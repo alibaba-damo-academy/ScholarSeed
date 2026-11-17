@@ -8,7 +8,7 @@ import { chromium, expect } from '@playwright/test'
 import tailwindcss from '@tailwindcss/postcss'
 import { build } from 'esbuild'
 import postcss from 'postcss'
-import { HOME_PROJECT_PAGE_SIZE, HOME_TASK_PAGE_SIZE } from './catalog.ts'
+import { HOME_PROJECT_PAGE_SIZE, HOME_TASK_LIMIT, HOME_TASK_PAGE_SIZE } from './catalog.ts'
 
 const DESKTOP = fileURLToPath(new URL('../../../../../', import.meta.url))
 const ORIGIN = 'http://127.0.0.1:18775'
@@ -46,14 +46,15 @@ test('home renders fixed project/task pages and project/session navigation', asy
               sessionCatalogRevision: (window.homeState.sessionCatalogRevision || 0) + 1 });
             flushSync(() => root.render(<I18nextProvider i18n={engine}><HomeOverview key="23en" /></I18nextProvider>));
           },
-          render: async (count, language = 'zh') => {
+          render: async (count, language = 'zh', loading = false) => {
             window.rows = Array.from({ length: count }, (_, index) => ({
               session_id: 'task-' + index, title: 'Task ' + index,
               project_path: index % 2 ? '/second' : '/first', mtime: count - index
             }));
+            if (loading) window.rows = new Promise(() => {});
             window.homeState.lang = language;
             await engine.changeLanguage(language);
-            flushSync(() => root.render(<I18nextProvider i18n={engine}><HomeOverview key={count + language} /></I18nextProvider>));
+            flushSync(() => root.render(<I18nextProvider i18n={engine}><HomeOverview key={count + language + loading} /></I18nextProvider>));
           }
         };
       `,
@@ -80,7 +81,7 @@ test('home renders fixed project/task pages and project/session navigation', asy
           builder.onLoad({ filter: /.*/, namespace: 'home-test' }, (args) => ({
             loader: 'js',
             contents: args.path.endsWith('/api')
-              ? 'export async function listAllSessions() { return window.rows }; export async function listProjects() { return null }; export async function revealSystemPath() { return { ok: false, error: "desktop bridge unavailable", applicationFailure: { code: "desktop_bridge_unavailable" } } }'
+              ? 'export async function listAllSessions(options) { window.catalogOptions = options; return window.rows }; export async function listProjects() { return null }; export async function revealSystemPath() { return { ok: false, error: "desktop bridge unavailable", applicationFailure: { code: "desktop_bridge_unavailable" } } }'
               : args.path.endsWith('/store')
                 ? `export function useApp() { return { state: window.homeState, set: patch => window.actions.push(['set', patch]), act: {
                   selectProject: id => window.actions.push(['project', id]),
@@ -107,6 +108,20 @@ test('home renders fixed project/task pages and project/session navigation', asy
   )
   await page.goto(ORIGIN)
   await page.addScriptTag({ path: bundle })
+  await context.test('pending tasks show the spinner without the bordered list', async () => {
+    await page.evaluate(() => Reflect.get(window, 'probe').render(1, 'zh', true))
+    const tasks = page.locator('section[aria-labelledby="home-tasks-heading"]')
+    await expect(tasks.getByRole('status')).toBeAttached()
+    await expect(tasks.getByTestId('home-tasks-list')).toBeHidden()
+  })
+  await context.test('home activity listing does not request unused reply history', async () => {
+    await page.evaluate(() => Reflect.get(window, 'probe').render(1))
+    await expect(page.locator('#home-tasks-heading')).toBeVisible()
+    assert.deepEqual(await page.evaluate(() => Reflect.get(window, 'catalogOptions')), {
+      scope: 'all',
+      limit: HOME_TASK_LIMIT,
+    })
+  })
   await context.test(
     'project actions belong to the welcome content, not the window header',
     async () => {

@@ -4,11 +4,15 @@ import importlib.util
 import re
 import shutil
 
+from prose import latex as prose_latex
+from writing_contract import section_label
+from layouts import copy_template_assets, document_title
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def extension(fmt):
-    return 'md' if fmt == 'markdown' else 'tex'
+    return 'md' if fmt in ('markdown','docx') else 'tex'
 
 
 def chapter_frame(section, fmt):
@@ -16,17 +20,15 @@ def chapter_frame(section, fmt):
     if section is None:
         return {'chapter_kind':'component','chapter_opening':'','chapter_closing':''}
     title=section['title']
-    if fmt=='markdown':
+    if fmt in ('markdown','docx'):
         return {'chapter_kind':'abstract' if section.get('role')=='abstract' else 'section',
                 'chapter_opening':'## '+title+'\n\n','chapter_closing':''}
-    from figure_caption import caption_latex
-    from writing_contract import section_label
     if section.get('role')=='abstract':
         return {'chapter_kind':'abstract',
-                'chapter_opening':r'\renewcommand{\abstractname}{'+caption_latex(title)+'}\n'+r'\begin{abstract}'+'\n',
+                'chapter_opening':r'\renewcommand{\abstractname}{'+prose_latex(title,'title')+'}\n'+r'\begin{abstract}'+'\n',
                 'chapter_closing':'\n'+r'\end{abstract}'+'\n'}
     return {'chapter_kind':'section',
-            'chapter_opening':r'\section{'+caption_latex(title)+'}\n'+r'\label{'+section_label(section['section_id'])+'}\n\n',
+            'chapter_opening':r'\section{'+prose_latex(title,'title')+'}\n'+r'\label{'+section_label(section['section_id'])+'}\n\n',
             'chapter_closing':''}
 
 
@@ -72,18 +74,15 @@ def assemble(ws, outline, packets, spec, figures):
         from citation_styles import style_asset
         preamble = renderer._citation_preamble(language, spec)
         preamble += '\n'+r'\graphicspath{{figures/}{./}}'
-        if language != 'chinese':
-            shutil.copyfile(renderer.NEURIPS_TEMPLATE_DIR/renderer.NEURIPS_STY_FILENAME,
-                            gen/renderer.NEURIPS_STY_FILENAME)
+        copy_template_assets(spec.get('template', 'standard_chinese' if language == 'chinese' else 'neurips'), gen)
         shutil.copyfile(style_asset(spec['citation_style']), gen/(spec['bibliography_style']+'.bst'))
         parts = [preamble]
         if outline.get('survey_title'):
-            from figure_caption import caption_latex
-            parts += [r'\title{'+caption_latex(outline['survey_title'])+'}']
+            parts += [r'\title{'+prose_latex(outline['survey_title'],'survey_title')+'}']
             if spec.get('output_scope') == 'survey':parts += [r'\author{'+review_byline(language, latex=True)+'}']
             parts += [r'\date{}']
         parts += [r'\begin{document}']
-        if outline.get('survey_title'):parts += [r'\maketitle']
+        if outline.get('survey_title'):parts += [document_title(spec.get('template'), prose_latex(outline['survey_title'],'survey_title'), review_byline(language, latex=True) if spec.get('output_scope') == 'survey' else '')]
     by_id = {n['section_id']:n for n in outline.get('outline_tree', [])}
     for packet in packets:
         sid = packet['chapter_ids'][0]

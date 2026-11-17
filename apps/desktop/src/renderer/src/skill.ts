@@ -16,7 +16,8 @@ export type TaskStarterSkillReference = {
 
 export function resolveTaskStarterSkill(
   skills: SkillInfo[],
-  name: string
+  name: string,
+  language = ''
 ):
   | { reference: TaskStarterSkillReference; failure?: never }
   | { reference?: never; failure: TaskStarterSkillFailure } {
@@ -32,7 +33,7 @@ export function resolveTaskStarterSkill(
     reference: {
       type: 'skill',
       id: skill.name,
-      title: skillName(skill),
+      title: skillName(skill, language),
       path: skill.path,
       version: skill.version,
     },
@@ -73,8 +74,18 @@ export function skillCallable(
   )
 }
 
-export function skillName(skill: { name: string; display_name?: string }): string {
-  return skill.display_name || skill.name
+export function skillName(
+  skill: { name: string; display_name?: string; display_names?: Record<string, string> | null },
+  language = ''
+): string {
+  const normalized = language.trim().toLowerCase()
+  const base = normalized.split('-')[0] ?? normalized
+  return (
+    skill.display_names?.[normalized] ||
+    skill.display_names?.[base] ||
+    skill.display_name ||
+    skill.name
+  )
 }
 
 export function skillCategory(

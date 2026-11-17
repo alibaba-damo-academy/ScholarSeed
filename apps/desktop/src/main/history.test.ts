@@ -512,8 +512,21 @@ test('Agent history proof binds full scope and one query, consumes once, and nev
     assert.equal(proof.queryDigest.length, 64)
     assert.equal(proof.historyRevision, history.revision())
     assert.throws(() => authority.execute({ scope, requestId: 'approval-1', proofId: proof.proofId, owner }), /approval_required/)
+    const aborted = new AbortController()
+    const abortedHandoff = authority.waitForApproval({ scope, requestId: 'approval-1', proofId: proof.proofId, signal: aborted.signal })
+    aborted.abort()
+    await assert.rejects(abortedHandoff, /request_expired/)
+    await assert.rejects(authority.waitForApproval({
+      scope: { ...scope, lifecycleEpoch: 2 }, requestId: 'approval-1', proofId: proof.proofId,
+    }), /stale_scope/)
+    const waiting = authority.waitForApproval({ scope, requestId: 'approval-1', proofId: proof.proofId })
+    let ready = false
+    const handoff = waiting.then(() => { ready = true })
+    await Promise.resolve()
+    assert.equal(ready, false)
     authority.grant({ scope, requestId: 'approval-1', proofId: proof.proofId,
       queryDigest: proof.queryDigest, historyRevision: proof.historyRevision, expiresAt: proof.expiresAt })
+    await handoff
     const result = authority.execute({ scope, requestId: 'approval-1', proofId: proof.proofId, owner })
     assert.deepEqual(result.items.map(item => item.title), ['Secret'])
     assert.throws(() => authority.execute({ scope, requestId: 'approval-1', proofId: proof.proofId, owner }), /approval_required/)

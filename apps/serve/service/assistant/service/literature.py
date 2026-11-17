@@ -22,9 +22,10 @@ from service.literature.domain.model import IMPORT_CONFLICT, LiteratureError
 from service.literature.persistence.imports import ImportReceipt, LiteratureImports
 from service.literature.persistence.store import load_library
 from service.literature.schema import LiteratureItem
+from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.importer import import_from_bytes, plan_artifact_import
 from service.platform.bridge import LiteratureImport, LiteratureImportedItem, LiteratureImportResult
-from service.platform.citations import LIBRARY_REF_PREFIX
+from service.platform.citations import LIBRARY_REF_PREFIX, PdfIndexPort
 from service.platform.content import ContentPort, ProjectRef
 
 PROJECT_UNAVAILABLE = "assistant_project_unavailable"
@@ -46,6 +47,8 @@ class AssistantLiteratureService:
         artifacts: ArtifactService,
         project_for_session: Callable[[str], ProjectRef | None],
         projection: LibraryLinkProjection,
+        *,
+        indexes: PdfIndexPort | None = None,
     ) -> None:
         self._content = content
         self._artifacts = artifacts
@@ -53,6 +56,7 @@ class AssistantLiteratureService:
         self._links = ArtifactLinkCatalog(content)
         self._projection = projection
         self._imports = LiteratureImports(content)
+        self._indexes = indexes
 
     def _project(self, session_id: str) -> ProjectRef:
         project = self._project_for_session(session_id)
@@ -120,6 +124,9 @@ class AssistantLiteratureService:
             receipt = import_from_bytes(self._content, project.id, plan, name, payload)
         link = self._links.complete(link, tuple(item.id for item in receipt.items))
         self._projection.project(link)
+        attachments = LiteratureAttachmentContent()
+        for item in receipt.items:
+            attachments.prewarm(self._indexes, item.id)
         return receipt
 
     def import_publication(
@@ -188,7 +195,8 @@ class AssistantLiteratureService:
             return ()
         records = self._links.list_session(project.id, session_id)
         recovered = []
-        for record in records:
+        for sourceRecord in records:
+            record = sourceRecord
             if record.destination is not LibraryDestination.LITERATURE:
                 continue
             try:

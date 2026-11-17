@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "table-long",
+  "revision": "1",
+  "name": "长表网格定位输入",
+  "description": "用于表格网格定位专项的合成原始 CSV，不包含产品状态或操作结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored synthetic CSV for grid navigation evaluation.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "long-csv",
+      "source": "files/long.csv",
+      "target": "long.csv",
+      "mediaType": "text/csv",
+      "size": 11520,
+      "sha256": "038ecd75be1ac04a2ee861b58084075386b84865f85187cd5f0d82e1e61bb837"
+    }
+  ]
+}

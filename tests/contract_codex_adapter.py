@@ -136,9 +136,11 @@ from scholarseed_runtime.contract import (
     RuntimeSecret,
     RuntimeServiceTool,
     SkillPolicy,
+    SteerRequest,
     TurnRequest,
 )
 from scholarseed_runtime.contract.command import (
+    ForkRequest,
     HostWarmupRequest,
     SkillConfiguration,
     SkillConfigurationRequest,
@@ -184,11 +186,15 @@ from scholarseed_runtime.contract.resource import (
     ResourceRequest,
     ResourceState,
 )
+from scholarseed_runtime.contract.session import RUNTIME_SUSPEND_BUSY
 from tests.contract_codex_capacity import ControlledHost
 
 PASS = 0
 FAIL = 0
 ROOT = Path(__file__).resolve().parents[1]
+GENERATION_TEST_MODEL = ModelIntent(
+    transport=ModelTransport(endpoint="https://model.example.test/v1")
+)
 ADAPTER_ROOT = ROOT / "packages" / "adapters" / "codex" / "scholarseed_codex"
 TEST_POOL_CAPACITY = 2
 TEST_WAIT_SECONDS = 5.0
@@ -1862,7 +1868,7 @@ def test_host_catalog_preflight_receipts() -> None:
 
 def test_catalog_version_pins_granted_execution() -> None:
     async def scenario(home: Path) -> None:
-        pool = CodexHostPool()
+        pool = CodexHostPool(CapacityPolicy(execution_hosts=1))
         schema = ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA)
         entry = ModelCatalogEntry("qwen", schema)
         initial = ModelIntent(
@@ -2005,6 +2011,251 @@ def test_catalog_version_pins_granted_execution() -> None:
                 and not pool._catalog_candidates
                 and upgraded_lease.host.closed,
             )
+
+    with tempfile.TemporaryDirectory() as directory:
+        asyncio.run(scenario(Path(directory)))
+
+
+def test_catalog_expansion_preserves_the_previous_host_until_release() -> None:
+    async def scenario(home: Path) -> None:
+        pool = CodexHostPool()
+        schema = ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA)
+        existing = ModelCatalogEntry("qwen", schema)
+        initial = ModelIntent(
+            model_ref="qwen",
+            capabilities=schema,
+            catalog_models=(existing,),
+            transport=ModelTransport(mode=ModelConnectionMode.NATIVE),
+        )
+        expanded = replace(
+            initial,
+            model_ref="gpt",
+            catalog_models=(existing, ModelCatalogEntry("gpt", schema)),
+        )
+        request = CodexSessionOpenRequest(
+            "first",
+            "codex",
+            home,
+            executable="/runtime/codex",
+            process_sharing_scope="catalog-actor",
+            process_environment={codex_environment.CODEX_HOME_ENV: str(home)},
+        )
+        readiness = SimpleNamespace(
+            ready=True,
+            status=CodexRuntimeStatus.READY,
+            safe_error="",
+            executable=request.executable,
+            version="test",
+        )
+        with (
+            patch.object(pool, "probe_readiness", AsyncMock(return_value=readiness)),
+            patch.object(pool_module, "discover_codex_executable", return_value=request.executable),
+            patch.object(pool_module, "CodexProcessHost", ControlledHost),
+        ):
+            try:
+                first = await pool.model_catalog_argument(initial, request)
+                old = await pool.acquire(replace(request, launch_arguments=(first,)))
+                second = await pool.model_catalog_argument(expanded, request)
+                changed = replace(
+                    request,
+                    request_id="other-environment",
+                    launch_arguments=(second,),
+                    process_environment={**request.process_environment, "MODEL_SECRET": "changed"},
+                )
+                rejected = await pool.reserve(
+                    changed,
+                    role=HostRole.EXECUTION,
+                    request_id=changed.request_id,
+                    deadline=time() + TEST_WAIT_SECONDS,
+                )
+                check(
+                    "catalog expansion cannot bypass process environment compatibility",
+                    rejected.safe_error == RESOURCE_HOST_CONFIGURATION_CONFLICT,
+                )
+                with patch.object(ControlledHost, "start", AsyncMock(side_effect=OSError("start"))):
+                    try:
+                        await pool.acquire(
+                            replace(
+                                request, request_id="failed-expansion", launch_arguments=(second,)
+                            )
+                        )
+                    except AppServerError:
+                        check(
+                            "failed expansion keeps the previous Host and its catalog pinned",
+                            not old.host.closed
+                            and await pool.model_catalog_argument(initial, request) == first,
+                        )
+                    else:
+                        check("the additional Host startup failure must be returned", False)
+                async with asyncio.timeout(TEST_WAIT_SECONDS):
+                    while len(pool._hosts) != 1:
+                        await asyncio.sleep(0)
+                new = await pool.acquire(
+                    replace(request, request_id="expanded", launch_arguments=(second,))
+                )
+                check(
+                    "an additive catalog starts a second Host without closing the old owner",
+                    old.host_id != new.host_id and not old.host.closed and not new.host.closed,
+                )
+                check(
+                    "compatible requests select the expanded catalog after its Host is ready",
+                    await pool.model_catalog_argument(initial, request) == second,
+                )
+                third_intent = replace(
+                    expanded,
+                    model_ref="third",
+                    catalog_models=(*expanded.catalog_models, ModelCatalogEntry("third", schema)),
+                )
+                third = await pool.model_catalog_argument(third_intent, request)
+                rejected = await pool.reserve(
+                    replace(request, request_id="third", launch_arguments=(third,)),
+                    role=HostRole.EXECUTION,
+                    request_id="third",
+                    deadline=time() + TEST_WAIT_SECONDS,
+                )
+                check(
+                    "two overlapping catalog Hosts retain the bounded configuration fallback",
+                    rejected.safe_error == RESOURCE_HOST_CONFIGURATION_CONFLICT,
+                )
+                busy = AppServerError(RUNTIME_SUSPEND_BUSY, safe_error=RUNTIME_SUSPEND_BUSY)
+                old_host = old.host
+                old_host.close_error = busy
+                stop_idle = old_host.stop_idle
+
+                async def stop_idle_once_busy(generation: int) -> None:
+                    try:
+                        await stop_idle(generation)
+                    finally:
+                        old_host.close_error = None
+
+                old_slot = next(slot for slot in pool._hosts.values() if slot.host is old_host)
+                with patch.object(old_host, "stop_idle", side_effect=stop_idle_once_busy):
+                    await old.close()
+                    async with asyncio.timeout(TEST_WAIT_SECONDS):
+                        while old_slot.key in pool._hosts:
+                            await asyncio.sleep(0)
+                check(
+                    "superseded Host retries a pre-EOF busy response and releases capacity",
+                    old_host.closed and old_host.safe_close_calls == 2 and not new.host.closed,
+                )
+                newest = await pool.acquire(
+                    replace(request, request_id="third-after-reclaim", launch_arguments=(third,))
+                )
+                new_host = new.host
+                new_slot = next(slot for slot in pool._hosts.values() if slot.host is new_host)
+                new_host.close_error = busy
+                max_attempts = 1 + len(pool_module.SUPERSEDED_HOST_RETRY_DELAYS)
+                try:
+                    with patch.object(
+                        pool_module, "SUPERSEDED_HOST_RETRY_DELAYS", (0,) * (max_attempts - 1)
+                    ):
+                        await new.close()
+                        async with asyncio.timeout(TEST_WAIT_SECONDS):
+                            while new_slot.reclaiming is None:
+                                await asyncio.sleep(0)
+                            await asyncio.shield(new_slot.reclaiming)
+                    check(
+                        "persistently busy superseded Host stops retrying without forced close",
+                        new_host.safe_close_calls == new_host.close_calls == max_attempts
+                        and not new_host.closed
+                        and new_slot.key in pool._hosts
+                        and not newest.host.closed,
+                    )
+                finally:
+                    new_host.close_error = None
+                await newest.close()
+            finally:
+                await pool.aclose()
+
+    with tempfile.TemporaryDirectory() as directory:
+        asyncio.run(scenario(Path(directory)))
+
+
+def test_catalog_cache_follows_native_connection_switches() -> None:
+    async def scenario(home: Path) -> None:
+        pool = CodexHostPool()
+        capabilities = ModelCapabilities(tool_protocol=ModelToolProtocol.PROVIDER_NATIVE)
+        entry = ModelCatalogEntry("same-slug", capabilities, native_catalog_source="connection-a")
+        first_intent = ModelIntent(
+            model_ref=entry.model_ref,
+            capabilities=capabilities,
+            catalog_models=(entry,),
+            transport=ModelTransport(mode=ModelConnectionMode.NATIVE),
+        )
+        second_intent = replace(
+            first_intent,
+            catalog_models=(replace(entry, native_catalog_source="connection-b"),),
+        )
+        request = CodexSessionOpenRequest(
+            "native-catalog-switch",
+            "codex",
+            home,
+            executable="/runtime/codex",
+            process_sharing_scope="catalog-actor",
+            process_environment={codex_environment.CODEX_HOME_ENV: str(home)},
+        )
+        readiness = SimpleNamespace(
+            ready=True,
+            status=CodexRuntimeStatus.READY,
+            safe_error="",
+            executable=request.executable,
+            version="test",
+        )
+        fetch = AsyncMock()
+        with (
+            patch.object(pool, "probe_readiness", AsyncMock(return_value=readiness)),
+            patch.object(pool, "_native_catalog", fetch),
+            patch.object(pool_module, "discover_codex_executable", return_value=request.executable),
+            patch.object(pool_module, "CodexProcessHost", ControlledHost),
+        ):
+            try:
+                for index, intent, instructions in (
+                    (0, first_intent, "instructions from A"),
+                    (1, second_intent, "instructions from B"),
+                    (2, first_intent, "instructions from A"),
+                ):
+                    fetch.return_value = {
+                        "models": [{"slug": entry.model_ref, "instructions": instructions}]
+                    }
+                    argument = await pool.model_catalog_argument(intent, request)
+                    check(
+                        "switching native catalog source fetches the target definition",
+                        fetch.await_count == index + 1,
+                    )
+                    if index:
+                        await pool.reset_execution_configuration(request.process_sharing_scope)
+                    lease = await pool.acquire(
+                        replace(
+                            request,
+                            request_id=f"native-switch-{index}",
+                            launch_arguments=(argument,),
+                        )
+                    )
+                    try:
+                        snapshot = pool._execution_catalog
+                        check(
+                            "the granted host pins the target connection's full native definition",
+                            snapshot is not None
+                            and json.loads(snapshot.document)["models"][0]["instructions"]
+                            == instructions,
+                        )
+                        if index == 0 and snapshot is not None:
+                            check(
+                                "identical payloads still keep distinct native catalog sources",
+                                not snapshot.covers(
+                                    replace(snapshot, entries=second_intent.catalog_models)
+                                ),
+                            )
+                        cached = await pool.model_catalog_argument(intent, request)
+                        check(
+                            "repeated preparation from the same connection keeps the cache hit",
+                            cached == argument and fetch.await_count == index + 1,
+                        )
+                    finally:
+                        await lease.close()
+                    await pool.release_idle()
+            finally:
+                await pool.aclose()
 
     with tempfile.TemporaryDirectory() as directory:
         asyncio.run(scenario(Path(directory)))
@@ -3020,6 +3271,8 @@ def test_managed_codex_isolation() -> None:
                 CodexRuntimeLaunchArgument(option="--strict-config"),
                 CodexRuntimeLaunchArgument(option="-c", value="project_doc_max_bytes=999"),
                 CodexRuntimeLaunchArgument(option="-c", value="features.plugins=true"),
+                CodexRuntimeLaunchArgument(option="-c", value="features.shell_snapshot=true"),
+                CodexRuntimeLaunchArgument(option="-c", value="features.shell_snapshot_v2=false"),
             ),
             inherited_environment=inherited,
         )
@@ -3064,6 +3317,12 @@ def test_managed_codex_isolation() -> None:
             str(resolved),
         )
         check(
+            "shared App Server disables legacy cross-thread snapshot cleanup",
+            resolved.index("features.shell_snapshot=false")
+            > resolved.index("features.shell_snapshot=true"),
+            str(resolved),
+        )
+        check(
             "spawned shells retain the original cross-platform home values",
             'shell_environment_policy.set.HOME="/Users/research user"' in resolved
             and 'shell_environment_policy.set.USERPROFILE="C:\\\\Users\\\\research user"'
@@ -3077,6 +3336,25 @@ def test_managed_codex_isolation() -> None:
             ),
             str(resolved),
         )
+        for platform, caller_value, managed_value in (
+            ("darwin", "false", "true"),
+            ("win32", "true", "false"),
+        ):
+            caller = f"features.shell_snapshot_v2={caller_value}"
+            expected = f"features.shell_snapshot_v2={managed_value}"
+            with patch("sys.platform", platform):
+                environment, arguments = codex_isolation.managed_codex_launch(
+                    runtime_home,
+                    {},
+                    (CodexRuntimeLaunchArgument(option="-c", value=caller),),
+                    inherited_environment=inherited,
+                )
+                resolved = codex_host._resolve_launch_arguments(arguments, environment)
+            check(
+                f"managed snapshot V2 policy overrides caller configuration on {platform}",
+                expected in resolved and resolved.index(expected) > resolved.index(caller),
+                str(resolved),
+            )
 
 
 def test_control_borrows_execution_host() -> None:
@@ -3841,6 +4119,106 @@ def test_inventory_projection() -> None:
         and skills.get("cwd") == str(ROOT)
         and inventory.revision == "skills-revision:mcp-revision",
     )
+
+
+def test_text_sample_cancellation_waits_for_original_request() -> None:
+    async def scenario() -> None:
+        host = CodexProcessHost(version="codex-cli 0.165.0")
+        host._proc = SimpleNamespace(returncode=None)
+        host._generation = 1
+        host._record_rpc_success = Mock()
+        started, cancelled = asyncio.Event(), asyncio.Event()
+        sample_id = None
+
+        async def write(
+            message, *, generation, on_written, before_write=None, on_write_attempt=None
+        ):
+            nonlocal sample_id
+            if before_write is not None:
+                before_write()
+            if on_write_attempt is not None:
+                on_write_attempt()
+            on_written()
+            if message["method"] == "thread/sample":
+                sample_id = message["id"]
+                started.set()
+            else:
+                assert message["method"] == "thread/sample/cancel"
+                assert message["params"]["requestId"] == sample_id
+                host._rpc_requests.resolve({"id": message["id"], "result": {}}, generation)
+                cancelled.set()
+
+        host._rpc_writer = SimpleNamespace(write=write)
+        task = asyncio.create_task(
+            host._request_connected(
+                "thread/sample",
+                {},
+                cancel_method="thread/sample/cancel",
+            )
+        )
+        await started.wait()
+        task.cancel()
+        await cancelled.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        host._rpc_requests.resolve({"id": sample_id, "result": {}}, 1)
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("sample cancellation must remain cancellation")
+        assert not host._rpc_requests._pending
+
+    asyncio.run(scenario())
+
+
+def test_text_sample_control_projection() -> None:
+    async def scenario() -> None:
+        with (
+            patch("scholarseed_codex.pool.prepare_codex_runtime_home", return_value=ROOT),
+            patch("scholarseed_codex.session.managed_codex_launch", return_value=({}, ())),
+        ):
+            session = CodexRuntimeSession(
+                OpenSessionRequest(
+                    product_session_id="sample", cwd=ROOT, model=GENERATION_TEST_MODEL
+                )
+            )
+        sample = AsyncMock(
+            return_value={
+                "sourceTurnId": "source",
+                "text": "Next question",
+                "inputTokens": 9,
+                "cachedInputTokens": 6,
+                "outputTokens": 3,
+            }
+        )
+        session._native = SimpleNamespace(host=SimpleNamespace(sample=sample), session_id="native")
+        result = await session.control(
+            RuntimeControlRequest(
+                command_id="sample",
+                kind=RuntimeControlKind.TEXT_SAMPLE,
+                values={"source_turn_id": "source", "prompt": "Predict a message"},
+            )
+        )
+        assert result.state is CommandState.APPLIED
+        assert result.values["text"] == "Next question"
+        assert result.values["source_turn_id"] == "source"
+        assert result.values["cached_input_tokens"] == 6
+        sample.assert_awaited_once_with("native", "source", "Predict a message")
+        assert session._active_operations == 0
+        host = CodexProcessHost(version="codex-cli 0.159.0")
+        with patch.object(host, "ensure_attached", new_callable=AsyncMock) as attach:
+            try:
+                await host.sample("native", "source", "Predict")
+            except AppServerError:
+                pass
+            else:
+                raise AssertionError("old runtime must reject sampling before any RPC")
+            attach.assert_not_awaited()
+
+    asyncio.run(scenario())
 
 
 def test_mcp_control_projection() -> None:
@@ -4966,7 +5344,8 @@ def test_same_process_reopen_restores_previous_configuration_on_failure() -> Non
         else:
             return False, False, False
         return (
-            host.suspend_thread.await_args.args == ("durable-thread", 3),
+            host.suspend_thread.await_args.args == ("durable-thread", 3)
+            and host.suspend_thread.await_args.kwargs == {"wait_closed": True},
             thread._attach.await_count == 2,
             thread.request.resume_session_id == "durable-thread"
             and thread.request.model == original.model
@@ -4974,7 +5353,7 @@ def test_same_process_reopen_restores_previous_configuration_on_failure() -> Non
         )
 
     suspended, restored, original_retained = asyncio.run(scenario())
-    check("old native attachment is unsubscribed once", suspended)
+    check("old native attachment requires confirmed unload before model replacement", suspended)
     check("rejected candidate triggers old configuration restoration", restored)
     check("restored thread retains its original host lease", original_retained)
 
@@ -5697,6 +6076,14 @@ def test_subscription_capability_rejection_is_terminal() -> None:
 
 
 def test_provider_http_authentication() -> None:
+    for code in ("connection_error", "timeout"):
+        failure = provider_failure({"code": code, "message": "private provider detail"})
+        check(
+            f"explicit {code} remains a safe recoverable provider failure",
+            failure.code == code
+            and failure.message == PROVIDER_UNAVAILABLE_MESSAGE
+            and failure.retryability is RuntimeRetryability.USER_RETRYABLE,
+        )
     for code in ("", "invalid_request_error", "bad_request", "vendor_unknown"):
         failure = provider_failure(
             {
@@ -5869,6 +6256,61 @@ def test_codex_flattened_stream_disconnect_recovers_transient_semantics() -> Non
         safety.code == CONTENT_SAFETY_BLOCKED
         and safety.retryability is RuntimeRetryability.TERMINAL,
     )
+
+
+def test_steering_preserves_target_across_attachment() -> None:
+    async def scenario(transition: str) -> bool:
+        calls = []
+
+        async def request(method, params, **_kwargs):
+            calls.append((method, params))
+            return {"turnId": "turn-a"}
+
+        async def attach(_thread_id):
+            if transition == "changed":
+                runtime.active_turn_id = "turn-b"
+            elif transition == "ended":
+                runtime.active_turn_id = ""
+            elif transition == "stopped":
+                runtime.turn_done.set_result({"status": "interrupted"})
+            return 1
+
+        runtime = CodexTurnRuntime(
+            SimpleNamespace(
+                thread_id="thread", attached_generation=1, request=SimpleNamespace(cwd=Path.cwd())
+            ),
+            request=request,
+            ensure_attached=attach,
+            stale_requests=AsyncMock(),
+            emitter=CodexEmitter(),
+            router=SimpleNamespace(),
+            watcher=SimpleNamespace(),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        runtime.active_turn_id = "turn-a"
+        runtime.turn_done = asyncio.get_running_loop().create_future()
+        try:
+            result = await runtime.steer(
+                TurnInput((InputItem(InputKind.TEXT, text="guide"),)), expected_turn_id="turn-a"
+            )
+        except AppServerError as exc:
+            return (
+                transition != "unchanged"
+                and exc.safe_error == "runtime_active_turn_changed"
+                and not calls
+            )
+        return (
+            transition == "unchanged"
+            and result == "turn-a"
+            and calls[0][1]["expectedTurnId"] == "turn-a"
+        )
+
+    for transition in ("unchanged", "changed", "ended", "stopped"):
+        check(
+            f"steering attachment {transition} preserves exact target",
+            asyncio.run(scenario(transition)),
+        )
 
 
 def test_gate_interrupt_reclaims_only_active_command_terminal() -> None:
@@ -6529,6 +6971,217 @@ def test_native_fork_at_turn() -> None:
     asyncio.run(scenario())
 
 
+def test_generation_schema_projection() -> None:
+    schema = {"type": "object", "properties": {"note": {"type": "string"}}}
+
+    async def scenario() -> dict:
+        with (
+            patch("scholarseed_codex.pool.prepare_codex_runtime_home", return_value=ROOT),
+            patch("scholarseed_codex.session.managed_codex_launch", return_value=({}, ())),
+        ):
+            session = CodexRuntimeSession(
+                OpenSessionRequest(
+                    product_session_id="schema", cwd=ROOT, model=GENERATION_TEST_MODEL
+                )
+            )
+        captured = []
+
+        async def run(turn):
+            captured.append(turn)
+
+        session._native.run = run
+        receipt = await session.submit(TurnRequest("schema-turn", ("write",), output_schema=schema))
+        await asyncio.gather(*session._tasks)
+        assert receipt.state is CommandState.ACCEPTED
+        return start_parameters("native", captured[0], session._native.request, (), "model")
+
+    params = asyncio.run(scenario())
+    assert params["outputSchema"] == schema
+    ordinary = start_parameters(
+        "native",
+        TurnInput((InputItem(InputKind.TEXT, text="hello"),)),
+        CodexSessionOpenRequest("plain", "codex", ROOT),
+        (),
+        "model",
+    )
+    assert "outputSchema" not in ordinary
+
+
+def test_generation_only_rejects_parent_context() -> None:
+    binding = RuntimeBinding(
+        "source", "codex", "test", "test", "test", "test", "native", CapabilitySet()
+    )
+    request = OpenSessionRequest(
+        product_session_id="generate", cwd=ROOT, generation_only=True, model=GENERATION_TEST_MODEL
+    )
+    fork = ForkRequest("fork", "generate", binding, "source-turn")
+    cases = (
+        (replace(request, initial_history=(HistoryEntry("user", "private parent history"),)), None),
+        (replace(request, fork_source=fork), None),
+        (request, binding),
+    )
+    with (
+        patch("scholarseed_codex.pool.prepare_codex_runtime_home", return_value=ROOT),
+        patch("scholarseed_codex.session.managed_codex_launch", return_value=({}, ())),
+    ):
+        for candidate, resume in cases:
+            try:
+                CodexRuntimeSession(candidate, resume_binding=resume)
+            except ValueError as error:
+                assert str(error) == "generation_only_invalid_configuration"
+            else:
+                raise AssertionError("isolated generation accepted parent conversation context")
+
+
+def test_generation_only_isolation() -> None:
+    async def scenario() -> None:
+        with (
+            patch("scholarseed_codex.pool.prepare_codex_runtime_home", return_value=ROOT),
+            patch("scholarseed_codex.session.managed_codex_launch", return_value=({}, ())),
+        ):
+            session = CodexRuntimeSession(
+                OpenSessionRequest(
+                    product_session_id="generate",
+                    cwd=ROOT,
+                    generation_only=True,
+                    model=GENERATION_TEST_MODEL,
+                )
+            )
+        native = await session._configure_model_connection(
+            ModelIntent(
+                transport=ModelTransport(
+                    mode=ModelConnectionMode.REMOTE, endpoint="http://localhost/v1"
+                )
+            ),
+            session._native_base_request,
+            None,
+        )
+        config = dict(native.thread_config)
+        assert config["features.shell_tool"] is False
+        assert config["features.multi_agent"] is False
+        assert config["features.goals"] is False
+        assert config["features.view_image"] is False
+        assert config["features.sleep_tool"] is False
+        assert config["features.apps"] is False
+        assert config["tools.update_plan.enabled"] is False
+        assert config["features.default_mode_request_user_input"] is False
+        assert config["web_search"] == "disabled"
+        # Native 0.159.0 rejects `disabled`; its no-agent enum is `none`.
+        assert native.multi_agent_mode == "none"
+        params = CodexProcessHost()._thread_params(native, include_dynamic_tools=True)
+        assert params["multiAgentMode"] == "none"
+        assert not native.dynamic_tools
+        assert not native.skill_roots
+
+    asyncio.run(scenario())
+
+
+def test_generation_only_rejects_tools() -> None:
+    async def scenario(kind) -> None:
+        with (
+            patch("scholarseed_codex.pool.prepare_codex_runtime_home", return_value=ROOT),
+            patch("scholarseed_codex.session.managed_codex_launch", return_value=({}, ())),
+        ):
+            session = CodexRuntimeSession(
+                OpenSessionRequest(
+                    product_session_id="generate",
+                    cwd=ROOT,
+                    generation_only=True,
+                    model=GENERATION_TEST_MODEL,
+                )
+            )
+        interrupt = AsyncMock()
+        session._native = SimpleNamespace(
+            host=SimpleNamespace(
+                readiness=SimpleNamespace(process_generation=1),
+                attachment=lambda _: SimpleNamespace(turn=SimpleNamespace(interrupt=interrupt)),
+            ),
+            session_id="native",
+            process_events=(),
+            rpc_evidence=(),
+        )
+        session._active_command_id = "one"
+        session._events = asyncio.Queue()
+        await session._on_native_event(CodexSessionEvent("codex", "native", kind, turn_id="turn"))
+        await asyncio.gather(*session._tasks)
+        interrupt.assert_awaited_once()
+        events = list(session._events._queue)
+        assert not any(isinstance(row, RuntimeCallbackRequest) for row in events)
+        assert not any(row.kind is RuntimeEventKind.TURN_FAILED for row in events)
+        await session._on_native_event(
+            CodexSessionEvent(
+                "codex",
+                "native",
+                CodexSessionEventKind.TURN_COMPLETED,
+                turn_id="turn",
+                payload={"status": "completed"},
+            )
+        )
+        terminal = list(session._events._queue)[-1]
+        assert terminal.kind is RuntimeEventKind.TURN_FAILED
+        assert terminal.payload["safe_error"] == "generation_only_tool_rejected"
+
+    for kind in (
+        CodexSessionEventKind.TOOL_STARTED,
+        CodexSessionEventKind.HIL_REQUESTED,
+        CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED,
+    ):
+        asyncio.run(scenario(kind))
+
+
+def test_generation_only_has_one_turn() -> None:
+    async def scenario() -> None:
+        with (
+            patch("scholarseed_codex.pool.prepare_codex_runtime_home", return_value=ROOT),
+            patch("scholarseed_codex.session.managed_codex_launch", return_value=({}, ())),
+        ):
+            session = CodexRuntimeSession(
+                OpenSessionRequest(
+                    product_session_id="generate",
+                    cwd=ROOT,
+                    generation_only=True,
+                    model=GENERATION_TEST_MODEL,
+                )
+            )
+        session._native.run = AsyncMock()
+        first = await session.submit(TurnRequest("one", ("write",)))
+        await asyncio.gather(*session._tasks)
+        steered = await session.steer(SteerRequest("steer", ("rewrite",)))
+        session._active_command_id = ""
+        second = await session.submit(TurnRequest("two", ("rewrite",)))
+        assert first.state is CommandState.ACCEPTED
+        assert second.state is CommandState.REJECTED
+        assert second.safe_error == "generation_only_turn_rejected"
+        assert steered.state is CommandState.REJECTED
+        session._native.run.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+def test_generation_only_rejects_executable_inputs() -> None:
+    async def scenario() -> None:
+        with (
+            patch("scholarseed_codex.pool.prepare_codex_runtime_home", return_value=ROOT),
+            patch("scholarseed_codex.session.managed_codex_launch", return_value=({}, ())),
+        ):
+            session = CodexRuntimeSession(
+                OpenSessionRequest(
+                    product_session_id="generate",
+                    cwd=ROOT,
+                    generation_only=True,
+                    model=GENERATION_TEST_MODEL,
+                )
+            )
+        session._native.run = AsyncMock()
+        receipt = await session.submit(
+            TurnRequest("skill", ({"kind": "skill", "name": "other", "path": str(ROOT)},))
+        )
+        assert receipt.state is CommandState.REJECTED
+        session._native.run.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
 def main() -> int:
     test_completed_resumed_turn_restores_authoritative_assistant_message()
     test_empty_attachment_proof_uses_the_native_open_contract()
@@ -6540,6 +7193,12 @@ def main() -> int:
     test_turn_admission_is_checked_under_the_transport_write_lock()
     test_native_fork_at_turn()
     test_version_probe_deduplicates_and_tracks_resolved_executable()
+    test_generation_schema_projection()
+    test_generation_only_rejects_parent_context()
+    test_generation_only_isolation()
+    test_generation_only_rejects_tools()
+    test_generation_only_has_one_turn()
+    test_generation_only_rejects_executable_inputs()
     test_product_plan_replaces_native_only_when_declared()
     test_version_probe_never_acquires_persistent_authentication()
     test_command_exit_output()
@@ -6555,6 +7214,8 @@ def main() -> int:
     test_catalog_http_preflight_boundaries()
     test_host_catalog_preflight_receipts()
     test_catalog_version_pins_granted_execution()
+    test_catalog_expansion_preserves_the_previous_host_until_release()
+    test_catalog_cache_follows_native_connection_switches()
     test_child_thread_terminal_truth_and_authentication_classification()
     test_durable_thread_unsubscribes()
     test_event_translation()
@@ -6590,10 +7251,13 @@ def main() -> int:
     test_model_reconfiguration()
     test_inventory_projection()
     test_mcp_control_projection()
+    test_text_sample_control_projection()
+    test_text_sample_cancellation_waits_for_original_request()
     test_content_completion_and_sequence()
     test_nullable_phase_message_streaming()
     test_public_reasoning_streaming()
     test_gate_interrupt_reclaims_only_active_command_terminal()
+    test_steering_preserves_target_across_attachment()
     test_capability_resolution_is_synthesised_once_per_pair()
     test_subagent_lifecycle_survives_out_of_order_observation()
     test_unsupported_dynamic_tool_fails_fast()

@@ -69,6 +69,7 @@ from scholarseed_codex.protocol.state import (
     CODEX_SUBMISSION_CANCELLED,
     CODEX_SUBMISSION_RETRY_EXPIRED,
     CODEX_WEB_SEARCH_ITEM_TYPE,
+    RPC_INVALID_REQUEST,
     AppServerError,
     _message_phase,
     _resolved_history_message_phase,
@@ -77,6 +78,7 @@ from scholarseed_codex.protocol.state import (
 from scholarseed_codex.router import ThreadRouter
 from scholarseed_codex.rpc import RpcSubmission, RpcSubmissionState
 from scholarseed_codex.watch import WorkspaceWatch
+from scholarseed_runtime.contract.command import RUNTIME_ACTIVE_TURN_CHANGED
 from scholarseed_runtime.contract.content import (
     PUBLIC_REASONING_SUMMARY,
     REASONING_SOURCE,
@@ -1190,14 +1192,22 @@ class CodexTurnRuntime:
 
         return unpack_error(value)
 
-    async def steer(self, turn_input: TurnInput) -> str:
+    async def steer(self, turn_input: TurnInput, *, expected_turn_id: str = "") -> str:
         """Append typed user input to the currently active turn with an exact-turn precondition."""
 
         thread_id = self._thread.thread_id
+        turn_id = expected_turn_id or self.active_turn_id
         self._generation = await self._ensure_attached(thread_id)
-        turn_id = self.active_turn_id
-        if not turn_id or self.turn_done is None or self.turn_done.done():
-            raise AppServerError(f"Codex thread has no active turn to steer: {thread_id}")
+        if (
+            not turn_id
+            or turn_id != self.active_turn_id
+            or self.turn_done is None
+            or self.turn_done.done()
+        ):
+            raise AppServerError(
+                f"Codex thread has no matching active turn to steer: {thread_id}",
+                safe_error=RUNTIME_ACTIVE_TURN_CHANGED,
+            )
         params: dict[str, Any] = {
             "threadId": thread_id,
             "expectedTurnId": turn_id,
@@ -1237,6 +1247,8 @@ class CodexTurnRuntime:
                 )
             else:
                 self.active_skill_inputs = previous_skill_inputs
+                if exc.rpc_code == RPC_INVALID_REQUEST:
+                    exc.safe_error = RUNTIME_ACTIVE_TURN_CHANGED
             raise
         response_turn_id = str(response.get("turnId") or turn_id)
         if response_turn_id != turn_id:

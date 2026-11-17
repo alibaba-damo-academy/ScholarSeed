@@ -19,6 +19,8 @@ import {
   parseBrowserOverlayModel,
 } from '../overlay.ts'
 import type { BrowserOverlayEvent, BrowserOverlayModel, OverlayReply } from '../overlay.ts'
+import { createBrowserFailureReporter } from '../browserdiagnostics.ts'
+import { registerNativeLayer, raiseNativeLayers } from './layers.ts'
 
 const OVERLAY_ENTRY = 'overlay.html'
 const OVERLAY_RESOURCE_DIRECTORIES = ['assets', 'fonts'] as const
@@ -26,6 +28,7 @@ const OVERLAY_DENIED = { action: 'deny' } as const
 const SUCCESS = { ok: true } as const
 const TRANSPARENT_BACKGROUND = '#00000000'
 interface OverlayOptions {
+  log?(line: string): void
   channels?: { [Key in keyof typeof OVERLAY_CHANNEL]: string }
   tooltip?: boolean
   ipc: Pick<IpcMain, 'handle' | 'removeHandler' | 'on' | 'removeListener'>
@@ -68,6 +71,8 @@ export function createBrowserOverlay(
   window: BrowserWindow,
   options: OverlayOptions
 ): BrowserOverlayOwner {
+  const report = createBrowserFailureReporter(options.log)
+  const source = options.tooltip ? 'tooltip' : 'overlay'
   const channels = options.channels ?? OVERLAY_CHANNEL
   const product = window.webContents
   const removers: (() => void)[] = []
@@ -119,6 +124,8 @@ export function createBrowserOverlay(
     view.setBounds(bounds)
     view.webContents.send(channels.model, current)
     window.contentView.addChildView(view)
+    registerNativeLayer(window, view, 'popup')
+    raiseNativeLayers(window)
     view.setVisible(true)
   }
   const ensureView = (): Promise<void> => {
@@ -157,7 +164,19 @@ export function createBrowserOverlay(
     ]) {
       listen(contents, name, (event) => event.preventDefault())
     }
-    listen(contents, 'render-process-gone', dismiss)
+    listen(contents, 'render-process-gone', () => {
+      report(
+        {
+          source,
+          boundary: 'main',
+          operation: 'crash',
+          phase: 'event',
+          revision: current?.revision,
+        },
+        BROWSER_ERROR.operationFailed
+      )
+      dismiss()
+    })
     loading = contents.loadURL(entry).then(() => {
       loaded = true
       render()
@@ -169,7 +188,7 @@ export function createBrowserOverlay(
     try {
       if (disposed) throw new Error(BROWSER_ERROR.desktopBridgeUnavailable)
       const model = parseBrowserOverlayModel(value)
-      if (Boolean(options.tooltip) !== (model.tooltip !== undefined))
+      if (Boolean(options.tooltip) !== (model.tooltip !== undefined || model.toast !== undefined))
         throw new Error(BROWSER_ERROR.invalidCommand)
       if (model.revision <= highestRevision) throw new Error(BROWSER_ERROR.invalidCommand)
       highestRevision = model.revision
@@ -185,6 +204,15 @@ export function createBrowserOverlay(
       return SUCCESS
     } catch (error) {
       if (publishingRevision !== null && current?.revision === publishingRevision) dismiss()
+      report(
+        {
+          source,
+          boundary: 'main',
+          operation: 'publish',
+          revision: publishingRevision ?? undefined,
+        },
+        error
+      )
       return {
         ok: false,
         error:
@@ -243,6 +271,7 @@ export function createBrowserOverlay(
             ? BROWSER_ERROR.invalidSender
             : BROWSER_ERROR.invalidCommand,
       }
+      report({ source, boundary: 'main', operation: 'dismiss-sync' }, error)
     }
   }
   options.ipc.on(channels.dismissSync, dismissSynchronously)
@@ -280,7 +309,19 @@ export function createBrowserOverlay(
     try {
       if (args.length !== 1) throw new Error(BROWSER_ERROR.invalidCommand)
       const response = parseBrowserOverlayEvent(args[0])
-      if (options.tooltip && response.kind !== 'dismiss')
+      if (
+        options.tooltip &&
+        response.kind !== 'dismiss' &&
+        !(current?.tooltip && response.kind === 'tooltip-hover') &&
+        !(current?.toast && (response.kind === 'toast-close' || response.kind === 'toast-hover'))
+      )
+        throw new Error(BROWSER_ERROR.invalidCommand)
+      if (
+        !options.tooltip &&
+        (response.kind === 'toast-close' ||
+          response.kind === 'toast-hover' ||
+          response.kind === 'tooltip-hover')
+      )
         throw new Error(BROWSER_ERROR.invalidCommand)
       if (!eligible()) dismiss()
       if (
@@ -289,6 +330,10 @@ export function createBrowserOverlay(
         (response.kind === 'select' && !current.items.some((item) => item.id === response.itemId))
       ) {
         throw new Error(BROWSER_ERROR.invalidCommand)
+      }
+      if (response.kind === 'toast-hover' || response.kind === 'tooltip-hover') {
+        notify(response)
+        return SUCCESS
       }
       current = null
       view?.setVisible(false)

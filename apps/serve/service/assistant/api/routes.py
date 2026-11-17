@@ -76,12 +76,20 @@ from service.assistant.service.resources import (
     AssistantResourceError,
     AssistantResourceService,
 )
-from service.chat.constants import SESSION_NOT_FOUND_ERROR, SessionTitleFallback
+from service.chat.constants import (
+    PRODUCT_EVENT_ANSWER_SOURCES,
+    PRODUCT_EVENT_PAPER_SEARCH_COMPLETED,
+    PRODUCT_EVENT_SOURCE_CANDIDATES,
+    PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
+    SESSION_NOT_FOUND_ERROR,
+    SessionTitleFallback,
+)
 from service.chat.persistence.catalog import (
     SessionAccessError,
     SessionCatalogStore,
     SessionPrincipal,
 )
+from service.chat.service.answers import TURN_ANSWER_ID_PREFIX
 from service.chat.service.artifacts import (
     ARTIFACT_INTEGRITY_MISMATCH,
     ARTIFACT_NOT_FOUND,
@@ -90,6 +98,8 @@ from service.chat.service.artifacts import (
     ArtifactReadError,
 )
 from service.chat.service.history import HistoryError, HistoryService
+from service.chat.service.sources import RECEIPT_SOURCE_KIND
+from service.chat.service.sources import answer_sources as project_answer_sources
 from service.content.domain.model import (
     PREPARED_CONFLICT,
     PREPARED_UNAVAILABLE,
@@ -111,6 +121,7 @@ from service.platform.context import (
     SelectionAnchor,
 )
 from service.platform.inference import ModelInvocationStatus
+from service.platform.workbench import REFERENCE_INVALID, parse_document_reference
 from service.resources.domain.model import IMPORT_CONFLICT, IMPORT_UNAVAILABLE, ResourceLocationRef
 
 ASSISTANT_ROUTE_PREFIX = "/api/assistant"
@@ -345,6 +356,36 @@ def _invocation_status(record: AssistantInvocationRecord) -> int:
 
 
 def register_assistant_routes(app: FastAPI) -> None:
+    @app.get(
+        f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/artifacts/{{artifact_id}}/reference"
+    )
+    def artifact_reference(
+        request: Request, session_id: str, artifact_id: str, revision: str, href: str
+    ) -> dict:
+        _require_session(request, session_id)
+        try:
+            reference = parse_document_reference(href)
+            payload, target_revision = _resources(request).resolve_artifact_reference(
+                session_id, artifact_id, revision, reference.path
+            )
+            text = payload.decode("utf-8")
+            if "\x00" in text:
+                raise ValueError(REFERENCE_INVALID)
+            return {
+                "text": text,
+                "revision": target_revision,
+                "source_revision": revision,
+                "fragment": reference.fragment,
+            }
+        except (
+            AssistantResourceError,
+            ArtifactReadError,
+            ContentError,
+            ValueError,
+            OSError,
+        ) as error:
+            raise HTTPException(HTTP_409_CONFLICT, str(error)) from error
+
     @app.get(ARTIFACT_CITATION_ROUTE)
     def artifact_citation(
         request: Request, session_id: str, artifact_id: str, handle: str, revision: str
@@ -476,6 +517,59 @@ def register_assistant_routes(app: FastAPI) -> None:
             headers={"Cache-Control": f"private, max-age={CITATION_PREVIEW_CACHE_SECONDS}"},
         )
 
+    @app.get(f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/turns/{{turn_id}}/sources")
+    def turn_sources(session_id: str, turn_id: str, request: Request) -> dict:
+        _require_session(request, session_id)
+        answer_id = f"{TURN_ANSWER_ID_PREFIX}{turn_id}"
+        answer = request.app.state.answer_source.answer(session_id=session_id, answer_id=answer_id)
+        if answer is None:
+            return {"sources": [], "markdown": "", "answer_id": answer_id}
+        records = request.app.state.product_events.turn_records(
+            session_id,
+            turn_id,
+            turn_id,
+            kinds=(
+                PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
+                PRODUCT_EVENT_PAPER_SEARCH_COMPLETED,
+                PRODUCT_EVENT_SOURCE_CANDIDATES,
+                PRODUCT_EVENT_ANSWER_SOURCES,
+            ),
+        )
+        projection = project_answer_sources(answer.markdown, records)
+        sources = projection["sources"]
+        identities = {
+            (source["kind"], source.get("url") or source.get("handle")) for source in sources
+        }
+        for record in records:
+            if record.kind != PRODUCT_EVENT_ANSWER_SOURCES or not record.vendor_item_id:
+                continue
+            native = request.app.state.answer_source.answer(
+                session_id=session_id, answer_id=f"item:{record.vendor_item_id}"
+            )
+            if native is None or native.revision != record.payload.get("answer_revision"):
+                continue
+            for source in record.payload.get("sources", []):
+                identity = (source["kind"], source.get("url") or source.get("handle"))
+                if identity in identities:
+                    continue
+                identities.add(identity)
+                sources.append(
+                    {
+                        **{key: value for key, value in source.items() if key != "occurrences"},
+                        "number": len(sources) + 1,
+                    }
+                )
+        receipts = [source for source in sources if source["kind"] == RECEIPT_SOURCE_KIND]
+        if receipts:
+            groups = request.app.state.assistant_citations.source_group_ids(answer)
+            for source in receipts:
+                source["source_group_id"] = groups.get(source["handle"])
+        return {
+            **projection,
+            "markdown": answer.markdown,
+            "answer_id": answer_id,
+        }
+
     @app.get(f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/answers/{{answer_id}}/sources")
     def answer_sources(
         session_id: str,
@@ -507,8 +601,6 @@ def register_assistant_routes(app: FastAPI) -> None:
             raise HTTPException(HTTP_409_CONFLICT, str(exc)) from exc
         except OSError as exc:
             raise HTTPException(HTTP_404_NOT_FOUND, "source_unavailable") from exc
-
-    """把最终的 Session 上下文资源接口挂到应用上。"""
 
     @app.get(f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/context")
     def assistant_context(session_id: str, request: Request) -> dict:

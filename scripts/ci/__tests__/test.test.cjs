@@ -4,10 +4,12 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
+const ts = require('../../../apps/desktop/node_modules/typescript')
 const test = require('node:test')
 const QUARANTINE = require('../quarantine.json')
 const DESKTOP_PACKAGE = require('../../../apps/desktop/package.json')
-const { TEST_FILES, TEST_GLOBS, testFiles } = require('../../../apps/desktop/scripts/ci/test.cjs')
+const { TEST_FILES, TEST_GLOBS, NATIVE_TEST_FILES, testFiles, unitTestFiles, invocation } = require('../../../apps/desktop/scripts/ci/test.cjs')
+const { CONTRACT_FILES, STANDARDS_ARGS } = require('../../../apps/desktop/scripts/ci/pretest.cjs')
 const { npmCommand, packageManagerCommand } = require('../../pre/toolchain.cjs')
 const { judgeRun } = require('../verdict.cjs')
 const { gitSource, expandTestGlob, planStages, stageBlockReason, summarizePlaywright, summarizeRunAll,
@@ -35,6 +37,317 @@ function globFixture(context) {
   }
   return directory
 }
+
+test('complete Desktop test stages have no aggregate deadline on either native platform', () => {
+  for (const platform of ['darwin', 'win32']) {
+    const stages = planStages(platform, {}, { profile: 'offline' })
+    assert.equal(stages.find(stage => stage.id === 'desktop-unit').timeoutMs, 0)
+    assert.equal(stages.find(stage => stage.id === 'desktop-extra-node').timeoutMs, 0)
+    assert.equal(stages.find(stage => stage.id === 'desktop-pretest').timeoutMs, undefined)
+  }
+})
+
+test('stage deadlines preserve explicit zero and failure exits through both execution paths', context => {
+  for (const progress of [false, true]) {
+    const directory = globFixture(context)
+    const stage = { id: 'deadline-probe', kind: 'node', cwd: directory,
+      args: ['-e', 'process.exit(7)'], timeoutMs: 0, progress }
+    const result = runStage(stage, directory, process.platform, 'a'.repeat(40))
+    assert.equal(result.exitCode, 7)
+    assert.equal(result.timedOut, false)
+    if (progress) {
+      const spec = JSON.parse(fs.readFileSync(path.join(directory, `${stage.id}.launch.json`), 'utf8'))
+      assert.equal(spec.timeout, 0)
+    }
+    const bounded = runStage({ ...stage, id: 'bounded-probe', timeoutMs: 1,
+      args: ['-e', 'setTimeout(() => process.exit(7), 50)'] },
+    directory, process.platform, 'a'.repeat(40))
+    assert.equal(bounded.timedOut, true)
+    assert.notEqual(bounded.exitCode, 0)
+  }
+})
+
+test('scheduled stages honor the same aggregate deadline policy', async context => {
+  for (const timeoutMs of [0, 1]) {
+    const directory = globFixture(context)
+    const stage = { id: 'scheduled-deadline', kind: 'node', cwd: directory,
+      args: ['-e', 'setTimeout(() => process.exit(7), 50)'], timeoutMs }
+    const [result] = await scheduleStages({ planned: [stage], directory, platform: process.platform,
+      commit: 'a'.repeat(40), prerequisiteError: null, npmAvailable: true,
+      parallel: false, quota: planQuotas([stage], false, 1) })
+    assert.equal(result.timedOut, timeoutMs !== 0)
+    assert.notEqual(result.exitCode, 0)
+  }
+})
+
+test('migrated PDFE regressions are collected on both native platforms without live prerequisites or quarantine', () => {
+  for (const platform of ['darwin', 'win32']) {
+    for (const profile of ['offline', 'full']) {
+      const stage = planStages(platform, {}, { profile, quarantine: profile === 'offline' }).find(item => item.id === 'desktop-pdfe')
+      assert.equal(stage?.kind, 'playwright')
+      assert.equal(stage.requiresLivePrerequisites, undefined)
+      assert.equal(stage.quarantine, undefined)
+      assert.ok(stage.args.includes('preview/native.config.ts'))
+      assert.ok(stage.args.includes('--retries=0'))
+      assert.ok(stage.args.includes('--reporter=json'))
+      const selected = stage.args[stage.args.indexOf('--grep') + 1]
+      assert.match(selected, /home and project search/)
+      assert.match(selected, /project center distinguishes task loading/)
+      assert.match(selected, /project catalog loading/)
+      assert.equal(stage.dependsOn, undefined)
+      const migrated = [
+        'native draft mixed context previews, removes and sends actual references',
+        'native draft shared attachment deletion preserves unselected sources and does not open previews',
+        'native mixed context shows four layers, image viewer and source conversation',
+        'native mixed context file opens existing PDF workbench',
+        'native context references group submitted selections',
+        'native context references remove only the last draft reference at input start',
+        'native translation configuration saves prompts, validates demo credentials and installs packages',
+        'native translation PDF preserves old results until refresh and opens the exact service configuration',
+        'native translation failures retain demo input and never enable failed services or packages',
+        'native translation selection respects the toolbar gate without clearing the saved preference',
+        'native translation configuration supports dark English, keyboard navigation and the native minimum window',
+        'literature grid surfaces cover every configured column when horizontally scrolled',
+        'native authorization shows one standalone status row without a separate receipt',
+        'native authorization expansion restores the conversation bottom position',
+        'native authorization cards keep eight pixel gaps above and below',
+        'native scrollbar thumbs keep token colors and geometry in both themes',
+        'native project center consumes every declared data policy through workbench navigation',
+        'native shared example reads public project files and creates a genuinely empty project',
+        'native credits report explicit unavailability while preserving simulated login',
+        'native project center records appearance under normal host conditions',
+        'native project center follows host theme notifications without reloading either document',
+        'native project center retains global login, theme and language through navigation and reset',
+        'native composer menus coordinate stationary pointers and keyboard selection',
+        'native dialog navigation preserves original entries, drafts and bilingual themed groups',
+        'native product uses top-level shared renderer, real OS fonts and isolated secure windows',
+        'native scenario controls, F8 and help preserve the same product draft and component entry',
+        'native dock and detach preserve both renderer documents, draft and workbench search',
+        'native dialog application: project-group-rename',
+        'archives project single deletion preserves the failure reason and allows retry',
+        'archives project batch deletion preserves the failure reason and allows retry',
+        'native read-only authorization is compact without changing selectable authorization',
+        'native fulltext authorization scenes show pending authorized rejected and reopen the same mock scope',
+        'native review decision lifecycle: accept',
+        'native review decision lifecycle: reject',
+        'native review decision lifecycle: revise',
+        'native review failed submission retains its decision through explicit retry',
+        'native review conflict revises the current disk content',
+        'native document content lifecycle: viewer-code-pending',
+        'native document content lifecycle: viewer-image-retry',
+        'native document content lifecycle: viewer-office-failed',
+        'native browser guidance uses current controls and rejects external navigation: page-browser',
+        'native browser guidance uses current controls and rejects external navigation: viewer-browser',
+        'native resource entry opens its project directory and reviewed document',
+        'native literature empty catalogue distinguishes filtering from emptiness',
+        'native skills retains policy and persists edits and confirmed deletion across reentry',
+        'native controls preserve settings selection across collapse and native viewport changes',
+        'native docked resizing preserves project form and workbench search without dock transitions',
+        'native workbench navigation and help preserve product form input and return from UI assets',
+        'native close decision lifecycle: surface-close-pending',
+        'native close decision lifecycle: surface-close-failed',
+        'native simulated permission lifecycle: settings-permissions-states',
+        'native simulated permission lifecycle: settings-permissions-pending',
+        'native simulated permission lifecycle: settings-permissions-failed',
+        'native account client lifecycle: settings-account-states',
+        'native account client lifecycle: settings-account-ready',
+        'native account client lifecycle: settings-account-pending',
+        'native account client lifecycle: settings-account-failed',
+        'native account client lifecycle: settings-account-anonymous',
+        'native preferences page uses real controls and persists appearance, auto-save and language after reload',
+        'native shortcuts page filters, rejects conflicts, records a real key combination and restores its persisted default',
+        'native selection prompts page validates empty drafts, saves through the actual form and restores the persisted default',
+        'native notification settings preserve the real sound preference without invoking native notification controls',
+        'native about settings display the real preview information, persist an update preference and block external link actions',
+        'native file version settings lifecycle: settings-files-states',
+        'native file version settings lifecycle: settings-files-save-pending',
+        'native file version settings lifecycle: settings-files-save-failed',
+        'native model profiles read-only lifecycle: settings-models-states',
+        'native model profiles read-only lifecycle: settings-models-empty',
+        'native model profiles read-only lifecycle: settings-models-pending',
+        'native model profiles read-only lifecycle: settings-models-failed',
+        'native document content lifecycle: viewer-markdown-pending',
+        'native document content lifecycle: viewer-markdown-failed',
+        'native document content lifecycle: viewer-markdown-retry',
+        'native document content lifecycle: viewer-pdf-pending',
+        'native document content lifecycle: viewer-pdf-failed',
+        'native document content lifecycle: viewer-pdf-retry',
+        'native delivery cancellation and later publication preserve the same session history after reentry',
+        'native browser settings preserve rules and history across edits, confirmation and reentry',
+        'native browser settings read lifecycle: settings-browser-empty',
+        'native browser settings read lifecycle: settings-browser-pending',
+        'native browser settings read lifecycle: settings-browser-failed',
+        'native browser settings read lifecycle: settings-browser-retry',
+        'native browser policy write lifecycle: settings-browser-write-pending',
+        'native browser policy write lifecycle: settings-browser-write-failed',
+        'native developer keys preserve managed identity and one-time simulated secrets across mutation and reentry',
+        'native developer list lifecycle: settings-developer-empty',
+        'native developer list lifecycle: settings-developer-pending',
+        'native developer list lifecycle: settings-developer-failed',
+        'native developer creation lifecycle: settings-developer-save-pending',
+        'native developer creation lifecycle: settings-developer-save-failed',
+        'native storage configuration preserves virtual roots across cancellation, reload and appearance changes',
+        'native storage save lifecycle: settings-storage-save-pending',
+        'native storage save lifecycle: settings-storage-save-failed',
+        'native storage reads isolate waiting and failed sources without virtual writes',
+        'native storage read recovery preserves public reentry and narrow keyboard access',
+        'native shared queue extraction retains the original Composer keyboard submission and stop path',
+        'native approval resumes the same request and turn through public reentry',
+        'native tool lifecycle preserves live output and restored identity: done',
+        'native tool lifecycle preserves live output and restored identity: error',
+        'native tool lifecycle preserves live output and restored identity: cancelled',
+        'native project new tab keeps its identity through selection, closing and reentry: library',
+        'native project new tab keeps its identity through selection, closing and reentry: explorer',
+        'native project layout preserves mounted controls and persists panel placement across reload',
+        'native long stream cancellation persists its interrupted answer through actual product reentry',
+        'native failed conversation resumes its closed stream without duplicate turns or answers',
+        'native failure evidence captures rendered surfaces without showing hidden controls',
+        'native published outputs preserve filters, file and snapshot sources across reload and appearance',
+        'native output catalogue wait: outputs-pending',
+        'native output catalogue wait: outputs-history-pending',
+        'native output catalogue recovery: outputs-catalog-failed',
+        'native output catalogue recovery: outputs-history-failed',
+        'native output file content lifecycle: outputs-content-pending',
+        'native output file content lifecycle: outputs-content-failed',
+      ]
+      for (const title of migrated) {
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      for (const sceneId of ['browsing-paged', 'browsing-empty']) {
+        const title = 'native resource browsing preserves shared nested content and genuine emptiness: ' + sceneId
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      const browsing = [
+        ...['listing', 'explorer'].flatMap(source => ['pending', 'failed'].map(state => 'native resource read lifecycle: ' + source + '-' + state)),
+        'native resource pagination failure preserves its first page and supports dark English keyboard retry',
+        ...['complete', 'refresh', 'remount'].map(action => 'native resource pending pagination preserves generation: ' + action),
+      ]
+      for (const title of browsing) {
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      const diagnostics = 'native conversation diagnostics preserve two-turn history and reset sanitized metadata'
+      assert.ok(stage.expectedTitles.includes(diagnostics), diagnostics)
+      assert.ok(new RegExp(selected).test(diagnostics), diagnostics)
+      for (const decision of ['deny', 'cancel']) {
+        const title = 'native approval decision preserves terminal identity through reload: ' + decision
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      for (const title of [
+        'native project creation preserves failed form input and retries successfully',
+        'native project center creates from empty, edits, pins and archives across page boundaries',
+      ]) {
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      for (const source of ['library', 'detail']) {
+        for (const state of ['pending', 'failed']) {
+          const title = 'native literature read lifecycle: ' + source + '-' + state
+          assert.ok(stage.expectedTitles.includes(title), title)
+          assert.ok(new RegExp(selected).test(title), title)
+        }
+      }
+      const keyboard = 'native literature detail failure supports dark English minimum-window keyboard retry'
+      assert.ok(stage.expectedTitles.includes(keyboard), keyboard)
+      assert.ok(new RegExp(selected).test(keyboard), keyboard)
+      for (const title of [
+        'native literature catalogue preserves filters, sorted rows, saved notes and the same PDF after reload',
+        'native literature metadata lifecycle: metadata-pending',
+        'native literature metadata lifecycle: metadata-failed',
+      ]) {
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      for (const title of [
+        'native archived project read lifecycle: pending',
+        'native archived project read lifecycle: failed',
+        'native archived project recovery keeps single restore busy through its receipt and catalogue refresh',
+        'native archived project empty catalogue is genuine and read-only',
+        'native archived project dark English public settings navigation cancels deletion without mutation',
+      ]) {
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      for (const title of [
+        'native archived projects restore mixed selection through single and batch actions',
+        'native archived projects retry partial batch restoration through the retained project selection',
+        'native archived projects batch mutation: restore',
+        'native archived projects batch mutation: delete',
+      ]) {
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      const archivedHistory = 'native archived task history stays read-only through dark English tree reentry and restore'
+      assert.ok(stage.expectedTitles.includes(archivedHistory), archivedHistory)
+      assert.ok(new RegExp(selected).test(archivedHistory), archivedHistory)
+      for (const [kind, states] of [['catalogue', ['empty', 'pending', 'failed']], ['history', ['pending', 'failed', 'empty']], ['deletion', ['pending', 'failed']]]) {
+        for (const state of states) {
+          const title = 'native archived task ' + kind + ' lifecycle: ' + state
+          assert.ok(stage.expectedTitles.includes(title), title)
+          assert.ok(new RegExp(selected).test(title), title)
+        }
+      }
+      for (const viewer of ['spreadsheet', 'table', 'unsupported']) {
+        const title = 'native reviewed data viewer preserves its sample through reload and public reentry: ' + viewer
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      const documentWrite = 'native project documents preserve manual Markdown saves and rendered PDF samples after reload'
+      assert.ok(stage.expectedTitles.includes(documentWrite), documentWrite)
+      assert.ok(new RegExp(selected).test(documentWrite), documentWrite)
+      const officeRuntime = 'native legacy XLS uses its bounded Office child runtime and dedicated compilation policy'
+      assert.ok(stage.expectedTitles.includes(officeRuntime), officeRuntime)
+      assert.ok(new RegExp(selected).test(officeRuntime), officeRuntime)
+      const comparison = 'native version comparison preserves one file and both immutable Monaco revisions without writes'
+      assert.ok(stage.expectedTitles.includes(comparison), comparison)
+      assert.ok(new RegExp(selected).test(comparison), comparison)
+      const searchHistory = 'native literature search restores terminal identities and preserves selection and details without imports'
+      assert.ok(stage.expectedTitles.includes(searchHistory), searchHistory)
+      assert.ok(new RegExp(selected).test(searchHistory), searchHistory)
+      const errorRecovery = 'native embedded render failure recovers locally without changing project or session state'
+      assert.ok(stage.expectedTitles.includes(errorRecovery), errorRecovery)
+      assert.ok(new RegExp(selected).test(errorRecovery), errorRecovery)
+      for (const scene of ['feedback-normal', 'feedback-failed', 'feedback-rate-limited']) {
+        const title = 'native feedback submission preserves consent and explicit retry: ' + scene
+        assert.ok(stage.expectedTitles.includes(title), title)
+        assert.ok(new RegExp(selected).test(title), title)
+      }
+      assert.equal(stage.expectedTitles.length, 168)
+    }
+  }
+})
+
+test('the PDFE CI stage collects exactly its declared Playwright titles', () => {
+  const stage = planStages('darwin', {}, { profile: 'offline' }).find(item => item.id === 'desktop-pdfe')
+  const launch = stageLaunch(stage, stage.cwd)
+  delete launch.env.PLAYWRIGHT_JSON_OUTPUT_FILE
+  delete launch.env.PLAYWRIGHT_JSON_OUTPUT_NAME
+  const result = spawnSync(launch.command, [...launch.args, '--list'], {
+    cwd: stage.cwd, env: launch.env, encoding: 'utf8'
+  })
+  assert.ifError(result.error)
+  assert.equal(result.status, 0, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.deepEqual(report.errors, [])
+  const collectTitles = suites => suites.flatMap(suite => [
+    ...(suite.specs || []).flatMap(spec => spec.tests.map(() => spec.title)),
+    ...collectTitles(suite.suites || [])
+  ])
+  assert.deepEqual(collectTitles(report.suites).sort(), [...stage.expectedTitles].sort())
+})
+
+test('a selected Playwright stage rejects omitted, replaced and duplicated titles', () => {
+  const report = { errors: [], stats: { expected: 1, skipped: 0, unexpected: 0, flaky: 0 },
+    suites: [{ specs: [{ id: 'case', title: 'selected case', tests: [{ projectName: 'pdfe',
+      status: 'expected', expectedStatus: 'passed', results: [{ status: 'passed', errors: [] }] }] }] }] }
+  assert.equal(summarizePlaywright(report, 'darwin', 'offline', false, false, ['selected case']).length, 1)
+  for (const selected of [[], ['different case'], ['selected case', 'selected case']]) {
+    assert.throws(() => summarizePlaywright(report, 'darwin', 'offline', false, false, selected), /declared titles/)
+  }
+})
 
 test('coverage globs preserve shallow roots and explicitly declared recursive scopes', (context) => {
   const directory = globFixture(context)
@@ -78,28 +391,178 @@ test('default coverage plans retain preview and fixture contracts but exclude te
   }
 })
 
-test('every platform CI coverage plan consumes the complete Desktop-owned test manifest', () => {
-  const expected = testFiles()
+test('native probes and unit coverage partition the complete Desktop-owned test manifest', () => {
+  const aggregator = path.resolve(sourceDirectory, '../../apps/desktop/scripts/cd/__tests__/build.test.cjs')
+  const source = ts.createSourceFile(aggregator, fs.readFileSync(aggregator, 'utf8'), ts.ScriptTarget.Latest, true)
+  const declared = new Set(testFiles().map(filename => path.resolve(sourceDirectory, '../../apps/desktop', filename)))
+  for (const statement of source.statements) {
+    if (!ts.isExpressionStatement(statement)) continue
+    const expression = statement.expression
+    if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression) ||
+      expression.expression.text !== 'require' || expression.arguments.length !== 1 ||
+      !ts.isStringLiteral(expression.arguments[0])) continue
+    const dependency = expression.arguments[0].text
+    if (!dependency.startsWith('.')) continue
+    assert.equal(declared.has(path.resolve(path.dirname(aggregator), dependency)), false,
+      `direct and aggregated test registration: ${dependency}`)
+  }
+  assert.deepEqual(NATIVE_TEST_FILES, [
+    'src/main/sandbox.test.ts', 'src/preload/menu.test.ts', 'src/preload/menureact.test.ts',
+    'src/main/plugins.test.ts', 'src/main/preferences.test.ts',
+    'src/main/inspector.test.ts', 'src/main/binding.test.ts',
+    'src/main/chromiumrelay.test.ts', 'src/main/agentbrowser.test.ts',
+    'src/main/searchdom.test.ts', 'src/main/browser.test.ts',
+    'native/storage.test.cjs',
+    'scripts/cd/__tests__/updater.test.cjs',
+    'native/shipit/fingerprint.test.cjs',
+  ])
+  const expected = unitTestFiles()
+  const all = testFiles()
+  for (const filename of ['editor', 'composer']) {
+    const relative = `src/renderer/src/components/business/${filename}.render.test.ts`
+    assert.equal(expected.filter(item => item === relative).length, 1)
+  }
+  assert.equal(QUARANTINE.playwright.some(item => item.file === 'editor-workbench.spec.ts'), false)
+  assert.deepEqual([...expected, ...NATIVE_TEST_FILES].sort(), [...all].sort())
+  assert.equal(new Set([...expected, ...NATIVE_TEST_FILES]).size, all.length)
+  for (const filename of NATIVE_TEST_FILES) {
+    assert.equal(QUARANTINE.nodeCases.some(item => item.file === filename), false)
+  }
+  const localCoverage = invocation(true).args.slice(5).filter(argument => !argument.startsWith('--'))
+  assert.deepEqual(localCoverage, expected)
+  assert.deepEqual(invocation(false).args.slice(3), TEST_FILES)
   for (const platform of ['darwin', 'win32']) {
     for (const quarantine of [false, true]) {
-      const stage = planStages(platform, {}, { profile: 'offline', quarantine, quota: 3 })
-        .find(item => item.id === 'desktop-unit')
+      const stages = planStages(platform, {}, { profile: 'offline', quarantine, quota: 3 })
+      const stage = stages.find(item => item.id === 'desktop-unit')
       const files = stage.args.slice(4).filter(argument => !argument.startsWith('--'))
       assert.deepEqual(files, expected)
       assert.equal(stage.ignoreLifecycle, true)
+      const native = stages.find(item => item.id === 'desktop-extra-node')
+      assert.ok(native.args.includes('--test-concurrency=1'))
+      assert.equal(native.args.some(argument => argument.includes('c8')), false)
+      for (const filename of NATIVE_TEST_FILES) {
+        const relative = `apps/desktop/${filename}`
+        assert.equal(native.args.filter(argument => argument === relative).length, 1)
+        assert.equal(files.includes(filename), false)
+      }
     }
   }
 })
 
-test('public projection retains its original collection and adds the tooling consumer regression', () => {
+test('public engineering checks are owned by source in both platform and profile plans', () => {
   for (const platform of ['darwin', 'win32']) {
     for (const profile of ['full', 'offline']) {
-      const stage = planStages(platform, {}, { profile }).find(item => item.id === 'python-public-projection')
+      const stages = planStages(platform, {}, { profile })
+      const stage = stages.find(item => item.id === 'python-public-engineering')
       assert.equal(stage.reportKind, 'pytest')
       assert.deepEqual(stage.args.slice(-2), [
-        'scripts/cd/public/__tests__/test_sync.py',
-        'scripts/cd/public/__tests__/test_tooling.py'
+        'scripts/ci/docs/__tests__/test_check.py',
+        'scripts/ci/docs/__tests__/test_public.py'
       ])
+      const node = stages.find(item => item.id === 'desktop-extra-node')
+      for (const file of ['scripts/ci/docs/__tests__/commands.test.cjs', 'scripts/ci/docs/__tests__/structure.test.mjs',
+        'scripts/__tests__/ownership.test.cjs', 'apps/desktop/scripts/ci/__tests__/standards.test.mjs', 'scripts/pre/__tests__/symlinks.test.cjs']) {
+        assert.equal(node.args.filter(argument => argument === file).length, 1)
+      }
+      assert.equal(stages.some(item => (item.args || []).some(argument => argument.startsWith('scripts/cd/public/'))), false)
+    }
+  }
+})
+
+test('shared example and real preparation contracts run in both platform CI plans', () => {
+  for (const platform of ['darwin', 'win32']) {
+    for (const profile of ['full', 'offline']) {
+      const stages = planStages(platform, {}, { profile })
+      const stage = stages.find(item => item.id === 'desktop-extra-node')
+      for (const file of ['scripts/shared/__tests__/examples.test.cjs', 'scripts/shared/__tests__/preparation.test.cjs']) {
+        assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
+      }
+      for (const file of ['scripts/ci/docs/__tests__/structure.test.mjs',
+        'apps/desktop/eval-scenarios/frozen/frozen.test.mjs',
+        'scripts/ci/docs/__tests__/commands.test.cjs']) {
+        assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
+        const target = path.resolve(stage.cwd, file)
+        const owners = stages.filter(item => item.kind === 'node' &&
+          item.args.some(argument => path.resolve(item.cwd, argument) === target))
+        assert.deepEqual(owners.map(item => item.id), ['desktop-extra-node'])
+      }
+      for (const file of ['scripts/shared/__tests__/permissions.test.cjs', 'scripts/ci/__tests__/format.test.cjs',
+        'scripts/pre/__tests__/cleanup.test.cjs', 'scripts/pre/__tests__/commands.test.cjs',
+        'scripts/pre/__tests__/symlinks.test.cjs']) {
+        const relative = `../../${file}`
+        assert.equal(TEST_FILES.filter(argument => argument === relative).length, 1, `${platform}/${profile}: ${file}`)
+        assert.equal(invocation(true).args.filter(argument => argument === relative).length, 1)
+        assert.equal(invocation(false).args.filter(argument => argument === relative).length, 1)
+        const target = path.resolve(stage.cwd, file)
+        const owners = stages.filter(item => item.kind === 'node' &&
+          item.args.some(argument => path.resolve(item.cwd, argument) === target))
+        assert.deepEqual(owners.map(item => item.id), ['desktop-unit'])
+        assert.ok(owners[0].args[0].endsWith(path.join('c8', 'bin', 'c8.js')))
+      }
+    }
+  }
+})
+
+test('Desktop deterministic stages do not repeat direct or aggregated test modules', () => {
+  const dependencies = new Map()
+  const imports = filename => {
+    if (dependencies.has(filename)) return dependencies.get(filename)
+    const targets = []
+    const source = ts.createSourceFile(filename, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true)
+    const visit = node => {
+      const reference = ts.isImportDeclaration(node) || ts.isExportDeclaration(node)
+        ? node.moduleSpecifier
+        : ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+          node.expression.text === 'require' && node.arguments.length === 1
+          ? node.arguments[0] : undefined
+      if (reference && ts.isStringLiteral(reference) && reference.text.startsWith('.') &&
+          /\.test\.(?:ts|cjs|mjs)$/.test(reference.text)) {
+        targets.push(path.resolve(path.dirname(filename), reference.text))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    dependencies.set(filename, targets)
+    return targets
+  }
+  for (const platform of ['darwin', 'win32']) {
+    const owners = new Map()
+    const stages = planStages(platform, {}, { profile: 'offline', quarantine: false })
+      .filter(stage => ['desktop-pretest', 'desktop-unit', 'desktop-extra-node'].includes(stage.id))
+    for (const stage of stages) {
+      const roots = stage.id === 'desktop-pretest'
+        ? CONTRACT_FILES.map(filename => path.resolve(sourceDirectory, '../../apps/desktop', filename))
+        : stage.args.filter(argument => /\.test\.(?:ts|cjs|mjs)$/.test(argument))
+          .map(filename => path.resolve(stage.cwd, filename))
+      for (const token of roots) {
+        const reached = new Set()
+        const collect = filename => {
+          if (reached.has(filename)) return
+          reached.add(filename)
+          const entries = owners.get(filename) || []
+          entries.push({ stage: stage.id, root: token })
+          owners.set(filename, entries)
+          imports(filename).forEach(collect)
+        }
+        collect(path.resolve(stage.cwd, token))
+      }
+    }
+    const repeated = [...owners].filter(([, entries]) => entries.length > 1)
+      .map(([filename, entries]) => ({ filename, entries }))
+    assert.deepEqual(repeated, [], JSON.stringify({ platform, repeated }, null, 2))
+  }
+})
+
+test('Preview visual and reuse contract has one deterministic coverage owner', () => {
+  const filename = 'preview/quality.test.mjs'
+  assert.equal(TEST_FILES.filter(token => token === filename).length, 1)
+  const target = path.resolve(sourceDirectory, '../../apps/desktop', filename)
+  for (const platform of ['darwin', 'win32']) {
+    for (const quarantine of [false, true]) {
+      const owners = planStages(platform, {}, { profile: 'offline', quarantine })
+        .filter(stage => stage.kind === 'node' && stage.args.some(argument => path.resolve(stage.cwd, argument) === target))
+      assert.deepEqual(owners.map(stage => stage.id), ['desktop-unit'])
     }
   }
 })
@@ -203,11 +666,14 @@ test('pytest quarantine keeps exact collected identity and recovery evidence', (
 })
 
 test('Node quarantine stays scoped to the declared stage', () => {
-  const title = 'main startup tolerates damaged preferences but reconciliation cannot acknowledge them'
+  const policy = QUARANTINE.nodeCases.find(item => item.stage && item.stage !== 'desktop-unit')
+  assert.ok(policy)
+  const title = policy.title
   const stage = planStages('darwin', {}, { profile: 'offline', quarantine: true })
-    .find(item => item.id === 'desktop-i18n-test')
+    .find(item => item.id === policy.stage)
   assert.equal(stage.kind, 'node')
-  assert.equal(stage.cwd.endsWith('apps/desktop'), true)
+  const filename = path.resolve(sourceDirectory, '../../apps/desktop', policy.file)
+  assert.ok(stage.args.some(argument => path.resolve(stage.cwd, argument) === filename))
   assert.ok(new RegExp(nodeOmissionPattern(stage.id)).test(title))
   assert.ok(!new RegExp(nodeOmissionPattern()).test(title))
   assert.ok(stage.args.includes(`--test-skip-pattern=${nodeOmissionPattern(stage.id)}`))
@@ -270,13 +736,14 @@ test('complete CI plans never apply smoke selection', () => {
       assert.ok(stages.every(stage => stage.selection === undefined))
       assert.ok(stages.find(stage => stage.id === 'desktop-extra-node').args.includes('scripts/ci/__tests__/smoke.test.cjs'))
       assert.ok(stages.find(stage => stage.id === 'desktop-extra-node').args.includes('scripts/cd/__tests__/distribution.test.cjs'))
-      const projection = stages.filter(stage => stage.id === 'python-public-projection')
+      assert.ok(stages.every(stage => !(stage.args || []).some(argument => argument.startsWith('.agents/'))))
+      const projection = stages.filter(stage => stage.id === 'python-public-engineering')
       assert.equal(projection.length, 1)
       assert.equal(projection[0].kind, 'python')
       assert.equal(projection[0].reportKind, 'pytest')
       assert.deepEqual(projection[0].args, ['-m', 'pytest', '-q', '-o',
-        'python_files=test_*.py contract_*.py e2e_*.py', 'scripts/cd/public/__tests__/test_sync.py',
-        'scripts/cd/public/__tests__/test_tooling.py'])
+        'python_files=test_*.py contract_*.py e2e_*.py', 'scripts/ci/docs/__tests__/test_check.py',
+        'scripts/ci/docs/__tests__/test_public.py'])
       assert.equal(projection[0].quarantine, undefined)
     }
   }
@@ -295,18 +762,31 @@ test('Python quarantine reports preserve omissions without masking executed fail
   assert.equal(summarizeRunAll(failed, 'offline', true)[0].status, 'failed')
 })
 
-test('temporary quarantine preserves runtime and i18n tests and only excludes named blockers', () => {
+test('temporary quarantine preserves runtime, standards and i18n tests and only excludes named blockers', () => {
   for (const platform of ['darwin', 'win32']) {
     const stages = planStages(platform, {}, { profile: 'offline', quarantine: true })
-    assert.equal(stages.find(stage => stage.id === 'desktop-standards').skipReason,
-      'known_desktop_standards_debt')
-    assert.equal(stages.find(stage => stage.id === 'desktop-i18n-check').skipReason,
-      'known_i18n_scanner_and_copy_debt')
-    assert.ok(stages.find(stage => stage.id === 'desktop-i18n-test'))
+    const standards = stages.find(stage => stage.id === 'desktop-standards')
+    assert.equal(standards.kind, 'node')
+    assert.equal(standards.skipReason, undefined)
+    assert.equal(standards.reportKind, 'node-summary')
+    assert.deepEqual(standards.args, STANDARDS_ARGS)
+    assert.equal(QUARANTINE.stages.some(stage => stage.id === 'desktop-standards'), false)
+    assert.equal(stages.find(stage => stage.id === 'desktop-extra-node').args.includes(
+      'apps/desktop/scripts/ci/__tests__/visual.test.mjs'), false)
+    const localization = stages.find(stage => stage.id === 'desktop-i18n-check')
+    assert.equal(localization.kind, 'node')
+    assert.equal(localization.skipReason, undefined)
+    assert.deepEqual(localization.args.slice(-2), ['run', 'i18n:check'])
+    const localizationTests = stages.find(stage => stage.id === 'desktop-i18n-test')
+    assert.ok(localizationTests)
+    assert.equal(localizationTests.args.some(argument => argument.startsWith('--test-skip-pattern=')), false)
+    assert.equal(QUARANTINE.nodeCases.some(item => item.stage === 'desktop-i18n-test'), false)
     assert.equal(stages.find(stage => stage.id === 'desktop-pretest').kind, 'node')
   }
   const strict = planStages('darwin', {}, { profile: 'offline', quarantine: false })
   assert.equal(strict.find(stage => stage.id === 'desktop-pretest').kind, 'npm')
+  assert.equal(strict.find(stage => stage.id === 'desktop-extra-node').args.includes(
+    'apps/desktop/scripts/ci/__tests__/visual.test.mjs'), false)
   assert.ok(!strict.find(stage => stage.id === 'python-run-all').args.includes('--exclude-suite'))
   const relaxed = planStages('darwin', {}, { profile: 'offline', quarantine: true })
   const exclusions = QUARANTINE.suites.flatMap(item => ['--exclude-suite', item.id])
@@ -419,12 +899,14 @@ test('direct invocation writes a failed prerequisite report instead of losing th
   try {
     const resultPath = path.join(directory, 'quality.json')
     fs.writeFileSync(resultPath, JSON.stringify({ stale: true }))
-    const env = { ...process.env, SCHOLARSEED_ACTION_MODEL: '' }
+    const env = { ...process.env, SCHOLARSEED_ACTION_MODEL: '',
+      TMPDIR: directory, TEMP: directory, TMP: directory }
     delete env.npm_execpath
     const result = spawnSync(process.execPath, [path.join(sourceDirectory, 'test.cjs'), '--result', resultPath],
       { cwd: directory, env, encoding: 'utf8' })
     assert.equal(result.status, 1)
     const report = JSON.parse(fs.readFileSync(resultPath, 'utf8'))
+    assert.equal(path.dirname(report.runDirectory), fs.realpathSync(directory))
     assert.equal(report.verdict, 'fail')
     assert.equal(report.stages[0].id, 'ci-prerequisites')
     assert.equal(report.stages[0].exitCode, 1)
@@ -447,7 +929,8 @@ test('direct invocation writes a failed prerequisite report instead of losing th
         assert.match(line, /^\[ci:test\] \[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] /)
       }
       assert.ok(lines.some(line => line.endsWith('desktop-pretest exit=blocked')))
-      assert.ok(lines.some(line => line.endsWith('python-integration-serve skipped=real_model_config')))
+      assert.equal(lines.some(line => line.endsWith('python-integration-serve skipped=real_model_config')),
+        process.platform === 'darwin')
     }
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
@@ -463,7 +946,51 @@ test('native stage plan covers macOS Python and both supported Desktop platforms
   assert.equal(mac.find(stage => stage.id === 'python-run-all').env.PYTHONPATH,
     path.resolve(sourceDirectory, '../..'))
   assert.ok(mac.some(stage => stage.id === 'python-serve-independent'))
+  const serve = mac.find(stage => stage.id === 'python-serve-independent')
+  assert.equal(serve.args.includes('tests/contract_literature_fulltext.py'), false)
+  for (const filename of ['tests/contract_browser_approval_response.py', 'tests/test_run_all_report.py']) {
+    assert.equal(serve.args.filter(argument => argument === filename).length, 1)
+  }
   assert.ok(mac.some(stage => stage.id === 'python-root-independent'))
+  const root = mac.find(stage => stage.id === 'python-root-independent')
+  for (const filename of ['tests/contract_permission.py', 'tests/contract_codex_shutdown.py',
+    'tests/contract_resume_deadline.py', 'scripts/dev/__tests__/test_watch.py']) {
+    assert.equal(root.args.filter(argument => argument === filename).length, 1)
+  }
+  const websearch = mac.find(stage => stage.id === 'python-websearch-independent')
+  assert.equal(websearch.args.filter(argument => argument === 'skills/community/web-search/scripts/test_capture.py').length, 1)
+  const formal = mac.find(stage => stage.id === 'python-formal-independent')
+  assert.ok(formal)
+  assert.equal(formal.reportKind, 'pytest')
+  assert.equal(formal.args.filter(argument => argument === 'skills/community/formal-verification/tests/test_proof_client.py').length, 1)
+  const highlights = mac.filter(stage => stage.id === 'python-highlights-independent')
+  assert.equal(highlights.length, 1)
+  assert.equal(highlights[0].reportKind, 'pytest')
+  assert.equal(highlights[0].args.filter(argument => argument === 'skills/community/highlights-to-insights').length, 1)
+  assert.equal(highlights[0].dependsOn, undefined)
+  for (const directory of ['scripts', 'tests']) {
+    assert.ok(highlights[0].env.PYTHONPATH.split(path.delimiter).includes(
+      path.resolve(sourceDirectory, '../../skills/community/highlights-to-insights', directory)))
+  }
+  const trace = mac.find(stage => stage.id === 'python-trace-independent')
+  assert.equal(trace.reportKind, 'pytest')
+  assert.equal(trace.args.filter(argument => argument === 'packages/damoatrace/damoatrace/tests').length, 1)
+  assert.equal(mac.some(stage => stage.id === 'python-trace'), false)
+  const privateFiles = ['tests/contract_gateway.py', 'tests/contract_mastergo.py',
+    'tests/contract_session.py', 'tests/contract_summary.py']
+  const publicFiles = ['scripts/ci/docs/__tests__/test_check.py', 'developer-docs/plugins/test.py']
+  const pipeline = fs.readFileSync(path.resolve(sourceDirectory, '../../.gitlab-ci.yml'), 'utf8')
+  const contract = pipeline.match(/^contract-gate:\r?\n((?:[ \t].*\r?\n|#.*\r?\n|\r?\n)*)/m)
+  assert.ok(contract)
+  assert.ok(contract[1].includes(`- .venv/bin/python -m pytest -q ${publicFiles.join(' ')}`))
+  assert.ok(contract[1].includes('- PYTHONPATH=skills/community/highlights-to-insights/scripts:skills/community/highlights-to-insights/tests:$PYTHONPATH .venv/bin/python -m pytest -q skills/community/highlights-to-insights'))
+  assert.ok(contract[1].includes('- .venv/bin/python -m pytest -q -o "python_files=test_*.py contract_*.py e2e_*.py" packages/damoatrace/damoatrace/tests'))
+  for (const filename of privateFiles) {
+    assert.equal(pipeline.includes(filename), false)
+    assert.equal(fs.existsSync(path.resolve(sourceDirectory, '../..', filename)), false)
+    assert.equal(mac.some(stage => stage.args?.includes(filename)), false)
+    assert.equal(windows.some(stage => stage.args?.includes(filename)), false)
+  }
   assert.ok(mac.some(stage => stage.id === 'python-precise-independent'))
   const literature = mac.find(stage => stage.id === 'python-literature-independent')
   assert.ok(literature.args.includes('apps/serve/service/capabilities/skills/literature-review/scripts'))
@@ -471,11 +998,18 @@ test('native stage plan covers macOS Python and both supported Desktop platforms
   assert.ok(mac.find(stage => stage.id === 'python-precise-independent').env.PYTHONPATH.includes(
     'precise-literature-search'))
   assert.ok(mac.find(stage => stage.id === 'python-precise-independent').env.PYTHONPATH.includes(
-    'modules/search'))
+    path.join('modules', 'search')))
   assert.ok(mac.some(stage => stage.id === 'python-skillhub'))
   assert.equal(mac.find(stage => stage.id === 'python-skillhub').dependsOn,
     'ci-skillhub-prerequisites')
-  assert.ok(mac.some(stage => stage.id === 'desktop-bun'))
+  for (const stages of [mac, windows,
+    planStages('darwin', process.env, { profile: 'offline', quarantine: false }),
+    planStages('win32', process.env, { profile: 'offline', quarantine: false })]) {
+    assert.equal(stages.some(stage => stage.kind === 'bun'), false)
+    const unit = stages.find(stage => stage.id === 'desktop-unit')
+    assert.ok(unit.args.includes('src/renderer/src/directive.test.ts'))
+    assert.ok(unit.args.includes('src/renderer/src/drag.test.ts'))
+  }
   assert.ok(mac.some(stage => stage.id === 'desktop-extra-node'))
   assert.equal(mac.find(stage => stage.id === 'desktop-pretest').env.SCHOLARSEED_NATIVE_MATRIX, '1')
   assert.equal(windows.find(stage => stage.id === 'desktop-pretest').env?.SCHOLARSEED_NATIVE_MATRIX,
@@ -517,7 +1051,7 @@ test('CI lifecycle suppression preserves build main and propagates its failure',
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const saved = process.env.npm_execpath
   const savedUserAgent = process.env.npm_config_user_agent
-  process.env.npm_execpath = npmCommand({ ...process.env, npm_execpath: 'npm' }).path
+  process.env.npm_execpath = npmCommand({ ...process.env, PATH: process.env.PATH, npm_execpath: 'npm' }).path
   process.env.npm_config_user_agent = 'npm/'
   context.after(() => { if (savedUserAgent === undefined) delete process.env.npm_config_user_agent; else process.env.npm_config_user_agent = savedUserAgent })
   context.after(() => { if (saved === undefined) delete process.env.npm_execpath; else process.env.npm_execpath = saved })
@@ -586,6 +1120,51 @@ test('offline Playwright report records only allowlisted model skips', () => {
   assert.throws(() => summarizePlaywright(report, 'darwin', 'offline', true), /missing cases/)
   assert.equal(summarizePlaywright({ ...report, suites: [{ specs: [{ ...report.suites[0].specs[0],
     title: 'unlisted case' }] }] }, 'darwin', 'offline')[0].status, 'failed')
+})
+
+test('offline controlled HTTP passes coexist with required real-upstream skips', () => {
+  const external = require('../external-cases.json')
+  const controlledTitles = ['auth', 'rate-limit', 'quota', 'credits', 'request', 'model-config',
+    'content-policy', 'overloaded', 'unavailable', 'unknown'].map(kind =>
+    `controlled integration provider HTTP ${kind} projects the expected failure surface`)
+  const upstreamTitles = ['http-503', 'sse-cut'].flatMap(mode => ['light', 'dark'].map(theme =>
+    `recoverable provider gateway failure continues once with the real upstream and preserves the draft (${mode}, ${theme})`))
+  const remaining = external.cases.filter(entry => entry.project !== 'live' ||
+    entry.file !== 'live.spec.ts' || !controlledTitles.includes(entry.title))
+  for (const title of upstreamTitles) assert.equal(remaining.filter(entry =>
+    entry.project === 'live' && entry.file === 'live.spec.ts' && entry.title === title).length, 1)
+  const specs = remaining.map((entry, index) => ({
+    file: entry.file, title: entry.title, id: `external-${index}`,
+    tests: [{ projectName: entry.project, status: 'skipped', expectedStatus: 'passed', results: [],
+      annotations: [{ type: 'skip', description: 'requires an authorized real model configuration' }] }]
+  }))
+  specs.push(...controlledTitles.map((title, index) => ({
+    file: 'live.spec.ts', title, id: `controlled-${index}`,
+    tests: [{ projectName: 'live', status: 'expected', expectedStatus: 'passed',
+      results: [{ status: 'passed', errors: [] }], annotations: [] }]
+  })))
+  const report = { suites: [{ specs }], errors: [],
+    stats: { expected: controlledTitles.length, skipped: remaining.length, unexpected: 0, flaky: 0 } }
+  const cases = summarizePlaywright(report, 'darwin', 'offline', true)
+  assert.equal(cases.filter(entry => entry.status === 'passed').length, controlledTitles.length)
+  assert.equal(cases.filter(entry => entry.status === 'skipped').length, remaining.length)
+  assert.ok(cases.every(entry => entry.retries === 0))
+  for (const title of upstreamTitles) {
+    const missing = structuredClone(report)
+    missing.suites[0].specs = missing.suites[0].specs.filter(entry => entry.title !== title)
+    missing.stats.skipped -= 1
+    assert.throws(() => summarizePlaywright(missing, 'darwin', 'offline', true), /missing cases/)
+  }
+  for (const title of controlledTitles) {
+    const skipped = structuredClone(report)
+    const spec = skipped.suites[0].specs.find(entry => entry.title === title)
+    spec.tests[0] = { projectName: 'live', status: 'skipped', expectedStatus: 'passed', results: [],
+      annotations: [{ type: 'skip', description: 'requires an authorized real model configuration' }] }
+    skipped.stats.expected -= 1
+    skipped.stats.skipped += 1
+    const result = summarizePlaywright(skipped, 'darwin', 'offline', true)
+    assert.equal(result.find(entry => entry.id === `live:${spec.id}`).status, 'failed')
+  }
 })
 
 test('overlapping external and quarantine cases retain exact skip evidence', () => {
@@ -764,6 +1343,113 @@ test('pytest collection errors remain visible when no case was collected', () =>
   assert.deepEqual(summarizePytest(report, 'python-collection', 2), [
     { id: 'python-collection:collection:tests/test_environment.py', status: 'failed', retries: 0 }
   ])
+})
+
+test('pytest stages isolate inherited state before collection and clean ordinary exits', context => {
+  const directory = globFixture(context)
+  const personal = path.join(directory, 'personal')
+  fs.mkdirSync(personal)
+  fs.writeFileSync(path.join(personal, 'sentinel'), 'preserved')
+  const roots = ['SCHOLARSEED_HOME', 'DAMOATRACE_HOME', 'DAMOATRACE_LEDGER_ROOT',
+    'SCHOLARSEED_CODEX_HOME', 'CODEX_HOME', 'TMPDIR', 'TEMP', 'TMP']
+  fs.writeFileSync(path.join(directory, 'test_sample.py'), [
+    'import json, os, sys',
+    'from pathlib import Path',
+    `roots = {name: os.environ.get(name) for name in ${JSON.stringify(roots)}}`,
+    'home = Path(roots["SCHOLARSEED_HOME"])',
+    'home.joinpath("owned").write_text("task state")',
+    'Path(os.environ["PROBE_RESULT"]).write_text(json.dumps(roots))',
+    'def test_sample():',
+    '    assert sys.dont_write_bytecode',
+    '    assert os.environ["PROBE_FAIL"] == "0"',
+  ].join('\n'))
+  const homes = []
+  for (const progress of [false, true]) {
+    for (const failed of [false, true]) {
+      const id = `pytest-state-${progress}-${failed}`
+      const capture = path.join(directory, `${id}-state.json`)
+      const stage = { id, kind: 'python', cwd: directory, progress,
+        args: ['-m', 'pytest', '-q', 'test_sample.py'], reportKind: 'pytest',
+        env: { ...Object.fromEntries(roots.map(name => [name, personal])),
+          PYTHONDONTWRITEBYTECODE: '0', PROBE_RESULT: capture, PROBE_FAIL: failed ? '1' : '0' } }
+      const result = runStage(stage, directory, process.platform, 'a'.repeat(40))
+      assert.equal(result.exitCode, failed ? 1 : 0)
+      const observed = JSON.parse(fs.readFileSync(capture, 'utf8'))
+      const home = observed.SCHOLARSEED_HOME
+      assert.notEqual(home, personal)
+      assert.equal(path.dirname(home), fs.realpathSync(directory))
+      for (const value of Object.values(observed))
+        assert.ok(value === home || value.startsWith(home + path.sep))
+      assert.equal(fs.existsSync(home), false)
+      assert.equal(fs.existsSync(path.join(directory, '__pycache__')), false)
+      assert.equal(result.state.status, 'cleaned')
+      assert.equal(result.state.home, home)
+      homes.push(home)
+      assert.deepEqual(fs.readdirSync(personal), ['sentinel'])
+      assert.equal(fs.readFileSync(path.join(personal, 'sentinel'), 'utf8'), 'preserved')
+    }
+  }
+  assert.equal(new Set(homes).size, homes.length)
+})
+
+test('parallel pytest stages own different state and preserve scheduled spawn failures', async context => {
+  const directory = globFixture(context)
+  fs.writeFileSync(path.join(directory, 'test_sample.py'), [
+    'import os', 'from pathlib import Path',
+    'home = Path(os.environ["SCHOLARSEED_HOME"])',
+    'home.joinpath("owned").write_text("task state")',
+    'def test_sample():', '    assert home.joinpath("owned").read_text() == "task state"',
+  ].join('\n'))
+  const planned = ['pytest-first', 'pytest-second'].map(id => ({ id, kind: 'python',
+    cwd: directory, args: ['-m', 'pytest', '-q', 'test_sample.py'], reportKind: 'pytest' }))
+  const results = await scheduleStages({ planned, directory, platform: process.platform,
+    commit: 'a'.repeat(40), prerequisiteError: null, npmAvailable: true,
+    parallel: true, quota: new Map(planned.map(stage => [stage.id, 1])) })
+  assert.equal(results.length, 2)
+  assert.notEqual(results[0].state.home, results[1].state.home)
+  for (const result of results) {
+    assert.equal(result.exitCode, 0)
+    assert.equal(result.state.status, 'cleaned')
+    assert.equal(fs.existsSync(result.state.home), false)
+  }
+  const missing = { ...planned[0], id: 'pytest-missing', cwd: path.join(directory, 'missing') }
+  const failures = await scheduleStages({ planned: [missing], directory, platform: process.platform,
+    commit: 'a'.repeat(40), prerequisiteError: null, npmAvailable: true,
+    parallel: false, quota: new Map([[missing.id, 1]]) })
+  assert.equal(failures.length, 1)
+  assert.notEqual(failures[0].exitCode, 0)
+  assert.equal(failures[0].state.status, 'retained')
+  assert.equal(fs.existsSync(failures[0].state.home), true)
+})
+
+test('pytest timeout retains owned state and cleanup faults cannot report a passing stage', context => {
+  const directory = globFixture(context)
+  fs.writeFileSync(path.join(directory, 'test_sample.py'),
+    'import time\n\ndef test_sample():\n    time.sleep(30)\n')
+  const stage = { id: 'pytest-timeout', kind: 'python', cwd: directory, timeoutMs: 1000,
+    args: ['-m', 'pytest', '-q', 'test_sample.py'], reportKind: 'pytest' }
+  const timed = runStage(stage, directory, process.platform, 'a'.repeat(40))
+  assert.notEqual(timed.exitCode, 0)
+  assert.equal(timed.timedOut, true)
+  assert.equal(timed.state.status, 'retained')
+  assert.equal(fs.existsSync(timed.state.home), true)
+  fs.writeFileSync(path.join(directory, 'test_sample.py'), 'def test_sample():\n    assert True\n')
+  const remove = fs.rmSync
+  fs.rmSync = (filename, options) => {
+    if (path.basename(filename).startsWith('pytest-home-')) throw new Error('injected state cleanup failure')
+    return remove(filename, options)
+  }
+  let failed
+  try {
+    failed = runStage({ ...stage, id: 'pytest-cleanup', timeoutMs: 0 }, directory,
+      process.platform, 'a'.repeat(40))
+  } finally {
+    fs.rmSync = remove
+  }
+  assert.notEqual(failed.exitCode, 0)
+  assert.equal(failed.state.status, 'failed')
+  assert.match(failed.state.error, /injected state cleanup failure/)
+  assert.equal(failed.cases[0].status, 'passed')
 })
 
 test('pytest stage reports an unexpected skip despite process exit zero', () => {
@@ -1104,21 +1790,32 @@ test('stage quota planning keeps serial default at full cpus and shares budget w
   assert.equal(parallel.get('c'), 2)
 })
 
-test('planStages honors explicit per-stage quota over env defaults', () => {
+test('planStages honors CPU quotas without overriding Desktop host serialization', () => {
   const stages = planStages('darwin', {}, { profile: 'full', quarantine: false, quota: 3 })
   const runAll = stages.find(stage => stage.id === 'python-run-all')
   assert.equal(runAll.args[runAll.args.indexOf('--jobs') + 1], '3')
   const unit = stages.find(stage => stage.id === 'desktop-unit')
-  assert.ok(unit.args.includes('--test-concurrency=3'), 'explicit budget overrides default 4')
+  assert.ok(unit.args.includes('--test-concurrency=1'), 'Desktop host resource policy is not a CPU quota')
   assert.deepEqual(unit.args.filter(argument => argument.startsWith('--test-concurrency=')),
-    ['--test-concurrency=3'])
+    ['--test-concurrency=1'])
   const testFiles = unit.args.filter(argument => /\.test\.(?:ts|cjs|mjs)$/.test(argument))
   assert.equal(testFiles.length, new Set(testFiles).size)
   assert.ok(!unit.args.includes('--test-force-exit'), 'forced exit can discard completed worker results')
   assert.ok(!unit.args.some(arg => arg.includes('*')), 'quoted globs are expanded to real files for spawn')
   assert.ok(stages.find(stage => stage.id === 'desktop-extra-node').args.includes('--test-concurrency=1'))
   const wide = planStages('darwin', {}, { profile: 'full', quota: 8 })
-  assert.ok(wide.find(stage => stage.id === 'desktop-unit').args.includes('--test-concurrency=8'))
+  assert.ok(wide.find(stage => stage.id === 'desktop-unit').args.includes('--test-concurrency=1'))
+  const original = process.env.CI_STAGE_QUOTA
+  try {
+    process.env.CI_STAGE_QUOTA = '8'
+    for (const platform of ['darwin', 'win32']) {
+      const planned = planStages(platform, {}, { profile: 'full', quarantine: false })
+      assert.ok(planned.find(stage => stage.id === 'desktop-unit').args.includes('--test-concurrency=1'))
+    }
+  } finally {
+    if (original === undefined) delete process.env.CI_STAGE_QUOTA
+    else process.env.CI_STAGE_QUOTA = original
+  }
 })
 
 test('scheduler preserves dependency order and blocks dependents after failure', async () => {

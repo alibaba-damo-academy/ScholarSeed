@@ -26,6 +26,7 @@ import os
 import platform
 import uuid
 import zipfile
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -37,6 +38,8 @@ import httpx
 from damoatrace.data.store import TraceStore
 from damoatrace.paths import APP_LOG_DIR, METRICS_DIR, TRACE_DIR
 from scholarseed_runtime.contract.session import RuntimeExecutionThread
+from service.capabilities.service.manifest import LOCK_FILENAME
+from service.capabilities.service.source import validate_source_lock
 from service.chat.runtime.evidence import (
     TRACE_RUNTIME_BOUND,
     TRACE_RUNTIME_INCIDENT_PREFIX,
@@ -53,6 +56,7 @@ from service.paths import (
     STARTUP_LOG_DIR,
     SYSTEM_LOG,
 )
+from service.platform.storage import open_parent
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +87,9 @@ BUNDLE_MEDIA_TYPE = "application/zip"
 RECORDING_REPORT_ARCNAME = "feedback/recording-report.json"
 RENDERER_DIAGNOSTICS_ARCNAME = "feedback/renderer-diagnostics.json"
 SESSION_ERROR_SUMMARY_ARCNAME = "feedback/session-error-summary.json"
+BUNDLED_SKILL_LOCK_ENV = "SCHOLARSEED_BUNDLED_SKILL_LOCK"
+BUNDLED_SKILL_LOCK_ARCNAME = f"backend/{LOCK_FILENAME}"
+BUNDLED_SKILL_LOCK_LIMIT = 2 * 1024 * 1024
 SESSION_ERROR_SUMMARY_VERSION = 1
 SESSION_ERROR_SUMMARY_EVENTS = 64
 SESSION_ERROR_SUMMARY_MAX_BYTES = 16 * 1024
@@ -506,6 +513,26 @@ def _collect_files(root: Path) -> list[Path]:
     return sorted(kept, key=_mtime, reverse=True)
 
 
+def _bundled_skill_lock() -> bytes:
+    """Read only the running desktop build's bounded, declared skill lock."""
+    configured = os.environ.get(BUNDLED_SKILL_LOCK_ENV)
+    if not configured:
+        return b""
+    path = Path(configured)
+    if not path.is_absolute() or path.name != LOCK_FILENAME:
+        return b""
+    try:
+        parent, name = open_parent(path)
+        with closing(parent), os.fdopen(parent.open_regular(name), "rb") as stream:
+            payload = stream.read(BUNDLED_SKILL_LOCK_LIMIT + 1)
+        if len(payload) > BUNDLED_SKILL_LOCK_LIMIT:
+            return b""
+        validate_source_lock(json.loads(payload))
+        return payload
+    except (OSError, ValueError, TypeError, RecursionError):
+        return b""
+
+
 def build_log_bundle(
     *,
     include_trace: bool,
@@ -734,6 +761,10 @@ def _build_log_bundle_contents(
                 return _finish(archive, buffer)
         conversation_exhausted = False
         if include_trace:
+            if session_id and (lock := _bundled_skill_lock()):
+                _append_bytes_bounded(
+                    archive, lock, BUNDLED_SKILL_LOCK_ARCNAME, buffer, budget // 4
+                )
             for path in session_trace_paths(session_id, TRACE_DIR):
                 arcname = f"{CONVERSATION_LABEL}/{path.name}"
                 if not _append_bounded(

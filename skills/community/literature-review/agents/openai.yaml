@@ -1,7 +1,7 @@
 interface:
   display_name: "文献综述撰写"
-  short_description: "Build and verify a complete research survey"
-  default_prompt: "Use $literature-review to produce a systematic literature review for my research topic."
+  short_description: "Literature reviews: Quick Markdown or Standard full-text analysis"
+  default_prompt: "Use $literature-review for the document or section I need. Recommend Quick for abstracts-only Markdown, or Standard for full text, figures and other formats."
 
 policy:
   allow_implicit_invocation: true

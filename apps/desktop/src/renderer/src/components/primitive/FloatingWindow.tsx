@@ -1,6 +1,6 @@
 import React, { useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, Maximize2, Minimize2 } from 'lucide-react'
 import { IconButton } from '../ui'
 import { Icon } from '../../icons'
 
@@ -20,9 +20,13 @@ export function FloatingWindow({
   children,
   footer,
   initialSize,
+  initialPosition,
+  collapsible = false,
   initialHorizontalCenterRef,
   ghostIconHeader = false,
   plainFooter = false,
+  headerSeparator = true,
+  bodyClassName = 'min-h-0 flex-1 overflow-auto',
   pinned = false,
   onPinnedChange,
 }: {
@@ -31,9 +35,13 @@ export function FloatingWindow({
   children: ReactNode
   footer?: ReactNode
   initialSize?: { width: number; height: number }
+  initialPosition?: { left: number; top: number }
+  collapsible?: boolean
   initialHorizontalCenterRef?: React.RefObject<HTMLElement | null>
   ghostIconHeader?: boolean
   plainFooter?: boolean
+  headerSeparator?: boolean
+  bodyClassName?: string
   pinned?: boolean
   onPinnedChange?: (pinned: boolean) => void
 }): React.JSX.Element {
@@ -43,16 +51,21 @@ export function FloatingWindow({
     const width = Math.min(initialSize?.width ?? DEFAULT_WIDTH, innerWidth - WINDOW_MARGIN * 2)
     const height = Math.min(initialSize?.height ?? DEFAULT_HEIGHT, innerHeight - WINDOW_MARGIN * 2)
     const anchor = initialHorizontalCenterRef?.current?.getBoundingClientRect()
-    const initialLeft = anchor ? anchor.left + (anchor.width - width) / 2 : INITIAL_LEFT
+    const initialLeft =
+      initialPosition?.left ?? (anchor ? anchor.left + (anchor.width - width) / 2 : INITIAL_LEFT)
     return {
       left: Math.max(WINDOW_MARGIN, Math.min(initialLeft, innerWidth - width - WINDOW_MARGIN)),
-      top: Math.min(INITIAL_TOP, innerHeight - height - WINDOW_MARGIN),
+      top: Math.max(
+        WINDOW_MARGIN,
+        Math.min(initialPosition?.top ?? INITIAL_TOP, innerHeight - height - WINDOW_MARGIN)
+      ),
       width,
       height,
     }
   })
   const [maximized, setMaximized] = useState(false)
-  const drag = useRef<{ x: number; y: number; box: typeof box; resize: boolean }>()
+  const [collapsed, setCollapsed] = useState(false)
+  const drag = useRef<{ x: number; y: number; box: typeof box; resize: boolean } | undefined>(undefined)
   const begin = (event: React.PointerEvent, resize: boolean): void => {
     if ((event.target as HTMLElement).closest('button')) return
     drag.current = { x: event.clientX, y: event.clientY, box, resize }
@@ -93,6 +106,7 @@ export function FloatingWindow({
     if (event.target !== event.currentTarget) return
     if (!event.key.startsWith('Arrow')) return
     event.preventDefault()
+    event.stopPropagation()
     const horizontal =
       event.key === 'ArrowRight' ? KEYBOARD_MOVE : event.key === 'ArrowLeft' ? -KEYBOARD_MOVE : 0
     const vertical =
@@ -114,16 +128,17 @@ export function FloatingWindow({
       role="dialog"
       aria-modal="false"
       aria-label={title}
-      style={
-        maximized
+      style={{
+        ...(maximized
           ? {
               left: WINDOW_MARGIN,
               top: WINDOW_MARGIN,
               width: innerWidth - WINDOW_MARGIN * 2,
               height: innerHeight - WINDOW_MARGIN * 2,
             }
-          : box
-      }
+          : box),
+        ...(collapsed ? { height: 'auto' } : {}),
+      }}
       className="fixed z-[var(--vds-z-floating-panel)] flex flex-col overflow-hidden rounded-2xl border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] shadow-xl"
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
@@ -135,7 +150,7 @@ export function FloatingWindow({
       <header
         aria-label={t('floatingWindow.move', { title })}
         tabIndex={0}
-        className="flex cursor-move items-center justify-between border-b border-[var(--vds-border-default)] px-5 py-3 font-semibold"
+        className={`flex shrink-0 cursor-move items-center justify-between pt-[var(--vds-space-3)] font-semibold${headerSeparator ? ' border-b border-[var(--vds-border-default)] px-5 pb-[var(--vds-space-3)]' : ` px-[var(--vds-space-3)] [&_.vds-icon-button>span]:!text-[var(--vds-icon-outline-default)]${collapsed ? ' pb-[var(--vds-space-3)]' : ''}`}`}
         onKeyDown={moveByKeyboard}
         onPointerDown={(event) => begin(event, false)}
         onPointerMove={move}
@@ -145,9 +160,21 @@ export function FloatingWindow({
         onPointerCancel={() => {
           drag.current = undefined
         }}
+        onLostPointerCapture={() => {
+          drag.current = undefined
+        }}
       >
         <span>{title}</span>
         <span className="flex items-center gap-[var(--vds-space-1)]">
+          {collapsible && (
+            <IconButton
+              label={t(collapsed ? 'floatingWindow.expand' : 'floatingWindow.collapse')}
+              aria-expanded={!collapsed}
+              icon={collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+              variant={headerIconVariant}
+              onClick={() => setCollapsed((value) => !value)}
+            />
+          )}
           {onPinnedChange ? (
             <IconButton
               aria-pressed={pinned}
@@ -172,8 +199,10 @@ export function FloatingWindow({
           />
         </span>
       </header>
-      <div className="min-h-0 flex-1 overflow-auto">{children}</div>
-      {footer && (
+      <div hidden={collapsed} className={bodyClassName}>
+        {children}
+      </div>
+      {footer && !collapsed && (
         <footer
           className={`flex flex-wrap justify-end gap-2 border-t border-[var(--vds-border-default)] px-4 py-3${plainFooter ? '' : ' bg-[var(--vds-surface-muted)]'}`}
         >
@@ -181,6 +210,7 @@ export function FloatingWindow({
         </footer>
       )}
       <div
+        hidden={collapsed}
         role="separator"
         aria-label={t('floatingWindow.resize')}
         tabIndex={0}
@@ -190,9 +220,16 @@ export function FloatingWindow({
         onPointerUp={() => {
           drag.current = undefined
         }}
+        onPointerCancel={() => {
+          drag.current = undefined
+        }}
+        onLostPointerCapture={() => {
+          drag.current = undefined
+        }}
         onKeyDown={(event) => {
           if (event.key.startsWith('Arrow')) {
             event.preventDefault()
+            event.stopPropagation()
             setBox((value) => ({
               ...value,
               width: Math.max(

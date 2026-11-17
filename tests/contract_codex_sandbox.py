@@ -36,6 +36,7 @@ from scholarseed_codex.sandbox import (
     SANDBOX_EXECUTION_TIMEOUT_MS,
     SANDBOX_MODE,
     SANDBOX_PERMISSION_METHOD,
+    SANDBOX_PROBE_ERROR,
     SANDBOX_READINESS_METHOD,
     SANDBOX_READONLY_ARGUMENT,
     SANDBOX_RESOURCE_ERROR,
@@ -91,6 +92,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_stops_after_sandbox_failure_and_keeps_its_cause(self) -> None:
         for safe_error, retryability in (
             (SANDBOX_CANCELLED_ERROR, RuntimeRetryability.USER_RETRYABLE),
+            ("windows_sandbox_password_policy_rejected", RuntimeRetryability.USER_RETRYABLE),
             (SANDBOX_UNKNOWN_ERROR, RuntimeRetryability.UNKNOWN_OUTCOME),
         ):
             with self.subTest(safe_error=safe_error):
@@ -451,6 +453,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
     async def test_recovery_cleanup_failure_projects_sandbox_cause_to_all_threads(self) -> None:
         for safe_error, retryability in (
             (SANDBOX_CANCELLED_ERROR, RuntimeRetryability.USER_RETRYABLE),
+            ("windows_sandbox_password_policy_rejected", RuntimeRetryability.USER_RETRYABLE),
             (SANDBOX_UNKNOWN_ERROR, RuntimeRetryability.UNKNOWN_OUTCOME),
         ):
             with self.subTest(safe_error=safe_error):
@@ -636,6 +639,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         state = SimpleNamespace(attachment_incident=None, thread_id="blocked")
         for safe_error, retryability in (
             (SANDBOX_CANCELLED_ERROR, RuntimeRetryability.USER_RETRYABLE),
+            ("windows_sandbox_password_policy_rejected", RuntimeRetryability.USER_RETRYABLE),
             (SANDBOX_UNKNOWN_ERROR, RuntimeRetryability.UNKNOWN_OUTCOME),
         ):
             failure = AppServerError(
@@ -810,7 +814,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         home = Path.cwd()
 
         async def prepare(actual_home, version, executable):
-            self.assertEqual((actual_home, version), (home, "0.163.0"))
+            self.assertEqual((actual_home, version), (home, "0.165.0"))
             self.assertEqual(executable, home / "codex.exe")
             calls.append("private")
 
@@ -821,7 +825,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         recovery = Mock(prepare=AsyncMock(side_effect=prepare))
         bootstrap = WindowsSandboxBootstrap(
             (SANDBOX_ARGUMENT,),
-            version="codex-cli 0.163.0",
+            version="codex-cli 0.165.0",
             recovery=recovery,
             home=home,
             executable=home / "codex.exe",
@@ -835,6 +839,110 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIs(provider._pool._sandbox_recovery, recovery)
         changed = ProviderConfiguration("codex", sandbox_recovery=Mock(prepare=AsyncMock()))
         self.assertEqual(provider.configure(changed).state, CommandState.REJECTED)
+
+    async def test_thread_preflight_reestablishes_private_maintenance(self) -> None:
+        events = []
+        recovery = Mock(prepare=AsyncMock(side_effect=lambda *args: events.append("private")))
+        bootstrap = WindowsSandboxBootstrap(
+            (SANDBOX_ARGUMENT,),
+            version="0.165.0",
+            recovery=recovery,
+            home=Path("native-home"),
+            executable=Path("codex.exe"),
+        )
+
+        async def request(method, params):
+            events.append(method)
+            self.assertFalse(params["sandboxPolicy"]["networkAccess"])
+            self.assertEqual(params["command"][-3:], ["/c", "exit", "0"])
+            return {"exitCode": 0}
+
+        with (
+            patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+            patch("scholarseed_codex.sandbox._system_directory", return_value=Path("system")),
+        ):
+            for _ in range(2):
+                await bootstrap.ensure_thread_execution_ready(
+                    request, Path.cwd(), {"type": "readOnly"}
+                )
+            self.assertEqual(events, ["private", SANDBOX_EXECUTION_METHOD] * 2)
+            recovery.prepare.side_effect = PermissionError("refused")
+            blocked = AsyncMock()
+            with self.assertRaises(AppServerError):
+                await bootstrap.ensure_thread_execution_ready(
+                    blocked, Path.cwd(), {"type": "readOnly"}
+                )
+            blocked.assert_not_awaited()
+
+    async def test_tool_probes_recheck_private_maintenance_after_native_refresh(self):
+        maintenance_ready = False
+        native_calls = []
+
+        async def prepare(*args):
+            nonlocal maintenance_ready
+            maintenance_ready = True
+
+        @asynccontextmanager
+        async def verification(cwd, *, writable):
+            yield (
+                SandboxProbe("python", ("python.exe",)),
+                SandboxProbe("libraries", ("python.exe",)),
+            )
+
+        async def request(method, params):
+            nonlocal maintenance_ready
+            if not maintenance_ready:
+                raise AppServerError("native credential maintenance unavailable")
+            native_calls.append(params["command"])
+            if len(native_calls) == 2:
+                maintenance_ready = False
+            return {"exitCode": 0}
+
+        resources = SimpleNamespace(verification=verification, validate_probe=AsyncMock())
+        bootstrap = WindowsSandboxBootstrap(
+            (SANDBOX_ARGUMENT,),
+            version="0.165.0",
+            recovery=SimpleNamespace(prepare=prepare),
+            home=Path("native-home"),
+            executable=Path("codex.exe"),
+            resources=resources,
+        )
+        with (
+            patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+            patch("scholarseed_codex.sandbox._system_directory", return_value=Path("system")),
+            self.assertLogs(LOGGER, level="INFO") as diagnostics,
+        ):
+            await bootstrap.ensure_thread_execution_ready(
+                request, Path.cwd(), {"type": "workspaceWrite"}
+            )
+        self.assertEqual(len(native_calls), 3)
+        self.assertEqual(resources.validate_probe.await_count, 2)
+        for kind, entry in (("python", 0), ("libraries", 1)):
+            self.assertRegex(
+                "\n".join(diagnostics.output),
+                rf"windows_sandbox_probe_maintenance event=finished kind={kind} "
+                rf"entry={entry} generation=\d+ elapsed_ms=\d+ recovery_available=True",
+            )
+
+        bootstrap._recovery.prepare = AsyncMock(side_effect=[None, PermissionError("private path")])
+        blocked_request = AsyncMock(return_value={"exitCode": 0})
+        with (
+            patch("scholarseed_codex.sandbox.sys.platform", "win32"),
+            patch("scholarseed_codex.sandbox._system_directory", return_value=Path("system")),
+            self.assertLogs(LOGGER, level="WARNING") as diagnostics,
+        ):
+            with self.assertRaises(AppServerError) as raised:
+                await bootstrap.ensure_thread_execution_ready(
+                    blocked_request, Path.cwd(), {"type": "workspaceWrite"}
+                )
+        self.assertEqual(raised.exception.safe_error, SANDBOX_SETUP_ERROR)
+        blocked_request.assert_awaited_once()
+        diagnostic = "\n".join(diagnostics.output)
+        self.assertIn(
+            "windows_sandbox_probe_maintenance event=failed kind=python entry=0", diagnostic
+        )
+        self.assertIn(f"safe_error={SANDBOX_SETUP_ERROR}", diagnostic)
+        self.assertNotIn("private path", diagnostic)
 
     async def test_private_recovery_failure_blocks_native_execution(self) -> None:
         for version in ("0.163.0", "0.165.0", "codex-cli 0.165.0"):
@@ -933,12 +1041,39 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         events = [json.loads(line.split(" ", 1)[1]) for line in text.splitlines()]
         completed = next(event for event in events if event["event"] == "completion")
         self.assertEqual(completed["native_code"], "orchestrator_helper_incomplete")
+        self.assertEqual(completed["native_stage"], "setup_completion_check")
+        self.assertIsNone(completed["native_system_code"])
         self.assertEqual(completed["pid"], 4321)
         self.assertEqual(completed["generation"], GENERATION)
         self.assertEqual(len(completed["error_sha256"]), 64)
         self.assertEqual(len({event["setup_attempt_id"] for event in events}), 1)
         self.assertEqual(events[-1]["event"], "failed")
         self.assertEqual(events[-1]["stage"], "completion")
+
+    async def test_setup_completion_preserves_reviewed_system_code(self) -> None:
+        bootstrap = self.bootstrap()
+        native_error = (
+            "orchestrator_helper_launch_failed: ShellExecuteExW failed to launch setup helper: 5"
+        )
+
+        async def request(method, params):
+            if method == SANDBOX_SETUP_METHOD:
+                bootstrap.completed(
+                    {"mode": SANDBOX_MODE, "success": False, "error": native_error},
+                    GENERATION,
+                )
+                return {"started": True}
+            return {"status": "updateRequired"}
+
+        with self.assertLogs(LOGGER, level="INFO") as logs:
+            with self.assertRaises(AppServerError):
+                await bootstrap.ensure_ready(request, Path.cwd(), GENERATION, pid=4321)
+        events = [json.loads(record.getMessage().split(" ", 1)[1]) for record in logs.records]
+        completed = next(event for event in events if event["event"] == "completion")
+        self.assertEqual(completed["native_stage"], "setup")
+        self.assertEqual(completed["native_code_type"], "win32")
+        self.assertEqual(completed["native_system_code"], 5)
+        self.assertNotIn(native_error, "".join(logs.output))
 
     async def test_failure_stages_and_cleanup_are_correlated(self) -> None:
         for responses, stage in (
@@ -1325,6 +1460,35 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
                 await bootstrap.ensure_ready(request, Path.cwd(), GENERATION)
             self.assertNotIn("sensitive native detail", str(raised.exception))
 
+    async def test_password_policy_completion_stops_until_explicit_new_generation(self) -> None:
+        bootstrap = self.bootstrap()
+
+        async def request(method, params):
+            if method == SANDBOX_SETUP_METHOD:
+                bootstrap.completed(
+                    {
+                        "mode": SANDBOX_MODE,
+                        "success": False,
+                        "error": "helper_user_create_or_update_failed: failed to create/update user CodexSandboxOffline, code 2224/2245",
+                    },
+                    GENERATION,
+                )
+                return {"started": True}
+            return {"status": "updateRequired"}
+
+        with self.assertRaises(AppServerError) as raised:
+            await bootstrap.ensure_ready(request, Path.cwd(), GENERATION)
+        self.assertEqual(raised.exception.safe_error, "windows_sandbox_password_policy_rejected")
+        self.assertIs(raised.exception.retryability, RuntimeRetryability.USER_RETRYABLE)
+        replay = AsyncMock()
+        with self.assertRaises(AppServerError) as cached:
+            await bootstrap.ensure_ready(replay, Path.cwd(), GENERATION)
+        self.assertEqual(cached.exception.safe_error, raised.exception.safe_error)
+        replay.assert_not_awaited()
+        reopened = AsyncMock(return_value={"status": "ready"})
+        await bootstrap.ensure_ready(reopened, Path.cwd(), GENERATION + 1)
+        reopened.assert_awaited_once_with(SANDBOX_READINESS_METHOD, None)
+
     async def test_disconnect_unblocks_setup(self) -> None:
         bootstrap = self.bootstrap()
 
@@ -1573,6 +1737,36 @@ class StartupCoordinationContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["sandboxPolicy"], {"type": "readOnly", "networkAccess": False})
         resources.prepare.assert_not_called()
         resources.verification.assert_not_called()
+
+    async def test_only_definitive_fresh_preflight_failure_proves_no_thread_open(self):
+        for resumed, retryability, expected in (
+            (False, RuntimeRetryability.USER_RETRYABLE, True),
+            (True, RuntimeRetryability.USER_RETRYABLE, False),
+            (False, RuntimeRetryability.UNKNOWN_OUTCOME, False),
+            (False, RuntimeRetryability.IN_PROGRESS, False),
+        ):
+            with self.subTest(resumed=resumed, retryability=retryability):
+                host = CodexProcessHost()
+                host.start = AsyncMock()
+                host.ensure_skill_roots = AsyncMock()
+                failure = AppServerError(
+                    "sandbox preflight failed",
+                    safe_error="windows_sandbox_password_policy_rejected",
+                    retryability=retryability,
+                )
+                host._prepare_thread_resources = AsyncMock(side_effect=failure)
+                host._request_connected = AsyncMock()
+                request = CodexSessionOpenRequest(
+                    request_id="preflight",
+                    runtime_id="test",
+                    cwd=Path.cwd(),
+                    resume_session_id="existing" if resumed else "",
+                )
+                with self.assertRaises(AppServerError) as raised:
+                    await host.open_thread(request, None)
+                self.assertIs(raised.exception, failure)
+                self.assertEqual(getattr(failure, "thread_open_not_applied", False), expected)
+                host._request_connected.assert_not_awaited()
 
     async def test_thread_preflight_keeps_each_workspace_and_permission(self):
         observations = []
@@ -1856,7 +2050,7 @@ class StartupCoordinationContracts(unittest.IsolatedAsyncioTestCase):
         failure = raised.exception
         nativeFailure = failure.__cause__
         self.assertIsInstance(nativeFailure, AppServerError)
-        self.assertEqual(failure.safe_error, SANDBOX_RESOURCE_ERROR)
+        self.assertEqual(failure.safe_error, SANDBOX_PROBE_ERROR)
         self.assertIs(failure.retryability, RuntimeRetryability.USER_RETRYABLE)
         self.assertEqual(failure.method, SANDBOX_EXECUTION_METHOD)
         self.assertEqual(failure.generation, 7)
@@ -1921,7 +2115,7 @@ class StartupCoordinationContracts(unittest.IsolatedAsyncioTestCase):
                 await bootstrap.ensure_thread_execution_ready(
                     request, Path.cwd(), {"type": "workspaceWrite", "networkAccess": True}
                 )
-        self.assertEqual(raised.exception.safe_error, SANDBOX_RESOURCE_ERROR)
+        self.assertEqual(raised.exception.safe_error, SANDBOX_PROBE_ERROR)
         self.assertIsNone(raised.exception.rpc_request_id)
         self.assertIsNone(raised.exception.rpc_pid)
         self.assertIsNone(raised.exception.rpc_code)
@@ -2229,6 +2423,188 @@ class StartupCoordinationContracts(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeDiagnosticContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_rpc_log_preserves_scoped_native_metadata_without_vendor_text(self):
+        cases = (
+            ("CreateProcessWithLogonW failed: 5", "runner_logon", "win32", 5),
+            (
+                "runner failed during ReadSpawnRequest: runner: unsupported protocol version 6",
+                "runner_read_spawn_request",
+                None,
+                None,
+            ),
+            (
+                "helper_sandbox_lock_failed: private-path token=secret",
+                "setup",
+                None,
+                None,
+            ),
+            (
+                "helper_read_acl_helper_spawn_failed: private-path token=secret",
+                "setup_read_acl_helper",
+                None,
+                None,
+            ),
+            (
+                "CreateDesktopW failed for shared private desktop: 5",
+                "runner_desktop_create",
+                "win32",
+                5,
+            ),
+            ("SetSecurityInfo failed for private desktop: 5", "runner_desktop_acl", "win32", 5),
+            (
+                "CreateDesktopW failed for shared private desktop: private-path token=secret",
+                "runner_desktop_create",
+                None,
+                None,
+            ),
+            (
+                "SetSecurityInfo failed for private desktop: 5 (os error 5)",
+                "runner_desktop_acl",
+                None,
+                None,
+            ),
+            ("connect pipe-out: Access is denied. (os error 5)", "runner_pipe_connect", "win32", 5),
+            (
+                "runner failed during SpawnChild: private-path token=secret",
+                "runner_spawn_child",
+                None,
+                None,
+            ),
+            ("private-path token=secret", None, None, None),
+        )
+        for detail, stage, codeType, nativeCode in cases:
+            with self.subTest(stage=stage):
+                requests = PendingRequests()
+                requestId, pending = requests.begin(7, "command/exec")
+                with (
+                    patch("scholarseed_codex.rpc.sys.platform", "win32"),
+                    self.assertLogs("scholarseed_codex.rpc", level="WARNING") as captured,
+                ):
+                    requests.resolve(
+                        {
+                            "id": requestId,
+                            "error": {
+                                "code": -32603,
+                                "message": "exec failed: windows sandbox: " + detail,
+                            },
+                        },
+                        7,
+                        pid=12588,
+                    )
+                with self.assertRaises(AppServerError) as raised:
+                    await pending.future
+                self.assertEqual(raised.exception.native_stage, stage)
+                self.assertEqual(raised.exception.native_code_type, codeType)
+                self.assertEqual(raised.exception.native_code, nativeCode)
+                output = "\n".join(captured.output)
+                for field in (
+                    "method=command/exec",
+                    f"request_id={requestId}",
+                    "generation=7",
+                    "pid=12588",
+                    f"native_stage={stage}",
+                    f"native_code_type={codeType}",
+                    f"native_code={nativeCode}",
+                ):
+                    self.assertIn(field, output)
+                self.assertNotIn("private-path", output)
+                self.assertNotIn("secret", output)
+
+    def test_runner_transport_context_preserves_stage_without_free_text(self):
+        prefix = "exec failed: windows sandbox: "
+        cases = (
+            ("connect pipe-in", "runner_pipe_connect"),
+            ("connect pipe-out", "runner_pipe_connect"),
+            ("connect pipe-out: private-path token=secret", "runner_pipe_connect"),
+            ("wait for runner spawn_ready: private-path token=secret", "runner_spawn_ready"),
+            ("runner pipe closed before exit", "runner_capture"),
+        )
+        for detail, stage in cases:
+            with self.subTest(detail=detail):
+                result = native_diagnostic("rpc", prefix + detail, windows_command_failure=True)
+                self.assertEqual(result.native_stage, stage)
+                self.assertIsNone(result.code_type)
+                self.assertIsNone(result.code)
+                self.assertNotIn("private-path", result.summary)
+                self.assertNotIn("secret", result.summary)
+
+    def test_runner_transport_context_rejects_unreviewed_shapes(self):
+        prefix = "exec failed: windows sandbox: "
+        for detail in (
+            "connect pipe-other",
+            "connect pipe-outside",
+            "connect pipe-out forged",
+            "connect pipe-out: ",
+            "connect pipe-out: forged\nlog",
+            "wait for runner spawn_ready forged",
+            "prefix connect pipe-out",
+            "runner pipe closed before exit: forged",
+            "connect pipe-out: " + "x" * DIAGNOSTIC_SCAN_LIMIT,
+        ):
+            with self.subTest(detail=detail[:80]):
+                result = native_diagnostic("rpc", prefix + detail, windows_command_failure=True)
+                self.assertIsNone(result.native_stage)
+                self.assertIsNone(result.code)
+
+    async def test_account_password_policy_failure_is_scoped_and_preserved(self):
+        detail = "helper_user_create_or_update_failed: failed to create/update user CodexSandboxOnline, code 2224/2245"
+        raw = "exec failed: windows sandbox: " + detail
+        for platform, method, rpc_code, message, expected in (
+            ("win32", "command/exec", -32603, raw, "windows_sandbox_password_policy_rejected"),
+            ("darwin", "command/exec", -32603, raw, SANDBOX_SETUP_ERROR),
+            ("win32", "thread/read", -32603, raw, SANDBOX_SETUP_ERROR),
+            ("win32", "command/exec", -32602, raw, SANDBOX_SETUP_ERROR),
+            (
+                "win32",
+                "command/exec",
+                -32603,
+                raw.replace("2224/2245", "2245/5"),
+                SANDBOX_SETUP_ERROR,
+            ),
+            ("win32", "command/exec", -32603, raw + " secret", SANDBOX_SETUP_ERROR),
+            (
+                "win32",
+                "command/exec",
+                -32603,
+                raw.replace("2224/2245", "4294967296/2245"),
+                SANDBOX_SETUP_ERROR,
+            ),
+        ):
+            with self.subTest(platform=platform, method=method, rpc_code=rpc_code, message=message):
+                requests = PendingRequests()
+                request_id, pending = requests.begin(GENERATION, method)
+                with patch("scholarseed_codex.rpc.sys.platform", platform):
+                    requests.resolve(
+                        {"id": request_id, "error": {"code": rpc_code, "message": message}},
+                        GENERATION,
+                    )
+                request = AsyncMock(side_effect=pending.future.exception())
+                bootstrap = WindowsSandboxBootstrap((SANDBOX_ARGUMENT,))
+                with self.assertLogs(LOGGER, level="WARNING") as logs:
+                    with self.assertRaises(AppServerError) as raised:
+                        await bootstrap._check_execution(
+                            request,
+                            Path.cwd(),
+                            str(Path.cwd()),
+                            {"type": "readOnly"},
+                            probe="bootstrap",
+                        )
+                self.assertIn(
+                    "windows_sandbox_execution_check event=failed probe=bootstrap",
+                    "".join(logs.output),
+                )
+                failure = raised.exception
+                self.assertEqual(failure.safe_error, expected)
+                self.assertIs(failure.retryability, RuntimeRetryability.USER_RETRYABLE)
+                self.assertNotIn("CodexSandboxOnline", str(failure))
+                self.assertNotIn("secret", str(failure))
+                request.assert_awaited_once()
+                if expected != SANDBOX_SETUP_ERROR:
+                    self.assertEqual(failure.native_code, 2245)
+                    self.assertEqual(failure.native_stage, "setup_account_update")
+        stderr = native_diagnostic("stderr", raw, windows_command_failure=True)
+        self.assertIsNone(stderr.code)
+
     def test_native_rpc_metadata_projects_only_reported_stage_and_code(self):
         prefix = "exec failed: windows sandbox: "
         cases = (

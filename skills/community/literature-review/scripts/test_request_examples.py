@@ -1,5 +1,6 @@
 """Validate agent-authored JSON examples through their actual input interfaces."""
 import copy
+from importlib.metadata import version as distribution_version
 import json
 from pathlib import Path
 import re
@@ -10,11 +11,17 @@ from unittest.mock import patch
 
 import test_native_pipeline as fixtures
 from evidence import build,read
-from task_contract import configure,atomic_json
+from task_contract import configure,atomic_json,read_request,validate_request,publication_view
+from input_contracts import describe_init
 from operator_cli import configure_outline,figure_plan
 from chapter_pipeline import chapter_messages
 from manuscript_delta import REFINE_GUIDANCE
 from chapter_plan import ROLES
+from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE, EVIDENCE_GUIDANCE
+from abstract_contract import ABSTRACT_GUIDANCE
+from service.capabilities.service.descriptor import inspect_plugin, HOST_INCOMPATIBLE, PLUGIN_DESCRIPTOR
+from service.capabilities.service.install import parse_skill_frontmatter
+from service.capabilities.service.plugins import PLUGIN_CAPABILITIES
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -32,18 +39,88 @@ def description(operation,workspace=None):
 
 
 class RequestExampleTest(unittest.TestCase):
-    def test_literature_count_guidance_reaches_all_chapters_and_refinement(self):
-        prompts = [('refinement', REFINE_GUIDANCE)]
+    def test_source_plugin_and_skill_versions_pass_the_runtime_identity_contract(self):
+        expected=(ROOT/'VERSION').read_text().strip()
+        front,_=parse_skill_frontmatter((ROOT/'SKILL.md').read_text())
+        descriptor=json.loads((ROOT/PLUGIN_DESCRIPTOR).read_text())
+        self.assertEqual(front['version'],expected)
+        self.assertEqual(front['metadata']['version'],expected)
+        self.assertEqual(descriptor['version'],expected)
+        names={PLUGIN_DESCRIPTOR,'SKILL.md'}
+        for component in descriptor['components']:
+            names.update(component[key] for key in ('entry','preview') if component.get(key))
+        files={name:(ROOT/name).read_bytes() for name in names}
+        def inspect(payload):
+            return inspect_plugin(payload,skill_name=ROOT.name,skill_version=expected,
+                                  host_version=distribution_version('scholarseed'),
+                                  available_capabilities=PLUGIN_CAPABILITIES)
+        report=inspect(files)
+        errors={item['code'] for item in report['issues'] if item['severity']=='error'}
+        self.assertEqual(errors-{HOST_INCOMPATIBLE},set(),report['issues'])
+        descriptor['version']='0.0.0'
+        stale={**files,PLUGIN_DESCRIPTOR:json.dumps(descriptor).encode()}
+        self.assertIn('identity_mismatch',{item['code'] for item in inspect(stale)['issues']})
+
+    def test_init_publication_defaults_and_examples_match_runtime(self):
+        for mode in ('quick', 'standard'):
+            described = describe_init(mode)
+            for language in ('CHINESE', 'ENGLISH'):
+                with self.subTest(mode=mode, language=language):
+                    expected = {'format': 'markdown' if mode == 'quick' else 'latex_pdf',
+                                'citation_style': 'numeric',
+                                'template': None if mode == 'quick' else
+                                'standard_chinese' if language == 'CHINESE' else 'neurips'}
+                    request = validate_request({'intent': 'Write a review.', 'language': language,
+                                                'execution': {'mode': mode}})
+                    self.assertEqual(publication_view(request), expected)
+                    self.assertEqual(described['defaults']['publication'][language], expected)
+                    example = next(value for value in described['examples']
+                                   if value['language'] == language)
+                    self.assertEqual(publication_view(validate_request(example)), expected)
+
+    def test_explicit_publication_settings_override_defaults(self):
+        for mode in ('quick', 'standard'):
+            for language in ('CHINESE', 'ENGLISH'):
+                with self.subTest(mode=mode, language=language):
+                    request = validate_request({'intent': 'Write a review.', 'language': language,
+                                                'execution': {'mode': mode},
+                                                'publication': {'format': 'markdown',
+                                                                'citation_style': 'gbt7714_2025'}})
+                    self.assertEqual(publication_view(request),
+                                     {'format': 'markdown', 'template': None,
+                                      'citation_style': 'gbt7714_2025'})
+
+    def test_source_permission_contract_preserves_all_policies(self):
+        contract = description('writing.configure')['fields']['sources']
+        self.assertEqual(set(contract['policy']),
+                         {'provided_only', 'supplement', 'discover'})
+        for policy in contract['policy']:
+            with self.subTest(policy=policy):
+                fixture = self.fixture()
+                sources = {'policy': policy, 'refs': ['literature:one']}
+                self.assertEqual(configure(fixture.ws, {'sources': sources})['status'], 'SUCCESS')
+                self.assertEqual(read_request(fixture.ws)['sources'], sources)
+
+    def test_writing_guidance_stays_in_chapters_not_refinement(self):
+        prompts = []
         for role in sorted(ROLES):
             for output_format in ('latex_pdf', 'markdown'):
                 for shared_tables in ([], [{'table_id': 'T1'}]):
                     packet = {'chapter_kind': role, 'output_format': output_format,
                               'shared_tables': shared_tables}
                     prompts.append(((role, output_format, bool(shared_tables)),
-                                    chapter_messages(packet)[0]['content']))
-        for stage, prompt in prompts:
+                                    chapter_messages(packet)[0]['content'],
+                                    ABSTRACT_GUIDANCE if role == 'abstract' else MANUSCRIPT_WRITING_GUIDANCE))
+        self.assertTrue(TASK_GUIDANCE.strip())
+        for stage, prompt, expected in prompts:
             with self.subTest(stage=stage):
-                self.assertIn('Do not mention how many papers this review or any of its sections uses.', prompt)
+                self.assertTrue(expected.strip())
+                self.assertIn(TASK_GUIDANCE, prompt)
+                self.assertIn(expected, prompt)
+        self.assertTrue(REFINE_GUIDANCE.strip())
+        self.assertNotIn(TASK_GUIDANCE, REFINE_GUIDANCE)
+        self.assertNotIn(MANUSCRIPT_WRITING_GUIDANCE, REFINE_GUIDANCE)
+        self.assertNotIn(EVIDENCE_GUIDANCE, REFINE_GUIDANCE)
 
     def fixture(self):
         f=fixtures.NativeTest();f.setUp();self.addCleanup(f.doCleanups)
@@ -101,18 +178,9 @@ class RequestExampleTest(unittest.TestCase):
 
     def test_configure_description_leads_with_valid_publication_and_verbatim_shapes(self):
         interface=description('writing.configure')
-        self.assertEqual(interface['publication_example']['template'],'ctexart')
+        self.assertEqual(interface['publication_example']['template'],'standard_chinese')
         self.assertEqual(interface['fields']['publication']['template']['type'],'string')
         self.assertIn('more than 60%',interface['fields']['constraints']['verbatim'])
-
-    def test_abstract_prompts_require_one_compact_paragraph_and_nonexpanding_refine(self):
-        from writing_prompt_guidance import MANUSCRIPT_WRITING_GUIDANCE
-        from manuscript_delta import REFINE_GUIDANCE
-        self.assertIn('one compact prose paragraph',MANUSCRIPT_WRITING_GUIDANCE)
-        self.assertIn('rather than a chapter-by-chapter roadmap',MANUSCRIPT_WRITING_GUIDANCE)
-        self.assertIn('Keep the abstract as one compact paragraph',REFINE_GUIDANCE)
-        self.assertIn('improve it without increasing',REFINE_GUIDANCE)
-        self.assertIn('its length',REFINE_GUIDANCE)
 
     def test_complete_outline_example_is_accepted(self):
         value=description('outline.configure')['examples'][0]

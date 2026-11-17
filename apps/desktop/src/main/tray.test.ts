@@ -13,6 +13,42 @@ import type { WindowController } from './tray'
 
 const traySource = readFileSync(new URL('./tray.ts', import.meta.url), 'utf8')
 
+test('Windows native menu can quit a hidden window without waiting for a renderer reply', () => {
+  const { close, state } = fixture({ askOnClose: false })
+  close()
+  state.trayHandlers.get('mouse-enter')!()
+  assert.deepEqual(state.snapshotRequests, [1])
+  assert.equal(state.visible, false)
+  assert.ok(state.nativeMenu)
+  assert.equal(state.trayHandlers.has('right-click'), false)
+  state.nativeMenu.find((item) => item.label === 'tray.quit')!.click!()
+  assert.equal(state.marked, 1)
+  assert.equal(state.quit, 1)
+  assert.equal(state.popupMenus, 0)
+  assert.deepEqual(state.revealed, [])
+})
+
+test('Windows applies a snapshot after the native menu closes without another mouse-enter', async () => {
+  const { controller, window, state } = fixture()
+  controller.ensureTray(window)
+  const initialMenu = state.nativeMenu
+  assert.ok(initialMenu)
+  state.trayHandlers.get('click')!()
+  state.menuHandlers.get('menu-will-show')!()
+  const snapshot = { project: { id: 'project', name: 'Example' }, sessions: [] }
+  assert.ok(controller.respondTray(window, { requestId: 1, snapshot }))
+  assert.equal(state.nativeMenu, initialMenu)
+  state.menuHandlers.get('menu-will-close')!()
+  // Electron can dispatch the selected command after the close notification.
+  initialMenu.find((item) => item.label === 'tray.show')!.click!()
+  assert.deepEqual(state.revealed, ['tray menu'])
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(state.snapshotRequests, [1])
+  assert.notEqual(state.nativeMenu, initialMenu)
+  assert.ok(state.nativeMenu?.some((item) => item.label === 'tray.newSession'))
+  assert.equal(state.popupMenus, 0)
+})
+
 function fixture(
   options: {
     platform?: NodeJS.Platform
@@ -52,6 +88,7 @@ function fixture(
     saved: [] as unknown[],
     logs: [] as string[],
     popupMenus: 0,
+    nativeMenu: null as Array<{ label: string; click?: () => void }> | null,
     trayMenu: [] as Array<{
       label: string
       toolTip?: string
@@ -80,7 +117,7 @@ function fixture(
       state.updatedImages += 1
     }
     setContextMenu(menu: typeof state.trayMenu): void {
-      state.trayMenu = menu
+      state.nativeMenu = menu
     }
     popUpContextMenu(): void {
       state.popupMenus += 1
@@ -186,6 +223,7 @@ function fixture(
       },
       setTimeout,
       clearTimeout,
+      setImmediate,
     }
   )
   const create = exports.createWindowController as (options: unknown) => WindowController
@@ -219,10 +257,13 @@ function fixture(
   })
   const window = {
     id: 1,
+    on: (event: string, handler: () => void) => state.windowHandlers.set(event, handler),
+    removeListener: (event: string) => state.windowHandlers.delete(event),
     once: (event: string, handler: () => void) => state.windowHandlers.set(event, handler),
     hide: () => {
       state.hidden += 1
       state.visible = false
+      state.windowHandlers.get('hide')?.()
     },
     isDestroyed: () => state.destroyed,
     isVisible: () => {
@@ -485,11 +526,10 @@ test('右键展开空项目菜单，只有选择显示窗口才恢复', () => {
   const { close, respond, state, controller, window } = fixture()
   close()
   respond('minimize')
-  state.trayHandlers.get('right-click')!()
   controller.respondTray(window, { requestId: 1, snapshot: { project: null, sessions: [] } })
   assert.equal(state.visible, false)
   assert.equal(state.trayHandlers.has('double-click'), false)
-  state.trayMenu.find((item) => item.label === 'tray.show')!.click!()
+  state.nativeMenu!.find((item) => item.label === 'tray.show')!.click!()
   assert.deepEqual(state.revealed, ['tray menu'])
   assert.equal(state.quit, 0)
 })
@@ -498,13 +538,12 @@ test('鼠标进入和原生菜单生命周期均可观测', () => {
   const { close, state, controller, window } = fixture()
   close()
   state.trayHandlers.get('mouse-enter')!()
-  state.trayHandlers.get('right-click')!()
   controller.respondTray(window, { requestId: 1, snapshot: { project: null, sessions: [] } })
   state.menuHandlers.get('menu-will-show')!()
   state.menuHandlers.get('menu-will-close')!()
   assert.ok(state.logs.includes('[tray] mouse entered\n'))
-  assert.ok(state.logs.some((line) => line.includes('[tray] right click window=1')))
-  assert.equal(state.popupMenus, 1)
+  assert.ok(state.nativeMenu)
+  assert.equal(state.popupMenus, 0)
   assert.ok(state.logs.includes('[tray] context menu opening\n'))
   assert.ok(state.logs.includes('[tray] context menu closing\n'))
 })

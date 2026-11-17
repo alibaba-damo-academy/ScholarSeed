@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 import unittest
@@ -20,6 +21,80 @@ from service.platform.recovery import (
 
 
 class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_metadata_details_reach_backend_log_without_changing_safe_error(self):
+        stream = asyncio.StreamReader()
+        receipt = {"event": "failed", "stage": "metadata", "reason": "policy_rejected"}
+        stream.feed_data(json.dumps(receipt).encode())
+        stream.feed_eof()
+        diagnostic = asyncio.StreamReader()
+        diagnostic.feed_data(
+            json.dumps({**receipt, "object": "sandbox_bin", "rule": "unknown_principal"}).encode()
+        )
+        diagnostic.feed_eof()
+        process = SimpleNamespace(
+            stdout=stream, stderr=diagnostic, wait=AsyncMock(return_value=4102)
+        )
+        with (
+            patch(
+                "service.platform.recovery.asyncio.create_subprocess_exec",
+                AsyncMock(return_value=process),
+            ),
+            self.assertLogs("service.platform.recovery", level="WARNING") as logs,
+        ):
+            with self.assertRaises(PermissionError) as raised:
+                await self.recovery().prepare(
+                    Path("/authorized"), "0.165.0", Path("/native/codex.exe")
+                )
+        message = " ".join(logs.output)
+        self.assertIn("object=sandbox_bin", message)
+        self.assertIn("rule=unknown_principal", message)
+        self.assertEqual(raised.exception.safe_error, "windows_sandbox_policy_rejected")
+
+    async def test_metadata_stderr_is_bounded_allowlisted_and_cannot_change_receipt(self):
+        receipt = {"event": "failed", "stage": "metadata", "reason": "policy_rejected"}
+        detail = {**receipt, "object": "daily_log", "rule": "daily_log_limit", "count": 91}
+        for supplied, expected in (
+            (json.dumps(detail).encode(), "count=91"),
+            (json.dumps({**detail, "object": "C:/private-token"}).encode(), None),
+            (json.dumps({**detail, "rule": "private-token"}).encode(), None),
+            (json.dumps({**detail, "path": "private-token"}).encode(), None),
+            (json.dumps({**detail, "count": True}).encode(), None),
+            (json.dumps({**detail, "count": -1}).encode(), None),
+            (json.dumps({**detail, "reason": "cancelled"}).encode(), None),
+            (json.dumps(detail).encode() * 2, None),
+            (b"private-token" * NATIVE_OUTPUT_LIMIT, None),
+            (b"[" * 1100 + b"]" * 1100, None),
+            (b"private-token", None),
+        ):
+            with self.subTest(expected=expected):
+                stream, diagnostic = asyncio.StreamReader(), asyncio.StreamReader()
+                stream.feed_data(json.dumps(receipt).encode())
+                stream.feed_eof()
+                diagnostic.feed_data(supplied)
+                diagnostic.feed_eof()
+                process = SimpleNamespace(
+                    stdout=stream, stderr=diagnostic, wait=AsyncMock(return_value=4102)
+                )
+                with (
+                    patch(
+                        "service.platform.recovery.asyncio.create_subprocess_exec",
+                        AsyncMock(return_value=process),
+                    ),
+                    self.assertLogs("service.platform.recovery", level="WARNING") as logs,
+                ):
+                    with self.assertRaises(PermissionError) as raised:
+                        await self.recovery().prepare(
+                            Path("/authorized"), "0.165.0", Path("/native/codex.exe")
+                        )
+                message = " ".join(logs.output)
+                self.assertEqual(raised.exception.safe_error, "windows_sandbox_policy_rejected")
+                self.assertNotIn("private-token", message)
+                if expected:
+                    self.assertIn(expected, message)
+                else:
+                    self.assertNotIn(" object=", message)
+                process.wait.assert_awaited_once()
+
     def recovery(self):
         return SandboxRecovery(Path("/installed/helper.exe"), frozenset({Path("/authorized")}))
 
@@ -76,7 +151,7 @@ class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
         stream.feed_data(b'{"event":')
         stream.feed_data(b'"repaired"}')
         stream.feed_eof()
-        process = SimpleNamespace(stdout=stream, wait=AsyncMock(return_value=0))
+        process = SimpleNamespace(stdout=stream, stderr=None, wait=AsyncMock(return_value=0))
         create = AsyncMock(return_value=process)
         with patch("service.platform.recovery.asyncio.create_subprocess_exec", create):
             await self.recovery().prepare(Path("/authorized"), "0.163.0", Path("/native/codex.exe"))
@@ -115,7 +190,9 @@ class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
                 stream = asyncio.StreamReader()
                 stream.feed_data(output)
                 stream.feed_eof()
-                process = SimpleNamespace(stdout=stream, wait=AsyncMock(return_value=code))
+                process = SimpleNamespace(
+                    stdout=stream, stderr=None, wait=AsyncMock(return_value=code)
+                )
                 with patch(
                     "service.platform.recovery.asyncio.create_subprocess_exec",
                     AsyncMock(return_value=process),
@@ -150,6 +227,8 @@ class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
         for stage, reason, system_error in (
             ("identity", "policy_rejected", 0),
             ("ancestor_profile", "policy_rejected", 0),
+            ("metadata", "policy_rejected", 0),
+            ("metadata", "access_denied", 5),
             ("elevation", "cancelled", 0),
             ("elevation", "access_denied", 5),
             ("worker_privilege", "privilege_missing", 1314),
@@ -163,7 +242,9 @@ class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
                     ).encode()
                 )
                 stream.feed_eof()
-                process = SimpleNamespace(stdout=stream, wait=AsyncMock(return_value=1))
+                process = SimpleNamespace(
+                    stdout=stream, stderr=None, wait=AsyncMock(return_value=1)
+                )
                 with (
                     patch(
                         "service.platform.recovery.asyncio.create_subprocess_exec",
@@ -200,7 +281,7 @@ class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
             stream = asyncio.StreamReader()
             stream.feed_data(output)
             stream.feed_eof()
-            process = SimpleNamespace(stdout=stream, wait=AsyncMock(return_value=1))
+            process = SimpleNamespace(stdout=stream, stderr=None, wait=AsyncMock(return_value=1))
             with (
                 patch(
                     "service.platform.recovery.asyncio.create_subprocess_exec",
@@ -239,7 +320,7 @@ class RecoveryContracts(unittest.IsolatedAsyncioTestCase):
         stream = asyncio.StreamReader()
         stream.feed_data(b'{"event":"unsupported"}')
         stream.feed_eof()
-        process = SimpleNamespace(stdout=stream, wait=AsyncMock(return_value=0))
+        process = SimpleNamespace(stdout=stream, stderr=None, wait=AsyncMock(return_value=0))
         with patch(
             "service.platform.recovery.asyncio.create_subprocess_exec",
             AsyncMock(return_value=process),

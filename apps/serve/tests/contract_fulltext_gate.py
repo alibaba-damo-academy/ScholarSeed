@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 from service.assistant.service.authorization import (
     AUTHORIZATION_REQUIRED,
+    LIBRARY_FULLTEXT,
     LITERATURE_REVIEW_FULLTEXT,
     PRECISE_SEARCH_FULLTEXT,
     RESEARCH_IDEA_FULLTEXT,
@@ -25,6 +26,7 @@ from service.assistant.service.authorization import (
     AuthorizationState,
     FulltextAuthorization,
     FulltextAuthorizer,
+    authorization_policy,
     authorize_sources,
     derive_granted_scope,
 )
@@ -33,14 +35,17 @@ from service.chat.constants import (
     PRODUCT_TURN_OUTCOME_UNKNOWN,
 )
 from service.chat.persistence.catalog import (
+    QUEUE_PURPOSE_AUTHORIZATION,
     HilStatus,
     SessionCatalogStore,
     SessionPrincipal,
     SessionStatus,
 )
 from service.chat.runtime.interaction import SessionInteractions
+from service.chat.service.sessions import SessionService
 from service.chat.service.tasks import ProductTaskLease, verified_authorization_context
 from service.literature.api.gate import (
+    CONTINUATION_AUTHORIZED,
     CONTINUATION_PLAN,
     CONTINUATION_REJECTED,
     FulltextGate,
@@ -81,6 +86,7 @@ def age(path: Path) -> None:
 class RecordingTurns:
     def __init__(self) -> None:
         self.posts: list[dict[str, Any]] = []
+        self.rejections = 0
 
     async def post(
         self,
@@ -91,12 +97,42 @@ class RecordingTurns:
         expected_submission_id: str = "",
         expected_interrupt_generation: int | None = None,
         continuation_activity: ActivityLease | None = None,
+        purpose: str = "turn",
+        display_text: str | None = None,
     ) -> tuple[dict[str, Any], int]:
-        self.posts.append({"session_id": session_id, "body": body, "side": side})
+        self.posts.append(
+            {
+                "session_id": session_id,
+                "body": body,
+                "side": side,
+                "purpose": purpose,
+                "display_text": display_text,
+            }
+        )
+        if self.rejections:
+            self.rejections -= 1
+            return {"ok": False, "error": "assistant_context_revision_conflict"}, 409
         return {"ok": True}, 202
 
 
 class FulltextGateContract(unittest.TestCase):
+    def test_library_consent_exposes_the_exact_source_selection(self) -> None:
+        self.assertTrue(authorization_policy(LIBRARY_FULLTEXT).subset_selection)
+
+    def test_research_gate_rejects_a_taskless_library_policy(self) -> None:
+        gate = FulltextGate(self.authorizer, RecordingTurns(), activities=self.activities)
+        with self.assertRaisesRegex(ValueError, AUTHORIZATION_REQUIRED):
+            asyncio.run(
+                gate.authorize_sources(
+                    SimpleNamespace(id=SESSION_ID),
+                    turn_id="native-turn-1",
+                    snapshot_id="snapshot-1",
+                    authorization_type=LIBRARY_FULLTEXT,
+                    refs=("literature:one",),
+                    source_count=1,
+                )
+            )
+
     def test_idea_authorization_uses_turn_component_without_task_lease(self) -> None:
         live = self.live(ProductTaskType.RESEARCH_IDEA.value)
         reference = {
@@ -127,7 +163,519 @@ class FulltextGateContract(unittest.TestCase):
         )
         self.assertEqual(question["component"], reference)
         self.assertEqual(question["component_data"], {"papers": [papers[0]], "scope_count": 1})
-        self.assertNotIn("papers", question)
+        self.assertEqual(question["papers"], [{**papers[0], "description": ""}])
+
+    def test_reauthorize_reopens_the_same_candidates_then_continues_without_retrieval(self) -> None:
+        async def scenario() -> None:
+            self.precise_selection()
+            live = self.live(ProductTaskType.PRECISE_SEARCH.value, running=False)
+            live.activation_lock = asyncio.Lock()
+            original = self.authorizer.prepare(
+                session_id=SESSION_ID,
+                snapshot_id="snapshot-1",
+                turn_id="native-turn-1",
+                authorization_type=PRECISE_SEARCH_FULLTEXT,
+                refs=("paper:p1",),
+            )
+            self.catalog.update_status(SESSION_ID, SessionStatus.READY, turn_id="native-turn-1")
+            self.catalog.record_hil(
+                product_request_id=original.question_id,
+                session_id=SESSION_ID,
+                vendor_request_id=original.question_id,
+                vendor_turn_id=original.turn_id,
+                vendor_item_id=None,
+                method="product_user_input",
+                payload={"questions": [{"id": original.question_id}]},
+            )
+            self.catalog.resolve_hil(
+                original.question_id, {"answers": {original.question_id: REJECT}}
+            )
+            turns = RecordingTurns()
+            turns.rejections = 1
+            gate = FulltextGate(self.authorizer, turns, activities=self.activities, poll_seconds=0)
+            live.active_assistant_revision = None
+            retried = await gate.retry(live, original.question_id, context_revision=7)
+            self.assertEqual(
+                await gate.retry(live, original.question_id, context_revision=7), retried
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            renewed = self.catalog.hil(retried["request_id"])
+            self.assertEqual(renewed.status, HilStatus.PENDING)
+            self.assertFalse(turns.posts)
+            await live.interactions.resolve(
+                None,
+                renewed.product_request_id,
+                {"answers": {renewed.product_request_id: AUTHORIZE}},
+            )
+            await asyncio.gather(*tuple(gate._bridge_tasks))
+            self.assertEqual(len(turns.posts), 1)
+            self.assertEqual(turns.posts[0]["body"]["assistant_context_revision"], 7)
+            await gate.retry(live, original.question_id, context_revision=8)
+            await asyncio.gather(*tuple(gate._bridge_tasks))
+            self.assertEqual(len(turns.posts), 2)
+            self.assertEqual(turns.posts[1]["body"]["assistant_context_revision"], 8)
+            self.assertEqual(self.catalog.hil(retried["request_id"]).status, HilStatus.RESOLVED)
+            await gate.retry(live, original.question_id, context_revision=8)
+            self.assertEqual(len(turns.posts), 2)
+            self.assertIn("不要重新检索", turns.posts[0]["body"]["input"][0]["text"])
+            continuation = turns.posts[0]["body"]["input"][0]["text"]
+            self.assertTrue(continuation.startswith("[书深内部授权通知]"))
+            self.assertLess(len(continuation), 220)
+            self.assertIn("授权不代表已下载或入库", continuation)
+            self.assertEqual(turns.posts[0]["purpose"], QUEUE_PURPOSE_AUTHORIZATION)
+            self.assertEqual(turns.posts[0]["display_text"], "已重新授权，继续原任务。")
+            self.assertEqual(
+                self.authorizer.granted_refs(
+                    self.authorizer.challenge(SESSION_ID, retried["request_id"])
+                ),
+                ("paper:p1",),
+            )
+
+        asyncio.run(scenario())
+
+    def test_reauthorization_is_idempotent_and_never_grants_before_the_new_answer(self) -> None:
+        scope = dict(
+            session_id=SESSION_ID,
+            snapshot_id="snapshot",
+            turn_id="turn",
+            authorization_type=PRECISE_SEARCH_FULLTEXT,
+        )
+        original = self.authorizer.prepare(**scope, refs=("paper:p1", "paper:p2"))
+        self.catalog.record_hil(
+            product_request_id=original.question_id,
+            session_id=SESSION_ID,
+            vendor_request_id=original.question_id,
+            vendor_turn_id="turn",
+            vendor_item_id=None,
+            method="product_user_input",
+            payload={"questions": [{"id": original.question_id}]},
+        )
+        self.catalog.resolve_hil(original.question_id, {"answers": {original.question_id: REJECT}})
+        renewed = self.authorizer.reopen(SESSION_ID, original.question_id)
+        self.assertNotEqual(renewed.question_id, original.question_id)
+        self.assertEqual(renewed.refs, original.refs)
+        self.assertEqual(self.authorizer.reopen(SESSION_ID, original.question_id), renewed)
+        self.assertFalse(self.authorizer.granted(renewed))
+        self.assertEqual(
+            self.catalog.hil(original.question_id).decision,
+            {"answers": {original.question_id: REJECT}},
+        )
+        with self.assertRaises(ValueError):
+            self.authorizer.reopen("another-session", original.question_id)
+        with self.assertRaises(ValueError):
+            self.authorizer.reopen(SESSION_ID, renewed.question_id)
+
+    def test_safe_auto_fulltext_waits_for_real_subset_confirmation(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.PRECISE_SEARCH.value)
+            live.applied_permission_mode = "safe_auto"
+            context = verified_authorization_context(live, ProductTaskType.PRECISE_SEARCH)
+            pending = asyncio.create_task(
+                authorize_sources(
+                    live,
+                    self.authorizer,
+                    turn_id=live.ledger.active_turn_id,
+                    snapshot_id=live.active_assistant_snapshot_id,
+                    authorization_type=PRECISE_SEARCH_FULLTEXT,
+                    refs=("paper:p1", "paper:p2"),
+                    task_context=context,
+                )
+            )
+            try:
+                await asyncio.sleep(POLL_SECONDS)
+                self.assertFalse(pending.done(), "safe_auto must not authorize full text")
+                record = self.catalog.pending_hil(SESSION_ID)[0]
+                await live.interactions.resolve(
+                    None,
+                    record.product_request_id,
+                    {
+                        "answers": {record.product_request_id: AUTHORIZE},
+                        "values": {"selected_paper_ids": ["paper:p2"]},
+                        "decision_source": "auto_delegated",
+                    },
+                    active_turn_id=live.ledger.active_turn_id,
+                )
+                challenge, disposition, decision = await asyncio.wait_for(pending, WAIT_SECONDS)
+                self.assertIs(disposition, AuthorizationDisposition.AUTHORIZED)
+                self.assertEqual(self.authorizer.granted_refs(challenge), ("paper:p2",))
+                self.assertEqual(decision["decision_source"], "user_explicit")
+                self.assertEqual(live.events[-1][1]["decision_source"], "user_explicit")
+            finally:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+    def test_fulltext_confirmation_preserves_verified_task_scope(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.PRECISE_SEARCH.value)
+            live.applied_permission_mode = "safe_auto"
+            context = FulltextTaskContext(
+                owner_id="owner",
+                project_id="",
+                session_id=SESSION_ID,
+                workdir=str(self.root),
+                task_type=ProductTaskType.PRECISE_SEARCH,
+                workspace=PRECISE_RUN,
+                run_id="run1",
+            )
+            pending = asyncio.create_task(
+                authorize_sources(
+                    live,
+                    self.authorizer,
+                    turn_id="automatic-turn",
+                    snapshot_id="snapshot",
+                    authorization_type=PRECISE_SEARCH_FULLTEXT,
+                    refs=("paper:p1",),
+                    task_context=context,
+                )
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            self.assertFalse(pending.done())
+            record = self.catalog.pending_hil(SESSION_ID)[0]
+            await live.interactions.resolve(
+                None, record.product_request_id, {"answers": {record.product_request_id: AUTHORIZE}}
+            )
+            challenge, disposition, _decision = await asyncio.wait_for(pending, WAIT_SECONDS)
+            self.assertIs(disposition, AuthorizationDisposition.AUTHORIZED)
+            self.assertEqual(self.authorizer.granted_refs(challenge), ("paper:p1",))
+            self.assertFalse(self.catalog.pending_hil(SESSION_ID))
+            pending = asyncio.create_task(
+                authorize_sources(
+                    live,
+                    self.authorizer,
+                    turn_id="unbound-turn",
+                    snapshot_id="snapshot",
+                    authorization_type=PRECISE_SEARCH_FULLTEXT,
+                    refs=("paper:p2",),
+                )
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            self.assertFalse(pending.done())
+            self.assertTrue(self.catalog.pending_hil(SESSION_ID))
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+        asyncio.run(scenario())
+
+    def test_automatic_product_decision_is_durable_without_pending_confirmation(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.PRECISE_SEARCH.value)
+            question = {"id": "automatic-scope", "question": "Read full text?", "options": []}
+            decision = {"answers": {"automatic-scope": AUTHORIZE}}
+            result = await live.interactions.request_product_input(
+                question,
+                turn_id="native-turn-1",
+                automatic_decision=lambda: decision,
+            )
+            self.assertEqual(result, decision)
+            self.assertEqual(self.catalog.hil("automatic-scope").decision, decision)
+            self.assertFalse(self.catalog.pending_hil(SESSION_ID))
+            self.assertEqual(live.events[0][1]["state"], HilStatus.RESOLVED.value)
+            self.assertEqual(live.events[0][1]["answers"], decision["answers"])
+
+        asyncio.run(scenario())
+
+    def test_product_question_preserves_structured_answers_in_its_receipt(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
+            question = {
+                "id": "scope",
+                "question": "Choose scope",
+                "options": [{"label": "A, B"}, {"label": "C"}],
+            }
+            pending = asyncio.create_task(
+                live.interactions.request_product_input(question, turn_id="native-turn-1")
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            decision = {
+                "answers": {"scope": "A, B\nline one\nline two"},
+                "answer_details": {"scope": {"option_indices": [0], "text": "line one\nline two"}},
+            }
+            receipt = await live.interactions.resolve(None, "scope", decision)
+            self.assertEqual(
+                await asyncio.wait_for(pending, WAIT_SECONDS), {"answers": decision["answers"]}
+            )
+            self.assertEqual(self.catalog.hil("scope").decision, decision)
+            self.assertEqual(
+                await live.interactions.request_product_input(question, turn_id="native-turn-1"),
+                {"answers": decision["answers"]},
+            )
+            self.assertIsNotNone(receipt)
+            assert receipt is not None
+            self.assertEqual(receipt["answer_details"], decision["answer_details"])
+            self.assertEqual(live.events[-1][1]["answer_details"], decision["answer_details"])
+
+        asyncio.run(scenario())
+
+    def test_manual_fulltext_consent_accepts_verified_turn_only_tasks(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
+            live.applied_permission_mode = "safe_auto"
+            context = verified_authorization_context(live, ProductTaskType.LITERATURE_REVIEW)
+            self.assertIsNone(context)
+            pending = asyncio.create_task(
+                authorize_sources(
+                    live,
+                    self.authorizer,
+                    turn_id=live.ledger.active_turn_id,
+                    snapshot_id=live.active_assistant_snapshot_id,
+                    authorization_type=LITERATURE_REVIEW_FULLTEXT,
+                    refs=("paper:p1",),
+                    task_context=context,
+                )
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            self.assertFalse(pending.done())
+            record = self.catalog.pending_hil(SESSION_ID)[0]
+            await live.interactions.resolve(
+                None, record.product_request_id, {"answers": {record.product_request_id: AUTHORIZE}}
+            )
+            challenge, disposition, _decision = await asyncio.wait_for(pending, WAIT_SECONDS)
+            self.assertIs(disposition, AuthorizationDisposition.AUTHORIZED)
+            self.assertEqual(challenge.task_key, "")
+            self.assertFalse(self.catalog.pending_hil(SESSION_ID))
+            self.assertEqual(
+                self.authorizer.effective_scope(
+                    session_id=live.id,
+                    snapshot_id="next-snapshot",
+                    turn_id="next-turn",
+                    authorization_type=LITERATURE_REVIEW_FULLTEXT,
+                    refs=("paper:p1",),
+                ).allowed,
+                (),
+            )
+
+        asyncio.run(scenario())
+
+    def test_switching_automatic_policy_resolves_an_existing_confirmation(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.PRECISE_SEARCH.value)
+            automatic = False
+            decision = {"answers": {"switch-scope": AUTHORIZE}}
+            pending = asyncio.create_task(
+                live.interactions.request_product_input(
+                    {"id": "switch-scope", "question": "Read?", "options": []},
+                    turn_id="native-turn-1",
+                    automatic_decision=lambda: decision if automatic else None,
+                )
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            self.assertFalse(pending.done())
+            self.assertTrue(self.catalog.pending_hil(SESSION_ID))
+            automatic = True
+            self.assertEqual(await asyncio.wait_for(pending, WAIT_SECONDS), decision)
+            self.assertFalse(self.catalog.pending_hil(SESSION_ID))
+
+        asyncio.run(scenario())
+
+    def grant(self, refs, answer=AUTHORIZE, source="user_explicit", task_context=None):
+        scope = dict(
+            session_id=SESSION_ID,
+            snapshot_id="snapshot-1",
+            turn_id="native-turn-1",
+            authorization_type=LITERATURE_REVIEW_FULLTEXT,
+            task_context=task_context,
+        )
+        challenge = self.authorizer.prepare(**scope, refs=refs)
+        self.catalog.record_hil(
+            product_request_id=challenge.question_id,
+            session_id=SESSION_ID,
+            vendor_request_id=challenge.question_id,
+            vendor_turn_id=challenge.turn_id,
+            vendor_item_id=None,
+            method="contract",
+            payload={"questions": [{"id": challenge.question_id}]},
+        )
+        decision: dict[str, Any] = {"answers": {challenge.question_id: answer}}
+        if source is not None:
+            decision["decision_source"] = source
+        self.catalog.resolve_hil(challenge.question_id, decision)
+        return scope
+
+    def test_unverified_historical_grants_require_a_new_real_confirmation(self) -> None:
+        async def scenario(source, persistent: bool) -> None:
+            refs = ("paper:legacy",)
+            context = (
+                FulltextTaskContext(
+                    owner_id="owner",
+                    project_id="",
+                    session_id=SESSION_ID,
+                    workdir=str(self.root),
+                    task_type=ProductTaskType.LITERATURE_REVIEW,
+                    workspace="survey",
+                    run_id="review-run",
+                )
+                if persistent
+                else None
+            )
+            scope = self.grant(refs, source=source, task_context=context)
+            original = self.authorizer.turn_scope(**scope)[0]
+            original_decision = self.catalog.hil(original.question_id).decision
+            if persistent:
+                self.authorizer = FulltextAuthorizer(
+                    self.catalog.database, SessionCatalogStore(self.catalog.database)
+                )
+                scope = {**scope, "snapshot_id": "resumed-snapshot", "turn_id": "resumed-turn"}
+            self.assertEqual(self.authorizer.effective_scope(**scope, refs=refs).allowed, ())
+            live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
+            live.applied_permission_mode = "safe_auto"
+            pending = asyncio.create_task(
+                authorize_sources(
+                    live,
+                    self.authorizer,
+                    turn_id=scope["turn_id"],
+                    snapshot_id=scope["snapshot_id"],
+                    authorization_type=LITERATURE_REVIEW_FULLTEXT,
+                    refs=refs,
+                    task_context=context,
+                )
+            )
+            try:
+                await asyncio.sleep(POLL_SECONDS)
+                self.assertFalse(pending.done())
+                record = self.catalog.pending_hil(SESSION_ID)[0]
+                self.assertNotEqual(record.product_request_id, original.question_id)
+                self.assertEqual(self.catalog.hil(original.question_id).decision, original_decision)
+                await live.interactions.resolve(
+                    None,
+                    record.product_request_id,
+                    {"answers": {record.product_request_id: AUTHORIZE}},
+                )
+                challenge, disposition, _decision = await asyncio.wait_for(pending, WAIT_SECONDS)
+                self.assertIs(disposition, AuthorizationDisposition.AUTHORIZED)
+                self.assertEqual(self.authorizer.granted_refs(challenge), refs)
+            finally:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+
+        for source in (None, "auto_delegated"):
+            for persistent in (False, True):
+                with self.subTest(source=source, persistent=persistent):
+                    self.setUp()
+                    asyncio.run(scenario(source, persistent))
+
+    def test_server_owned_confirmation_source_preserves_manual_reply_retries(self) -> None:
+        async def scenario(component: bool) -> None:
+            request_id = "confirmed-component"
+            body = {"answers": {request_id: AUTHORIZE}}
+            self.catalog.record_hil(
+                product_request_id=request_id,
+                session_id=SESSION_ID,
+                vendor_request_id=request_id,
+                vendor_turn_id="native-turn-1",
+                vendor_item_id=None,
+                method="product_user_input",
+                payload={
+                    "questions": [
+                        {
+                            "id": request_id,
+                            "requires_user_confirmation": True,
+                            **({"component": {"component": "authorization"}} if component else {}),
+                        }
+                    ]
+                },
+            )
+            self.catalog.resolve_hil(request_id, {**body, "decision_source": "user_explicit"})
+            live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
+            live.user_id = "owner"
+            live.component_registry = SimpleNamespace(
+                snapshot=lambda *_args, **_kwargs: {"interaction": {"session_id": SESSION_ID}}
+            )
+            live.ledger.uncertainty_snapshot = lambda: []
+            service = SimpleNamespace(
+                _sessions={SESSION_ID: live}, _access=self.catalog, _activities=self.activities
+            )
+            result, status = await SessionService.respond_hil(service, SESSION_ID, request_id, body)
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["interaction"]["decision_source"], "user_explicit")
+            conflict, status = await SessionService.respond_hil(
+                service, SESSION_ID, request_id, {"answers": {request_id: REJECT}}
+            )
+            self.assertEqual(status, 409)
+            self.assertEqual(conflict["error"], "hil_response_conflict")
+
+        for component in (True, False):
+            with self.subTest(component=component):
+                self.setUp()
+                asyncio.run(scenario(component))
+
+    def test_manual_confirmation_without_component_still_requires_trusted_host(self) -> None:
+        request_id = "manual-fallback"
+        self.catalog.record_hil(
+            product_request_id=request_id,
+            session_id=SESSION_ID,
+            vendor_request_id=request_id,
+            vendor_turn_id="native-turn-1",
+            vendor_item_id=None,
+            method="product_user_input",
+            payload={"questions": [{"id": request_id, "requires_user_confirmation": True}]},
+        )
+        service = SimpleNamespace(_access=self.catalog)
+        self.assertTrue(SessionService.requires_host_for_hil(service, request_id))
+
+    def test_local_source_grant_matches_library_and_survey_routes_only(self):
+        scope = self.grant(("paper:literature:local-one",))
+        self.authorizer.require(**scope, ref_id="literature:local-one")
+        self.authorizer.require(**scope, ref_id="paper:literature:local-one")
+        for ref in ("paper:local-one", "literature:other", "paper:literature:other"):
+            with self.subTest(ref=ref), self.assertRaisesRegex(ValueError, AUTHORIZATION_REQUIRED):
+                self.authorizer.require(**scope, ref_id=ref)
+        with self.assertRaisesRegex(ValueError, AUTHORIZATION_REQUIRED):
+            self.authorizer.require(
+                **{**scope, "turn_id": "other-turn"}, ref_id="literature:local-one"
+            )
+
+    def test_local_identity_does_not_turn_rejection_into_a_new_question(self):
+        scope = self.grant(("literature:local-one",), answer=REJECT)
+        result = self.authorizer.effective_scope(**scope, refs=("paper:literature:local-one",))
+        self.assertEqual(result.denied, ("paper:literature:local-one",))
+        self.assertEqual(result.unknown, ())
+        with self.assertRaisesRegex(ValueError, AUTHORIZATION_REQUIRED):
+            self.authorizer.require(**scope, ref_id="paper:literature:local-one")
+
+    def test_author_edit_does_not_interrupt_but_source_change_does(self):
+        selection = self.review_selection()
+        self.start_fulltext()
+        live = self.live("literature_review")
+        gate = FulltextGate(
+            self.authorizer, RecordingTurns(), activities=self.activities, poll_seconds=0
+        )
+        checkpoint = read_checkpoint(
+            self.root, *discover_triggers(self.root, "literature_review")[0]
+        )
+        self.grant(checkpoint.content.refs)
+        original_digest = next(
+            a.digest for a in checkpoint.content.artifacts if a.field == "selection"
+        )
+        write(
+            selection,
+            {
+                "r1": {
+                    "title": "Review One",
+                    "authors": [{"name": "Doe, Jane"}],
+                    "author_metadata": {"verification": "source"},
+                }
+            },
+        )
+        self.start_fulltext()
+        self.assertIsNone(gate._pending(live))
+        changed = read_checkpoint(self.root, *discover_triggers(self.root, "literature_review")[0])
+        self.assertNotEqual(
+            original_digest,
+            next(a.digest for a in changed.content.artifacts if a.field == "selection"),
+        )
+        self.assertEqual(checkpoint.content.refs, changed.content.refs)
+        for field, value in (
+            ("url", "https://example.org/other.pdf"),
+            ("local_source", {"path": "other.pdf", "sha256": "new"}),
+            ("source_revision", "new"),
+            ("future_source_field", "new"),
+        ):
+            with self.subTest(field=field):
+                write(selection, {"r1": {"title": "Review One", field: value}})
+                self.start_fulltext()
+                self.assertIsNotNone(gate._pending(live))
 
     def test_duplicate_bridge_checkpoint_shares_one_authorization_wait(self) -> None:
         async def scenario() -> None:
@@ -159,6 +707,56 @@ class FulltextGateContract(unittest.TestCase):
             self.assertEqual(first_result, second_result)
             self.assertEqual(first_result[1].value, "authorized")
             self.assertEqual(len(self.catalog.turn_hil(SESSION_ID, "native-turn-1")), 1)
+
+        asyncio.run(scenario())
+
+    def test_resolved_bridge_scope_is_not_asked_again_during_terminal_cleanup(self) -> None:
+        async def scenario() -> None:
+            selection = self.review_selection()
+            self.start_fulltext()
+            live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
+            gate = FulltextGate(
+                self.authorizer, RecordingTurns(), activities=self.activities, poll_seconds=0
+            )
+            checkpoint = read_checkpoint(
+                self.root, *discover_triggers(self.root, "literature_review")[0]
+            )
+            request = asyncio.create_task(
+                gate.authorize_sources(
+                    live,
+                    turn_id="native-turn-1",
+                    snapshot_id="snapshot-1",
+                    authorization_type=LITERATURE_REVIEW_FULLTEXT,
+                    refs=checkpoint.content.refs,
+                    source_count=1,
+                )
+            )
+            while not self.catalog.pending_hil(SESSION_ID):
+                await asyncio.sleep(0)
+            pending = self.catalog.pending_hil(SESSION_ID)[0]
+            await live.interactions.resolve(
+                None,
+                pending.product_request_id,
+                {"answers": {pending.product_request_id: AUTHORIZE}},
+            )
+            await request
+            live.ledger.active_turn_id = ""
+            self.assertIsNone(gate._pending(live))
+            write(
+                selection, {"r1": {"title": "Review One", "url": "https://example.org/changed.pdf"}}
+            )
+            self.start_fulltext()
+            self.assertIsNotNone(gate._pending(live))
+            self.review_selection()
+            self.start_fulltext()
+            live.last_submission_id = "client-turn-2"
+            live.active_product_turn_id = "client-turn-2"
+            live.product_turn_generation = 2
+            live.active_task_lease = replace(
+                live.active_task_lease, turn_id="client-turn-2", generation=2
+            )
+            live.ledger.active_turn_id = "native-turn-2"
+            self.assertIsNotNone(gate._pending(live))
 
         asyncio.run(scenario())
 
@@ -230,11 +828,13 @@ class FulltextGateContract(unittest.TestCase):
             pending = self.catalog.pending_hil(SESSION_ID)
             published = []
             finished = []
+            finished_at_publish = []
             live.interactions._finish_component = finished.append
 
             async def failed_publish(kind, payload, **kwargs):
                 self.assertEqual(len(finished), len(requests))
                 published.append(payload)
+                finished_at_publish.append(len(finished))
                 raise RuntimeError("notification unavailable")
 
             live.interactions._publish = failed_publish
@@ -244,6 +844,11 @@ class FulltextGateContract(unittest.TestCase):
                 await live.interactions.cancel_product_requests()
             self.assertEqual(len(failure.exception.exceptions), len(requests))
             self.assertEqual(len(published), len(requests))
+            expected_questions = [
+                question for row in pending for question in row.payload["questions"]
+            ]
+            self.assertEqual(finished, expected_questions)
+            self.assertEqual(finished_at_publish, [len(expected_questions)] * len(requests))
             results = await asyncio.wait_for(asyncio.gather(*requests), WAIT_SECONDS)
             self.assertTrue(all(result[2].get("cancelled") for result in results))
             self.assertTrue(
@@ -693,11 +1298,44 @@ class FulltextGateContract(unittest.TestCase):
             alias.symlink_to(target, target_is_directory=True)
             self.addCleanup(alias.unlink)
 
+    def test_bound_discovery_uses_exact_workspace_not_title_or_glob(self) -> None:
+        cases = (
+            ("precise_search", ".precise-literature-search/runs/run-one", "selection.json"),
+            ("literature_review", "review", "02_retrieval/selected_paper.json"),
+            ("research_idea", "agentic-search-results", "metadata.json"),
+        )
+        for task_type, directory, filename in cases:
+            workspace = f"arbitrary/会话 [1]/work/{directory}"
+            target = self.root / workspace / filename
+            write(target, {})
+            write(self.root / workspace.replace("[1]", "1") / filename, {})
+            found = discover_triggers(self.root, task_type, workspace)
+            self.assertEqual(
+                [item[1] for item in found], [target.relative_to(self.root).as_posix()]
+            )
+            self.assertEqual(discover_triggers(self.root, task_type, workspace + "-missing"), ())
+
     def test_checkpoint_discovery_rejects_root_alias(self) -> None:
         self.precise_selection()
         alias = self.root.parent / "aliased-workdir"
         self.directory_alias(alias, self.root)
         self.assertEqual(discover_triggers(alias, "precise_search"), ())
+        self.assertEqual(discover_triggers(alias, "precise_search", PRECISE_RUN), ())
+
+    def test_precise_checkpoint_reads_new_and_previous_session_layouts(self) -> None:
+        for prefix in ("output/会话 [1]", "output/会话 [1]/work"):
+            with self.subTest(prefix=prefix):
+                original = self.precise_selection().parent
+                workspace = f"{prefix}/{PRECISE_RUN}"
+                target = self.root / workspace
+                target.parent.mkdir(parents=True, exist_ok=True)
+                original.rename(target)
+                (found,) = discover_triggers(self.root, "precise_search", workspace)
+                checkpoint = read_checkpoint(self.root, *found)
+                self.assertIsNotNone(checkpoint)
+                self.assertEqual(checkpoint.content.workspace, workspace)
+                self.assertEqual(checkpoint.content.refs, ("paper:p1",))
+                self.assertEqual(checkpoint.content.trigger, f"{workspace}/selection.json")
 
     def test_checkpoint_discovery_rejects_ancestor_alias(self) -> None:
         selection = self.precise_selection()
@@ -706,6 +1344,7 @@ class FulltextGateContract(unittest.TestCase):
         run.rename(moved)
         self.directory_alias(run, moved)
         self.assertEqual(discover_triggers(self.root, "precise_search"), ())
+        self.assertEqual(discover_triggers(self.root, "precise_search", PRECISE_RUN), ())
 
     def test_checkpoint_consumption_rejects_marker_ancestor_alias(self) -> None:
         selection = self.review_selection()
@@ -799,9 +1438,12 @@ class FulltextGateContract(unittest.TestCase):
         self.assertEqual(live.cards[0][0], SEARCH_CARD)
         self.assertTrue(live.cards[0][1]["selection"]["artifact_id"])
         (post,) = turns.posts
+        self.assertIsNone(post["display_text"])
         self.assertFalse(post["side"])
         self.assertEqual(post["body"]["task_type"], "precise_search")
         self.assertIn(CONTINUATION_PLAN, post["body"]["input"][0]["text"])
+        self.assertNotIn("plan_id", post["body"]["input"][0]["text"])
+        self.assertNotIn("scholarseed-bridge", post["body"]["input"][0]["text"])
         self.assertIn(CONTINUATION_PLAN, CONTINUATION_REJECTED)
         continuation = post["body"]["client_user_message_id"]
         self.assertTrue(
@@ -836,6 +1478,17 @@ class FulltextGateContract(unittest.TestCase):
         self.run_gate(gate, live, None)
         self.assertEqual(len(turns.posts), 1)
         self.assertEqual(live.interrupts, [True])
+
+    def test_authorization_notification_preserves_original_task_limits(self) -> None:
+        self.assertLess(len(CONTINUATION_AUTHORIZED), 220)
+        for continuation in (CONTINUATION_AUTHORIZED, CONTINUATION_REJECTED):
+            with self.subTest(continuation=continuation):
+                self.assertIn("本消息仅通知授权结果，不是新的任务指令", continuation)
+                self.assertIn("原用户任务的目标、范围、禁止事项和停止条件", continuation)
+                self.assertIn("只要求确认授权", continuation)
+                self.assertIn("不要执行后续任务", continuation)
+        self.assertIn("仅当原任务要求且允许获取全文时", CONTINUATION_AUTHORIZED)
+        self.assertIn("仅当原任务允许基于标题和摘要继续时", CONTINUATION_REJECTED)
 
     def test_authorization_is_created_only_after_interrupted_turn_terminal_cleanup(self) -> None:
         self.review_selection()
@@ -1114,7 +1767,10 @@ class FulltextGateContract(unittest.TestCase):
 
         record(first)
         second = self.authorizer.prepare(**scope, refs=("paper:p2",))
-        self.catalog.resolve_hil(first.question_id, {"answers": {first.question_id: AUTHORIZE}})
+        self.catalog.resolve_hil(
+            first.question_id,
+            {"answers": {first.question_id: AUTHORIZE}, "decision_source": "user_explicit"},
+        )
         self.authorizer.require(**scope, ref_id="paper:p1")
         record(second)
         self.catalog.expire_pending_hil(SESSION_ID)
@@ -1303,7 +1959,8 @@ class FulltextGateContract(unittest.TestCase):
             payload={"questions": [{"id": challenge.question_id}]},
         )
         self.catalog.resolve_hil(
-            challenge.question_id, {"answers": {challenge.question_id: AUTHORIZE}}
+            challenge.question_id,
+            {"answers": {challenge.question_id: AUTHORIZE}, "decision_source": "user_explicit"},
         )
         content = json.loads(selection.read_text())
         content["selected_paper_ids"] = ["p1", "p2"]
@@ -1341,7 +1998,11 @@ class SubsetDerivationContract(unittest.TestCase):
             turn_hil=lambda session_id, turn_id: [
                 SimpleNamespace(
                     status=HilStatus.RESOLVED,
-                    decision=decision,
+                    decision=(
+                        {**decision, "decision_source": "user_explicit"}
+                        if decision is not None
+                        else None
+                    ),
                     payload={"questions": [{"id": self.QUESTION_ID}]},
                 )
             ]
@@ -1433,6 +2094,7 @@ class CrossTurnGrantContract(unittest.TestCase):
 
     def _allow(self, question_id: str, selected: list[str]) -> dict:
         decision = {
+            "decision_source": "user_explicit",
             "answers": {question_id: AUTHORIZE},
             "values": {"selected_paper_ids": selected},
         }
@@ -1475,7 +2137,9 @@ class CrossTurnGrantContract(unittest.TestCase):
 
         asked: list[dict] = []
 
-        async def request_product_input(question: dict, *, turn_id: str, activity=None) -> dict:
+        async def request_product_input(
+            question: dict, *, turn_id: str, activity=None, automatic_decision=None
+        ) -> dict:
             asked.append(question)
             return self._allow(str(question["id"]), list(self.REFS))
 
@@ -1521,7 +2185,9 @@ class CrossTurnGrantContract(unittest.TestCase):
         )
         self._allow(first.question_id, list(self.REFS))
 
-        async def request_product_input(question: dict, *, turn_id: str, activity=None) -> dict:
+        async def request_product_input(
+            question: dict, *, turn_id: str, activity=None, automatic_decision=None
+        ) -> dict:
             raise AssertionError("an already granted turn must not be asked again")
 
         live = SimpleNamespace(
@@ -1603,7 +2269,11 @@ class TaskConsentContract(CrossTurnGrantContract):
         asked = []
 
         async def request(
-            question: dict, *, turn_id: str, activity: ActivityLease | None = None
+            question: dict,
+            *,
+            turn_id: str,
+            activity: ActivityLease | None = None,
+            automatic_decision=None,
         ) -> dict:
             asked.append(question)
             return self._allow(question["id"], ["paper:p4"])
@@ -1677,7 +2347,11 @@ class TaskConsentContract(CrossTurnGrantContract):
         self.consent(self.REFS, ["paper:p2"])
 
         async def request(
-            question: dict, *, turn_id: str, activity: ActivityLease | None = None
+            question: dict,
+            *,
+            turn_id: str,
+            activity: ActivityLease | None = None,
+            automatic_decision=None,
         ) -> dict:
             decision = {"answers": {question["id"]: REJECT}}
             self.answers[question["id"]] = decision

@@ -2,14 +2,15 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
-const LINKS = ['.codex/skills', '.claude/skills', 'CLAUDE.md']
 const SYMLINK_MODE = '120000'
 const TEMP_PREFIX = '.symlink-repair-'
 const LINK_TYPE_DIRECTORY = 'dir'
 const LINK_TYPE_FILE = 'file'
 function inspectLinks(repo, platform) {
   repo = fs.realpathSync(repo)
-  return LINKS.map(link => {
+  const links = execFileSync('git', ['ls-files', '--stage', '-z'], { cwd: repo, encoding: 'utf8' }).split('\0')
+    .filter(entry => entry.startsWith(`${SYMLINK_MODE} `)).map(entry => entry.slice(entry.indexOf('\t') + 1))
+  return links.map(link => {
     const filename = path.join(repo, link)
     let ancestor = path.dirname(filename)
     while (ancestor !== path.resolve(repo)) {
@@ -23,6 +24,8 @@ function inspectLinks(repo, platform) {
     const expected = execFileSync('git', ['cat-file', 'blob', match[2]], { cwd: repo })
     const target = expected.toString('utf8')
     const physicalTarget = path.resolve(path.dirname(filename), target)
+    const relativeTarget = path.relative(repo, physicalTarget)
+    if (relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) return { link, filename, target, state: 'conflict' }
     let owner
     try {
       owner = fs.lstatSync(physicalTarget)
@@ -33,8 +36,7 @@ function inspectLinks(repo, platform) {
       if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
       return { link, filename, target, state: 'conflict' }
     }
-    const validType = link === 'CLAUDE.md' ? owner.isFile() : owner.isDirectory()
-    if (!validType) return { link, filename, target, state: 'conflict' }
+    if (!owner.isDirectory() && !owner.isFile()) return { link, filename, target, state: 'conflict' }
     const type = owner.isDirectory() ? LINK_TYPE_DIRECTORY : LINK_TYPE_FILE
     let stat
     try { stat = fs.lstatSync(filename) } catch (error) {
@@ -43,7 +45,9 @@ function inspectLinks(repo, platform) {
     }
     if (stat.isSymbolicLink()) {
       const actual = fs.readlinkSync(filename)
-      const accurate = actual === target && !(platform === 'win32' && path.isAbsolute(actual))
+      const normalized = platform === 'win32' ? actual.replaceAll('\\', '/') : actual
+      const absolute = platform === 'win32' && (path.isAbsolute(actual) || path.win32.isAbsolute(actual))
+      const accurate = normalized === target && !absolute
       return { link, filename, target, state: accurate ? 'valid' : 'conflict' }
     }
     const placeholder = stat.isFile() && fs.readFileSync(filename).equals(expected)
@@ -85,7 +89,9 @@ function repairLinks(repo, platform = process.platform) {
 if (require.main === module) {
   try {
     const command = process.argv[2]
-    const repo = path.resolve(__dirname, '../..')
+    const args = process.argv.slice(3)
+    if (args.length && (args.length !== 2 || args[0] !== '--root' || !args[1])) throw new Error('usage: symlinks.cjs check|repair [--root repository]')
+    const repo = args.length ? path.resolve(args[1]) : path.resolve(__dirname, '../..')
     if (command === 'repair') console.log(`repaired ${repairLinks(repo)} symlink(s)`)
     else if (command === 'check') {
       const problems = checkLinks(repo)

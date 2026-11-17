@@ -38,7 +38,7 @@ function sourceCheckout(context) {
       fs.copyFileSync(source, path.join(directory, relative))
     }
   }
-  for (const relative of ['scripts', 'apps/desktop/scripts', 'apps/desktop/runtime', 'package.json', 'apps/desktop/package.json']) copy(relative)
+  for (const relative of ['scripts', 'apps/desktop/scripts', 'apps/desktop/runtime', 'apps/desktop/native/toolchain.json', 'package.json', 'apps/desktop/package.json']) copy(relative)
   return directory
 }
 
@@ -196,6 +196,54 @@ test('GitLab Serve contract and Desktop smoke recipes are fixed and context-scop
   }
 })
 
+test('project API feedback selects only the registered Serve suites without overrides', context => {
+  const command = ['ci', 'test', 'api', '--scope', 'serve', '--suite', 'projects']
+  const result = resolveCommand([...command])
+  const selection = [
+    '--only-suite', 'contract_projects',
+    '--only-suite', 'contract_project_queries',
+    '--only-suite', 'contract_resource_listing',
+  ]
+  assert.deepEqual(result.steps, [{ kind: 'workspace', method: 'serveTests', args: [selection] }])
+  const environment = { VENV: '.venv' }
+  const executable = path.join(ROOT, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+  const invocations = []
+  context.mock.method(pythonOwner, 'developmentPython', () => executable)
+  context.mock.method(workspaceLeases, 'acquire', () => ({ release() {} }))
+  context.mock.method(execution, 'launch', (program, args, options) => {
+    invocations.push({ program, args, options })
+    return { exitCode: 0 }
+  })
+  delete require.cache[require.resolve('../shared/workspace.cjs')]
+  const workspace = require('../shared/workspace.cjs').createWorkspace(ROOT, environment, { context: 'local' })
+  context.after(() => { delete require.cache[require.resolve('../shared/workspace.cjs')] })
+  const [step] = result.steps
+  assert.throws(() => workspace.serveTests('--only-suite'), /array of strings/)
+  assert.equal(invocations.length, 0)
+  workspace[step.method](...step.args)
+  const [invocation] = invocations
+  assert.equal(invocations.length, 1)
+  assert.equal(invocation.program, executable)
+  assert.deepEqual(invocation.args, ['-P', '-m', 'tests.run_all', ...selection])
+  assert.equal(invocation.options.cwd, path.join(ROOT, 'apps', 'serve'))
+  assert.equal(invocation.options.env.PYTHONPATH, [invocation.options.cwd, ROOT].join(path.delimiter))
+  const catalog = JSON.parse(invoke(['--json', 'list']).stdout).data.commands
+  const registration = catalog.find(entry => entry.command === 'ci test api')
+  assert.equal(registration.status, 'available')
+  assert.match(registration.usage, /--scope serve --suite projects/)
+  for (const options of [
+    ['--scope', 'serve'],
+    ['--scope', 'serve', '--suite', 'integration_serve'],
+    ['--scope', 'desktop', '--suite', 'projects'],
+    [...command.slice(3), '--with-external'],
+    [...command.slice(3), '--coverage'],
+    [...command.slice(3), '--result', 'another.json'],
+    [...command.slice(3), '--', '--only-suite', 'integration_serve'],
+  ]) {
+    assert.throws(() => resolveCommand([...command.slice(0, 3), ...options]))
+  }
+})
+
 test('GitLab Serve contract preserves the runner cwd, fixed argv and PYTHONPATH', context => {
   const environment = { CI: '1', PYTHON: '3.12', VENV: '.venv', PYTHONPATH: 'inherited', MARKER: 'preserved' }
   let invocation
@@ -349,8 +397,9 @@ test('long-running execution waits for signal cleanup before returning', async c
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-long-run-'))
   const marker = path.join(directory, 'stopped')
   const ready = path.join(directory, 'ready')
-  const childProgram = "const fs=require('node:fs');process.once('SIGINT',()=>setTimeout(()=>{fs.writeFileSync(process.argv[2],'done');process.exit(0)},50));fs.writeFileSync(process.argv[1],'ready');setInterval(()=>{},1000)"
-  const wrapper = `const { launchLong } = require(${JSON.stringify(require.resolve('../shared/execution.cjs'))}); launchLong(process.execPath, ['-e', ${JSON.stringify(childProgram)}, ${JSON.stringify(ready)}, ${JSON.stringify(marker)}], { stdio: 'ignore' }).catch(error => { process.exitCode = error.exitCode }); process.send('ready')`
+  const interrupt = path.join(directory, 'interrupt')
+  const childProgram = "const fs=require('node:fs');process.once('SIGINT',()=>setTimeout(()=>{fs.writeFileSync(process.argv[2],'done');process.exit(0)},50));fs.writeFileSync(process.argv[1],'ready');setInterval(()=>{if(process.platform==='win32'&&fs.existsSync(process.argv.at(-1)))process.emit('SIGINT')},20)"
+  const wrapper = `const fs = require('node:fs'); const { launchLong } = require(${JSON.stringify(require.resolve('../shared/execution.cjs'))}); launchLong(process.execPath, ['-e', ${JSON.stringify(childProgram)}, ${JSON.stringify(ready)}, ${JSON.stringify(marker)}, ${JSON.stringify(interrupt)}], { stdio: 'ignore' }).finally(() => clearInterval(watch)).catch(error => { process.exitCode = error.exitCode }); const watch = process.platform === 'win32' ? setInterval(() => { if (fs.existsSync(${JSON.stringify(interrupt)})) { clearInterval(watch); process.emit('SIGINT') } }, 20) : undefined; process.send('ready')`
   const processHandle = spawn(process.execPath, ['-e', wrapper], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
   context.after(() => {
     if (processHandle.exitCode === null) processHandle.kill('SIGKILL')
@@ -360,7 +409,8 @@ test('long-running execution waits for signal cleanup before returning', async c
   const deadline = Date.now() + 5000
   while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
   assert.ok(fs.existsSync(ready), 'long-running child did not reach its signal handler')
-  processHandle.kill('SIGINT')
+  if (process.platform === 'win32') fs.writeFileSync(interrupt, '')
+  else processHandle.kill('SIGINT')
   const [code, signal] = await once(processHandle, 'exit')
   assert.equal(code, 130)
   assert.equal(signal, null)
@@ -379,8 +429,9 @@ test('long-running execution lets an owned supervisor finish nested cleanup', as
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-long-nested-'))
   const marker = path.join(directory, 'stopped')
   const ready = path.join(directory, 'ready')
-  const childProgram = "const fs=require('node:fs');process.once('SIGINT',()=>setTimeout(()=>{fs.writeFileSync(process.argv[2],'done');process.exit(0)},1500));fs.writeFileSync(process.argv[1],'ready');setInterval(()=>{},1000)"
-  const wrapper = `const { launchLong } = require(${JSON.stringify(require.resolve('../shared/execution.cjs'))}); launchLong(process.execPath, ['-e', ${JSON.stringify(childProgram)}, ${JSON.stringify(ready)}, ${JSON.stringify(marker)}], { stdio: 'ignore' }).catch(error => { process.exitCode = error.exitCode })`
+  const interrupt = path.join(directory, 'interrupt')
+  const childProgram = "const fs=require('node:fs');process.once('SIGINT',()=>setTimeout(()=>{fs.writeFileSync(process.argv[2],'done');process.exit(0)},1500));fs.writeFileSync(process.argv[1],'ready');setInterval(()=>{if(process.platform==='win32'&&fs.existsSync(process.argv.at(-1)))process.emit('SIGINT')},20)"
+  const wrapper = `const fs = require('node:fs'); const { launchLong } = require(${JSON.stringify(require.resolve('../shared/execution.cjs'))}); launchLong(process.execPath, ['-e', ${JSON.stringify(childProgram)}, ${JSON.stringify(ready)}, ${JSON.stringify(marker)}, ${JSON.stringify(interrupt)}], { stdio: 'ignore' }).finally(() => clearInterval(watch)).catch(error => { process.exitCode = error.exitCode }); const watch = process.platform === 'win32' ? setInterval(() => { if (fs.existsSync(${JSON.stringify(interrupt)})) { clearInterval(watch); process.emit('SIGINT') } }, 20) : undefined`
   const processHandle = spawn(process.execPath, ['-e', wrapper], { stdio: ['ignore', 'ignore', 'inherit'] })
   context.after(() => {
     if (processHandle.exitCode === null) processHandle.kill('SIGKILL')
@@ -389,7 +440,8 @@ test('long-running execution lets an owned supervisor finish nested cleanup', as
   const readyDeadline = Date.now() + 5000
   while (!fs.existsSync(ready) && Date.now() < readyDeadline) await new Promise(resolve => setTimeout(resolve, 10))
   assert.ok(fs.existsSync(ready), 'owned supervisor did not reach its signal handler')
-  processHandle.kill('SIGINT')
+  if (process.platform === 'win32') fs.writeFileSync(interrupt, '')
+  else processHandle.kill('SIGINT')
   const [code, signal] = await once(processHandle, 'exit')
   assert.equal(code, 130)
   assert.equal(signal, null)
@@ -399,8 +451,9 @@ test('long-running execution lets an owned supervisor finish nested cleanup', as
 test('long-running execution escalates when a process ignores termination signals', async context => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-long-ignore-'))
   const ready = path.join(directory, 'ready')
-  const childProgram = "const fs=require('node:fs');process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});fs.writeFileSync(process.argv[1],'ready');setInterval(()=>{},1000)"
-  const wrapper = `const { launchLong } = require(${JSON.stringify(require.resolve('../shared/execution.cjs'))}); launchLong(process.execPath, ['-e', ${JSON.stringify(childProgram)}, ${JSON.stringify(ready)}], { stdio: 'ignore' }).catch(error => { process.exitCode = error.exitCode })`
+  const interrupt = path.join(directory, 'interrupt')
+  const childProgram = "const fs=require('node:fs');process.on('SIGINT',()=>{});process.on('SIGTERM',()=>{});fs.writeFileSync(process.argv[1],'ready');setInterval(()=>{if(process.platform==='win32'&&fs.existsSync(process.argv.at(-1)))process.emit('SIGINT')},20)"
+  const wrapper = `const fs = require('node:fs'); const { launchLong } = require(${JSON.stringify(require.resolve('../shared/execution.cjs'))}); launchLong(process.execPath, ['-e', ${JSON.stringify(childProgram)}, ${JSON.stringify(ready)}, ${JSON.stringify(interrupt)}], { stdio: 'ignore' }).finally(() => clearInterval(watch)).catch(error => { process.exitCode = error.exitCode }); const watch = process.platform === 'win32' ? setInterval(() => { if (fs.existsSync(${JSON.stringify(interrupt)})) { clearInterval(watch); process.emit('SIGINT') } }, 20) : undefined`
   const processHandle = spawn(process.execPath, ['-e', wrapper], { stdio: ['ignore', 'ignore', 'inherit'] })
   context.after(() => {
     if (processHandle.exitCode === null) processHandle.kill('SIGKILL')
@@ -410,7 +463,8 @@ test('long-running execution escalates when a process ignores termination signal
   while (!fs.existsSync(ready) && Date.now() < readyDeadline) await new Promise(resolve => setTimeout(resolve, 10))
   assert.ok(fs.existsSync(ready), 'long-running child did not reach its signal handlers')
   const started = Date.now()
-  processHandle.kill('SIGINT')
+  if (process.platform === 'win32') fs.writeFileSync(interrupt, '')
+  else processHandle.kill('SIGINT')
   const [code, signal] = await once(processHandle, 'exit')
   assert.equal(code, 130)
   assert.equal(signal, null)
@@ -438,7 +492,36 @@ test('non-renderer source reminders observe real changes and close without resta
   assert.equal(reports.length, 1)
 })
 
-test('source monitoring dispatches structured changes without issuing a manual restart reminder', async context => {
+test('source monitoring reconciles the initial subscription gap without a file event', context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-watch-gap-'))
+  const root = path.join(directory, 'apps/serve/service')
+  fs.mkdirSync(root, { recursive: true })
+  const filename = path.join(root, 'example.py')
+  fs.writeFileSync(filename, 'initial')
+  const reports = []
+  const watched = []
+  const closed = []
+  context.mock.method(fs, 'watch', filename => {
+    watched.push(filename)
+    return { on() {}, close() { closed.push(filename) } }
+  })
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const close = watchRestartSources(directory, message => reports.push(message))
+  context.after(() => { close(); fs.rmSync(directory, { recursive: true, force: true }) })
+  fs.writeFileSync(filename, 'changed before watch delivery')
+  context.mock.timers.runAll()
+  assert.equal(reports.length, 1)
+  assert.match(reports[0], /example\.py/)
+  assert.match(reports[0], /No process was restarted/)
+  close()
+  fs.writeFileSync(filename, 'after-close')
+  context.mock.timers.runAll()
+  assert.equal(reports.length, 1)
+  assert.ok(watched.length > 0)
+  assert.equal(closed.length, watched.length)
+})
+
+test('source monitoring dispatches structured changes without issuing a manual restart reminder', { timeout: 5000 }, async context => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-watch-structured-'))
   const root = path.join(directory, 'apps/serve/service')
   fs.mkdirSync(root, { recursive: true })
@@ -446,14 +529,20 @@ test('source monitoring dispatches structured changes without issuing a manual r
   fs.writeFileSync(filename, 'initial')
   const reports = []
   const batches = []
-  const close = watchRestartSources(directory, message => reports.push(message), changed => batches.push(changed))
+  let resolveChange
+  const changed = new Promise(resolve => { resolveChange = resolve })
+  const close = watchRestartSources(directory, message => reports.push(message), paths => {
+    batches.push(paths)
+    resolveChange()
+  })
   context.after(() => { close(); fs.rmSync(directory, { recursive: true, force: true }) })
   fs.writeFileSync(filename, 'changed')
-  const deadline = Date.now() + 5000
-  while (!batches.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+  await changed
   assert.deepEqual(batches, [['apps/serve/service/example.py']])
   assert.equal(reports.length, 1)
-  assert.match(reports[0], /Non-HMR source changed: \["apps\/serve\/service\/example\.py"\]; automatic reload requested\./)
+  assert.match(reports[0], /automatic reload requested/)
+  assert.match(reports[0], /apps\/serve\/service\/example\.py/)
+  assert.doesNotMatch(reports[0], /Restart manually|No process was restarted/)
   assert.doesNotMatch(reports[0], /manual|manually|手动/i)
 })
 
@@ -470,6 +559,9 @@ test('registered execution selects the most specific Owner', () => {
   assert.equal(resolveCommand(['ci', 'check', 'docs', 'workspace']).owner, 'documentation')
   assert.equal(resolveCommand(['ci', 'check', 'i18n']).owner, 'localization')
   assert.equal(resolveCommand(['ci', 'format']).owner, 'formatter')
+  assert.throws(() => resolveCommand(['ci', 'check', 'skills', 'host', '--mode', 'links']), /private documentation repository/)
+  assert.deepEqual(resolveCommand(['ci', 'check', 'skills', 'product', '--mode', 'source']).contexts, ['local'])
+  assert.throws(() => resolveCommand(['ci', 'check', 'skills', 'product', '--mode', 'manifest']), /Unsupported Skill owner\/mode/)
 })
 
 test('tooling debug preserves one Node test invocation and its original file order', () => {
@@ -493,7 +585,9 @@ test('interrupting startup cancels observers and removes signal handlers', async
   const timer = setTimeout(() => process.emit('SIGINT'), 300)
   try {
     const status = await supervise({ executable: process.execPath,
-      args: ['-e', 'process.on("SIGINT",()=>process.exit(0));setInterval(()=>{},1000)'], options: { stdio: 'ignore' } },
+      args: ['-e', process.platform === 'win32'
+        ? 'setTimeout(() => process.exit(0), 600)'
+        : 'process.on("SIGINT",()=>process.exit(0));setInterval(()=>{},1000)'], options: { stdio: 'ignore' } },
     { observe: async () => { observations += 1; return { rendererReady: false } }, intervalMs: 10 })
     assert.equal(status, 130)
     assert.equal(process.listenerCount('SIGINT'), before)

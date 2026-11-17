@@ -55,13 +55,15 @@
 frontmatter 扩展，例如 `version`、`description_zh` 和已有 `metadata`；不要为了通过
 通用 Skill 校验器删除它们。
 
+产品展示名称使用 `display_name_zh` 等语言字段，描述使用 `description_zh` 等字段。
+只写已确认的译文；缺失时界面回退默认原文，不修改 canonical `name` 或技能正文。
+
 一次更新必须使用一个新版本，并保持以下记录一致：
 
 | 记录 | 处理方式 |
 |---|---|
 | `SKILL.md` 的 `version` | 源码身份版本 |
 | `VERSION` | 必须逐字等于 `SKILL.md` 版本 |
-| `skills/skills.lock.json` 中该 Skill 的 `version` | 从当前源码重新生成并审核 |
 | 构建产物 `.scholarseed-package.json` 的 `version` | 由预打包器从源码版本生成，只验证，不手工修改 |
 | 构建产物 `.scholarseed.json` 的 `version` | 由预打包器生成，只验证，不手工修改 |
 
@@ -82,25 +84,24 @@ worktree 中修改。主 checkout 中用户已有的改动不得被切换、暂�
 
 1. `SKILL.md`、脚本、Schema、说明等真实源文件；
 2. `VERSION`；
-3. 依赖变化时更新 `skills/registry.json` 中该 Skill 的声明；
-4. 提交前审核并更新 `skills/skills.lock.json` 中该 Skill 的文件记录、依赖、payload 摘要和版本。
+3. 依赖变化时更新 `skills/registry.json` 中该 Skill 的声明。
 
-本地用仓库根的 `pnpm dev` 重建内置 pack 并启动 Electron，不要求先刷新审核锁。
+在 MR 中评审源码、依赖声明和打包规则。逐文件清单在构建时生成，不提交到 Git。
+
+本地用仓库根的 `pnpm dev` 重建内置 pack 并启动 Electron。
 已有实例先退出再重启；从旧清单布局升级也应先用该入口重建。生成的发布清单不写回源码。
 
-使用仓库预打包器在临时目录生成完整结果，再把目标 Skill 的记录与产物核对：
+使用仓库预打包器在临时目录构建 pack，再检查目标 Skill 的生成元数据：
 
 ```bash
 task_pack_dir=$(mktemp -d /tmp/scholarseed-skill-pack.XXXXXX)
 .venv/bin/python -m service.cli.prebundle \
   --build \
   --source skills/community \
-  --lock "$task_pack_dir/skills.lock.json" \
   --target "$task_pack_dir/pack"
 ```
 
-全量生成的 lock 可能暴露其他 Skill 的既有漂移。除非用户同时授权处理那些 Skill，
-只把目标 Skill 的生成记录写入已提交的 `skills/skills.lock.json`，并单独报告其他漂移。
+可选的 `--lock` 输出供依赖安装和独立的安装态验包使用，不用于构建比对。
 最终确认 Git diff 中没有混入其他 Skill。
 
 若目标 Skill 自带 `scripts/package_skill.py`，再将归档输出到临时目录：
@@ -115,11 +116,21 @@ task_archive_dir=$(mktemp -d /tmp/scholarseed-skill-archive.XXXXXX)
 
 ## 4. 验证真实边界
 
+更新 `scholarseed-product-operations` 时，在构建 pack 前刷新随包 Bridge 契约和官方对话组件签名：
+
+```bash
+.venv/bin/python -m service.cli.prebundle --write-bridge-reference --source skills/community
+node packages/ui/build.cjs --write-skill-reference
+```
+
+Skill 预打包拒绝 Bridge 契约漂移，官方 UI 构建拒绝组件签名漂移。手写说明归产品操作技能的索引与专题指南，不编辑生成文件。随包参考变化时审核生成差异，并更新技能版本。
+
 至少完成以下检查：
 
 ```bash
 git diff --check
-pnpm ops ci check skills product --mode manifest
+pnpm ops cd build local --target skills
+pnpm ops ci check skills product --mode source
 PYTHONPATH="apps/serve:packages/runtime" \
   .venv/bin/python -m apps.serve.tests.contract_skill_prebundle
 PYTHONPATH="apps/serve:packages/runtime" \

@@ -8,11 +8,21 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_runtime.contract.resource import RESOURCE_CANCELLED
 
 ADMISSION_INITIAL_REVISION = 0
 ADMISSION_REVISION_INVALID = "runtime_admission_revision_invalid"
 ADMISSION_BUSY = "runtime_admission_busy"
 ADMISSION_CLOSED = "agent_runtime_closed"
+
+
+class RetiredExecutionAuthority(AppServerError):
+    def __init__(self) -> None:
+        super().__init__(
+            RESOURCE_CANCELLED,
+            safe_error=RESOURCE_CANCELLED,
+            submission_not_applied=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -35,6 +45,7 @@ class NativeAdmission:
         self._desired_revision = ADMISSION_INITIAL_REVISION
         self._epoch = 0
         self._closed = False
+        self._retired = False
         self._failure = ""
 
     @property
@@ -51,12 +62,25 @@ class NativeAdmission:
         self._ready.set()
 
     @property
+    def retired(self) -> bool:
+        return self._retired
+
+    def retire(self) -> None:
+        self._retired = True
+        self._epoch += 1
+        self._ready.set()
+
+    def require_authority(self) -> None:
+        if self.retired:
+            raise RetiredExecutionAuthority()
+
+    @property
     def active(self) -> int:
         return self._active
 
     @property
     def accepting(self) -> bool:
-        return not self._closed and not self._failure and self._ready.is_set()
+        return not self._closed and not self.retired and not self._failure and self._ready.is_set()
 
     @property
     def desired_revision(self) -> int:
@@ -75,9 +99,13 @@ class NativeAdmission:
         )
 
     def freeze(self, revision: int) -> bool:
-        if type(revision) is not int or revision < ADMISSION_INITIAL_REVISION:
+        if (
+            not isinstance(revision, int)
+            or isinstance(revision, bool)
+            or revision < ADMISSION_INITIAL_REVISION
+        ):
             raise ValueError(ADMISSION_REVISION_INVALID)
-        if self._closed or self._failure or revision < self._desired_revision:
+        if self._closed or self.retired or self._failure or revision < self._desired_revision:
             return False
         self._desired_revision = revision
         self._epoch += 1
@@ -86,10 +114,15 @@ class NativeAdmission:
 
     async def wait_drained(self, revision: int) -> bool:
         await self._drained.wait()
-        return not self._closed and not self._failure and revision == self._desired_revision
+        return (
+            not self._closed
+            and not self.retired
+            and not self._failure
+            and revision == self._desired_revision
+        )
 
     def applied(self, revision: int) -> bool:
-        if self._closed or self._failure or revision != self._desired_revision:
+        if self._closed or self.retired or self._failure or revision != self._desired_revision:
             return False
         if self._active:
             raise RuntimeError(ADMISSION_BUSY)
@@ -107,6 +140,7 @@ class NativeAdmission:
     async def enter(self) -> AsyncIterator[None]:
         while True:
             await self._ready.wait()
+            self.require_authority()
             if self._failure:
                 raise AppServerError(self._failure, safe_error=self._failure)
             if self._closed:

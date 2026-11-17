@@ -80,6 +80,7 @@ IMAGE_INPUT_REASON_KEY = "image_input_reason"
 INPUT_MODALITIES_KEY = "input_modalities"
 OUTPUT_MODALITIES_KEY = "output_modalities"
 REASONING_OPTIONS_KEY = "reasoning_options"
+RESPONSES_REASONING_SUMMARY_KEY = "responses_reasoning_summary"
 REASONING_EFFORTS_KEY = "reasoning_efforts"
 CONTEXT_EDITION_KEY = "context_edition"
 BASE_EDITION = "base"
@@ -120,6 +121,7 @@ class ModelCapability:
     output_modalities: tuple[str, ...] | None = None
     reasoning_supported: bool | None = None
     reasoning_options: tuple[ReasoningOption, ...] | None = None
+    responses_reasoning_summary: bool | None = None
     long_context: int | None = None
     status: str = MODEL_STATUS_ACTIVE
     provenance: Mapping[str, str] = EMPTY_PROVENANCE
@@ -368,6 +370,9 @@ def _parse_entry(wire_model: str, value: Any, *, where: str) -> ModelCapability:
     if not isinstance(modalities_value, dict):
         raise CapabilitySchemaError(f"{where}: modalities must be an object")
     supported, options = _parse_reasoning(value.get("reasoning"), where=where)
+    reasoning_summary = value.get(RESPONSES_REASONING_SUMMARY_KEY)
+    if reasoning_summary is not None and not isinstance(reasoning_summary, bool):
+        raise CapabilitySchemaError(f"{where}: {RESPONSES_REASONING_SUMMARY_KEY} must be boolean")
     status = _text(value.get("status")) or MODEL_STATUS_ACTIVE
     if status not in MODEL_STATUSES:
         raise CapabilitySchemaError(f"{where}: unknown status {status!r}")
@@ -392,6 +397,7 @@ def _parse_entry(wire_model: str, value: Any, *, where: str) -> ModelCapability:
         ),
         reasoning_supported=supported,
         reasoning_options=options,
+        responses_reasoning_summary=reasoning_summary,
         long_context=long_context,
         status=status,
         provenance=_parse_provenance(value.get("provenance"), where=where),
@@ -491,6 +497,11 @@ def _merge(baseline: ModelCapability, override: ModelCapability) -> ModelCapabil
             else override.reasoning_supported
         ),
         reasoning_options=_merge_options(baseline.reasoning_options, override.reasoning_options),
+        responses_reasoning_summary=(
+            baseline.responses_reasoning_summary
+            if override.responses_reasoning_summary is None
+            else override.responses_reasoning_summary
+        ),
         long_context=(
             baseline.long_context if override.long_context is None else override.long_context
         ),

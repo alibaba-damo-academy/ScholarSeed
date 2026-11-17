@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -39,8 +40,113 @@ from service.chat.runtime.reconfiguration import (
     PreparationError,
 )
 from service.chat.service.sessions import SessionService
+from service.identity.service.skill_credentials import SKILL_API_KEY_ENV, SkillCredentialService
 from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
 from service.platform.parent_control import ParentControl
+
+
+class PreparedOpenCredentialContracts(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.activities = Activities()
+        self.account = Mock()
+        self.account.request.return_value = httpx.Response(200, json={"token": "contract-key"})
+        self.actor = "actor"
+        self.credential = "contract-identity"
+        self.credentials = SkillCredentialService(
+            "https://account.test", activities=self.activities, client=self.account, environ={}
+        )
+        self.credentials.bind_identity(
+            lambda credential: {"user_id": self.actor} if credential == self.credential else None,
+            lambda _owner: self.credential,
+        )
+        self.sessions = SimpleNamespace(
+            model_admission=Mock(return_value=nullcontext()),
+            open=AsyncMock(return_value=({"ok": True}, 200)),
+        )
+        self.application = FastAPI()
+        self.application.state.auth_enabled = False
+        self.application.state.ownership_axis = "machine"
+
+        @self.application.middleware("http")
+        async def identity(request, call_next):
+            request.state.user_id = self.actor
+            return await call_next(request)
+
+        mount_session_routes(
+            self.application,
+            sessions=self.sessions,
+            turns=Mock(),
+            events=Mock(),
+            artifacts=Mock(),
+            credentials=self.credentials,
+        )
+        self.body = {
+            "prepare_runtime": True,
+            "model_id": "model",
+            "service_instance_id": self.activities.instance_id,
+        }
+
+    async def post(self, body):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.application), base_url="http://contract.test"
+        ) as client:
+            return await client.post(
+                "/api/serve/sessions/open",
+                json=body,
+                headers={"Authorization": "Bearer contract-identity"},
+            )
+
+    async def test_prepared_open_keeps_authorized_environment_without_second_slot_request(self):
+        prepared = await self.credentials.ensure(self.actor, self.credential)
+        self.account.request.side_effect = httpx.ConnectError("account unavailable")
+        response = await self.post(self.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.account.request.call_count, 1)
+        self.assertEqual(self.credentials.cached_environment(self.actor), prepared)
+        self.assertEqual(self.sessions.open.await_args.kwargs["skill_environment"], prepared)
+
+    async def test_prepared_open_without_key_does_not_invent_credentials(self):
+        self.account.request.side_effect = httpx.ConnectError("account unavailable")
+        response = await self.post(self.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.sessions.open.await_args.kwargs["skill_environment"], {})
+        self.assertEqual(self.credentials.cached_environment(self.actor), {})
+
+    async def test_invalid_preparation_never_resolves_credentials(self):
+        for body in (
+            {"prepare_runtime": "true"},
+            {**self.body, "model_id": ""},
+            {**self.body, "service_instance_id": ""},
+            {**self.body, "resume_session_id": "existing"},
+        ):
+            with self.subTest(body=body):
+                response = await self.post(body)
+                self.assertEqual(response.status_code, 400)
+        self.account.request.assert_not_called()
+        self.sessions.open.assert_not_awaited()
+
+    async def test_ordinary_resume_and_fork_still_retrieve_authoritative_credentials(self):
+        await self.credentials.ensure(self.actor, self.credential)
+        self.account.request.return_value = httpx.Response(200, json={"token": "rotated-key"})
+        for body in ({}, {"resume_session_id": "existing"}, {"fork_session_id": "source"}):
+            with self.subTest(body=body):
+                self.account.request.reset_mock()
+                response = await self.post(body)
+                self.assertEqual(response.status_code, 200)
+                self.account.request.assert_called_once()
+                self.assertEqual(
+                    self.sessions.open.await_args.kwargs["skill_environment"],
+                    {SKILL_API_KEY_ENV: "rotated-key"},
+                )
+
+    async def test_prepared_open_cannot_reuse_credentials_after_identity_invalidated(self):
+        await self.credentials.ensure(self.actor, self.credential)
+        self.credentials.clear_credentials()
+        self.credential = ""
+        response = await self.post(self.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.sessions.open.await_args.kwargs["skill_environment"], {})
+        self.assertEqual(self.account.request.call_count, 1)
 
 
 class ReconfigurationContracts(unittest.IsolatedAsyncioTestCase):
@@ -77,6 +183,55 @@ class ReconfigurationContracts(unittest.IsolatedAsyncioTestCase):
                 **changes,
             }
         )
+
+    async def test_owner_drain_timeout_keeps_fence_without_applying(self):
+        self.drain.side_effect = TimeoutError("owner close incomplete")
+        with self.assertLogs(__name__, level="WARNING") as captured:
+            self.start()
+            await self.manager.aclose()
+        self.assertIn("stage=owner_drain", "\n".join(captured.output))
+        self.assertIs(self.manager.state, CommandState.RESTART_REQUIRED)
+        self.assertIs(self.activities.snapshot().phase, ActivityPhase.DRAINING)
+        self.apply.assert_not_awaited()
+        with self.assertRaises(MaintenanceActive):
+            self.activities.enter(ActivityDomain.TURN, root=True)
+
+    async def test_timeout_diagnostics_identify_stage_and_live_resources(self):
+        resource = self.activities.enter(ActivityDomain.RESOURCE)
+        try:
+            with self.assertLogs(__name__, level="WARNING") as captured:
+                self.start(wait_seconds=0.001)
+                await self.manager.aclose()
+            message = "\n".join(captured.output)
+            self.assertIn("stage=resource_wait", message)
+            self.assertIn("'total': 2", message)
+            self.assertIn("service.chat.runtime.reconfiguration.start", message)
+            self.assertIn("'age_seconds':", message)
+            self.assertIs(self.manager.state, CommandState.RESTART_REQUIRED)
+            self.assertIs(self.activities.snapshot().phase, ActivityPhase.DRAINING)
+            self.apply.assert_not_awaited()
+            self.assertEqual(self.activities.resource_diagnostics()["total"], 1)
+        finally:
+            resource.close()
+
+    async def test_business_timeout_diagnostic_is_distinct_and_reopens(self):
+        business = self.activities.enter(ActivityDomain.TURN)
+        try:
+            with self.assertLogs(__name__, level="INFO") as captured:
+                self.start(wait_seconds=0.001)
+                await self.manager.aclose()
+            message = "\n".join(captured.output)
+            self.assertIn("stage=business_wait", message)
+            self.assertIn("runtime_host_reconfiguration_business_wait", message)
+            self.assertIn(f"'lease_id': '{business.identity}'", message)
+            self.assertIn(f"'instance_id': '{self.activities.instance_id}'", message)
+            self.assertIn("'turn_total': 1", message)
+            self.assertIn("'generation': '", message)
+            self.assertIs(self.manager.state, CommandState.REJECTED)
+            self.assertIs(self.activities.snapshot().phase, ActivityPhase.OPEN)
+            self.drain.assert_not_awaited()
+        finally:
+            business.close()
 
     async def test_waits_for_existing_business_blocks_new_roots_then_switches(self):
         self.assertIsNone(self.manager.state)
@@ -316,19 +471,24 @@ class PreparationContracts(unittest.IsolatedAsyncioTestCase):
         finally:
             business.close()
 
-    async def assert_conflict_drains_after_business(self):
+    async def assert_conflict_rejects_busy_then_retries(self):
         business = self.activities.enter(ActivityDomain.TURN, root=True)
         try:
             self.start()
-            await asyncio.sleep(0)
+            result = await self.wait()
+            self.assertEqual((result["state"], result["error"]), ("rejected", RESOURCE_HOST_BUSY))
+            self.assertEqual(self.start(), result)
             self.warm.assert_awaited_once()
-            self.assertIs(self.activities.snapshot().phase, ActivityPhase.DRAINING)
+            self.assertIs(self.activities.snapshot().phase, ActivityPhase.OPEN)
+            self.assertEqual(self.activities.snapshot().counts, {"turn": 1})
             self.drain.assert_not_awaited()
             self.apply.assert_not_awaited()
-            with self.assertRaises(MaintenanceActive):
-                self.activities.enter(ActivityDomain.RUNTIME, root=True)
+            with self.activities.enter(ActivityDomain.TURN, root=True):
+                self.assertEqual(self.activities.snapshot().counts, {"turn": 2})
         finally:
             business.close()
+        self.identity = str(uuid4())
+        self.start()
         result = await self.wait()
         self.assertEqual(result["state"], "applied")
         self.drain.assert_awaited_once()
@@ -336,21 +496,21 @@ class PreparationContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.activities.snapshot().phase, ActivityPhase.OPEN)
         self.assertEqual(self.activities.snapshot().counts, {})
 
-    async def test_precise_conflict_receipt_enters_controlled_drain(self):
+    async def test_precise_conflict_receipt_retries_only_after_idle(self):
         self.warm.return_value = CommandReceipt(
             RUNTIME_HOST_WARMUP_COMMAND,
             CommandState.RESTART_REQUIRED,
             safe_error=RESOURCE_HOST_CONFIGURATION_CONFLICT,
         )
-        await self.assert_conflict_drains_after_business()
+        await self.assert_conflict_rejects_busy_then_retries()
 
-    async def test_precise_conflict_exception_enters_controlled_drain(self):
+    async def test_precise_conflict_exception_retries_only_after_idle(self):
         self.warm.side_effect = SessionActivationError(RESOURCE_HOST_CONFIGURATION_CONFLICT)
-        await self.assert_conflict_drains_after_business()
+        await self.assert_conflict_rejects_busy_then_retries()
 
-    async def test_precise_conflict_value_error_enters_controlled_drain(self):
+    async def test_precise_conflict_value_error_retries_only_after_idle(self):
         self.warm.side_effect = ValueError(RESOURCE_HOST_CONFIGURATION_CONFLICT)
-        await self.assert_conflict_drains_after_business()
+        await self.assert_conflict_rejects_busy_then_retries()
 
     async def test_nonconflict_rejection_never_uses_reconfiguration(self):
         self.warm.return_value = CommandReceipt(
@@ -643,6 +803,32 @@ class ModelAdmissionContracts(unittest.IsolatedAsyncioTestCase):
             domain=ActivityDomain.TURN,
             service_instance_id=self.activities.instance_id,
         )
+
+    async def test_incompatible_preparation_does_not_block_compatible_turn(self):
+        async def warm(*, model_id, **_options):
+            if model_id == "target":
+                return CommandReceipt(
+                    RUNTIME_HOST_WARMUP_COMMAND,
+                    CommandState.REJECTED,
+                    safe_error=RESOURCE_HOST_CONFIGURATION_CONFLICT,
+                )
+            return CommandReceipt(
+                RUNTIME_HOST_WARMUP_COMMAND, CommandState.APPLIED, correlation_id="warm-host:1"
+            )
+
+        self.warm.side_effect = warm
+        with self.activities.enter(ActivityDomain.TURN, root=True):
+            with self.assertRaisesRegex(PreparationError, RESOURCE_HOST_BUSY):
+                async with self.admission():
+                    self.fail("incompatible host admitted during another turn")
+            async with self.admission("compatible"):
+                self.assertEqual(self.activities.snapshot().counts, {"turn": 2})
+            self.drain.assert_not_awaited()
+            self.apply.assert_not_awaited()
+        async with self.admission():
+            self.assertEqual(self.activities.snapshot().counts, {"turn": 1})
+        self.drain.assert_awaited_once()
+        self.apply.assert_awaited_once()
 
     async def test_waiting_carries_only_service_operation_resource_then_admits_turn(self):
         entered = asyncio.Event()
@@ -1169,11 +1355,94 @@ class ModelAdmissionContracts(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"], SESSION_ARCHIVED_ERROR)
+        self.assertNotIn("preparation_state", response.json())
         self.warm.assert_not_awaited()
         self.drain.assert_not_awaited()
         self.apply.assert_not_awaited()
         turns.post.assert_not_awaited()
         self.assertEqual(self.activities.snapshot().counts, {})
+
+    async def _assert_turn_http_preparation_failure_state(self, state: CommandState) -> None:
+        application = FastAPI()
+        turns = SimpleNamespace(post=AsyncMock())
+        self.warm.return_value = CommandReceipt(
+            RUNTIME_HOST_WARMUP_COMMAND, state, safe_error="runtime_warmup_failed"
+        )
+        mount_session_routes(
+            application,
+            sessions=self.service,
+            turns=turns,
+            events=Mock(),
+            artifacts=Mock(),
+            credentials=Mock(),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://contract.test"
+        ) as client:
+            response = await client.post(
+                "/api/serve/sessions/session/turns",
+                json={
+                    "expected_model_id": "target",
+                    "service_instance_id": self.activities.instance_id,
+                    "input": [],
+                },
+            )
+        self.warm.assert_awaited_once()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": False,
+                "error": "runtime_warmup_failed",
+                "preparation_error": True,
+                "preparation_state": state.value,
+            },
+        )
+        turns.post.assert_not_awaited()
+        self.assertEqual(self.activities.snapshot().counts, {})
+
+    async def test_turn_http_preserves_rejected_preparation(self):
+        await self._assert_turn_http_preparation_failure_state(CommandState.REJECTED)
+
+    async def test_turn_http_preserves_unsupported_preparation(self):
+        await self._assert_turn_http_preparation_failure_state(CommandState.UNSUPPORTED)
+
+    async def test_turn_http_preserves_restart_required_preparation(self):
+        await self._assert_turn_http_preparation_failure_state(CommandState.RESTART_REQUIRED)
+
+    async def test_model_selection_rejects_old_service_instance_before_mutation(self):
+        application = FastAPI()
+        application.state.service_instance_id = self.activities.instance_id
+        self.service.set_model = AsyncMock(return_value=({"ok": True}, 200))
+        mount_session_routes(
+            application,
+            sessions=self.service,
+            turns=Mock(),
+            events=Mock(),
+            artifacts=Mock(),
+            credentials=Mock(),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://contract.test"
+        ) as client:
+            response = await client.post(
+                "/api/serve/sessions/session/model",
+                json={"model_id": "target", "service_instance_id": "old-instance"},
+            )
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["error"], "service_instance_changed")
+            self.service.set_model.assert_not_awaited()
+            response = await client.post(
+                "/api/serve/sessions/session/model",
+                json={"model_id": "target", "service_instance_id": self.activities.instance_id},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.service.set_model.assert_awaited_once()
+            response = await client.post(
+                "/api/serve/sessions/session/model", json={"model_id": "target"}
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.service.set_model.await_count, 2)
 
     async def test_stale_session_model_is_rejected_before_metering_or_body(self):
         self.service.model.return_value = {"model_id": "changed"}

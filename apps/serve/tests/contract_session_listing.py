@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import dataclasses
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -45,9 +47,21 @@ from service.chat.constants import (  # noqa: E402
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_USER_MESSAGE,
 )
+from service.chat.persistence import events as event_persistence  # noqa: E402
 from service.chat.persistence.catalog import (  # noqa: E402
+    SessionListScope,
     SessionPrincipal,
     SessionStatus,
+)
+from service.chat.persistence.events import (  # noqa: E402 -- after SCHOLARSEED_HOME isolation
+    SESSION_FORK_EVENT,
+    SESSION_FORK_KEY,
+)
+from service.chat.service.sessions import (  # noqa: E402
+    SESSION_LIST_TIMING_LOGGER,
+    SessionListPhase,
+    SessionListTiming,
+    SessionListTimingEvent,
 )
 from service.identity.utils import (  # noqa: E402
     OWNERSHIP_AXIS_MACHINE,
@@ -280,7 +294,11 @@ def principal_axis(root: Path) -> None:
             )
 
         app.state.runtime_service.readiness = readiness
-        response = client.get("/api/serve/sessions")
+        with patch.object(
+            catalog, "observe", side_effect=AssertionError("list installed mutation triggers")
+        ) as observer:
+            response = client.get("/api/serve/sessions")
+            check("ordinary listing skips notification setup", not observer.called)
         payload = response.json()
         rows = payload.get("sessions", [])
         ids = [row["session_id"] for row in rows]
@@ -298,22 +316,37 @@ def principal_axis(root: Path) -> None:
             all("last_agent_reply_at" not in row for row in rows),
             str(rows),
         )
-        reply_rows = client.get(
-            "/api/serve/sessions", params={"include_last_agent_reply": "true"}
-        ).json()["sessions"]
+        with (
+            patch.object(
+                app.state.product_events, "observe", wraps=app.state.product_events.observe
+            ) as reply_observer,
+            patch(
+                "service.chat.persistence.events.reader",
+                wraps=event_persistence.reader,
+            ) as reply_readers,
+        ):
+            reply_rows = client.get(
+                "/api/serve/sessions", params={"include_last_agent_reply": "true"}
+            ).json()["sessions"]
+        check(
+            "reply-time listing never installs mutation notifications",
+            reply_observer.call_count == 0,
+            str(reply_observer.call_count),
+        )
+        check("reply-time listing uses one read snapshot", reply_readers.call_count == 1)
         reply_times = {row["session_id"]: row.get("last_agent_reply_at") for row in reply_rows}
         entered = Event()
         release = Event()
-        original_reply = app.state.product_events.last_agent_reply_at
+        original_reply = app.state.product_events.last_agent_reply_times
 
-        def delayed_reply(session_id: str) -> float | None:
+        def delayed_reply(session_ids: list[str]) -> dict[str, float | None]:
             entered.set()
             if not release.wait(10):
                 raise TimeoutError("history probe was not released")
-            return original_reply(session_id)
+            return original_reply(session_ids)
 
         with (
-            patch.object(app.state.product_events, "last_agent_reply_at", delayed_reply),
+            patch.object(app.state.product_events, "last_agent_reply_times", delayed_reply),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
             listing = executor.submit(
@@ -437,6 +470,39 @@ def principal_axis(root: Path) -> None:
         )
         project_scopes(app, client, root, principal)
         pagination_regression(app, client, principal)
+        legacy = catalog.register(
+            "legacy-model",
+            principal,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id="legacy-model-thread",
+            vendor_session_id=None,
+            runtime_workdir=str(root / "legacy-model"),
+            project_path=None,
+            output_root=str(root / "legacy-model" / "output"),
+            codex_version=None,
+            model_id=None,
+            policy_id=None,
+            status=SessionStatus.READY,
+            title="Legacy model",
+            created_at=0.0,
+        )
+        with patch.object(catalog, "observe", wraps=catalog.observe) as observer:
+            # The project pagination fixtures must not consume this query's candidate window.
+            legacy_response = client.get(
+                "/api/serve/sessions", params={"scope": "unassigned", "query": legacy.title}
+            )
+            check("legacy model backfill uses one observed connection", observer.call_count == 1)
+        legacy_rows = legacy_response.json().get("sessions", [])
+        persisted = catalog.get(legacy.session_id)
+        check(
+            "legacy model is persisted and projected by listing",
+            legacy_response.status_code == 200
+            and len(legacy_rows) == 1
+            and persisted is not None
+            and bool(persisted.model_id)
+            and legacy_rows[0]["runtime"]["model_id"] == persisted.model_id,
+            legacy_response.text,
+        )
 
 
 def pagination_regression(app: Any, client: TestClient, principal: SessionPrincipal) -> None:
@@ -562,6 +628,111 @@ def pagination_regression(app: Any, client: TestClient, principal: SessionPrinci
         "unassigned excludes projects and foreign principal",
         {row["session_id"] for row in unassigned["sessions"]} == {"oldest", "middle", "newest"},
     )
+    with (
+        patch.object(SESSION_LIST_TIMING_LOGGER, "isEnabledFor", return_value=True),
+        patch.object(SESSION_LIST_TIMING_LOGGER, "log") as diagnostic_log,
+        patch.object(
+            app.state.product_events, "observe", wraps=app.state.product_events.observe
+        ) as notifications,
+        patch.object(event_persistence, "reader", wraps=event_persistence.reader) as reply_readers,
+    ):
+        diagnostic = client.get(
+            "/api/serve/sessions",
+            params={**params, "limit": 500, "include_last_agent_reply": True},
+            headers={"x-scholarseed-diagnostic-id": "a" * 32},
+        )
+    check("500-task reply listing preserves the page", len(diagnostic.json()["sessions"]) == 500)
+    check("500-task reply listing opens one read snapshot", reply_readers.call_count == 1)
+    check("500-task reply listing has zero write observers", notifications.call_count == 0)
+    timings = [json.loads(call.args[1]) for call in diagnostic_log.call_args_list]
+    check(
+        "correlated list timing is available at normal INFO level",
+        all(call.args[0] == logging.INFO for call in diagnostic_log.call_args_list),
+    )
+    check(
+        "timing distinguishes physical worker completion from response completion",
+        [row["event"] for row in timings] == ["worker_finished", "finished"],
+    )
+    final = timings[-1]
+    check(
+        "timing correlates with the HTTP request",
+        bool(final["request_id"]) and final["client_request_id"] == "a" * 32,
+    )
+    check(
+        "timing records real page counts",
+        final["counts"]["selected_rows"] == final["counts"]["reply_sessions"] == 500,
+    )
+    check(
+        "timing separates worker queue and query phases",
+        final["queue_ms"] >= 0
+        and all(
+            phase.value in final["phases_ms"]
+            for phase in (
+                SessionListPhase.CATALOG,
+                SessionListPhase.SEARCH,
+                SessionListPhase.STATES,
+                SessionListPhase.REPLIES,
+                SessionListPhase.PROJECTION,
+            )
+        ),
+    )
+    check(
+        "timing excludes project paths and titles",
+        project not in json.dumps(timings) and "needle" not in json.dumps(timings),
+    )
+    print("session_list_probe " + json.dumps(final))
+    with patch.object(SESSION_LIST_TIMING_LOGGER, "isEnabledFor", return_value=False):
+        check(
+            "disabled diagnostics allocate no observation",
+            SessionListTiming.create(None, None) is None,
+        )
+    with patch.object(
+        SESSION_LIST_TIMING_LOGGER, "isEnabledFor", side_effect=lambda level: level >= logging.INFO
+    ):
+        check(
+            "ordinary uncorrelated reads remain DEBUG-only",
+            SessionListTiming.create(None, None) is None,
+        )
+        check(
+            "correlated reads retain phase timing without global DEBUG",
+            SessionListTiming.create("server-request", "a" * 32) is not None,
+        )
+    entered, release = Event(), Event()
+    observation = SessionListTiming()
+
+    def held_reader():
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test reader not released")
+        raise ValueError("private-query-and-body")
+
+    with (
+        patch.object(SESSION_LIST_TIMING_LOGGER, "log") as lifecycle_log,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        pending = executor.submit(observation.run, held_reader)
+        try:
+            check("physical timing starts with the actual worker", entered.wait(5))
+            observation.report(SessionListTimingEvent.FINISHED, "CancelledError")
+            check(
+                "cancelled waiter does not claim the worker completed",
+                not json.loads(lifecycle_log.call_args.args[1])["worker_completed"],
+            )
+        finally:
+            release.set()
+        try:
+            pending.result(timeout=5)
+        except ValueError:
+            pass
+        else:
+            check("timing preserves worker errors", False)
+    final_worker = json.loads(lifecycle_log.call_args.args[1])
+    check(
+        "late worker completion retains failure class without error text",
+        final_worker["worker_completed"]
+        and final_worker["error_type"] == "ValueError"
+        and "private-query-and-body" not in str(lifecycle_log.call_args_list),
+    )
 
 
 def pagination_axis(root: Path) -> None:
@@ -670,6 +841,64 @@ def pagination(app: Any, client: TestClient, root: Path, principal: SessionPrinc
         [row["session_id"] for row in pinned_search["sessions"] + pinned_search_tail["sessions"]]
         == [expected[-1], *expected[:3]],
     )
+    catalog.set_pinned(expected[-1], principal, False)
+    original = catalog.owned(principal)
+    moved = client.put(
+        f"/api/serve/sessions/{expected[-1]}/display-order",
+        json={"target_session_id": expected[0], "placement": "before"},
+    )
+    check(
+        "relative ordering accepts a session beyond the first 500 rows",
+        moved.status_code == 200,
+        moved.text,
+    )
+    reopened = type(catalog)(shared_ownership=catalog.shared_ownership)
+    check(
+        "relative ordering changes only presentation ranks in the complete sibling set",
+        all(
+            record == dataclasses.replace(original[session_id], display_order=record.display_order)
+            for session_id, record in reopened.owned(principal).items()
+        ),
+    )
+    ordered_first = client.get("/api/serve/sessions", params=params).json()
+    ordered_tail = client.get(
+        "/api/serve/sessions", params={**params, "cursor": ordered_first.get("next_cursor")}
+    ).json()
+    ordered_expected = [expected[-1], *expected[:-1]]
+    check(
+        "durable manual order paginates all 503 sessions without omission or duplication",
+        [row["session_id"] for row in ordered_first["sessions"] + ordered_tail["sessions"]]
+        == ordered_expected
+        and ordered_tail.get("next_cursor") is None,
+    )
+    moved_to_tail = client.put(
+        f"/api/serve/sessions/{expected[0]}/display-order",
+        json={"target_session_id": expected[-2], "placement": "after"},
+    )
+    reordered = reopened.listed(
+        principal,
+        runtime_id=RUNTIME_ID,
+        scope=SessionListScope.PROJECT,
+        project_path=project,
+        limit=None,
+        archived=False,
+    )
+    check(
+        "relative ordering resolves a target beyond the first 500 rows from durable metadata",
+        moved_to_tail.status_code == 200
+        and [record.session_id for record in reordered]
+        == [expected[-1], *expected[1:-1], expected[0]],
+        moved_to_tail.text,
+    )
+    for body in (
+        {"target_session_id": expected[0], "placement": "invalid"},
+        {"target_session_id": expected[0]},
+        {"target_session_id": 12, "placement": "before"},
+    ):
+        rejected = client.put(f"/api/serve/sessions/{expected[-1]}/display-order", json=body)
+        check(
+            "invalid relative order request is rejected", rejected.status_code == 422, rejected.text
+        )
     for values in (
         [True, "id"],
         [-1, "id"],
@@ -686,6 +915,26 @@ def pagination(app: Any, client: TestClient, root: Path, principal: SessionPrinc
             f"invalid cursor shape rejected: {values}",
             client.get("/api/serve/sessions", params={"cursor": cursor}).status_code == 422,
         )
+    for operation in ("archive", "delete"):
+        cursor_page = client.get("/api/serve/sessions", params={**params, "limit": 1}).json()
+        anchor_id = cursor_page["sessions"][0]["session_id"]
+        removed = (
+            client.put(f"/api/serve/sessions/{anchor_id}/archive", json={"archived": True})
+            if operation == "archive"
+            else client.delete(f"/api/serve/sessions/{anchor_id}")
+        )
+        stale_page = client.get(
+            "/api/serve/sessions", params={**params, "cursor": cursor_page["next_cursor"]}
+        )
+        check(
+            f"{operation} of a cursor anchor explicitly invalidates the project page",
+            removed.status_code == 200
+            and stale_page.status_code == 422
+            and stale_page.json().get("detail") == "session_list_cursor_invalid",
+            stale_page.text,
+        )
+        if operation == "archive":
+            catalog.set_archived(anchor_id, principal, False)
 
 
 def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionPrincipal) -> None:
@@ -786,8 +1035,108 @@ def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionP
         unassigned.status_code == 200 and unassigned_ids == {"oldest", "middle", "newest"},
         f"status={unassigned.status_code}; ids={unassigned_ids}",
     )
+    child_id = "project-a-2"
+    catalog.set_display_parent(child_id, principal, "project-a-0")
+    events = app.state.product_events
+    events.append(
+        session_id=child_id,
+        runtime_id=RUNTIME_ID,
+        vendor_thread_id=f"vendor-{child_id}",
+        vendor_turn_id=None,
+        vendor_item_id=None,
+        kind=SESSION_FORK_EVENT,
+        payload={
+            "source_session_id": "project-a-1",
+            "source_turn_id": "original-turn",
+            "source_product_seq": 1,
+        },
+        idempotency_key=SESSION_FORK_KEY,
+    )
+    before_detach = catalog.get(child_id)
+    assert before_detach is not None
+    before_events = events.replay(child_id)
+    children = client.get("/api/serve/sessions/project-a-0/display-children")
+    check(
+        "delete confirmation counts attached children",
+        children.status_code == 200 and children.json()["child_count"] == 1,
+        children.text,
+    )
+    for _ in range(2):
+        detached = client.delete(f"/api/serve/sessions/{child_id}/display-parent")
+        check(
+            "detach clears only the display parent and is idempotent",
+            detached.status_code == 200
+            and detached.json()
+            == {
+                "ok": True,
+                "session_id": child_id,
+                "display_parent_session_id": None,
+            }
+            and catalog.get(child_id)
+            == dataclasses.replace(
+                before_detach,
+                display_parent_session_id=None,
+                detached_parent_session_id=before_detach.display_parent_session_id,
+                display_order=0,
+            ),
+            detached.text,
+        )
+        check(
+            "detach preserves the sibling source, fork anchor and complete event history",
+            events.replay(child_id) == before_events,
+        )
+    reopened = type(catalog)(shared_ownership=catalog.shared_ownership)
+    denied_parent = client.put(
+        f"/api/serve/sessions/{child_id}/display-parent", json={"parent_session_id": "project-a-1"}
+    )
+    check(
+        "returning rejects an unrelated parent",
+        denied_parent.status_code == 422,
+        denied_parent.text,
+    )
+    returned = client.put(
+        f"/api/serve/sessions/{child_id}/display-parent", json={"parent_session_id": "project-a-0"}
+    )
+    check(
+        "returning restores only the recorded parent",
+        returned.status_code == 200
+        and returned.json()["display_parent_session_id"] == "project-a-0",
+        returned.text,
+    )
+    client.delete(f"/api/serve/sessions/{child_id}/display-parent")
+    check(
+        "detached display parent survives reopening the catalog",
+        reopened.get(child_id) == catalog.get(child_id),
+    )
+    check(
+        "missing detach targets remain non-enumerating",
+        client.delete("/api/serve/sessions/missing/display-parent").status_code == 404,
+    )
     archived_id = "project-a-2"
-    archived = client.put(f"/api/serve/sessions/{archived_id}/archive", json={"archived": True})
+    catalog.update_status(archived_id, SessionStatus.RUNNING)
+    denied_stop = client.put(
+        f"/api/serve/sessions/{archived_id}/archive",
+        json={"archived": True, "stop_running": False},
+    )
+    check(
+        "archive API forwards the absence of stop consent before any runtime activation",
+        denied_stop.status_code == 409
+        and denied_stop.json()["error"] == "session_archive_stop_required"
+        and not catalog.get(archived_id).archived,
+        denied_stop.text,
+    )
+    check(
+        "archive stop consent rejects string booleans",
+        client.put(
+            f"/api/serve/sessions/{archived_id}/archive",
+            json={"archived": True, "stop_running": "false"},
+        ).status_code
+        == 422,
+    )
+    catalog.update_status(archived_id, SessionStatus.COMPLETED)
+    archived = client.put(
+        f"/api/serve/sessions/{archived_id}/archive", json={"archived": True, "stop_running": False}
+    )
     check("idle task archives through the public owner route", archived.status_code == 200)
     visible = client.get(
         "/api/serve/sessions",
@@ -814,11 +1163,26 @@ def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionP
         ("POST", f"/api/serve/sessions/{archived_id}/turns", {"text": "no new turn"}),
         ("PATCH", f"/api/serve/sessions/{archived_id}", {"title": "no edit"}),
         ("PUT", f"/api/serve/sessions/{archived_id}/pin", {"pinned": True}),
+        ("DELETE", f"/api/serve/sessions/{archived_id}/display-parent", None),
+        (
+            "PUT",
+            f"/api/serve/sessions/{archived_id}/display-order",
+            {"target_session_id": "project-a-0", "placement": "before"},
+        ),
     ):
         response = client.request(method, path, json=body)
         check(
             "archived conversation mutations are rejected: " + method, response.status_code == 409
         )
+    archived_target = client.put(
+        "/api/serve/sessions/project-a-0/display-order",
+        json={"target_session_id": archived_id, "placement": "before"},
+    )
+    check(
+        "archived ordering targets are rejected as a state conflict",
+        archived_target.status_code == 409,
+        archived_target.text,
+    )
     check(
         "archived tasks cannot restore ordinary navigation",
         client.get(f"/api/serve/sessions/{archived_id}/navigation").status_code == 404,
@@ -844,6 +1208,21 @@ def project_scopes(app: Any, client: TestClient, root: Path, principal: SessionP
         "an unregistered project scope is non-enumerating",
         denied.status_code == 404,
         denied.text,
+    )
+    catalog.set_display_parent(child_id, principal, "project-a-0")
+    for source_id in ("project-a-0", "project-a-1"):
+        removed = client.delete(f"/api/serve/sessions/{source_id}")
+        check("detachment fixture removes its parent or sibling source", removed.status_code == 200)
+    preserved = catalog.get(child_id)
+    assert preserved is not None
+    detached = client.delete(f"/api/serve/sessions/{child_id}/display-parent")
+    check(
+        "unavailable parent and actual source do not prevent owned child detachment",
+        detached.status_code == 200
+        and catalog.get(child_id) == preserved
+        and preserved.display_parent_session_id is None
+        and events.replay(child_id) == before_events,
+        detached.text,
     )
 
 
@@ -887,9 +1266,14 @@ def machine_axis(root: Path) -> None:
             if cursor is None:
                 break
         check("machine 轴下别的账号建的会话可见", "foreign" in ids, str(ids))
+        expected = {"oldest", "middle", "newest", "foreign", "project-a-2", "legacy-model"}
+        expected.update(f"project-b-{index}" for index in range(4))
+        expected.update(f"paged-{index:04d}" for index in range(505))
         check(
             "machine pagination reaches all sessions once",
-            len(ids) == 516 and len(set(ids)) == len(ids),
+            set(ids) == expected and len(set(ids)) == len(ids),
+            f"count={len(ids)}; unique={len(set(ids))}; "
+            f"missing={sorted(expected - set(ids))}; extra={sorted(set(ids) - expected)}",
         )
 
 

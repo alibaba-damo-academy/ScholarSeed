@@ -15,11 +15,14 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from unittest.mock import patch
 
 import httpx
 import jwt
@@ -35,6 +38,11 @@ from ._directories import directory
 _FIXTURES = ExitStack()
 _HOME = _FIXTURES.enter_context(directory("rp-account-trust-home-"))
 os.environ["SCHOLARSEED_HOME"] = str(_HOME)
+# Keep all startup-owned roots in this fixture; do not inherit another runner's
+# Trace/Codex Home or fall back to the developer's provider configuration.
+os.environ["DAMOATRACE_HOME"] = str(_HOME)
+os.environ["DAMOATRACE_LEDGER_ROOT"] = str(_HOME / "projects")
+os.environ["CODEX_HOME"] = str(_HOME / "codex")
 
 from tests._isolate import isolate_research_db  # noqa: E402
 
@@ -378,6 +386,102 @@ def test_transport_failure_logs_cause_chain_without_credentials() -> None:
     check("不记录 access token", token not in joined)
 
 
+def test_connection_diagnostics_are_bounded() -> None:
+    print("[5d] 诊断忽略敏感事件且环境快照不随进程变量变化")
+    capture = LogCapture()
+    account_logger = logging.getLogger(ACCOUNT_LOGGER)
+    old_level = account_logger.level
+    account_logger.setLevel(logging.INFO)
+    account_logger.addHandler(capture)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        trace = request.extensions["trace"]
+        trace("http11.send_request_headers.started", {"request": "secret-header"})
+        trace("connection.connect_tcp.started", {"host": "secret-host\nforged", "port": True})
+        return httpx.Response(200, json={})
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+            with patch.dict(
+                os.environ,
+                {"HTTPS_PROXY": "http://secret-user:secret-pass@proxy.invalid"},
+                clear=True,
+            ):
+                trust = AccountTrust(ACCOUNT_BASE, client=client, activities=Activities())
+            with patch.dict(os.environ, {"http_proxy": "secret-new-value"}, clear=True):
+                trust._get(JWKS_PATH)
+        joined = "\n".join(capture.messages)
+        check("创建时环境键快照", "proxy_env_keys_at_creation=HTTPS_PROXY" in joined, joined)
+        check("注入客户端不冒充环境代理", "client_source=injected" in joined, joined)
+        check("非法主机/端口省略", "tcp_host=unobserved tcp_port=None" in joined, joined)
+        check("敏感事件和变量值均不记录", "secret" not in joined and "forged" not in joined, joined)
+    finally:
+        account_logger.removeHandler(capture)
+        account_logger.setLevel(old_level)
+
+
+def test_real_proxy_connection_diagnostics() -> None:
+    print("[5c] 真实 loopback 代理不可达/恢复与诊断脱敏")
+    signer = Signer()
+    clock = Clock()
+    capture = LogCapture()
+    account_logger = logging.getLogger(ACCOUNT_LOGGER)
+    old_level = account_logger.level
+    account_logger.setLevel(logging.INFO)
+    account_logger.addHandler(capture)
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            payload = {"keys": [signer.jwk]} if JWKS_PATH in self.path else {"revocations": []}
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: Any) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler, bind_and_activate=False)
+    server.server_bind()  # Reserve the port without listening: unavailable, with OS-specific failure semantics.
+    port = server.server_address[1]
+    thread = None
+    try:
+        with httpx.Client(
+            proxy=f"http://private-user:private-password@127.0.0.1:{port}",
+            trust_env=False,
+            timeout=2,
+        ) as client:
+            trust = AccountTrust(
+                "http://account.invalid", client=client, activities=Activities(), clock=clock
+            )
+            token = signer.token()
+            check("代理不可达时不采纳身份", trust.identity(token) is None)
+            failed = "\n".join(capture.messages)
+            check("失败记录实际代理主机", "tcp_host=127.0.0.1" in failed, failed)
+            check("失败记录实际代理端口", f"tcp_port={port}" in failed, failed)
+            server.server_activate()
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            clock.advance(JWKS_MIN_REFRESH_S + 1)
+            check("代理恢复后相同客户端可验签", trust.identity(token) is not None)
+            joined = "\n".join(capture.messages)
+            check("复用连接明确未观察新连接", "tcp_host=unobserved" in joined, joined)
+            check(
+                "不记录代理认证或 JWT",
+                all(value not in joined for value in ("private-user", "private-password", token)),
+            )
+    finally:
+        if thread is not None:
+            server.shutdown()
+            thread.join(timeout=3)
+        server.server_close()
+        account_logger.removeHandler(capture)
+        account_logger.setLevel(old_level)
+
+
 # ---------------------------------------------------------------------------
 # 测试 6: 吊销增量 —— 拉取节律 / since 游标重叠 / 上游故障沿用缓存
 # ---------------------------------------------------------------------------
@@ -471,7 +575,7 @@ def test_revocations_off_request_path() -> None:
 def _local_user_id() -> str:
     """建一个真本地用户：verify_token 要求 token 的 user_id 在 auth.json 里有用户记录。"""
     users = UserRepository()
-    return str(users.create("dual@example.test", "local-password")["user_id"])
+    return str(users.create("dual@alibaba-inc.com", "local-password")["user_id"])
 
 
 def _protected_app(trust: AccountTrust) -> TestClient:
@@ -659,12 +763,22 @@ def test_preflight_not_blocked() -> None:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def product_client(app: FastAPI):
+    # TestClient drains HTTP/lifespan but does not run ProductServer's final
+    # storage release. Retain qualifications on failed or incomplete teardown.
+    with TestClient(app) as client:
+        yield client
+    assert not app.state.activities.snapshot().counts, "product client left active work"
+    app.state.storage_domains.close()
+
+
 def test_unauthorized_is_readable_cross_origin() -> None:
     print("[9] 真 create_app 的 401 带 CORS 头, 跨源前端读得到状态码")
     cases = _HOME / "cases"
     cases.mkdir(exist_ok=True)
     app = create_app(cases, auth=True, auth_mode=ACCOUNT_MODE)
-    with TestClient(app) as client:
+    with product_client(app) as client:
         denied = client.get("/api/content/projects", headers={"origin": DEV_ORIGIN})
     check("无凭据 401", denied.status_code == 401, f"got {denied.status_code}")
     # 鉴权 middleware 是直接 return 401 不进内层的: CORS 必须包在它外面 (在 create_app 里
@@ -703,7 +817,7 @@ def test_revision_headers_are_readable_cross_origin() -> None:
             }
         )
 
-    with TestClient(app) as client:
+    with product_client(app) as client:
         response = client.get("/api/probe-etag", headers={"origin": DEV_ORIGIN})
     exposed = {
         header.strip().lower()
@@ -765,7 +879,7 @@ def test_product_app_env_wiring() -> None:
     os.environ[ACCOUNT_BASE_URL_ENV] = ACCOUNT_BASE
     try:
         app = create_app(cases, auth=True, auth_mode=ACCOUNT_MODE)
-        with TestClient(app) as client:
+        with product_client(app) as client:
             body = client.get("/api/auth/status").json()
     finally:
         os.environ.pop(ACCOUNT_BASE_URL_ENV, None)
@@ -884,6 +998,8 @@ def main() -> int:
     test_key_rotation()
     test_jwks_unreachable_fail_closed()
     test_transport_failure_logs_cause_chain_without_credentials()
+    test_real_proxy_connection_diagnostics()
+    test_connection_diagnostics_are_bounded()
     test_revocations()
     test_revocations_off_request_path()
     test_revocation_pruning()

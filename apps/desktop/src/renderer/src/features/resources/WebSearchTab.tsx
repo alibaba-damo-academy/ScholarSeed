@@ -17,6 +17,7 @@ import {
 } from '../../components/ui'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
+import { WebNavigationContext } from '../../contracts/navigation'
 import { importWebResources, mutateResourceNode, webSearchSiteIconUrl } from './api'
 import { WebImportDestination } from './Destination'
 import { resourceErrorMessage } from './error'
@@ -125,6 +126,7 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
   const { state, set, act } = useApp()
   const { t } = useTranslation('resources')
   const { toast } = useToast()
+  const openPage = React.useContext(WebNavigationContext)
   const deliveredNotices = useRef(new Set<WebSearchNotice>())
   const search = state.resource.webSearches[tabId]
   const attempt = latestAttempt(search)
@@ -517,7 +519,7 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
                           aria-label={t('webSearch.open', { title: candidate.title })}
                           className="inline-flex min-w-0 cursor-pointer items-center justify-start gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)] border-0 bg-transparent p-0 text-left [font:inherit] text-[inherit] hover:underline focus-visible:shadow-[var(--vds-focus-brand)]"
                           data-testid={`web-search-result-title-${index}`}
-                          onClick={() => void window.scholarseed.openExternal(candidate.url)}
+                          onClick={() => void openPage(candidate.url)}
                           unstyled
                         >
                           <span className="truncate">{candidate.title}</span>

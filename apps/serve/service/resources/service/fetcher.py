@@ -63,6 +63,16 @@ WEB_PAGE_TYPES = WEB_HTML_TYPES | {"text/plain", "application/json"}
 WEB_PAGE_ACCEPT = "text/html,application/xhtml+xml,text/plain,application/json"
 WEB_HIDDEN_TAGS = frozenset({"script", "style", "template", "noscript"})
 WEB_PAGE_ENCODING_INVALID = "web_page_encoding_invalid"
+WEB_PREVIEW_TITLE_FIELDS = ("citation_title", "og:title", "twitter:title")
+WEB_PREVIEW_DESCRIPTION_FIELDS = (
+    "citation_abstract",
+    "description",
+    "og:description",
+    "twitter:description",
+)
+WEB_PREVIEW_TITLE_LIMIT = 2000
+WEB_PREVIEW_DESCRIPTION_LIMIT = 4000
+WEB_PREVIEW_ABSTRACT_FIELD = "citation_abstract"
 
 
 class PageFetchError(RuntimeError):
@@ -82,6 +92,18 @@ class FetchedImage:
     final_url: str
     media_type: str
     content: bytes
+
+
+@dataclass(frozen=True)
+class WebPreview:
+    title: str
+    description: str
+    abstract: str = ""
+
+
+@runtime_checkable
+class WebPreviewFetcher(Protocol):
+    async def fetch_preview(self, url: str) -> WebPreview: ...
 
 
 @runtime_checkable
@@ -124,18 +146,34 @@ class _PageText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.hidden: list[str] = []
+        self.metadata: dict[str, str] = {}
+        self.title: list[str] = []
+        self.in_title = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in WEB_HIDDEN_TAGS:
             self.hidden.append(tag)
+        if not self.hidden:
+            if tag == "title":
+                self.in_title = True
+            if tag == "meta":
+                attributes = dict(attrs)
+                key = (attributes.get("name") or attributes.get("property") or "").lower()
+                value = attributes.get("content") or ""
+                if key and value.strip():
+                    self.metadata.setdefault(key, " ".join(value.split()))
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self.in_title = False
         if self.hidden and self.hidden[-1] == tag:
             self.hidden.pop()
 
     def handle_data(self, data: str) -> None:
         if not self.hidden:
             self.parts.append(data)
+            if self.in_title:
+                self.title.append(data)
 
 
 WEB_SITE_ICON_FETCH_POLICY = _FetchPolicy(
@@ -252,20 +290,45 @@ def _host_header(target: _Target) -> str:
     return authority
 
 
+def _parse_html(response: _Response) -> _PageText:
+    document = httpx.Response(response.status, headers=response.headers, content=response.payload)
+    encoding = document.charset_encoding
+    decoded = UnicodeDammit(
+        response.payload,
+        known_definite_encodings=[encoding] if encoding else [],
+        is_html=True,
+    )
+    if decoded.unicode_markup is None or decoded.contains_replacement_characters:
+        raise PageFetchError(WEB_PAGE_ENCODING_INVALID)
+    parser = _PageText()
+    parser.feed(decoded.unicode_markup)
+    parser.close()
+    return parser
+
+
+def _extract_preview(response: _Response) -> WebPreview:
+    if response.media_type not in WEB_HTML_TYPES:
+        return WebPreview("", "")
+    parser = _parse_html(response)
+    title = next(
+        (parser.metadata[key] for key in WEB_PREVIEW_TITLE_FIELDS if key in parser.metadata),
+        " ".join(parser.title),
+    )
+    description = next(
+        (parser.metadata[key] for key in WEB_PREVIEW_DESCRIPTION_FIELDS if key in parser.metadata),
+        "",
+    )
+    return WebPreview(
+        title[:WEB_PREVIEW_TITLE_LIMIT],
+        description[:WEB_PREVIEW_DESCRIPTION_LIMIT],
+        parser.metadata.get(WEB_PREVIEW_ABSTRACT_FIELD, "")[:WEB_PREVIEW_DESCRIPTION_LIMIT],
+    )
+
+
 def _extract_page_text(response: _Response) -> str:
     document = httpx.Response(response.status, headers=response.headers, content=response.payload)
     if response.media_type in WEB_HTML_TYPES:
-        encoding = document.charset_encoding
-        decoded = UnicodeDammit(
-            response.payload,
-            known_definite_encodings=[encoding] if encoding else [],
-            is_html=True,
-        )
-        if decoded.unicode_markup is None or decoded.contains_replacement_characters:
-            raise PageFetchError(WEB_PAGE_ENCODING_INVALID)
-        parser = _PageText()
-        parser.feed(decoded.unicode_markup)
-        parser.close()
+        parser = _parse_html(response)
         text = " ".join(parser.parts)
     else:
         text = document.text
@@ -274,6 +337,11 @@ def _extract_page_text(response: _Response) -> str:
 
 class HtmlFetcher:
     """不执行 JavaScript、固定公网 IP、逐跳校验重定向的 HTML 抓取器。"""
+
+    async def fetch_preview(self, url: str) -> WebPreview:
+        async with asyncio.timeout(WEB_PAGE_TIMEOUT_SECONDS):
+            _, _, response = await self._fetch_page(url)
+            return await asyncio.to_thread(_extract_preview, response)
 
     async def fetch_page(self, url: str) -> WebEvidencePage:
         async with asyncio.timeout(WEB_PAGE_TIMEOUT_SECONDS):

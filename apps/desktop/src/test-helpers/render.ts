@@ -2,19 +2,50 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import type { TestContext } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { chromium, type Browser } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer, type InlineConfig, type ViteDevServer } from 'vite'
+import { RENDERER_SHARED_DEPENDENCIES, RENDERER_OPTIMIZE_DEPS } from '../../renderer.ts'
 
 const CACHE_SEGMENTS = ['node_modules', '.vite-tests']
 const CACHE_ROOT = path.resolve(import.meta.dirname, '../..', ...CACHE_SEGMENTS)
 const CACHE_PREFIX = 'render-'
+const DESKTOP_ROOT = path.resolve(import.meta.dirname, '../..')
+const SOURCE_ROOTS = [DESKTOP_ROOT, path.resolve(DESKTOP_ROOT, '../../packages/ui')]
 const LOOPBACK_HOST = '127.0.0.1'
 const AUTOMATIC_PORT = 0
+const OPTIMIZER_DRAIN_TIMEOUT_MS = 15_000
+
+export function renderConfig(config: InlineConfig): InlineConfig {
+  assert.ok(config.root, 'render server requires an explicit source root')
+  return {
+    ...config,
+    optimizeDeps: config.optimizeDeps ?? RENDERER_OPTIMIZE_DEPS,
+    resolve: {
+      ...config.resolve,
+      dedupe: [...new Set([...RENDERER_SHARED_DEPENDENCIES, ...(config.resolve?.dedupe ?? [])])],
+    },
+    server: {
+      ...config.server,
+      fs: {
+        ...config.server?.fs,
+        allow: [
+          ...new Set([
+            path.resolve(config.root),
+            ...SOURCE_ROOTS,
+            ...(config.server?.fs?.allow ?? []),
+          ]),
+        ],
+      },
+    },
+  }
+}
 
 interface RenderDependencies {
   create?: (config: InlineConfig) => Promise<ViteDevServer>
   launch?: () => Promise<Browser>
+  optimizerDrainTimeoutMs?: number
 }
 
 export class RenderFailure extends Error {
@@ -37,6 +68,7 @@ export async function renderFixture(root: string, dependencies: RenderDependenci
 
   async function release() {
     const errors: unknown[] = []
+    let cacheIdle = true
     if (browser) {
       try {
         await browser.close()
@@ -47,13 +79,41 @@ export async function renderFixture(root: string, dependencies: RenderDependenci
     }
     if (server) {
       try {
+        const optimizer = server.environments.client.depsOptimizer
+        if (optimizer) {
+          const deadline = new AbortController()
+          try {
+            await Promise.race([
+              (async () => {
+                await optimizer.scanProcessing
+                await Promise.all(
+                  Object.values(optimizer.metadata.discovered).map(
+                    (dependency) => dependency.processing
+                  )
+                )
+              })(),
+              delay(dependencies.optimizerDrainTimeoutMs ?? OPTIMIZER_DRAIN_TIMEOUT_MS, undefined, {
+                signal: deadline.signal,
+              }).then(() => {
+                throw new Error(`render optimizer did not drain; retained cache: ${cache}`)
+              }),
+            ])
+          } finally {
+            deadline.abort()
+          }
+        }
+      } catch (error) {
+        cacheIdle = false
+        errors.push(error)
+      }
+      try {
         await server.close()
         assert.equal(server.httpServer?.listening, false, 'render listener survived close')
       } catch (error) {
         errors.push(error)
       }
     }
-    if (!server?.httpServer?.listening) {
+    if (cacheIdle && !server?.httpServer?.listening) {
       try {
         await rm(cache, { recursive: true, force: true })
       } catch (error) {
@@ -69,17 +129,27 @@ export async function renderFixture(root: string, dependencies: RenderDependenci
   }
 
   try {
-    server = await (dependencies.create ?? createServer)({
-      configFile: false,
-      root,
-      cacheDir: cache,
-      plugins: [react()],
-      server: { host: LOOPBACK_HOST, port: AUTOMATIC_PORT },
-    })
+    server = await (dependencies.create ?? createServer)(
+      renderConfig({
+        configFile: false,
+        root,
+        cacheDir: cache,
+        plugins: [react()],
+        resolve: { dedupe: RENDERER_SHARED_DEPENDENCIES },
+        server: {
+          host: LOOPBACK_HOST,
+          port: AUTOMATIC_PORT,
+          fs: { allow: [root, ...SOURCE_ROOTS] },
+        },
+      })
+    )
     await server.listen()
     const url = server.resolvedUrls?.local[0]
     assert.ok(url, 'render fixture has no local URL')
-    browser = await (dependencies.launch ?? (() => chromium.launch({ headless: true })))()
+    browser = await (
+      dependencies.launch ??
+      (() => chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL }))
+    )()
     const activeBrowser = browser
     return {
       server,
@@ -159,7 +229,9 @@ export function renderServers(
         caches.set(identity, allocated)
       }
       const creating = allocated.then(async (cacheDir) => {
-        const server = await (dependencies.create ?? createServer)({ ...config, cacheDir })
+        const server = await (dependencies.create ?? createServer)(
+          renderConfig({ ...config, cacheDir })
+        )
         servers.add(server)
         return server
       })

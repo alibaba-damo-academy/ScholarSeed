@@ -35,6 +35,7 @@ import { performance } from 'node:perf_hooks'
 
 import { type HandoffLocalCoordinator } from './handoff-local.ts'
 import { handoffFingerprint, newHandoffState, parseCallbackUrl } from './handoff-url.ts'
+import { newLoginProof, type listenForLoginCallback, type LoginReceiver } from './loopback.ts'
 
 const FAILURE_CODES = {
   handoffUnclaimed: 'handoff_unclaimed',
@@ -43,6 +44,9 @@ const FAILURE_CODES = {
 
 const LOGIN_PAGE_PATH = '/web/login.html'
 const EXCHANGE_PATH = '/api/desktop/token'
+const LOOPBACK_EXCHANGE_PATH = '/api/desktop/loopback/token'
+const LOOPBACK_LOGIN_MODE = '2'
+const DEEP_LINK_LOGIN_MODE = '1'
 const LOGIN_EXPIRED = 'login_expired'
 const EXPIRED_STATE_MEMORY = 16
 const LOGIN_CANCELLED = 'login_cancelled'
@@ -85,6 +89,7 @@ export interface HandoffDependencies {
   publish: (snapshot: DesktopAuthSnapshot) => void
   revealWindow: (reason: string) => boolean
   openExternal: (url: string) => Promise<void>
+  loopback?: typeof listenForLoginCallback
   /** 本机协调腿（proposal 74）。它自己保证不抛：失败即降级成只靠内存 state。 */
   local: HandoffLocalCoordinator
   /** 本机实例身份账（87515374）：实例 id / app 路径 / home。只进日志，不进 UI 与网络。 */
@@ -109,6 +114,7 @@ export class DesktopHandoff {
   /** 最近采纳过的 state：兜底收件箱可能把同一条回调再送一次，见 handleCallback 的去重。 */
   private adoptedStates: string[] = []
   private pendingStartedAt = 0
+  private loopbackAttempt: { receiver: LoginReceiver; verifier: string; base: string } | null = null
   private generation = 0
   private exchanging = false
   private activeOperations = 0
@@ -207,19 +213,46 @@ export class DesktopHandoff {
     const superseded = this.pendingState
     this.exchanging = false
     this.stopPolling()
+    this.closeLoopback()
     this.pendingState = newHandoffState()
     this.pendingStartedAt = Date.now()
     if (this.expiryTimer !== null) clearTimeout(this.expiryTimer)
     this.expiryTimer = setTimeout(() => this.current(), STATE_TTL_MS)
-    if (superseded) {
+    if (superseded && !this.deps.loopback) {
       this.diagnose('release_requested', superseded, 'reason=superseded')
       void this.track(() => this.deps.local.release(superseded))
     }
     const claimed = this.pendingState
-    const url = `${base}${LOGIN_PAGE_PATH}?desktop=1&state=${encodeURIComponent(this.pendingState)}&lang=${language}`
+    const params = new URLSearchParams({
+      desktop: DEEP_LINK_LOGIN_MODE,
+      state: claimed,
+      lang: language,
+    })
     this.diagnose('start', claimed, `ttl_ms=${STATE_TTL_MS}`)
     try {
-      await this.deps.openExternal(url)
+      if (this.deps.loopback) {
+        const endpoint = new URL(base)
+        if (
+          endpoint.protocol !== 'https:' &&
+          !(endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1')
+        ) {
+          throw new Error('Loopback sign-in requires HTTPS for the account service')
+        }
+        const { verifier, challenge } = newLoginProof()
+        const receiver = await this.deps.loopback((state, code) =>
+          this.receiveLoopback(code, state, generation)
+        )
+        if (generation !== this.generation || claimed !== this.pendingState) {
+          receiver.close()
+          return { ok: false, error: LOGIN_CANCELLED }
+        }
+        this.loopbackAttempt = { receiver, verifier, base }
+        params.set('desktop', LOOPBACK_LOGIN_MODE)
+        params.set('redirect_port', String(receiver.port))
+        params.set('code_challenge', challenge)
+        this.publish({ phase: 'waiting' })
+      }
+      await this.deps.openExternal(`${base}${LOGIN_PAGE_PATH}?${params}`)
     } catch (e) {
       if (generation !== this.generation) return { ok: false, error: LOGIN_CANCELLED }
       this.abandon(this.pendingState, 'browser_failed')
@@ -234,6 +267,7 @@ export class DesktopHandoff {
     // 上一轮的 claim 明确放手，不等租约自己过期：否则本机库里会留一个无人续租却仍看似
     // 有效的槽位，那期间到达的深链会被转交进一个没人取走的 code 列。
     if (generation !== this.generation) return { ok: false, error: LOGIN_CANCELLED }
+    if (this.deps.loopback) return { ok: true }
     this.publish({ phase: 'waiting' })
     void this.track(async () => {
       const granted = await this.deps.local.claim(claimed)
@@ -295,6 +329,15 @@ export class DesktopHandoff {
 
   private async handleCallbackFlow(url: string): Promise<void> {
     const parsed = parseCallbackUrl(url)
+    if (this.deps.loopback) {
+      if (parsed) {
+        const delivered = await this.measure('legacy_forward', parsed.state, () =>
+          this.deps.local.deliver(parsed.state, parsed.code)
+        )
+        this.diagnose('legacy_forward_result', parsed.state, `result=${delivered}`)
+      }
+      return
+    }
     if (!parsed) {
       // An unrelated malformed callback cannot replace an in-flight confirmation.
       if (this.confirmation) {
@@ -404,10 +447,31 @@ export class DesktopHandoff {
         `reason=${reason} age_ms=${Date.now() - this.pendingStartedAt} ttl_ms=${STATE_TTL_MS}`
       )
     this.stopPolling()
+    this.closeLoopback()
     if (this.expiryTimer !== null) clearTimeout(this.expiryTimer)
     this.expiryTimer = null
     this.pendingState = ''
-    if (state) void this.track(() => this.deps.local.release(state))
+    if (state && !this.deps.loopback) void this.track(() => this.deps.local.release(state))
+  }
+
+  private closeLoopback(): void {
+    const attempt = this.loopbackAttempt
+    this.loopbackAttempt = null
+    attempt?.receiver.close()
+  }
+
+  private receiveLoopback(code: string, state: string, generation: number): boolean {
+    if (
+      !this.loopbackAttempt ||
+      generation !== this.generation ||
+      state !== this.pendingState ||
+      this.exchanging ||
+      this.stateExpired()
+    )
+      return false
+    this.diagnose('received', state, 'source=loopback')
+    this.beginExchange(code, state, generation)
+    return true
   }
 
   private startPolling(state: string, generation: number): void {
@@ -489,7 +553,7 @@ export class DesktopHandoff {
       // 可重试型：state 留着，本机 claim 也留着继续续租 —— 成功页再点一次可能又被别的
       // 实例接管，那条转交路必须还活着。
       const state = this.pendingState
-      if (state) this.startPolling(state, generation)
+      if (state && !this.deps.loopback) this.startPolling(state, generation)
     }
     this.publish(next.phase === 'failed' ? { ...next, terminal } : next)
   }
@@ -511,7 +575,11 @@ export class DesktopHandoff {
   }
 
   private async exchange(code: string, state: string, generation: number): Promise<void> {
-    const base = await this.measure('account_base', state, () => this.deps.accountBaseUrl())
+    const loopback = this.loopbackAttempt
+    const base = await this.measure('account_base', state, () =>
+      loopback ? Promise.resolve(loopback.base) : this.deps.accountBaseUrl()
+    )
+    if (generation !== this.generation || state !== this.pendingState || this.stateExpired()) return
     if (!base) {
       this.settle(generation, { phase: 'failed', error: 'account_base_unavailable' }, false)
       return
@@ -523,10 +591,18 @@ export class DesktopHandoff {
     const timer = setTimeout(() => ctl.abort(), EXCHANGE_TIMEOUT_MS)
     try {
       const { resp, body } = await this.measure('exchange_http', state, async () => {
-        const resp = await fetch(base + EXCHANGE_PATH, {
+        const resp = await fetch(base + (loopback ? LOOPBACK_EXCHANGE_PATH : EXCHANGE_PATH), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code, state, ...this.deps.deviceFields() }),
+          body: JSON.stringify({
+            code,
+            state,
+            ...this.deps.deviceFields(),
+            ...(loopback
+              ? { redirect_port: loopback.receiver.port, code_verifier: loopback.verifier }
+              : {}),
+          }),
+          ...(loopback ? { redirect: 'error' as const } : {}),
           signal: ctl.signal,
         })
         clearTimeout(timer)
@@ -557,9 +633,10 @@ export class DesktopHandoff {
         this.deps.adoptTokens(token, refreshToken, isCurrent)
       )
       if (!isCurrent()) return
+      if (loopback) this.deps.revealWindow('desktop login credentials received')
       if (!adopted) {
-        // adopt 失败时 token 仍在手且服务端签发的 access token 有效（refresh 已落盘、
-        // cookie 已设过，只有 catch 才返回 false），所以这一路回报是可行的。
+        // The exchanged access token can report failure even when local storage
+        // or cookie adoption failed. This does not prove either write completed.
         this.reportOutcome(generation, state, 'adopt_failed', token)
         this.settle(generation, { phase: 'failed', error: 'adopt_failed' }, true)
         return

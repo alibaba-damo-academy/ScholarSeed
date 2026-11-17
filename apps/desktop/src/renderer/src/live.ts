@@ -1,6 +1,9 @@
 import { startupSnapshot } from './app/connection'
+import { modelSelectionGuard } from './modelselection'
 import { ExclusiveSubscription } from './subscriptions'
 import { subscribeChanges } from './app/notifications'
+import { expireJoinedPapers } from './features/literature/joinState'
+import { libraryStatusCache } from './features/literature/status'
 import { DirtyRefresh } from '../../notifications'
 import { STARTUP_PHASE } from '../../startup'
 import {
@@ -16,6 +19,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { AspEnvelope, ServeSession } from './api'
 import {
   BACKEND_FAILURE_EVENT,
+  SESSION_MODEL_OUTCOME_UNKNOWN_EVENT,
   BACKEND_ADMISSION_FAILURE,
   PRODUCT_DATA_SCOPE_LITERATURE,
   PRODUCT_DATA_SCOPE_RESOURCES,
@@ -50,6 +54,7 @@ import {
   browserApprovalResolution,
   browserHistoryApprovalResolution,
   projectHilCard,
+  reviseHilCard,
   hilEventResolution,
   settlePendingHil,
   hilResolvedRunState,
@@ -78,7 +83,10 @@ import {
   projectAnswerSources,
   projectArtifactFailure,
   projectDisplayCardEvent,
+  projectGenerationPreview,
   projectHistorySnapshot,
+  projectToolCompletion,
+  normalizeToolName,
   snapshotTurnActivity,
   projectNativeActivityEvent,
   projectPaperSearchEvent,
@@ -212,7 +220,8 @@ function failThread(
   const conversation = settleInterruptedActivities(
     settlePendingHil(thread.conversation, turnId, 'stale'),
     turnId,
-    completedAt
+    completedAt,
+    'failed'
   )
   return {
     running: false,
@@ -329,6 +338,23 @@ export function onEvent(
   acknowledgeOutbox: boolean
 ): void {
   switch (event.type) {
+    case 'generation_preview':
+      patchThread(threadId, (thread) => {
+        const projected = projectGenerationPreview(thread.conversation, event)
+        const outcome = event.turn_id ? thread.turnOutcomes?.[event.turn_id] : undefined
+        return {
+          conversation:
+            outcome === 'failed' || outcome === 'interrupted' || outcome === 'unknown'
+              ? settleInterruptedActivities(
+                  projected,
+                  event.turn_id,
+                  productEventTime(event.ts),
+                  outcome === 'failed' ? 'failed' : 'cancelled'
+                )
+              : projected,
+        }
+      })
+      return
     case 'session_state': {
       const runtimeState = projectSessionState(event.data)
       const status = runtimeState.status ?? 'dormant'
@@ -446,8 +472,8 @@ export function onEvent(
       return
     case 'tool_started':
       patchThread(threadId, (thread) => ({
-        running: true,
-        status: 'running',
+        running: event.data.retry_of ? thread.running : true,
+        status: event.data.retry_of ? thread.status : 'running',
         conversation: thread.conversation.some(
           (item) =>
             item.kind === 'tool' &&
@@ -460,8 +486,10 @@ export function onEvent(
               {
                 kind: 'tool',
                 toolId: event.data.tool_id,
-                name: event.data.name,
+                name: normalizeToolName(event.data.name),
                 input: event.data.input,
+                batchId: event.data.batch_id,
+                retryOf: event.data.retry_of,
                 status: 'running',
                 turnId: event.turn_id,
                 itemId: event.item_id,
@@ -469,8 +497,12 @@ export function onEvent(
                 startedAt: productEventTime(event.ts),
               },
             ],
-        turnOutcomes: turnOutcomes(thread, event.turn_id, 'running'),
-        turnTimings: turnTimings(thread, event.turn_id, productEventTime(event.ts)),
+        turnOutcomes: event.data.retry_of
+          ? thread.turnOutcomes
+          : turnOutcomes(thread, event.turn_id, 'running'),
+        turnTimings: event.data.retry_of
+          ? thread.turnTimings
+          : turnTimings(thread, event.turn_id, productEventTime(event.ts)),
       }))
       liveIndex.current[threadId] = null
       return
@@ -487,20 +519,7 @@ export function onEvent(
       return
     case 'tool_completed':
       patchThread(threadId, (thread) => ({
-        conversation: thread.conversation.map((item) =>
-          item.kind === 'tool' &&
-          item.toolId === event.data.tool_id &&
-          item.turnId === event.turn_id
-            ? {
-                ...item,
-                name: event.data.name || item.name,
-                result: event.data.output ?? item.result,
-                exitCode: event.data.exit_code ?? item.exitCode,
-                status: event.data.success ? 'done' : 'error',
-                completedAt: productEventTime(event.ts),
-              }
-            : item
-        ),
+        conversation: projectToolCompletion(thread.conversation, event, productEventTime(event.ts)),
       }))
       return
     case 'web_search_started':
@@ -520,6 +539,7 @@ export function onEvent(
       }))
       return
     case 'web_search_completed':
+    case 'source_candidates':
       patchThread(threadId, (thread) => ({
         conversation: projectWebSearchEvent(thread.conversation, event, 'live'),
       }))
@@ -704,7 +724,7 @@ export function onEvent(
           ? thread.conversation.map((item) =>
               item.kind === 'hil' && item.requestId === event.data.request_id
                 ? {
-                    ...item,
+                    ...reviseHilCard(item, event.data),
                     turnId: item.turnId ?? event.turn_id,
                     itemId: item.itemId ?? event.item_id,
                     eventSeq: item.eventSeq ?? event.seq,
@@ -725,7 +745,7 @@ export function onEvent(
             : turnTimings(thread, event.turn_id, productEventTime(event.ts)),
       }))
       liveIndex.current[threadId] = null
-      set({ petOverride: 'waiting' })
+      if (event.data.state !== 'resolved') set({ petOverride: 'waiting' })
       window.dispatchEvent(new CustomEvent('scholarseed:refresh-interactions'))
       return
     }
@@ -761,6 +781,11 @@ export function onEvent(
                   }
                 : {}),
             answers: event.data.answers,
+            answerDetails: event.data.answer_details,
+            selectedPaperIds: event.data.selected_paper_ids,
+            decisionSource: event.data.decision_source,
+            freeText: event.data.free_text,
+            timedOut: event.data.timed_out,
             decisionScope: event.data.decision_scope,
             hilState: event.data.state,
           },
@@ -1024,7 +1049,7 @@ function reconcileThreadRuntime(
 
 export function useLiveSession(): void {
   const { t } = useTranslation('components')
-  const { state, set, patchThread, act } = useApp()
+  const { state, set, patchThread, act, getSnapshot } = useApp()
   const stateRef = useRef(state)
   // detachers 是「该线程已有活流」的唯一真相; resumeInFlight 只做并发保护。
   // 两者都不能兼职当「不要再恢复」的闸: 那种闸一旦活过一次选中就会把恢复态钉死。
@@ -1035,7 +1060,9 @@ export function useLiveSession(): void {
   const refreshMetaRef = useRef<() => void>(() => undefined)
   const resumeAttempts = useRef<Map<string, number>>(new Map())
   const resumeRetryTimers = useRef<Record<string, number>>({})
+  const resumeDeferredRetries = useRef<Set<string>>(new Set())
   const resumeStopped = useRef<Set<string>>(new Set())
+  const resumeUnknownModels = useRef<Set<string>>(new Set())
   const serviceInstance = useRef<string | null>(null)
   const metadataRequest = useRef(0)
   const metadataPollInFlight = useRef<{ dirty: boolean } | null>(null)
@@ -1045,6 +1072,51 @@ export function useLiveSession(): void {
   const metadataRetryAttempt = useRef(0)
   const metadataRetryTimer = useRef<number | null>(null)
   const disposed = useRef(false)
+
+  const hasUnknownModel = (instance: string | null, session: string): boolean => {
+    if (!instance) return true
+    try {
+      return modelSelectionGuard().unknown(instance, session)
+    } catch {
+      return true
+    }
+  }
+
+  const markUnknownModel = useCallback(
+    (threadId: string, sessionId: string): void => {
+      const current = getSnapshot().threads[threadId]
+      if (
+        resumeUnknownModels.current.has(threadId) &&
+        current?.resumeState === 'failed' &&
+        current.conversation.some(
+          (item) =>
+            item.kind === 'status' &&
+            item.incidentId === `session-resume:${sessionId}` &&
+            typeof item.text === 'object' &&
+            item.text?.key === 'resume.modelSelectionUnknown'
+        )
+      )
+        return
+      resumeUnknownModels.current.add(threadId)
+      resumeStopped.current.add(threadId)
+      resumeDeferredRetries.current.delete(threadId)
+      if (resumeRetryTimers.current[threadId] !== undefined) {
+        window.clearTimeout(resumeRetryTimers.current[threadId])
+        delete resumeRetryTimers.current[threadId]
+      }
+      patchThread(threadId, (thread) => ({
+        resumeState: 'failed',
+        resumeMessage: undefined,
+        ...reportSessionResume(
+          thread,
+          sessionId,
+          { key: 'resume.modelSelectionUnknown' },
+          'tension'
+        ),
+      }))
+    },
+    [getSnapshot, patchThread]
+  )
 
   useEffect(() => {
     stateRef.current = state
@@ -1098,11 +1170,22 @@ export function useLiveSession(): void {
 
   const ensure = useCallback(
     async (threadId: string, sessionId: string | undefined, refreshSnapshot = false) => {
-      if (!stateRef.current.workbenchReady || stateRef.current.runtimeQuiescing) return
+      if (
+        !stateRef.current.workbenchReady ||
+        stateRef.current.runtimeQuiescing ||
+        (getSnapshot().modelSelectionSessions[threadId]?.pending ?? 0) > 0
+      )
+        return
       if (stateRef.current.activeSession !== threadId) return
       if (stateRef.current.threads[threadId]?.readOnly) return
+      if (sessionId && hasUnknownModel(getSnapshot().serviceInstanceId, sessionId)) return
       if (resumeInFlight.current.has(threadId)) return
-      if (detachers.current[threadId] || resumeStopped.current.has(threadId)) return
+      if (
+        detachers.current[threadId] ||
+        resumeStopped.current.has(threadId) ||
+        resumeUnknownModels.current.has(threadId)
+      )
+        return
       if (!sessionId) {
         // 没有 sessionId 的线程恢复不了; 标停才不会被 threads 变更反复重入。
         resumeStopped.current.add(threadId)
@@ -1149,7 +1232,9 @@ export function useLiveSession(): void {
                   maximum: SESSION_RESUME_MAX_ATTEMPTS,
                   reason: failure.applicationFailure ?? failure.message,
                 }
-              : { key: 'resume.stopped', reason: failure.applicationFailure ?? failure.message },
+              : failure.code === 'session_model_unavailable'
+                ? { key: 'resume.modelUnavailable' }
+                : { key: 'resume.stopped', reason: failure.applicationFailure ?? failure.message },
             canRetry ? 'inference' : 'tension',
             !canRetry
           ),
@@ -1164,6 +1249,10 @@ export function useLiveSession(): void {
         }
         resumeRetryTimers.current[threadId] = window.setTimeout(() => {
           delete resumeRetryTimers.current[threadId]
+          if ((getSnapshot().modelSelectionSessions[threadId]?.pending ?? 0) > 0) {
+            resumeDeferredRetries.current.add(threadId)
+            return
+          }
           void ensure(threadId, sessionId)
         }, delay)
       }
@@ -1174,7 +1263,8 @@ export function useLiveSession(): void {
       const startedAt = Date.now()
       const generation = startupSnapshot().generation
       const instance = stateRef.current.serviceInstanceId
-      const current = (): boolean => {
+      const modelGeneration = getSnapshot().modelSelectionSessions[threadId]?.generation ?? 0
+      const streamCurrent = (): boolean => {
         const snapshot = stateRef.current
         const thread = snapshot.threads[threadId]
         return (
@@ -1184,6 +1274,7 @@ export function useLiveSession(): void {
           startupSnapshot().phase === STARTUP_PHASE.ready &&
           snapshot.backendReady &&
           !snapshot.runtimeQuiescing &&
+          !resumeUnknownModels.current.has(threadId) &&
           snapshot.workbenchReady &&
           snapshot.serviceInstanceId === instance &&
           thread?.sessionId === sessionId &&
@@ -1191,6 +1282,10 @@ export function useLiveSession(): void {
           snapshot.activeSession === threadId
         )
       }
+      const current = (): boolean =>
+        streamCurrent() &&
+        (getSnapshot().modelSelectionSessions[threadId]?.generation ?? 0) === modelGeneration &&
+        (getSnapshot().modelSelectionSessions[threadId]?.pending ?? 0) === 0
       const diagnostic = (stage: string, detail: Record<string, unknown> = {}): void => {
         console.info(
           '[session-recovery]',
@@ -1257,7 +1352,7 @@ export function useLiveSession(): void {
             sessionId,
             fromSeq,
             (event) => {
-              if (!current()) return
+              if (!streamCurrent()) return
               onEvent(
                 threadId,
                 event,
@@ -1291,7 +1386,7 @@ export function useLiveSession(): void {
               patchThread(threadId, { lastSeq: event.seq })
             },
             (connectionState) => {
-              if (current())
+              if (streamCurrent())
                 patchThread(threadId, (thread) => reportTransportState(thread, connectionState))
             },
             (reason) => {
@@ -1299,9 +1394,9 @@ export function useLiveSession(): void {
               detachers.current[threadId]?.()
               delete detachers.current[threadId]
               delete liveIndex.current[threadId]
-              if (current())
+              if (streamCurrent())
                 queueMicrotask(() => {
-                  if (current())
+                  if (streamCurrent())
                     void ensure(threadId, sessionId, reason === 'gap' || reason === 'projection')
                 })
             }
@@ -1518,16 +1613,18 @@ export function useLiveSession(): void {
           })
       } finally {
         const ownsAttempt = resumeInFlight.current.get(threadId) === attempt
+        const wasCurrent = current()
         if (ownsAttempt) resumeInFlight.current.delete(threadId)
         const snapshot = stateRef.current
         const thread = snapshot.threads[threadId]
         if (
           ownsAttempt &&
           startupSnapshot().generation === generation &&
-          !current() &&
+          !wasCurrent &&
           !disposed.current &&
           snapshot.backendReady &&
           !snapshot.runtimeQuiescing &&
+          !resumeUnknownModels.current.has(threadId) &&
           thread &&
           !thread.readOnly &&
           snapshot.activeSession === threadId &&
@@ -1544,8 +1641,29 @@ export function useLiveSession(): void {
       act.reloadArtifactLinks,
       patchThread,
       set,
+      getSnapshot,
     ]
   )
+
+  useEffect(() => {
+    const unknown = (event: Event): void => {
+      const detail = (
+        event as CustomEvent<{ sessionId?: string; serviceInstanceId?: string | null }>
+      ).detail
+      const sessionId = String(detail?.sessionId ?? '')
+      const snapshot = getSnapshot()
+      if (detail?.serviceInstanceId && detail.serviceInstanceId !== snapshot.serviceInstanceId)
+        return
+      const entry = Object.entries(snapshot.threads).find(
+        ([, thread]) => thread.sessionId === sessionId
+      )
+      if (!entry) return
+      const [threadId] = entry
+      markUnknownModel(threadId, sessionId)
+    }
+    window.addEventListener(SESSION_MODEL_OUTCOME_UNKNOWN_EVENT, unknown)
+    return () => window.removeEventListener(SESSION_MODEL_OUTCOME_UNKNOWN_EVENT, unknown)
+  }, [getSnapshot, markUnknownModel])
 
   useEffect(() => {
     const reconnect = (event: Event): void => {
@@ -1557,13 +1675,14 @@ export function useLiveSession(): void {
       )
       if (!sessionId || !entry) return
       const [threadId] = entry
-      if (!resumeStopped.current.has(threadId)) return
+      if (!resumeStopped.current.has(threadId) || resumeUnknownModels.current.has(threadId)) return
       if (resumeRetryTimers.current[threadId] !== undefined) {
         window.clearTimeout(resumeRetryTimers.current[threadId])
         delete resumeRetryTimers.current[threadId]
       }
       resumeStopped.current.delete(threadId)
       resumeAttempts.current.delete(sessionId)
+      resumeDeferredRetries.current.delete(threadId)
       patchThread(threadId, (thread) => ({
         resumeState: 'pending',
         resumeMessage: { key: 'resume.reconnect' },
@@ -1604,7 +1723,9 @@ export function useLiveSession(): void {
     try {
       const request = ++metadataRequest.current
       if (stateRef.current.workspaceLoadState !== 'ready') {
-        set({ workspaceLoadState: 'loading' })
+        set((current) =>
+          current.workspaceLoadState === 'ready' ? {} : { workspaceLoadState: 'loading' }
+        )
       }
       const [projects, sessionCatalog] = await Promise.all([
         listProjects(),
@@ -1618,26 +1739,28 @@ export function useLiveSession(): void {
       )
         return
       if (!sessionCatalog.ok) {
-        const projection = projectCatalogFailure(
-          stateRef.current.workspaceLoadState,
-          sessionCatalog.failure.retryable
-        )
-        if (projection.retry) {
+        if (sessionCatalog.failure.retryable) {
           scheduleMetadataRetry()
         } else {
           cancelMetadataRetry()
           metadataRetryAttempt.current = 0
         }
-        set(() => ({
-          workspaceLoadState: projection.workspaceLoadState,
-          ...(projection.workspaceLoadState === 'ready'
-            ? {
-                foregroundError: sessionCatalog.failure.retryable
-                  ? SESSION_CATALOG_RECOVERY_NOTICE
-                  : SESSION_CATALOG_UNAVAILABLE_NOTICE,
-              }
-            : {}),
-        }))
+        set((current) => {
+          const projection = projectCatalogFailure(
+            current.workspaceLoadState,
+            sessionCatalog.failure.retryable
+          )
+          return {
+            workspaceLoadState: projection.workspaceLoadState,
+            ...(projection.workspaceLoadState === 'ready'
+              ? {
+                  foregroundError: sessionCatalog.failure.retryable
+                    ? SESSION_CATALOG_RECOVERY_NOTICE
+                    : SESSION_CATALOG_UNAVAILABLE_NOTICE,
+                }
+              : {}),
+          }
+        })
         return
       }
       cancelMetadataRetry()
@@ -1791,6 +1914,8 @@ export function useLiveSession(): void {
     Object.keys(detachers.current).forEach((threadId) => delete detachers.current[threadId])
     resumeAttempts.current.clear()
     resumeStopped.current.clear()
+    resumeDeferredRetries.current.clear()
+    resumeUnknownModels.current.clear()
     Object.values(resumeRetryTimers.current).forEach((timer) => window.clearTimeout(timer))
     Object.keys(resumeRetryTimers.current).forEach(
       (threadId) => delete resumeRetryTimers.current[threadId]
@@ -1943,7 +2068,10 @@ export function useLiveSession(): void {
       refresh.invalidate(reset)
     })
     const resources = subscribeChanges(['resources'], act.invalidateResources)
-    const literature = subscribeChanges(['literature'], act.invalidateLiterature)
+    const literature = subscribeChanges(['literature'], (reset, changes) => {
+      expireJoinedPapers(libraryStatusCache.invalidate(reset, changes))
+      act.invalidateLiterature()
+    })
     refresh.invalidate()
     return () => {
       refresh.stop()
@@ -1981,8 +2109,15 @@ export function useLiveSession(): void {
     targets.forEach((threadId) => {
       const thread = state.threads[threadId]
       if (!thread) return
+      if (!state.serviceInstanceId) return
+      if (thread.sessionId && hasUnknownModel(state.serviceInstanceId, thread.sessionId)) {
+        markUnknownModel(threadId, thread.sessionId)
+        return
+      }
+      if (resumeUnknownModels.current.has(threadId)) return
       if (resumeInFlight.current.has(threadId) || resumeRetryTimers.current[threadId] !== undefined)
         return
+      if ((state.modelSelectionSessions[threadId]?.pending ?? 0) > 0) return
       if (detachers.current[threadId]) {
         // 已有活流: 选中时 store 写下的 pending 没有别的写入方, 必须在这里落回, 否则
         // 界面会停在「正在恢复对话」而背后其实一直在直播。
@@ -1994,7 +2129,8 @@ export function useLiveSession(): void {
       if (thread.resumeState === 'pending') {
         // 用户主动选中会话就是一次显式重连意图, 等价于点了「重新连接」。
         resumeStopped.current.delete(threadId)
-        if (thread.sessionId) resumeAttempts.current.delete(thread.sessionId)
+        if (!resumeDeferredRetries.current.delete(threadId) && thread.sessionId)
+          resumeAttempts.current.delete(thread.sessionId)
       }
       void ensure(threadId, thread.sessionId ?? undefined)
     })
@@ -2008,10 +2144,13 @@ export function useLiveSession(): void {
     })
   }, [
     ensure,
+    markUnknownModel,
     patchThread,
     state.activeSession,
     state.backendReady,
     state.runtimeQuiescing,
+    state.modelSelectionSessions,
+    state.serviceInstanceId,
     state.workbenchReady,
     state.threads,
   ])

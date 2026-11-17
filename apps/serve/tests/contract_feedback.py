@@ -32,6 +32,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from scholarseed_runtime.contract.session import RuntimeExecutionThread
+from service.capabilities.service.source import compile_source_skills
 from service.chat.api.feedback import mount_feedback_routes
 from service.chat.persistence.catalog import SessionAccessError
 from service.chat.service import feedback as fb
@@ -1805,6 +1806,7 @@ def main() -> int:
     test_update_bundle_real_http_submission()
     test_base_url_resolution()
     test_trace_is_opt_in()
+    test_feedback_attaches_only_the_bundled_skill_lock()
     test_multipart_shape()
     test_recording_report_bundle()
     test_renderer_diagnostics_bundle()
@@ -1822,6 +1824,55 @@ def main() -> int:
     test_session_error_summary_is_additive()
     print(f"passed={PASS} failed={FAIL}")
     return 1 if FAIL else 0
+
+
+def test_feedback_attaches_only_the_bundled_skill_lock() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        source = root / "source" / "example"
+        source.mkdir(parents=True)
+        (root / "registry.json").write_text('{"dependencies":{"example":{}}}', encoding="utf-8")
+        (source / "SKILL.md").write_text(
+            "---\nname: example\ndescription: A fixture\n---\n", encoding="utf-8"
+        )
+        lock = root / "skills.lock.json"
+        compile_source_skills(root / "bundled", source.parent, lock_path=lock)
+        original = lock.read_bytes()
+        expected = "backend/skills.lock.json"
+        with (
+            patch.dict(os.environ, {"SCHOLARSEED_BUNDLED_SKILL_LOCK": str(lock)}),
+            patch.object(fb, "TRACE_DIR", root / "no-trace"),
+        ):
+            for consent, session, attached in (
+                (True, "test-session", True),
+                (False, "test-session", False),
+                (True, "", False),
+            ):
+                bundle = fb.build_log_bundle(
+                    include_trace=consent, session_id=session, include_diagnostics=False
+                )
+                with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                    check(
+                        f"only authorized session feedback attaches build lock: {consent}, {session}",
+                        archive.namelist().count(expected) == int(attached)
+                        and not any(
+                            name.endswith("/.scholarseed-package.json")
+                            for name in archive.namelist()
+                        )
+                        and (not attached or archive.read(expected) == original),
+                    )
+            lock.write_bytes(b'{"malformed":"not a build lock"}')
+            for present in (True, False):
+                if not present:
+                    lock.unlink()
+                bundle = fb.build_log_bundle(
+                    include_trace=True, session_id="test-session", include_diagnostics=False
+                )
+                with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                    check(
+                        f"invalid or unavailable build lock is omitted: {present}",
+                        expected not in archive.namelist(),
+                    )
 
 
 def test_program_source_identity_is_bundled_without_conversation_consent() -> None:

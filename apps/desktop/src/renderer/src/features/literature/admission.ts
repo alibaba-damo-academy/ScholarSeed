@@ -1,166 +1,181 @@
-import type { LiteratureDownloadCard } from '../../contracts/literature'
+import type { TaskSourceContribution } from '../../contracts/features'
+import type { LiteratureSearchPaper } from '../../contracts/literature'
+import { taskTitleText, type ProductTask, type ProductTaskResult } from '../../contracts/tasks.ts'
+import type { JoinDestination } from './hierarchy'
+import {
+  joinWithScope,
+  type HeldFulltextJoin,
+  type JoinProgress,
+  type JoinScope,
+  type JoinScopeOutcome,
+} from './join.ts'
 
-export function conversationProject<Project extends { id: string; path: string }>(
-  projects: readonly Project[],
-  projectPath: string | null | undefined
-): Project | undefined {
-  return projectPath ? projects.find((project) => project.path === projectPath) : undefined
+const SOURCE_ID = 'literature-joins'
+const PHASE = { admitting: 'admitting', fulltext: 'fulltext' } as const
+const ERROR = { admission: 'admission_unconfirmed', fulltext: 'fulltext_failed' } as const
+const MILLISECONDS_PER_SECOND = 1_000
+const PERCENT_MAX = 100
+
+type JoinRecord = {
+  task: ProductTask
+  category: string
+  projectName: string
+  admitted: number
 }
 
-interface DownloadActions {
-  openLiteratureItem: (id: string, projectId: string) => Promise<boolean>
-  openLiteratureAttachment: (
-    id: string,
-    attachmentId?: string,
-    page?: number,
-    options?: { projectId?: string | null }
-  ) => Promise<boolean>
-}
+const records = new Map<string, JoinRecord>()
+const listeners = new Set<(task: ProductTask) => void>()
 
-export async function openDownloadedFulltext(
-  actions: DownloadActions,
-  card: LiteratureDownloadCard,
-  paper: LiteratureDownloadCard['papers'][number],
-  resolve?: (
-    sessionId: string,
-    operationId: string
-  ) => Promise<{ literature_id: string; attachment_id: string }>
-): Promise<boolean> {
-  const current =
-    paper.operation_id && resolve ? await resolve(card.session_id, paper.operation_id) : paper
-  if (!(await actions.openLiteratureItem(current.literature_id, card.project_id))) return false
-  return actions.openLiteratureAttachment(current.literature_id, current.attachment_id, undefined, {
-    projectId: card.project_id,
-  })
-}
-
-const DOWNLOAD_CARD_VERSION = '1.0'
-export const DOWNLOAD_REFRESH_CACHE_LIMIT = 256
-const refreshedDownloads = new Set<string>()
-
-export function downloadRefreshKey(cardId: string, card: LiteratureDownloadCard | null): string {
-  if (!card || card.papers.length + (card.omitted_papers ?? 0) === 0) return ''
-  return JSON.stringify([
-    cardId,
-    card.session_id,
-    card.run,
-    card.project_id,
-    card.papers.map((paper) => [paper.literature_id, paper.attachment_id, paper.revision]),
-    card.omitted_papers ?? 0,
-  ])
-}
-
-export function claimDownloadRefresh(key: string): boolean {
-  if (!key || refreshedDownloads.has(key)) return false
-  refreshedDownloads.add(key)
-  if (refreshedDownloads.size > DOWNLOAD_REFRESH_CACHE_LIMIT) {
-    const oldest = refreshedDownloads.values().next().value
-    if (oldest !== undefined) refreshedDownloads.delete(oldest)
-  }
-  return true
-}
-
-const isString = (value: unknown): value is string =>
-  typeof value === 'string' && value.trim().length > 0
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value != null && typeof value === 'object' && !Array.isArray(value)
-
-export function parseDownloadCard(value: Record<string, unknown>): LiteratureDownloadCard | null {
-  if (
-    value.schema_version !== DOWNLOAD_CARD_VERSION ||
-    !isString(value.session_id) ||
-    !isString(value.run) ||
-    typeof value.project_id !== 'string' ||
-    !Array.isArray(value.papers) ||
-    !Array.isArray(value.failures)
-  )
-    return null
-  const papers: LiteratureDownloadCard['papers'] = []
-  for (const paper of value.papers) {
-    if (
-      !isRecord(paper) ||
-      !isString(paper.paper_id) ||
-      !isString(paper.literature_id) ||
-      !isString(paper.attachment_id) ||
-      !isString(paper.title) ||
-      !isString(paper.revision) ||
-      (paper.operation_id !== undefined && !isString(paper.operation_id))
-    )
-      return null
-    papers.push({
-      paper_id: paper.paper_id,
-      literature_id: paper.literature_id,
-      attachment_id: paper.attachment_id,
-      title: paper.title,
-      revision: paper.revision,
-      ...(paper.operation_id ? { operation_id: paper.operation_id } : {}),
+export const literatureJoinTasks: TaskSourceContribution = {
+  id: SOURCE_ID,
+  list: async () => [...records.values()].map(({ task }) => task),
+  subscribe(listener) {
+    listeners.add(listener)
+    return () => listeners.delete(listener)
+  },
+  present(task, t) {
+    const record = records.get(task.id)
+    const scope = task.operation === 'fulltext' ? 'fulltext' : 'metadata'
+    const library =
+      record?.projectName || t(task.projectId ? 'literatureJoin.project' : 'literatureJoin.library')
+    const target = record?.category ? [library, record.category].join(' / ') : library
+    const description = t('literatureJoin.destination', {
+      method: t(scope === 'fulltext' ? 'literatureJoin.fulltext' : 'literatureJoin.metadata'),
+      target,
     })
-  }
-  const failures: LiteratureDownloadCard['failures'] = []
-  for (const failure of value.failures) {
-    if (!isRecord(failure) || !isString(failure.paper_id) || !isString(failure.code)) return null
-    failures.push({ paper_id: failure.paper_id, code: failure.code })
-  }
-  if (new Set(papers.map((paper) => paper.paper_id)).size !== papers.length) return null
-  const omittedPapers = value.omitted_papers
-  const omittedFailures = value.omitted_failures
-  if (
-    omittedPapers !== undefined &&
-    (typeof omittedPapers !== 'number' || !Number.isSafeInteger(omittedPapers) || omittedPapers < 0)
-  )
-    return null
-  if (
-    omittedFailures !== undefined &&
-    (typeof omittedFailures !== 'number' ||
-      !Number.isSafeInteger(omittedFailures) ||
-      omittedFailures < 0)
-  )
-    return null
-  return {
-    schema_version: value.schema_version,
-    session_id: value.session_id,
-    run: value.run,
-    project_id: value.project_id,
-    papers,
-    failures,
-    ...(omittedPapers !== undefined && { omitted_papers: omittedPapers }),
-    ...(omittedFailures !== undefined && { omitted_failures: omittedFailures }),
-  }
+    const admitted = t('literatureJoin.admitted', {
+      completed: record?.admitted ?? 0,
+      total: task.sourceNames.length,
+    })
+    const acquired =
+      scope === 'fulltext' && task.status !== 'failed' && task.phase === PHASE.fulltext
+        ? t('literatureJoin.acquired', {
+            succeeded: task.outcome.succeeded,
+            failed: task.outcome.failed,
+          })
+        : ''
+    const error = task.error === ERROR.admission ? t('literatureJoin.admissionUnconfirmed') : ''
+    const summary = error || [admitted, acquired].filter(Boolean).join(' · ')
+    const detail = error ? description : [description, summary].join(' · ')
+    return {
+      title: taskTitleText(task.title, t),
+      detail,
+      row: {
+        summary,
+        context: description,
+        sourceListLabel: t('literatureJoin.paperList', { count: task.sourceNames.length }),
+      },
+      announcement: detail,
+      error,
+      failures: task.outcome.results
+        .filter((result) => result.status === 'failed')
+        .map(({ name }) => ({ name, reason: t('literatureJoin.fulltextFailed') })),
+      progress:
+        task.status !== 'running'
+          ? undefined
+          : task.phase === PHASE.fulltext && task.totalItems > 0
+            ? {
+                determinate: true,
+                value: (task.completedItems / task.totalItems) * PERCENT_MAX,
+                label: t('literatureJoin.progress', {
+                  completed: task.completedItems,
+                  total: task.totalItems,
+                }),
+              }
+            : { determinate: false, value: 0, label: t('literatureJoin.admitting') },
+    }
+  },
 }
 
-export function downloadOutcome(card: LiteratureDownloadCard) {
-  const saved = card.papers.length + (card.omitted_papers ?? 0)
-  const failed = card.failures.length + (card.omitted_failures ?? 0)
-  if (saved > 0 && failed > 0)
-    return {
-      saved,
-      failed,
-      heading: 'downloads.partialHeading',
-      descriptionKey: 'downloads.partialSaved',
-    } as const
-  if (saved > 0)
-    return {
-      saved,
-      failed,
-      heading: 'downloads.heading',
-      descriptionKey: card.project_id ? 'downloads.projectLinked' : 'downloads.globalSaved',
-    } as const
-  if (failed > 0)
-    return {
-      saved,
-      failed,
-      heading: 'downloads.failedHeading',
-      descriptionKey: 'downloads.noneSaved',
-    } as const
-  return {
-    saved,
-    failed,
-    heading: 'downloads.emptyHeading',
-    descriptionKey: 'downloads.empty',
-  } as const
-}
+export async function runLiteratureJoinTask(
+  papers: LiteratureSearchPaper[],
+  scope: JoinScope,
+  destination: JoinDestination,
+  projectName: string,
+  fulltext?: HeldFulltextJoin,
+  execute = (report: (progress: JoinProgress) => void) =>
+    joinWithScope(
+      papers,
+      scope,
+      destination,
+      destination.projectId,
+      fulltext,
+      undefined,
+      undefined,
+      report
+    )
+): Promise<JoinScopeOutcome> {
+  const id = crypto.randomUUID()
+  const createdAt = Date.now() / MILLISECONDS_PER_SECOND
+  const sourceNames = papers.map((paper) => paper.title)
+  const category = destination.path.join(' / ')
+  let admitted = 0
+  const heldIds = new Set(fulltext?.paperIds ?? [])
+  let results: ProductTaskResult[] =
+    scope === 'fulltext'
+      ? papers.flatMap((paper, index) =>
+          heldIds.has(paper.paper_id)
+            ? [{ index, name: paper.title, status: 'pending', error: '', retryable: false }]
+            : []
+        )
+      : []
+  let eventSeq = 0
+  let phase: ProductTask['phase'] = PHASE.admitting
+  const publish = (status: ProductTask['status'], error = ''): void => {
+    const succeeded = results.filter((result) => result.status === 'succeeded').length
+    const failed = results.filter((result) => result.status === 'failed').length
+    const task: ProductTask = {
+      id,
+      sourceId: SOURCE_ID,
+      projectId: destination.projectId ?? '',
+      operation: scope,
+      title: { key: 'title.literatureJoin', names: [] },
+      detail: '',
+      sourceNames,
+      status,
+      phase,
+      discoveredItems: papers.length,
+      completedItems: succeeded + failed,
+      totalItems: results.length,
+      completedBytes: 0,
+      totalBytes: 0,
+      versionDiscoveredItems: 0,
+      versionCompletedItems: 0,
+      versionTotalItems: 0,
+      outcome: { available: true, total: results.length, succeeded, failed, cancelled: 0, results },
+      eventSeq: ++eventSeq,
+      error,
+      createdAt,
+      updatedAt: Date.now() / MILLISECONDS_PER_SECOND,
+    }
+    records.set(id, { task, projectName, category, admitted })
+    for (const listener of listeners) listener(task)
+  }
 
-export function downloadSupersessionKey(value: Record<string, unknown>): string | null {
-  const card = parseDownloadCard(value)
-  return card ? JSON.stringify([card.session_id, card.run, card.project_id]) : null
+  publish('running')
+  try {
+    const outcome = await execute((progress) => {
+      if (progress.kind === 'admitted') {
+        admitted = progress.count
+        if (scope === 'fulltext') phase = PHASE.fulltext
+        if (results.length > 0) publish('running')
+        return
+      }
+      results = results.map((result) =>
+        result.index === progress.index
+          ? {
+              ...result,
+              status: progress.succeeded ? 'succeeded' : 'failed',
+              error: progress.succeeded ? '' : ERROR.fulltext,
+            }
+          : result
+      )
+      publish('running')
+    })
+    publish(outcome.fulltextFailed > 0 ? 'partial' : 'completed')
+    return outcome
+  } catch (error) {
+    publish('failed', ERROR.admission)
+    throw error
+  }
 }

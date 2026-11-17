@@ -6,7 +6,7 @@ import { loadReviewedRevisions } from './samples.ts'
 import { PreviewReviews } from './reviews.ts'
 
 function setup(failOnce = false) {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const versions = new PreviewVersions(files)
   const reviews = new PreviewReviews(versions, { failOnce })
   const baseline = files.read('readme.md')
@@ -75,7 +75,7 @@ test('keep-current reconciliation advances pending identity and revision resolve
 })
 
 test('multi-member retry only applies failed members and all returned snapshots are defensive copies', () => {
-  const files = new PreviewFiles()
+  const files = new PreviewFiles('reviewed')
   const versions = new PreviewVersions(files)
   const reviews = new PreviewReviews(versions, { failOnce: true })
   const candidate = loadReviewedRevisions()[0].bytes

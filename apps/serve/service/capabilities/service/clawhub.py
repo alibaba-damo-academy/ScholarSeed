@@ -20,6 +20,7 @@ from service.capabilities.service.attribution import (
     unavailable_attribution,
 )
 from service.capabilities.service.install import MAX_DOCUMENT_BYTES, MAX_PACKAGE_BYTES
+from service.capabilities.service.utils import integer
 
 CLAWHUB_URL_ENV = "SCHOLARSEED_CLAWHUB_URL"
 CLAWHUB_DOWNLOAD_HOSTS_ENV = "SCHOLARSEED_CLAWHUB_DOWNLOAD_HOSTS"
@@ -48,6 +49,7 @@ CLAWHUB_SEARCH_PATH = "/api/v1/search"
 SKILLHUB_CATALOG_PATH = "/api/web/skills"
 SKILLHUB_LABELS_PATH = "/api/web/labels"
 SKILLHUB_LOCALE_PATTERN = re.compile(r"^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$")
+SKILLHUB_COPY_LOCALES = ("en", "zh")
 SKILLHUB_LABEL_TYPES = frozenset({"RECOMMENDED", "PRIVILEGED"})
 SKILLHUB_LABELS_READY = "ready"
 SKILLHUB_LABELS_UNAVAILABLE = "unavailable"
@@ -137,7 +139,7 @@ def _item(value: Any) -> dict[str, Any]:
         ),
         "moderation": _moderation(value.get("moderation")),
         "downloads": (
-            downloads if type(downloads) is int and downloads >= CLAWHUB_MIN_DOWNLOADS else None
+            downloads if integer(downloads) and downloads >= CLAWHUB_MIN_DOWNLOADS else None
         ),
     }
 
@@ -272,6 +274,18 @@ class ClawHub:
             raise ClawHubError("SkillHub metadata identity mismatch")
         return metadata
 
+    async def localized_copy(self, namespace: str, slug: str) -> dict[str, dict[str, str]]:
+        names: dict[str, str] = {}
+        descriptions: dict[str, str] = {}
+        for locale in SKILLHUB_COPY_LOCALES:
+            hub = ClawHub(url=self.base, transport=self.transport, locale=locale)
+            metadata = await hub._metadata(namespace, slug)
+            for field, target in (("displayName", names), ("summary", descriptions)):
+                value = metadata.get(field)
+                if isinstance(value, str) and value.strip():
+                    target[locale] = value.strip()
+        return {"display_names": names, "descriptions": descriptions}
+
     async def attribution(self, namespace: str, slug: str, version: str) -> dict[str, Any]:
         namespace_id, slug_id, version_id = (
             _identifier(value) for value in (namespace, slug, version)
@@ -324,15 +338,16 @@ class ClawHub:
             try:
                 async with gate:
                     metadata = await self._metadata(namespace, slug)
-                display_name = metadata.get("displayName")
-                if isinstance(display_name, str) and display_name:
-                    result["display_name"] = display_name
-                summary = metadata.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    result["descriptions"] = {
-                        **(row.get("descriptions") or {}),
-                        self.locale.lower(): summary.strip(),
-                    }
+                for remote, local in (
+                    ("displayName", "display_names"),
+                    ("summary", "descriptions"),
+                ):
+                    value = metadata.get(remote)
+                    if isinstance(value, str) and value.strip():
+                        result[local] = {
+                            **(row.get(local) or {}),
+                            self.locale.lower(): value.strip(),
+                        }
                 result.update(
                     labels=_labels(metadata.get("labels")), labelsStatus=SKILLHUB_LABELS_READY
                 )
@@ -371,7 +386,7 @@ class ClawHub:
         rows, total = result.get("items"), result.get("total")
         if (
             not isinstance(rows, list)
-            or type(total) is not int
+            or (not isinstance(total, int) or isinstance(total, bool))
             or total < 0
             or result.get("page") != page
             or result.get("size") != CLAWHUB_PAGE_SIZE
@@ -463,7 +478,7 @@ class ClawHub:
             downloads = metadata.get("downloadCount")
             native_provider = str(metadata.get("ownerDisplayName") or "")
             normalized["downloads"] = (
-                downloads if type(downloads) is int and downloads >= CLAWHUB_MIN_DOWNLOADS else None
+                downloads if integer(downloads) and downloads >= CLAWHUB_MIN_DOWNLOADS else None
             )
         published = await self._json(
             f"{CLAWHUB_SKILLS_PATH}/{namespace_id}/{name_id}/versions/{version_id}"

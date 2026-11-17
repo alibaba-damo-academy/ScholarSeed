@@ -20,6 +20,8 @@ class NextStepsContracts(unittest.TestCase):
     def test_preserves_context_language_without_executable_actions(self):
         payload = self.payload()
         self.assertEqual(validate_next_steps_card(payload), payload)
+        payload["options"] = payload["options"][:1]
+        self.assertEqual(validate_next_steps_card(payload), payload)
 
     def test_rejects_empty_choices_and_hidden_action_fields(self):
         for change in ({"options": []}, {"action": "execute"}, {"title": " "}):
@@ -37,3 +39,7 @@ class NextStepsContracts(unittest.TestCase):
             validate_next_steps_card(payload)
         with self.assertRaises(ValueError):
             validate_next_steps_card({**self.payload(), "title": "x" * 10000})
+
+
+if __name__ == "__main__":
+    unittest.main()

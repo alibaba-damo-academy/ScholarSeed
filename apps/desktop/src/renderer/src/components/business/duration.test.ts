@@ -8,6 +8,7 @@ import zhTasks from '../../../../localization/locales/zh/tasks.json' with { type
 import {
   activityDurationLabel,
   activitySummaryState,
+  answerCountdownLabel,
   elapsedLabel,
   planDurationLabel,
   turnDurationLabel,
@@ -18,13 +19,14 @@ const translate = ((
   options?: {
     count?: number
     minutes?: number
-    seconds?: number
+    seconds?: number | string
     state?: string
     duration?: string
   }
 ) => {
   if (key === 'stream.seconds')
     return `${options?.count} ${options?.count === 1 ? 'second' : 'seconds'}`
+  if (key === 'stream.hil.waitingAnswerCountdown') return `${options?.minutes}:${options?.seconds}`
   if (key === 'stream.minutesSeconds') return `${options?.minutes} min ${options?.seconds} sec`
   if (key === 'stream.minutes')
     return `${options?.count} ${options?.count === 1 ? 'minute' : 'minutes'}`
@@ -32,6 +34,13 @@ const translate = ((
   if (key === 'stream.durationState') return `${options?.state} · Took ${options?.duration}`
   throw new Error(`Unexpected translation key: ${key}`)
 }) as TFunction<'components'>
+
+test('answer countdown rounds up and stops at zero', () => {
+  assert.equal(answerCountdownLabel(301_000, 1_000, translate), '5:00')
+  assert.equal(answerCountdownLabel(301_000, 1_999, translate), '5:00')
+  assert.equal(answerCountdownLabel(301_000, 2_000, translate), '4:59')
+  assert.equal(answerCountdownLabel(301_000, 302_000, translate), '0:00')
+})
 
 test('activity duration uses whole compact seconds and retains the one-second minimum', () => {
   assert.equal(activityDurationLabel(1000, 1000), '1s')

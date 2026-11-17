@@ -99,7 +99,7 @@ class CasPublication:
                 self._sealed
                 or kind not in ("objects", "chunks")
                 or name not in ("meta.json", "manifest.json", "payload")
-                or type(payload) is not bytes
+                or not isinstance(payload, bytes)
             ):
                 raise ValueError("invalid CAS publication file")
             if kind == "objects" and identifier != self.object_id:
@@ -498,7 +498,9 @@ class CasProjection:
         try:
             self._check()
             parts = _object_parts(expected_object_id, "objects")
-            if type(raw_size_bytes) is not int or raw_size_bytes < 0:
+            if (
+                not isinstance(raw_size_bytes, int) or isinstance(raw_size_bytes, bool)
+            ) or raw_size_bytes < 0:
                 raise ValueError("invalid CAS capture size")
             self._captured_bytes += raw_size_bytes
             self._check()

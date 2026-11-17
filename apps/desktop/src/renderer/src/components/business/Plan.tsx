@@ -1,8 +1,8 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronRight, CircleAlert, CircleDashed, type LucideIcon } from 'lucide-react'
+import { ChevronRight, CircleAlert, CircleDashed, Clock3, type LucideIcon } from 'lucide-react'
 import type { ParseKeys } from 'i18next'
-import aiThinking from '../../assets/ai-thinking.gif'
+import aiThinking from '../../assets/ai-thinking.gif?inline'
 import { streamingTextClassName } from '../../design/motion'
 import { IconFont } from '../primitive/Iconfont'
 import {
@@ -19,10 +19,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
   EllipsisText,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  ScrollArea,
   Spinner,
-  Tooltip,
 } from '../ui'
-import { planDurationLabel } from './duration'
+import { planElapsedLabel } from './duration'
 import { TaskPausedIcon } from './TaskStatus'
 
 const PLAN_DETAIL_MIN_WIDTH = 420
@@ -36,11 +39,18 @@ export interface PlanItem extends Omit<TodoDisplayItem, 'children'> {
 export interface PlanProps {
   id: string
   items: PlanItem[]
-  summary: { status: TodoDisplayStatus; label: string; paused?: boolean; danger?: boolean }
+  summary: {
+    status: TodoDisplayStatus
+    label: string
+    paused?: boolean
+    danger?: boolean
+    issue?: 'error' | 'warning'
+  }
   activeLabel?: string
   elapsedMilliseconds?: number | null
   estimateLabel?: string
   estimateTooltip?: string
+  estimateOverrun?: boolean
   running?: boolean
   compact?: boolean
   canContinue?: boolean
@@ -127,19 +137,27 @@ function StatusMark({
     /* min-h-[1lh]: iconfont 字形靠行盒撑高(18/22px), svg 没有行盒会缩成图标自身高度,
        在 items-start 的行里顶边对齐显得偏高; 用自身行高兜底后与右侧文字首行居中对齐。 */
     <span
-      className={`inline-grid min-h-[var(--vds-todo-status-mark-min-height)] shrink-0 place-items-center font-[var(--vds-fw-medium)] ${color}`}
+      className={`inline-grid min-h-[var(--vds-todo-status-mark-min-height)] shrink-0 place-items-center font-[var(--vds-fw-regular)] ${color}`}
       data-testid={`todo-mark-${status}`}
       aria-label={paused ? t('todo.summary.interrupted') : t(presentation.messageKey)}
     >
       {paused ? (
-        <TaskPausedIcon />
+        <TaskPausedIcon className="!size-[var(--vds-icon-6)]" />
       ) : status === 'running' ? (
-        <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
+        <Spinner
+          imageSrc={aiThinking}
+          size="sm"
+          className="!size-[var(--vds-icon-6)]"
+          aria-hidden="true"
+        />
       ) : LucideMark ? (
-        /* .iconfont 全局 16px, lucide 图标用同一档 icon-8 token 才能与其余状态字形等大。 */
-        <LucideMark aria-hidden="true" className="size-[var(--vds-icon-8)]" />
+        /* All plan status marks share the compact icon size. */
+        <LucideMark aria-hidden="true" className="size-[var(--vds-icon-6)]" />
       ) : presentation.mark ? (
-        <IconFont type={presentation.mark} />
+        <IconFont
+          type={presentation.mark}
+          className="inline-flex size-[var(--vds-icon-6)] items-center justify-center !text-[length:var(--vds-icon-6)]"
+        />
       ) : null}
     </span>
   )
@@ -149,14 +167,21 @@ function Row({
   item,
   items,
   isLast = false,
+  showDetails = true,
 }: {
   item: PlanItem
   items: PlanItem[]
   isLast?: boolean
+  showDetails?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('components')
-  const elapsed = item.elapsedMilliseconds ?? null
-  const duration = elapsed === null ? null : planDurationLabel(elapsed)
+  const emphasized = ['running', 'failed', 'blocked'].includes(item.status)
+  const pending = item.status === 'todo' || item.status === 'unrequested'
+  const textColor = pending
+    ? 'text-[var(--vds-text-tertiary)]'
+    : emphasized || item.status === 'done'
+      ? 'text-[var(--vds-text-secondary)]'
+      : 'text-[var(--vds-text-primary)]'
   const pendingDependencies =
     item.status === 'todo'
       ? items.filter(
@@ -166,7 +191,7 @@ function Row({
       : []
   return (
     <li
-      className={`flex min-w-0 items-start gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] px-[var(--vds-space-1)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] ${item.status === 'running' ? 'bg-[var(--vds-surface-muted)]' : ''}`}
+      className="flex min-w-0 items-start gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] px-[var(--vds-space-1)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-[var(--vds-fw-regular)]"
       data-testid="todo-step"
     >
       <span className="relative self-stretch">
@@ -178,34 +203,20 @@ function Row({
           />
         ) : null}
       </span>
-      <div className="min-w-0 flex-1 break-words">
+      <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
         <div className="flex min-w-0 items-start justify-between gap-[var(--vds-space-2)]">
-          <span
-            className={
-              item.status === 'done'
-                ? 'text-[var(--vds-text-secondary)]'
-                : 'text-[var(--vds-text-primary)]'
-            }
-          >
+          <span className={`${textColor} ${emphasized ? 'font-[var(--vds-fw-medium)]' : ''}`}>
             {item.status === 'running' && item.activeForm ? item.activeForm : item.content}
           </span>
-          {duration !== null ? (
-            <Tooltip
-              content={t(item.children?.length ? 'todo.stepAccumulated' : 'todo.stepExecution')}
-            >
-              <span
-                className="shrink-0 whitespace-nowrap text-[var(--vds-text-tertiary)] tabular-nums"
-                data-testid="todo-step-elapsed"
-                aria-label={t(
-                  item.children?.length ? 'todo.stepAccumulatedElapsed' : 'todo.stepElapsed',
-                  { duration }
-                )}
-              >
-                {duration}
-              </span>
-            </Tooltip>
-          ) : null}
         </div>
+        {showDetails && item.reason ? (
+          <p
+            data-testid="todo-step-reason"
+            className="m-0 mt-[var(--vds-space-1)] whitespace-pre-wrap text-[var(--vds-error-text-primary)] [overflow-wrap:anywhere]"
+          >
+            {item.reason}
+          </p>
+        ) : null}
         {pendingDependencies.length > 0 && (
           <span className="block text-[var(--text-3)]">
             {t('todo.waitingFor', {
@@ -214,11 +225,15 @@ function Row({
           </span>
         )}
         {item.status === 'unrequested' && (
-          <Badge size="sm" tone="neutral" className="mt-[var(--vds-space-1)]">
+          <Badge
+            size="sm"
+            tone="neutral"
+            className="mt-[var(--vds-space-1)] !font-[var(--vds-fw-regular)]"
+          >
             {t('todo.status.unrequestedBadge')}
           </Badge>
         )}
-        {item.children?.length ? (
+        {showDetails && item.children?.length ? (
           <Collapsible
             className="mt-[var(--vds-space-1)] !gap-0 overflow-hidden rounded-[var(--vds-accordion-radius)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)]"
             defaultOpen={item.status !== 'done'}
@@ -270,6 +285,7 @@ export function Plan({
   elapsedMilliseconds,
   estimateLabel,
   estimateTooltip,
+  estimateOverrun = false,
   running: planRunning = false,
   compact = false,
   canContinue: continuationRequested = false,
@@ -280,14 +296,13 @@ export function Plan({
   const { done, total } = todoProgress(items)
   const canContinue = Boolean(continuationRequested && onContinue)
   const allDone = done === total
-  const summaryLabel = summary.label
-  const currentLabel = total > 0 ? summaryLabel : t('todo.summary.preparing')
-  const elapsed = elapsedMilliseconds == null ? '' : planDurationLabel(elapsedMilliseconds)
+  const elapsed = elapsedMilliseconds == null ? '' : planElapsedLabel(elapsedMilliseconds, t)
   const continuingRef = React.useRef(false)
   const [continuing, setContinuing] = React.useState(false)
   const toggleRef = React.useRef<HTMLButtonElement | null>(null)
   const [headerWidth, setHeaderWidth] = React.useState(0)
   React.useLayoutEffect(() => {
+    if (compact) return
     const button = toggleRef.current
     if (!button) return
     const update = (): void => setHeaderWidth(button.clientWidth)
@@ -309,26 +324,160 @@ export function Plan({
       setContinuing(false)
     }
   }
-  const showResult = summary.status !== 'running' && summary.status !== 'done'
+  const incomplete = ['stopped', 'partial', 'failed', 'blocked'].includes(summary.status)
   const showCurrent =
     summary.status !== 'done' && Boolean(stepLabel) && headerWidth >= PLAN_DETAIL_MIN_WIDTH
   const resultTone =
-    summary.danger || ['failed', 'blocked', 'partial'].includes(summary.status)
-      ? 'danger'
-      : 'neutral'
+    summary.danger || incomplete ? 'danger' : summary.status === 'done' ? undefined : 'neutral'
+  const compactPanelRef = React.useRef<HTMLDivElement>(null)
   if (total === 0 && !estimateLabel) return null
+  const progress = !allDone ? (
+    <span
+      className="shrink-0 font-[var(--vds-fw-medium)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
+      data-testid="todo-progress"
+    >
+      {todoProgressLabel(items)}
+    </span>
+  ) : null
+  const renderTimer = (testId: string): React.JSX.Element | null =>
+    elapsed ? (
+      <span
+        className="inline-flex shrink-0 items-center gap-[var(--vds-space-1)] whitespace-nowrap text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]"
+        data-testid={testId}
+        aria-label={t('todo.totalElapsed', { duration: elapsed })}
+        title={t('todo.totalElapsed', { duration: elapsed })}
+      >
+        <Clock3
+          className={
+            compact ? '!size-[var(--vds-icon-6)] shrink-0' : 'size-[var(--vds-icon-7)] shrink-0'
+          }
+          strokeWidth={1.5}
+          aria-hidden="true"
+        />
+        {elapsed}
+      </span>
+    ) : null
+  const continuation = canContinue ? (
+    <Button
+      size="sm"
+      variant="secondary"
+      className="shrink-0 !font-[var(--vds-fw-regular)]"
+      data-testid="todo-continue"
+      disabled={continueDisabled || continuing}
+      onClick={() => void continuePlan()}
+    >
+      {t('todo.continue')}
+    </Button>
+  ) : null
+  const steps =
+    total === 0 ? null : (
+      <ol
+        className={
+          compact
+            ? 'm-0 list-none px-[var(--vds-space-3)] pt-[var(--vds-space-1)]'
+            : 'm-0 mt-[var(--vds-space-2)] max-h-[var(--vds-plan-list-max-height)] list-none overflow-y-auto border-t border-[var(--vds-divider-default)] p-0 pt-[var(--vds-space-1)]'
+        }
+      >
+        {items.map((item, index) => (
+          <Row
+            key={item.id || index}
+            item={item}
+            items={items}
+            isLast={index === items.length - 1}
+            showDetails={!compact}
+          />
+        ))}
+      </ol>
+    )
+
+  if (compact) {
+    const issue = summary.issue
+    return (
+      <div
+        ref={compactPanelRef}
+        className="-mb-[var(--vds-space-1)] min-w-0"
+        data-testid="todo-panel"
+      >
+        <Popover key={id}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="!inline-flex !h-auto min-h-[var(--vds-control-height-md)] max-w-full flex-wrap !justify-start !gap-x-[var(--vds-space-2)] !gap-y-0 !rounded-[var(--vds-radius-4)] !border-[var(--border)] !bg-[var(--vds-bg-white-default)] ![font-family:inherit] !font-[var(--vds-fw-regular)] !text-[length:var(--vds-font-body-lv1)] transition-shadow duration-[var(--vds-duration-fast)] motion-reduce:transition-none hover:!shadow-[var(--vds-shadow-1-center)] data-[state=open]:!bg-[var(--vds-surface-hover)]"
+              data-testid="todo-toggle"
+              aria-description={summary.label}
+            >
+              <StatusMark
+                status={
+                  issue === 'error' ? 'blocked' : issue === 'warning' ? 'failed' : summary.status
+                }
+                tone={issue ? undefined : resultTone}
+                paused={!issue && summary.paused}
+              />
+              <span className="font-[var(--vds-fw-medium)] text-[var(--vds-text-secondary)]">
+                {t('todo.steps')}
+              </span>
+              {progress}
+              {estimateLabel && !estimateOverrun ? (
+                <span
+                  className="shrink-0 whitespace-nowrap text-[var(--vds-text-tertiary)]"
+                  data-testid="todo-summary-estimate"
+                  title={estimateTooltip}
+                >
+                  {estimateLabel}
+                </span>
+              ) : (
+                renderTimer('todo-elapsed')
+              )}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            aria-label={t('todo.title')}
+            side="top"
+            horizontalAnchorRef={compactPanelRef}
+            className="!block !w-max !max-w-[min(var(--floating-anchor-width,var(--vds-popover-available-width)),var(--vds-popover-available-width))] max-h-[calc(100dvh_-_var(--vds-space-8))] overflow-y-auto border border-[var(--vds-divider-default)] !px-0 !py-[var(--vds-space-3)] !shadow-[var(--vds-shadow-2-center)]"
+            data-testid="todo-body"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-x-[var(--vds-space-2)] px-[var(--vds-space-3)]">
+              <div className="text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-medium)]">
+                {t('todo.title')}
+              </div>
+              {renderTimer('todo-detail-elapsed')}
+            </div>
+            {steps ? (
+              <>
+                <div className="mx-[var(--vds-space-3)] mt-[var(--vds-space-2)] border-t border-[var(--vds-divider-default)]" />
+                <ScrollArea
+                  overlay
+                  viewportClassName="max-h-[var(--vds-plan-list-max-height)]"
+                  viewportProps={{ 'aria-label': t('todo.steps') }}
+                >
+                  {steps}
+                </ScrollArea>
+              </>
+            ) : null}
+            {continuation ? (
+              <div className="mt-[var(--vds-space-2)] flex justify-end px-[var(--vds-space-3)]">
+                {continuation}
+              </div>
+            ) : null}
+          </PopoverContent>
+        </Popover>
+      </div>
+    )
+  }
+
   return (
-    /* compact 的 -mb-4 与 composer assistant 的 pt-12 相抵 → 执行计划与输入框间距 8px。 */
     <Card
       padding="sm"
-      className={`!rounded-[var(--vds-radius-6)] !shadow-none ${compact ? '!px-[var(--vds-space-2)] !py-[var(--vds-space-1)] -mb-[var(--vds-space-1)]' : ''}`}
+      className="font-[var(--vds-fw-regular)] !rounded-[var(--vds-radius-6)] !border-[length:var(--vds-border-width-1)] !border-[var(--vds-divider-default)] !shadow-none transition-shadow duration-[var(--vds-duration-fast)] motion-reduce:transition-none has-[[data-testid=todo-toggle][data-state=closed]]:hover:!shadow-[var(--vds-shadow-1-center)]"
       data-testid="todo-panel"
       aria-label={t('todo.title')}
     >
       <Collapsible
         className="!gap-[var(--vds-space-1)]"
         key={`${id}:${allDone}`}
-        defaultOpen={!compact && !allDone}
+        defaultOpen={!allDone}
       >
         <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
           <CollapsibleTrigger asChild>
@@ -336,37 +485,18 @@ export function Plan({
               ref={toggleRef}
               variant="ghost"
               size="content"
-              className="group !flex flex-1 !shrink min-w-0 flex-wrap !justify-start gap-[var(--vds-space-2)] !border-0 !px-[var(--vds-space-1)] !py-[var(--vds-space-1)] text-left"
+              className="!font-[var(--vds-fw-regular)] group !flex flex-1 !shrink min-w-0 flex-wrap !items-center !justify-start !gap-[var(--vds-space-2)] !border-0 !px-[var(--vds-space-1)] !py-[var(--vds-space-1)] text-left data-[state=closed]:hover:!bg-transparent"
               data-testid="todo-toggle"
             >
               <span className="flex shrink-0 items-center gap-[var(--vds-space-2)]">
                 <span className="shrink-0 transition-transform group-data-[state=open]:rotate-90">
                   <ChevronRight size={13} strokeWidth={1.8} aria-hidden="true" />
                 </span>
-                <span
-                  className={`shrink-0 font-[var(--vds-fw-medium)] ${planRunning ? streamingTextClassName : ''}`}
-                >
+                <span className={`shrink-0 ${planRunning ? streamingTextClassName : ''}`}>
                   {t('todo.title')}
                 </span>
-                {total > 0 && !compactPaused ? (
-                  <Badge size="sm" tone="neutral" className="shrink-0" data-testid="todo-progress">
-                    {todoProgressLabel(items)}
-                  </Badge>
-                ) : null}
+                {!compactPaused ? progress : null}
               </span>
-              {showResult && !compactPaused ? (
-                <EllipsisText
-                  className={`text-right text-[length:var(--vds-font-body-lv1)] ${resultTone === 'danger' ? 'text-[var(--vds-error-text-primary)]' : 'text-[var(--vds-text-secondary)]'}`}
-                  role="status"
-                  data-testid="todo-result"
-                  tooltip={summaryLabel}
-                  tooltipPortalled
-                  tooltipSide="bottom"
-                  wrapperClassName="min-w-0 shrink"
-                >
-                  {currentLabel}
-                </EllipsisText>
-              ) : null}
               {showCurrent ? (
                 <EllipsisText
                   className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
@@ -374,23 +504,26 @@ export function Plan({
                   data-testid="todo-current"
                   tooltipPortalled
                   tooltipSide="bottom"
-                  wrapperClassName="min-w-0 shrink"
+                  wrapperClassName="inline-flex items-center min-w-0 shrink"
                 >
                   {stepLabel}
                 </EllipsisText>
               ) : null}
-              <span className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-2)]">
+              <span
+                className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-2)]"
+                title={summary.label}
+              >
                 <StatusMark status={summary.status} tone={resultTone} paused={summary.paused} />
-                {elapsed ? (
+                {incomplete ? (
                   <span
-                    className="shrink-0 whitespace-nowrap text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]"
-                    data-testid="todo-elapsed"
-                    aria-label={t('todo.totalElapsed', { duration: elapsed })}
-                    title={t('todo.totalElapsed', { duration: elapsed })}
+                    className="inline-flex items-center whitespace-nowrap text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-[var(--vds-fw-regular)] text-[var(--vds-error-text-primary)]"
+                    data-testid="todo-incomplete"
                   >
-                    {elapsed}
+                    {t('todo.status.stopped')}
                   </span>
-                ) : null}
+                ) : (
+                  renderTimer('todo-elapsed')
+                )}
               </span>
               {estimateLabel && headerWidth >= PLAN_ESTIMATE_MIN_WIDTH ? (
                 <EllipsisText
@@ -406,35 +539,13 @@ export function Plan({
               ) : null}
             </Button>
           </CollapsibleTrigger>
-          {canContinue ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              className="shrink-0"
-              data-testid="todo-continue"
-              disabled={continueDisabled || continuing}
-              onClick={() => void continuePlan()}
-            >
-              {t('todo.continue')}
-            </Button>
-          ) : null}
+          {continuation}
         </div>
         <CollapsibleContent
           className="!rounded-none !border-0 !bg-transparent !p-0"
           data-testid="todo-body"
         >
-          {total === 0 ? null : (
-            <ol className="m-0 mt-[var(--vds-space-2)] max-h-[var(--vds-plan-list-max-height)] list-none overflow-y-auto border-t border-[var(--vds-divider-default)] p-0 pt-[var(--vds-space-1)]">
-              {items.map((item, index) => (
-                <Row
-                  key={item.id || index}
-                  item={item}
-                  items={items}
-                  isLast={index === items.length - 1}
-                />
-              ))}
-            </ol>
-          )}
+          {steps}
         </CollapsibleContent>
       </Collapsible>
     </Card>

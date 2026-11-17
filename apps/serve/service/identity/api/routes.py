@@ -33,9 +33,11 @@ from service.identity.service.policy import (
     install_policy,
     replace_policy,
 )
+from service.identity.service.scope import ExecutionIdentity
 from service.identity.utils import bearer_or_cookie, is_host_process, require_host_process
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.http_activity import execution_admission
+from service.platform.latency import RequestLatency, requestLatency
 
 # ── FastAPI 装配 ──
 
@@ -51,12 +53,21 @@ PREFLIGHT_METHOD = "OPTIONS"
 
 
 def _request_identity(
-    auth: AuthService, credential: str, activities: Activities
+    auth: AuthService,
+    credential: str,
+    activities: Activities,
+    observation: RequestLatency | None = None,
 ) -> Dict[str, Any] | None:
     # This scope belongs to the synchronous worker, not its cancellable waiter.
     # Request observation does not grant an ambient business execution lease.
-    with activities.observe_request():
-        return auth.identity(credential)
+    if observation is not None:
+        observation.identityStarted()
+    try:
+        with activities.observe_request():
+            return auth.identity(credential)
+    finally:
+        if observation is not None:
+            observation.identityFinished()
 
 
 def register_auth(
@@ -70,6 +81,8 @@ def register_auth(
     mode: str | None = None,
     on_logout: Callable[[str], Awaitable[None]] | None = None,
     on_auth_disabled: Callable[[], Awaitable[None]] | None = None,
+    execution_identity: ExecutionIdentity | None = None,
+    on_retire_execution_scope: Callable[[str], None] | None = None,
 ) -> None:
     """注册 /api/auth/* 路由 + **常挂**的全 /api 鉴权 middleware（proposal 18）。
 
@@ -135,19 +148,16 @@ def register_auth(
                         account_tokens.forget_if_current(owner, credential)
                         == CredentialCleanup.MATCHED
                     )
-                if (
-                    who is not None
-                    and on_logout is not None
-                    and (
-                        (
-                            matched
-                            and account_tokens is not None
-                            and not account_tokens.current(owner)
-                        )
-                        or (who.get("auth_source") != AUTH_SOURCE and ok)
-                    )
+                if who is not None and (
+                    (matched and account_tokens is not None and not account_tokens.current(owner))
+                    or (who.get("auth_source") != AUTH_SOURCE and ok)
                 ):
-                    await on_logout(owner)
+                    if execution_identity is not None and on_retire_execution_scope is not None:
+                        scope = execution_identity.retire(owner)
+                        if scope is not None:
+                            on_retire_execution_scope(scope)
+                    if on_logout is not None:
+                        await on_logout(owner)
                 return {"ok": ok}
 
         return await activities.finish(ActivityDomain.CREDENTIAL, revoke)
@@ -217,7 +227,13 @@ def register_auth(
     # 触发 bootstrap 的 fail-open except 把整个鉴权面降级成 no-auth。
     app.include_router(build_handoff_router(HandoffClaimStore(), activities=activities))
 
-    register_auth_middleware(app, auth, activities=activities, account_tokens=account_tokens)
+    register_auth_middleware(
+        app,
+        auth,
+        activities=activities,
+        account_tokens=account_tokens,
+        execution_identity=execution_identity,
+    )
 
 
 def register_auth_middleware(
@@ -226,6 +242,7 @@ def register_auth_middleware(
     *,
     activities: Activities,
     account_tokens: Any | None = None,
+    execution_identity: ExecutionIdentity | None = None,
 ) -> None:
     """Protect user APIs while leaving capability-authenticated routes to their owner.
 
@@ -255,11 +272,19 @@ def register_auth_middleware(
         # 循环冻住（连带所有并发请求），故挪进线程池。sync 路由（/api/auth/me）由
         # FastAPI 自己放线程池，不需要这一层。
         projection_revision = account_tokens.revision if account_tokens is not None else None
-        who = (
-            await run_in_threadpool(_request_identity, service, credential, activities)
-            if credential
-            else None
-        )
+        execution_revision = execution_identity.revision if execution_identity is not None else 0
+        observation = requestLatency(request.scope)
+        if credential and observation is not None:
+            observation.identityQueued()
+        who = None
+        if credential:
+            try:
+                who = await run_in_threadpool(
+                    _request_identity, service, credential, activities, observation
+                )
+            finally:
+                if observation is not None:
+                    observation.identityResumed()
         request.state.auth_identity_rejected = bool(credential) and who is None
         if who is not None:
             request.state.user_id = who["user_id"]
@@ -269,6 +294,16 @@ def register_auth_middleware(
                 account_tokens.remember_if_unchanged(
                     who["user_id"], credential, projection_revision
                 )
+            if execution_identity is not None:
+                hosted = who.get("auth_source") == AUTH_SOURCE
+                with execution_identity.project(
+                    who["user_id"],
+                    revoked=hosted
+                    and account_tokens is not None
+                    and account_tokens.is_revoked(credential),
+                    observed_revision=execution_revision,
+                ):
+                    return await call_next(request)
         elif current_policy(request.app).protects(path) and not (
             (path == DEVICE_SKILL_ROUTE_PREFIX or path.startswith(DEVICE_SKILL_ROUTE_PREFIX + "/"))
             and is_host_process(request)

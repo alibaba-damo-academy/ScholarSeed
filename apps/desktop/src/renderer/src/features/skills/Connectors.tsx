@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import emptyImage from '../../assets/empty_img.webp'
 import {
   Check,
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -11,6 +12,7 @@ import {
   Hammer,
   KeyRound,
   MessageCircle,
+  Package,
   Plus,
   Trash2,
 } from 'lucide-react'
@@ -84,11 +86,12 @@ import {
   useToast,
 } from '../../components/ui'
 
-const CONTENT_CLASS = 'mx-auto w-full max-w-[var(--vds-skills-content-width)]'
+const CONTENT_CLASS =
+  'mx-auto w-full max-w-[var(--vds-skills-content-width)] [@media(width>1600px)]:max-w-none'
 const SEARCH_EMPTY_CLASS =
   'min-h-[var(--vds-skills-empty-height)] flex-1 w-full content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
 const GRID_CLASS =
-  'grid grid-cols-1 gap-x-[var(--vds-space-4)] gap-y-[var(--vds-space-3)] md:grid-cols-2 lg:grid-cols-3'
+  'grid grid-cols-1 gap-x-[var(--vds-space-4)] gap-y-[var(--vds-space-3)] md:grid-cols-2 lg:grid-cols-3 [@media(width>1600px)]:[&>*]:max-w-[var(--vds-skills-card-max-width)] [@media(width>1600px)]:grid-cols-[repeat(auto-fill,minmax(var(--vds-skills-card-min-width),1fr))]'
 const CARD_CLASS =
   'group relative isolate flex flex-col gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] !bg-transparent hover:!bg-[var(--vds-bg-gray-default-transparent)] py-[var(--vds-space-3)] !shadow-none'
 const POLL_INTERVAL = 2000
@@ -152,7 +155,9 @@ async function openExternal(url: string): Promise<void> {
   else window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-export function Connectors(): React.JSX.Element {
+export function Connectors({
+  navigation,
+}: { navigation?: React.ReactNode } = {}): React.JSX.Element {
   const { t } = useTranslation('skills')
   const { t: ui } = useTranslation('ui')
   const { toast } = useToast()
@@ -528,6 +533,18 @@ export function Connectors(): React.JSX.Element {
         aria-label={t('connectors.search')}
         containerClassName="w-[var(--vds-skills-search-width)]"
       />
+      {scope === 'market' && (
+        <Button
+          variant="outline"
+          onClick={() => {
+            setScope('mine')
+            setQuery('')
+          }}
+        >
+          <Package aria-hidden="true" className="size-[var(--vds-icon-6)]" />
+          {t('connectors.mine')} {items.filter((item) => item.installed).length}
+        </Button>
+      )}
       <Button variant="primary" onClick={() => setCustom('new')} disabled={busy}>
         <Plus className="size-[var(--vds-icon-6)]" aria-hidden="true" />
         {t('connectors.custom.add')}
@@ -848,12 +865,23 @@ export function Connectors(): React.JSX.Element {
           <div
             className={`${CONTENT_CLASS} mb-[var(--vds-space-4)] flex shrink-0 flex-wrap items-center justify-between gap-[var(--vds-space-2)]`}
           >
-            <Tabs value={scope} onValueChange={(value) => setScope(String(value))}>
-              <TabsList aria-label={t('connectors.scope')}>
-                <TabsTrigger value="market">{t('connectors.market')}</TabsTrigger>
-                <TabsTrigger value="mine">{t('connectors.mine')}</TabsTrigger>
-              </TabsList>
-            </Tabs>
+            {scope === 'market' && navigation}
+            {scope === 'mine' && (
+              <Button
+                variant="ghost"
+                className="!pl-0 !text-[length:var(--vds-font-body-lv2)] !font-[var(--vds-fw-medium)] !text-[var(--vds-text-primary)]"
+                onClick={() => {
+                  setScope('market')
+                  setQuery('')
+                }}
+              >
+                <ArrowLeft
+                  aria-hidden="true"
+                  className="size-[var(--vds-icon-6)] text-[var(--vds-text-tertiary)]"
+                />
+                {t('connectors.addedTitle')}
+              </Button>
+            )}
             <div className="ml-auto flex items-center gap-[var(--vds-space-2)]">{actions}</div>
           </div>
           {error && (
@@ -920,13 +948,7 @@ export function Connectors(): React.JSX.Element {
                   }
                 />
               ) : (
-                <div
-                  className={
-                    scope === 'mine'
-                      ? 'grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2'
-                      : GRID_CLASS
-                  }
-                >
+                <div className={GRID_CLASS}>
                   {visible.map((item) => (
                     <Card
                       key={item.id}

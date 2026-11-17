@@ -39,11 +39,17 @@ from scholarseed_runtime.contract.incident import (
     RuntimeIncidentScope,
     RuntimeRetryability,
 )
+from scholarseed_runtime.contract.input import InputKind
 from scholarseed_runtime.contract.inventory import SkillPolicy
 from service.chat.constants import (
     PRODUCT_INTERACTION_BLOCKING,
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
+    QUEUED_DISPLAY_TEXT,
+    SESSION_FORK_FIRST_NUMBER,
+    SESSION_FORK_TITLE_SUFFIX,
+    SESSION_RENAME_MAX_LENGTH,
+    SESSION_TITLE_DEFAULT,
     SessionTitleFallback,
 )
 from service.chat.persistence import journal
@@ -61,6 +67,7 @@ from service.persistence.project import (
     sql_tokens,
     table_clauses,
 )
+from service.persistence.revisions import Migration, Revisions
 from service.platform.bridge import (
     BRIDGE_CALLBACK_REQUEST_CHARS,
     BRIDGE_CALLBACK_REQUEST_PATTERN,
@@ -102,10 +109,13 @@ TURN_SUBMISSION_UNKNOWN_KINDS = frozenset(
 TURN_SUBMISSION_RPC_METHOD = "turn/start"
 QUEUE_PURPOSE_TURN = "turn"
 QUEUE_PURPOSE_RECOVERY = "crash_recovery"
+QUEUE_PURPOSE_AUTHORIZATION = "authorization_continuation"
 QUEUE_RECOVERY_UNKNOWN_ERROR = "runtime_submission_outcome_unknown"
 QUEUE_RECOVERY_WAIT_INTERRUPTED = "runtime_resource_wait_interrupted"
 INITIAL_ATTACHMENT_GENERATION = 0
 PORTABLE_HISTORY_ROLES = frozenset(("user", "assistant"))
+SESSION_SCHEMA_REVISION = 1
+SESSION_SCHEMA_OWNER = "session_catalog"
 LEGACY_SESSION_TABLE = "session_access"
 LEGACY_RUNTIME_ID = "legacy_damoagent"
 SQLITE_TIMEOUT_SECONDS = 30.0
@@ -184,6 +194,9 @@ class SessionStatus(str, Enum):
 
 
 CATALOG_ADDITIVE_COLUMNS = {
+    "display_parent_session_id": "TEXT",
+    "detached_parent_session_id": "TEXT",
+    "display_order": "INTEGER",
     "runtime_id": f"TEXT NOT NULL DEFAULT '{LEGACY_RUNTIME_ID}'",
     "vendor_thread_id": "TEXT",
     "vendor_session_id": "TEXT",
@@ -200,6 +213,9 @@ CATALOG_ADDITIVE_COLUMNS = {
     "last_product_seq": "INTEGER NOT NULL DEFAULT 0",
     "title": "TEXT NOT NULL DEFAULT ''",
     "title_fallback": "TEXT",
+    "fork_title_group": "TEXT",
+    "fork_title_base": "TEXT",
+    "fork_title_number": "INTEGER",
     "pinned": "INTEGER NOT NULL DEFAULT 0",
     "archived": "INTEGER NOT NULL DEFAULT 0",
     "todos": "TEXT NOT NULL DEFAULT '[]'",
@@ -216,6 +232,11 @@ class SessionListScope(str, Enum):
     ALL = "all"
     PROJECT = "project"
     UNASSIGNED = "unassigned"
+
+
+class SessionOrderPlacement(str, Enum):
+    BEFORE = "before"
+    AFTER = "after"
 
 
 class HilStatus(str, Enum):
@@ -408,9 +429,19 @@ class SessionCatalogRecord:
     todo_product_seq: int = INITIAL_PRODUCT_SEQUENCE
     todo_explanation: str | None = None
     title_fallback: SessionTitleFallback | None = None
+    fork_title_group: str | None = None
+    fork_title_base: str | None = None
+    fork_title_number: int | None = None
     next_turn_mode: str | None = None
     pinned: bool = False
     archived: bool = False
+    display_parent_session_id: str | None = None
+    detached_parent_session_id: str | None = None
+    display_order: int | None = None
+
+    @property
+    def runtime_workdir_path(self) -> Path | None:
+        return Path(self.runtime_workdir) if self.runtime_workdir else None
 
 
 def encode_thinking(thinking: ModelThinking | None) -> str | None:
@@ -475,6 +506,13 @@ class SessionModelState:
             self.active_reasoning_effort,
             self.active_thinking,
         )
+
+
+@dataclass(frozen=True)
+class SessionListState:
+    binding: RuntimeBinding | None
+    model: SessionModelState
+    pending: PendingTurnSettlement | None
 
 
 @dataclass(frozen=True)
@@ -633,6 +671,10 @@ class SessionStateConflictError(RuntimeError):
     """An idempotency key was reused for different product state."""
 
 
+class SessionListCursorError(ValueError):
+    """A scoped catalog cursor no longer identifies an available boundary."""
+
+
 class SessionQueueCapacityError(RuntimeError):
     """A product session already has the maximum number of queued messages."""
 
@@ -649,11 +691,13 @@ class SessionSchema:
     catalog_backfill: bool
     binding_backfill: bool
     activation_backfill: bool
+    revision: int = 0
 
     @property
     def needs_write(self) -> bool:
         return any(
             (
+                self.revision < SESSION_SCHEMA_REVISION,
                 self.create_tables,
                 self.add_columns,
                 self.create_indexes,
@@ -711,6 +755,25 @@ class SessionCatalogStore:
 
     @classmethod
     def inspect_connection(cls, connection: sqlite3.Connection) -> SessionSchema:
+        revision = cls._revisions().inspect(connection)
+        return dataclasses.replace(cls._inspect_structure(connection), revision=revision)
+
+    @classmethod
+    def inspect_layout(cls, connection: sqlite3.Connection) -> SessionSchema:
+        """Only for previews whose full row digest equals the inspected source."""
+        if not cls._revisions().inspect_definition(connection):
+            raise RuntimeError("candidate session revision metadata is missing")
+        return cls._inspect_structure(connection)
+
+    @classmethod
+    def _revisions(cls) -> Revisions:
+        return Revisions(
+            SESSION_SCHEMA_OWNER,
+            (Migration(SESSION_SCHEMA_REVISION, 0, cls._initialize_structure),),
+        )
+
+    @classmethod
+    def _inspect_structure(cls, connection: sqlite3.Connection) -> SessionSchema:
         objects = {
             row["name"]: row
             for row in connection.execute("SELECT name,type,tbl_name,sql FROM sqlite_master")
@@ -780,7 +843,7 @@ class SessionCatalogStore:
                     )
                     allowed.update(historical)
                 corrected = []
-                for clause in observed:
+                for clause_number, clause in enumerate(observed, start=1):
                     normalized = clause
                     if table in repairs and clause[:2] == ("foreign", "key"):
                         position = clause.index("references") + 1
@@ -790,7 +853,17 @@ class SessionCatalogStore:
                             *clause[position + 1 :],
                         )
                     if normalized not in allowed or normalized in corrected:
-                        raise RuntimeError("unsupported session schema declaration")
+                        # Only product-owned names and fixed-size metadata reach logs.
+                        # SQL literals and even unknown identifiers may contain user data.
+                        reason = "unknown" if normalized not in allowed else "duplicate"
+                        fingerprint = hashlib.sha256(
+                            json.dumps(clause, ensure_ascii=True).encode("ascii")
+                        ).hexdigest()
+                        raise RuntimeError(
+                            "unsupported session schema declaration: "
+                            f"table={actual_name} reason={reason} "
+                            f"clause={clause_number} sha256={fingerprint}"
+                        )
                     corrected.append(normalized)
                 constraints = {clause for clause in expected if clause[0] not in declared}
                 # Known additive legacy catalogs never acquired the newer UNIQUE.
@@ -859,6 +932,7 @@ class SessionCatalogStore:
             catalog_backfill,
             binding_backfill,
             activation_backfill,
+            SESSION_SCHEMA_REVISION,
         )
 
     def _owner_condition(self, principal: SessionPrincipal) -> tuple[str, tuple[str, ...]]:
@@ -895,7 +969,15 @@ class SessionCatalogStore:
 
     @classmethod
     def initialize_schema(cls, connection: sqlite3.Connection) -> None:
-        schema = cls.inspect_connection(connection)
+        cls._revisions().migrate(
+            connection,
+            validate=lambda current: cls._inspect_structure(current).needs_write,
+            repair=cls._initialize_structure,
+        )
+
+    @classmethod
+    def _initialize_structure(cls, connection: sqlite3.Connection) -> None:
+        schema = cls._inspect_structure(connection)
         if journal.inspect_connection(connection).needs_write:
             journal.initialize(connection)
         if not schema.needs_write:
@@ -1021,6 +1103,16 @@ class SessionCatalogStore:
                 ) as rows:
                     for row in rows:
                         yield row[0]
+
+    @staticmethod
+    def has_inline_bodies(connection: sqlite3.Connection) -> bool:
+        return any(
+            connection.execute(
+                f"SELECT 1 FROM {table} WHERE {_inline_body_condition(body_field)} LIMIT 1"
+            ).fetchone()
+            for table, fields in CATALOG_BODY_FIELDS.items()
+            for body_field in fields
+        )
 
     @staticmethod
     def migrate_bodies(
@@ -1197,8 +1289,14 @@ class SessionCatalogStore:
                 last_product_seq INTEGER NOT NULL DEFAULT 0,
                 title TEXT NOT NULL DEFAULT '',
                 title_fallback TEXT,
+                fork_title_group TEXT,
+                fork_title_base TEXT,
+                fork_title_number INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
+                display_parent_session_id TEXT,
+                detached_parent_session_id TEXT,
+                display_order INTEGER,
                 todos TEXT NOT NULL DEFAULT '[]',
                 todo_turn_id TEXT,
                 todo_product_seq INTEGER NOT NULL DEFAULT 0,
@@ -1781,8 +1879,14 @@ class SessionCatalogStore:
             or payload.get("proof_id") != row["proof_id"]
             or not payload.get("call_id")
             or not payload.get("command_id")
-            or type(payload.get("operation_seq")) is not int
-            or type(payload.get("generation")) is not int
+            or (
+                not isinstance(payload.get("operation_seq"), int)
+                or isinstance(payload.get("operation_seq"), bool)
+            )
+            or (
+                not isinstance(payload.get("generation"), int)
+                or isinstance(payload.get("generation"), bool)
+            )
             or not isinstance(payload.get("binding"), str)
             or not isinstance(payload.get("revision"), str)
         ):
@@ -2200,7 +2304,9 @@ class SessionCatalogStore:
                 configuration=self._replacement_configuration(connection, session_id),
             )
             connection.execute(
-                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, deadline = NULL, updated_at = ? WHERE session_id = ? AND queued_message_id = ?",
+                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, deadline = NULL, "
+                "safe_error = '', safe_error_details = '{}', updated_at = ? "
+                "WHERE session_id = ? AND queued_message_id = ?",
                 (QueuedMessageState.WAITING_RESOURCES.value, time.time(), session_id, command_id),
             )
             connection.execute(
@@ -2594,34 +2700,56 @@ class SessionCatalogStore:
             and str(resolved_payload.get(RESOLVED_AMBIGUOUS_INCIDENT_ID_KEY) or "") == incident_id
         )
 
-    def pending_turn_settlement(self, session_id: str) -> PendingTurnSettlement | None:
-        with closing(self._connect()) as connection, connection:
-            row = connection.execute(
+    def pending_turn_settlement(
+        self, session_id: str, *, connection: sqlite3.Connection | None = None
+    ) -> PendingTurnSettlement | None:
+        if connection is not None:
+            validate_transaction(connection, self._database)
+        with closing(self._connect()) if connection is None else nullcontext(connection) as current:
+            assert current is not None
+            row = current.execute(
                 f"SELECT * FROM {SESSION_TURN_SETTLEMENT_TABLE} WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
-            row = _materialize_row(connection, row)
+            row = _materialize_row(current, row)
         return self._turn_settlement(row)
 
-    def mark_turn_recovery_blocked(self, session_id: str, blocked: bool) -> bool:
-        with closing(self._connect()) as connection, connection:
-            begin_write(connection, self._database)
-            cursor = connection.execute(
-                f"UPDATE {SESSION_TURN_SETTLEMENT_TABLE} SET recovery_blocked = ? "
-                "WHERE session_id = ?",
-                (int(blocked), session_id),
-            )
-            return cursor.rowcount == 1
+    def mark_turn_recovery_blocked(
+        self, session_id: str, blocked: bool, *, connection: sqlite3.Connection | None = None
+    ) -> bool:
+        if connection is None:
+            with closing(self._connect()) as owned, owned:
+                begin_write(owned, self._database)
+                return self.mark_turn_recovery_blocked(session_id, blocked, connection=owned)
+        validate_transaction(connection, self._database)
+        cursor = connection.execute(
+            f"UPDATE {SESSION_TURN_SETTLEMENT_TABLE} SET recovery_blocked = ? "
+            "WHERE session_id = ?",
+            (int(blocked), session_id),
+        )
+        return cursor.rowcount == 1
 
-    def clear_turn_settlement(self, session_id: str, native_turn_id: str) -> bool:
-        with closing(self._connect()) as connection, connection:
-            begin_write(connection, self._database)
-            cursor = connection.execute(
-                f"DELETE FROM {SESSION_TURN_SETTLEMENT_TABLE} "
-                "WHERE session_id = ? AND native_turn_id = ?",
-                (session_id, native_turn_id),
-            )
-            return cursor.rowcount == 1
+    def clear_turn_settlement(
+        self,
+        session_id: str,
+        native_turn_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
+        owned = connection is None
+        if connection is not None:
+            validate_transaction(connection, self._database)
+        with closing(self._connect()) if owned else nullcontext(connection) as current:
+            assert current is not None
+            with current if owned else nullcontext():
+                if owned:
+                    begin_write(current, self._database)
+                cursor = current.execute(
+                    f"DELETE FROM {SESSION_TURN_SETTLEMENT_TABLE} "
+                    "WHERE session_id = ? AND native_turn_id = ?",
+                    (session_id, native_turn_id),
+                )
+                return cursor.rowcount == 1
 
     @staticmethod
     def _queued_message(row: sqlite3.Row | Mapping[str, Any] | None) -> QueuedMessageRecord | None:
@@ -2763,7 +2891,12 @@ class SessionCatalogStore:
                 return None
             if record.purpose != purpose:
                 raise SessionStateConflictError("resource wait purpose changed")
-            if record.state is QueuedMessageState.WAITING_RESOURCES:
+            if (
+                record.state is QueuedMessageState.WAITING_RESOURCES
+                and not record.safe_error
+                and not record.safe_error_details
+                and (record.deadline is not None or deadline is None)
+            ):
                 return record
             connection.execute(
                 f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, "
@@ -2874,13 +3007,123 @@ class SessionCatalogStore:
             connection.commit()
         return self.queued_message(session_id, queued_message_id)
 
+    @classmethod
+    def local_rejection_source(
+        cls, connection: sqlite3.Connection, session_id: str, queued_message_id: str
+    ) -> tuple[RuntimeBinding, int, int, str, int] | None:
+        activation = cls._activation(
+            connection.execute(
+                f"SELECT * FROM {SESSION_ACTIVATION_TABLE} WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        )
+        binding = cls._runtime_binding(
+            connection.execute(
+                f"SELECT * FROM {SESSION_RUNTIME_BINDING_TABLE} WHERE product_session_id = ?",
+                (session_id,),
+            ).fetchone()
+        )
+        queued = connection.execute(
+            f"SELECT * FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id = ?",
+            (session_id, queued_message_id),
+        ).fetchone()
+        model = cls._model_state(
+            connection.execute(
+                f"SELECT * FROM {SESSION_MODEL_TABLE} WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        )
+        if (
+            activation is None
+            or activation.open_state is not OpenState.BOUND
+            or activation.generation != INITIAL_ATTACHMENT_GENERATION + 1
+            or binding is None
+            or model is None
+            or model.deferred
+            or queued is None
+            or queued["purpose"] != QUEUE_PURPOSE_TURN
+            or queued["state"]
+            not in (QueuedMessageState.FAILED.value, QueuedMessageState.WAITING_RESOURCES.value)
+            or queued["native_turn_id"]
+            or queued["operation_seq"] is None
+            or cls._rebuilding_blocked(
+                connection, session_id, queued_message_id, queued["operation_seq"]
+            )
+            or connection.execute(
+                f"SELECT 1 FROM {SESSION_MESSAGE_QUEUE_TABLE} WHERE session_id = ? AND queued_message_id != ? LIMIT 1",
+                (session_id, queued_message_id),
+            ).fetchone()
+            is not None
+        ):
+            return None
+        for table in (
+            SESSION_UNCERTAINTY_TABLE,
+            SESSION_TURN_SETTLEMENT_TABLE,
+            SESSION_PORTABLE_HISTORY_TABLE,
+            SESSION_REPLACEMENT_TABLE,
+        ):
+            if (
+                connection.execute(
+                    f"SELECT 1 FROM {table} WHERE session_id = ? LIMIT 1", (session_id,)
+                ).fetchone()
+                is not None
+            ):
+                return None
+        watermark = connection.execute(
+            f"SELECT last_product_seq FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+        return (
+            binding,
+            activation.generation,
+            queued["operation_seq"],
+            cls._replacement_configuration(connection, session_id),
+            watermark,
+        )
+
+    @classmethod
+    def restore_local_rejection(
+        cls,
+        connection: sqlite3.Connection,
+        session_id: str,
+        queued_message_id: str,
+        source: tuple[RuntimeBinding, int, int, str, int],
+    ) -> bool:
+        validate_transaction(connection, _body_database(connection))
+        if cls.local_rejection_source(connection, session_id, queued_message_id) != source:
+            return False
+        return (
+            connection.execute(
+                f"UPDATE {SESSION_ACTIVATION_TABLE} SET open_state = ? WHERE session_id = ? AND open_state = ? AND generation = ?",
+                (OpenState.UNSUBMITTED.value, session_id, OpenState.BOUND.value, source[1]),
+            ).rowcount
+            == 1
+        )
+
     def update_queued_message(
         self,
         session_id: str,
         queued_message_id: str,
-        body: Mapping[str, Any],
+        text: str,
     ) -> QueuedMessageRecord | None:
         with closing(self._connect()) as connection, connection:
+            begin_write(connection, _body_database(connection))
+            row = connection.execute(
+                f"SELECT * FROM {SESSION_MESSAGE_QUEUE_TABLE} "
+                "WHERE session_id = ? AND queued_message_id = ?",
+                (session_id, queued_message_id),
+            ).fetchone()
+            current = self._queued_message(_materialize_row(connection, row))
+            if current is None or current.state not in QUEUE_SUBMITTABLE_STATES:
+                return None
+            body = dict(current.body)
+            body["input"] = [
+                {"type": InputKind.TEXT.value, "text": text},
+                *(
+                    item
+                    for item in body.get("input", [])
+                    if item.get("type") != InputKind.TEXT.value
+                ),
+            ]
+            body[QUEUED_DISPLAY_TEXT] = text
             cursor = connection.execute(
                 f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET body = '', body_ref = ?, safe_error = '', "
                 "safe_error_details = '{}', updated_at = ? "
@@ -2897,6 +3140,30 @@ class SessionCatalogStore:
                 ),
             )
         return self.queued_message(session_id, queued_message_id) if cursor.rowcount == 1 else None
+
+    def restore_queued_submission(
+        self, session_id: str, queued: QueuedMessageRecord
+    ) -> QueuedMessageRecord | None:
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, safe_error = ?, safe_error_details = ?, updated_at = ? "
+                "WHERE session_id = ? AND queued_message_id = ? AND state = ? AND operation_seq = ?",
+                (
+                    queued.state.value,
+                    queued.safe_error,
+                    json.dumps(dict(queued.safe_error_details), ensure_ascii=False, sort_keys=True),
+                    time.time(),
+                    session_id,
+                    queued.queued_message_id,
+                    QueuedMessageState.SUBMITTING.value,
+                    queued.operation_seq,
+                ),
+            )
+        return (
+            self.queued_message(session_id, queued.queued_message_id)
+            if cursor.rowcount == 1
+            else None
+        )
 
     def delete_queued_message(self, session_id: str, queued_message_id: str) -> bool:
         """Cancel unsent work while retaining its idempotency identity."""
@@ -3183,8 +3450,16 @@ class SessionCatalogStore:
             last_turn_status=cls._optional(row, "last_turn_status"),
             last_product_seq=int(row["last_product_seq"]),
             title=str(row["title"] or ""),
+            fork_title_group=cls._optional(row, "fork_title_group"),
+            fork_title_base=cls._optional(row, "fork_title_base"),
+            fork_title_number=(
+                int(row["fork_title_number"]) if row["fork_title_number"] is not None else None
+            ),
             pinned=bool(row["pinned"]),
             archived=bool(row["archived"]),
+            display_parent_session_id=cls._optional(row, "display_parent_session_id"),
+            detached_parent_session_id=cls._optional(row, "detached_parent_session_id"),
+            display_order=int(row["display_order"]) if row["display_order"] is not None else None,
             title_fallback=next(
                 (value for value in SessionTitleFallback if value.value == row["title_fallback"]),
                 None,
@@ -3278,6 +3553,7 @@ class SessionCatalogStore:
         reasoning_effort: str = "",
         thinking: ModelThinking | None = None,
         title_fallback: SessionTitleFallback | None = None,
+        display_parent_session_id: str | None = None,
     ) -> SessionCatalogRecord:
         """Allocate a durable product identity before creating a native thread."""
 
@@ -3322,11 +3598,17 @@ class SessionCatalogStore:
                 ):
                     raise SessionStateConflictError("session allocation idempotency conflict")
                 return existing
+            self._validate_display_parent(
+                connection, session_id, creator, project_path, display_parent_session_id
+            )
+            display_order = self._next_display_order(
+                connection, creator, project_path, display_parent_session_id
+            )
             connection.execute(
                 f"INSERT INTO {SESSION_CATALOG_TABLE} "
                 "(session_id, principal_id, runtime_id, runtime_workdir, project_path, "
                 "output_root, codex_version, model_id, policy_id, status, title, title_fallback, created_at, "
-                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "updated_at, display_parent_session_id, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session_id,
                     creator.user_id,
@@ -3342,6 +3624,8 @@ class SessionCatalogStore:
                     title_fallback,
                     timestamp,
                     timestamp,
+                    display_parent_session_id,
+                    display_order,
                 ),
             )
             connection.execute(
@@ -3929,7 +4213,7 @@ class SessionCatalogStore:
             connection.execute(
                 f"""
                 UPDATE {SESSION_CATALOG_TABLE}
-                SET title = ?, title_fallback = NULL, updated_at = ?
+                SET title = ?, title_fallback = NULL, fork_title_base = NULL, updated_at = ?
                 WHERE session_id = ? AND {condition}
                 """,
                 (title.strip(), timestamp, session_id, *owner_params),
@@ -3938,6 +4222,63 @@ class SessionCatalogStore:
         if record is None:
             raise SessionAccessError("session not found")
         return record
+
+    def name_fork(
+        self, session_id: str, source_id: str, principal: SessionPrincipal
+    ) -> SessionCatalogRecord:
+        """Allocate a language-neutral title within the source's durable numbering group."""
+
+        condition, owner_params = self._owner_condition(principal)
+        with closing(self._connect()) as connection, connection:
+            begin_write(connection, _body_database(connection))
+            records = {}
+            for selected_id in (session_id, source_id):
+                record = self._record(
+                    connection.execute(
+                        f"SELECT * FROM {SESSION_CATALOG_TABLE} "
+                        f"WHERE session_id = ? AND {condition}",
+                        (selected_id, *owner_params),
+                    ).fetchone()
+                )
+                if record is None:
+                    raise SessionAccessError("session not found")
+                records[selected_id] = record
+            target = records[session_id]
+            if (
+                target.fork_title_number is not None
+                or target.title_fallback is not SessionTitleFallback.NEW_SESSION
+            ):
+                return target
+            source = records[source_id]
+            if source.fork_title_base is not None and source.fork_title_group is not None:
+                group = source.fork_title_group
+                base = source.fork_title_base
+            else:
+                group = source.session_id
+                base = source.title or SESSION_TITLE_DEFAULT
+            maximum = connection.execute(
+                f"SELECT MAX(fork_title_number) FROM {SESSION_CATALOG_TABLE} "
+                "WHERE fork_title_group = ?",
+                (group,),
+            ).fetchone()[0]
+            number = max(SESSION_FORK_FIRST_NUMBER, (maximum or 0) + 1)
+            suffix = SESSION_FORK_TITLE_SUFFIX.format(number=number)
+            title = base[: SESSION_RENAME_MAX_LENGTH - len(suffix)] + suffix
+            connection.execute(
+                f"UPDATE {SESSION_CATALOG_TABLE} "
+                "SET title = ?, title_fallback = NULL, fork_title_group = ?, "
+                "fork_title_base = ?, fork_title_number = ?, updated_at = ? "
+                "WHERE session_id = ?",
+                (title, group, base, number, time.time(), session_id),
+            )
+            result = self._record(
+                connection.execute(
+                    f"SELECT * FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?", (session_id,)
+                ).fetchone()
+            )
+            if result is None:
+                raise SessionAccessError("session not found")
+            return result
 
     def set_archived(
         self,
@@ -4242,6 +4583,12 @@ class SessionCatalogStore:
                 (session_id,),
             ).fetchone()
             if row is None:
+                begin_write(connection, self._database)
+                row = connection.execute(
+                    f"SELECT * FROM {SESSION_MODEL_TABLE} WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            if row is None:
                 catalog = connection.execute(
                     f"SELECT model_id, updated_at FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?",
                     (session_id,),
@@ -4271,6 +4618,50 @@ class SessionCatalogStore:
         if row is None:
             raise SessionAccessError("session not found")
         return self._model_state(row)
+
+    def list_states(
+        self, session_ids: Sequence[str], *, default_model_id: str
+    ) -> dict[str, SessionListState]:
+        """Read a page of durable task state without installing mutation triggers."""
+
+        if not session_ids:
+            return {}
+        placeholders = ",".join("?" for _ in session_ids)
+        with reader(self._database) as connection:
+            connection.execute("BEGIN")
+            bindings = {
+                str(row["product_session_id"]): self._runtime_binding(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {SESSION_RUNTIME_BINDING_TABLE} "
+                    f"WHERE product_session_id IN ({placeholders})",
+                    session_ids,
+                )
+            }
+            models = {
+                str(row["session_id"]): self._model_state(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {SESSION_MODEL_TABLE} WHERE session_id IN ({placeholders})",
+                    session_ids,
+                )
+            }
+            settlements = _materialize_rows(
+                connection,
+                connection.execute(
+                    f"SELECT * FROM {SESSION_TURN_SETTLEMENT_TABLE} "
+                    f"WHERE session_id IN ({placeholders})",
+                    session_ids,
+                ).fetchall(),
+            )
+            pending = {str(row["session_id"]): self._turn_settlement(row) for row in settlements}
+        return {
+            session_id: SessionListState(
+                bindings.get(session_id),
+                models.get(session_id)
+                or self.model_state(session_id, default_model_id=default_model_id),
+                pending.get(session_id),
+            )
+            for session_id in session_ids
+        }
 
     @staticmethod
     def _model_state(row: sqlite3.Row | Mapping[str, Any]) -> SessionModelState:
@@ -4737,6 +5128,26 @@ class SessionCatalogStore:
             raise SessionAccessError("HIL request not found")
         return record
 
+    def replace_pending_hil_payload(
+        self, request_id: str, expected: dict[str, Any], payload: dict[str, Any]
+    ) -> SessionHilRecord:
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                f"SELECT * FROM {SESSION_HIL_TABLE} WHERE product_request_id = ?", (request_id,)
+            ).fetchone()
+            record = self._hil_record(_materialize_row(connection, row))
+            if (
+                record is None
+                or record.status is not HilStatus.PENDING
+                or record.payload != expected
+            ):
+                raise SessionStateConflictError("product interaction changed")
+            connection.execute(
+                f"UPDATE {SESSION_HIL_TABLE} SET payload = '', payload_ref = ? WHERE product_request_id = ?",
+                (_store_body(connection, json.dumps(payload, ensure_ascii=False)), request_id),
+            )
+        return self.hil(request_id)
+
     def installation_state(self, request_id: str, state: dict[str, Any]) -> None:
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
@@ -4839,6 +5250,21 @@ class SessionCatalogStore:
                 ),
             )
         return self.hil(product_request_id)
+
+    def update_pending_hil_decision(
+        self, product_request_id: str, decision: dict[str, Any]
+    ) -> bool:
+        encoded = json.dumps(decision, ensure_ascii=False, separators=(",", ":"))
+        with closing(self._connect()) as connection, connection:
+            begin_write(connection, self._database)
+            cursor = connection.execute(
+                f"""
+                UPDATE {SESSION_HIL_TABLE} SET decision = '', decision_ref = ?
+                WHERE product_request_id = ? AND status = ?
+                """,
+                (_store_body(connection, encoded), product_request_id, HilStatus.PENDING.value),
+            )
+        return cursor.rowcount == 1
 
     def resolve_hil(
         self,
@@ -5410,6 +5836,258 @@ class SessionCatalogStore:
         if row is None:
             raise SessionAccessError("session not found")
 
+    def _validate_display_parent(
+        self,
+        connection: sqlite3.Connection,
+        session_id: str,
+        principal: SessionPrincipal,
+        project_path: str | None,
+        parent_session_id: str | None,
+    ) -> None:
+        if parent_session_id is None:
+            return
+        if parent_session_id == session_id:
+            raise ValueError("a session cannot be its own display parent")
+        condition, owner_params = self._owner_condition(principal)
+        parent = self._record(
+            connection.execute(
+                f"SELECT * FROM {SESSION_CATALOG_TABLE} WHERE session_id = ? AND {condition}",
+                (parent_session_id, *owner_params),
+            ).fetchone()
+        )
+        if parent is None:
+            raise SessionAccessError("session not found")
+        if parent.project_path != project_path or parent.display_parent_session_id is not None:
+            raise ValueError("display parent must be a root session in the same project")
+        if (
+            connection.execute(
+                f"SELECT 1 FROM {SESSION_CATALOG_TABLE} WHERE display_parent_session_id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("a session with children cannot have a display parent")
+
+    def set_display_parent(
+        self,
+        session_id: str,
+        principal: SessionPrincipal,
+        parent_session_id: str | None,
+        *,
+        restore: bool = False,
+    ) -> SessionCatalogRecord:
+        condition, owner_params = self._owner_condition(principal)
+        with closing(self._connect()) as connection, connection:
+            begin_write(connection, _body_database(connection))
+            record = self._record(
+                connection.execute(
+                    f"SELECT * FROM {SESSION_CATALOG_TABLE} WHERE session_id = ? AND {condition}",
+                    (session_id, *owner_params),
+                ).fetchone()
+            )
+            if record is None:
+                raise SessionAccessError("session not found")
+            if restore:
+                if (
+                    parent_session_id is None
+                    or record.display_parent_session_id is not None
+                    or record.detached_parent_session_id != parent_session_id
+                    or record.archived
+                ):
+                    raise ValueError("a detached session can only return to its previous parent")
+                parent = connection.execute(
+                    f"SELECT archived FROM {SESSION_CATALOG_TABLE} "
+                    f"WHERE session_id = ? AND {condition}",
+                    (parent_session_id, *owner_params),
+                ).fetchone()
+                if parent is None:
+                    raise SessionAccessError("session not found")
+                if parent["archived"]:
+                    raise ValueError("previous parent is unavailable")
+            self._validate_display_parent(
+                connection, session_id, principal, record.project_path, parent_session_id
+            )
+            detached_parent_session_id = (
+                record.display_parent_session_id or record.detached_parent_session_id
+                if parent_session_id is None
+                else None
+            )
+            display_order = record.display_order
+            if record.display_parent_session_id != parent_session_id:
+                display_order = self._next_display_order(
+                    connection,
+                    principal,
+                    record.project_path,
+                    parent_session_id,
+                    exclude_session_id=session_id,
+                    explicit=parent_session_id is None,
+                )
+            connection.execute(
+                f"UPDATE {SESSION_CATALOG_TABLE} SET display_parent_session_id = ?, "
+                "detached_parent_session_id = ?, display_order = ? WHERE session_id = ?",
+                (parent_session_id, detached_parent_session_id, display_order, session_id),
+            )
+            updated = self._record(
+                connection.execute(
+                    f"SELECT * FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?", (session_id,)
+                ).fetchone()
+            )
+            if updated is None:
+                raise SessionAccessError("session not found")
+            return updated
+
+    def display_child_count(self, session_id: str, principal: SessionPrincipal) -> int:
+        self.require(session_id, principal)
+        condition, owner_params = self._owner_condition(principal)
+        with closing(self._connect()) as connection:
+            return int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {SESSION_CATALOG_TABLE} "
+                    f"WHERE display_parent_session_id = ? AND {condition}",
+                    (session_id, *owner_params),
+                ).fetchone()[0]
+            )
+
+    def _next_display_order(
+        self,
+        connection: sqlite3.Connection,
+        principal: SessionPrincipal,
+        project_path: str | None,
+        parent_session_id: str | None,
+        *,
+        exclude_session_id: str = "",
+        explicit: bool = False,
+    ) -> int | None:
+        if not project_path:
+            return None
+        condition, owner_params = self._owner_condition(principal)
+        minimum = connection.execute(
+            f"SELECT MIN(display_order) FROM {SESSION_CATALOG_TABLE} WHERE {condition} "
+            "AND project_path = ? AND display_parent_session_id IS ? "
+            "AND session_id != ? AND archived = 0",
+            (*owner_params, project_path, parent_session_id, exclude_session_id),
+        ).fetchone()[0]
+        return int(minimum) - 1 if minimum is not None else (0 if explicit else None)
+
+    @staticmethod
+    def _display_key(record: SessionCatalogRecord) -> tuple[bool, int, float, str]:
+        return (
+            record.display_order is None,
+            record.display_order or 0,
+            -record.updated_at,
+            record.session_id,
+        )
+
+    @classmethod
+    def _project_records(
+        cls, records: Sequence[SessionCatalogRecord]
+    ) -> tuple[SessionCatalogRecord, ...]:
+        by_id = {record.session_id: record for record in records}
+        groups: dict[str, list[SessionCatalogRecord]] = {}
+        roots: list[SessionCatalogRecord] = []
+        for record in records:
+            parent = by_id.get(record.display_parent_session_id or "")
+            if (
+                parent is not None
+                and parent.session_id != record.session_id
+                and not parent.display_parent_session_id
+            ):
+                groups.setdefault(parent.session_id, []).append(record)
+            else:
+                roots.append(record)
+        roots.sort(
+            key=lambda record: (
+                not (
+                    record.pinned
+                    or any(child.pinned for child in groups.get(record.session_id, ()))
+                ),
+                *cls._display_key(record),
+            )
+        )
+        return tuple(
+            member
+            for root in roots
+            for member in (root, *sorted(groups.get(root.session_id, ()), key=cls._display_key))
+        )
+
+    def reorder(
+        self,
+        session_id: str,
+        principal: SessionPrincipal,
+        *,
+        target_session_id: str,
+        placement: SessionOrderPlacement | str,
+    ) -> SessionCatalogRecord:
+        placement = SessionOrderPlacement(placement)
+        condition, owner_params = self._owner_condition(principal)
+        with closing(self._connect()) as connection, connection:
+            begin_write(connection, _body_database(connection))
+            owned = {
+                record.session_id: record
+                for row in connection.execute(
+                    f"SELECT * FROM {SESSION_CATALOG_TABLE} WHERE {condition} AND session_id IN (?, ?)",
+                    (*owner_params, session_id, target_session_id),
+                ).fetchall()
+                if (record := self._record(row)) is not None
+            }
+            source = owned.get(session_id)
+            target = owned.get(target_session_id)
+            if source is None or target is None:
+                raise SessionAccessError("session not found")
+            if source.archived or target.archived:
+                raise SessionStateConflictError("archived sessions cannot be reordered")
+            if (
+                not source.project_path
+                or source.project_path != target.project_path
+                or source.runtime_id != target.runtime_id
+                or source.display_parent_session_id != target.display_parent_session_id
+            ):
+                raise ValueError("sessions must belong to the same project and display group")
+            records: list[SessionCatalogRecord] = []
+            for row in connection.execute(
+                f"SELECT * FROM {SESSION_CATALOG_TABLE} WHERE {condition} "
+                "AND project_path = ? AND runtime_id = ? AND archived = 0",
+                (*owner_params, source.project_path, source.runtime_id),
+            ).fetchall():
+                candidate = self._record(row)
+                if candidate is not None:
+                    records.append(candidate)
+            if source.display_parent_session_id is None:
+
+                def pinned(record: SessionCatalogRecord) -> bool:
+                    return record.pinned or any(
+                        child.pinned and child.display_parent_session_id == record.session_id
+                        for child in records
+                    )
+
+                if pinned(source) != pinned(target):
+                    raise ValueError("sessions must belong to the same pinned section")
+            siblings = sorted(
+                (
+                    record
+                    for record in records
+                    if record.display_parent_session_id == source.display_parent_session_id
+                ),
+                key=self._display_key,
+            )
+            original = [record.session_id for record in siblings]
+            if session_id == target_session_id:
+                return source
+            reordered = [member for member in original if member != session_id]
+            target_index = reordered.index(target_session_id)
+            if placement is SessionOrderPlacement.AFTER:
+                target_index += 1
+            reordered.insert(target_index, session_id)
+            if reordered == original and all(
+                record.display_order is not None for record in siblings
+            ):
+                return source
+            connection.executemany(
+                f"UPDATE {SESSION_CATALOG_TABLE} SET display_order = ? WHERE session_id = ?",
+                enumerate(reordered),
+            )
+            return dataclasses.replace(source, display_order=reordered.index(session_id))
+
     def get(self, session_id: str) -> SessionCatalogRecord | None:
         with closing(self._connect()) as connection, connection:
             row = connection.execute(
@@ -5473,22 +6151,16 @@ class SessionCatalogStore:
             params.append(project_path or "")
         elif scope is SessionListScope.UNASSIGNED:
             clauses.append("project_path IS NULL")
-        if after is not None:
+        if after is not None and scope is not SessionListScope.PROJECT:
             activity_after = "(updated_at < ? OR (updated_at = ? AND session_id > ?))"
-            if scope is SessionListScope.PROJECT and after[2] is not None:
-                clauses.append(f"(pinned < ? OR (pinned = ? AND {activity_after}))")
-                params.extend((int(after[2]), int(after[2])))
-            else:
-                clauses.append(activity_after)
+            clauses.append(activity_after)
             params.extend((after[0], after[0], after[1]))
         limit_clause = ""
-        if limit is not None:
+        if limit is not None and scope is not SessionListScope.PROJECT:
             limit_clause = "LIMIT ?"
             params.append(limit)
         order = "updated_at DESC, session_id"
-        if scope is SessionListScope.PROJECT:
-            order = f"pinned DESC, {order}"
-        with closing(self._connect()) as connection, connection:
+        with reader(self._database) as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM {SESSION_CATALOG_TABLE}
@@ -5498,7 +6170,24 @@ class SessionCatalogStore:
                 """,
                 tuple(params),
             ).fetchall()
-        return tuple(record for row in rows if (record := self._record(row)) is not None)
+        records = tuple(record for row in rows if (record := self._record(row)) is not None)
+        if scope is SessionListScope.PROJECT:
+            records = self._project_records(records)
+            if after is not None:
+                anchor = next(
+                    (
+                        index
+                        for index, record in enumerate(records)
+                        if record.session_id == after[1]
+                    ),
+                    None,
+                )
+                if anchor is None:
+                    raise SessionListCursorError("session list anchor unavailable")
+                records = records[anchor + 1 :]
+            if limit is not None:
+                records = records[:limit]
+        return records
 
     def owned_session_ids(self, principal: SessionPrincipal) -> frozenset[str]:
         return frozenset(self.owned(principal))
@@ -5515,6 +6204,7 @@ class SessionCatalogStore:
     def release(self, session_id: str, principal: SessionPrincipal) -> None:
         condition, owner_params = self._owner_condition(principal)
         with closing(self._connect()) as connection, connection:
+            begin_write(connection, _body_database(connection))
             cursor = connection.execute(
                 f"""
                 DELETE FROM {SESSION_CATALOG_TABLE}
@@ -5523,6 +6213,16 @@ class SessionCatalogStore:
                 (session_id, *owner_params),
             )
             if cursor.rowcount == 1:
+                connection.execute(
+                    f"UPDATE {SESSION_CATALOG_TABLE} SET display_parent_session_id = NULL, "
+                    "display_order = NULL WHERE display_parent_session_id = ?",
+                    (session_id,),
+                )
+                connection.execute(
+                    f"UPDATE {SESSION_CATALOG_TABLE} SET detached_parent_session_id = NULL "
+                    "WHERE detached_parent_session_id = ?",
+                    (session_id,),
+                )
                 connection.execute(
                     f"DELETE FROM {SESSION_BROWSER_ACTION_TABLE} WHERE session_id = ?",
                     (session_id,),

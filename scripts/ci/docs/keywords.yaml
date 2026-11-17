@@ -1,0 +1,203 @@
+# 当前知识检查的受控关键词词表 (单一来源)
+# ─────────────────────────────────────────────────────────────────────────────
+# 每篇文档 frontmatter 的 `keywords:` 必须全部命中本表 (经 aliases 归一后)。
+# scripts/ci/docs/check.py 通过 scripts/ci/docs/vocabulary.py 读取并校验本表。
+#
+# 分面 (facet) 用于组织关键词，不授权重建已退役的 Wiki 静态站:
+#   domain            机制 / 领域 (memory / context / runtime / ...)
+#   system            具名系统 / 产品 / 数据集 (mem0 / vikingmem / locomo / ...)
+#   method            技术手法 (consolidation / compaction / hypothesis-tree / ...)
+#   external-baseline 对标的外部 agent / 工具 (claude-code / codex / ...)
+#   usecase           用户场景 (phd-research / code-agent / ...)
+#
+# 加新词: 放进对应 facet; 加同义词: 放进 aliases (alias -> canonical)。
+
+facets:
+  domain:
+    - memory
+    - context
+    - prompt
+    - harness
+    - runtime
+    - sdk
+    - model
+    - agent-core
+    - loop
+    - tool-system
+    - permission
+    - hil
+    - session
+    - trace
+    - observability
+    - multi-agent
+    - subagent
+    - orchestration
+    - workflow
+    - scheduler
+    - background-task
+    - plugin
+    - skill
+    - mcp
+    - attachment
+    - deep-research
+    - scholar
+    - research-platform
+    - worktree
+    - sandbox
+    - exploration
+    - git-memory
+    - resource-kit
+    - rl-env
+    - benchmark
+    - self-evolve
+    - serve
+    - webui
+    - opentui
+    - desktop-app
+    - cli
+    - bridge
+    - gateway-entry        # 网关的 HTTP 入口面 (/v1/chat/completions, /v1/responses)
+    - responses-api        # OpenAI Responses 协议 (别名 responses)
+    - model-catalog        # 可选模型枚举 / 目录
+    - compaction
+    - evaluation
+    - product
+    - architecture
+    - monorepo             # 多包单仓布局 (apps/ + packages/ + uv workspace)
+    - packaging            # 发行包 / wheel / DMG 边界与构建产物
+    - persistence          # 落盘布局: SCHOLARSEED_HOME / sqlite / 会话目录
+    - toolchain            # npm scripts / 格式化 / lint / 类型检查入口
+    - test-gate            # 契约门禁与验收分层
+    - business-domain      # MVP 0.2 六域纵向切分 (content/resources/literature/workbench/documents/assistant)
+    - workbench            # 共享工作台: 多标签 / Viewer 注册 / 打开协议
+    - literature           # 文献库域: 导入 / 元数据 / 检索 / 集合
+    - document-editing     # Markdown/DOCX 编辑、版本、ChangeSet、Diff
+    - code-ownership       # 目录所有权 / 热点文件 / 并行分工边界
+    - design-system        # components/ui 原子库 / 意图索引 / 原生标签禁令与复用门禁
+    - identity
+    - sms
+
+  system:
+    - mem0
+    - vikingmem
+    - openviking
+    - vikingdb
+    - simplemem
+    - memrefine
+    - openrath
+    - hermes
+    - letta
+    - memgpt
+    - zep
+    - mimocode
+    - apodex
+    - arbor
+    - aris
+    - ars
+    - opensandbox
+    - evoscientist
+    - omniscientist
+    - mirrormind
+    - k-dense
+    - openclaw
+    - openhuman
+    - locomo
+    - longmemeval
+    - pi-bench
+    - worldmemarena
+    - groupmembench
+    - sciagentarena
+    - memgym
+    - swe-bench
+    - terminal-bench
+    - scholarseed
+
+  method:
+    - consolidation
+    - retrieval
+    - reranking
+    - summarization
+    - distillation
+    - auto-dream
+    - hypothesis-tree
+    - skill-based
+    - claim-audit
+    - reflection
+    - process-reward
+    - env-synthesis
+    - dedup
+    - focus-swap
+    - cqrs
+    - ledger
+    - force-graph
+    - semantic-merge
+    - worktree-merge
+    - context-merge
+    - post-training
+    - agentic-rl
+    - verification
+    - planning
+    - react
+    - debate
+    - role-team
+    - passthrough
+    - resume
+    - jwt
+
+  external-baseline:
+    - claude-code
+    - codex
+    - cursor
+    - devin
+    - gemini
+    - qwen
+    - openai-deep-research
+    - gemini-deep-research
+    - nekocode
+
+  usecase:
+    - phd-research
+    - vocational-publishing
+    - code-agent
+    - long-horizon-research
+    - academic-writing
+    - literature-review
+
+  # content-type: 每篇 research 文档带且仅带一个, 是知识库的主分类轴
+  # 与 domain/system 正交；旧研究索引生成器已退役，不据此新增研究目录或重建索引。
+  content-type:
+    - paper-survey         # 按会议/顶会拆分的论文综述 (收录证据 + 逐篇精读)
+    - topic-survey         # 按主题拆分的文章调研综述 (跨系统/跨论文归纳)
+    - system-deepdive      # 开源项目 / 具名系统 / 数据集的单点深拆
+    - harness-decompile    # Claude Code / Codex 等外部 harness 的一手反编译研究
+    - usecase              # 用户场景 / 端到端剧本压测
+
+# alias -> canonical (归一后再校验)
+aliases:
+  cc: claude-code
+  ltm: memory
+  long-term-memory: memory
+  rag: retrieval
+  async-agent: multi-agent
+  delegation: orchestration
+  code-review: evaluation
+  memory-graph: memory
+  compression: compaction
+  staleness: memory
+  hermes-agent: hermes
+  worktrees: worktree
+  subagents: subagent
+  self-evolving: self-evolve
+  self-evolution: self-evolve
+  observability-trace: observability
+  research: deep-research
+  responses: responses-api
+  scholarcore: scholar
+  service-decoupling: architecture
+  layering: architecture
+  backends-registry: sdk
+  research-port: research-platform
+  agent-launch: runtime
+  work-layer: architecture
+  sdk-exposure: sdk
+  service-consumer: serve

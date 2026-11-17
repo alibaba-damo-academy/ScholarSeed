@@ -21,12 +21,20 @@ from fastapi.responses import JSONResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN
 
 from scholarseed_runtime.contract import RuntimePermissionMode
+from service.assistant.service.authorization import (
+    LIBRARY_FULLTEXT,
+    AuthorizationDisposition,
+    FulltextAuthorizer,
+    authorize_sources,
+    task_authorization_policy,
+)
 from service.assistant.service.literature import AssistantLiteratureService
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.runtime.live import LiveSession
 from service.chat.service.artifacts import ArtifactReadError
 from service.chat.service.invalidation import SCOPE_LITERATURE, announce
 from service.chat.service.sessions import SessionService
+from service.chat.service.tasks import authorization_context_current, verified_authorization_context
 from service.content.domain.model import ContentError
 from service.literature.api.catalogue import (
     AVAILABLE,
@@ -44,13 +52,14 @@ from service.literature.api.catalogue import (
     tag_facets_payload,
 )
 from service.literature.api.papermeta import resolve_timeout_seconds
-from service.literature.domain.model import NOTE_NOT_FOUND, LiteratureError
+from service.literature.domain.model import NOTE_NOT_FOUND, NOTE_VERSION_CONFLICT, LiteratureError
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import PublicationType
 from service.literature.service.attachment import (
     ARXIV_ALREADY_ATTACHED,
     AttachmentConflictError,
     AttachmentFormatError,
+    LiteratureAttachmentContent,
     attach_primary_pdf,
 )
 from service.literature.service.bibliography import (
@@ -65,9 +74,9 @@ from service.platform.bridge import (
     LITERATURE_CURATION_REQUESTS,
     LITERATURE_CURATION_ROUTES,
 )
-from service.platform.citations import PDF_INDEX_STATE
+from service.platform.citations import LIBRARY_REF_PREFIX, PDF_INDEX_STATE
+from service.platform.content import ContentPort
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
 )
 
@@ -129,7 +138,9 @@ def _item_summary(item: Any, project_id: str = "") -> dict[str, Any]:
 def _note_error(error: LiteratureError) -> HTTPException:
     if error.code == NOTE_NOT_FOUND:
         return HTTPException(status_code=404, detail={"code": error.code})
-    return HTTPException(status_code=409, detail={"code": REVISION_CONFLICT, "current": str(error)})
+    if error.code == NOTE_VERSION_CONFLICT:
+        return HTTPException(status_code=409, detail={"code": REVISION_CONFLICT})
+    return HTTPException(status_code=400, detail={"code": error.code})
 
 
 def _affected(name: str, data: dict[str, Any]) -> tuple[list[str], int]:
@@ -180,8 +191,14 @@ def _bulk_result(requested: tuple[str, ...], succeeded: tuple[str, ...]) -> dict
     }
 
 
-def _execute(name: str, data: dict[str, Any], content: Any) -> dict[str, Any]:
-    repository = LiteratureRepository()
+def _execute(
+    name: str,
+    data: dict[str, Any],
+    content: ContentPort,
+    current_project: str | None = None,
+    catalogue_repository: LiteratureRepository | None = None,
+) -> dict[str, Any]:
+    repository = catalogue_repository or LiteratureRepository()
     scope = project_scope(content, data.get("project_id") or "")
     if name == "counts":
         return counts_payload(repository, scope)
@@ -195,7 +212,7 @@ def _execute(name: str, data: dict[str, Any], content: Any) -> dict[str, Any]:
             recent_only=bool(data["recent"]),
         )
     if name == "projects":
-        return projects_payload(content, repository)
+        return projects_payload(content, repository, current_project=current_project)
     if name == "notes":
         notes = repository.notes(data["literature_id"])
         if notes is None:
@@ -319,7 +336,10 @@ def register_curation_bridge(
     sessions: SessionService,
     *,
     assistant: AssistantLiteratureService,
+    content: ContentPort,
     activities: Activities,
+    authorizer: FulltextAuthorizer | None = None,
+    catalogue_repository: LiteratureRepository | None = None,
 ) -> APIRouter:
     router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
     #: (session_id, client_op_id) → first response; a retry replays instead of
@@ -327,11 +347,7 @@ def register_curation_bridge(
     replays: dict[tuple[str, str], dict[str, Any]] = {}
 
     async def _body(request: Request) -> bytes:
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                raise ValueError("bridge_request_too_large")
+        raw = await request.body()
         return bytes(raw)
 
     def _active_scope(live: LiveSession, snapshot_id: str, turn_id: str) -> bool:
@@ -396,7 +412,6 @@ def register_curation_bridge(
         replay_key = (live.id, client_op_id) if client_op_id else None
         if replay_key is not None and replay_key in replays:
             return JSONResponse({**replays[replay_key], "replayed": True})
-        content = getattr(request.app.state, "content", None)
         pdf_indexes = getattr(request.app.state, PDF_INDEX_STATE, None)
         try:
             if name in LITERATURE_CURATION_DESTRUCTIVE:
@@ -424,8 +439,71 @@ def register_curation_bridge(
                         ),
                     }
             elif name == "fulltext":
+                if authorizer is None:
+                    raise HTTPException(
+                        status_code=403, detail={"code": "fulltext_authorization_unavailable"}
+                    )
+                item = LiteratureRepository().get(data["literature_id"])
+                if item is None:
+                    raise HTTPException(status_code=404, detail={"code": LITERATURE_NOT_FOUND})
+                policy = task_authorization_policy(getattr(live, "active_task_type", ""))
+                authorization_type = policy.authorization_type if policy else LIBRARY_FULLTEXT
+                task_type = policy.task_type if policy else None
+                try:
+                    task_context = (
+                        verified_authorization_context(live, task_type) if task_type else None
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=403, detail={"code": str(error)}) from error
+                lease = getattr(live, "active_task_lease", None)
+                submission_id = getattr(live, "last_submission_id", "")
+                interrupt_generation = getattr(live, "interrupt_generation", 0)
+                ref_id = LIBRARY_REF_PREFIX + item.id
+                with activities.continue_from(
+                    live.turn_activity, ActivityDomain.BRIDGE
+                ) as activity:
+                    _challenge, disposition, _decision = await authorize_sources(
+                        live,
+                        authorizer,
+                        turn_id=turn_id,
+                        snapshot_id=snapshot_id,
+                        authorization_type=authorization_type,
+                        refs=(ref_id,),
+                        papers=({"id": ref_id, "label": item.title},),
+                        task_context=task_context,
+                        activity=activity,
+                    )
+                if (
+                    not _active_scope(live, snapshot_id, turn_id)
+                    or getattr(live, "active_task_lease", None) is not lease
+                    or getattr(live, "last_submission_id", "") != submission_id
+                    or getattr(live, "interrupt_generation", 0) != interrupt_generation
+                    or task_authorization_policy(getattr(live, "active_task_type", ""))
+                    is not policy
+                    or not authorization_context_current(live, task_context)
+                    or getattr(live, "terminating", False)
+                    or getattr(live, "terminated", False)
+                    or getattr(live, "applied_permission_mode", "")
+                    == RuntimePermissionMode.READ_ONLY.value
+                ):
+                    raise HTTPException(status_code=403, detail={"code": "bridge_access_denied"})
+                if disposition is not AuthorizationDisposition.AUTHORIZED:
+                    raise HTTPException(status_code=403, detail={"code": USER_DENIED})
+                authorizer.require(
+                    session_id=live.id,
+                    snapshot_id=snapshot_id,
+                    turn_id=turn_id,
+                    authorization_type=authorization_type,
+                    ref_id=ref_id,
+                    client_turn_id=getattr(live, "active_product_turn_id", ""),
+                    task_context=task_context,
+                )
                 saved = await activities.to_thread(
-                    ActivityDomain.BRIDGE, fetch_arxiv_fulltext, data["literature_id"]
+                    ActivityDomain.BRIDGE,
+                    fetch_arxiv_fulltext,
+                    data["literature_id"],
+                    pdf_indexes,
+                    catalogue_repository,
                 )
                 result = {"ok": True, "item": _item_summary(saved)}
             elif name == "fulltext-attach":
@@ -436,7 +514,13 @@ def register_curation_bridge(
                 result = {
                     "ok": True,
                     **await activities.to_thread(
-                        ActivityDomain.BRIDGE, _execute, name, data, content
+                        ActivityDomain.BRIDGE,
+                        _execute,
+                        name,
+                        data,
+                        content,
+                        live.project_id,
+                        catalogue_repository,
                     ),
                 }
         except HTTPException as error:
@@ -512,9 +596,16 @@ def register_curation_bridge(
             raise HTTPException(status_code=409, detail={"code": error.code}) from error
         except AttachmentFormatError as error:
             raise HTTPException(status_code=422, detail={"code": error.code}) from error
+        await activities.to_thread(
+            ActivityDomain.BRIDGE,
+            LiteratureAttachmentContent(repository).prewarm,
+            pdf_indexes,
+            attached.item.id,
+            attached.attachment["id"],
+        )
         return {"item": _item_summary(attached.item)}
 
-    async def _import_identifier(data: dict[str, Any], content: Any) -> dict[str, Any]:
+    async def _import_identifier(data: dict[str, Any], content: ContentPort) -> dict[str, Any]:
 
         scope = project_scope(content, data.get("project_id") or "")
         try:
@@ -531,7 +622,7 @@ def register_curation_bridge(
             ) from error
 
         def save() -> dict[str, Any]:
-            repository = LiteratureRepository()
+            repository = catalogue_repository or LiteratureRepository()
             imported = repository.save_all(
                 outcome.items,
                 collection_id=data.get("collection_id") or "",
@@ -541,15 +632,21 @@ def register_curation_bridge(
 
         return await activities.to_thread(ActivityDomain.BRIDGE, save)
 
-    def _purge(name: str, data: dict[str, Any], content: Any, pdf_indexes: Any) -> dict[str, Any]:
+    def _purge(
+        name: str, data: dict[str, Any], content: ContentPort, pdf_indexes: Any
+    ) -> dict[str, Any]:
         if name == "delete":
-            return {"deleted": purge_literatures(tuple(data["literature_ids"]), pdf_indexes)}
+            return {
+                "deleted": purge_literatures(
+                    tuple(data["literature_ids"]), pdf_indexes, catalogue_repository
+                )
+            }
         if name == "attachment-delete":
             deleted = purge_attachment(data["literature_id"], data["attachment_id"], pdf_indexes)
             if deleted is None:
                 raise HTTPException(status_code=404, detail={"code": LITERATURE_NOT_FOUND})
             return {"deleted": deleted}
-        return _execute(name, data, content)
+        return _execute(name, data, content, catalogue_repository=catalogue_repository)
 
     for operation in LITERATURE_CURATION_REQUESTS:
         route = LITERATURE_CURATION_ROUTES[operation]

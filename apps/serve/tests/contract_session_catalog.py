@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
+import logging
 import sqlite3
 import tempfile
 import time
@@ -12,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from typing import Any, Mapping, TypedDict, TypeVar
 from unittest.mock import patch
 
@@ -40,6 +43,8 @@ from service.assistant.service.authorization import (
     authorization_question,
 )
 from service.chat.constants import (
+    PRODUCT_DECISION_SOURCE,
+    PRODUCT_DECISION_USER,
     PRODUCT_EVENT_VERSION,
     SESSION_TITLE_DEFAULT,
     SessionTitleFallback,
@@ -70,6 +75,7 @@ from service.chat.persistence.catalog import (
 )
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
 from service.chat.runtime.interaction import SessionInteractions
+from service.chat.service.turns import TurnService
 from service.platform.activity import Activities, ActivityDomain
 
 OWNER = SessionPrincipal("catalog-owner")
@@ -113,7 +119,13 @@ def published_event(kind: str, data: Mapping[str, Any]) -> ProductEventRecord:
     )
 
 
-def allocate_session(catalog: SessionCatalogStore, session_id: str) -> None:
+def allocate_session(
+    catalog: SessionCatalogStore,
+    session_id: str,
+    *,
+    title: str = "",
+    title_fallback: SessionTitleFallback | None = None,
+) -> None:
     catalog.allocate(
         session_id,
         OWNER,
@@ -122,6 +134,8 @@ def allocate_session(catalog: SessionCatalogStore, session_id: str) -> None:
         project_path="/research",
         output_root=f"/research/{session_id}/outputs",
         model_id="gpt-5-codex",
+        title=title,
+        title_fallback=title_fallback,
         created_at=20.0,
         required_capabilities=(RuntimeCapabilityName.WEB_SEARCH,),
     )
@@ -167,6 +181,602 @@ def register_session(
 
 
 class SessionCatalogContract(unittest.TestCase):
+    def local_rejection(self):
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "local-rejection")
+        events = ProductEventStore(self.database)
+
+        def emit(kind, payload, thread=""):
+            return events.append(
+                session_id="local-rejection",
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=thread,
+                vendor_turn_id=None,
+                vendor_item_id=None,
+                kind=kind,
+                payload=payload,
+                idempotency_key=f"{kind}:{catalog.get('local-rejection').last_product_seq}",
+            )
+
+        emit("session.workspace.bound", {})
+        catalog.enqueue_message("local-rejection", "original", {"text": "preserve"})
+        emit("message_queued", {"queued_message_id": "original", "operation_seq": None})
+        catalog.begin_open("local-rejection", "first-open")
+        binding = native_binding("local-rejection", "empty-thread")
+        catalog.bind_open("local-rejection", "first-open", binding, unsubmitted=True)
+        catalog.begin_attachment("local-rejection")
+        catalog.begin_queued_submission("local-rejection", "original")
+        emit(
+            "send_now_submitted",
+            {"queued_message_id": "original", "operation_seq": 1},
+            "empty-thread",
+        )
+        catalog.fail_queued_submission(
+            "local-rejection", "original", unknown=False, safe_error="resource_baseline_failed"
+        )
+        emit(
+            "send_now_rejected",
+            {
+                "queued_message_id": "original",
+                "operation_seq": 1,
+                "safe_error": "resource_baseline_failed",
+            },
+            "empty-thread",
+        )
+        catalog.begin_resource_wait("local-rejection", "original", purpose="turn")
+        catalog.fail_queued_submission(
+            "local-rejection", "original", unknown=False, safe_error="session_model_switch_failed"
+        )
+        emit(
+            "send_now_rejected",
+            {
+                "queued_message_id": "original",
+                "operation_seq": 1,
+                "safe_error": "session_model_switch_failed",
+            },
+            "empty-thread",
+        )
+        return SessionCatalogStore(self.database), ProductEventStore(self.database)
+
+    def test_local_rejection_restores_empty_binding_before_retry_activation(self):
+        catalog, events = self.local_rejection()
+        original = catalog.queued_message("local-rejection", "original")
+        observed = []
+
+        async def scenario():
+            live = SimpleNamespace(
+                id="local-rejection",
+                catalog=catalog,
+                lifecycle_lock=asyncio.Lock(),
+                runtime_session=None,
+                runtime_driver=None,
+                waiting_request_id="",
+                closing=False,
+                interrupting=False,
+                terminated=False,
+                pending_hil_snapshot=lambda: (),
+                ledger=SimpleNamespace(uncertainty_snapshot=lambda: ()),
+            )
+
+            async def prepare(*_args, **_kwargs):
+                observed.append(catalog.activation(live.id).open_state)
+                raise asyncio.CancelledError
+
+            turns = TurnService(
+                {live.id: live},
+                logging.getLogger(__name__),
+                activities=Activities(),
+                prepare=prepare,
+                events=events,
+            )
+            await turns._prepare_queued(live, "original")
+
+        asyncio.run(scenario())
+        self.assertEqual(observed, [OpenState.UNSUBMITTED])
+        self.assertEqual(catalog.queued_message("local-rejection", "original"), original)
+        self.assertFalse(events.restore_local_rejection("local-rejection", "original"))
+
+    def test_local_rejection_keeps_execution_and_incomplete_evidence_fenced(self):
+        changes = {
+            "unknown": "UPDATE session_message_queue SET state='outcome_unknown'",
+            "side-input": "UPDATE session_message_queue SET purpose='authorization_continuation'",
+            "archived": "UPDATE session_catalog SET archived=1",
+            "native": "UPDATE session_message_queue SET native_turn_id='accepted'",
+            "completed": "UPDATE session_message_queue SET state='completed'",
+            "generation": "UPDATE session_activation SET generation=generation+1",
+            "binding": "UPDATE session_runtime_binding SET opaque_session_ref='different'",
+            "model": "UPDATE session_model_state SET selected_model_id='different'",
+            "operation": "UPDATE session_message_queue SET operation_seq=operation_seq+1",
+            "missing": "DELETE FROM product_event WHERE kind='send_now_rejected'",
+            "crash-before-receipt": "DELETE FROM product_event WHERE kind='send_now_rejected' AND product_seq=(SELECT MIN(product_seq) FROM product_event WHERE kind='send_now_rejected')",
+            "version": "UPDATE product_event SET schema_version=999 WHERE kind='send_now_rejected'",
+            "corrupt": "UPDATE product_event SET payload_ref=NULL,payload='not-json' WHERE kind='send_now_rejected'",
+            "unconfirmed": "UPDATE product_event SET kind='send_now_outcome_unknown' WHERE kind='send_now_rejected'",
+            "fork": "UPDATE product_event SET kind='session.forked' WHERE kind='session.workspace.bound'",
+            "admitted": "UPDATE product_event SET kind='user_message' WHERE kind='send_now_rejected'",
+        }
+        for boundary in (*changes, "hil", "uncertainty", "queue"):
+            with (
+                self.subTest(boundary=boundary),
+                tempfile.TemporaryDirectory(dir=self._temporary.name) as root,
+            ):
+                self.database = Path(root) / "sessions.sqlite3"
+                catalog, events = self.local_rejection()
+                if boundary in changes:
+                    with sqlite3.connect(self.database) as connection:
+                        connection.execute(changes[boundary])
+                elif boundary == "hil":
+                    catalog.record_hil(
+                        product_request_id="approval",
+                        session_id="local-rejection",
+                        vendor_request_id="approval",
+                        vendor_turn_id=None,
+                        vendor_item_id=None,
+                        method="approval",
+                        payload={},
+                    )
+                elif boundary == "uncertainty":
+                    catalog.claim_uncertainty("local-rejection", UncertaintyKind.TURN, "unknown")
+                else:
+                    catalog.enqueue_message("local-rejection", "later", {"text": "other"})
+                try:
+                    restored = events.restore_local_rejection("local-rejection", "original")
+                except (ValueError, RuntimeError):
+                    restored = False
+                self.assertFalse(restored)
+                self.assertEqual(catalog.activation("local-rejection").open_state, OpenState.BOUND)
+
+    def test_local_rejection_cas_rechecks_configuration_binding_generation_and_watermark(self):
+        changes = (
+            "UPDATE session_model_state SET selected_model_id='different'",
+            "UPDATE session_runtime_binding SET opaque_session_ref='different'",
+            "UPDATE session_activation SET generation=generation+1",
+            "UPDATE session_message_queue SET operation_seq=operation_seq+1",
+            "UPDATE session_catalog SET last_product_seq=last_product_seq+1",
+        )
+        for change in changes:
+            with (
+                self.subTest(change=change),
+                tempfile.TemporaryDirectory(dir=self._temporary.name) as root,
+            ):
+                self.database = Path(root) / "sessions.sqlite3"
+                catalog, events = self.local_rejection()
+                with events.transaction() as connection:
+                    source = catalog.local_rejection_source(
+                        connection, "local-rejection", "original"
+                    )
+                    self.assertIsNotNone(source)
+                    connection.execute(change)
+                    self.assertFalse(
+                        catalog.restore_local_rejection(
+                            connection, "local-rejection", "original", source
+                        )
+                    )
+                self.assertEqual(catalog.activation("local-rejection").open_state, OpenState.BOUND)
+
+    def test_local_rejection_proof_transaction_excludes_concurrent_writers(self):
+        catalog, events = self.local_rejection()
+        with events.transaction() as connection:
+            source = catalog.local_rejection_source(connection, "local-rejection", "original")
+            with closing(sqlite3.connect(self.database, timeout=0)) as competing:
+                with self.assertRaises(sqlite3.OperationalError):
+                    competing.execute(
+                        "UPDATE session_catalog SET last_product_seq=last_product_seq+1"
+                    )
+            self.assertTrue(
+                catalog.restore_local_rejection(connection, "local-rejection", "original", source)
+            )
+        self.assertFalse(events.restore_local_rejection("local-rejection", "original"))
+
+    def test_fork_titles_number_one_family_across_nested_forks_and_reopen(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("source", "first", "second", "nested"):
+            allocate_session(
+                catalog,
+                session_id,
+                title=SESSION_TITLE_DEFAULT,
+                title_fallback=SessionTitleFallback.NEW_SESSION,
+            )
+        catalog.rename("source", OWNER, "Generate LLM research ideas")
+        self.assertEqual(
+            catalog.name_fork("first", "source", OWNER).title,
+            "Generate LLM research ideas(2)",
+        )
+        reopened = SessionCatalogStore(self.database)
+        self.assertEqual(
+            reopened.name_fork("second", "source", OWNER).title,
+            "Generate LLM research ideas(3)",
+        )
+        self.assertEqual(
+            reopened.name_fork("nested", "first", OWNER).title,
+            "Generate LLM research ideas(4)",
+        )
+        self.assertEqual(
+            reopened.name_fork("nested", "first", OWNER).title, "Generate LLM research ideas(4)"
+        )
+        self.assertEqual(
+            require_present(reopened.get("source")).title, "Generate LLM research ideas"
+        )
+
+    def test_fork_titles_preserve_literal_renames_and_independent_source_groups(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("source", "first", "renamed-child", "sibling", "unrelated", "other"):
+            allocate_session(
+                catalog,
+                session_id,
+                title=SESSION_TITLE_DEFAULT,
+                title_fallback=SessionTitleFallback.NEW_SESSION,
+            )
+        catalog.rename("source", OWNER, "比较推理模型")
+        self.assertEqual(catalog.name_fork("first", "source", OWNER).title, "比较推理模型(2)")
+        catalog.rename("first", OWNER, "My title(2) · 分支")
+        self.assertEqual(
+            catalog.name_fork("renamed-child", "first", OWNER).title, "My title(2) · 分支(2)"
+        )
+        self.assertEqual(catalog.name_fork("sibling", "source", OWNER).title, "比较推理模型(3)")
+        catalog.rename("unrelated", OWNER, "比较推理模型")
+        self.assertEqual(catalog.name_fork("other", "unrelated", OWNER).title, "比较推理模型(2)")
+        self.assertEqual(require_present(catalog.get("first")).title, "My title(2) · 分支")
+
+    def test_fork_titles_keep_numeric_suffix_with_long_empty_and_default_source_titles(
+        self,
+    ) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for ordinal, title in enumerate(("题" * 150, "", SESSION_TITLE_DEFAULT)):
+            source_id = f"source-{ordinal}"
+            child_id = f"child-{ordinal}"
+            allocate_session(catalog, source_id, title=title)
+            allocate_session(
+                catalog,
+                child_id,
+                title=SESSION_TITLE_DEFAULT,
+                title_fallback=SessionTitleFallback.NEW_SESSION,
+            )
+            expected_base = title or SESSION_TITLE_DEFAULT
+            child = catalog.name_fork(child_id, source_id, OWNER)
+            self.assertEqual(child.title, expected_base[:147] + "(2)")
+            self.assertLessEqual(len(child.title), 150)
+            self.assertIsNone(child.title_fallback)
+            self.assertEqual(require_present(catalog.get(source_id)).title, title)
+
+    def test_fork_titles_allocate_unique_numbers_concurrently(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "source", title="Concurrent")
+        child_ids = [f"branch-{ordinal}" for ordinal in range(8)]
+        for child_id in child_ids:
+            allocate_session(
+                catalog,
+                child_id,
+                title=SESSION_TITLE_DEFAULT,
+                title_fallback=SessionTitleFallback.NEW_SESSION,
+            )
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            titles = list(
+                workers.map(
+                    lambda child_id: catalog.name_fork(child_id, "source", OWNER).title, child_ids
+                )
+            )
+        self.assertEqual(set(titles), {f"Concurrent({number})" for number in range(2, 10)})
+
+    def test_fork_title_columns_upgrade_without_rewriting_legacy_names(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "legacy", title="Legacy · 分支 · 分支")
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            for column in ("fork_title_group", "fork_title_base", "fork_title_number"):
+                connection.execute(f"ALTER TABLE {SESSION_CATALOG_TABLE} DROP COLUMN {column}")
+        reopened = SessionCatalogStore(self.database)
+        legacy = require_present(reopened.get("legacy"))
+        self.assertEqual(legacy.title, "Legacy · 分支 · 分支")
+        self.assertIsNone(legacy.fork_title_base)
+        allocate_session(
+            reopened,
+            "child",
+            title=SESSION_TITLE_DEFAULT,
+            title_fallback=SessionTitleFallback.NEW_SESSION,
+        )
+        self.assertEqual(
+            reopened.name_fork("child", "legacy", OWNER).title, "Legacy · 分支 · 分支(2)"
+        )
+
+    def test_fork_naming_does_not_overwrite_a_rename_during_history_import(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "source", title="Source")
+        allocate_session(
+            catalog,
+            "child",
+            title=SESSION_TITLE_DEFAULT,
+            title_fallback=SessionTitleFallback.NEW_SESSION,
+        )
+        catalog.rename("child", OWNER, "User-owned title")
+        self.assertEqual(catalog.name_fork("child", "source", OWNER).title, "User-owned title")
+
+    def test_detached_session_can_only_return_to_its_recorded_parent(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("parent", "child", "other"):
+            allocate_session(catalog, session_id)
+        catalog.set_display_parent("child", OWNER, "parent")
+        before = require_present(catalog.get("child"))
+        detached = catalog.set_display_parent("child", OWNER, None)
+        self.assertEqual(detached.detached_parent_session_id, "parent")
+        self.assertEqual(catalog.display_child_count("parent", OWNER), 0)
+        with self.assertRaises(ValueError):
+            catalog.set_display_parent("child", OWNER, "other", restore=True)
+        with self.assertRaises(SessionAccessError):
+            catalog.set_display_parent("child", OTHER_OWNER, "parent", restore=True)
+        catalog.set_archived("parent", OWNER, True)
+        with self.assertRaises(ValueError):
+            catalog.set_display_parent("child", OWNER, "parent", restore=True)
+        catalog.set_archived("parent", OWNER, False)
+        reopened = SessionCatalogStore(self.database)
+        restored = reopened.set_display_parent("child", OWNER, "parent", restore=True)
+        self.assertEqual(restored.display_parent_session_id, "parent")
+        self.assertIsNone(restored.detached_parent_session_id)
+        self.assertEqual(restored.updated_at, before.updated_at)
+        self.assertEqual(restored.vendor_thread_id, before.vendor_thread_id)
+
+    def test_parent_archive_preserves_membership_but_deletion_releases_children(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("parent", "child", "archived-child", "detached"):
+            allocate_session(catalog, session_id)
+        for session_id in ("child", "archived-child", "detached"):
+            catalog.set_display_parent(session_id, OWNER, "parent")
+        catalog.set_display_parent("detached", OWNER, None)
+        catalog.set_archived("archived-child", OWNER, True)
+        self.assertEqual(catalog.display_child_count("parent", OWNER), 2)
+        catalog.set_archived("parent", OWNER, True)
+        self.assertEqual(require_present(catalog.get("child")).display_parent_session_id, "parent")
+        catalog.set_archived("parent", OWNER, False)
+        self.assertIsNone(require_present(catalog.get("detached")).display_parent_session_id)
+        catalog.release("parent", OTHER_OWNER)
+        self.assertEqual(catalog.display_child_count("parent", OWNER), 2)
+        catalog.release("parent", OWNER)
+        for session_id in ("child", "archived-child", "detached"):
+            record = require_present(catalog.get(session_id))
+            self.assertIsNone(record.display_parent_session_id)
+            self.assertIsNone(record.detached_parent_session_id)
+        self.assertTrue(require_present(catalog.get("archived-child")).archived)
+        with self.assertRaises((SessionAccessError, ValueError)):
+            catalog.set_display_parent("detached", OWNER, "parent", restore=True)
+
+    def test_reordering_a_pinned_group_preserves_other_groups_latent_order(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("a", "b", "c", "d", "child"):
+            register_session(catalog, session_id, f"thread-{session_id}")
+        catalog.set_display_parent("child", OWNER, "b")
+        catalog.set_pinned("child", OWNER, True)
+        catalog.set_pinned("d", OWNER, True)
+        catalog.reorder("d", OWNER, target_session_id="b", placement="before")
+        catalog.set_pinned("child", OWNER, False)
+        catalog.set_pinned("d", OWNER, False)
+        rows = catalog.listed(
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            scope=SessionListScope.PROJECT,
+            project_path="/research",
+            limit=None,
+            archived=False,
+        )
+        self.assertEqual([record.session_id for record in rows], ["a", "d", "b", "child", "c"])
+
+    def test_project_cursor_anchor_removal_is_explicit_not_a_successful_empty_tail(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("anchor", "tail"):
+            register_session(catalog, session_id, f"thread-{session_id}")
+        first = catalog.listed(
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            scope=SessionListScope.PROJECT,
+            project_path="/research",
+            limit=1,
+            archived=False,
+        )
+        after = (first[0].updated_at, first[0].session_id, first[0].pinned)
+        catalog.set_archived("anchor", OWNER, True)
+        with self.assertRaises(ValueError):
+            catalog.listed(
+                OWNER,
+                runtime_id=RUNTIME_ID,
+                scope=SessionListScope.PROJECT,
+                project_path="/research",
+                limit=1,
+                archived=False,
+                after=after,
+            )
+        catalog.set_archived("anchor", OWNER, False)
+        catalog.release("anchor", OWNER)
+        with self.assertRaises(ValueError):
+            catalog.listed(
+                OWNER,
+                runtime_id=RUNTIME_ID,
+                scope=SessionListScope.PROJECT,
+                project_path="/research",
+                limit=1,
+                archived=False,
+                after=after,
+            )
+
+    def test_display_order_is_durable_scoped_and_independent_of_activity(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("root-a", "root-b", "child-a", "child-b"):
+            register_session(catalog, session_id, f"thread-{session_id}")
+        for session_id in ("child-a", "child-b"):
+            catalog.set_display_parent(session_id, OWNER, "root-a")
+        original = catalog.owned(OWNER)
+        catalog.reorder("child-b", OWNER, target_session_id="child-a", placement="before")
+        catalog.reorder("root-b", OWNER, target_session_id="root-a", placement="before")
+        ordered = catalog.owned(OWNER)
+        for session_id, record in original.items():
+            self.assertEqual(
+                ordered[session_id],
+                dataclasses.replace(record, display_order=ordered[session_id].display_order),
+            )
+        catalog.reorder("root-b", OWNER, target_session_id="root-a", placement="before")
+        self.assertEqual(catalog.owned(OWNER), ordered)
+        catalog.rename("root-a", OWNER, "active root", updated_at=80.0)
+        catalog.rename("child-a", OWNER, "active child", updated_at=90.0)
+        reopened = SessionCatalogStore(self.database)
+        rows = reopened.listed(
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            scope=SessionListScope.PROJECT,
+            project_path="/research",
+            limit=None,
+            archived=False,
+        )
+        self.assertEqual(
+            [record.session_id for record in rows], ["root-b", "root-a", "child-b", "child-a"]
+        )
+        global_rows = reopened.listed(
+            OWNER, runtime_id=RUNTIME_ID, scope=SessionListScope.ALL, project_path=None, limit=1
+        )
+        self.assertEqual(global_rows[0].session_id, "child-a")
+        detached = reopened.set_display_parent("child-a", OWNER, None)
+        assert detached.display_order is not None
+        self.assertLess(detached.display_order, 0)
+        rows = reopened.listed(
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            scope=SessionListScope.PROJECT,
+            project_path="/research",
+            limit=None,
+            archived=False,
+        )
+        self.assertEqual(
+            [record.session_id for record in rows], ["child-a", "root-b", "root-a", "child-b"]
+        )
+        allocate_session(reopened, "new-root")
+        reopened.allocate(
+            "new-child",
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            runtime_workdir="/research/new-child",
+            project_path="/research",
+            output_root="/research/new-child/outputs",
+            display_parent_session_id="root-a",
+            created_at=20.0,
+        )
+        rows = reopened.listed(
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            scope=SessionListScope.PROJECT,
+            project_path="/research",
+            limit=None,
+            archived=False,
+        )
+        self.assertEqual(
+            [record.session_id for record in rows],
+            ["new-root", "child-a", "root-b", "root-a", "new-child", "child-b"],
+        )
+
+    def test_display_order_rejects_incompatible_targets_without_partial_writes(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("root", "other", "child", "foreign", "archived", "pinned"):
+            register_session(catalog, session_id, f"thread-{session_id}")
+        catalog.set_display_parent("child", OWNER, "root")
+        catalog.set_archived("archived", OWNER, True)
+        catalog.set_pinned("pinned", OWNER, True)
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"UPDATE {SESSION_CATALOG_TABLE} SET project_path = ? WHERE session_id = ?",
+                ("/other", "foreign"),
+            )
+        before = catalog.owned(OWNER)
+        for source, principal, target, placement in (
+            ("root", OTHER_OWNER, "other", "before"),
+            ("root", OWNER, "missing", "before"),
+            ("root", OWNER, "foreign", "before"),
+            ("root", OWNER, "child", "before"),
+            ("root", OWNER, "archived", "before"),
+            ("root", OWNER, "pinned", "before"),
+            ("root", OWNER, "other", "invalid"),
+        ):
+            with self.subTest(source=source, target=target, placement=placement):
+                with self.assertRaises((SessionAccessError, SessionStateConflictError, ValueError)):
+                    catalog.reorder(
+                        source, principal, target_session_id=target, placement=placement
+                    )
+                self.assertEqual(catalog.owned(OWNER), before)
+
+    def test_display_order_migration_preserves_extra_columns(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        register_session(catalog, "old", "thread-old")
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(f"ALTER TABLE {SESSION_CATALOG_TABLE} DROP COLUMN display_order")
+            connection.execute(
+                f"ALTER TABLE {SESSION_CATALOG_TABLE} ADD COLUMN work TEXT NOT NULL DEFAULT ''"
+            )
+            connection.execute(f"UPDATE {SESSION_CATALOG_TABLE} SET work = 'keep'")
+        upgraded = SessionCatalogStore(self.database)
+        self.assertIsNone(require_present(upgraded.get("old")).display_order)
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            self.assertEqual(
+                connection.execute(f"SELECT work FROM {SESSION_CATALOG_TABLE}").fetchone(),
+                ("keep",),
+            )
+
+    def test_display_order_rolls_back_all_ranks_if_a_write_fails(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("root-a", "root-b", "root-c"):
+            register_session(catalog, session_id, f"thread-{session_id}")
+        original = catalog.owned(OWNER)
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"CREATE TRIGGER fail_order BEFORE UPDATE OF display_order ON {SESSION_CATALOG_TABLE} "
+                "WHEN OLD.session_id = 'root-b' BEGIN SELECT RAISE(ABORT, 'test write failure'); END"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            catalog.reorder("root-c", OWNER, target_session_id="root-a", placement="before")
+        self.assertEqual(catalog.owned(OWNER), original)
+
+    def test_display_parent_is_owned_single_level_and_durable(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        for session_id in ("parent", "child", "sibling"):
+            allocate_session(catalog, session_id)
+        before = require_present(catalog.get("child")).updated_at
+        child = catalog.set_display_parent("child", OWNER, "parent")
+        self.assertEqual(child.display_parent_session_id, "parent")
+        self.assertEqual(child.updated_at, before)
+        with self.assertRaises(SessionAccessError):
+            catalog.set_display_parent("child", SessionPrincipal(user_id="stranger"), None)
+        with self.assertRaises(ValueError):
+            catalog.set_display_parent("sibling", OWNER, "child")
+        with self.assertRaises(ValueError):
+            catalog.set_display_parent("parent", OWNER, "sibling")
+        with self.assertRaises(ValueError):
+            catalog.set_display_parent("parent", OWNER, "parent")
+        self.assertEqual(
+            require_present(
+                SessionCatalogStore(self.database).get("child")
+            ).display_parent_session_id,
+            "parent",
+        )
+        self.assertIsNone(
+            catalog.set_display_parent("child", OWNER, None).display_parent_session_id
+        )
+
+    def test_display_parent_migration_keeps_extra_columns(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "old")
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"ALTER TABLE {SESSION_CATALOG_TABLE} DROP COLUMN display_parent_session_id"
+            )
+            connection.execute(
+                f"ALTER TABLE {SESSION_CATALOG_TABLE} DROP COLUMN detached_parent_session_id"
+            )
+            connection.execute(
+                f"ALTER TABLE {SESSION_CATALOG_TABLE} ADD COLUMN work TEXT NOT NULL DEFAULT ''"
+            )
+            connection.execute(f"UPDATE {SESSION_CATALOG_TABLE} SET work = 'keep'")
+        upgraded = SessionCatalogStore(self.database)
+        self.assertIsNone(require_present(upgraded.get("old")).display_parent_session_id)
+        self.assertIsNone(require_present(upgraded.get("old")).detached_parent_session_id)
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertEqual(
+                connection.execute(f"SELECT work FROM {SESSION_CATALOG_TABLE}").fetchone(),
+                ("keep",),
+            )
+
     def test_archive_migration_preserves_existing_columns_and_history(self) -> None:
         catalog = SessionCatalogStore(self.database)
         register_session(catalog, "old", "thread-old")
@@ -354,6 +964,52 @@ class SessionCatalogContract(unittest.TestCase):
                         SessionCatalogStore(path)
                 with closing(sqlite3.connect(path)) as connection:
                     self.assertEqual(tuple(connection.iterdump()), before)
+
+    def test_schema_rejection_diagnostics_preserve_data_and_redact_sql(self) -> None:
+        SessionCatalogStore(self.database)
+        secret = "private-default-" + "x" * 4096 + "\nforged-log-line"
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                "ALTER TABLE session_catalog ADD COLUMN sensitive_name TEXT DEFAULT '"
+                + secret
+                + "'"
+            )
+        before = self.database.read_bytes()
+        with self.assertRaises(RuntimeError) as rejected:
+            SessionCatalogStore.inspect_schema(self.database)
+        message = str(rejected.exception)
+        self.assertRegex(
+            message,
+            r"unsupported session schema declaration: table=session_catalog "
+            r"reason=unknown clause=\d+ sha256=[0-9a-f]{64}$",
+        )
+        self.assertNotIn("sensitive_name", message)
+        self.assertNotIn("private-default", message)
+        self.assertNotIn("forged-log-line", message)
+        self.assertNotIn(str(self.database), message)
+        self.assertLess(len(message), 256)
+        with self.assertRaises(RuntimeError) as repeated:
+            SessionCatalogStore.inspect_schema(self.database)
+        self.assertEqual(str(repeated.exception), message)
+        self.assertEqual(self.database.read_bytes(), before)
+
+    def test_schema_rejection_identifies_duplicate_constraint(self) -> None:
+        with closing(sqlite3.connect(":memory:")) as connection:
+            connection.row_factory = sqlite3.Row
+            SessionCatalogStore._create_schema(connection)
+            sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name='session_catalog'"
+            ).fetchone()[0]
+            self.assertIn("UNIQUE(runtime_id, vendor_thread_id)", sql)
+            connection.execute("DROP TABLE session_catalog")
+            connection.execute(sql[: sql.rfind(")")] + ", UNIQUE(runtime_id, vendor_thread_id))")
+            before = tuple(connection.iterdump())
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"table=session_catalog reason=duplicate clause=\d+ sha256=[0-9a-f]{64}$",
+            ):
+                SessionCatalogStore.inspect_connection(connection)
+            self.assertEqual(tuple(connection.iterdump()), before)
 
     def test_schema_inspection_refuses_queue_missing_historical_constraints(self) -> None:
         SessionCatalogStore(self.database)
@@ -1531,6 +2187,88 @@ class SessionCatalogContract(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_product_edit_cancels_only_opted_in_timeout_without_answering(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "editing-question")
+
+            async def publish(kind, data, **kwargs):
+                return published_event(kind, data)
+
+            interactions = SessionInteractions("editing-question", catalog, publish)
+            waiting = asyncio.create_task(
+                interactions.request_product_input(
+                    {"id": "editing", "question": "Revise?"},
+                    turn_id="turn-1",
+                    timeout_seconds=0.01,
+                    cancel_timeout_on_edit=True,
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertTrue(catalog.hil("editing").payload["cancel_timeout_on_edit"])
+            self.assertIsNone(
+                await interactions.resolve(
+                    None, "editing", {"editing": True}, active_turn_id="wrong-turn"
+                )
+            )
+            result = await interactions.resolve(
+                None, "editing", {"editing": True}, active_turn_id="turn-1"
+            )
+            self.assertIsNotNone(result, catalog.hil("editing"))
+            self.assertTrue(result["timeout_cancelled"])
+            self.assertEqual(catalog.hil("editing").status, HilStatus.PENDING)
+            await asyncio.sleep(0.03)
+            self.assertFalse(waiting.done())
+            self.assertTrue(catalog.hil("editing").decision["timeout_cancelled"])
+            answer = {"free_text": "Change chapter two"}
+            resolved = await interactions.resolve(None, "editing", answer, active_turn_id="turn-1")
+            self.assertEqual(resolved["free_text"], answer["free_text"])
+            self.assertEqual(await waiting, answer)
+            self.assertIsNone(
+                await interactions.resolve(
+                    None, "editing", {"editing": True}, active_turn_id="turn-1"
+                )
+            )
+
+        asyncio.run(scenario())
+
+    def test_product_edit_permission_requires_explicit_opt_in_and_a_deadline(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "permission-question")
+
+            async def publish(kind, data, **kwargs):
+                return published_event(kind, data)
+
+            interactions = SessionInteractions("permission-question", catalog, publish)
+            for request_id, timeout, opt_in in (
+                ("data-only", 0.01, False),
+                ("no-deadline", None, True),
+            ):
+                with self.subTest(request_id=request_id):
+                    record = interactions.prepare_product_input(
+                        {
+                            "id": request_id,
+                            "question": "Continue?",
+                            "cancel_timeout_on_edit": True,
+                        },
+                        turn_id="turn-1",
+                        timeout_seconds=timeout,
+                        cancel_timeout_on_edit=opt_in,
+                    )
+                    self.assertNotIn("cancel_timeout_on_edit", record.payload)
+                    self.assertEqual(
+                        record.payload["questions"], [{"id": request_id, "question": "Continue?"}]
+                    )
+                    self.assertIsNone(
+                        await interactions.resolve(
+                            None, request_id, {"editing": True}, active_turn_id="turn-1"
+                        )
+                    )
+                    self.assertIsNone(catalog.hil(request_id).decision)
+
+        asyncio.run(scenario())
+
     def test_product_question_timeout_is_durable_and_not_a_user_answer(self) -> None:
         async def scenario() -> None:
             catalog = SessionCatalogStore(self.database)
@@ -1547,6 +2285,11 @@ class SessionCatalogContract(unittest.TestCase):
                 question, turn_id="turn-1", timeout_seconds=0.01
             )
             self.assertTrue(decision["timed_out"])
+            self.assertIsNone(
+                await interactions.resolve(
+                    None, "timed", {"editing": True}, active_turn_id="turn-1"
+                )
+            )
             self.assertNotIn("answers", decision)
             self.assertEqual(catalog.hil("timed").decision, decision)
             self.assertEqual(
@@ -1556,6 +2299,33 @@ class SessionCatalogContract(unittest.TestCase):
                 decision,
             )
             self.assertEqual([event[0] for event in events], ["hil_requested", "hil_resolved"])
+
+        asyncio.run(scenario())
+
+    def test_product_edit_never_changes_an_ordinary_question_or_authorization(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "ordinary-question")
+
+            async def publish(kind, data, **kwargs):
+                return published_event(kind, data)
+
+            interactions = SessionInteractions("ordinary-question", catalog, publish)
+            waiting = asyncio.create_task(
+                interactions.request_product_input(
+                    {"id": "ordinary", "question": "Authorize?"}, turn_id="turn-1"
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertIsNone(
+                await interactions.resolve(
+                    None, "ordinary", {"editing": True}, active_turn_id="turn-1"
+                )
+            )
+            self.assertIsNone(catalog.hil("ordinary").decision)
+            self.assertFalse(waiting.done())
+            await interactions.resolve(None, "ordinary", {"answers": {}}, active_turn_id="turn-1")
+            self.assertEqual(await waiting, {"answers": {}})
 
         asyncio.run(scenario())
 
@@ -2018,7 +2788,10 @@ class SessionCatalogContract(unittest.TestCase):
         )
         catalog.resolve_hil(
             "hil-product-idea",
-            {"answers": {first.question_id: "一键授权"}},
+            {
+                PRODUCT_DECISION_SOURCE: PRODUCT_DECISION_USER,
+                "answers": {first.question_id: "一键授权"},
+            },
         )
         authorizer.require(
             session_id="product-a",
@@ -2089,7 +2862,10 @@ class SessionCatalogContract(unittest.TestCase):
         )
         catalog.resolve_hil(
             "hil-precise",
-            {"answers": {granted.question_id: "一键授权"}},
+            {
+                PRODUCT_DECISION_SOURCE: PRODUCT_DECISION_USER,
+                "answers": {granted.question_id: "一键授权"},
+            },
         )
         authorizer.require(
             session_id="product-a",
@@ -2226,6 +3002,56 @@ class SessionCatalogContract(unittest.TestCase):
                 for record in SessionCatalogStore(self.database).queued_messages("product-a")
             ],
             ["queue-1", "queue-2"],
+        )
+
+    def test_queue_edit_preserves_identity_skills_references_and_rejects_submission(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        register_session(catalog, "product-a", "thread-a")
+        body = {
+            "input": [
+                {"type": "text", "text": "original"},
+                {
+                    "type": "skill",
+                    "name": "selected",
+                    "path": "/selected/SKILL.md",
+                    "version": "v1",
+                },
+                {"type": "file", "path": "/selected/reference.pdf"},
+            ],
+            "assistant_snapshot_id": "frozen-snapshot",
+            "assistant_context_revision": 3,
+            "client_user_message_id": "queue-edit",
+        }
+        original = catalog.enqueue_message("product-a", "queue-edit", body)
+        catalog.enqueue_message(
+            "product-a", "queue-next", {"input": [{"type": "text", "text": "next"}]}
+        )
+        updated = require_present(
+            catalog.update_queued_message("product-a", "queue-edit", "edited")
+        )
+        self.assertEqual(updated.enqueue_seq, original.enqueue_seq)
+        self.assertEqual(updated.queued_message_id, original.queued_message_id)
+        self.assertEqual(updated.body["input"][1:], body["input"][1:])
+        self.assertEqual(updated.body["assistant_snapshot_id"], body["assistant_snapshot_id"])
+        self.assertEqual(updated.body["input"][0]["text"], "edited")
+        submitted = require_present(catalog.begin_queued_submission("product-a", "queue-edit"))
+        self.assertIsNone(catalog.update_queued_message("product-a", "queue-edit", "too late"))
+        self.assertEqual(
+            require_present(catalog.queued_message("product-a", "queue-edit")).body, updated.body
+        )
+        restored = require_present(
+            catalog.restore_queued_submission(
+                "product-a", dataclasses.replace(submitted, state=original.state)
+            )
+        )
+        self.assertEqual(restored.state, QueuedMessageState.QUEUED)
+        self.assertEqual(restored.enqueue_seq, original.enqueue_seq)
+        self.assertEqual(restored.body, updated.body)
+        catalog.begin_queued_submission("product-a", "queue-edit")
+        self.assertIsNone(catalog.restore_queued_submission("product-a", submitted))
+        catalog.remove_queued_message("product-a", "queue-edit")
+        self.assertIsNone(
+            catalog.update_queued_message("product-a", "queue-edit", "after execution")
         )
 
     def test_message_queue_never_resubmits_an_unknown_outcome(self) -> None:
@@ -2587,6 +3413,41 @@ class SessionCatalogContract(unittest.TestCase):
             QueuedMessageState.COMPLETED,
         )
 
+    def test_resource_wait_fills_an_unset_deadline_once(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "product-new")
+        catalog.enqueue_message("product-new", "deferred", {"text": "once"})
+        deferred = catalog.begin_resource_wait("product-new", "deferred", purpose="turn")
+        self.assertIsNone(require_present(deferred).deadline)
+        waiting = catalog.begin_resource_wait(
+            "product-new", "deferred", purpose="turn", deadline=TEST_DEADLINE
+        )
+        self.assertEqual(require_present(waiting).deadline, TEST_DEADLINE)
+        self.assertEqual(
+            catalog.begin_resource_wait(
+                "product-new", "deferred", purpose="turn", deadline=TEST_DEADLINE + 1
+            ),
+            waiting,
+        )
+
+    def test_resource_wait_clears_legacy_error_without_renewing_a_deadline(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "product-new")
+        catalog.enqueue_message("product-new", "legacy", {"text": "once"})
+        catalog.begin_resource_wait("product-new", "legacy", purpose="turn", deadline=TEST_DEADLINE)
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET safe_error_details = ?",
+                (json.dumps({"reason": "old failure"}),),
+            )
+        waiting = require_present(
+            catalog.begin_resource_wait(
+                "product-new", "legacy", purpose="turn", deadline=TEST_DEADLINE + 1
+            )
+        )
+        self.assertEqual(waiting.safe_error_details, {})
+        self.assertEqual(waiting.deadline, TEST_DEADLINE)
+
     def test_cancel_and_complete_keep_exact_request_idempotency(self) -> None:
         catalog = SessionCatalogStore(self.database)
         allocate_session(catalog, "product-new")
@@ -2596,6 +3457,14 @@ class SessionCatalogContract(unittest.TestCase):
             "product-new", "cancelled", purpose="turn", deadline=TEST_DEADLINE
         )
         self.assertEqual(require_present(waiting).deadline, TEST_DEADLINE)
+        self.assertEqual(
+            require_present(
+                catalog.begin_resource_wait(
+                    "product-new", "cancelled", purpose="turn", deadline=TEST_DEADLINE + 1
+                )
+            ).deadline,
+            TEST_DEADLINE,
+        )
         self.assertTrue(catalog.delete_queued_message("product-new", "cancelled"))
         self.assertEqual(
             catalog.enqueue_message("product-new", "cancelled", body).state,

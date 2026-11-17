@@ -1,7 +1,25 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { SelectionActionRegistry, selectionReplacementFor } from './actions.ts'
+import {
+  SelectionActionRegistry,
+  selectionReplacementFor,
+  selectionToolbarVisible,
+} from './actions.ts'
+
+test('disabled selection toolbars preserve explicit forms without changing document selection', () => {
+  const contribution = {
+    id: 'pdf',
+    order: 1,
+    actions: null,
+    expanded: false,
+    toolbarEnabled: false,
+  }
+  assert.equal(selectionToolbarVisible([]), true)
+  assert.equal(selectionToolbarVisible([contribution]), false)
+  assert.equal(selectionToolbarVisible([{ ...contribution, forceVisible: true }]), true)
+  assert.equal(selectionToolbarVisible([{ ...contribution, toolbarEnabled: true }]), true)
+})
 
 test('selection action contributions stay tab-scoped, ordered and disposable', () => {
   const registry = new SelectionActionRegistry()
@@ -14,7 +32,7 @@ test('selection action contributions stay tab-scoped, ordered and disposable', (
     dismiss: () => dismissals.push('later'),
     expanded: false,
     id: 'later',
-    order: 20
+    order: 20,
   })
   const removeFirst = registry.register('tab-a', {
     actions: 'first',
@@ -22,25 +40,34 @@ test('selection action contributions stay tab-scoped, ordered and disposable', (
     expanded: true,
     id: 'first',
     order: 10,
-    panel: 'panel'
+    panel: 'panel',
   })
   registry.register('tab-b', {
     actions: 'other-tab',
     dismiss: () => dismissals.push('other-tab'),
     expanded: false,
     id: 'other-tab',
-    order: 0
+    order: 0,
   })
 
-  assert.deepEqual(registry.get('tab-a').map((item) => item.id), ['first', 'later'])
+  assert.deepEqual(
+    registry.get('tab-a').map((item) => item.id),
+    ['first', 'later']
+  )
   assert.equal(registry.get('tab-a')[0]?.panel, 'panel')
-  assert.deepEqual(registry.get('tab-b').map((item) => item.id), ['other-tab'])
+  assert.deepEqual(
+    registry.get('tab-b').map((item) => item.id),
+    ['other-tab']
+  )
 
   registry.dismiss('tab-a')
   assert.deepEqual(dismissals, ['first', 'later'])
 
   removeFirst()
-  assert.deepEqual(registry.get('tab-a').map((item) => item.id), ['later'])
+  assert.deepEqual(
+    registry.get('tab-a').map((item) => item.id),
+    ['later']
+  )
   removeLater()
   assert.deepEqual(registry.get('tab-a'), [])
   assert.equal(changes.length, 5)
@@ -51,20 +78,33 @@ test('selection action contributions stay tab-scoped, ordered and disposable', (
 test('re-registering one contribution updates it without disturbing sibling order', () => {
   const registry = new SelectionActionRegistry()
   const remove = registry.register('tab', {
-    actions: 'old', expanded: false, id: 'format', order: 20
+    actions: 'old',
+    expanded: false,
+    id: 'format',
+    order: 20,
   })
   registry.register('tab', {
-    actions: 'copy', expanded: false, id: 'copy', order: 30
+    actions: 'copy',
+    expanded: false,
+    id: 'copy',
+    order: 30,
   })
 
   registry.update('tab', 'format', {
-    actions: 'new', expanded: true, id: 'format', order: 10, panel: 'format-panel'
+    actions: 'new',
+    expanded: true,
+    id: 'format',
+    order: 10,
+    panel: 'format-panel',
   })
 
-  assert.deepEqual(registry.get('tab').map((item) => [item.id, item.actions]), [
-    ['format', 'new'],
-    ['copy', 'copy']
-  ])
+  assert.deepEqual(
+    registry.get('tab').map((item) => [item.id, item.actions]),
+    [
+      ['format', 'new'],
+      ['copy', 'copy'],
+    ]
+  )
   assert.equal(registry.get('tab')[0]?.expanded, true)
   remove()
 })
@@ -77,14 +117,14 @@ test('replacement capability is resolved from the focused tab contribution only'
     expanded: false,
     id: 'markdown-replacement',
     order: 30,
-    replaceSelection
+    replaceSelection,
   })
   registry.register('tab-b', {
     actions: null,
     expanded: false,
     id: 'other-replacement',
     order: 30,
-    replaceSelection: async () => ({ ok: false as const, error: 'selection_changed' as const })
+    replaceSelection: async () => ({ ok: false as const, error: 'selection_changed' as const }),
   })
 
   assert.equal(selectionReplacementFor(registry.get('tab-a')), replaceSelection)

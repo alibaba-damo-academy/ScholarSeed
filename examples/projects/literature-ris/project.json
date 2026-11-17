@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "literature-ris",
+  "revision": "1",
+  "name": "RIS 导入合成输入",
+  "description": "文献书目导入专项的合成原始题录，不包含导入结果。",
+  "source": {
+    "kind": "synthetic",
+    "origin": "Repository-authored fictional RIS records for manual import evaluation.",
+    "rights": "Synthetic repository input containing no third-party or user data; repository license applies."
+  },
+  "files": [
+    {
+      "id": "ris-records",
+      "source": "files/sample.ris",
+      "target": "sample.ris",
+      "mediaType": "text/plain",
+      "size": 333,
+      "sha256": "17db896b3942b82aa49cbf4c525844353616ac43d24b45b287d251f7aa59bb57"
+    }
+  ]
+}

@@ -393,6 +393,7 @@ def import_zotero(
     include_unfiled: bool = True,
     import_collections: bool = True,
     preview_revision: str = "",
+    repository: LiteratureRepository | None = None,
 ) -> ZoteroImportResult:
     """Import the selected Zotero scope into the caller's current landing point.
 
@@ -512,7 +513,7 @@ def import_zotero(
                 name, parent = collection_names[key]
                 ordered.append((key, name, parent))
                 pending.remove(key)
-        repository = LiteratureRepository()
+        repository = repository or LiteratureRepository()
         saved = batch.commit(
             tuple(admitted),
             lambda values: repository.save_external_tree(

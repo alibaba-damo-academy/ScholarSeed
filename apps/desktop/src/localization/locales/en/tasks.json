@@ -48,11 +48,26 @@
   "title": {
     "copy": "Copy resources to project",
     "link": "Link local resources",
+    "literatureJoin": "Add papers to library",
     "sources_one": "{{name}} ({{count}} item)",
     "sources_other": "{{name}} ({{count}} items)",
     "withSource": "{{operation}} · {{source}}"
   },
   "failure": "{{name}}: {{reason}}",
+  "literatureJoin": {
+    "library": "My literature library",
+    "project": "Project literature library",
+    "metadata": "Metadata only",
+    "fulltext": "Metadata and full text",
+    "destination": "{{method}} · Destination: {{target}}",
+    "paperList": "Paper list ({{count}})",
+    "admitting": "Saving paper metadata",
+    "admitted": "Added {{completed}} of {{total}} papers",
+    "progress": "Full text processed: {{completed}} of {{total}}",
+    "acquired": "{{succeeded}} with full text, {{failed}} without",
+    "admissionUnconfirmed": "Could not confirm what was added. Check the library first.",
+    "fulltextFailed": "Could not attach the downloaded full text"
+  },
   "resourceImport": {
     "progressItems": "{{completed}}/{{total}} items",
     "summary": {

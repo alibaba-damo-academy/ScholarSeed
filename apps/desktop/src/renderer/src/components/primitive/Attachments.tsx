@@ -1,6 +1,7 @@
 import React from 'react'
 import { useDocumentWorkspace } from '../../features/workbench/workspace'
 import { AttachmentList } from './AttachmentList'
+export type { LocalReference } from './AttachmentList'
 
 export function ComposerAttachments(
   props: Omit<React.ComponentProps<typeof AttachmentList>, 'openPaths'>

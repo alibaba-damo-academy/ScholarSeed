@@ -1,7 +1,7 @@
 # ScholarSeed 产品后端 (FastAPI Serve + composition root) —— distribution `scholarseed`。
 #
 # 边界: 本包只拥有 apps/serve/service/**。runtime kernel (damoagent)、证据查询
-# (damoatrace) 与runtime adapter (scholarseed-codex) 都是独立发行包,
+# (damoatrace) 与 runtime adapter (scholarseed-codex) 都是独立发行包,
 # 这里只作依赖声明, 绝不打包它们的 namespace。
 
 [build-system]
@@ -10,12 +10,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scholarseed"
-version = "0.2.0"
+version = "0.3.2"
 description = "ScholarSeed product backend, composition root, and desktop launcher"
+readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
+    "deep-rnd-l1==0.2.8",
     "aiosqlite",
     "damoatrace==0.1.0",
     "anthropic",
@@ -25,7 +27,8 @@ dependencies = [
     "mcp==1.26.0",
     "zotero-mcp-server==0.15.1",
     "json-repair",
-    "jsonschema>=4",
+    "jsonschema>=4.18",
+    "referencing>=0.28.4",
     "lxml>=5.2",
     "numpy",
     "openpyxl",

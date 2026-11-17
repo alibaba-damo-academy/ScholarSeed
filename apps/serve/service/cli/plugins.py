@@ -25,7 +25,6 @@ from service.capabilities.service.package import (
     pack_skill,
 )
 from service.capabilities.service.utils import json_object
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 PRODUCT_DISTRIBUTION = "scholarseed"
 TEMPORARY_PREFIX = "scholarseed-plugin-author-"
@@ -69,6 +68,12 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="explicit dependency declaration JSON; otherwise preserve source package declaration",
     )
+    for command in (check, pack):
+        command.add_argument(
+            "--check-entries",
+            action="store_true",
+            help="compile archived JS entries without executing them",
+        )
     return root
 
 
@@ -102,7 +107,9 @@ def _pack(args: argparse.Namespace, host_version: str) -> dict[str, Any]:
         archive = Path(directory) / TEMPORARY_ARCHIVE
         pack_skill(args.source, archive, args.version, dependencies, expected_name=args.name)
         payload = _read_package(archive)
-        result = inspect_package(payload, host_version=host_version)
+        result = inspect_package(
+            payload, host_version=host_version, check_entries=args.check_entries
+        )
         if result["valid"]:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("xb") as stream:
@@ -138,16 +145,18 @@ def main(argv: list[str] | None = None) -> int:
                     stream.read(MAX_DESCRIPTOR_BYTES + 1), limit=MAX_DESCRIPTOR_BYTES
                 )
             with args.request.open("rb") as stream:
-                request = json_object(
-                    stream.read(BRIDGE_MAX_REQUEST_BYTES + 1), limit=BRIDGE_MAX_REQUEST_BYTES
-                )
+                request = json_object(stream.read())
             result = validate_request(descriptor, request)
         else:
             host_version = args.host_version or version(PRODUCT_DISTRIBUTION)
             result = (
                 _pack(args, host_version)
                 if args.command == "pack"
-                else inspect_package(_read_package(args.package), host_version=host_version)
+                else inspect_package(
+                    _read_package(args.package),
+                    host_version=host_version,
+                    check_entries=args.check_entries,
+                )
             )
     except (OSError, ValueError, PackageNotFoundError) as exc:
         result = {

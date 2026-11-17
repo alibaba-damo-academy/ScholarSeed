@@ -7,7 +7,7 @@ import json
 import shutil
 import sqlite3
 import time
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from itertools import islice
 from pathlib import Path
@@ -16,9 +16,20 @@ from typing import Any, Callable, Generator, Iterable, Iterator, Mapping, Sequen
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
 from service.chat.constants import (
     CANCELLED_MESSAGE_HISTORY_PREFIX,
+    PRODUCT_EVENT_ANSWER_SOURCES,
+    PRODUCT_EVENT_ARTIFACT_CHANGED,
+    PRODUCT_EVENT_ARTIFACT_DECLARED,
+    PRODUCT_EVENT_ARTIFACT_PUBLISHED,
+    PRODUCT_EVENT_FILE_CHANGED,
     PRODUCT_EVENT_MESSAGE_DELTA,
+    PRODUCT_EVENT_MESSAGE_QUEUED,
+    PRODUCT_EVENT_MESSAGE_UPDATED,
     PRODUCT_EVENT_REASONING_DELTA,
+    PRODUCT_EVENT_RUNTIME_INCIDENT,
+    PRODUCT_EVENT_SEND_NOW_REJECTED,
+    PRODUCT_EVENT_SEND_NOW_SUBMITTED,
     PRODUCT_EVENT_SESSION_STATE,
+    PRODUCT_EVENT_TOOL_COMPLETED,
     PRODUCT_EVENT_TOOL_OUTPUT_DELTA,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
@@ -27,6 +38,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_VERSION,
     PRODUCT_EVENT_VERSION_V1,
+    RESOURCE_BASELINE_FAILED,
     USER_MESSAGE_BINDING_ADMITTED,
     USER_MESSAGE_BINDING_BOUND,
     USER_MESSAGE_BINDING_CANCELLED,
@@ -38,10 +50,12 @@ from service.chat.persistence.catalog import (
     SQLITE_TIMEOUT_SECONDS,
     SessionBindingConflictError,
     SessionCatalogRecord,
+    SessionCatalogStore,
     SessionStateConflictError,
 )
 from service.chat.persistence.utils import begin_write, validate_transaction
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
+from service.chat.utils import SESSION_FORK_COPIED_FIELD, copied_session_path
 from service.paths import SESSION_CATALOG_DB
 from service.persistence.notifications import NotificationConnection
 from service.persistence.project import (
@@ -77,10 +91,36 @@ SESSION_FORK_KEY = "session:fork"
 SESSION_FORK_IMPORTED_KEY = "session:fork:imported"
 SESSION_FORK_IMPORTED_EVENT = "session.fork.imported"
 SESSION_FORK_SOURCE_CHANGED = "session_fork_source_changed"
+SESSION_FORK_NATIVE_FIELD = "native_fork"
+SESSION_FORK_WORKSPACE_FIELD = "inherited_workspace"
+SUBMITTED_REFERENCES_CONTEXT_PREFIX = "\nSubmitted references: "
 FORK_HISTORY_KINDS = frozenset(
-    {PRODUCT_EVENT_USER_MESSAGE, PRODUCT_EVENT_MESSAGE_DELTA, PRODUCT_EVENT_TURN_COMPLETED}
+    {
+        PRODUCT_EVENT_USER_MESSAGE,
+        PRODUCT_EVENT_MESSAGE_DELTA,
+        PRODUCT_EVENT_TURN_COMPLETED,
+        PRODUCT_EVENT_REASONING_DELTA,
+        PRODUCT_EVENT_TOOL_COMPLETED,
+        PRODUCT_EVENT_TOOL_OUTPUT_DELTA,
+        PRODUCT_EVENT_FILE_CHANGED,
+        PRODUCT_EVENT_ARTIFACT_CHANGED,
+        PRODUCT_EVENT_ARTIFACT_PUBLISHED,
+        PRODUCT_EVENT_ARTIFACT_DECLARED,
+        PRODUCT_EVENT_ANSWER_SOURCES,
+    }
 )
 WORKSPACE_INITIAL_SEQUENCE = 0
+LOCAL_REJECTION_EVENTS = frozenset(
+    {
+        WORKSPACE_BOUND_EVENT,
+        PRODUCT_EVENT_MESSAGE_QUEUED,
+        PRODUCT_EVENT_MESSAGE_UPDATED,
+        PRODUCT_EVENT_SEND_NOW_SUBMITTED,
+        PRODUCT_EVENT_SEND_NOW_REJECTED,
+        PRODUCT_EVENT_SESSION_STATE,
+        PRODUCT_EVENT_RUNTIME_INCIDENT,
+    }
+)
 WORKSPACE_ORIGIN_UNAVAILABLE = "session_workspace_origin_unavailable"
 CONTENT_REJECTION_CODES = frozenset(
     {
@@ -204,6 +244,10 @@ class ProductEventStore:
         with closing(self._connect()) as connection, schema_transaction(connection):
             self.initialize_schema(connection)
 
+    @staticmethod
+    def preview_triggers() -> tuple[tuple[str, str, str], ...]:
+        return attention.preview_triggers()
+
     @classmethod
     def initialize_schema(cls, connection: sqlite3.Connection) -> None:
         """Apply owned startup migrations inside the caller's transaction.
@@ -252,11 +296,15 @@ class ProductEventStore:
                 return schema
 
     @staticmethod
-    def _reclaim_needed(connection: sqlite3.Connection) -> bool:
+    def reclaim_needed(connection: sqlite3.Connection) -> bool:
         # VACUUM may renumber implicit rowids in unkeyed foreign tables. The
         # reviewed runtime is gated by full typed-row equality for keyed owner
         # tables (including hidden rowids). A primary key alone is not a
         # portable SQLite rowid guarantee. Retain unknown unkeyed assets.
+        pages = int(connection.execute("PRAGMA page_count").fetchone()[0])
+        size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+        if pages * size < RECLAIM_MIN_BYTES:
+            return False
         for table in connection.execute("PRAGMA main.table_list"):
             if table[0] != "main":
                 continue
@@ -277,9 +325,7 @@ class ProductEventStore:
                 row[5] for row in connection.execute(f"PRAGMA main.table_xinfo({quoted})")
             ):
                 return False
-        pages = int(connection.execute("PRAGMA page_count").fetchone()[0])
         free = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
-        size = int(connection.execute("PRAGMA page_size").fetchone()[0])
         unused = int(
             connection.execute("SELECT COALESCE(SUM(unused),0) FROM dbstat('main',1)").fetchone()[0]
         )
@@ -305,7 +351,7 @@ class ProductEventStore:
                     lambda: int(time.monotonic() >= deadline), MAINTENANCE_PROGRESS_OPCODES
                 )
             try:
-                if not cls._reclaim_needed(connection):
+                if not cls.reclaim_needed(connection):
                     return False
                 pages = int(connection.execute("PRAGMA page_count").fetchone()[0])
                 size = int(connection.execute("PRAGMA page_size").fetchone()[0])
@@ -671,6 +717,27 @@ class ProductEventStore:
         return "1"
 
     @classmethod
+    def has_legacy_events(cls, connection: sqlite3.Connection) -> bool:
+        movable = cls._movable_delta(connection)
+        placeholders = ",".join("?" for _ in BLOCK_EVENT_KINDS)
+        return (
+            movable == "1"
+            and connection.execute(
+                f"SELECT 1 FROM {PRODUCT_EVENT_TABLE} WHERE kind IN ({placeholders}) LIMIT 1",
+                tuple(sorted(BLOCK_EVENT_KINDS)),
+            ).fetchone()
+            is not None
+        ) or connection.execute(
+            f"SELECT 1 FROM {PRODUCT_EVENT_TABLE} WHERE {cls._inline_event_condition(movable)} LIMIT 1",
+            tuple(sorted(BLOCK_EVENT_KINDS)),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _inline_event_condition(movable: str) -> str:
+        placeholders = ",".join("?" for _ in BLOCK_EVENT_KINDS)
+        return f"payload_ref IS NULL AND (kind NOT IN ({placeholders}) OR NOT ({movable}))"
+
+    @classmethod
     def migrate_blocks(
         cls,
         connection: sqlite3.Connection,
@@ -778,7 +845,7 @@ class ProductEventStore:
         size = 0
         with closing(
             connection.execute(
-                f"SELECT event_id,kind,payload FROM {PRODUCT_EVENT_TABLE} WHERE payload_ref IS NULL AND (kind NOT IN (?, ?, ?) OR NOT ({cls._movable_delta(connection)})) ORDER BY event_id LIMIT ?",
+                f"SELECT event_id,kind,payload FROM {PRODUCT_EVENT_TABLE} WHERE {cls._inline_event_condition(cls._movable_delta(connection))} ORDER BY event_id LIMIT ?",
                 (*sorted(BLOCK_EVENT_KINDS), min(limit, MIGRATION_BATCH_EVENTS)),
             )
         ) as rows:
@@ -1016,7 +1083,13 @@ class ProductEventStore:
             return self._record(row) if row is not None else None
 
     def latest_answer(
-        self, session_id: str, turn_id: str, *, connection: sqlite3.Connection | None = None
+        self,
+        session_id: str,
+        turn_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+        before_seq: int | None = None,
+        item_id: str | None = None,
     ) -> ProductEventRecord | None:
         with (
             self._snapshot(connection) as current,
@@ -1026,6 +1099,7 @@ class ProductEventStore:
                     session_id=session_id,
                     kinds=(PRODUCT_EVENT_MESSAGE_DELTA,),
                     vendor_turn_id=turn_id,
+                    vendor_item_id=item_id,
                 )
             ) as rows,
         ):
@@ -1034,30 +1108,38 @@ class ProductEventStore:
                 for row in rows
                 if (record := self._record(row)).payload.get("phase")
                 in {None, "", MessagePhase.FINAL_ANSWER.value}
+                and (before_seq is None or record.product_seq < before_seq)
             )
             return max(answers, key=lambda record: record.product_seq, default=None)
 
     def last_agent_reply_at(self, session_id: str) -> float | None:
         """Timestamp of the latest nonempty user-visible assistant message."""
 
-        with (
-            self._snapshot() as connection,
-            closing(
-                self._rows(
-                    connection,
-                    session_id=session_id,
-                    kinds=(PRODUCT_EVENT_MESSAGE_DELTA,),
-                )
-            ) as rows,
-        ):
-            return max(
-                (
-                    record.created_at
-                    for row in rows
-                    if str((record := self._record(row)).payload.get("delta") or "").strip()
-                ),
-                default=None,
-            )
+        return self.last_agent_reply_times((session_id,))[session_id]
+
+    def last_agent_reply_times(self, session_ids: Sequence[str]) -> dict[str, float | None]:
+        if not session_ids:
+            return {}
+        timestamps: dict[str, float | None] = {}
+        with reader(self._database) as connection:
+            connection.execute("BEGIN")
+            for session_id in dict.fromkeys(session_ids):
+                with closing(
+                    self._rows(
+                        connection,
+                        session_id=session_id,
+                        kinds=(PRODUCT_EVENT_MESSAGE_DELTA,),
+                    )
+                ) as rows:
+                    timestamps[session_id] = max(
+                        (
+                            record.created_at
+                            for row in rows
+                            if str((record := self._record(row)).payload.get("delta") or "").strip()
+                        ),
+                        default=None,
+                    )
+        return timestamps
 
     def recovery_snapshot(self, session_id: str, turn_id: str) -> dict[str, Any]:
         with (
@@ -1128,10 +1210,44 @@ class ProductEventStore:
             )
             return tuple(self._record(row) for row in reversed(selected))
 
+    def workspace_referenced(self, session_id: str) -> bool:
+        with (
+            self._snapshot() as connection,
+            closing(
+                connection.execute(
+                    f"SELECT * FROM {PRODUCT_EVENT_TABLE} WHERE kind=? AND session_id!=? "
+                    "AND idempotency_key LIKE ?",
+                    (PRODUCT_EVENT_USER_MESSAGE, session_id, f"{SESSION_FORK_KEY}:%"),
+                )
+            ) as rows,
+            closing(self._materialize(connection, rows, database=self._database)) as materialized,
+        ):
+            for row in materialized:
+                payload = self._record(row).payload
+                origin = payload.get(SESSION_FORK_WORKSPACE_FIELD)
+                if (
+                    isinstance(origin, dict)
+                    and origin.get("session_id") == session_id
+                    and payload.get("refs")
+                ):
+                    return True
+        return False
+
     def workspace_for_sequence(
         self, session: SessionCatalogRecord, product_seq: int
     ) -> SessionCatalogRecord:
         """Resolve file authority at its originating event, never at today's cwd."""
+        event = self.by_sequence(session.session_id, product_seq)
+        if event is not None and event.idempotency_key.startswith(f"{SESSION_FORK_KEY}:"):
+            inherited = event.payload.get(SESSION_FORK_WORKSPACE_FIELD)
+            if isinstance(inherited, dict):
+                return replace(
+                    session,
+                    session_id=inherited.get("session_id", session.session_id),
+                    runtime_workdir=inherited["runtime_workdir"],
+                    project_path=inherited["project_path"],
+                    output_root=inherited["output_root"],
+                )
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 f"SELECT * FROM {PRODUCT_EVENT_TABLE} WHERE session_id = ? AND kind = ? ORDER BY product_seq",
@@ -1600,7 +1716,92 @@ class ProductEventStore:
                 return runs
             sequence = page[-1].product_seq
 
-    def rejected_turns(self, session_id: str, vendor_thread_id: str = "") -> frozenset[str]:
+    def restore_local_rejection(self, session_id: str, queued_message_id: str) -> bool:
+        with self.transaction() as connection:
+            source = SessionCatalogStore.local_rejection_source(
+                connection, session_id, queued_message_id
+            )
+            if source is None:
+                return False
+            binding, _generation, operation_seq, _configuration, watermark = source
+            with closing(self._rows(connection, session_id=session_id)) as rows:
+                records = tuple(self._record(row) for row in islice(rows, MAXIMUM_REPLAY_LIMIT + 1))
+            if not records or len(records) > MAXIMUM_REPLAY_LIMIT:
+                return False
+            catalog = connection.execute(
+                f"SELECT last_product_seq FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                records[-1].product_seq != catalog["last_product_seq"]
+                or watermark != records[-1].product_seq
+            ):
+                return False
+            submitted = rejected = 0
+            pending_submission = False
+            for sequence, record in enumerate(records, start=WORKSPACE_INITIAL_SEQUENCE + 1):
+                if (
+                    record.product_seq != sequence
+                    or record.schema_version
+                    not in (PRODUCT_EVENT_VERSION_V1, PRODUCT_EVENT_VERSION)
+                    or record.kind not in LOCAL_REJECTION_EVENTS
+                    or record.runtime_id != binding.runtime_id
+                    or record.vendor_thread_id not in ("", binding.opaque_session_ref)
+                    or record.vendor_turn_id
+                    or record.vendor_item_id
+                ):
+                    return False
+                if record.kind == WORKSPACE_BOUND_EVENT:
+                    if sequence != WORKSPACE_INITIAL_SEQUENCE + 1 or record.vendor_thread_id:
+                        return False
+                elif sequence == WORKSPACE_INITIAL_SEQUENCE + 1:
+                    return False
+                if record.kind in (
+                    PRODUCT_EVENT_MESSAGE_QUEUED,
+                    PRODUCT_EVENT_MESSAGE_UPDATED,
+                    PRODUCT_EVENT_SEND_NOW_SUBMITTED,
+                    PRODUCT_EVENT_SEND_NOW_REJECTED,
+                ):
+                    if record.payload.get("queued_message_id") != queued_message_id:
+                        return False
+                if record.kind == PRODUCT_EVENT_MESSAGE_QUEUED and (
+                    submitted or record.vendor_thread_id
+                ):
+                    return False
+                if record.kind == PRODUCT_EVENT_SEND_NOW_SUBMITTED:
+                    current = record.payload.get("operation_seq")
+                    if (
+                        pending_submission
+                        or not isinstance(current, int)
+                        or isinstance(current, bool)
+                        or current <= submitted
+                        or record.vendor_thread_id != binding.opaque_session_ref
+                    ):
+                        return False
+                    submitted = current
+                    pending_submission = True
+                elif record.kind == PRODUCT_EVENT_SEND_NOW_REJECTED:
+                    if (
+                        record.payload.get("operation_seq") != submitted
+                        or record.vendor_thread_id != binding.opaque_session_ref
+                    ):
+                        return False
+                    if pending_submission:
+                        if record.payload.get("safe_error") != RESOURCE_BASELINE_FAILED:
+                            return False
+                        rejected = submitted
+                        pending_submission = False
+                    elif not rejected:
+                        return False
+            if pending_submission or not rejected or rejected != operation_seq:
+                return False
+            return SessionCatalogStore.restore_local_rejection(
+                connection, session_id, queued_message_id, source
+            )
+
+    def rejected_turns(
+        self, session_id: str, vendor_thread_id: str = "", *, through_seq: int | None = None
+    ) -> frozenset[str]:
         """Read durable rejection decisions; transient service failures are not rejections."""
         rejected: set[str] = set()
         sequence = 0
@@ -1609,6 +1810,7 @@ class ProductEventStore:
             for record in page:
                 if (
                     record.kind == PRODUCT_EVENT_TURN_FAILED
+                    and (through_seq is None or record.product_seq <= through_seq)
                     and str(record.payload.get("code") or "").lower() in CONTENT_REJECTION_CODES
                     and (not vendor_thread_id or record.vendor_thread_id == vendor_thread_id)
                     and record.vendor_turn_id
@@ -1623,9 +1825,28 @@ class ProductEventStore:
         source_session_id: str,
         target: SessionCatalogRecord,
         through_seq: int,
+        *,
+        copied_workdir: Path | None = None,
+        connection: sqlite3.Connection | None = None,
+        inherit_snapshot: (
+            Callable[[Mapping[str, Any], sqlite3.Connection], str | None] | None
+        ) = None,
+        snapshots_only: bool = False,
     ) -> None:
-        with self.transaction() as connection:
-            with closing(self._rows(connection, session_id=source_session_id)) as rows:
+        source = SessionCatalogStore(self._database).get(source_session_id)
+        if source is None:
+            if snapshots_only:
+                return
+            raise SessionStateConflictError(SESSION_FORK_SOURCE_CHANGED)
+        request = self.by_key(target.session_id, SESSION_FORK_KEY)
+        source_workdir = Path(
+            str(request.payload.get(SESSION_FORK_COPIED_FIELD) or source.runtime_workdir)
+            if request is not None
+            else source.runtime_workdir
+        )
+        with self.transaction() if connection is None else nullcontext(connection) as current:
+            validate_transaction(current, self._database)
+            with closing(self._rows(current, session_id=source_session_id)) as rows:
                 for row in rows:
                     record = self._record(row)
                     if record.product_seq > through_seq:
@@ -1641,14 +1862,53 @@ class ProductEventStore:
                                 record.payload.get("client_turn_id") or record.product_seq
                             ),
                             "binding": USER_MESSAGE_BINDING_BOUND,
+                            "refs": record.payload.get("refs", []),
+                            "origin": record.payload.get("origin"),
+                        }
+                        if inherit_snapshot is not None:
+                            snapshot_id = inherit_snapshot(record.payload, current)
+                            if snapshot_id:
+                                payload["assistant_snapshot_id"] = snapshot_id
+                        workspace = self.workspace_for_sequence(source, record.product_seq)
+                        if copied_workdir is not None:
+                            payload["refs"] = [
+                                (
+                                    {
+                                        **reference,
+                                        "path": copied_session_path(
+                                            str(reference.get("path") or ""),
+                                            source_workdir,
+                                            copied_workdir,
+                                        ),
+                                    }
+                                    if isinstance(reference, dict) and "path" in reference
+                                    else reference
+                                )
+                                for reference in payload["refs"]
+                            ]
+                            if Path(workspace.runtime_workdir) == source_workdir:
+                                workspace = target
+                        payload[SESSION_FORK_WORKSPACE_FIELD] = {
+                            "session_id": workspace.session_id,
+                            "runtime_workdir": workspace.runtime_workdir,
+                            "project_path": workspace.project_path,
+                            "output_root": workspace.output_root,
                         }
                     elif record.kind == PRODUCT_EVENT_MESSAGE_DELTA:
                         payload = {
                             "delta": str(record.payload.get("delta") or ""),
                             "phase": record.payload.get("phase"),
                         }
-                    else:
+                    elif record.kind == PRODUCT_EVENT_TURN_COMPLETED:
                         payload = {"status": record.payload.get("status")}
+                    else:
+                        payload = dict(record.payload)
+                        if copied_workdir is not None and isinstance(payload.get("path"), str):
+                            payload["path"] = copied_session_path(
+                                payload["path"], source_workdir, copied_workdir
+                            )
+                    if snapshots_only:
+                        continue
                     self.append(
                         session_id=target.session_id,
                         runtime_id=target.runtime_id,
@@ -1659,9 +1919,11 @@ class ProductEventStore:
                         payload=payload,
                         idempotency_key=f"{SESSION_FORK_KEY}:{record.product_seq}",
                         created_at=record.created_at,
-                        connection=connection,
+                        connection=current,
                     )
 
+            if snapshots_only:
+                return
             self.append(
                 session_id=target.session_id,
                 runtime_id=target.runtime_id,
@@ -1671,7 +1933,7 @@ class ProductEventStore:
                 kind=SESSION_FORK_IMPORTED_EVENT,
                 payload={"source_session_id": source_session_id, "source_product_seq": through_seq},
                 idempotency_key=SESSION_FORK_IMPORTED_KEY,
-                connection=connection,
+                connection=current,
             )
 
     def _continuation_budget(
@@ -1832,7 +2094,12 @@ class ProductEventStore:
         return str(row["vendor_turn_id"] or "") if row is not None else ""
 
     def portable_history(
-        self, session_id: str, *, exclude_rejected: bool = False
+        self,
+        session_id: str,
+        *,
+        exclude_rejected: bool = False,
+        include_references: bool = False,
+        through_seq: int | None = None,
     ) -> tuple[HistoryEntry, ...]:
         """Project durable product messages without reading vendor-private history."""
 
@@ -1845,6 +2112,8 @@ class ProductEventStore:
                 limit=MAXIMUM_REPLAY_LIMIT,
             )
             for record in page:
+                if through_seq is not None and record.product_seq > through_seq:
+                    break
                 if record.kind == PRODUCT_EVENT_USER_MESSAGE:
                     binding = str(record.payload.get("binding") or "")
                     source_text = cancelled_message_text(record.payload)
@@ -1854,6 +2123,10 @@ class ProductEventStore:
                         if binding == USER_MESSAGE_BINDING_CANCELLED
                         else str(record.payload.get("text") or "").strip()
                     )
+                    if include_references and record.payload.get("refs"):
+                        text += SUBMITTED_REFERENCES_CONTEXT_PREFIX + json.dumps(
+                            record.payload["refs"], ensure_ascii=False
+                        )
                     if binding == USER_MESSAGE_BINDING_CANCELLED and not source_text:
                         continue
                     client_turn_id = str(
@@ -1901,10 +2174,18 @@ class ProductEventStore:
                         ),
                     ),
                 )
-            if not page or len(page) < MAXIMUM_REPLAY_LIMIT:
+            if (
+                not page
+                or len(page) < MAXIMUM_REPLAY_LIMIT
+                or (through_seq is not None and page[-1].product_seq >= through_seq)
+            ):
                 break
             last_sequence = page[-1].product_seq
-        rejected = self.rejected_turns(session_id) if exclude_rejected else frozenset()
+        rejected = (
+            self.rejected_turns(session_id, through_seq=through_seq)
+            if exclude_rejected
+            else frozenset()
+        )
         return tuple(
             entry
             for _, entry in sorted(
@@ -1913,6 +2194,40 @@ class ProductEventStore:
             )
             if entry.turn_id not in rejected
         )
+
+    def history_payload(self, session_id: str) -> list[dict[str, Any]]:
+        users: dict[str, dict[str, Any]] = {}
+        sequence = 0
+        while page := self.replay(session_id, after_seq=sequence):
+            sequence = page[-1].product_seq
+            for record in page:
+                if record.kind == PRODUCT_EVENT_USER_MESSAGE:
+                    key = record.vendor_item_id or str(
+                        record.payload.get("client_turn_id")
+                        or record.vendor_turn_id
+                        or record.product_seq
+                    )
+                    users[key] = record.payload
+        return [
+            {
+                "kind": (
+                    "user"
+                    if entry.role == "user"
+                    else ("thinking" if entry.phase == MessagePhase.COMMENTARY else "text")
+                ),
+                "role": entry.role,
+                "text": entry.text,
+                "turn_id": entry.turn_id,
+                "item_id": entry.item_id,
+                "phase": entry.phase.value if entry.phase is not None else None,
+                **(
+                    {"refs": users.get(entry.item_id, {}).get("refs", [])}
+                    if entry.role == "user"
+                    else {}
+                ),
+            }
+            for entry in self.portable_history(session_id)
+        ]
 
     def cancelled_messages_since_bound(self, session_id: str) -> tuple[HistoryEntry, ...]:
         pending: list[HistoryEntry] = []

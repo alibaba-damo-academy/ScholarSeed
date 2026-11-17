@@ -47,7 +47,6 @@ MCP_APPLICATION_POLL_SECONDS = 0.1
 @dataclass
 class _HostApplication:
     host: CodexProcessHost = field(repr=False)
-    editor: CodexConfigurationEditor = field(repr=False)
     generation: int = 0
     applied_revision: int = MCP_UNAPPLIED_REVISION
     inventory: NativeMcpInventory = field(default_factory=NativeMcpInventory)
@@ -58,7 +57,6 @@ class McpCoordinator:
         self, editor: CodexConfigurationEditor, *, publication: asyncio.Lock | None = None
     ) -> None:
         self._editor = editor
-        self._partitions: dict[Path, CodexConfigurationEditor] = {}
         self._hosts: dict[str, _HostApplication] = {}
         self._desired: NativeMcpConfiguration | None = None
         self._published: NativeMcpConfiguration | None = None
@@ -72,7 +70,7 @@ class McpCoordinator:
         self._safe_error = ""
         self._schedule_epoch = 0
 
-    def register(self, host_id: str, host: CodexProcessHost, *, isolation_scope: str = "") -> None:
+    def register(self, host_id: str, host: CodexProcessHost) -> None:
         if self._closed:
             raise AppServerError(MCP_COORDINATOR_CLOSED, safe_error=MCP_COORDINATOR_CLOSED)
         if host_id in self._hosts:
@@ -80,43 +78,17 @@ class McpCoordinator:
                 MCP_HOST_ALREADY_REGISTERED, safe_error=MCP_HOST_ALREADY_REGISTERED
             )
         home = Path(host.process_environment.get(CODEX_HOME_ENV, "")).expanduser()
-        editor = self._configuration_editor(home)
-        if (
-            not home.is_absolute()
-            or editor is None
-            or (isolation_scope and (str(home) != isolation_scope or home not in self._partitions))
-        ):
+        if not home.is_absolute() or home.resolve() != self._editor.runtime_home.resolve():
             raise AppServerError(
                 MCP_CONFIGURATION_HOME_MISMATCH, safe_error=MCP_CONFIGURATION_HOME_MISMATCH
             )
-        self._hosts[host_id] = _HostApplication(host, editor=editor)
+        self._hosts[host_id] = _HostApplication(host)
         if self._desired is not None:
             host.admission.freeze(self._desired.revision)
         self._wake.set()
 
-    def allocate_home(self) -> Path:
-        if self._closed:
-            raise AppServerError(MCP_COORDINATOR_CLOSED, safe_error=MCP_COORDINATOR_CLOSED)
-        editor = self._editor.partition()
-        self._partitions[editor.runtime_home] = editor
-        return editor.runtime_home
-
-    def _configuration_editor(self, home: Path) -> CodexConfigurationEditor | None:
-        if home == self._editor.runtime_home:
-            return self._editor
-        return self._partitions.get(home)
-
-    def release_home(self, home: Path) -> None:
-        if not any(entry.editor.runtime_home == home for entry in self._hosts.values()):
-            self._partitions.pop(home, None)
-
     def remove(self, host_id: str) -> None:
-        entry = self._hosts.pop(host_id, None)
-        if entry is not None:
-            if entry.editor is not self._editor and not any(
-                other.editor is entry.editor for other in self._hosts.values()
-            ):
-                self._partitions.pop(entry.editor.runtime_home, None)
+        if self._hosts.pop(host_id, None) is not None:
             self._wake.set()
 
     def submit(self, configuration: NativeMcpConfiguration) -> McpConfigurationReceipt:
@@ -267,9 +239,7 @@ class McpCoordinator:
         return frozenset(configuration.servers()) - McpCoordinator._expected(configuration)
 
     @asynccontextmanager
-    async def catalog_configuration(
-        self, providers: Mapping[str, Any], home: Path | None = None
-    ) -> AsyncIterator[None]:
+    async def catalog_configuration(self, providers: Mapping[str, Any]) -> AsyncIterator[None]:
         await self._initialized.wait()
         async with self._publication:
             if self._closed or (self._published is None and self._safe_error):
@@ -288,14 +258,9 @@ class McpCoordinator:
                         RESOURCE_HOST_CONFIGURATION_CONFLICT,
                         safe_error=RESOURCE_HOST_CONFIGURATION_CONFLICT,
                     )
-            editor = self._configuration_editor(home) if home is not None else self._editor
-            if editor is None:
-                raise AppServerError(
-                    MCP_CONFIGURATION_HOME_MISMATCH, safe_error=MCP_CONFIGURATION_HOME_MISMATCH
-                )
-            if not self._hosts or editor is not self._editor:
+            else:
                 publication = asyncio.create_task(
-                    asyncio.to_thread(editor.publish_provider, providers)
+                    asyncio.to_thread(self._editor.publish_provider, providers)
                 )
                 try:
                     await asyncio.shield(publication)
@@ -317,7 +282,7 @@ class McpCoordinator:
             entry = self._hosts[host_id]
             publication = asyncio.create_task(
                 asyncio.to_thread(
-                    entry.editor.publish_provider,
+                    self._editor.publish_provider,
                     entry.host.provider_configuration,
                 )
             )
@@ -326,15 +291,6 @@ class McpCoordinator:
             except asyncio.CancelledError:
                 await _finish(publication)
                 raise
-            if entry.editor is not self._editor:
-                publication = asyncio.create_task(
-                    asyncio.to_thread(entry.editor.publish, configuration.servers())
-                )
-                try:
-                    await asyncio.shield(publication)
-                except asyncio.CancelledError:
-                    await _finish(publication)
-                    raise
             if self._published != self._desired and self._desired is not None:
                 await self._publish(self._desired)
                 configuration = self._published
@@ -354,16 +310,14 @@ class McpCoordinator:
             self._wake.set()
 
     async def _publish(self, configuration: NativeMcpConfiguration) -> None:
-        editors = {self._editor, *(entry.editor for entry in self._hosts.values())}
-        for editor in editors:
-            writing = asyncio.create_task(
-                asyncio.to_thread(editor.publish, configuration.servers())
-            )
-            try:
-                await asyncio.shield(writing)
-            except asyncio.CancelledError:
-                await writing
-                raise
+        writing = asyncio.create_task(
+            asyncio.to_thread(self._editor.publish, configuration.servers())
+        )
+        try:
+            await asyncio.shield(writing)
+        except asyncio.CancelledError:
+            await writing
+            raise
         self._published = configuration
         self._initialized.set()
 
@@ -485,7 +439,6 @@ class McpCoordinator:
 
     async def aclose(self) -> None:
         self._closed = True
-        self._partitions.clear()
         self._initialized.set()
         self._wake.set()
         if self._worker is not None:

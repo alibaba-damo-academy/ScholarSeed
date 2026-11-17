@@ -1,16 +1,19 @@
 """Research 全套**契约**回归门 — 任一套非 0 即整体失败 (严格 gate)。
 
-测试分层 (审查 #6):
-- 本文件 = contract 层: 确定性、不烧 token、CI 每次跑 — **只证明机制自洽**,
-  不得作为产品验收依据;
+测试分层:
+- 本文件是混合回归收集入口，多数契约确定性且不调用模型，只证明机制自洽，
+  不得作为产品验收依据。
+- 默认包含的 integration_serve 会请求真实模型，须另有任务/预算授权及
+  SCHOLARSEED_INTEGRATION_CONFIG；配置存在不等于调用获准。未经授权时通过现有
+  --exclude-suite integration_serve 或 --fast 显式排除并记为未执行，不声称完整验收。
 - acceptance_all = 真实产品链路 (真 LLM/真命令/真落盘, 烧 token):
   .venv/bin/python -m tests.acceptance_all
 
 跑法: .venv/bin/python -m tests.run_all
 (integration_serve 烧端口起真 serve, 默认含; --fast 跳过; --jobs N 调并发, 默认 min(8, CPU))
 
-并发模型: 每套件是独立子进程 (各用自己的临时 workspace/DB), subprocess.run 等待期释放
-GIL, 故线程池即可打满多核。串行 ~245s → 8 路 ~62s (实测 4/8/12 路全绿, 结果与串行一致)。
+并发模型: 每套件是独立子进程 (各用自己的临时 workspace/DB), 线程池编排子进程等待。
+并发数由 --jobs 指定；稳定性和耗时须按版本、范围与宿主条件实测，不能由并发度推定。
 
 但「无共享可变态」只对纯 Python 套件成立: 少数套件会起**真的 codex CLI**, 它们共享同一个
 二进制与这台机器的进程容量。高并发下真实子进程的启动与收尾仍受机器负载影响，
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -40,7 +44,7 @@ from pathlib import Path
 from service import brand
 from service.platform.storage import filesystem_path
 
-from ._directories import LEASE_TEST_ROOT_ENV, make_directory
+from ._directories import ENTRY_TOKEN_ENV, LEASE_TEST_ROOT_ENV, make_directory
 from .prefetch import ISOLATED_JOBS_ENV, isolated_jobs
 from .progress import PROGRESS_DIRECTORY, PROGRESS_MODULE, emit
 from .utils import WindowsFlag, WindowsJob
@@ -54,8 +58,12 @@ RUNTIME_SOURCE_ROOT = REPOSITORY_ROOT / "packages" / "runtime"
 SERVE_SUITE_PREFIX = "tests."
 PYTHONPATH_ENV = "PYTHONPATH"
 PYTHON_SAFE_PATH_ENV = "PYTHONSAFEPATH"
+ENTRY_REPORT_FILENAME = "entry.json"
+ENTRY_SCHEMA_VERSION = 1
+SERVE_OBSERVER_MODULE = "tests.observations"
+REPOSITORY_OBSERVER_MODULE = "apps.serve.tests.observations"
 
-PARALLEL_CASE_SUITES = frozenset({"contract_literature_delivery"})
+PARALLEL_CASE_SUITES = frozenset()
 
 #: 单套件墙钟上限。这不是性能阈值而是**挂死兜底**: 全量 --fast 实测 ~2.5 分钟,
 #: 最慢的单套件 (起真 serve 的 integration_serve) 在分钟量级, 留一个数量级余量,
@@ -85,6 +93,7 @@ os.environ.setdefault(brand.PROJECT_DIRNAME_ENV, brand.PROJECT_DIRNAME)
 # bc6992e2 "refactor: remove legacy research runtime" 删除。依赖 work.scholar.* /
 # service.research.* / ActionActor 的 42 个套件同批移除 —— 门不再挂不可导入的套件。
 SUITES = [
+    "contract_canvas",
     "contract_component_registry",
     "contract_ui_dependency",
     "contract_plugin_revision",
@@ -96,6 +105,7 @@ SUITES = [
     "contract_plugin_admission",
     "contract_plugin_delivery",
     "contract_skill_browsing",
+    "translation",
     "contract_python",
     "contract_connectors",
     "contract_resource_listing",
@@ -104,14 +114,17 @@ SUITES = [
     "contract_mcp_configuration",
     "contract_configuration_storage",
     "contract_mcp_service",
+    "contract_mcp_bridge",
     "contract_mcp_plans",
     "contract_access",
     "contract_shutdown",
+    "contract_logging",
     "contract_transport",
     "contract_runner",
     "contract_activity",
     "contract_workbench_admission",
     "contract_http_activity",
+    "contract_latency",
     "contract_passive_events",
     "contract_content_drain",
     "contract_diagnostic_drain",
@@ -122,12 +135,15 @@ SUITES = [
     "contract_oauth_bridge",
     "contract_subscriptions",
     "contract_pdf_analysis",
+    "contract_translation_structure",
     "contract_analysis_drain",
     "contract_figure_stream",
     "contract_pdf_failures",
     "contract_pdf_parser",
     "contract_pdf_worker",
     "contract_pdf_records",
+    "contract_pdf_engine",
+    "contract_pdf_comments",
     "contract_attachment_import",
     "contract_resource_ai",
     "contract_inference",
@@ -148,10 +164,13 @@ SUITES = [
     "contract_auth_generation",
     "contract_cors",
     "contract_session_principal",
+    "contract_prediction",
     "contract_ownership_axis",
+    "contract_revisions",
     "contract_session_catalog",
     "contract_session_deletion",
     "contract_session_title",
+    "contract_output",
     "contract_session_catalog_bodies",
     "contract_session_journal",
     "contract_event_blocks",
@@ -171,9 +190,12 @@ SUITES = [
     "contract_persistence_worker",
     "contract_codex_watch",
     "contract_completion_bridge",
+    "contract_generation",
+    "contract_preview",
     "contract_content_source",
     "contract_community_auth",
     "contract_account_trust",
+    "contract_account_proxy",
     "contract_account_drain",
     "contract_auth_drain",
     "contract_identity_writes",
@@ -203,6 +225,11 @@ SUITES = [
     # BIB·RIS 解析与去重, 未实现能力显式 501, 全局搜索跨域命中。
     "contract_workbench_domains",
     "contract_literature_store",
+    "contract_note_sources",
+    "contract_insights",
+    "contract_note_index",
+    "contract_reading_store",
+    "contract_comprehension",
     # 文献 curation 桥 (AI 侧读写口径): 之前漏登记, 29 例从来没进过门禁。
     "contract_literature_curation",
     "contract_taxonomy",
@@ -210,6 +237,7 @@ SUITES = [
     "contract_literature_zotero",
     "contract_literature_search",
     "contract_file_workbench",
+    "contract_references",
     "contract_spreadsheet_processors",
     "contract_csv",
     "contract_model_profiles",
@@ -230,6 +258,7 @@ SUITES = [
     "contract_domains",
     "contract_directory_wait",
     "contract_reclamation",
+    "contract_retirement",
     "contract_lease",
     "contract_toolchain",
     "contract_security",
@@ -288,15 +317,20 @@ SUITES = [
     "contract_browser_storage",
     "contract_literature_bridge",
     "contract_literature_result",
+    "contract_cited",
     "contract_literature_review",
+    "contract_literature_reuse",
+    "contract_material_assets",
+    "contract_candidate_metadata",
+    "contract_selected",
     "contract_fulltext_gate",
     "contract_fulltext_protection",
     "contract_literature_acquire",
     "contract_literature_binding",
     "contract_literature_fulltext",
+    "contract_literature_holdings",
+    "contract_literature_identifier_import",
     "contract_filenames",
-    "contract_literature_delivery",
-    "contract_literature_downloads",
     "contract_task_lease",
     "contract_running_history",
     "contract_interrupt_barrier",
@@ -531,6 +565,7 @@ PRODUCT_ROOT_SUITES = (
     "tests.contract_runtime_driver",
     "tests.contract_runtime_suspension",
     "tests.contract_codex_activity",
+    "tests.contract_pagination",
     "tests.contract_codex_suspension",
     "tests.contract_codex_admission",
     # proposal 115/116: 技能全文边界 (零提权文案 / 获取只经 serve / 授权以 receipt 再确认)
@@ -589,7 +624,7 @@ NATIVE_COORDINATOR_EXCLUSIVE = frozenset(
 def _parse_jobs(argv: list[str]) -> int:
     """从 --jobs N / --jobs=N 取并发度; 缺省 min(8, CPU)。
 
-    上限 8: 实测本机 10 核下 jobs=8 已接近最优 (~62s), jobs=12 反而因超配变慢。
+    默认保持 min(8, CPU)；显式参数使用调用方的资源预算，不代表已证明的最优并发度。
     """
     for index, arg in enumerate(argv):
         raw = ""
@@ -783,6 +818,46 @@ def _stop_suite(proc: subprocess.Popen[str], job: WindowsJob | None = None) -> t
             )
 
 
+def _entry_observation(target: Path, module: str, token: str) -> dict:
+    report = json.loads(target.read_text(encoding="utf-8"))
+    if (
+        not isinstance(report, dict)
+        or type(report.get("schemaVersion")) is not int
+        or report.get("schemaVersion") != ENTRY_SCHEMA_VERSION
+        or report.get("kind") != "entry"
+        or report.get("module") != module
+        or type(report.get("token")) is not str
+        or report.get("token") != token
+        or type(report.get("pid")) is not int
+        or type(report.get("declaredUnittest")) is not bool
+        or type(report.get("exitStatus")) is not int
+    ):
+        raise ValueError("invalid entry observation identity")
+    counters = ("runners", "plannedTests", "reportedTestsRun", "skipped", "expectedFailures")
+    if any(type(report.get(key)) is not int or report[key] < 0 for key in counters):
+        raise ValueError("invalid entry observation counters")
+    if (not report["runners"] and any(report[key] for key in counters[1:])) or report[
+        "skipped"
+    ] + report["expectedFailures"] > report["reportedTestsRun"]:
+        raise ValueError("inconsistent entry observation counters")
+    for key in ("errors", "cleanupErrors"):
+        if not isinstance(report.get(key), list) or any(
+            not isinstance(value, str) for value in report[key]
+        ):
+            raise ValueError("invalid entry observation diagnostics")
+    if report["exitStatus"] == 0 and (
+        report["errors"]
+        or report["cleanupErrors"]
+        or (report["declaredUnittest"] and not report["runners"])
+        or (
+            report["runners"]
+            and (not report["plannedTests"] or report["reportedTestsRun"] != report["plannedTests"])
+        )
+    ):
+        raise ValueError("successful entry observation omitted execution")
+    return report
+
+
 def _run_suite(
     suite: str,
     case_report_dir: Path | None = None,
@@ -807,19 +882,9 @@ def _run_suite(
     if timings is not None and queued_at is not None:
         timings["queueWaitMs"] = (time.perf_counter_ns() - queued_at) / NANOSECONDS_PER_MILLISECOND
     mod = suite if product_root else f"{SERVE_SUITE_PREFIX}{suite}"
-    command = [sys.executable, "-P", "-m", mod]
-    if case_report_dir is not None:
-        command = [
-            sys.executable,
-            "-P",
-            str(Path(__file__).with_name("observations.py")),
-            "--module",
-            mod,
-            "--report",
-            str(case_report_dir.resolve() / f"{suite}.json"),
-        ]
     started = time.monotonic()
     timed_out = False
+    entry = None
     environment_context = (
         _child_environment(product_root=product_root)
         if timings is None
@@ -830,6 +895,27 @@ def _run_suite(
         environment_context as environment,
         _suite_job() as job,
     ):
+        entry_target = None
+        entry_token = None
+        if case_report_dir is None:
+            entry_target = Path(environment["TMPDIR"]) / ENTRY_REPORT_FILENAME
+            entry_token = secrets.token_hex(32)
+            environment[ENTRY_TOKEN_ENV] = entry_token
+            target = entry_target
+        else:
+            target = case_report_dir.resolve() / f"{suite}.json"
+        command = [
+            sys.executable,
+            "-P",
+            "-m",
+            REPOSITORY_OBSERVER_MODULE if product_root else SERVE_OBSERVER_MODULE,
+            "--module",
+            mod,
+            "--report",
+            str(target),
+        ]
+        if entry_target is not None:
+            command.append("--verify-entry")
         # Nested runner probes are test fixtures, not live smoke work.
         if environment.get(PROGRESS_MODULE):
             environment.pop(PROGRESS_DIRECTORY, None)
@@ -870,6 +956,16 @@ def _run_suite(
             if not isinstance(primary, subprocess.TimeoutExpired):
                 raise
             timed_out = True
+        exit_code = proc.returncode
+        if not timed_out and entry_target is not None:
+            with _measure(timings, "entryObservationMs"):
+                try:
+                    entry = _entry_observation(entry_target, mod, entry_token)
+                    if entry["exitStatus"] != exit_code:
+                        raise ValueError("entry observation exit status differs from the child")
+                except (OSError, ValueError) as error:
+                    stderr += f"\n[ci:failure] entry observation: {error}\n"
+                    exit_code = exit_code or 1
     if timed_out:
         summary = f"超时 {SUITE_TIMEOUT_SECONDS}s 未结束, 已杀进程组"
         return (
@@ -880,11 +976,16 @@ def _run_suite(
             int((time.monotonic() - started) * 1000),
         )
     tail = (stdout or stderr).strip().splitlines()[-1:] or ["(no output)"]
+    if entry is not None and entry["runners"]:
+        tail[0] = (
+            f"unittest {entry['reportedTestsRun']}/{entry['plannedTests']} "
+            f"skipped={entry['skipped']} expectedFailures={entry['expectedFailures']}: {tail[0]}"
+        )
     return (
         suite,
-        proc.returncode,
+        exit_code,
         tail[0],
-        (stdout + stderr) if proc.returncode else "",
+        (stdout + stderr) if exit_code else "",
         int((time.monotonic() - started) * 1000),
     )
 
@@ -1051,7 +1152,10 @@ def main() -> int:
         report_failed = case_report_dir is not None and report["verdict"] != "pass"
         if report_failed:
             sys.stderr.write(f"[ci:failure] report={report_path}\n")
-            for row in report["results"]:
+            report_rows = report["results"]
+            if not isinstance(report_rows, list):
+                raise ValueError("runner report results must be a list")
+            for row in report_rows:
                 if row["status"] != "passed":
                     sys.stderr.write(
                         f"[ci:failure] suite={row['suite']} exit={row['exitCode']} "

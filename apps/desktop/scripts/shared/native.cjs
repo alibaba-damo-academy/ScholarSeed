@@ -137,10 +137,14 @@ async function compileNative({
   environment = process.env,
   runContract = true,
   runDirectoryContract = false,
+  runRepairMappingsIntegration = false,
 }) {
   if (typeof runDirectoryContract !== 'boolean') throw new TypeError('runDirectoryContract must be boolean')
-  invoke(process.execPath, [path.resolve(__dirname, '../pre/security.cjs'), '--check'], environment)
+  if (typeof runRepairMappingsIntegration !== 'boolean') throw new TypeError('runRepairMappingsIntegration must be boolean')
   const platform = process.platform
+  if (runRepairMappingsIntegration && platform !== 'darwin')
+    throw new Error('ShipIt mappings integration requires macOS')
+  invoke(process.execPath, [path.resolve(__dirname, '../pre/security.cjs'), '--check'], environment)
   if (!(
     (platform === 'darwin' && ['arm64', 'x64'].includes(arch)) ||
     (platform === 'win32' && arch === 'x64' && process.arch === 'x64')
@@ -355,21 +359,31 @@ async function compileNative({
       ticketArguments.push('-framework', 'Security', '-framework', 'CoreFoundation')
       invoke(compiler, ticketArguments, selected)
       const repairArguments = arguments_
+        .filter(argument => argument !== '-std=c11')
         .map(argument => argument === path.join(NATIVE, 'lease.c')
           ? path.join(NATIVE, 'shipit/bridge.m') : argument === output ? path.join(directory, 'repair.node') : argument)
       repairArguments.push(...REPAIR_FLAGS,
         ...SUPPORT_UNITS.map(name => path.join(NATIVE, 'shipit', name)))
       invoke(compiler, repairArguments, selected)
-      if (runContract) {
+      if (runContract || runRepairMappingsIntegration) {
         const repairFixture = path.join(temporary, 'repair-fixture.node')
         invoke(compiler, repairArguments.map(argument =>
           argument === path.join(NATIVE, 'shipit/bridge.m') ? path.join(NATIVE, 'shipit/repair.fixture.m')
             : argument === path.join(directory, 'repair.node') ? repairFixture : argument), selected)
-        invoke(process.execPath, ['--test', path.join(NATIVE, 'shipit/repair.test.cjs')], {
+        const repairEnvironment = {
           ...selected,
           SCHOLARSEED_REPAIR_LIBRARY: path.join(directory, 'repair.node'),
           SCHOLARSEED_REPAIR_FIXTURE_LIBRARY: repairFixture,
-        })
+        }
+        const repairTests = ['--test', path.join(NATIVE, 'shipit/repair.test.cjs')]
+        if (runContract) invoke(process.execPath, repairTests, repairEnvironment)
+        if (runRepairMappingsIntegration)
+          console.log(invoke(process.execPath, repairTests, {
+            ...repairEnvironment,
+            SCHOLARSEED_REPAIR_MAPPINGS_INTEGRATION: '1',
+          }))
+      }
+      if (runContract) {
         invoke(process.execPath, ['--test', path.join(NATIVE, 'notarization.test.cjs')], {
           ...selected,
           SCHOLARSEED_NOTARIZATION_LIBRARY: ticketLibrary,
@@ -444,17 +458,25 @@ if (require.main === module) {
     '--library',
     '--license',
   ])
-  for (let i = 0; i < args.length; i += 2) {
-    if (!allowed.has(args[i]) || !args[i + 1] || args[i + 1].startsWith('--') || options[args[i]]) {
+  const mappingsFlag = '--shipit-mappings-integration'
+  for (let i = 0; i < args.length; i++) {
+    const option = args[i]
+    if (option === mappingsFlag && !options[option]) {
+      options[option] = true
+      continue
+    }
+    if (!allowed.has(option) || !args[i + 1] || args[i + 1].startsWith('--') || options[option]) {
       throw new Error(
-        'usage: native.cjs --output <new directory> [--arch arm64|x64] [--headers <archive>] [--compiler <archive>] [--library <Electron node.lib>] [--license <Node LICENSE>]'
+        'usage: native.cjs --output <new directory> [--arch arm64|x64] [--headers <archive>] [--compiler <archive>] [--library <Electron node.lib>] [--license <Node LICENSE>] [--shipit-mappings-integration]'
       )
     }
-    options[args[i]] = args[i + 1]
+    options[option] = args[++i]
   }
   compileNative({
     directory: options['--output'] && path.resolve(options['--output']),
     arch: options['--arch'] || process.arch,
+    runContract: !options[mappingsFlag],
+    runRepairMappingsIntegration: options[mappingsFlag] === true,
     artifacts: {
       headers: options['--headers'],
       compiler: options['--compiler'],

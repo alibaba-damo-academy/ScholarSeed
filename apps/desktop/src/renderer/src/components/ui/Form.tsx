@@ -1,5 +1,14 @@
+import type * as React from 'react'
 import type { HTMLAttributes, ReactElement, ReactNode } from 'react'
-import { Children, cloneElement, createContext, forwardRef, isValidElement, useContext, useId } from 'react'
+import {
+  Children,
+  cloneElement,
+  createContext,
+  forwardRef,
+  isValidElement,
+  useContext,
+  useId,
+} from 'react'
 
 import { formDescriptionClassName, formFieldClassName, formMessageClassName } from './classes'
 import { Label, type LabelProps } from './Label'
@@ -24,11 +33,11 @@ export function useFormField(): FieldContextValue {
 }
 
 function hasFormChild(children: ReactNode, component: unknown): boolean {
-  return Children.toArray(children).some((child) => (
-    isValidElement<{ children?: ReactNode }>(child) && (
-      child.type === component || hasFormChild(child.props.children, component)
-    )
-  ))
+  return Children.toArray(children).some(
+    (child) =>
+      isValidElement<{ children?: ReactNode }>(child) &&
+      (child.type === component || hasFormChild(child.props.children, component))
+  )
 }
 
 export interface FormFieldProps extends HTMLAttributes<HTMLDivElement> {
@@ -43,7 +52,7 @@ export const FormField = forwardRef<HTMLDivElement, FormFieldProps>(
       controlId: `${fieldId}-control`,
       descriptionId: hasFormChild(children, FormDescription) ? `${fieldId}-description` : undefined,
       id: fieldId,
-      messageId: hasFormChild(children, FormMessage) ? `${fieldId}-message` : undefined
+      messageId: hasFormChild(children, FormMessage) ? `${fieldId}-message` : undefined,
     }
 
     return (
@@ -70,15 +79,23 @@ Form.displayName = 'Form'
 
 export type FormItemProps = HTMLAttributes<HTMLDivElement>
 
-export const FormItem = forwardRef<HTMLDivElement, FormItemProps>(({ className, ...props }, ref) => (
-  <div className={['vds-form-field__item', className].filter(Boolean).join(' ')} ref={ref} {...props} />
-))
+export const FormItem = forwardRef<HTMLDivElement, FormItemProps>(
+  ({ className, ...props }, ref) => (
+    <div
+      className={['vds-form-field__item grid min-w-0 gap-[var(--vds-form-field-gap)]', className]
+        .filter(Boolean)
+        .join(' ')}
+      ref={ref}
+      {...props}
+    />
+  )
+)
 
 FormItem.displayName = 'FormItem'
 
 export type FormLabelProps = Omit<LabelProps, 'htmlFor'>
 
-export function FormLabel(props: FormLabelProps): JSX.Element {
+export function FormLabel(props: FormLabelProps): React.JSX.Element {
   const { controlId } = useFieldContext('FormLabel')
   return <Label htmlFor={controlId} {...props} />
 }
@@ -92,13 +109,15 @@ export interface FormControlProps {
   invalid?: boolean
 }
 
-export function FormControl({ children, invalid = false }: FormControlProps): JSX.Element {
+export function FormControl({ children, invalid = false }: FormControlProps): React.JSX.Element {
   const { controlId, descriptionId, messageId } = useFieldContext('FormControl')
-  const describedBy = [children.props['aria-describedby'], descriptionId, messageId].filter(Boolean).join(' ')
+  const describedBy = [children.props['aria-describedby'], descriptionId, messageId]
+    .filter(Boolean)
+    .join(' ')
   return cloneElement(children, {
     'aria-describedby': describedBy || undefined,
     'aria-invalid': invalid || children.props['aria-invalid'] || undefined,
-    id: children.props.id ?? controlId
+    id: children.props.id ?? controlId,
   })
 }
 
@@ -108,7 +127,14 @@ export const FormDescription = forwardRef<HTMLParagraphElement, FormDescriptionP
   ({ className, ...props }, ref) => {
     const { descriptionId } = useFieldContext('FormDescription')
     if (!descriptionId) throw new Error('FormDescription must be a descendant of FormField')
-    return <p className={formDescriptionClassName({ className })} id={descriptionId} ref={ref} {...props} />
+    return (
+      <p
+        className={formDescriptionClassName({ className })}
+        id={descriptionId}
+        ref={ref}
+        {...props}
+      />
+    )
   }
 )
 
@@ -120,7 +146,15 @@ export const FormMessage = forwardRef<HTMLParagraphElement, FormMessageProps>(
   ({ className, ...props }, ref) => {
     const { messageId } = useFieldContext('FormMessage')
     if (!messageId) throw new Error('FormMessage must be a descendant of FormField')
-    return <p aria-live="polite" className={formMessageClassName({ className })} id={messageId} ref={ref} {...props} />
+    return (
+      <p
+        aria-live="polite"
+        className={formMessageClassName({ className })}
+        id={messageId}
+        ref={ref}
+        {...props}
+      />
+    )
   }
 )
 

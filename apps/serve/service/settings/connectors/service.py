@@ -12,7 +12,8 @@ import httpx
 
 from scholarseed_runtime.contract.secret import RuntimeSecret
 from service.platform.activity import Activities, ActivityDomain
-from service.platform.mcp import McpHttpServer, McpServer, McpStdioServer
+from service.platform.mcp import McpHttpServer, McpRemoteServer, McpServer, McpStdioServer
+from service.settings.connectors.broker import ConnectorBroker
 from service.settings.connectors.catalog import (
     CATALOG,
     CONNECTORS,
@@ -260,7 +261,7 @@ class ConnectorSecrets:
                         or server.id != RUNTIME_ID_PREFIX + identifier
                     ):
                         raise ValueError("connector_credentials_invalid")
-                    if isinstance(server, McpHttpServer):
+                    if isinstance(server, McpRemoteServer):
                         url = item.oauth_url if entry.get("method") == OAUTH_METHOD else item.url
                         valid = (
                             item.url
@@ -372,7 +373,7 @@ class ConnectorService:
         self.secrets = ConnectorSecrets(store, activities, hosted)
         self.snapshot = snapshot
         self.tools = tools
-        self.broker = None
+        self.broker: ConnectorBroker | None = None
 
     async def observe(self, source: McpServer, observed: dict | None, error: str) -> None:
         def publish(state):
@@ -605,11 +606,13 @@ class ConnectorService:
                     )
                     try:
                         await self.secrets.resolve(reference)
-                        refreshed = await self.transact(
-                            lambda state, entry=entry: state["entries"][entry["config"]["id"]][
-                                "credential"
-                            ].copy()
-                        )
+
+                        def refreshedCredential(
+                            state: dict, configId: str = entry["config"]["id"]
+                        ) -> dict:
+                            return state["entries"][configId]["credential"].copy()
+
+                        refreshed = await self.transact(refreshedCredential)
                         entry["credential"] = refreshed
                     except ValueError as error:
                         invalid = str(error) == "connector_credentials_invalid"
@@ -738,7 +741,7 @@ class ConnectorService:
             )
             if not server or server.get("startup_state") != READY:
                 raise ValueError("connector_local_runtime_required")
-            rows = []
+            rows: list[dict] = []
             cursor = ""
             seen = set()
             for _ in range(MAX_TOOL_PAGES):
@@ -923,6 +926,8 @@ class ConnectorService:
     def _verify(client, item, method: str, credential: dict, entry: dict) -> dict:
         if entry.get("custom"):
             server = SERVER_ADAPTER.validate_json(json.dumps(entry["config"]))
+            if not isinstance(server, McpRemoteServer):
+                raise ValueError(CUSTOM_TRANSPORT)
             material = {
                 name: entry["values"][ref]
                 for name, ref in server.header_secrets.items()

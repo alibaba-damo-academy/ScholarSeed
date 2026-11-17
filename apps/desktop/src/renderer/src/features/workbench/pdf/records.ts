@@ -1,4 +1,24 @@
-import type { PdfRecordSnapshot, PdfRecords } from '../../../contracts/workbench'
+import type {
+  PdfPointMarkRecord,
+  PdfRecordSnapshot,
+  PdfRecords,
+} from '../../../contracts/workbench'
+
+export function createPointMark(page: number, point: [number, number]): PdfPointMarkRecord {
+  const timestamp = Date.now() / 1000
+  return {
+    id: crypto.randomUUID(),
+    style: 'comment',
+    color: 'green',
+    page,
+    point,
+    quads: [],
+    text: '',
+    anchor_state: 'anchored',
+    created_at: timestamp,
+    updated_at: timestamp,
+  }
+}
 
 export const PDF_RECORD_SCHEMA_VERSION = 1
 export const PDF_HIGHLIGHT_OPACITY = 0.32
@@ -6,6 +26,7 @@ export const PDF_SEARCH_HIGHLIGHT_OPACITY = 0.4
 export const PDF_UNDERLINE_OPACITY = 0.9
 export const PDF_UNDERLINE_THICKNESS = 1.5
 export const PDF_STRIKETHROUGH_THICKNESS = 1.5
+export const PDF_COMMENT_PIN_RADIUS = 6
 
 export const PDF_MARK_PALETTE = [
   { name: 'yellow', hex: '#f7d154', rgb: [0.96, 0.76, 0.18] },
@@ -15,26 +36,28 @@ export const PDF_MARK_PALETTE = [
   { name: 'blue', hex: '#72aee6', rgb: [0.32, 0.6, 0.9] },
   { name: 'purple', hex: '#b79bdb', rgb: [0.58, 0.42, 0.78] },
   { name: 'red', hex: '#e99188', rgb: [0.86, 0.34, 0.3] },
-  { name: 'gray', hex: '#b9b5aa', rgb: [0.58, 0.56, 0.52] }
+  { name: 'gray', hex: '#b9b5aa', rgb: [0.58, 0.56, 0.52] },
 ] as const
 
-export type PdfMarkColor = typeof PDF_MARK_PALETTE[number]['name']
+export type PdfMarkColor = (typeof PDF_MARK_PALETTE)[number]['name']
 
 export const DEFAULT_PDF_MARK_COLOR: PdfMarkColor = 'yellow'
-export const PDF_HIGHLIGHT_VISUAL_CLASS = 'absolute bg-[var(--pdf-mark-color)] opacity-[var(--pdf-mark-opacity)]'
+export const PDF_HIGHLIGHT_VISUAL_CLASS =
+  'absolute bg-[var(--pdf-mark-color)] opacity-[var(--pdf-mark-opacity)]'
 
 export function stagePdfRecords(
   snapshot: PdfRecordSnapshot,
   records: PdfRecords
 ): PdfRecordSnapshot {
-  return { ...snapshot, records }
+  const sources = records.native_annotations ?? snapshot.records.native_annotations
+  return { ...snapshot, records: sources ? { ...records, native_annotations: sources } : records }
 }
 
 export type PdfMarkCategory = 'all' | 'highlight' | 'underline' | 'strikethrough' | 'comment'
 
 interface CategorizedMark {
   id: string
-  style: 'highlight' | 'underline' | 'strikethrough'
+  style: 'highlight' | 'underline' | 'strikethrough' | 'comment'
 }
 
 export function pdfMarkVisualClass(style: CategorizedMark['style']): string {
@@ -48,8 +71,12 @@ interface MarkComment {
   mark_id: string
 }
 
-export function markCategory(mark: CategorizedMark, comments: readonly MarkComment[]): Exclude<PdfMarkCategory, 'all'> {
-  if (comments.some((comment) => comment.mark_id === mark.id)) return 'comment'
+export function markCategory(
+  mark: CategorizedMark,
+  comments: readonly MarkComment[]
+): Exclude<PdfMarkCategory, 'all'> {
+  if (mark.style === 'comment' || comments.some((comment) => comment.mark_id === mark.id))
+    return 'comment'
   return mark.style
 }
 
@@ -58,7 +85,9 @@ export function filterMarks<T extends CategorizedMark>(
   comments: readonly MarkComment[],
   category: PdfMarkCategory
 ): T[] {
-  return category === 'all' ? [...marks] : marks.filter((mark) => markCategory(mark, comments) === category)
+  return category === 'all'
+    ? [...marks]
+    : marks.filter((mark) => markCategory(mark, comments) === category)
 }
 export const PDF_MARK_COLORS = Object.fromEntries(
   PDF_MARK_PALETTE.map((color) => [color.name, color.hex])

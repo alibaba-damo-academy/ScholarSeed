@@ -2,27 +2,22 @@ import type { PluginCopyContent } from '../../../../plugins'
 import type { TFunction } from 'i18next'
 import {
   parseReview,
+  reviewCitationTitle,
   reviewEvidenceReason,
   reviewNotice,
+  reviewIssueSummary,
   reviewStatus,
   REVIEW_VERDICTS,
+  REVIEW_EVIDENCE_BASIS_LABELS,
 } from './projection.ts'
-import { downloadOutcome, parseDownloadCard } from './admission.ts'
-import { RESULT_LABELS, searchCriteria, searchWarningKeys } from './result.ts'
-import { DELIVERY_STATUS_KEYS } from './utils.ts'
+import { CITATIONS_ORIGIN, RESULT_LABELS, searchCriteria, searchWarningKeys } from './result.ts'
 
 const CHOICE_SLOTS = new Set([
   'interaction.question',
   'literature.authorization',
   'literature.selection',
 ])
-const PAPER_SLOTS = new Set([
-  'display.literature-search',
-  'preview.literature-results',
-  'display.literature-references',
-  'display.literature-downloads',
-  'display.literature-delivery',
-])
+const PAPER_SLOTS = new Set(['display.literature-search', 'preview.literature-results'])
 
 function records(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value)
@@ -78,7 +73,8 @@ export function literatureCopy(
       ),
     ]
   } else if (PAPER_SLOTS.has(slot)) {
-    const papers = records(data.references ?? data.papers)
+    const papers = records(data.papers)
+    const context = data.context as { authorization?: { status?: unknown } } | undefined
     const headings: string[] = []
     const resultStatus = text(data.status) as keyof typeof RESULT_LABELS
     if (
@@ -88,55 +84,14 @@ export function literatureCopy(
       headings.push(
         translate('result.heading', {
           heading:
-            data.selection &&
-            typeof data.selection === 'object' &&
-            'artifact_id' in data.selection &&
-            data.selection.artifact_id
-              ? translate('searchResult.authorizationPending')
-              : translate(RESULT_LABELS[resultStatus]),
+            data.origin === CITATIONS_ORIGIN
+              ? translate('result.citations')
+              : context?.authorization?.status === 'pending'
+                ? translate('searchResult.authorizationPending')
+                : translate(RESULT_LABELS[resultStatus]),
           count: typeof data.retained === 'number' ? data.retained : papers.length,
         })
       )
-    }
-    if (slot === 'display.literature-references')
-      headings.push(translate('references.heading', { count: papers.length }))
-    if (slot === 'display.literature-downloads') {
-      const card = parseDownloadCard(data)
-      if (card) {
-        const outcome = downloadOutcome(card)
-        headings.push(
-          translate(outcome.heading, { count: outcome.saved, failed: outcome.failed }),
-          translate(outcome.descriptionKey)
-        )
-      }
-    }
-    if (slot === 'display.literature-delivery') {
-      const status = text(data.state) as keyof typeof DELIVERY_STATUS_KEYS
-      const reused = papers.filter((paper) => paper.save_reused || paper.library_reused).length
-      const skipped = papers.filter((paper) => paper.saved === 'skipped').length
-      const librarySkipped = papers.filter(
-        (paper) => paper.saved === 'saved' && paper.library === 'skipped'
-      ).length
-      headings.push(
-        translate('delivery.cardTitle'),
-        translate('delivery.counts', {
-          acquired: papers.length,
-          saved: papers.filter((paper) => paper.saved === 'saved').length,
-          admitted: papers.filter((paper) => paper.library === 'saved').length,
-        })
-      )
-      if (Object.prototype.hasOwnProperty.call(DELIVERY_STATUS_KEYS, status))
-        headings.push(
-          translate(
-            status === 'saved' && skipped === papers.length
-              ? 'delivery.allSkipped'
-              : DELIVERY_STATUS_KEYS[status]
-          )
-        )
-      if (reused) headings.push(translate('delivery.reused', { count: reused }))
-      if (skipped) headings.push(translate('delivery.skipped', { count: skipped }))
-      if (librarySkipped)
-        headings.push(translate('delivery.librarySkipped', { count: librarySkipped }))
     }
     lines = [
       ...headings,
@@ -195,26 +150,20 @@ export function reviewCopy(
   const count = (value: number | null): string =>
     value === null ? translate('review.unknownCount') : String(value)
   const notice = reviewNotice(review)
-  const issueCount = review.issue_count ?? review.issues.length
+  const issues = reviewIssueSummary(review)
   const lines = [
     review.title,
     reviewStatus(review, translate),
-    review.scope.topic || review.intent,
-    `${translate('review.timeRange')}${review.scope.time_range}`,
-    `${translate('review.focus')}${review.scope.focus.join('；') || translate('review.defaultFocus')}`,
-    `${translate('review.materialScope')}${translate('review.materialCounts', {
-      project: count(review.scope.project_materials),
-      external: count(review.scope.external_materials),
-    })}`,
-    ...(review.scope.requested_materials.length
-      ? [`${translate('review.requestedMaterials')}${review.scope.requested_materials.join('；')}`]
-      : []),
-    `${translate('review.delivery')}${review.output.format ?? translate('review.pendingSelection')} · ${review.output.citation_style ?? translate('review.pendingSelection')}`,
-    review.output.decided_by === 'default' ? translate('review.defaultSettings') : '',
-    ...[review.included, review.fulltext, review.abstract_only, review.pending_checks].map(
-      (value, index) =>
-        `${translate((['review.included', 'review.fulltext', 'review.abstractOnly', 'review.pendingChecks'] as const)[index])}: ${count(value)}`
-    ),
+    `${translate('review.researchScope')} ${review.scope.topic || count(null)}`,
+    `${translate('review.delivery')}${review.output.format ?? count(null)} · ${review.output.citation_style ?? count(null)}`,
+    ...(
+      [
+        [review.references.cited_count, 'review.citedTotal'],
+        [review.references.fulltext_cited_count, 'review.citedFulltext'],
+        [review.references.abstract_cited_count, 'review.citedAbstract'],
+        [review.verification.issue_count, 'review.pendingProblems'],
+      ] as const
+    ).map(([value, label]) => `${translate(label)}: ${count(value)}`),
     ...(notice === 'incomplete'
       ? [translate('review.incompleteTitle'), translate('review.incompleteDescription')]
       : notice === 'verification'
@@ -239,46 +188,41 @@ export function reviewCopy(
         .join('\n')
     ),
     review.section_count > review.sections.length ? translate('review.moreSections') : '',
-    ...(review.checkpoint === 'result'
-      ? [
-          translate('review.citationsTitle'),
-          ...review.citations.map((citation, index) =>
-            [`${index + 1}. ${citation.title}`, citation.authors, citation.year, citation.venue]
-              .filter(Boolean)
-              .join(' · ')
-          ),
-          review.citations.length ? '' : translate('review.noCitations'),
-        ]
-      : []),
-    ...review.abstract_evidence.flatMap((evidence) => [
-      translate('review.abstractEvidenceTitle'),
-      evidence.title || evidence.paper_id,
-      reviewEvidenceReason(evidence, translate),
-    ]),
-    translate('review.verificationTitle'),
-    ...review.checks.map((check) =>
-      [check.title, translate(REVIEW_VERDICTS[check.verdict]), check.reason].join('\n')
-    ),
-    review.checks.length ? '' : translate('review.noChecks'),
-    ...review.issues.map((issue) =>
+    translate('review.referencesTitle'),
+    ...review.references.rows.map(({ citation, evidence, target }) =>
       [
-        issue.title,
-        issue.detail,
-        issue.paper_ids.length
+        reviewCitationTitle(citation),
+        [citation.authors, citation.year, citation.venue].filter(Boolean).join(' · '),
+        target?.kind === 'web' ? target.url : '',
+        evidence ? translate(REVIEW_EVIDENCE_BASIS_LABELS[evidence.basis]) : count(null),
+        evidence ? reviewEvidenceReason(evidence, translate) : '',
+        evidence?.extracted_chars == null
+          ? ''
+          : translate('review.extractedCharacters', { count: evidence.extracted_chars }),
+      ]
+        .filter(Boolean)
+        .join('\n')
+    ),
+    translate('review.verificationTitle'),
+    ...review.verification.rows.map(({ check, issue }) =>
+      [
+        check && [check.title, translate(REVIEW_VERDICTS[check.verdict]), check.reason].join(' · '),
+        issue && (issue.detail || issue.title),
+        issue?.paper_ids.length
           ? translate('review.issuePapers', { papers: issue.paper_ids.join('、') })
           : '',
-        issue.affected_content
+        issue?.affected_content
           ? translate('review.issueAffected', { content: issue.affected_content })
           : '',
       ]
         .filter(Boolean)
         .join('\n')
     ),
-    issueCount > review.issues.length
+    issues.total !== null && issues.hidden > 0
       ? translate('review.moreIssues', {
-          shown: review.issues.length,
-          total: issueCount,
-          count: issueCount - review.issues.length,
+          shown: issues.shown,
+          total: issues.total,
+          count: issues.hidden,
         })
       : '',
     ...review.artifacts.map((artifact) =>

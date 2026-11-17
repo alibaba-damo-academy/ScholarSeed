@@ -3,40 +3,351 @@ import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { connect } from 'node:net'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { build } from 'esbuild'
 import { _electron } from '@playwright/test'
 import type { BrowserWindow, WebContents, WebContentsView, WebPreferences } from 'electron'
 import type { BrowserRegistry } from './browser.ts'
+import { BROWSER_ERROR } from '../browser.ts'
 import { createBrowserHistory } from './history.ts'
 import type { createBrowserReadGrants } from './grant.ts'
+import { nativeFixture } from '../test-helpers/native.ts'
+
+const DESKTOP_ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
 interface BrowserFixture {
   ready: Promise<void>
   logs: string[]
   throwSearchLogs: boolean
+  publishedSnapshots: number
+  visibilityChanges: number
   registry: BrowserRegistry
   browserWindow: BrowserWindow
   downloadItem(url: string, onSave: () => void): Electron.DownloadItem
   createSearchGrants: typeof createBrowserReadGrants
 }
 
+test(
+  'closing the native window disposes its browser registry',
+  { timeout: 30_000 },
+  async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-close-disposal-'))
+    const fixture = nativeFixture(context, () => rm(temporary, { recursive: true, force: true }))
+    const application = await fixture.launch(() => launchRegistryProbe('', temporary))
+    await application.evaluate(async ({ app }) => {
+      await app.whenReady()
+      const state = globalThis as unknown as BrowserFixture
+      await state.ready
+      const { browserWindow, registry } = state
+      await registry.dispatch({ kind: 'open' })
+      const tab = registry.target(registry.snapshot().activeTabId!)
+      const keepRunning = () => {}
+      app.on('window-all-closed', keepRunning)
+      try {
+        browserWindow.destroy()
+        await registry.dispose()
+      } finally {
+        app.removeListener('window-all-closed', keepRunning)
+      }
+      if (!tab.isDestroyed()) throw new Error('Browser tab survived native window closure')
+    })
+  }
+)
+
+test(
+  'an aborted Electron fixture exits even when the application refuses to quit',
+  { timeout: 30_000 },
+  async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-aborted-fixture-'))
+    const controller = new AbortController()
+    const fixture = nativeFixture(
+      { signal: controller.signal, after: context.after.bind(context) },
+      () => rm(temporary, { recursive: true, force: true })
+    )
+    const application = await fixture.launch(() => launchRegistryProbe('', temporary))
+    await application.evaluate(async ({ app }) => {
+      await app.whenReady()
+      await (globalThis as unknown as BrowserFixture).ready
+      app.on('before-quit', (event) => event.preventDefault())
+    })
+    const child = application.process()
+    controller.abort(new Error('fixture deadline expired'))
+    await fixture.close()
+    assert.ok(child.exitCode !== null || child.signalCode !== null)
+    assert.equal(existsSync(temporary), false)
+  }
+)
+
+test(
+  'continuous native bounds update geometry without broadcasting business snapshots or repeatedly raising layers',
+  { timeout: 30000 },
+  async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-layout-'))
+    const application = await launchRegistryProbe('', temporary)
+    try {
+      const result = await application.evaluate(async () => {
+        const state = globalThis as unknown as BrowserFixture
+        await state.ready
+        state.browserWindow.show()
+        await state.registry.dispatch({ kind: 'open' })
+        const tabId = state.registry.snapshot().activeTabId!
+        const initialPublished = state.publishedSnapshots
+        const initialVisibility = state.visibilityChanges
+        for (let index = 0; index < 20; index++)
+          await state.registry.dispatch({
+            kind: 'bounds',
+            tabId,
+            x: index,
+            y: 80,
+            width: 500 - index,
+            height: 500,
+            visible: true,
+          })
+        return {
+          published: state.publishedSnapshots - initialPublished,
+          visibility: state.visibilityChanges - initialVisibility,
+        }
+      })
+      assert.deepEqual(result, { published: 0, visibility: 1 })
+    } finally {
+      await application.close()
+      await rm(temporary, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'browser publishes the pending address and ends initial loading before subresources finish',
+  { timeout: 30_000 },
+  async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-readiness-'))
+    let respond: (() => void) | undefined
+    let finishImage: (() => void) | undefined
+    let requestStarted: (() => void) | undefined
+    let imageRequested: (() => void) | undefined
+    const started = new Promise<void>((resolve) => {
+      requestStarted = resolve
+    })
+    const image = new Promise<void>((resolve) => {
+      imageRequested = resolve
+    })
+    const server = createServer((request, response) => {
+      if (request.url === '/image') {
+        finishImage = () => {
+          finishImage = undefined
+          response.end('image')
+        }
+        imageRequested!()
+      } else {
+        respond = () => {
+          respond = undefined
+          response.setHeader('content-type', 'text/html')
+          response.end('<main>Visible content</main><img src="/image">')
+        }
+        requestStarted!()
+      }
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const origin = `http://127.0.0.1:${address.port}`
+    const application = await launchRegistryProbe(origin, temporary, false, join(temporary, 'home'))
+    try {
+      const navigation = application.evaluate(async (_electron, origin) => {
+        const state = globalThis as unknown as BrowserFixture
+        await state.ready
+        await state.registry.dispatch({ kind: 'open', input: `${origin}/page` })
+      }, origin)
+      await started
+      const pending = await application.evaluate(
+        () => (globalThis as unknown as BrowserFixture).registry.snapshot().tabs[0]
+      )
+      const ready = application.evaluate(async () => {
+        const { registry } = globalThis as unknown as BrowserFixture
+        const contents = registry.target(registry.snapshot().tabs[0].tabId)
+        await new Promise<void>((resolve) => contents.once('dom-ready', () => resolve()))
+        return registry.snapshot().tabs[0]
+      })
+      respond!()
+      await image
+      const displayed = await ready
+      finishImage!()
+      await navigation
+      assert.equal(pending.url, `${origin}/page`)
+      assert.equal(pending.documentReady, false)
+      assert.equal(pending.loading, true)
+      assert.equal(displayed.documentReady, true)
+      assert.equal(displayed.loading, true)
+    } finally {
+      respond?.()
+      finishImage?.()
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await application.close()
+      await rm(temporary, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'browser renders an inline PDF and scopes viewer failures to its document',
+  { timeout: 30_000 },
+  async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-pdf-'))
+    const pdf = await readFile(join(DESKTOP_ROOT, 'e2e/fixtures/data/minimal-project/sample.pdf'))
+    let revalidated = false
+    const server = createServer((request, response) => {
+      if (request.url === '/redirect') {
+        response.writeHead(302, { location: '/document' }).end()
+        return
+      }
+      if (request.url === '/page.pdf') {
+        response.setHeader('content-type', 'text/html')
+        response.end(
+          '<main>Ordinary HTML</main><iframe src="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html"></iframe>'
+        )
+        return
+      }
+      response.setHeader('etag', '"pdf-fixture"')
+      response.setHeader('cache-control', 'no-cache')
+      if (request.headers['if-none-match'] === '"pdf-fixture"') {
+        revalidated = true
+        response.writeHead(304).end()
+        return
+      }
+      response.setHeader('content-type', 'application/pdf')
+      response.end(pdf)
+    })
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const origin = `http://127.0.0.1:${address.port}`
+    const application = await launchRegistryProbe(origin, temporary)
+    try {
+      await application.evaluate(async (_electron, origin) => {
+        const state = globalThis as unknown as BrowserFixture
+        await state.ready
+        await state.registry.dispatch({ kind: 'open', input: `${origin}/redirect` })
+        state.browserWindow.show()
+        await state.registry.dispatch({
+          kind: 'bounds',
+          tabId: state.registry.snapshot().tabs[0].tabId,
+          x: 0,
+          y: 0,
+          width: 800,
+          height: 600,
+          visible: true,
+        })
+      }, origin)
+      const page = application
+        .windows()
+        .find((candidate) => candidate.url() === `${origin}/document`)
+      assert.ok(page)
+      let viewer = page.frames().find((frame) => frame !== page.mainFrame())
+      assert.ok(viewer)
+      await viewer.waitForURL('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html', {
+        timeout: 10_000,
+      })
+      await viewer.locator('pdf-viewer').waitFor({ state: 'attached', timeout: 10_000 })
+      await viewer
+        .locator('viewer-toolbar:not([loading_])')
+        .waitFor({ state: 'attached', timeout: 10_000 })
+      assert.equal(await viewer.locator('viewer-page-selector input').inputValue(), '1')
+      assert.equal(
+        await application.evaluate(
+          () =>
+            (globalThis as unknown as BrowserFixture).registry.snapshot().tabs[0].navigationError
+        ),
+        null
+      )
+      await page.reload({ waitUntil: 'load' })
+      viewer = page.frames().find((frame) => frame !== page.mainFrame())
+      assert.ok(viewer)
+      await viewer.waitForURL('chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html', {
+        timeout: 10_000,
+      })
+      await viewer
+        .locator('viewer-toolbar:not([loading_])')
+        .waitFor({ state: 'attached', timeout: 10_000 })
+      assert.equal(await viewer.locator('viewer-page-selector input').inputValue(), '1')
+      assert.equal(revalidated, true)
+      await viewer
+        .addScriptTag({
+          url: 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/missing-pdf-regression.js',
+        })
+        .catch(() => undefined)
+      assert.equal(
+        await application.evaluate(
+          () =>
+            (globalThis as unknown as BrowserFixture).registry.snapshot().tabs[0].navigationError
+        ),
+        BROWSER_ERROR.navigationFailed
+      )
+      await application.evaluate(async (_electron, origin) => {
+        const { registry } = globalThis as unknown as BrowserFixture
+        await registry.dispatch({
+          kind: 'navigate',
+          tabId: registry.snapshot().tabs[0].tabId,
+          input: `${origin}/page.pdf`,
+        })
+      }, origin)
+      await page.getByText('Ordinary HTML').waitFor()
+      await page.frameLocator('iframe').locator('body').waitFor({ state: 'attached' })
+      assert.equal(await page.frameLocator('iframe').locator('pdf-viewer').count(), 0)
+      assert.equal(
+        await application.evaluate(
+          () =>
+            (globalThis as unknown as BrowserFixture).registry.snapshot().tabs[0].navigationError
+        ),
+        null
+      )
+    } catch (error) {
+      context.diagnostic(
+        JSON.stringify(
+          await application.evaluate(() => {
+            const state = globalThis as unknown as BrowserFixture
+            const contents = state.registry.target(state.registry.snapshot().tabs[0].tabId)
+            return {
+              logs: state.logs,
+              frames: contents.mainFrame.framesInSubtree.map((frame) => ({
+                url: frame.url,
+                id: frame.frameTreeNodeId,
+                parent: frame.parent?.frameTreeNodeId,
+              })),
+            }
+          })
+        )
+      )
+      throw error
+    } finally {
+      await application.evaluate(async () => {
+        const state = globalThis as unknown as BrowserFixture
+        await state.registry.dispose()
+        state.browserWindow.destroy()
+      })
+      await application.close()
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await rm(temporary, { recursive: true, force: true })
+    }
+  }
+)
+
 for (const shownParent of [true, false])
   test(
     `product search delivers native input without the Playwright precommit bypass (${shownParent ? 'shown' : 'hidden'} parent)`,
     { timeout: 30_000 },
-    async () => {
+    async (context) => {
       const temporary = await mkdtemp(join(tmpdir(), 'browser-search-native-input-'))
-      const application = await launchRegistryProbe(
-        '',
-        temporary,
-        false,
-        join(temporary, 'home'),
-        false,
-        true
+      const fixture = nativeFixture(context, () => rm(temporary, { recursive: true, force: true }))
+      const application = await fixture.launch(() =>
+        launchRegistryProbe('', temporary, false, join(temporary, 'home'), false, true)
       )
       try {
         const result = await application.evaluate(async ({ app, WebContentsView }, shownParent) => {
@@ -50,7 +361,6 @@ for (const shownParent of [true, false])
             state.browserWindow.focus()
             state.browserWindow.webContents.focus()
           }
-          const ownerFocusedBefore = state.browserWindow.webContents.isFocused()
           const target = await state.registry.createSearchTarget()
           const initial = state.registry.agentNavigationTarget(target.tabId).contents
           const requests: string[] = []
@@ -69,6 +379,11 @@ for (const shownParent of [true, false])
               'https://www.bing.com/',
               'https://www.bing.com'
             )
+            const contents = state.registry.agentTarget(target.tabId).contents
+            const view = state.browserWindow.contentView.children.find(
+              (child) => child instanceof WebContentsView && child.webContents === contents
+            ) as WebContentsView
+            view.setBounds({ x: 1, y: 2, width: 10, height: 10 })
             await state.registry.dispatch({
               kind: 'bounds',
               tabId: target.tabId,
@@ -78,10 +393,6 @@ for (const shownParent of [true, false])
               height: 10,
               visible: true,
             })
-            const contents = state.registry.agentTarget(target.tabId).contents
-            const view = state.browserWindow.contentView.children.find(
-              (child) => child instanceof WebContentsView && child.webContents === contents
-            ) as WebContentsView
             const presentation = {
               visible: view.getVisible(),
               bounds: view.getBounds(),
@@ -142,8 +453,9 @@ for (const shownParent of [true, false])
               url: state.registry.agentTarget(target.tabId).url,
               bypass: app.commandLine.hasSwitch('allow-pre-commit-input'),
               disabledFeatures: app.commandLine.getSwitchValue('disable-features'),
-              ownerFocusedBefore,
-              ownerFocused: state.browserWindow.webContents.isFocused(),
+              ownerActiveElement: await state.browserWindow.webContents.executeJavaScript(
+                'document.activeElement?.id'
+              ),
               ownerValue: await state.browserWindow.webContents.executeJavaScript(
                 'document.querySelector("#owner").value'
               ),
@@ -167,7 +479,7 @@ for (const shownParent of [true, false])
         assert.ok(result.presentation.bounds.width > 0 && result.presentation.bounds.height > 0)
         assert.equal(result.url, 'https://www.bing.com/search?q=native+input')
         assert.deepEqual(result.requests, ['https://www.bing.com/', result.url])
-        assert.equal(result.ownerFocused, result.ownerFocusedBefore)
+        assert.equal(result.ownerActiveElement, 'owner')
         assert.equal(result.ownerValue, 'unchanged')
         assert.ok(result.logs.some((line) => line.includes('"phase":"completed"')))
         const rendering = result.logs
@@ -181,8 +493,7 @@ for (const shownParent of [true, false])
           )
         )
       } finally {
-        await application.close()
-        await rm(temporary, { recursive: true, force: true })
+        await fixture.close()
       }
     }
   )
@@ -198,14 +509,26 @@ test(
         const state = globalThis as unknown as BrowserFixture
         await state.ready
         const results = []
-        for (const position of ['middle', 'first', 'last', 'throwing-log']) {
+        for (const position of [
+          'middle',
+          'first',
+          'last',
+          'throwing-log',
+          'hidden-control',
+          'textarea',
+        ]) {
           state.throwSearchLogs = position === 'throwing-log'
           const target = await state.registry.createSearchTarget()
           const initial = state.registry.agentNavigationTarget(target.tabId).contents
           const requests: string[] = []
-          const input = '<input id="sb_form_q" name="q" type="search">'
+          const input =
+            position === 'textarea'
+              ? '<textarea id="sb_form_q" name="q"></textarea>'
+              : '<input id="sb_form_q" name="q" type="search">'
           const submit =
-            '<input id="sb_form_go" type="submit" name="search" value=""><label id="search_icon" for="sb_form_go">Search</label>'
+            position === 'hidden-control'
+              ? '<input id="sb_form_go" type="submit" name="search" value="" hidden aria-hidden="true">'
+              : '<input id="sb_form_go" type="submit" name="search" value=""><label id="search_icon" for="sb_form_go">Search</label>'
           const hidden = '<input type="hidden" name="form" value="QBLH">'
           const controls =
             position === 'first'
@@ -231,7 +554,7 @@ test(
             landingUrl: 'https://cn.bing.com/',
             resultUrl: 'https://cn.bing.com/search',
             inputSelector: '#sb_form_q',
-            submitSelector: '#search_icon',
+            submitSelector: '#search_icon, #sb_form_go[hidden]:not(form:has(#search_icon) *)',
             queryParameter: 'q',
             submitter: { name: 'search', value: '' },
             fields: { form: { pattern: '^QBLH$', maxLength: 4 } },
@@ -392,9 +715,10 @@ test(
 test(
   'product search exposes only a fresh one-use blocked homepage redirect receipt',
   { timeout: 60_000 },
-  async () => {
+  async (context) => {
     const temporary = await mkdtemp(join(tmpdir(), 'browser-search-regional-'))
-    const application = await launchRegistryProbe('', temporary)
+    const fixture = nativeFixture(context, () => rm(temporary, { recursive: true, force: true }))
+    const application = await fixture.launch(() => launchRegistryProbe('', temporary))
     try {
       const results = await application.evaluate(async () => {
         const state = globalThis as unknown as BrowserFixture
@@ -489,8 +813,7 @@ test(
         }
       }
     } finally {
-      await application.close()
-      await rm(temporary, { recursive: true, force: true })
+      await fixture.close()
     }
   }
 )
@@ -914,9 +1237,10 @@ test(
 test(
   'product search rejects unsafe initial forms and host-injected focus hijacking before entering the query',
   { timeout: 30_000 },
-  async () => {
+  async (context) => {
     const temporary = await mkdtemp(join(tmpdir(), 'browser-search-form-input-'))
-    const application = await launchRegistryProbe('', temporary)
+    const fixture = nativeFixture(context, () => rm(temporary, { recursive: true, force: true }))
+    const application = await fixture.launch(() => launchRegistryProbe('', temporary))
     try {
       const results = await application.evaluate(async () => {
         const state = globalThis as unknown as BrowserFixture
@@ -1007,8 +1331,7 @@ test(
         assert.equal(result.inserted, 0, result.scenario)
       }
     } finally {
-      await application.close()
-      await rm(temporary, { recursive: true, force: true })
+      await fixture.close()
     }
   }
 )
@@ -1016,9 +1339,10 @@ test(
 test(
   'product search refuses same-origin and cross-origin redirects after one exact submission',
   { timeout: 30_000 },
-  async () => {
+  async (context) => {
     const temporary = await mkdtemp(join(tmpdir(), 'browser-search-form-redirect-'))
-    const application = await launchRegistryProbe('', temporary)
+    const fixture = nativeFixture(context, () => rm(temporary, { recursive: true, force: true }))
+    const application = await fixture.launch(() => launchRegistryProbe('', temporary))
     try {
       const results = await application.evaluate(async () => {
         const state = globalThis as unknown as BrowserFixture
@@ -1079,15 +1403,15 @@ test(
         ])
       }
     } finally {
-      await application.close()
-      await rm(temporary, { recursive: true, force: true })
+      await fixture.close()
     }
   }
 )
 
-test('product search targets are isolated from birth and close only their owned tab', async () => {
+test('product search targets are isolated from birth and close only their owned tab', async (context) => {
   const temporary = await mkdtemp(join(tmpdir(), 'browser-search-target-'))
-  const application = await launchRegistryProbe('', temporary)
+  const fixture = nativeFixture(context, () => rm(temporary, { recursive: true, force: true }))
+  const application = await fixture.launch(() => launchRegistryProbe('', temporary))
   try {
     const result = await application.evaluate(async () => {
       const state = globalThis as unknown as BrowserFixture
@@ -1125,8 +1449,7 @@ test('product search targets are isolated from birth and close only their owned 
     assert.equal(result.manualAlive, true)
     assert.deepEqual(result.remaining, [result.manualId])
   } finally {
-    await application.close()
-    await rm(temporary, { recursive: true, force: true })
+    await fixture.close()
   }
 })
 
@@ -1419,7 +1742,9 @@ async function launchRegistryProbe(
       globalThis.pageFocusCount = 0
       globalThis.logs = []
       globalThis.throwSearchLogs = false
-      globalThis.registry = createBrowserRegistry(window, { apiBase: ${JSON.stringify(origin)}, publish() {}, log(message) {
+      globalThis.publishedSnapshots = 0
+      globalThis.visibilityChanges = 0
+      globalThis.registry = createBrowserRegistry(window, { apiBase: ${JSON.stringify(origin)}, publish() { globalThis.publishedSnapshots++ }, onVisibilityChanged() { globalThis.visibilityChanges++ }, log(message) {
         globalThis.logs.push(message)
         if (globalThis.throwSearchLogs && message.startsWith('[browser-search-')) throw new Error('diagnostic sink unavailable')
       },
@@ -1427,7 +1752,7 @@ async function launchRegistryProbe(
         historyAgentUseRevision: () => ${historyEnabled ? '1' : 'null'} })
     })
   `,
-      resolveDir: resolve('.'),
+      resolveDir: DESKTOP_ROOT,
     },
     outfile: entry,
     platform: 'node',
@@ -1440,7 +1765,7 @@ async function launchRegistryProbe(
   )
   delete environment.ELECTRON_RUN_AS_NODE
   environment.SCHOLARSEED_HOME = home
-  return _electron.launch({ args: [entry], env: environment })
+  return _electron.launch({ args: [entry], env: environment, timeout: 20_000 })
 }
 
 test(
@@ -3076,11 +3401,81 @@ test(
 )
 
 test(
-  'native browser bounds follow renderer zoom and window minimization without destroying tabs',
+  'renderer navigation revokes native presentation until fresh bounds and close destroys it',
   { timeout: 30_000 },
   async () => {
-    const temporary = await mkdtemp(join(tmpdir(), 'browser-geometry-'))
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-renderer-lifecycle-'))
     const application = await launchRegistryProbe('', temporary)
+    try {
+      const result = await application.evaluate(async () => {
+        await (globalThis as unknown as BrowserFixture).ready
+        const { registry, browserWindow } = globalThis as unknown as BrowserFixture
+        await browserWindow.loadURL('about:blank')
+        browserWindow.show()
+        await registry.dispatch({ kind: 'open' })
+        const tabId = registry.snapshot().activeTabId!
+        const bounds = {
+          kind: 'bounds' as const,
+          tabId,
+          visible: true,
+          x: 10,
+          y: 20,
+          width: 200,
+          height: 100,
+        }
+        await registry.dispatch(bounds)
+        const view = browserWindow.contentView.children[0] as WebContentsView
+        await browserWindow.loadURL('about:blank#same-document')
+        const sameDocumentVisible = view.getVisible()
+        await browserWindow.loadURL('data:text/html,<title>Replacement renderer</title>')
+        const revoked = !view.getVisible()
+        const tabsRetained = registry.snapshot().tabs.length
+        browserWindow.setSize(900, 600)
+        const resizeHidden = !view.getVisible()
+        await registry.dispatch(bounds)
+        const rebound = view.getVisible()
+        const crashed = new Promise<void>((resolve) =>
+          browserWindow.webContents.once('render-process-gone', () => resolve())
+        )
+        browserWindow.webContents.forcefullyCrashRenderer()
+        await crashed
+        const crashHidden = !view.getVisible()
+        await browserWindow.loadURL('about:blank')
+        await registry.dispatch(bounds)
+        await registry.dispatch({ kind: 'close', tabId })
+        return {
+          sameDocumentVisible,
+          revoked,
+          tabsRetained,
+          resizeHidden,
+          rebound,
+          crashHidden,
+          detached: !browserWindow.contentView.children.includes(view),
+          tabsClosed: registry.snapshot().tabs.length,
+        }
+      })
+      assert.equal(result.sameDocumentVisible, true)
+      assert.equal(result.revoked, true)
+      assert.equal(result.resizeHidden, true)
+      assert.equal(result.tabsRetained, 1)
+      assert.equal(result.rebound, true)
+      assert.equal(result.crashHidden, true)
+      assert.equal(result.detached, true)
+      assert.equal(result.tabsClosed, 0)
+    } finally {
+      await application.close()
+      await rm(temporary, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'native browser bounds follow renderer zoom and window minimization without destroying tabs',
+  { timeout: 30_000 },
+  async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-geometry-'))
+    const fixture = nativeFixture(context, () => rm(temporary, { recursive: true, force: true }))
+    const application = await fixture.launch(() => launchRegistryProbe('', temporary))
     try {
       const result = await application.evaluate(async () => {
         await (globalThis as unknown as BrowserFixture).ready
@@ -3107,7 +3502,9 @@ test(
         browserWindow.minimize()
         await minimized
         const hidden = !view.getVisible()
+        const restored = new Promise<void>((resolve) => browserWindow.once('restore', resolve))
         browserWindow.restore()
+        await restored
         await registry.dispatch({
           kind: 'bounds',
           tabId,
@@ -3129,8 +3526,7 @@ test(
       assert.equal(result.inactive, true)
       assert.equal(result.tabs, 1)
     } finally {
-      await application.close()
-      await rm(temporary, { recursive: true, force: true })
+      await fixture.close()
     }
   }
 )
@@ -3338,6 +3734,56 @@ test(
       )
       assert.equal(result.historyAfterCombined, 0)
       assert.equal(result.mainCookies.length, 0)
+    } finally {
+      await application.close()
+      await rm(temporary, { recursive: true, force: true })
+    }
+  }
+)
+
+test(
+  'selected data applies the cutoff only to history while clearing all cookies',
+  { timeout: 30_000 },
+  async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'browser-range-clear-'))
+    const history = createBrowserHistory(join(temporary, 'home', 'browser'))
+    history.record('https://example.org/old', 'Older visit', 1000)
+    history.record('https://example.org/recent', 'Recent visit', 2000)
+    history.close()
+    const application = await launchRegistryProbe('', temporary)
+    try {
+      const result = await application.evaluate(async () => {
+        await (globalThis as unknown as BrowserFixture).ready
+        const { registry } = globalThis as unknown as BrowserFixture
+        await registry.dispatch({ kind: 'open' })
+        const browserSession = registry.target(registry.snapshot().activeTabId!).session
+        await browserSession.cookies.set({
+          url: 'https://example.org/',
+          name: 'range-probe',
+          value: 'one',
+        })
+        const deleted = await registry.clearData({
+          kind: 'clear-selected',
+          types: ['history', 'cookies', 'storage', 'cache'],
+          since: 1500,
+        })
+        return {
+          deleted,
+          visits: registry.queryHistory({ offset: 0, limit: 10 }).items,
+          cookies: await browserSession.cookies.get({ url: 'https://example.org/' }),
+          tabs: registry.snapshot().tabs.length,
+        }
+      })
+      assert.equal(result.deleted, 1)
+      assert.deepEqual(
+        result.visits.map((visit) => visit.title),
+        ['Older visit']
+      )
+      assert.equal(
+        result.cookies.some((cookie) => cookie.name === 'range-probe'),
+        false
+      )
+      assert.equal(result.tabs, 0)
     } finally {
       await application.close()
       await rm(temporary, { recursive: true, force: true })
@@ -4575,6 +5021,7 @@ test(
         const sourceTabId = registry.snapshot().activeTabId!
         const source = registry.target(sourceTabId)
         const popupUrl = 'https://example.org/popup'
+        await source.session.protocol.handle('https', () => new Response('<title>Popup</title>'))
         const blocked = registry.blockAgentPopups(sourceTabId)
         const alsoBlocked = registry.blockAgentPopups(sourceTabId)
         await source.executeJavaScript(`window.open(${JSON.stringify(popupUrl)}); null`)
@@ -4687,6 +5134,9 @@ test(
         await registry.dispatch({ kind: 'close', tabId: oldTabId })
         await registry.dispatch({ kind: 'open' })
         const newTabId = registry.snapshot().activeTabId!
+        await registry
+          .target(newTabId)
+          .session.protocol.handle('https', () => new Response('<title>Popup</title>'))
         const newLease = registry.blockAgentPopups(newTabId)
         oldLease()
         await registry
@@ -4789,7 +5239,7 @@ test(
         return { created, afterPopups, afterManual: registry.snapshot().tabs.length }
       })
       assert.equal(result.created, 8, JSON.stringify(result))
-      assert.equal(result.afterPopups, 9, JSON.stringify(result))
+      assert.equal(result.afterPopups, 1, JSON.stringify(result))
       assert.equal(result.afterManual, result.afterPopups + 1)
     } finally {
       await application.close()
@@ -4827,12 +5277,21 @@ test('closing a popup source cancels its pending child tab', { timeout: 30_000 }
       electron.app.on('web-contents-created', hold)
       await source.executeJavaScript("window.open('https://example.org/popup'); null")
       await created
+      const whilePending = registry.snapshot()
       await registry.dispatch({ kind: 'close', tabId: sourceTabId })
       const afterClose = registry.snapshot().tabs.length
       releaseLoad()
       await new Promise((resolve) => setTimeout(resolve, 100))
-      return { afterClose, afterRelease: registry.snapshot().tabs.length }
+      return {
+        pendingTabs: whilePending.tabs.map((tab) => tab.tabId),
+        pendingActiveTab: whilePending.activeTabId,
+        sourceTabId,
+        afterClose,
+        afterRelease: registry.snapshot().tabs.length,
+      }
     })
+    assert.deepEqual(result.pendingTabs, [result.sourceTabId])
+    assert.equal(result.pendingActiveTab, result.sourceTabId)
     assert.equal(result.afterClose, 0)
     assert.equal(result.afterRelease, 0)
   } finally {
@@ -4946,10 +5405,18 @@ test(
         )
         await new Promise((resolve) => setTimeout(resolve, 300))
         electron.app.removeListener('web-contents-created', hold)
-        return { laterCreated, tabs: registry.snapshot().tabs.length }
+        const tabs = registry.snapshot().tabs.length
+        await registry.dispatch({ kind: 'close', tabId: sourceTabId })
+        return {
+          laterCreated,
+          tabs,
+          popupTabId,
+          remainingTabs: registry.snapshot().tabs.map((tab) => tab.tabId),
+        }
       }, origin)
       assert.equal(result.laterCreated, 7, JSON.stringify(result))
-      assert.equal(result.tabs, 9, JSON.stringify(result))
+      assert.equal(result.tabs, 2, JSON.stringify(result))
+      assert.deepEqual(result.remainingTabs, [result.popupTabId])
     } finally {
       await application.close()
       fixture.closeAllConnections()

@@ -15,6 +15,7 @@ from service.capabilities.service.descriptor import (
     validate_component_value,
 )
 from service.capabilities.service.package import declaration, digest, read_package
+from service.capabilities.service.syntax import check_entry_syntax
 from service.platform.bridge import (
     BRIDGE_REQUESTS,
     CONTRACT_CAPABILITY,
@@ -24,7 +25,6 @@ from service.platform.bridge import (
     ComponentPreflight,
     PluginInstallation,
 )
-from service.platform.vocabulary import BRIDGE_MAX_REQUEST_BYTES
 
 OFFLINE_VALIDATION_STAGE = "offline"
 AUTHORING_CONTRACT_VERSION = "1.0.0"
@@ -104,7 +104,6 @@ def describe_contract() -> dict[str, Any]:
             "result": "published is not installed; independent card actions never gate creation",
             "revision": "immutable workspace-relative ZIP path and SHA256 per request_id",
         },
-        "bridge_request_max_bytes": BRIDGE_MAX_REQUEST_BYTES,
     }
     canonical = json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return {
@@ -116,7 +115,9 @@ def describe_contract() -> dict[str, Any]:
     }
 
 
-def inspect_package(payload: bytes, *, host_version: str) -> dict[str, Any]:
+def inspect_package(
+    payload: bytes, *, host_version: str, check_entries: bool = False
+) -> dict[str, Any]:
     package = read_package(payload)
     dependencies = declaration(package.manifest["dependencies"])
     result = inspect_plugin(
@@ -125,6 +126,16 @@ def inspect_package(payload: bytes, *, host_version: str) -> dict[str, Any]:
         skill_version=package.version,
         host_version=host_version,
     )
+    if check_entries and result["valid"]:
+        entries = {
+            component["entry"]: package.files[component["entry"]].data
+            for component in result["descriptor"]["components"]
+            if component.get("entry")
+        }
+        syntax = check_entry_syntax(entries)
+        result["entry_syntax"] = {"valid": syntax["valid"], "checked": syntax["checked"]}
+        result["valid"] = syntax["valid"]
+        result["issues"].extend(syntax["issues"])
     return {
         **result,
         "validation_stage": OFFLINE_VALIDATION_STAGE,

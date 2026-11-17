@@ -16,9 +16,11 @@ import { isAbsolute, join, win32 } from 'node:path'
 
 import type { BrowserDownloadSettings } from '../browser.ts'
 import { decodeDownloadPreferences } from './downloads-record.ts'
-import { browserResourceAllowed } from './navigation.ts'
+import { BLANK_PAGE, browserResourceAllowed } from './navigation.ts'
 
 const PREFERENCES_FILENAME = 'downloads.json'
+const DEFAULT_ASK_EVERY_TIME = false
+const MISSING_FILE_CODE = 'ENOENT'
 export const DOWNLOAD_STAGE_PREFIX = 'download-'
 const STAGE_MANIFEST_FILENAME = 'manifest.json'
 const TEMPORARY_SUFFIX = '.tmp'
@@ -276,11 +278,18 @@ export function downloadSourceAllowed(
   urls: string[],
   topUrl: string,
   approvedLocalOrigin: string | null,
-  apiOrigin: string | null
+  apiOrigin: string | null,
+  pendingUrl?: string
 ): boolean {
   if (!urls.length) return false
   try {
-    const top = new URL(topUrl)
+    const initialDownload =
+      (!topUrl || topUrl === BLANK_PAGE) &&
+      pendingUrl !== undefined &&
+      pendingUrl === urls[0] &&
+      approvedLocalOrigin === null &&
+      !pendingUrl.startsWith('blob:')
+    const top = new URL(initialDownload ? pendingUrl : topUrl)
     if (
       !browserResourceAllowed({ url: top, topOrigin: top.origin, approvedLocalOrigin, apiOrigin })
     )
@@ -451,13 +460,14 @@ export function createDownloadPreferences(
 ) {
   const path = join(home, PREFERENCES_FILENAME)
   let directoryOverride: string | null = null
-  let askEveryTime = true
+  let askEveryTime = DEFAULT_ASK_EVERY_TIME
   try {
     const stored = decodeDownloadPreferences(readFileSync(path, 'utf8'))
     directoryOverride = stored.directoryOverride
     askEveryTime = stored.askEveryTime
-  } catch {
+  } catch (error) {
     directoryOverride = null
+    askEveryTime = (error as NodeJS.ErrnoException).code !== MISSING_FILE_CODE
   }
   const persist = (candidate: string | null, ask: boolean) => {
     const temporary = `${path}${TEMPORARY_SUFFIX}-${randomUUID()}`

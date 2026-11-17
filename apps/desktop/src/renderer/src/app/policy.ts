@@ -6,7 +6,11 @@ const SAFE_TAB = 'overview'
 const ROUTE_FEATURES: Readonly<Record<string, string>> = { browser: BROWSER_FEATURE }
 const TAB_FEATURES: Readonly<Record<string, string>> = { browser: BROWSER_FEATURE }
 const SETTINGS_FEATURES: Readonly<Record<string, string>> = { browser: BROWSER_FEATURE }
-const HIL_FEATURES: Readonly<Record<string, string>> = { browser_approval: BROWSER_FEATURE, browser_history_approval: BROWSER_FEATURE }
+const BROWSER_ADVANCED_FEATURE = 'browserAdvancedSettings'
+const HIL_FEATURES: Readonly<Record<string, string>> = {
+  browser_approval: BROWSER_ADVANCED_FEATURE,
+  browser_history_approval: BROWSER_ADVANCED_FEATURE,
+}
 
 interface NavigationState {
   mainView: string
@@ -23,8 +27,15 @@ interface Location {
   target?: { kind: string; id?: string } | null
 }
 
-export function createAvailabilityPolicy(browserEnabled: boolean) {
-  const enabled: Readonly<Record<string, boolean>> = { [BROWSER_FEATURE]: browserEnabled }
+export function createAvailabilityPolicy(
+  browserEnabled: boolean,
+  advancedEnabled = false,
+  navigationEnabled = false
+) {
+  const enabled: Readonly<Record<string, boolean>> = {
+    [BROWSER_FEATURE]: browserEnabled,
+    [BROWSER_ADVANCED_FEATURE]: browserEnabled && advancedEnabled,
+  }
   const available = (requirements: Readonly<Record<string, string>>, key: string): boolean => {
     const feature = requirements[key]
     return !feature || enabled[feature] === true
@@ -33,22 +44,48 @@ export function createAvailabilityPolicy(browserEnabled: boolean) {
   const tabIdAvailable = (id: string): boolean => available(TAB_FEATURES, id)
   const tabAvailable = (tab: { id: string; kind: string }): boolean =>
     available(TAB_FEATURES, tab.kind) && tabIdAvailable(tab.id)
-  const settingsAvailable = (page: string | null): boolean => page === null || available(SETTINGS_FEATURES, page)
+  const settingsAvailable = (page: string | null): boolean =>
+    page === null || available(SETTINGS_FEATURES, page)
   return {
     browserEnabled,
     routeAvailable,
     tabAvailable,
     tabIdAvailable,
     settingsAvailable,
-    hilAvailable: (kind: string): boolean => available(HIL_FEATURES, kind),
-    navigationPatch<State extends NavigationState>(current: State, patch: Partial<State>): Partial<State> {
+    hilAvailable: (kind: string, action?: string): boolean =>
+      (browserEnabled &&
+        navigationEnabled &&
+        kind === 'browser_approval' &&
+        action === 'navigate') ||
+      available(HIL_FEATURES, kind),
+    navigationPatch<State extends NavigationState>(
+      current: State,
+      patch: Partial<State>
+    ): Partial<State> {
       const projected = { ...patch }
-      if (projected.mainView !== undefined && !routeAvailable(projected.mainView)) projected.mainView = routeAvailable(current.mainView) ? current.mainView : SAFE_VIEW
+      if (projected.mainView !== undefined && !routeAvailable(projected.mainView))
+        projected.mainView = routeAvailable(current.mainView) ? current.mainView : SAFE_VIEW
       if (projected.tabs) projected.tabs = projected.tabs.filter(tabAvailable) as State['tabs']
-      if (projected.activeTab !== undefined && !tabIdAvailable(projected.activeTab)) projected.activeTab = tabIdAvailable(current.activeTab) ? current.activeTab : SAFE_TAB
-      if (projected.accountSettingsPage !== undefined && !settingsAvailable(projected.accountSettingsPage)) projected.accountSettingsPage = settingsAvailable(current.accountSettingsPage) ? current.accountSettingsPage : null
-      if ('accountSettingsPage' in patch || 'browserSettingsSection' in patch) projected.browserSettingsSection = browserSettingsSection(projected.accountSettingsPage === undefined ? current.accountSettingsPage : projected.accountSettingsPage,
-        projected.accountSettingsPage !== undefined && !('browserSettingsSection' in patch) ? undefined : 'browserSettingsSection' in patch ? projected.browserSettingsSection : current.browserSettingsSection)
+      if (projected.activeTab !== undefined && !tabIdAvailable(projected.activeTab))
+        projected.activeTab = tabIdAvailable(current.activeTab) ? current.activeTab : SAFE_TAB
+      if (
+        projected.accountSettingsPage !== undefined &&
+        !settingsAvailable(projected.accountSettingsPage)
+      )
+        projected.accountSettingsPage = settingsAvailable(current.accountSettingsPage)
+          ? current.accountSettingsPage
+          : null
+      if ('accountSettingsPage' in patch || 'browserSettingsSection' in patch)
+        projected.browserSettingsSection = browserSettingsSection(
+          projected.accountSettingsPage === undefined
+            ? current.accountSettingsPage
+            : projected.accountSettingsPage,
+          projected.accountSettingsPage !== undefined && !('browserSettingsSection' in patch)
+            ? undefined
+            : 'browserSettingsSection' in patch
+              ? projected.browserSettingsSection
+              : current.browserSettingsSection
+        )
       return projected
     },
     navigationLocation<Target extends Location>(location: Target): Target {
@@ -58,15 +95,24 @@ export function createAvailabilityPolicy(browserEnabled: boolean) {
       return {
         ...location,
         view: routeAvailable(location.view) ? location.view : SAFE_VIEW,
-        ...(location.target === undefined ? {} : { target: location.target?.kind === 'tab' && !tabIdAvailable(location.target.id ?? '') ? null : location.target }),
+        ...(location.target === undefined
+          ? {}
+          : {
+              target:
+                location.target?.kind === 'tab' && !tabIdAvailable(location.target.id ?? '')
+                  ? null
+                  : location.target,
+            }),
         settingsPage,
-        browserSettingsSection: section
+        browserSettingsSection: section,
       }
-    }
+    },
   }
 }
 
 export type AvailabilityPolicy = ReturnType<typeof createAvailabilityPolicy>
 export const availabilityPolicy = createAvailabilityPolicy(
-  typeof window !== 'undefined' && window.scholarseed?.browserEnabled === true
+  typeof window !== 'undefined' && window.scholarseed?.browserEnabled === true,
+  typeof window !== 'undefined' && window.scholarseed?.browserAdvancedSettingsEnabled === true,
+  typeof window !== 'undefined' && window.scholarseed?.browserAgentNavigationEnabled === true
 )

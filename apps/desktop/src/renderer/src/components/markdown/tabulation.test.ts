@@ -4,7 +4,7 @@ import type { Element, Root } from 'hast'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import { VFile } from 'vfile'
-import { GFM_PLUGIN } from './gfm.ts'
+import { GFM_PLUGIN } from '../../../../markdown/gfm.ts'
 import { CITATION_MARKER } from './citations.ts'
 import {
   rehypeTabulation,

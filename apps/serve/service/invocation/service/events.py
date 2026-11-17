@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from scholarseed_runtime.contract import RuntimeCallbackRequest, RuntimeEvent, RuntimeEventKind
+from scholarseed_runtime.contract import RuntimeCallbackRequest, RuntimeEventKind
 from scholarseed_runtime.gateway.driver import RuntimeObservation
 
 INVOCATION_EVENT_SCHEMA_VERSION = 1

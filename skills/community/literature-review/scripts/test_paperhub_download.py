@@ -18,8 +18,37 @@ import step0_load
 import fetch_fulltext
 import pdf_fixture
 from fetch_fulltext import FetchError, fetch_paperhub
+from diagnostics import EvidenceLog
 
 class DownloadTest(unittest.TestCase):
+    def test_parse_diagnostics_separate_size_and_elapsed_from_download(self):
+        with tempfile.TemporaryDirectory() as folder:
+            diagnostic = EvidenceLog(folder, 'fulltext')
+            parsed = {'sentences': '#1 Actual text', 'source_sha256': 'source'}
+            with patch.object(fetch_fulltext, 'parse_source', return_value=parsed):
+                self.assertEqual(fetch_fulltext.observed_parse(Path(folder)/'source', Path(folder),
+                                 'paper', 'paperhub', diagnostic), parsed)
+            events = [json.loads(line) for line in diagnostic.events.read_text().splitlines()]
+            result = events[-1]
+            self.assertEqual(result['event'], 'parse_completed')
+            self.assertEqual(result['parsed_size']['utf8_bytes'], len(parsed['sentences'].encode()))
+            self.assertEqual(result['parsed_size']['token_count_method'], 'utf8_byte_upper_bound_not_model_tokenizer')
+            self.assertGreaterEqual(result['elapsed_seconds'], 0)
+
+    def test_actual_pdf_version_is_observed_and_a_conflicting_pin_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'source.pdf'
+            document = pdf_fixture.open()
+            page = document.new_page()
+            page.insert_text((50, 100), 'arXiv:1706.03762v7')
+            page.insert_text((50, 130), 'Actual versioned source text.')
+            document.save(source)
+            document.close()
+            self.assertEqual(fetch_fulltext.observed_arxiv_version(source, '1706.03762'), '1706.03762v7')
+            with self.assertRaisesRegex(ValueError, 'identity/version'):
+                fetch_fulltext.observed_arxiv_version(source, '1706.03762v1')
+
+
     def test_arxiv_total_deadline_cancels_slow_stream_and_closes_it(self):
         closed = []
         requests = []
@@ -56,7 +85,8 @@ class DownloadTest(unittest.TestCase):
 
     def test_default_profile_uses_hub_then_arxiv(self):
         profile = json.loads((Path(__file__).resolve().parents[1] / 'config/profiles/fast.json').read_text())
-        command = next(stage['command'] for stage in profile['stages'] if stage['id'] == 'fulltext')
+        stage = next(stage for stage in profile['stages'] if stage['id'] == 'fulltext')
+        command = next(step for step in stage['steps'] if any(item.endswith('/fetch_fulltext.py') for item in step))
         self.assertEqual(command[command.index('--sources') + 1], 'paperhub,arxiv_pdf')
 
     def test_hub_failure_uses_arxiv_without_changing_hub_timeout(self):
@@ -77,9 +107,61 @@ class DownloadTest(unittest.TestCase):
                     breaker=fetch_fulltext.Breaker(), timeout=37, sources=('paperhub', 'arxiv_pdf'),
                 )
             self.assertEqual(hub_fetch.call_args.args[:3], ('123', 'https://example.test', 37))
-            arxiv_fetch.assert_called_once_with('https://arxiv.org/pdf/2401.00001')
+            arxiv_fetch.assert_called_once_with('https://arxiv.org/pdf/2401.00001',
+                                                timeout=fetch_fulltext.ARXIV_TOTAL_TIMEOUT)
             self.assertEqual(row['source'], 'arxiv_pdf')
             self.assertIn('calibrated estimator', record['sentences'])
+
+    def test_direct_arxiv_uses_request_budget_and_records_actual_dispatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'source.pdf'
+            document = pdf_fixture.open()
+            page = document.new_page()
+            page.insert_text((50, 100), 'arXiv:2401.00001v2 A measured result with stated conditions.')
+            document.save(source)
+            document.close()
+            with patch.object(fetch_fulltext, 'fetch_paperhub', side_effect=AssertionError('no verified hub ID')), \
+                 patch.object(fetch_fulltext, 'download_pdf', side_effect=AssertionError('no other PDF source')), \
+                 patch.object(fetch_fulltext, 'download_arxiv', return_value=source.read_bytes()) as download:
+                record, row = fetch_fulltext.acquire(
+                    'internal-alias', {'arxiv_id': '2401.00001', 'abstract': 'An original abstract.'},
+                    hub_base='https://example.test', cache=fetch_fulltext.Cache(root / 'cache'),
+                    breaker=fetch_fulltext.Breaker(), timeout=37, sources=('paperhub', 'arxiv_pdf'))
+            download.assert_called_once_with('https://arxiv.org/pdf/2401.00001', timeout=37)
+            self.assertEqual(record['actual_arxiv_id'], '2401.00001v2')
+            self.assertEqual(row['arxiv_request']['role'], 'primary')
+            self.assertEqual(row['arxiv_request']['timeout_sec'], 37)
+            self.assertEqual(row['arxiv_request']['outcome'], 'downloaded')
+            self.assertEqual(row['source'], 'arxiv_pdf')
+
+    def test_internal_alias_without_download_identifiers_never_reaches_network(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(fetch_fulltext, 'fetch_paperhub', side_effect=AssertionError('no verified hub ID')), \
+             patch.object(fetch_fulltext, 'download_pdf', side_effect=AssertionError('no PDF locator')), \
+             patch.object(fetch_fulltext, 'download_arxiv', side_effect=AssertionError('no arXiv ID')):
+            record, row = fetch_fulltext.acquire(
+                '2509.16082', {'abstract': 'An original abstract.'},
+                hub_base='https://example.test', cache=fetch_fulltext.Cache(Path(folder)),
+                breaker=fetch_fulltext.Breaker(), timeout=30, sources=('paperhub', 'arxiv_pdf'))
+            self.assertIsNone(record)
+            self.assertEqual(row['outcome'], 'no_identifier')
+            self.assertIn('use supplied abstract', row['detail'])
+
+    def test_connect_timeout_is_distinct_from_exhausted_total_budget(self):
+        with patch.object(fetch_fulltext, '_arxiv_request',
+                          side_effect=fetch_fulltext.httpx.ConnectTimeout('connection deadline')):
+            with self.assertRaises(FetchError) as caught:
+                fetch_fulltext.download_arxiv('https://arxiv.org/pdf/2401.00001', timeout=30)
+        self.assertEqual(caught.exception.outcome, 'timeout')
+        self.assertIn('ConnectTimeout', caught.exception.detail)
+        self.assertIn('request budget 30s', caught.exception.detail)
+        self.assertNotIn('overall deadline exhausted', caught.exception.detail)
+
+    def test_arxiv_rejects_unbounded_or_invalid_budget(self):
+        for budget in (0, -1, float('inf'), float('nan')):
+            with self.subTest(budget=budget), self.assertRaisesRegex(ValueError, 'finite and positive'):
+                fetch_fulltext.download_arxiv('https://arxiv.org/pdf/2401.00001', timeout=budget)
 
     def test_missing_arxiv_id_stops_without_pdf_or_doi_recovery(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(
@@ -107,7 +189,7 @@ class DownloadTest(unittest.TestCase):
             with patch.object(hub, 'download', return_value=(source, {})):
                 record = fetch_paperhub('123', 'https://example.test', 37, root)
             self.assertIn('calibrated estimator', record['sentences'])
-            self.assertTrue(record['parse_report']['warnings'])
+            self.assertIn('reading_input', record['parse_report'])
 
     def test_paperhub_keeps_proxy_and_direct_fallback(self):
         transports = []
@@ -123,7 +205,7 @@ class DownloadTest(unittest.TestCase):
                 pass
 
             def iter_bytes(self, *_args):
-                yield b'source'
+                yield b'%PDF-source'
 
         class Client:
             def __init__(self, **options):
@@ -158,9 +240,13 @@ class DownloadTest(unittest.TestCase):
             self.assertEqual(os.environ['NO_PROXY'], 'localhost,service.example.test')
             self.assertNotIn('scholarseed.damo.alibaba.com', os.environ['no_proxy'])
             self.assertEqual(os.environ['HTTP_PROXY'], environment['HTTP_PROXY'])
-            source, _metadata = hub.download('12345', directory, services['paper_hub'])
-            self.assertEqual(source.read_bytes(), b'source')
+            events = []
+            source, _metadata = hub.download('12345', directory, services['paper_hub'],
+                                             observer=lambda event, **values: events.append((event, values)))
+            self.assertEqual(source.read_bytes(), b'%PDF-source')
             self.assertEqual(transports, [True, False])
+            self.assertTrue(any(event == 'download_transport_failed' for event, _ in events))
+            self.assertEqual(events[-1][0], 'download_attempt_completed')
 
     def test_paperhub_direct_override_remains_available(self):
         services = {'paper_hub': 'https://scholarseed.damo.alibaba.com/paperhub'}
@@ -197,28 +283,6 @@ class DownloadTest(unittest.TestCase):
                 self.assertEqual(slr_paths.endpoints()['optional_service'], 'https://service.example.test')
                 self.assertIn('optional_service', slr_paths.endpoint_specs())
 
-    def test_downloaded_latex_without_caption_keeps_fulltext(self):
-        source_text = r'''\documentclass{article}
-\begin{document}
-The method remains available as full text.
-\begin{figure}PrivatePlotData\end{figure}
-The conclusion remains available as full text.
-\end{document}'''
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / 'source.tex'
-            source.write_text(source_text)
-            with patch.object(hub, 'download', return_value=(source, {})):
-                record = fetch_paperhub('123', 'https://example.test', 1, Path(tmp))
-            self.assertEqual(record['info_type'], 'origin_latex')
-            self.assertIn('The method remains', record['sentences'])
-            self.assertNotIn('PrivatePlotData', record['sentences'])
-            self.assertIn('float without caption: figure', record['parse_report']['warnings'])
-            self.assertEqual(record['parse_report']['status'], 'ok')
-            source.write_text(source_text.replace('The method remains', r'\input{missing} The method remains'))
-            with patch.object(hub, 'download', return_value=(source, {})):
-                with self.assertRaises(FetchError) as caught:
-                    fetch_paperhub('123', 'https://example.test', 1, Path(tmp))
-            self.assertEqual(caught.exception.outcome, 'extract_failed')
 
     def test_normalizes_sibling_paths_and_preserves_ports(self):
         for url,expected in [('http://example.test/papersearch/','http://example.test/paperdownload/'),('https://example.test:8443/prefix/paperdownload/','https://example.test:8443/prefix/paperdownload/')]:
@@ -228,10 +292,10 @@ The conclusion remains available as full text.
         seen=[]
         class Response:
             status_code=200
-            headers={'content-disposition':'attachment; filename="source.gz"'}
+            headers={'content-disposition':'attachment; filename="source.pdf"'}
             def __enter__(self):return self
             def __exit__(self,*args):pass
-            def iter_bytes(self,*args):yield b'binary-source'
+            def iter_bytes(self,*args):yield b'%PDF-test-source'
         class Client:
             def __init__(self,**kwargs):self.options=kwargs
             def __enter__(self):return self
@@ -240,9 +304,9 @@ The conclusion remains available as full text.
         with tempfile.TemporaryDirectory() as tmp,patch.dict('os.environ',{'SCHOLARSEED_API_KEY':'hub-test','SCHOLARSEED_ACCOUNT_TOKEN':'text-test','IMAGE_API_KEY':'image-test'},clear=True),patch.object(hub.httpx,'Client',Client):
             path,first=hub.download('12345',tmp,'https://example.test/papersearch/')
             _,cached=hub.download('12345',tmp,'https://example.test/papersearch/')
-            self.assertEqual(path.read_bytes(),b'binary-source')
+            self.assertEqual(path.read_bytes(),b'%PDF-test-source')
             self.assertEqual(seen[0][0],'GET')
-            self.assertEqual(seen[0][2]['params'],{'id':'12345'})
+            self.assertEqual(seen[0][2]['params'],{'id':'12345','pdf':'true'})
             self.assertEqual(seen[0][2]['headers'],{'Authorization':'Bearer hub-test'})
             self.assertEqual(len(seen),1);self.assertTrue(cached['cached'])
             self.assertNotIn('hub-test',json.dumps(first))
@@ -262,7 +326,7 @@ The conclusion remains available as full text.
             (inp/'paper_info.json').write_text(json.dumps({'p1':{'sentences':text,'parse_report':{'parser_version':'new'}}}))
             (out/'paper_cards.json').write_text(json.dumps({'p1':{'title':'Old'}}))
             self.assertEqual([pid for pid,_ in step0_load.load_inputs(str(inp),str(out))[-1]],['p1'])
-            self.assertTrue(list((out/'_history/p1').glob('*.json')))
+            self.assertFalse((out/'_history/p1').exists())
             (out/'paper_cards.json').write_text(json.dumps({'p1':{'card':{'method':{'description':'Real evidence'}},'source_text_sha256':hashlib.sha256(text.encode()).hexdigest()}}))
             self.assertEqual(step0_load.load_inputs(str(inp),str(out))[-1],[])
 

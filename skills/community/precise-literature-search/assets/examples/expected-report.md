@@ -19,8 +19,10 @@ verified bibliographic evidence.
 When the user chooses to finish, a separate `final_report.md` answers the
 confirmed research question using these reading artifacts plus recorded search
 and report feedback, without repeating their per-paper inventory. It uses numbered inline citations grounded in readable
-papers and ends with `## 参考资料` or `## References` containing the matching
-numbered bibliography. A selected paper without readable full text may appear as
+papers and ends with a references heading in the user's language containing the
+matching numbered bibliography. Use `## References` in English. For Chinese, use
+the exact heading accepted by the final-report validator in `scripts/run_state.py`.
+A selected paper without readable full text may appear as
 a separate `[A#]` abstract-level alert only when its substantive abstract is
 exceptionally relevant. These alerts use attributed wording, explicitly state
 that the full text was not read, appear in a dedicated section immediately before

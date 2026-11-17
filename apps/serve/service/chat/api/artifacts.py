@@ -11,7 +11,6 @@ from pydantic import ValidationError
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
-    HTTP_413_CONTENT_TOO_LARGE,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
 
@@ -29,7 +28,6 @@ from service.platform.bridge import (
 )
 from service.platform.content import ArtifactSnapshotFailure
 from service.platform.vocabulary import (
-    BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_SESSION_HEADER,
 )
 
@@ -60,14 +58,7 @@ def register_artifact_routes(
         turn_id = caller.publication_turn_id
         if not turn_id:
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
-        raw = bytearray()
-        async for chunk in request.stream():
-            raw.extend(chunk)
-            if len(raw) > BRIDGE_MAX_REQUEST_BYTES:
-                return JSONResponse(
-                    {"ok": False, "error": "bridge_request_too_large"},
-                    HTTP_413_CONTENT_TOO_LARGE,
-                )
+        raw = await request.body()
         try:
             command = ArtifactPublish.model_validate(json.loads(raw))
         except (ValueError, ValidationError):

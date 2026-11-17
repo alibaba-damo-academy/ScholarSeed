@@ -414,6 +414,27 @@ export function markCreditsExhausted(state: CreditsState): CreditsState {
   }
 }
 
+export function reconcileCreditsSummary(
+  current: CreditsState,
+  requestedSummary: CreditsSummary | null,
+  summary: CreditsSummary
+): CreditsState {
+  if (current.summary !== requestedSummary && creditsAreExhausted(current.summary)) return current
+  if (
+    creditsAreExhausted(current.summary) &&
+    summary.enforcing &&
+    !summary.unlimited &&
+    summary.balance_credits !== null &&
+    summary.balance_credits > 0 &&
+    summary.granted_credits !== null &&
+    summary.used_credits !== null &&
+    summary.granted_credits === current.summary?.granted_credits &&
+    summary.used_credits === current.summary?.used_credits
+  )
+    return current
+  return { phase: 'ready', summary }
+}
+
 function toFiniteNumber(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(parsed) ? parsed : null

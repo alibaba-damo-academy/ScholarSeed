@@ -101,6 +101,7 @@ _MODEL_CONFIG_CODES = frozenset(
 )
 _UNAVAILABLE_CODES = frozenset(
     {
+        "connection_error",
         "overloaded",
         "server_error",
         "server_is_overloaded",
@@ -262,7 +263,9 @@ def _native_http_status(value: Any) -> int | None:
                     continue
                 for status_key in _HTTP_STATUS_KEYS:
                     status = details.get(status_key)
-                    if type(status) is int and 400 <= status <= 599:
+                    if (
+                        isinstance(status, int) and not isinstance(status, bool)
+                    ) and 400 <= status <= 599:
                         return status
     return None
 

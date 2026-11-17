@@ -13,9 +13,23 @@ await engine.init({
   fallbackLng: false,
   lng: 'zh',
   resources: {
-    en: { literature: JSON.parse(readFileSync(new URL('../../../../localization/locales/en/literature.json', import.meta.url), 'utf8')) },
-    zh: { literature: JSON.parse(readFileSync(new URL('../../../../localization/locales/zh/literature.json', import.meta.url), 'utf8')) }
-  }
+    en: {
+      literature: JSON.parse(
+        readFileSync(
+          new URL('../../../../localization/locales/en/literature.json', import.meta.url),
+          'utf8'
+        )
+      ),
+    },
+    zh: {
+      literature: JSON.parse(
+        readFileSync(
+          new URL('../../../../localization/locales/zh/literature.json', import.meta.url),
+          'utf8'
+        )
+      ),
+    },
+  },
 })
 
 test('the row menu is the design system context menu wrapped around the row itself', () => {
@@ -23,16 +37,21 @@ test('the row menu is the design system context menu wrapped around the row itse
   assert.match(menuSource, /} from '\.\.\/\.\.\/components\/ui'/)
   assert.match(menuSource, /<ContextMenuTrigger asChild>\{children\}<\/ContextMenuTrigger>/)
   // 行是列表网格的直接子元素: 触发器必须合并到行的 div 上, 不能插入包裹节点。
-  assert.match(listSource, /<LiteratureRowMenu actions=\{menu\} item=\{item\} projectId=\{projectId\}>/)
+  assert.match(
+    listSource,
+    /<LiteratureRowMenu actions=\{menu\} item=\{item\} projectId=\{projectId\}>/
+  )
   assert.doesNotMatch(menuSource, /onContextMenu=/)
   assert.doesNotMatch(menuSource, /createPortal/)
 })
 
 test('menu entries keep the required order and separators', () => {
-  const sequence = [...menuSource.matchAll(/<ContextMenuSeparator \/>|literature\('([a-zA-Z.]+)'\)/g)]
-    .map((match) => match[1] ?? '|')
+  const sequence = [
+    ...menuSource.matchAll(/<ContextMenuSeparator \/>|literature\('([a-zA-Z.]+)'\)/g),
+  ].map((match) => match[1] ?? '|')
   assert.deepEqual(sequence, [
     'list.rowMenu.viewPdf',
+    'reading.title',
     'list.rowMenu.copyTitle',
     'list.rowMenu.viewInfo',
     '|',
@@ -40,12 +59,15 @@ test('menu entries keep the required order and separators', () => {
     'list.rowMenu.addAttachment',
     '|',
     'batch.removeProject',
-    'batch.deleteTitle'
+    'batch.deleteTitle',
   ])
 })
 
 test('icons come from the shared icon set instead of hand drawn svg', () => {
-  assert.match(menuSource, /import \{ Copy, Eye, Info, Paperclip, PenLine, Trash \} from 'lucide-react'/)
+  assert.match(
+    menuSource,
+    /import \{ Copy, Eye, Info, Paperclip, PenLine, Sparkles, Trash \} from 'lucide-react'/
+  )
   assert.doesNotMatch(menuSource, /<svg|<path\s/)
 })
 
@@ -54,7 +76,10 @@ test('view pdf is unavailable exactly when the row has no usable primary attachm
   assert.match(menuSource, /isAttachmentAvailable\(item\.primary_attachment\)/)
   assert.match(menuSource, /disabled=\{primaryAttachment === null\}/)
   assert.match(menuSource, /if \(primaryAttachment\) actions\.viewPdf\(primaryAttachment\.id\)/)
-  assert.match(listSource, /viewPdf: \(attachmentId\) =>\s*act\.openLiteratureAttachment\(item\.id, attachmentId\)/)
+  assert.match(
+    listSource,
+    /viewPdf: \(attachmentId\) =>\s*act\.openLiteratureAttachment\(item\.id, attachmentId\)/
+  )
 })
 
 test('copy title is a clipboard action owned by the list, not by the menu', () => {
@@ -64,7 +89,10 @@ test('copy title is a clipboard action owned by the list, not by the menu', () =
   // 标题为空的行没有可复制的东西, 与「没有主附件就不能查看 PDF」同一种处理: 置灰。
   assert.match(menuSource, /disabled=\{item\.title\.trim\(\) === ''\}/)
   // 走共享剪贴板能力 (主进程优先), 不用只认聚焦态的 navigator.clipboard。
-  assert.match(listSource, /import \{ writeClipboard \} from '\.\.\/\.\.\/components\/primitive\/clipboard'/)
+  assert.match(
+    listSource,
+    /import \{ writeClipboard \} from '\.\.\/\.\.\/components\/primitive\/clipboard'/
+  )
   assert.match(listSource, /await writeClipboard\(title\)/)
   assert.match(listSource, /copyTitle: \(\) => void copyItemTitle\(item\)/)
   // 成与败都要有用户可见反馈, 不能静默。
@@ -74,7 +102,10 @@ test('copy title is a clipboard action owned by the list, not by the menu', () =
 
 test('the destructive entry follows the scope: remove in a project, delete in the overview', () => {
   assert.match(menuSource, /destructive onSelect=\{actions\.remove\}/)
-  assert.match(menuSource, /projectId\s*\?\s*literature\('batch\.removeProject'\)\s*:\s*literature\('batch\.deleteTitle'\)/)
+  assert.match(
+    menuSource,
+    /projectId\s*\?\s*literature\('batch\.removeProject'\)\s*:\s*literature\('batch\.deleteTitle'\)/
+  )
   assert.match(listSource, /remove: \(\) => setRemoveTarget\(item\)/)
   // 单条与批量共用同一套语义与失败提示, 不各写一份后端调用。
   assert.match(listSource, /if \(!\(await removeLiteratures\(selected\)\)\) return/)
@@ -88,11 +119,20 @@ test('the destructive entry follows the scope: remove in a project, delete in th
 })
 
 test('note and attachment intents land on their own tab and fire once', () => {
-  assert.match(detailSource, /intent\.action === 'note' \? DETAIL_TAB\.notes : DETAIL_TAB\.attachments/)
+  assert.match(
+    detailSource,
+    /intent\.action === 'reading'\s*\? DETAIL_TAB\.reading\s*:\s*intent\.action === 'note'\s*\? DETAIL_TAB\.notes\s*:\s*DETAIL_TAB\.attachments/
+  )
   // 附件页的隐藏 input 只在该 tab 挂上后才存在, 早一步 click 会打在空 ref 上。
-  assert.match(detailSource, /if \(detailTab !== DETAIL_TAB\.attachments \|\| !attachmentInput\.current\) return/)
+  assert.match(
+    detailSource,
+    /if \(detailTab !== DETAIL_TAB\.attachments \|\| !attachmentInput\.current\) return/
+  )
   assert.match(detailSource, /attachmentInput\.current\.click\(\)/)
-  assert.match(detailSource, /startNew=\{\s*pendingIntent\?\.action === 'note' \? pendingIntent\.nonce : 0\s*\}/)
+  assert.match(
+    detailSource,
+    /startNew=\{\s*pendingIntent\?\.action === 'note' \? pendingIntent\.nonce : 0\s*\}/
+  )
   // 笔记按 nonce 触发: 依赖里放 requestNew 会把用户正在写的那篇反复重开。
   assert.match(notesSource, /startRequest\.current\.requestNew\(\)/)
   assert.match(notesSource, /\}, \[startNew\]\)/)

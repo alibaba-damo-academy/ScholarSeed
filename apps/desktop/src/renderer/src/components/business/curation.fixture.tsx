@@ -11,6 +11,7 @@ import {
   literatureCurationInteraction,
   literatureOutlineConfirmation,
 } from '../../features/literature/interaction'
+import { DocumentWorkspaceContext, documentWorkspaces } from '../../features/workbench/workspace'
 import { InteractionPolicyProvider } from './Interactions'
 import { HilCard, Stream, type HilController } from './Stream'
 import { ToastProvider } from '../ui'
@@ -127,7 +128,9 @@ createRoot(document.getElementById('root')!).render(
         policies={[literatureCurationInteraction, literatureOutlineConfirmation]}
       >
         <StoreProvider assistantSources={[]}>
-          <Fixture />
+          <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
+            <Fixture />
+          </DocumentWorkspaceContext.Provider>
         </StoreProvider>
       </InteractionPolicyProvider>
     </ToastProvider>

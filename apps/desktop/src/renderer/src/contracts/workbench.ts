@@ -81,6 +81,13 @@ export interface OpenDocumentRequest {
   page?: number
 }
 
+export interface ProjectDocumentSource {
+  kind: 'project'
+  path: string
+  project?: string | null
+  assetId?: string | null
+}
+
 export interface LiteratureDocumentSource {
   kind: 'literature'
   literatureId: string
@@ -96,6 +103,15 @@ export interface SavedCitationReference {
   project_id: string
   path: string
   handle: string
+}
+
+export const ANNOTATION_VIEW_STATE_KEY = 'annotationFocus'
+
+export interface AnnotationFocus {
+  revision: string
+  page: number
+  markId: string
+  sequence: number
 }
 
 export interface SessionFileSource {
@@ -119,17 +135,31 @@ export interface ArtifactCitationReference {
   handle: string
 }
 
-export interface PdfMarkRecord {
+export type PdfTextMarkStyle = 'highlight' | 'underline' | 'strikethrough'
+
+interface PdfMarkIdentity {
   id: string
-  style: 'highlight' | 'underline' | 'strikethrough'
   color: 'yellow' | 'orange' | 'green' | 'teal' | 'blue' | 'purple' | 'red' | 'gray'
   page: number
-  quads: number[][]
-  text: string
   anchor_state: 'anchored' | 'stale'
   created_at: number
   updated_at: number
 }
+
+export interface PdfTextMarkRecord extends PdfMarkIdentity {
+  style: PdfTextMarkStyle
+  quads: number[][]
+  text: string
+}
+
+export interface PdfPointMarkRecord extends PdfMarkIdentity {
+  style: 'comment'
+  point: [number, number]
+  quads: []
+  text: ''
+}
+
+export type PdfMarkRecord = PdfTextMarkRecord | PdfPointMarkRecord
 
 export interface PdfCommentRecord {
   id: string
@@ -157,6 +187,17 @@ export interface PdfRecords {
   marks: PdfMarkRecord[]
   comments: PdfCommentRecord[]
   notes: PdfNoteRecord[]
+  native_annotations?: {
+    id: string
+    page: number
+    subtype: string
+    name: string
+    rect: number[]
+    contents: string
+    author: string
+    created: string
+    modified: string
+  }[]
 }
 
 export interface PdfRecordSnapshot {
@@ -195,7 +236,7 @@ export type SelectionLocator =
   | { kind: 'pdf'; page: number; quads: number[][]; text_length?: number; text_shape_hash?: string }
   | {
       kind: 'writer'
-      format: 'doc' | 'docx'
+      format?: 'doc' | 'docx'
       paragraph: string
       end_paragraph?: string
       start: number
@@ -203,6 +244,12 @@ export type SelectionLocator =
     }
   | { kind: 'calc'; sheet: string; range: string; content_mode?: 'reference' }
   | { kind: 'impress'; slide: number; shape: string; start?: number; end?: number }
+
+export interface SelectionReveal {
+  locator: SelectionLocator
+  text: string
+  sourceRevision?: string | null
+}
 
 export interface SelectionAnchor {
   document_id: string
