@@ -134,6 +134,16 @@ Runtime is a contract/Gateway distribution, not an agent Harness. Do not recreat
 built wheel, update consumers of moved symbols, and keep contract, Gateway,
 Trace and vendor execution in their respective Owners.
 
+### Resident Prompt Budget
+
+**Do not expand `baseInstructions.md` or `developerInstructions.md`: every conversation pays the context/latency cost.**
+Exceptions require minimal content essential on every call, unsafe to load on demand,
+and explicit user approval of necessity/context growth before editing; frequency or spare budget is insufficient.
+Base replaces Codex's foundation (identity, language, pre-Skill safeguards);
+Developer adds universal product constraints, not development rules.
+Put task details in matching product/research Skill references and development rules in scoped `AGENTS.md`.
+Never bypass this gate through tool descriptions or dynamic injection.
+
 ### Code Engineering Rules (hard gates)
 
 - Keep imports at file head; lazy, dynamic and type-only imports are dependency

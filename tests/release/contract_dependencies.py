@@ -137,7 +137,7 @@ class ReleaseDependenciesContracts(unittest.TestCase):
                     "-c",
                     "import sys; from pathlib import Path; from importlib.metadata import version; "
                     "import knowledge_layer.comprehend as kernel; "
-                    "assert version('deep-rnd-l1') == '0.2.8'; "
+                    "assert version('deep-rnd-l1') == '0.2.9'; "
                     "assert Path(kernel.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); "
                     "assert 'openai' not in sys.modules and 'anthropic' not in sys.modules",
                 ],
@@ -263,7 +263,7 @@ class ReleaseDependenciesContracts(unittest.TestCase):
         wheel = product_inputs(ROOT)[0]
         provenance = json.loads((wheel.parent / "provenance.json").read_bytes())
         self.assertEqual(provenance["sha256"], digest(wheel))
-        self.assertEqual(provenance["version"], "0.2.8")
+        self.assertEqual(provenance["version"], "0.2.9")
         self.assertFalse(provenance["source_dirty"])
         with zipfile.ZipFile(wheel) as archive:
             sources = {name for name in archive.namelist() if name.endswith(".py")}
@@ -308,7 +308,7 @@ class ReleaseDependenciesContracts(unittest.TestCase):
                     {
                         "path": str(wheel),
                         "name": "deep-rnd-l1",
-                        "version": "0.2.8",
+                        "version": "0.2.9",
                         "sha256": digest(wheel),
                     }
                 ],
@@ -322,7 +322,7 @@ class ReleaseDependenciesContracts(unittest.TestCase):
                     snapshot(plan, requirements, [], output)
                 snapshot(plan, requirements, [wheel], output)
                 self.assertEqual(
-                    json.loads(output.read_bytes())["packages"], {"deep-rnd-l1": "0.2.8"}
+                    json.loads(output.read_bytes())["packages"], {"deep-rnd-l1": "0.2.9"}
                 )
                 with zipfile.ZipFile(wheel, "a") as archive:
                     archive.writestr("changed.txt", "changed")

@@ -106,8 +106,10 @@ test('macOS registry identity checks preserve the SQLite write lock', {
 }, t => {
   const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
   const leaf = 'registry.sqlite'
-  const filename = path.join(account, leaf)
-  const pin = api.pin(account, false)
+  const coordinator = path.join(account, 'coordinator')
+  fs.mkdirSync(coordinator, { mode: 0o700 })
+  const filename = path.join(coordinator, leaf)
+  const pin = api.pin(coordinator, false)
   const db = new DatabaseSync(filename)
   t.after(() => {
     db.close()
@@ -138,6 +140,25 @@ test('macOS registry identity checks preserve the SQLite write lock', {
   assert.match(identity, /^darwin:/)
   assert.equal(competingWriter(), 'busy')
   assert.equal(api.fileIdentityAt(pin, leaf, null), identity)
+  assert.equal(competingWriter(), 'busy')
+  execFileSync('chmod', ['+a', 'everyone allow write', filename])
+  assert.throws(() => api.fileIdentityAt(pin, leaf, null), { code: 'ERR_LEASE_PERMISSION' })
+  execFileSync('chmod', ['-N', filename])
+  execFileSync('chmod', ['+a', `user:${os.userInfo().username} allow write`, filename])
+  // The directory itself fits in PATH_MAX, but its SQLite leaf does not.
+  let parent = account
+  while (Buffer.byteLength(parent) < 790) {
+    parent = path.join(parent, 'a'.repeat(180))
+  }
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
+  const moved = path.join(parent, 'b'.repeat(1015 - Buffer.byteLength(parent) - 1))
+  fs.renameSync(coordinator, moved)
+  try {
+    assert.equal(api.fileIdentityAt(pin, leaf, legacy), identity)
+    assert.equal(api.fileIdentityAt(pin, leaf, null), identity)
+  } finally {
+    fs.renameSync(moved, coordinator)
+  }
   assert.equal(competingWriter(), 'busy')
   db.exec('ROLLBACK')
   assert.equal(competingWriter(), 'acquired')

@@ -434,7 +434,7 @@ export function ToolExecution({
                 <Card
                   variant="flat"
                   padding="none"
-                  className="flex items-center gap-[var(--vds-space-2)] !rounded-[var(--vds-radius-6)] !border-[var(--vds-divider-default)] !bg-transparent px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
+                  className="flex items-center gap-[var(--vds-space-2)] !rounded-[var(--vds-radius-3)] !border-[var(--vds-divider-default)] !bg-transparent px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
                 >
                   <p className="m-0 min-w-0 [overflow-wrap:anywhere]">{data.failure.help}</p>
                   <Button

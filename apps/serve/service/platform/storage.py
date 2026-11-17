@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import stat
+import struct
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -1799,6 +1800,26 @@ def _darwin_directory_mode_trusted(owner: int, group: int, mode: int, ancestor: 
     return ancestor and owner == 0 and group == 80 and not mode & stat.S_IWOTH
 
 
+_DARWIN_ATTR_RETURNED = 0x80000000
+_DARWIN_ATTR_DEVICE = 0x00000002
+_DARWIN_ATTR_BIRTH = 0x00000200
+_DARWIN_ATTR_OWNER_GROUP_MODE = 0x00038000
+_DARWIN_ATTR_SECURITY = 0x00400000
+_DARWIN_ATTR_FILE_ID = 0x02000000
+_DARWIN_ATTR_LINK_COUNT = 1
+_DARWIN_FSOPT_NOFOLLOW = 1
+_DARWIN_FSOPT_REPORT_FULLSIZE = 4
+_DARWIN_FSOPT_PACK_INVAL_ATTRS = 8
+_DARWIN_FILESEC_MAGIC = 0x012CC16D
+_DARWIN_ACL_MAX_ENTRIES = 128
+# Darwin packs the returned attributes and variable-length filesec record on
+# four-byte boundaries. The filesec header holds magic, two UUIDs, count and flags.
+_DARWIN_IDENTITY_ATTRIBUTES = struct.Struct("=6IiqqIIIiIQI")
+_DARWIN_ATTR_SECURITY_REF = struct.calcsize("=6IiqqIII")
+_DARWIN_FILESEC_HEADER = struct.Struct("=I16s16sII")
+_DARWIN_ACE_SIZE = struct.calcsize("=16sII")
+
+
 class _DarwinSecurity:
     """Darwin 64-bit stat/filesec ABI; permission checks never repair ACLs."""
 
@@ -1819,9 +1840,6 @@ class _DarwinSecurity:
         stat_function.argtypes = [integer, ctypes.POINTER(_DarwinStat), pointer]
         stat_function.restype = integer
         self.stat = stat_function
-        self.lstat = getattr(self.lib, "lstatx_np" + suffix)
-        self.lstat.argtypes = [ctypes.c_char_p, ctypes.POINTER(_DarwinStat), pointer]
-        self.lstat.restype = integer
         mount_function = getattr(self.lib, "fstatfs" + suffix)
         mount_function.argtypes = [integer, ctypes.POINTER(_DarwinMount)]
         mount_function.restype = integer
@@ -1831,11 +1849,16 @@ class _DarwinSecurity:
                 [integer, pointer, pointer, ctypes.c_size_t, ctypes.c_ulong],
                 integer,
             ),
+            "getattrlistat": (
+                [integer, ctypes.c_char_p, pointer, pointer, ctypes.c_size_t, ctypes.c_ulong],
+                integer,
+            ),
             "filesec_init": ([], pointer),
             "filesec_free": ([pointer], None),
             "filesec_query_property": ([pointer, integer, ctypes.POINTER(integer)], integer),
             "filesec_get_property": ([pointer, integer, pointer], integer),
             "acl_free": ([pointer], integer),
+            "acl_copy_int_native": ([pointer], pointer),
             "acl_get_entry": ([pointer, integer, out_pointer], integer),
             "acl_get_tag_type": ([pointer, ctypes.POINTER(integer)], integer),
             "acl_get_permset": ([pointer, out_pointer], integer),
@@ -1915,9 +1938,9 @@ class _DarwinSecurity:
             raise LeaseError("ERR_LEASE_UNSUPPORTED")
         return f"darwin:{uuid.hex()}:{info.st_ino:016x}:{seconds:016x}:{nanoseconds:08x}"
 
-    def _validated_stat(
-        self, descriptor: int, ancestor: bool, role: DirectoryRole, path: bytes | None = None
-    ) -> _DarwinStat:
+    def validate(
+        self, descriptor: int, ancestor: bool, role: DirectoryRole = DirectoryRole.PRIVATE
+    ) -> _PosixMetadata:
         volume = _DarwinMount()
         self._check(self.mount(descriptor, ctypes.byref(volume)))
         if not volume.flags & _DARWIN_MNT_LOCAL:
@@ -1927,10 +1950,7 @@ class _DarwinSecurity:
             raise LeaseError("ERR_LEASE_ALLOCATION")
         info, acl, present = _DarwinStat(), ctypes.c_void_p(), ctypes.c_int()
         try:
-            if path is None:
-                self._check(self.stat(descriptor, ctypes.byref(info), security))
-            else:
-                self._check(self.lstat(path, ctypes.byref(info), security))
+            self._check(self.stat(descriptor, ctypes.byref(info), security))
             self._check(
                 self.lib.filesec_query_property(
                     security, _DARWIN_FILESEC_ACL, ctypes.byref(present)
@@ -1951,44 +1971,108 @@ class _DarwinSecurity:
                 if not acl:
                     raise LeaseError("ERR_LEASE_PERMISSION")
                 self._acl(acl)
-            return info
+            return _PosixMetadata(
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_nlink,
+                info.st_uid,
+                info.st_gid,
+                info.st_size,
+                info.mtime[0] * _NANOSECONDS + info.mtime[1],
+                info.ctime[0] * _NANOSECONDS + info.ctime[1],
+            )
         finally:
             if acl:
                 self.lib.acl_free(acl)
 
-    def validate(
-        self, descriptor: int, ancestor: bool, role: DirectoryRole = DirectoryRole.PRIVATE
-    ) -> _PosixMetadata:
-        info = self._validated_stat(descriptor, ancestor, role)
-        return _PosixMetadata(
-            info.st_dev,
-            info.st_ino,
-            info.st_mode,
-            info.st_nlink,
-            info.st_uid,
-            info.st_gid,
-            info.st_size,
-            info.mtime[0] * _NANOSECONDS + info.mtime[1],
-            info.ctime[0] * _NANOSECONDS + info.ctime[1],
-        )
-
-    def persistent_identity_at(
-        self, parent: int, name: str, path: bytes, expected: str | None
-    ) -> str:
-        # A raw close on the SQLite inode would release this process's POSIX locks.
-        info = self._validated_stat(parent, False, DirectoryRole.PRIVATE, path)
-        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if not stat.S_ISREG(named.st_mode) or named.st_nlink != 1:
-            raise LeaseError("ERR_LEASE_FILE")
+    def _identity_acl(
+        self, buffer: ctypes.Array[ctypes.c_char], end: int, relative: int, size: int
+    ) -> None:
+        offset = _DARWIN_ATTR_SECURITY_REF + relative
         if (
-            named.st_dev != os.fstat(parent).st_dev
-            or named.st_dev != info.st_dev
-            or named.st_ino != info.st_ino
-            or named.st_mode != info.st_mode
-            or named.st_nlink != info.st_nlink
-            or (expected is not None and _lease_identity(named) != expected)
+            offset < _DARWIN_IDENTITY_ATTRIBUTES.size
+            or offset % 4
+            or size < _DARWIN_FILESEC_HEADER.size
+            or offset + size > end
+        ):
+            raise LeaseError("ERR_LEASE_PERMISSION")
+        magic, _, _, entries, _ = _DARWIN_FILESEC_HEADER.unpack_from(buffer, offset)
+        if (
+            magic != _DARWIN_FILESEC_MAGIC
+            or entries > _DARWIN_ACL_MAX_ENTRIES
+            or size != _DARWIN_FILESEC_HEADER.size + entries * _DARWIN_ACE_SIZE
+        ):
+            raise LeaseError("ERR_LEASE_PERMISSION")
+        acl = self.lib.acl_copy_int_native(ctypes.byref(buffer, offset))
+        if not acl:
+            raise LeaseError("ERR_LEASE_PERMISSION")
+        try:
+            self._acl(acl)
+        finally:
+            self.lib.acl_free(acl)
+
+    def persistent_identity_at(self, parent: int, name: str, expected: str | None) -> str:
+        # A raw close on the SQLite inode would release this process's POSIX locks.
+        volume = _DarwinMount()
+        self._check(self.mount(parent, ctypes.byref(volume)))
+        if not volume.flags & _DARWIN_MNT_LOCAL:
+            raise LeaseError("ERR_LEASE_UNSUPPORTED")
+        required = (
+            _DARWIN_ATTR_RETURNED
+            | _DARWIN_ATTR_DEVICE
+            | _DARWIN_ATTR_BIRTH
+            | _DARWIN_ATTR_OWNER_GROUP_MODE
+            | _DARWIN_ATTR_FILE_ID
+        )
+        request = (ctypes.c_uint32 * 6)(
+            5, required | _DARWIN_ATTR_SECURITY, 0, 0, _DARWIN_ATTR_LINK_COUNT, 0
+        )
+        buffer = ctypes.create_string_buffer(
+            _DARWIN_IDENTITY_ATTRIBUTES.size
+            + _DARWIN_FILESEC_HEADER.size
+            + _DARWIN_ACL_MAX_ENTRIES * _DARWIN_ACE_SIZE
+        )
+        options = (
+            _DARWIN_FSOPT_NOFOLLOW | _DARWIN_FSOPT_REPORT_FULLSIZE | _DARWIN_FSOPT_PACK_INVAL_ATTRS
+        )
+        self._check(
+            self.lib.getattrlistat(parent, os.fsencode(name), request, buffer, len(buffer), options)
+        )
+        (
+            length,
+            common,
+            _,
+            _,
+            files,
+            _,
+            device,
+            seconds,
+            nanos,
+            owner,
+            group,
+            mode,
+            acl_offset,
+            acl_size,
+            inode,
+            links,
+        ) = _DARWIN_IDENTITY_ATTRIBUTES.unpack_from(buffer)
+        if (
+            not _DARWIN_IDENTITY_ATTRIBUTES.size <= length <= len(buffer)
+            or common & required != required
+        ):
+            raise LeaseError("ERR_LEASE_UNSUPPORTED")
+        if not stat.S_ISREG(mode) or not files & _DARWIN_ATTR_LINK_COUNT or links != 1:
+            raise LeaseError("ERR_LEASE_FILE")
+        info = _DarwinStat(st_dev=device, st_ino=inode, birthtime=(seconds, nanos))
+        if device != os.fstat(parent).st_dev or (
+            expected is not None and _lease_identity(info) != expected
         ):
             raise LeaseError("ERR_LEASE_CHANGED")
+        if not _darwin_directory_mode_trusted(owner, group, mode, False):
+            raise LeaseError("ERR_LEASE_PERMISSION")
+        if common & _DARWIN_ATTR_SECURITY:
+            self._identity_acl(buffer, length, acl_offset, acl_size)
         if not os.access(
             name, os.R_OK | os.W_OK, dir_fd=parent, effective_ids=True, follow_symlinks=False
         ):
@@ -2016,7 +2100,7 @@ class _LeaseLock:
     parent: _LeasePin
 
 
-def _lease_identity(info: _PosixMetadata | os.stat_result) -> str:
+def _lease_identity(info: _PosixMetadata | _DarwinStat) -> str:
     return f"posix:{info.st_dev & ((1 << 64) - 1):016x}:{info.st_ino:016x}"
 
 
@@ -2650,8 +2734,7 @@ class DarwinDirectoryNative(_PosixDirectoryNative):
         with self._operation():
             parent = self._pin(pin)
             self._name(name)
-            path = os.fsencode(os.path.join(self._descriptor_path(parent.leaf), name))
-            return self._darwin_security.persistent_identity_at(parent.leaf, name, path, expected)
+            return self._darwin_security.persistent_identity_at(parent.leaf, name, expected)
 
     def publish_registry_binding(self, pin: object, name: str, data: bytes) -> None:
         """Publish under the registry write transaction shared with Desktop."""

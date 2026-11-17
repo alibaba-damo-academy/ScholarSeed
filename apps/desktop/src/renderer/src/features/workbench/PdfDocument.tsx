@@ -13,6 +13,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import {
   getDocument,
@@ -2171,7 +2172,7 @@ export function PdfDocument({
         />
       ) : (
         <>
-          {analysis.floating}
+          {active && analysis.floating && createPortal(analysis.floating, document.body)}
           {cropBox && (
             <div
               aria-label={t('figureRegion')}

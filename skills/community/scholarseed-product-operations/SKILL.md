@@ -1,37 +1,51 @@
 ---
 name: scholarseed-product-operations
-version: "2026.11.16+1"
+version: "2026.11.16+5"
 description: >-
-  Use ScholarSeed's Bridge, guide users to supported product destinations, and
-  choose official conversation components. Load for project resources and papers,
-  PDF evidence and retrieval, session history, file delivery and imports, task
-  plans and MCP settings, user-clicked navigation, or when structured display or
-  interaction materially improves the result. Load when the user wants to pick
-  from displayed options and continue with their choice, even if no card was requested.
-  Skip for self-contained text answers and discussion that requires no product operation.
+  Use ScholarSeed product operations, conversation components, local code execution
+  and project edits. Covers resources/PDFs, retrieval, history, delivery/imports,
+  plans, MCP, webpages and permission recovery. Load for choosing displayed rows,
+  even if no card was requested. Skip for self-contained text answers and feature discussion.
 metadata:
-  version: "2026.11.16+1"
+  version: "2026.11.16+5"
 ---
 
 # ScholarSeed Product Operations
 
-Load only the reference needed for the next action. A task may move from one
-reference to another; do not preload all three.
+**English** · [简体中文](SKILL.zh.md)
 
-| Intent | Open first |
+Load only the reference needed for the next action. Do not preload all linked guides.
+Read one language version, not both.
+Reuse unchanged guidance still in context; reread after change or context loss.
+Do not load Bridge merely to run local code or use the native plan tool.
+
+| Intent | Read directly |
 | --- | --- |
-| Read or change product state, retrieve evidence, publish files, import into a library, manage plans or MCP | [ScholarSeed Bridge](references/scholarseed-bridge/README.md) |
-| Give the user a clickable entry to a source, result, or published file | [ScholarSeed Frontend](references/scholarseed-frontend/README.md) |
-| Compare and pick from displayed rows, show a chart or native result card, or edit a task Canvas | [ScholarSeed Chat UI](references/scholarseed-chat-ui/README.md) |
+| Run code or install dependencies, including research/data work | [Execution](references/execution.md) |
+| Edit project files, test or maintain a repository | [Project](references/project.md) |
+| Recover a denied tool call | [Recovery](references/recovery.md) |
+| Read/manage project resources | [Resources](references/scholarseed-bridge/guides/resources.md) |
+| Interpret PDFs or retrieve evidence | [Evidence](references/scholarseed-bridge/guides/retrieval.md) |
+| Read earlier/attached conversations | [History](references/scholarseed-bridge/guides/history.md) |
+| Transfer/process/publish files or directories | [Artifacts](references/scholarseed-bridge/guides/artifacts.md) |
+| Explicitly import into a library | [Imports](references/scholarseed-bridge/guides/imports.md) |
+| Manage a product plan | [Plans](references/scholarseed-bridge/guides/plans.md) |
+| Inspect/change MCP servers | [MCP](references/scholarseed-bridge/guides/mcp.md) |
+| Open a webpage, including external-browser requests | [Browser](references/scholarseed-bridge/guides/browser.md) |
+| Provide a clickable source/result/file entry | [Links](references/scholarseed-frontend/README.md) |
+| Use native artifact previews or the workbench | [Workbench](references/scholarseed-chat-ui/guides/workbench.md) |
+| Show ordinary charts or tables | [Display](references/scholarseed-chat-ui/guides/conversation.md) |
+| Let the user pick rows and continue | [Selection](references/scholarseed-chat-ui/guides/selection.md) |
+| Create/edit a task Canvas | [Canvas](references/scholarseed-chat-ui/guides/canvas.md) |
+| Author an executable custom card/plugin | [Authoring](references/scholarseed-chat-ui/guides/authoring.md) |
 
-For file-only transfer or processing, read the [file-artifacts guide](references/scholarseed-bridge/guides/artifacts.md)
-and the Bridge contract for publication when needed. File bytes are not research
-evidence; do not load retrieval or library workflows merely because a file is a PDF.
-Use `pdf-evidence` for PDF interpretation, `web-search` for web evidence discovery,
-and `project-literature` for stored literature when the relevant workflow calls for it.
-Research reasoning belongs to `academic-research-guidance`.
+Before a Bridge call, read its short [protocol](references/scholarseed-bridge/README.md)
+once and only the selected operation contract. For an unclear UI choice use the
+[UI chooser](references/scholarseed-chat-ui/README.md), not every UI guide.
 
-Judge component use from the user's goal and available data, not from mentions of
-“card”, “chart”, or a skill name. Do not add a card when a short answer is clearer.
-Keep input, progress, clarification, authorization and error recovery in their
-native product flows. This skill grants no access or write permission on its own.
+For file-only transfer or processing, use the artifacts guide; File bytes are not
+research evidence. Do not load retrieval or library workflows just because a file
+is a PDF. Evidence tasks route to `pdf-evidence`, `web-search` or `project-literature`;
+research reasoning remains with `academic-research-guidance`.
+Use text when clearer. Input, progress, clarification, authorization and recovery
+remain native product flows. This skill grants no access or write permission.
