@@ -4,11 +4,12 @@ import { apiFetch, LIVE_CATALOG_REQUEST } from './client.ts'
 import { API_DIAGNOSTIC_HEADER, HTTP_LATENCY_DIAGNOSTIC_PREFIX } from '../../../../requests.ts'
 import { flushApiDiagnostics } from './diagnostics.ts'
 import { readApiJson, reportCatalogFailure } from './timing.ts'
+import { resourceTimingDetails, RESOURCE_OBSERVATION_BUDGET_MS } from './resources.ts'
 
 const CATALOG = '/api/serve/sessions?scope=project&project_path=private-project'
 const CORRELATION = '0123456789abcdef0123456789abcdef'
 
-function fixture(context: test.TestContext, transport: typeof fetch) {
+function fixture(context: test.TestContext, transport: typeof fetch, resourceObserver = false) {
   const records: Record<string, unknown>[] = []
   context.mock.method(console, 'info', (prefix: string, value: string) => {
     if (prefix === HTTP_LATENCY_DIAGNOSTIC_PREFIX) {
@@ -17,6 +18,17 @@ function fixture(context: test.TestContext, transport: typeof fetch) {
     }
   })
   context.mock.method(globalThis, 'fetch', transport)
+  if (!resourceObserver)
+    context.mock.method(
+      globalThis,
+      'PerformanceObserver',
+      class {
+        observe() {
+          throw new Error('Resource timing is configured by the resource-specific fixture')
+        }
+        disconnect() {}
+      } as unknown as typeof PerformanceObserver
+    )
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -52,6 +64,12 @@ test('ordinary catalog requests correlate fetch and JSON without recording priva
   assert.equal(records[0].timeout_ms, 10_000)
   assert.ok(Number(records[3].body_elapsed_ms) >= 0)
   assert.ok(records.every((record) => Number.isFinite(record.timestamp_ms)))
+  assert.deepEqual(records[0].catalog, {
+    scope: 'project',
+    archived: null,
+    include_last_agent_reply: null,
+    limit: null,
+  })
   assert.ok(!JSON.stringify(records).includes('private'))
 })
 
@@ -201,5 +219,122 @@ test('schema failures after JSON decoding retain the same exact correlation', as
   assert.equal(records.at(-1)?.event, 'catalog_failed')
   assert.equal(records.at(-1)?.failure_phase, 'schema')
   assert.ok(records.every((record) => record.client_request_id === records[0].client_request_id))
+  assert.ok(!JSON.stringify(records).includes('private'))
+})
+
+test('resource projection preserves unknown phases and excludes names and server metadata', () => {
+  const details = resourceTimingDetails({
+    name: 'http://private.test/api/serve/sessions?project_path=private',
+    startTime: 100,
+    fetchStart: 100,
+    requestStart: 400,
+    domainLookupStart: 100,
+    domainLookupEnd: 100,
+    connectStart: 100,
+    connectEnd: 100,
+    responseStart: 500,
+    responseEnd: 550,
+    duration: 450,
+    nextHopProtocol: 'http/1.1',
+    serverTiming: [{ name: 'private' }],
+  } as unknown as PerformanceResourceTiming)
+  assert.equal(details.before_request_ms, 300)
+  assert.equal(details.request_to_headers_ms, 100)
+  assert.equal(details.transfer_ms, 50)
+  assert.equal(details.connect_ms, 0)
+  assert.ok(!JSON.stringify(details).includes('private'))
+  const aborted = resourceTimingDetails({
+    startTime: 100,
+    fetchStart: 100,
+    requestStart: 0,
+    responseStart: 0,
+    responseEnd: 10_100,
+    duration: 10_000,
+  } as PerformanceResourceTiming)
+  assert.equal(aborted.before_request_ms, null)
+  assert.equal(aborted.request_to_headers_ms, null)
+  assert.equal(aborted.transfer_ms, null)
+  assert.equal(aborted.total_ms, 10_000)
+})
+
+test('real-resource observations correlate only unambiguous dispatches and always disconnect', async (context) => {
+  const observers: Observer[] = []
+  class Observer {
+    disconnected = false
+    constructor(readonly callback: PerformanceObserverCallback) {
+      observers.push(this)
+    }
+    observe() {}
+    disconnect() {
+      this.disconnected = true
+    }
+    takeRecords() {
+      return []
+    }
+    emit(entry: PerformanceEntry) {
+      this.callback(
+        { getEntries: () => [entry] } as PerformanceObserverEntryList,
+        this as unknown as PerformanceObserver
+      )
+    }
+  }
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'PerformanceObserver')
+  Object.defineProperty(globalThis, 'PerformanceObserver', { configurable: true, value: Observer })
+  context.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'PerformanceObserver', previous)
+    else delete (globalThis as Record<string, unknown>).PerformanceObserver
+  })
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const starts: number[] = []
+  const records = fixture(
+    context,
+    async () => {
+      starts.push(performance.now())
+      return Response.json({ sessions: [] })
+    },
+    true
+  )
+  const entry = (startTime: number) =>
+    ({
+      entryType: 'resource',
+      initiatorType: 'fetch',
+      name: `http://127.0.0.1:9000${CATALOG}`,
+      startTime,
+      fetchStart: startTime,
+      requestStart: startTime + 200,
+      responseStart: startTime + 300,
+      responseEnd: startTime + 301,
+      duration: 301,
+      nextHopProtocol: 'http/1.1',
+    }) as PerformanceResourceTiming
+  const response = await apiFetch(CATALOG)
+  observers[0].emit(entry(starts[0]))
+  await readApiJson(response)
+  context.mock.timers.tick(0)
+  const sample = records.find((record) => record.event === 'resource_timing')!
+  assert.equal(sample.resource_status, 'matched')
+  assert.ok(
+    Math.abs(Number((sample.resource as Record<string, unknown>).before_request_ms) - 200) < 1e-9
+  )
+  assert.equal(sample.client_request_id, records[0].client_request_id)
+  assert.equal(observers[0].disconnected, true)
+
+  context.mock.method(performance, 'now', () => 10_000_000)
+  const concurrent = await Promise.all([apiFetch(CATALOG), apiFetch(CATALOG)])
+  observers[1].emit(entry(10_000_000))
+  observers[2].emit(entry(10_000_000))
+  await Promise.all(concurrent.map((value) => readApiJson(value)))
+  context.mock.timers.tick(0)
+  const ambiguous = records.filter((record) => record.event === 'resource_timing').slice(-2)
+  assert.equal(ambiguous.length, 2)
+  assert.ok(ambiguous.every((record) => record.resource_status === 'ambiguous'))
+  assert.ok(ambiguous.every((record) => record.resource === null))
+  assert.ok(observers.every((observer) => observer.disconnected))
+
+  await apiFetch(CATALOG)
+  context.mock.timers.tick(RESOURCE_OBSERVATION_BUDGET_MS)
+  assert.equal(records.at(-1)?.resource_status, 'unavailable')
+  assert.equal(records.at(-1)?.observation_expired, true)
+  assert.equal(observers.at(-1)?.disconnected, true)
   assert.ok(!JSON.stringify(records).includes('private'))
 })
