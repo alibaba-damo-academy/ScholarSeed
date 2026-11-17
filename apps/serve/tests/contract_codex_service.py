@@ -8349,7 +8349,11 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(choice["max_output_tokens"], 393_216)
         self.assertTrue(choice["image_input"])
         self.assertFalse(choice["pdf_input"])
-        self.assertEqual(choice["reasoning_efforts"], ["low", "high", "max"])
+        self.assertEqual(choice["reasoning_efforts"], ["none", "low", "high", "max"])
+        effort = next(
+            option for option in choice["reasoning_options"] if option["kind"] == "effort"
+        )
+        self.assertEqual(effort["default"], "none")
         selected = model_module.apply_model_to_config(config, choice)
         self.assertEqual(converge_gateway_model_config(selected)["selected_model_key"], "auto")
         self.assertEqual(model_module.current_model_key(selected), "auto")
@@ -8364,7 +8368,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(intent.model_ref, "bailian/deepseek-v4.1-flash-1017")
         self.assertEqual(intent.context_window, 1_000_000)
         self.assertEqual(intent.capabilities.input_modalities, ("text", "image"))
-        self.assertEqual(intent.capabilities.reasoning_efforts, ("low", "high", "max"))
+        self.assertEqual(intent.capabilities.reasoning_efforts, ("none", "low", "high", "max"))
         self.assertEqual(intent.approval_model_ref, "")
         self.assertEqual(spec.config["call_url"], f"{DEEPRD_GATEWAY_BASE_URL}/responses")
 
