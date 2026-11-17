@@ -211,8 +211,8 @@ _GATEWAY_STRATEGY_EDITIONS = {
     for name, _label in GATEWAY_STRATEGY_MODELS
     for edition in (BASE_EDITION, LONG_CONTEXT_EDITION)
 }
-# Auto is a fixed product selection, not a gateway routing strategy. Capabilities
-# remain unverified until the gateway declares this exact wire model's contract.
+# Auto is a fixed product selection, not a gateway routing strategy. Capability
+# facts are resolved by its exact wire model in the shared capability registry.
 GATEWAY_MODEL_CATALOG: List[Dict[str, Any]] = [
     _gateway_model_item(
         ("bailian/deepseek-v4.1-flash-1017", "Auto"),

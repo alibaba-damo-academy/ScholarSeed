@@ -8,6 +8,49 @@
     "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
   ],
   "models": {
+    "bailian/deepseek-v4.1-flash-1017": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 1000000,
+        "max_output": 393216,
+        "max_reasoning": 393216,
+        "max_input_thinking": 1000000
+      },
+      "modalities": {
+        "input": ["text", "image"],
+        "output": ["text"]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": ["low", "high", "max"],
+            "default": "high",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/deepseek-v4-1-flash",
+        "retrieved": "2026-11-17"
+      },
+      "notes": [
+        "Exact gateway wire ID for the Bailian-hosted deepseek-v4.1-flash-1017 snapshot; no capability inheritance by model-name prefix.",
+        "Bailian documents 1000000 context tokens and 393216 output tokens for this snapshot. These are declared limits, not a full-window load-test result.",
+        "Thinking levels follow https://help.aliyun.com/en/model-studio/deepseek-api and https://api-docs.deepseek.com/guides/thinking_mode/; equivalent compatibility aliases are not separate levels.",
+        "Native input modalities are text and image. PDF page images use the image path; native PDF file input is not declared."
+      ]
+    },
     "deepseek-v4-pro": {
       "limits": {
         "context": 1000000,
