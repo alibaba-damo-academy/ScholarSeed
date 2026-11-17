@@ -970,6 +970,10 @@ class LiveSession:
         if frozen_request is not None:
             if frozen_request.command_id != turn_input.client_user_message_id:
                 raise RuntimeError("frozen runtime command does not match the current input")
+            if self.project_path == self.runtime_workdir:
+                await self._persistence.run(
+                    self._catalog.prepare_output, self.id, self.runtime_workdir
+                )
             return await driver.submit(
                 replace(
                     frozen_request,
@@ -990,6 +994,9 @@ class LiveSession:
             for item in turn_input.items
         )
         if self.project_path == self.runtime_workdir:
+            output_dir = await self._persistence.run(
+                self._catalog.prepare_output, self.id, self.runtime_workdir
+            )
             record = self._catalog.get(self.id)
             if record is None:
                 raise RuntimeError("session context is unavailable")
@@ -999,6 +1006,7 @@ class LiveSession:
                     "text": session_context(
                         title=record.title if record.title_fallback is None else "",
                         cwd=self.runtime_workdir,
+                        output_dir=Path(output_dir) if output_dir is not None else None,
                     ),
                     "path": "",
                     "name": "",

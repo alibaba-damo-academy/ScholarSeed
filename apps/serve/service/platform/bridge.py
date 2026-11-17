@@ -100,6 +100,13 @@ MCP_APPLY_EFFECT = "configure"
 TASK_ACTIVATE_ROUTE = BRIDGE_ROUTE_PREFIX + "task/activate"
 HISTORY_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "history/"
 ARTIFACT_PUBLISH_ROUTE = BRIDGE_ROUTE_PREFIX + "artifact/publish"
+ARTIFACT_BATCH_OPERATION = "publish-many"
+ARTIFACT_BATCH_ROUTE = BRIDGE_ROUTE_PREFIX + "artifact/" + ARTIFACT_BATCH_OPERATION
+ARTIFACT_BATCH_TOOL_NAME = "publish_artifacts"
+ARTIFACT_BATCH_MAX_FILES = 32
+ARTIFACT_BATCH_COMPLETED = "completed"
+ARTIFACT_BATCH_PARTIAL = "partial"
+ARTIFACT_BATCH_FAILED = "failed"
 DISPLAY_CARD_ROUTE = BRIDGE_ROUTE_PREFIX + "display-card"
 COMPONENT_CAPABILITY = "component"
 PLUGIN_INSTALL_CAPABILITY = "plugin"
@@ -498,6 +505,12 @@ class ArtifactPublish(BaseModel):
         description="Existing execution-relative file, or an existing directory in a Desktop session; never an absolute path.",
     )
     role: Literal["final", "intermediate", "supporting"] = ARTIFACT_DEFAULT_ROLE
+
+
+class ArtifactsPublish(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    files: list[ArtifactPublish] = Field(min_length=1, max_length=ARTIFACT_BATCH_MAX_FILES)
 
 
 class DisplayCardContent(BaseModel):
@@ -965,6 +978,19 @@ BRIDGE_REQUESTS[("artifact", "publish")] = BridgeOperation(
         "reject the whole directory publication. Directory cards browse captured members read-only; "
         "they do not support exporting a folder, saving/importing it, or opening its mutable source "
         "through a file operation. One-shot invocations still publish regular files only."
+    ),
+)
+BRIDGE_REQUESTS[("artifact", ARTIFACT_BATCH_OPERATION)] = BridgeOperation(
+    ArtifactsPublish,
+    ARTIFACT_BATCH_ROUTE,
+    "Publish explicitly declared deliverables with per-item immutable publication receipts.",
+    guidance=(
+        "Prefer publish_artifacts with a files list; its typed tool schema needs no contract query. "
+        "Validate and finish writing every delivery before publication. Invalid request structure rejects "
+        "the entire batch; file failures return completed/partial/failed and retry_files. "
+        "Retry only retry_files after correcting their errors. Repeated declarations in the same turn "
+        "reuse the existing publication; changed bytes create a new revision. "
+        + BRIDGE_REQUESTS[("artifact", "publish")].guidance
     ),
 )
 BRIDGE_REQUESTS[("search", "run")] = BridgeOperation(

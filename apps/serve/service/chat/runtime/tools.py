@@ -17,6 +17,8 @@ from scholarseed_runtime.contract import RuntimeServiceTool
 from service.chat.runtime.utils import request_file
 from service.chat.service.contracts import contract_query, describe_contract, operation_choices
 from service.platform.bridge import (
+    ARTIFACT_BATCH_OPERATION,
+    ARTIFACT_BATCH_TOOL_NAME,
     BLOCKING_CHECKPOINTS,
     BLOCKING_OPERATIONS,
     BRIDGE_CALLBACK_REQUEST_HEADER,
@@ -31,6 +33,7 @@ from service.platform.bridge import (
     PLAN_ACTION_STATUSES,
     PLAN_COMPLETE_ACTION,
     SERVICE_PLAN_TOOL_NAME,
+    ArtifactsPublish,
     ContractDescribe,
     PlanAction,
     PlanRead,
@@ -204,10 +207,29 @@ SERVICE_PLAN_TOOL = RuntimeServiceTool(
     ),
     input_schema=plan_tool_schema(),
 )
-SESSION_SERVICE_TOOLS = (SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL)
+
+
+def artifact_tool_schema() -> dict[str, Any]:
+    schema = ArtifactsPublish.model_json_schema()
+    schema["properties"]["files"]["items"] = schema.pop("$defs")["ArtifactPublish"]
+    return schema
+
+
+SERVICE_ARTIFACT_TOOL = RuntimeServiceTool(
+    name=ARTIFACT_BATCH_TOOL_NAME,
+    description=(
+        "Publish explicitly requested deliverables after writing and verification. "
+        "Follow the scholarseed-product-operations artifacts guide. "
+        "Paths are cwd-relative; user-requested code is eligible. No contract query is needed. "
+        "Returns completed/partial/failed and per-file receipts; correct and retry only retry_files."
+    ),
+    input_schema=artifact_tool_schema(),
+)
+SESSION_SERVICE_TOOLS = (SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL, SERVICE_ARTIFACT_TOOL)
 SERVICE_TOOL_CAPABILITIES = {
     SERVICE_BRIDGE_TOOL_NAME: None,
     SERVICE_PLAN_TOOL_NAME: PLAN_CAPABILITY,
+    ARTIFACT_BATCH_TOOL_NAME: "artifact",
 }
 
 
@@ -232,8 +254,15 @@ async def execute_service_tool(
         and set(arguments) == {"operation", "request"}
         and arguments.get("operation") in ("get", "write")
     )
-    model_plan = capability_override is not None and not legacy_plan
-    if model_plan:
+    model_plan = tool_name == SERVICE_PLAN_TOOL_NAME and not legacy_plan
+    model_artifacts = tool_name == ARTIFACT_BATCH_TOOL_NAME
+    if model_artifacts:
+        arguments = {
+            "capability": "artifact",
+            "operation": ARTIFACT_BATCH_OPERATION,
+            "request": arguments,
+        }
+    elif model_plan:
         mutation = arguments.get("operation")
         if mutation not in PLAN_MODEL_OPERATIONS:
             return {
@@ -335,7 +364,12 @@ async def execute_service_tool(
         if capability_override is not None:
             result.pop("describe")
             result.pop("contract_version")
-            if legacy_plan:
+            if model_artifacts:
+                result["tool_schema"] = SERVICE_ARTIFACT_TOOL.input_schema
+                result["next_action"] = (
+                    "Correct validation_errors using the publish_artifacts schema; no files were published."
+                )
+            elif legacy_plan:
                 result["request_schema"] = request_type.model_json_schema()
                 result["next_action"] = (
                     "Keep the declared get/write tool's request envelope. Correct request using "
