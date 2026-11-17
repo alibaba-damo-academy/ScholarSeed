@@ -8832,7 +8832,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(personal_intent.approval_model_ref, "")
 
     async def test_retry_budget_follows_endpoint_ownership(self) -> None:
-        """内置网关路 Codex 侧不重试(0)，BYOK 直连路保留一次瞬时重连(1)；0 不被当 falsy 丢掉。"""
+        """Gateway streams retry five times; request zero and BYOK one remain explicit."""
 
         bridge = CompletionBridge(
             "http://127.0.0.1:9999", source_endpoints=(DEEPRD_GATEWAY_BASE_URL,)
@@ -8859,7 +8859,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             byok_provider["request_max_retries"], model_module.BYOK_REQUEST_MAX_RETRIES
         )
-        self.assertEqual(model_module.GATEWAY_STREAM_MAX_RETRIES, 0)
+        self.assertEqual(model_module.GATEWAY_STREAM_MAX_RETRIES, 5)
         self.assertEqual(model_module.BYOK_STREAM_MAX_RETRIES, 1)
         gateway_spec = model_module.SessionModelSpec(
             key="qwen3.8-max",
@@ -8869,8 +8869,23 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             codex_provider=gateway_provider,
         )
         intent, _ = gateway_spec.runtime_model()
-        self.assertEqual(intent.transport.stream_max_retries, 0)
+        self.assertEqual(intent.transport.stream_max_retries, 5)
         self.assertEqual(intent.transport.request_max_retries, 0)
+        sampling_provider, _ = model_module._codex_provider(
+            {"model_name": "qwen3.8-max", "base_url": DEEPRD_GATEWAY_BASE_URL},
+            bridge,
+            allow_tools=False,
+        )
+        sampling_spec = model_module.SessionModelSpec(
+            key="qwen3.8-max",
+            model_name="qwen3.8-max",
+            config={},
+            billing="api",
+            codex_provider=sampling_provider,
+        )
+        sampling_intent, _ = sampling_spec.runtime_model()
+        self.assertEqual(sampling_intent.transport.stream_max_retries, 5)
+        self.assertEqual(sampling_intent.transport.request_max_retries, 0)
         byok_spec = model_module.SessionModelSpec(
             key="minimax-m2.1",
             model_name="minimax-m2.1",

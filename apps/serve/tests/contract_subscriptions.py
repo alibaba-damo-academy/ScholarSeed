@@ -1661,6 +1661,8 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(qwen.catalog_models, native.catalog_models)
             qwen_intent, _ = qwen.runtime_model()
             native_intent, _ = native.runtime_model()
+            self.assertEqual(native_intent.transport.stream_max_retries, 0)
+            self.assertEqual(native_intent.transport.request_max_retries, 0)
             self.assertEqual(qwen_intent.transport.proxy_bypass_hosts, ("127.0.0.1",))
             self.assertEqual(
                 qwen_intent.transport.proxy_bypass_hosts,

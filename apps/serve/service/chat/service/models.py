@@ -154,11 +154,12 @@ MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
 OPTIONAL_PRELOAD_KEY = "optional_preload"
 BRIDGED_CATALOG_SCOPE = "product-bridge"
 DIRECT_CATALOG_SCOPE = "direct"
-# Codex 出站重试预算按 endpoint 归属分档（proposal 106 / 落实 proposal 42 立场）。
-# 内置网关路自有重试+降级链，Codex 再重试只会对一个确定性拒绝重复打上游，故设 0；
-# BYOK 直连路无网关兜底，保留一次瞬时重连韧性，确定性拒绝最多两次即终态。
-GATEWAY_STREAM_MAX_RETRIES = 0
+# Gateway retries cannot recover a response stream lost before the native client consumes it.
+# Keep native stream recovery bounded without adding request retries or changing personal routes.
+GATEWAY_STREAM_MAX_RETRIES = 5
 GATEWAY_REQUEST_MAX_RETRIES = 0
+SUBSCRIPTION_STREAM_MAX_RETRIES = 0
+SUBSCRIPTION_REQUEST_MAX_RETRIES = 0
 BYOK_STREAM_MAX_RETRIES = 1
 BYOK_REQUEST_MAX_RETRIES = 1
 # Product-owned configuration accessor.  Kept as a named seam so model tests and
@@ -1148,10 +1149,10 @@ class ModelService:
                     codex_provider={
                         "base_url": registration.base_url,
                         "wire_api": ModelWireProtocol.RESPONSES.value,
-                        # 订阅路恒经产品网关注册（registration.base_url 即 loopback bridge），
-                        # 网关自有重试+降级，故与内置网关路同档：Codex 侧不再重试。
-                        "stream_max_retries": GATEWAY_STREAM_MAX_RETRIES,
-                        "request_max_retries": GATEWAY_REQUEST_MAX_RETRIES,
+                        # A local subscription bridge is not the built-in gateway route.
+                        # Preserve its existing retry policy independently.
+                        "stream_max_retries": SUBSCRIPTION_STREAM_MAX_RETRIES,
+                        "request_max_retries": SUBSCRIPTION_REQUEST_MAX_RETRIES,
                         "proxy_bypass_hosts": _proxy_bypass_hosts(registration.proxy_bypass_host),
                     },
                 )
