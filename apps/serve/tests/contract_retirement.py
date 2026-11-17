@@ -93,6 +93,49 @@ class RetirementContracts(unittest.TestCase):
                 writer.close()
 
     @unittest.skipUnless(sys.platform == "darwin", "Darwin registry identity")
+    def test_darwin_identity_check_preserves_sqlite_write_lock(self):
+        with directory("ss-registry-") as root:
+            path = root / "registry.sqlite"
+            native = DarwinDirectoryNative()
+            pin = native.pin(str(root), False)
+            probe = """
+import sqlite3, sys
+from contextlib import closing
+with closing(sqlite3.connect(sys.argv[1], timeout=0)) as db:
+    try:
+        db.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError as error:
+        if error.sqlite_errorcode != sqlite3.SQLITE_BUSY:
+            raise
+        print("busy")
+    else:
+        db.rollback()
+        print("acquired")
+"""
+
+            def competing_writer():
+                return subprocess.check_output(
+                    [sys.executable, "-c", probe, str(path)], text=True, timeout=10
+                ).strip()
+
+            try:
+                with closing(sqlite3.connect(path)) as db:
+                    db.execute("CREATE TABLE fixture (id INTEGER)")
+                    info = path.stat()
+                    legacy = f"posix:{info.st_dev:016x}:{info.st_ino:016x}"
+                    db.execute("BEGIN IMMEDIATE")
+                    self.assertEqual(competing_writer(), "busy")
+                    identity = native.persistent_file_identity_at(pin, path.name, legacy)
+                    self.assertTrue(identity.startswith("darwin:"))
+                    self.assertEqual(competing_writer(), "busy")
+                    self.assertEqual(native.persistent_file_identity_at(pin, path.name), identity)
+                    self.assertEqual(competing_writer(), "busy")
+                    db.rollback()
+                    self.assertEqual(competing_writer(), "acquired")
+            finally:
+                native.release(pin)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin registry identity")
     def test_darwin_resumes_after_failure_between_range_commit_and_publication(self):
         with directory("ss-registry-") as root:
             coordinator = root / REGISTRY_DIRECTORY

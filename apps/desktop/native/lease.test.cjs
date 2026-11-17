@@ -101,6 +101,48 @@ test('macOS registry holds independent slot locks in this process and across pro
   assert.equal(probe('second'), 'acquired')
 })
 
+test('macOS registry identity checks preserve the SQLite write lock', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const account = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ss-registry-'))
+  const leaf = 'registry.sqlite'
+  const filename = path.join(account, leaf)
+  const pin = api.pin(account, false)
+  const db = new DatabaseSync(filename)
+  t.after(() => {
+    db.close()
+    api.release(pin)
+    fs.rmSync(account, { recursive: true, force: true })
+  })
+  const competingWriter = () => execFileSync(process.execPath, ['-e', `
+    const { DatabaseSync } = require('node:sqlite')
+    const db = new DatabaseSync(process.argv[1], { timeout: 0 })
+    try {
+      db.exec('BEGIN IMMEDIATE')
+      db.exec('ROLLBACK')
+      console.log('acquired')
+    } catch (error) {
+      if (error.errcode !== 5) throw error
+      console.log('busy')
+    } finally {
+      db.close()
+    }
+  `, filename], { encoding: 'utf8', timeout: PROCESS_TIMEOUT }).trim()
+
+  db.exec('CREATE TABLE fixture (id INTEGER)')
+  const { dev, ino } = fs.statSync(filename, { bigint: true })
+  const legacy = 'posix:' + [dev, ino].map(value => value.toString(16).padStart(16, '0')).join(':')
+  db.exec('BEGIN IMMEDIATE')
+  assert.equal(competingWriter(), 'busy')
+  const identity = api.fileIdentityAt(pin, leaf, legacy)
+  assert.match(identity, /^darwin:/)
+  assert.equal(competingWriter(), 'busy')
+  assert.equal(api.fileIdentityAt(pin, leaf, null), identity)
+  assert.equal(competingWriter(), 'busy')
+  db.exec('ROLLBACK')
+  assert.equal(competingWriter(), 'acquired')
+})
+
 test('macOS registry reopens after mount drift and rejects a replacement ranges file', {
   skip: process.platform !== 'darwin',
 }, t => {
