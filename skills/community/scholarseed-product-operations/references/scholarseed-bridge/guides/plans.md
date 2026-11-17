@@ -1,6 +1,14 @@
 ## Main plans and subplans
 
+**English** · [简体中文](plans.zh.md)
+
 Use the conversation's `update_plan` tool for meaningful stages of the actual task. Keep stable IDs and parent_id links; do not create a leaf per tool call or a retrospective completed checklist. Plans are presentation/execution records, not a replacement research workflow.
+
+Check the actual declared schema first. For an older tool requiring a request
+wrapper, read [legacy plans](plans/legacy.md) instead of applying the flat forms.
+If the native tool is absent, read [Bridge fallback](plans/fallback.md). Do not
+preload either branch for the current flat tool; never switch an existing tree
+into a different native plan system.
 
 The following forms apply when the declared tool schema is flat. Call `operation=get` alone first. The result contains the plan, expected_revision, turn_id and allowed `actions` for each ID. No request wrapper, operation=write, or operation=progress. Every mutation supplies plan_id, expected_revision and request_id. The host binds the authenticated callback turn; omit the optional model turn_id instead of guessing. Reuse the returned identity and expected_revision, with a fresh request_id for changed arguments; an uncertain identical retry keeps its original arguments and request_id.
 
@@ -10,10 +18,10 @@ The following forms apply when the declared tool schema is flat. Call `operation
 
 After a rejection, use the returned current state or reread it and correct the cause. A rejected mutation does not advance revision; never guess the next revision. If the work has not happened, start then execute it. If it already completed without a recorded start, verify its actual result and use complete with step_ids and a reason stating the observed completion evidence. Reconcile remains available for only unstarted leaves. Neither operation invents a start or execution time. Include nonempty groups only when all descendants are already completed or complete in the same call; selecting a parent never completes its unselected children. Complete is not independent acceptance of the task result. A file merely existing does not establish that a step's requirements were met. Do not issue a bookkeeping start/finish to fabricate history. Block only for an actual obstacle, not missing timing. A separate verification leaf is appropriate only when actually performing authorized verification. Do not blindly repeat non-idempotent work.
 
+Keep IDs when renaming. A group is a container, not executable work; do not turn it into a step. Refine and start its concrete leaves before working.
+
+**Estimates:** after resolving the execution agreement, include estimate:{lower_seconds,upper_seconds} on create/revise when the agreed plan has a processing-time range. Never infer it from skill selection or a processing budget. It covers the whole plan, including work already performed on revise, and excludes user waits; it becomes visible only after start. Omit on update to preserve it; null clears it. Create/revise without an estimate clears the range. An estimate is not measured execution time.
+
 The host records timestamps. Never supply invented durations or infer progress from elapsed time. Only independently observed in_progress intervals provide measured leaf execution time; missing timing remains blank, not zero or a retrospective estimate. Parent and parallel intervals can overlap; do not sum them to invent total elapsed time. An empty group cannot complete, and a completed parent has only completed children.
 
-Before a turn ends, reconcile completed work using execution actions, or report partial/blocked/failed stages with their observed reason. Do not declare the final task complete while roots remain pending/in_progress. A genuine mid-work stop names the open stage. On continuation use get and the current turn_id before continued work; the closing action belongs to the turn that obtains completion evidence.
-
-Keep using this tool for the existing tree; do not switch to a native flat plan. If it is absent from the host, discover the current scholarseed_bridge plan/get, plan/structure and plan/action contracts. That lower-level Bridge uses capability/operation/request; do not mix its wrapper with this flat tool. Do not invoke product operations through shell scripts or inspect/inject Bridge credentials.
-
-Existing native threads may retain the older declared get/write tool with a required request field. For that actual declared schema, keep the original wrapper: get has request={}, and write has the complete PlanWrite request with operation and item statuses. Use the returned current state/transitions and request_schema for corrections. Record in_progress before real work and complete afterward; never fabricate missing starts. For reconciliation, discover the current scholarseed_bridge plan/action contract and use its reconcile action rather than adding unsupported arguments to the older tool. Do not mix this older presentation with the new flat actions or invent an alias to change it.
+Before a turn ends, reconcile completed work using execution actions, or report partial/blocked/failed stages with their observed reason. Do not declare the final task complete while roots remain pending/in_progress. A genuine mid-work stop names the open stage. On continuation use get before continued work; the native tool binds the current callback turn, so do not replay a historical turn_id. The closing action belongs to the turn that obtains completion evidence.

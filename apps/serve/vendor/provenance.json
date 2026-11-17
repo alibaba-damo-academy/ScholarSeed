@@ -1,9 +1,9 @@
 {
   "name": "deep-rnd-l1",
-  "version": "0.2.8",
-  "sha256": "862ee6f754794c9b7620e1ae25d9ff0fe87ec1d77ff6c65ad14ddaafe5fca92a",
+  "version": "0.2.9",
+  "sha256": "69f23a6001d23502754322ec3cf2f5a8129ceb5822656490cbc879a9a96f8e18",
   "source_repository": "deep_rnd",
-  "source_commit": "7a38da21ccddd414bbd2d6005f78d25740d50954",
+  "source_commit": "97b404ee188b3ae3bfc975db46ed4fb71b0cdcec",
   "source_dirty": false,
   "restored_base_commit": "0bf874d7e5ebd5a2b7820155a283d74d2230c06f",
   "source_files": {
@@ -13,7 +13,7 @@
     "knowledge_layer/comprehend/extract.py": "fef959d35260f37a68aeba0651454089e3db9af10bce2e71d2a055581c31a87f",
     "knowledge_layer/comprehend/options.py": "4238afeb545c7aed216a796ddb15094a84ca9e7d61b22bc58fdef73cddbb8772",
     "knowledge_layer/comprehend/prompts.py": "5ff312164c9400a26e53479e0c689a6726da475e177e6d64d856d078c6efca89",
-    "knowledge_layer/comprehend/protocol.py": "b5f2b7d566e7288242ecb8dc1e01e914d047f9672dbe51c521c6ce391857fdb1",
+    "knowledge_layer/comprehend/protocol.py": "5a0596607c37ac864356a155bf4111821991f87d4b9c597de1b2d870e1a93a59",
     "knowledge_layer/comprehend/recovery.py": "38b2450be9f35e6afc826a74779327188050af37a3f65bc846ae404147f7d9ee",
     "knowledge_layer/comprehend/schema.py": "5666fb73dc5c01a3e380856abe8aca0f112e75db79bac2b22f41c1e83482050e",
     "knowledge_layer/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

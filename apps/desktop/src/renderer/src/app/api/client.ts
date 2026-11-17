@@ -25,13 +25,16 @@ export async function apiFetch(path: string, init?: ApiFetchInit): Promise<Respo
         : deadline
       : rest.signal
     const headers = new Headers(rest.headers)
-    timing = startCatalogTiming(path, method.toUpperCase(), timeoutMs, headers)
-    const response = await fetch(apiBase() + path, {
-      credentials: CREDENTIALS,
-      ...rest,
-      ...(timing ? { headers } : {}),
-      signal,
-    })
+    const url = apiBase() + path
+    timing = startCatalogTiming(path, method.toUpperCase(), timeoutMs, headers, url)
+    const transport = () =>
+      fetch(url, {
+        credentials: CREDENTIALS,
+        ...rest,
+        ...(timing ? { headers } : {}),
+        signal,
+      })
+    const response = await (timing ? timing.fetch(transport) : transport())
     timing?.headers(response)
     if (!response.ok) reportApiFailure(path, method, response.status, startedAt, 'http')
     return response

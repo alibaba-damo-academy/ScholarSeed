@@ -84,8 +84,9 @@ class BridgeToolContracts(unittest.TestCase):
         internal = describe_contract("search", "browser")
         self.assertIn("Invocation", self.guidance(internal))
         self.assertIn("search/run", self.guidance(internal))
-        self.assertIn('"profile":"browser"', SERVICE_BRIDGE_TOOL.description)
-        self.assertIn("managed embedded browser", SERVICE_BRIDGE_TOOL.description)
+        self.assertIn("managed embedded browser", guidance)
+        self.assertIn("search/run", SERVICE_BRIDGE_TOOL.description)
+        self.assertNotIn("search/browser", SERVICE_BRIDGE_TOOL.description)
         self.assertIn("response_path", self.guidance(internal))
         request = BRIDGE_REQUESTS[("search", "run")].request_type.model_validate(
             {"query": "A2UI 最近研究", "profile": "browser", "limit": 20}

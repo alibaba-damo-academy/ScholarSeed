@@ -227,7 +227,12 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
             extraction_blocks(blocks, "method"), extraction_payload(joint_output(JOINT))
         )
         malformed = blocks.replace("<card>", '<card>{"broken":')
-        invoke = AsyncMock(side_effect=[record("initial", malformed), record("repair", EXTRACTION)])
+        invoke = AsyncMock(
+            side_effect=[
+                record("initial", malformed),
+                record("repair", {"blocks": {"card": EXTRACTION["card"]}}),
+            ]
+        )
         result = await comprehend(source, ReadingClient(source, invoke), paper_type="method")
         self.assertEqual(result["l1"]["extraction_quality"]["status"], "READY")
         self.assertEqual(invoke.await_count, 2)
@@ -406,7 +411,11 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
         prefixed["source_map"] = {
             field: [f"S{number}" for number in ids] for field, ids in prefixed["source_map"].items()
         }
-        for repaired, success in ((EXTRACTION, True), (prefixed, True), ({}, False)):
+        for repaired, success in (
+            ({"card": EXTRACTION["card"]}, True),
+            ({"blocks": {"card": prefixed["card"]}}, True),
+            ({}, False),
+        ):
             with self.subTest(success=success):
                 invoke = AsyncMock(return_value=record("repair", repaired))
                 client = JointReadingClient(
@@ -422,7 +431,7 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
                 compiled = invoke.await_args_list[0].args[0]
                 self.assertEqual(compiled.attachments, ())
                 self.assertNotIn(source.content, compiled.input_text)
-                self.assertEqual(compiled.prompt_version, "l1/format-repair-v2")
+                self.assertEqual(compiled.prompt_version, "l1/format-repair-v3")
                 self.assertEqual(
                     client.retry_metadata()["l1_retry_mode"], "format" if success else "content"
                 )
@@ -470,7 +479,7 @@ class ReadingContracts(unittest.IsolatedAsyncioTestCase):
         }
         for joint in (False, True):
             with self.subTest(joint=joint):
-                responses = [record("syntax", partial["extraction"]), record("content", patch)]
+                responses = [record("syntax", {"common_fields": {}}), record("content", patch)]
                 if joint:
                     invoke = AsyncMock(side_effect=responses)
                     client = JointReadingClient(
@@ -1465,7 +1474,7 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(final["result"]["reading_output"]), JOINT["reading"])
 
     async def test_joint_parse_failure_repair_receives_original_tail_and_diagnostic(self):
-        self.outputs = [JOINT, JOINT["extraction"]]
+        self.outputs = [JOINT, {"blocks": {"card": JOINT["extraction"]["card"]}}]
         original = self.invoke
         malformed = joint_output(JOINT).replace("<card>", '<card>{"broken":')
 

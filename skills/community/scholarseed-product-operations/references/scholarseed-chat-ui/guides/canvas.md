@@ -1,5 +1,10 @@
 # Task Canvas
 
+**English** · [简体中文](canvas.zh.md)
+
+Read [interaction rules](interaction.md) for operation envelopes, real decisions
+and failure boundaries. Do not load the ordinary display guide for a Canvas.
+
 When generating or revising a Canvas, use the [design guide](../DESIGN.md) to choose its layout and controls. Before publishing, check the first visible area, narrow layout, and host-owned actions against the actual source.
 
 A Canvas is a task page, not a wrapper for an ordinary answer, Markdown, or a plot. Read the bundled [Canvas signatures](../canvas.md). If unavailable or mismatched, request `{slot:"canvas.ui",include_ui:true,ui_mode:"canvas"}` through component/catalog, adding ui_detail:"schema" only when needed. Prefer OpenUI; use HTML/CSS/JavaScript for custom behavior it cannot express.
