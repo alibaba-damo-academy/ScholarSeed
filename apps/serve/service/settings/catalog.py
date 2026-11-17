@@ -84,7 +84,7 @@ GATEWAY_APPROVAL_MODELS = {name: GATEWAY_QWEN_APPROVAL_MODEL for name in GATEWAY
 # the visible default on load.
 # 单一事实源: 产品可见性只在这里声明, 服务层不再维护第二张常量表。空集合 = 不收敛。
 GATEWAY_VISIBLE_MODEL_KEYS: frozenset[str] = frozenset(
-    {"qwen4-max", "qwen3.8-max", "qwen3.8-flash"}
+    {"auto", "qwen4-max", "qwen3.8-max", "qwen3.8-flash"}
 )
 # 连接**身份**字段说明「连到哪、用什么协议、调哪个模型」; 连接**凭据**字段只说明「这条
 # 连接怎么鉴权」。判定内置目录时两组必须分开: 把凭据也算进连接声明, 会让用户一填
@@ -211,7 +211,15 @@ _GATEWAY_STRATEGY_EDITIONS = {
     for name, _label in GATEWAY_STRATEGY_MODELS
     for edition in (BASE_EDITION, LONG_CONTEXT_EDITION)
 }
-GATEWAY_MODEL_CATALOG: List[Dict[str, Any]] = []
+# Auto is a fixed product selection, not a gateway routing strategy. Capabilities
+# remain unverified until the gateway declares this exact wire model's contract.
+GATEWAY_MODEL_CATALOG: List[Dict[str, Any]] = [
+    _gateway_model_item(
+        ("bailian/deepseek-v4.1-flash-1017", "Auto"),
+        key="auto",
+        route_kind=GATEWAY_ROUTE_DIRECT,
+    ),
+]
 for strategy_name, strategy_label in GATEWAY_STRATEGY_MODELS:
     strategy_spec = (strategy_name, strategy_label)
     strategy_edition = _gateway_edition(strategy_name, BASE_EDITION)
