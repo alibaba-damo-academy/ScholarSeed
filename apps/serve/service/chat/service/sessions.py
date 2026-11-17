@@ -116,6 +116,7 @@ from service.chat.persistence.catalog import (
     SessionListState,
     SessionModelState,
     SessionOrderPlacement,
+    SessionOutputPolicy,
     SessionPrincipal,
     SessionStateConflictError,
     SessionStatus,
@@ -1195,6 +1196,11 @@ class SessionService:
                 status=SessionStatus.READY,
                 title=SESSION_TITLE_DEFAULT,
                 title_fallback=SessionTitleFallback.NEW_SESSION,
+                output_policy=(
+                    SessionOutputPolicy.MANAGED
+                    if project_path == runtime_workdir
+                    else SessionOutputPolicy.LEGACY
+                ),
                 display_parent_session_id=display_parent_session_id,
                 created_at=time.time(),
                 required_capabilities=required_capabilities,
