@@ -214,8 +214,10 @@ libinfo_lock.ini
 
 # 打包签名工具
 scholarseed-distribution/
+scholarseed/
 chimp.sh
 chimp.bat
+libinfo.yml
 
 # Local execution plans and work records.
 /docs/superpowers/
