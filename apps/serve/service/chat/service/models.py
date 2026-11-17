@@ -151,6 +151,7 @@ MODEL_UNAVAILABLE_ERROR = "session_model_unavailable"
 MODEL_CATALOG_CONFLICT = "model_catalog_definition_conflict"
 MODEL_CATALOG_STALE = "model_catalog_changed"
 MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
+OPTIONAL_PRELOAD_KEY = "optional_preload"
 BRIDGED_CATALOG_SCOPE = "product-bridge"
 DIRECT_CATALOG_SCOPE = "direct"
 # Codex 出站重试预算按 endpoint 归属分档（proposal 106 / 落实 proposal 42 立场）。
@@ -1372,7 +1373,7 @@ class ModelService:
         ]
         self._mark_gateway_credential_gate(rows, config, user_id)
         self._mark_subscription_gate(rows, owner_id)
-        return [
+        scoped = [
             (
                 {
                     **row,
@@ -1386,6 +1387,23 @@ class ModelService:
             )
             for row in sorted(rows, key=lambda item: str(item["key"]))
             if not row.get("disabled") and self._catalog_scope(config, document, row) == scope
+        ]
+        required_refs = set()
+        optional_sources: dict[str, set[str]] = {}
+        for row in scoped:
+            entry = self._catalog_entry(row)
+            if entry.optional_preload:
+                optional_sources.setdefault(entry.model_ref, set()).add(entry.native_catalog_source)
+            else:
+                required_refs.update((entry.model_ref, entry.approval_model_ref))
+        return [
+            row
+            for row in scoped
+            if not row.get(OPTIONAL_PRELOAD_KEY)
+            or (
+                (ref := self._catalog_entry(row).model_ref) not in required_refs
+                and len(optional_sources[ref]) == 1
+            )
         ]
 
     @staticmethod
@@ -1408,6 +1426,7 @@ class ModelService:
                 if capabilities.tool_protocol is ModelToolProtocol.PROVIDER_NATIVE
                 else ""
             ),
+            optional_preload=bool(row.get(OPTIONAL_PRELOAD_KEY)),
         )
 
     def _execution_catalog(
@@ -1503,7 +1522,16 @@ class ModelService:
         required_rows = {
             str(row["key"]): self._catalog_entry(row)
             for row in frozen_rows
-            if row.get("billing") == SUBSCRIPTION_BILLING or row["key"] == selected_key
+            if (row.get("billing") == SUBSCRIPTION_BILLING and not row.get(OPTIONAL_PRELOAD_KEY))
+            or row["key"] == selected_key
+        }
+        required_native_models = {
+            connection_id: {
+                entry.model_ref
+                for entry in required_rows.values()
+                if entry.native_catalog_source == connection_id
+            }
+            for connection_id in native_connections
         }
 
         def rejected(
@@ -1585,7 +1613,8 @@ class ModelService:
             conflicting_extras: set[str] = set()
             for connection_id, payload in zip(native_connections, payloads, strict=True):
                 source = payload.get("models")
-                if not isinstance(source, list) or not source:
+                required = required_native_models[connection_id]
+                if not isinstance(source, list) or (not source and required):
                     raise rejected(
                         (
                             CatalogValidationReason.EMPTY_MODELS
@@ -1624,7 +1653,6 @@ class ModelService:
                             row_index=row_index,
                             received_count=len(source),
                         )
-                required = native_models[connection_id]
                 missing = required.difference(definitions)
                 if missing:
                     raise rejected(
@@ -1636,7 +1664,10 @@ class ModelService:
                         missing_count=len(missing),
                     )
                 rows.update(
-                    {model_ref: copy.deepcopy(definitions[model_ref]) for model_ref in required}
+                    {
+                        model_ref: copy.deepcopy(definitions[model_ref])
+                        for model_ref in native_models[connection_id].intersection(definitions)
+                    }
                 )
                 for model_ref in definitions.keys() - admitted_refs:
                     definition = definitions[model_ref]
@@ -1684,6 +1715,7 @@ class ModelService:
             profile_id = str(profile.get("id") or "")
             vendor, vendor_preset_id = _vendor_label(profile, preset_labels)
             selected = profile.get(SELECTED_MODELS_KEY) or ()
+            selected_ids = {model.get(MODEL_ID_KEY) for model in selected}
             models = selected
             if preload and is_oauth_connection(profile):
                 directory = profile.get(MODEL_DIRECTORY_KEY) or {}
@@ -1713,6 +1745,11 @@ class ModelService:
                         "model_label": model_label,
                         "model_name": model_id,
                         "model_id": model_id,
+                        **(
+                            {OPTIONAL_PRELOAD_KEY: True}
+                            if preload and model_id not in selected_ids
+                            else {}
+                        ),
                         **_personal_capability(model, profile, model_id),
                         "source": PERSONAL_MODEL_SOURCE,
                         "profile_id": profile_id,
