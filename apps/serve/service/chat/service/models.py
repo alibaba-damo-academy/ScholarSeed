@@ -1165,8 +1165,15 @@ class ModelService:
             )
             _require_supported_personal_provider(runtime_config.get("provider"))
             runtime_model_ref = next(
-                self._catalog_entry(row).model_ref for row in catalog_rows if row["key"] == selected
+                (
+                    self._catalog_entry(row).model_ref
+                    for row in catalog_rows
+                    if row["key"] == selected
+                ),
+                "",
             )
+            if not runtime_model_ref:
+                raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
             personal_provider, personal_environment = _codex_provider(
                 runtime_config,
                 self._completions,
@@ -1718,12 +1725,22 @@ class ModelService:
             selected_ids = {model.get(MODEL_ID_KEY) for model in selected}
             models = selected
             if preload and is_oauth_connection(profile):
-                directory = profile.get(MODEL_DIRECTORY_KEY) or {}
-                models = {
+                directory = profile.get(MODEL_DIRECTORY_KEY)
+                discovered = directory.get("models") if isinstance(directory, Mapping) else None
+                by_id = {
                     str(model.get(MODEL_ID_KEY) or ""): model
-                    for model in (*selected, *(directory.get("models") or ()))
+                    for model in (discovered if isinstance(discovered, list) else ())
                     if isinstance(model, Mapping)
-                }.values()
+                }
+                for model in selected:
+                    model_id = str(model.get(MODEL_ID_KEY) or "")
+                    native = by_id.get(model_id)
+                    by_id[model_id] = (
+                        {**model, **_subscription_directory_capability(native)}
+                        if native is not None
+                        else model
+                    )
+                models = by_id.values()
             for model in models:
                 model_id = str(model.get(MODEL_ID_KEY) or "")
                 if not model_id:

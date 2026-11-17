@@ -1773,6 +1773,34 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         entry = next(entry for entry in qwen.catalog_models if entry.model_ref == MODEL)
         self.assertEqual(entry.native_catalog_source, selected)
 
+    async def test_preload_preserves_selected_limits_and_ignores_malformed_discovery(self):
+        connection = await self.connected()
+        key = personal_model_key(connection, MODEL)
+        await self.models.save_profile(
+            {**self.values, "selected_models": [{"id": MODEL, "context_window": 64000}]},
+            connection,
+            user_id=OWNER,
+        )
+        self.profiles.set_directory(
+            connection,
+            {"models": [{"id": MODEL, "input_modalities": ["text", "image"]}]},
+            owner_id=OWNER,
+        )
+        with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
+            spec = self.models.session_spec(key, user_id=OWNER)
+            entry = next(entry for entry in spec.catalog_models if entry.model_ref == MODEL)
+            self.assertEqual(entry.context_window, 64000)
+            self.assertEqual(entry.capabilities.input_modalities, ("text", "image"))
+
+        profile = self.profiles.profile(connection, owner_id=OWNER)
+        for invalid in ("legacy-snapshot", {"models": 42}):
+            with self.subTest(invalid=invalid):
+                rows = self.models._personal_items(
+                    {"profiles": [{**profile, "model_directory": invalid}]}, preload=True
+                )
+                self.assertEqual([row["key"] for row in rows], [key])
+                self.assertEqual(rows[0]["context_window"], 64000)
+
     async def test_unified_catalog_resolver_keeps_frozen_dependencies_when_models_are_added(self):
         connection = await self.connected()
         with patch("service.chat.service.models.load_builtin_work_config", return_value={}):

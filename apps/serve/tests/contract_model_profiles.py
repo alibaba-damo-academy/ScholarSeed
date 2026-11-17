@@ -490,10 +490,10 @@ def test_execution_catalog_prefers_selected_api_connection() -> None:
                 [
                     next(
                         e.context_window
-                        for e in spec.catalog_models
-                        if e.model_ref == spec.runtime_model_ref
+                        for e in candidate.catalog_models
+                        if e.model_ref == candidate.runtime_model_ref
                     )
-                    for spec in (first_spec, second_spec)
+                    for candidate in (first_spec, second_spec)
                 ]
                 == [32000, 64000],
             )
@@ -525,10 +525,10 @@ def test_execution_catalog_prefers_selected_api_connection() -> None:
                 [
                     next(
                         e.context_window
-                        for e in spec.catalog_models
-                        if e.model_ref == spec.runtime_model_ref
+                        for e in candidate.catalog_models
+                        if e.model_ref == candidate.runtime_model_ref
                     )
-                    for spec in alias_specs
+                    for candidate in alias_specs
                 ]
                 == [32000, 64000]
                 and alias_specs[0].catalog_models == alias_specs[1].catalog_models,
