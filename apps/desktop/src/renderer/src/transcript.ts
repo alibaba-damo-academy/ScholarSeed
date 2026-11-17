@@ -1731,6 +1731,11 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
             }
             return updated
           }
+          if (existing.kind === 'error' && failure.incidentId && !existing.incidentId) {
+            const updated = [...settled]
+            updated[existingIndex] = { ...existing, incidentId: failure.incidentId }
+            return updated
+          }
           return settled
         }
         return insertTurnRuntimeItem(settled, {
