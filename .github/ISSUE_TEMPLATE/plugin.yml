@@ -8,7 +8,7 @@ body:
       value: |
         Use this form to discuss a plugin idea or introduce an existing implementation.
 
-        Read the [contribution guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md) and [plugin documentation](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins.md).
+        Read the [contribution guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/CONTRIBUTING.md) and [plugin documentation](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/developer-docs/plugins.md).
 
         An issue does not submit code, install a plugin, or publish it to a marketplace. Do not attach credentials or private research data.
   - type: dropdown
