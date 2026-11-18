@@ -44,7 +44,7 @@ stated lens, named facets and boundary conditions, including qualifications in
 clauses or enumerations. Do not turn a focused question into a generic overview
 of its parent field. Give each section and subsection a distinct argumentative
 job. Its description states the question it answers, its organizing principle
-and its boundary relative to neighboring sections. Introduce prerequisites before
+and its boundary relative to neighboring sections. Introduce necessary concepts before
 using them, and avoid repeating substantive discussion across sibling sections.
 Use supplied survey structures to inform possible organizing axes, not as a
 template to copy.

@@ -36,7 +36,7 @@ test('code directory extraction requires a unique SHA-256 digest and handles CRL
     `Hash type=sha1 size=20\nCDHash=${hash}`,
     `Hash type=sha256 size=32\nCDHash=${hash}\nCDHash=${hash}`,
   ])
-    assert.throws(() => notarizationHash(metadata), NotarizationError)
+    assert.throws(() => notarizationHash(metadata), verdict('unsupported-code-directory'))
 })
 
 test('reads the exact attached bytes and awaits native verification', async () =>

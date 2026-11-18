@@ -1,9 +1,9 @@
 // Process-local proof of the trusted DMG -> ZIP conversion. Disk state is only a hint.
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { open } from 'node:fs/promises'
-import { verifyApplicationArchive } from './archive.ts'
-import { assertSquirrelArchiveSize, type SquirrelArchive } from './squirrel.ts'
+import { lstat, open, type FileHandle } from 'node:fs/promises'
+import { assertSquirrelArchiveSize, verifyApplicationArchiveFile } from './archive.ts'
+import type { SquirrelArchive } from './squirrel.ts'
 import type { LatestVersionMeta } from '../updates.ts'
 
 export class PreparedArtifactChangedError extends Error {}
@@ -30,7 +30,8 @@ export function preparedIdentity(meta: LatestVersionMeta): string {
 async function digest(
   path: string,
   expectedSize: number | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  inspect?: (file: FileHandle) => Promise<void>
 ): Promise<SquirrelArchive> {
   if (process.platform !== 'darwin') throw new Error('macOS prepared archive only')
   signal?.throwIfAborted()
@@ -43,23 +44,36 @@ async function digest(
     throw error
   })
   try {
-    const before = await file.stat()
+    const before = await file.stat({ bigint: true })
+    const expected = Number(before.size)
     if (
       !before.isFile() ||
-      before.size <= 0 ||
-      (expectedSize !== undefined && before.size !== expectedSize)
+      !Number.isSafeInteger(expected) ||
+      expected <= 0 ||
+      (expectedSize !== undefined && expected !== expectedSize)
     )
       throw new PreparedArtifactChangedError('Invalid prepared artifact size or type')
-    if (expectedSize === undefined) assertSquirrelArchiveSize(before.size)
+    if (expectedSize === undefined) assertSquirrelArchiveSize(expected)
     const hash = createHash('sha512')
     let size = 0
     for await (const chunk of file.createReadStream({ autoClose: false, signal })) {
       size += chunk.length
-      if (size > before.size) throw new PreparedArtifactChangedError('Prepared artifact grew')
+      if (size > expected) throw new PreparedArtifactChangedError('Prepared artifact grew')
       hash.update(chunk)
     }
-    const after = await file.stat()
-    if (size !== before.size || after.size !== before.size)
+    await inspect?.(file)
+    const after = await file.stat({ bigint: true })
+    const located = await lstat(path, { bigint: true })
+    if (
+      size !== expected ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs ||
+      located.dev !== before.dev ||
+      located.ino !== before.ino ||
+      located.mtimeNs !== after.mtimeNs ||
+      located.ctimeNs !== after.ctimeNs
+    )
       throw new PreparedArtifactChangedError('Prepared artifact changed')
     signal?.throwIfAborted()
     return Object.freeze({ path, size, sha512: hash.digest('hex') })
@@ -83,7 +97,8 @@ export class PreparedArchive {
   private constructor(
     private readonly meta: Readonly<LatestVersionMeta>,
     private readonly source: string,
-    readonly archive: Readonly<SquirrelArchive>
+    readonly archive: Readonly<SquirrelArchive>,
+    readonly expandedBytes: number
   ) {
     this.release = preparedIdentity(meta)
   }
@@ -102,13 +117,39 @@ export class PreparedArchive {
     await verifySource(candidate, source, signal)
     await generate()
     signal?.throwIfAborted()
-    const before = await digest(archive, undefined, signal)
-    await verifyApplicationArchive(archive, signal)
-    const after = await digest(archive, before.size, signal)
-    if (before.sha512 !== after.sha512)
-      throw new PreparedArtifactChangedError('Prepared ZIP changed during inspection')
+    let expanded = 0
+    const final = await digest(archive, undefined, signal, async (file) => {
+      expanded = (await verifyApplicationArchiveFile(file, signal)).expanded
+    })
     await verifySource(candidate, source, signal)
-    return new PreparedArchive(candidate, source, after)
+    return new PreparedArchive(candidate, source, final, expanded)
+  }
+
+  /** A persisted archive is a hint until its files, modes and links match the
+   * freshly verified, read-only mounted source on the same ZIP descriptor.
+   */
+  static async reattach(
+    meta: LatestVersionMeta,
+    source: string,
+    archive: SquirrelArchive,
+    withSource: (
+      verify: (application: string) => Promise<SquirrelArchive>
+    ) => Promise<SquirrelArchive>,
+    signal?: AbortSignal
+  ): Promise<PreparedArchive> {
+    const candidate = Object.freeze({ ...meta })
+    await verifySource(candidate, source, signal)
+    assertSquirrelArchiveSize(archive.size)
+    let expanded = 0
+    const final = await withSource((application) =>
+      digest(archive.path, archive.size, signal, async (file) => {
+        expanded = (await verifyApplicationArchiveFile(file, signal, application)).expanded
+      })
+    )
+    if (final.sha512 !== archive.sha512.toLowerCase())
+      throw new PreparedArtifactChangedError('Prepared ZIP digest differs')
+    await verifySource(candidate, source, signal)
+    return new PreparedArchive(candidate, source, final, expanded)
   }
 
   matches(meta: LatestVersionMeta, archive: SquirrelArchive): boolean {

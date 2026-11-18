@@ -73,6 +73,8 @@ class RuntimeCallbackResponse:
     values: RuntimeValue
     idempotency_key: str
     responded_at: str
+    # A rejected tool call carries the host's first correction feedback.
+    allow_tool_correction: bool = False
 
 
 __all__ = [

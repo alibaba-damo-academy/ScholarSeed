@@ -14,7 +14,6 @@ const POWERSHELL = 'powershell.exe'
 const SIGNED_NAMES = [
   /^ScholarSeed\.exe$/i,
   /^scholarseed-.*\.exe$/i,
-  /^__uninstaller-nsis-scholarseed-desktop\.exe$/i,
 ]
 
 function requiredEnvironment(name) {

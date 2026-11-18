@@ -10,9 +10,11 @@ from unittest.mock import patch
 
 from jsonschema import Draft202012Validator
 
+from service.chat.runtime import tools as service_tools
 from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL, execute_service_tool
 from service.chat.service.contracts import describe_contract
 from service.platform.bridge import (
+    ARTIFACT_BATCH_TOOL_NAME,
     BRIDGE_REQUESTS,
     CONTRACT_GUIDANCE_KEY,
     CONTRACT_PREREQUISITES_KEY,
@@ -26,6 +28,77 @@ TOOL_BYTES_LIMIT = 5000
 
 
 class BridgeToolContracts(unittest.TestCase):
+    def test_batch_tool_is_self_describing_and_rejects_invalid_structure(self):
+        tool = next(
+            tool for tool in service_tools.SESSION_SERVICE_TOOLS if tool.name == "publish_artifacts"
+        )
+        validator = Draft202012Validator(tool.input_schema)
+        Draft202012Validator.check_schema(tool.input_schema)
+        validator.validate(
+            {
+                "files": [
+                    {"path": "output/a.md", "role": "final"},
+                    {"path": "output/analysis.py", "role": "final"},
+                ]
+            }
+        )
+        for invalid in (
+            {"files": []},
+            {"files": [{"path": 1}]},
+            {"files": [{"path": "a", "role": "unknown"}]},
+            {"request": {"files": [{"path": "a"}]}},
+            {"files": [{"path": "a", "extra": True}]},
+        ):
+            self.assertFalse(validator.is_valid(invalid))
+        result = asyncio.run(
+            execute_service_tool(
+                {"files": [{"path": 1}]},
+                session_id="session",
+                token="fixture",
+                local_socket=None,
+                tool_name="publish_artifacts",
+            )
+        )
+        self.assertEqual(result["error"], "bridge_invalid_parameters")
+        self.assertNotIn("describe", result)
+        self.assertEqual(result["tool_schema"], tool.input_schema)
+        self.assertFalse(service_tools.artifact_tool_missing_parameters(tool.name, result))
+
+    def test_batch_tool_guides_one_correction_for_missing_required_arguments(self):
+        for arguments, path in (
+            ({}, ["files"]),
+            ({"files": [{"path": "output/a.md"}, {"role": "supporting"}]}, ["files", 1, "path"]),
+        ):
+            with (
+                self.subTest(path=path),
+                patch("service.chat.runtime.tools.httpx.AsyncClient") as client,
+            ):
+                result = asyncio.run(
+                    execute_service_tool(
+                        arguments,
+                        session_id="session",
+                        token="fixture",
+                        local_socket=Path("/unused.sock"),
+                        tool_name=ARTIFACT_BATCH_TOOL_NAME,
+                    )
+                )
+                client.assert_not_called()
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["validation_errors"][0]["path"], path)
+                self.assertIn("once", result["next_action"])
+                self.assertTrue(
+                    service_tools.artifact_tool_missing_parameters(ARTIFACT_BATCH_TOOL_NAME, result)
+                )
+                self.assertFalse(
+                    service_tools.artifact_tool_missing_parameters(SERVICE_BRIDGE_TOOL.name, result)
+                )
+        self.assertFalse(
+            service_tools.artifact_tool_missing_parameters(
+                ARTIFACT_BATCH_TOOL_NAME,
+                {"ok": False, "status": "partial", "retry_files": [{"path": "missing.md"}]},
+            )
+        )
+
     def test_bridge_request_sources_are_exclusive_and_preserve_inline_contracts(self):
         validator = Draft202012Validator(SERVICE_BRIDGE_TOOL.input_schema)
         base = {"capability": "component", "operation": "display"}
@@ -484,7 +557,9 @@ class BridgeToolContracts(unittest.TestCase):
     def test_unknown_operation_lists_registered_choices_without_eager_schemas(self):
         result = self.invalid("plan", "update", {})
         self.assertEqual(result["error"], "bridge_operation_unknown")
-        self.assertEqual(result["valid_operations"], ["get", "write", "structure", "action"])
+        self.assertEqual(
+            result["valid_operations"], ["enable", "get", "write", "structure", "action"]
+        )
         self.assertEqual(result["capability"], "plan")
         self.assertIn(
             {
@@ -497,7 +572,9 @@ class BridgeToolContracts(unittest.TestCase):
         self.assertNotIn("request_schemas", result)
         described = describe_contract("plan", "update")
         self.assertFalse(described["ok"])
-        self.assertEqual(described["valid_operations"], ["get", "write", "structure", "action"])
+        self.assertEqual(
+            described["valid_operations"], ["enable", "get", "write", "structure", "action"]
+        )
         self.assertNotIn("request_schemas", described)
         unknown = self.invalid("unknown", "update", {})
         self.assertEqual(unknown["valid_operations"], [])

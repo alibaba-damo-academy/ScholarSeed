@@ -203,6 +203,20 @@ test('the download action is offered exactly where the main process accepts it',
   // 主进程只在 available / failed 且候选包仍是当前那一个时放行下载。
   assert.equal(updateActionOf(snapshot('available', { candidate: CANDIDATE })), 'download')
   assert.equal(updateActionOf(snapshot('failed', { candidate: CANDIDATE })), 'download')
+  for (const errorFallback of [
+    'install_signature_untrusted',
+    'install_verify_unavailable',
+  ] as const)
+    assert.equal(
+      updateActionOf(
+        snapshot('failed', {
+          candidate: CANDIDATE,
+          errorOrigin: 'preparation',
+          errorFallback,
+        })
+      ),
+      'check'
+    )
   // 检查失败时没有候选包，重试的只能是检查本身。
   assert.equal(updateActionOf(snapshot('failed')), 'check')
   assert.equal(updateActionOf(snapshot('available')), 'check')
@@ -507,22 +521,30 @@ test('failure wording follows the action that failed', () => {
     ],
     [
       snapshot('ready', {
+        error: 'native verification diagnostic',
+        errorFallback: 'install_verification_failed',
+        errorOrigin: 'install',
+      }),
+      'c:update.titleInstallFailed',
+      'c:update.installVerificationFailed',
+    ],
+    [
+      snapshot('failed', {
+        error: 'native download diagnostic',
+        errorFallback: 'download_failed',
+        errorOrigin: 'download',
+      }),
+      'c:update.titleFailed',
+      'c:update.downloadFailed',
+    ],
+    [
+      snapshot('ready', {
         error: 'STATUS=乱码',
         errorFallback: 'install_signature_untrusted',
         errorOrigin: 'install',
       }),
       'c:update.titleInstallFailed',
       'c:update.installSignatureUntrusted',
-    ],
-    // 本机不可判定（链/吊销状态）是独立分类：文案引导修复环境后重试，而不是重新下载那条死路。
-    [
-      snapshot('ready', {
-        error: 'STATUS=NotTrusted',
-        errorFallback: 'install_signature_indeterminate',
-        errorOrigin: 'install',
-      }),
-      'c:update.titleInstallFailed',
-      'c:update.installSignatureIndeterminate',
     ],
     [
       snapshot('ready', {
@@ -549,12 +571,6 @@ test('failure wording follows the action that failed', () => {
       }),
       'c:update.titleInstallFailed',
       'c:update.installOccupancyUnknown',
-    ],
-    // 上一轮安装器还活着：独立分类，文案说清在等什么，而不是报「安装失败」诱导对着互斥量重试。
-    [
-      snapshot('ready', { errorFallback: 'install_already_running', errorOrigin: 'install' }),
-      'c:update.titleInstallFailed',
-      'c:update.installAlreadyRunning',
     ],
     [
       snapshot('rolled-back', {

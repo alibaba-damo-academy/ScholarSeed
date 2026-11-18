@@ -22,10 +22,13 @@ from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
     PLAN_ACTION_STATUSES,
     PLAN_COMPLETE_ACTION,
+    PLAN_ENABLE_OPERATION,
     PLAN_INITIAL_REVISION,
     PLAN_MUTATIONS,
+    PLAN_NOT_ENABLED,
     PLAN_RECONCILE_ACTION,
     PLAN_ROUTE_PREFIX,
+    PlanEnable,
     PlanRead,
 )
 
@@ -86,6 +89,22 @@ def register_plan_routes(
             return JSONResponse({"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN)
         try:
             data = json.loads(raw)
+            if operation == PLAN_ENABLE_OPERATION:
+                enable = PlanEnable.model_validate(data)
+                await activities.finish(
+                    ActivityDomain.BRIDGE, lambda: live.enable_plan(enable, turn_id)
+                )
+                return JSONResponse({"ok": True, "enabled": True, **current()})
+            if not await activities.finish_thread(ActivityDomain.BRIDGE, live.plans.enabled):
+                return JSONResponse({"ok": False, "error": PLAN_NOT_ENABLED}, HTTP_403_FORBIDDEN)
+            if (
+                sessions.bridge_caller(live.id) is not live
+                or live.publication_turn_id != turn_id
+                or live.turn_activity is not activity
+            ):
+                return JSONResponse(
+                    {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
+                )
             if operation == "get":
                 PlanRead.model_validate(data)
                 result = live.plans.current()

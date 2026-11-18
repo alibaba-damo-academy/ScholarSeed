@@ -5,7 +5,7 @@
 toolchain can compile what the pipeline actually emits: `PREAMBLE_EN` through
 pdflatex and `PREAMBLE_ZH` through xelatex, each with a real bibtex round trip,
 a forest tree, a tabularx table and a citation. The preambles are read from the
-phase that owns them, so a package added to a preamble becomes a requirement
+layout module that owns them, so a package added to a preamble becomes a requirement
 here automatically instead of failing on a user machine.
 
 Resolved engine paths are reported so a caller that staged its own toolchain can
@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PREAMBLE_SOURCE = ROOT / "scripts" / "generation" / "merge" / "_fast" / "phase05_merge_full_draft.py"
+PREAMBLE_SOURCE = ROOT / "lib" / "layouts.py"
 NEURIPS_STYLE = ROOT / "assets" / "templates" / "neurips" / "neurips_2026.sty"
 NUMERIC_STYLE = ROOT / "assets" / "unsrtnat_scholarseed.bst"
 BIBLIOGRAPHY_STYLE_NAME = "unsrtnat_scholarseed"
@@ -89,7 +89,7 @@ BIBLIOGRAPHY = (
 
 
 def preambles() -> dict[str, str]:
-    """Read the real preambles from their owning phase without importing it."""
+    """Read the real preambles from their owning layout module without importing it."""
     tree = ast.parse(PREAMBLE_SOURCE.read_text(encoding="utf-8"))
     wanted = {spec["preamble"] for spec in DOCUMENTS.values()}
     found = {}
@@ -118,14 +118,8 @@ def preambles() -> dict[str, str]:
                         raise ValueError("publication template path must be relative")
                     parts.insert(0, part)
                     path_node = path_node.left
-                if (
-                    not isinstance(path_node, ast.Attribute)
-                    or path_node.attr != "HOME"
-                    or not isinstance(path_node.value, ast.Name)
-                    or path_node.value.id != "_slr_paths"
-                    or not parts
-                ):
-                    raise ValueError("publication template must be rooted at _slr_paths.HOME")
+                if not isinstance(path_node, ast.Name) or path_node.id != "HOME":
+                    raise ValueError("publication template must use the owning HOME resolver")
                 template = ROOT.joinpath(*parts).resolve()
                 if not template.is_relative_to(ROOT.resolve()):
                     raise ValueError("publication template escapes the skill root")

@@ -125,6 +125,7 @@ from scholarseed_runtime.contract import (
     ResumeSessionRequest,
     RuntimeBinding,
     RuntimeCallbackRequest,
+    RuntimeCallbackResponse,
     RuntimeCapabilityName,
     RuntimeConfigurationIntent,
     RuntimeControlKind,
@@ -896,6 +897,9 @@ def test_remote_retry_budget_projection() -> None:
     )
     byok = project(ModelTransport(**remote, stream_max_retries=1, request_max_retries=1))
     gateway = project(ModelTransport(**remote, stream_max_retries=0, request_max_retries=0))
+    gateway_recovery = project(
+        ModelTransport(**remote, stream_max_retries=5, request_max_retries=0)
+    )
     undeclared = project(ModelTransport(**remote))
     check(
         "BYOK budget reaches the codex provider verbatim",
@@ -904,6 +908,11 @@ def test_remote_retry_budget_projection() -> None:
     check(
         "gateway budget of zero survives projection (not dropped as falsy)",
         gateway.get("stream_max_retries") == 0 and gateway.get("request_max_retries") == 0,
+    )
+    check(
+        "gateway stream recovery budget reaches the native provider without request retries",
+        gateway_recovery.get("stream_max_retries") == 5
+        and gateway_recovery.get("request_max_retries") == 0,
     )
     check(
         "undeclared budget omits the knobs so codex keeps its own default",
@@ -1537,6 +1546,27 @@ def test_mixed_catalog_declarations() -> None:
         check(
             "mixed compilation never mutates upstream native metadata",
             "auto_review_model_override" not in source["models"][0],
+        )
+        retired = ModelCatalogEntry("gpt-retired", native, optional_preload=True)
+        preloaded_gpt = replace(entries[1], optional_preload=True)
+        snapshots = []
+
+        async def select(snapshot):
+            snapshots.append(snapshot)
+            return snapshot.argument
+
+        optional = replace(qwen, catalog_models=(entries[0], preloaded_gpt, entries[2], retired))
+        await model_catalog_argument(optional, request, native=fetch, select=select)
+        snapshot = snapshots[0]
+        check(
+            "missing optional metadata is omitted without inventing a prefix binding",
+            {entry.model_ref for entry in snapshot.entries} == {"qwen", "gpt", "reviewer"},
+        )
+        check("preloaded model can be selected on the existing Host", snapshot.declares(gpt))
+        retired_selected = replace(optional, model_ref=retired.model_ref, capabilities=native)
+        check(
+            "missing optional model is never reusable for execution",
+            not snapshot.declares(retired_selected),
         )
         invalid = (
             (
@@ -5179,6 +5209,90 @@ def test_unsupported_dynamic_tool_fails_fast() -> None:
     check("undeclared dynamic tool never reaches Serve", queued == 0)
 
 
+def test_tool_correction_defers_only_its_rejected_callback() -> None:
+    async def scenario() -> None:
+        name = "typed_service_tool"
+        session = CodexRuntimeSession(
+            OpenSessionRequest(
+                product_session_id="product",
+                cwd=ROOT,
+                model=GENERATION_TEST_MODEL,
+                service_tools=(RuntimeServiceTool(name, "Typed tool", {}),),
+            )
+        )
+        interrupt = AsyncMock()
+        resolve_tool = AsyncMock(return_value=True)
+        session._native = SimpleNamespace(
+            host=SimpleNamespace(
+                readiness=SimpleNamespace(process_generation=1),
+                attachment=lambda _: SimpleNamespace(turn=SimpleNamespace(interrupt=interrupt)),
+            ),
+            session_id="native",
+            process_events=(),
+            rpc_evidence=(),
+            resolve_tool=resolve_tool,
+        )
+        allow_correction = False
+        response_matches = True
+
+        async def publish(observation: RuntimeEvent | RuntimeCallbackRequest) -> None:
+            if isinstance(observation, RuntimeCallbackRequest):
+                # A consumer may respond before the callback publication yields back to the adapter.
+                request_id = observation.request_id if response_matches else "unrelated-request"
+                await session.respond(
+                    RuntimeCallbackResponse(
+                        request_id=request_id,
+                        decision=CallbackKind.DYNAMIC_TOOL.value,
+                        values={"ok": False, "error": "validation_failed"},
+                        idempotency_key=request_id,
+                        responded_at="",
+                        allow_tool_correction=allow_correction,
+                    )
+                )
+
+        session._publish_observation = publish
+
+        async def call(turn_id: str, index: int) -> None:
+            item_id = f"call-{index}"
+            for kind, payload in (
+                (CodexSessionEventKind.TOOL_STARTED, {"name": name, "input": {}}),
+                (
+                    CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED,
+                    {"tool": name, "request_id": f"request-{turn_id}-{index}"},
+                ),
+                (CodexSessionEventKind.TOOL_COMPLETED, {"ok": False, "output": "invalid"}),
+            ):
+                await session._on_native_event(
+                    CodexSessionEvent("codex", "native", kind, turn_id, item_id, payload=payload)
+                )
+            await asyncio.gather(*session._tasks)
+
+        for turn_id in ("correction", "mismatched", "rejected"):
+            await session._on_native_event(
+                CodexSessionEvent("codex", "native", CodexSessionEventKind.TURN_STARTED, turn_id)
+            )
+            allow_correction = True
+            response_matches = turn_id != "mismatched"
+            resolve_tool.return_value = turn_id != "rejected"
+            for index in range(4):
+                await call(turn_id, index)
+            if turn_id == "correction":
+                interrupt.assert_not_awaited()
+                wire_response = resolve_tool.await_args.args[1]
+                assert wire_response.success is False
+                assert json.loads(wire_response.content_items[0]["text"]) == {
+                    "ok": False,
+                    "error": "validation_failed",
+                }
+                allow_correction = False
+                for index in range(4, 8):
+                    await call(turn_id, index)
+            interrupt.assert_awaited_once()
+            interrupt.reset_mock()
+
+    asyncio.run(scenario())
+
+
 def test_resumed_dynamic_tool_declaration_is_preserved() -> None:
     bridge_tool = RuntimeServiceTool(
         name="scholarseed_bridge",
@@ -6202,6 +6316,76 @@ def test_codex_retry_exhaustion_preserves_provider_status() -> None:
     asyncio.run(notification())
 
 
+def test_provider_terminal_preserves_its_exact_incident_reference() -> None:
+    async def scenario(status: str, incident_turn: str) -> None:
+        emitter = Mock(spec=CodexEmitter, incident=AsyncMock(), emit=AsyncMock())
+        runtime = CodexTurnRuntime(
+            Mock(thread_id="thread", attached_generation=1),
+            request=AsyncMock(),
+            ensure_attached=AsyncMock(return_value=1),
+            stale_requests=AsyncMock(),
+            emitter=emitter,
+            router=ThreadRouter(),
+            watcher=Mock(spec=WorkspaceWatch),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        runtime._flush_unknown_message = AsyncMock()
+        runtime._flush_watched_files = AsyncMock()
+        runtime.provider_incident_id = "provider-incident"
+        runtime.provider_incident_turn_id = incident_turn
+        await runtime._turn_completed({"id": "turn", "status": status})
+        payload = emitter.emit.await_args.kwargs["payload"]
+        if status == "failed" and incident_turn == "turn":
+            assert payload.get("incident_id") == "provider-incident"
+            assert emitter.incident.await_args.args[1].incident_id == payload["incident_id"]
+        else:
+            assert "incident_id" not in payload
+
+    for status, incident_turn in (
+        ("failed", "turn"),
+        ("failed", "another-turn"),
+        ("completed", "turn"),
+        ("interrupted", "turn"),
+    ):
+        asyncio.run(scenario(status, incident_turn))
+
+
+def test_codex_idle_timeout_preserves_failure_semantics() -> None:
+    native_message = "stream disconnected before completion: idle timeout waiting for SSE"
+    for message in (native_message, "idle timeout waiting for SSE", native_message.upper()):
+        for error in (
+            {"message": message},
+            {"error": {"message": message}},
+            {"message": json.dumps({"error": {"message": message}})},
+        ):
+            original = json.loads(json.dumps(error))
+            failure = provider_failure(error)
+            check(
+                "native SSE idle timeout keeps its recoverable timeout identity",
+                failure.code == "timeout"
+                and failure.diagnostic_code == "timeout"
+                and failure.http_status is None
+                and failure.message == PROVIDER_UNAVAILABLE_MESSAGE
+                and failure.retryability is RuntimeRetryability.USER_RETRYABLE
+                and error == original,
+            )
+    for message in (
+        "user mentioned idle timeout waiting for SSE",
+        native_message + " private detail",
+    ):
+        failure = provider_failure({"message": message})
+        check(
+            "unrecognized prose remains generic and redacted",
+            failure.code == "codex_provider_failed",
+        )
+    failure = provider_failure({"code": "invalid_api_key", "message": native_message})
+    check(
+        "explicit provider authentication failure takes precedence over timeout prose",
+        failure.code == "invalid_api_key" and failure.retryability is RuntimeRetryability.TERMINAL,
+    )
+
+
 def test_codex_flattened_stream_disconnect_recovers_transient_semantics() -> None:
     """Codex 压平流内 5xx 后 adapter 仍要恢复「暂时不可用」，而不是「rejected the request」。
 
@@ -7222,6 +7406,7 @@ def main() -> int:
     test_plan_projection()
     test_turn_timeout_projection()
     test_callback_translation()
+    test_tool_correction_defers_only_its_rejected_callback()
     test_subagent_translation()
     test_extension_and_incident_are_lossless()
     test_dependency_direction()
@@ -7272,6 +7457,8 @@ def main() -> int:
     test_evidence_cursor()
     test_upstream_inspection_launch()
     test_skill_refresh_does_not_require_exclusive_control()
+    test_provider_terminal_preserves_its_exact_incident_reference()
+    test_codex_idle_timeout_preserves_failure_semantics()
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()
     test_subscription_capability_rejection_is_terminal()

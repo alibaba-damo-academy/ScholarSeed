@@ -336,10 +336,7 @@ class _OpenAICompatLLM(LightLLM):
         # field; when False we explicitly disable it so the model doesn't
         # auto-engage reasoning on stages that expect direct answers.
         extra_body = dict(kwargs.get("extra_body") or {})
-        if self.thinking:
-            extra_body.setdefault("thinking", {"type": "enabled"})
-        else:
-            extra_body.setdefault("enable_thinking", False)
+        extra_body.setdefault("enable_thinking", bool(self.thinking))
 
         create_kwargs: dict[str, Any] = {
             "model": kwargs.get("model", self.model),

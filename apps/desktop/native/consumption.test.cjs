@@ -6,6 +6,7 @@ const { createHash } = require('node:crypto')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
 const { beginDomains } = require('./domains.cjs')
+const { acquireDirectoryWriter } = require('../src/main/writer.ts')
 const policy = require('./toolchain.json')
 
 const library = process.env.SCHOLARSEED_LEASE_LIBRARY
@@ -30,6 +31,36 @@ const macosTest = process.platform === 'darwin' ? test : test.skip
 const RECORD = 'context.json'
 const PAYLOAD = Buffer.from('{"candidate":"old-transaction"}\n')
 const TIMEOUT_MS = 2000
+
+macosTest('Desktop maintenance consumes only the admitted handoff while excluding publishers', (context) => {
+  const base = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'handoff-owner-'))
+  context.after(() => fs.rmSync(base, { recursive: true, force: true }))
+  const directory = path.join(base, 'updates')
+  const coordinator = path.join(base, 'coordinator')
+  const record = 'squirrel.json'
+  const filename = path.join(directory, record)
+  const publish = () => {
+    const writer = acquireDirectoryWriter(api, coordinator, directory)
+    try { writer.withRecordLock('squirrel-handoff.lock', () => writer.replace(record, PAYLOAD)) }
+    finally { writer.close() }
+  }
+  publish()
+  const stale = fs.statSync(filename, { bigint: true })
+  publish()
+  const replacement = fs.statSync(filename, { bigint: true })
+  assert.notEqual(replacement.ino, stale.ino)
+  const maintenance = acquireDirectoryWriter(api, coordinator, directory, true)
+  try {
+    assert.throws(publish, /BUSY|busy/)
+    assert.throws(
+      () => maintenance.consume(record, PAYLOAD, String(stale.dev), String(stale.ino)),
+      { code: 'ERR_LEASE_CHANGED' }
+    )
+    assert.deepEqual(fs.readFileSync(filename), PAYLOAD)
+    maintenance.consume(record, PAYLOAD, String(replacement.dev), String(replacement.ino))
+    assert.equal(fs.existsSync(filename), false)
+  } finally { maintenance.close() }
+})
 
 function fixture(context, bytes = PAYLOAD) {
   const base = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'consumption-fixture-'))

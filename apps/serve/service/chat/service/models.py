@@ -151,13 +151,15 @@ MODEL_UNAVAILABLE_ERROR = "session_model_unavailable"
 MODEL_CATALOG_CONFLICT = "model_catalog_definition_conflict"
 MODEL_CATALOG_STALE = "model_catalog_changed"
 MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
+OPTIONAL_PRELOAD_KEY = "optional_preload"
 BRIDGED_CATALOG_SCOPE = "product-bridge"
 DIRECT_CATALOG_SCOPE = "direct"
-# Codex 出站重试预算按 endpoint 归属分档（proposal 106 / 落实 proposal 42 立场）。
-# 内置网关路自有重试+降级链，Codex 再重试只会对一个确定性拒绝重复打上游，故设 0；
-# BYOK 直连路无网关兜底，保留一次瞬时重连韧性，确定性拒绝最多两次即终态。
-GATEWAY_STREAM_MAX_RETRIES = 0
+# Gateway retries cannot recover a response stream lost before the native client consumes it.
+# Keep native stream recovery bounded without adding request retries or changing personal routes.
+GATEWAY_STREAM_MAX_RETRIES = 5
 GATEWAY_REQUEST_MAX_RETRIES = 0
+SUBSCRIPTION_STREAM_MAX_RETRIES = 0
+SUBSCRIPTION_REQUEST_MAX_RETRIES = 0
 BYOK_STREAM_MAX_RETRIES = 1
 BYOK_REQUEST_MAX_RETRIES = 1
 # Product-owned configuration accessor.  Kept as a named seam so model tests and
@@ -276,6 +278,7 @@ class SessionModelSpec:
     capabilities: ModelCapabilities = ModelCapabilities()
     catalog_models: tuple[ModelCatalogEntry, ...] = ()
     approval_model_name: str = ""
+    runtime_model_ref: str = ""
 
     def runtime_model(
         self, reasoning_effort: str = "", thinking: ModelThinking | None = None
@@ -309,7 +312,7 @@ class SessionModelSpec:
             )
         context_window = _optional_int(_model_metadata(self.config).get("model_context_window"))
         intent = ModelIntent(
-            model_ref=self.model_name,
+            model_ref=self.runtime_model_ref or self.model_name,
             revision=revision,
             transport=ModelTransport(
                 mode=ModelConnectionMode.REMOTE,
@@ -460,13 +463,6 @@ class ModelService:
                         if item.get("profile_id") == profile_id:
                             native = offered.get(item["model_id"], {})
                             item.update(_subscription_directory_capability(native))
-                            if native.get("reasoning_efforts") is not None:
-                                item["reasoning_efforts"] = native.get("reasoning_efforts")
-                            # Keep the declared form alongside the legacy effort list so the
-                            # renderer can distinguish effort, toggle and fixed-on models.
-                            if native.get("reasoning_options") is not None:
-                                item["reasoning_options"] = native.get("reasoning_options")
-                            item["reasoning_effort"] = native.get("reasoning_effort", "")
                             # 订阅目录没给思考形态时回落到注册表：OAuth 端点就是厂商官方面，
                             # 其模型档位属 vendor-doc 真值（与受信预置 BYOK 同一口径），否则
                             # gpt 这类原生支持 reasoning_effort 的订阅模型连滑块都不出现。
@@ -1074,6 +1070,19 @@ class ModelService:
         selected_row = next(
             row for row in self._catalog_models(config, document) if row["key"] == selected
         )
+        if selected_row.get("billing") == SUBSCRIPTION_BILLING:
+            profile = self._profiles.profile(str(selected_row["profile_id"]), owner_id=owner_id)
+            snapshot = (profile or {}).get(MODEL_DIRECTORY_KEY)
+            if isinstance(snapshot, dict):
+                native = next(
+                    (
+                        row
+                        for row in snapshot.get("models") or ()
+                        if row.get("id") == selected_row.get("model_id")
+                    ),
+                    {},
+                )
+                selected_row.update(_subscription_directory_capability(native))
         catalog_rows, catalog_models = self._execution_catalog(
             config, document, selected_row, user_id=user_id
         )
@@ -1107,6 +1116,7 @@ class ModelService:
                     session_id,
                     {},
                     reasoning_effort=reasoning_effort,
+                    reasoning_options=reasoning_options,
                     catalog_identity=json.dumps(
                         [asdict(entry) for entry in catalog_models], sort_keys=True
                     ),
@@ -1139,10 +1149,10 @@ class ModelService:
                     codex_provider={
                         "base_url": registration.base_url,
                         "wire_api": ModelWireProtocol.RESPONSES.value,
-                        # 订阅路恒经产品网关注册（registration.base_url 即 loopback bridge），
-                        # 网关自有重试+降级，故与内置网关路同档：Codex 侧不再重试。
-                        "stream_max_retries": GATEWAY_STREAM_MAX_RETRIES,
-                        "request_max_retries": GATEWAY_REQUEST_MAX_RETRIES,
+                        # A local subscription bridge is not the built-in gateway route.
+                        # Preserve its existing retry policy independently.
+                        "stream_max_retries": SUBSCRIPTION_STREAM_MAX_RETRIES,
+                        "request_max_retries": SUBSCRIPTION_REQUEST_MAX_RETRIES,
                         "proxy_bypass_hosts": _proxy_bypass_hosts(registration.proxy_bypass_host),
                     },
                 )
@@ -1155,6 +1165,16 @@ class ModelService:
                 model_id=personal_model_id,
             )
             _require_supported_personal_provider(runtime_config.get("provider"))
+            runtime_model_ref = next(
+                (
+                    self._catalog_entry(row).model_ref
+                    for row in catalog_rows
+                    if row["key"] == selected
+                ),
+                "",
+            )
+            if not runtime_model_ref:
+                raise SessionModelUnavailableError(MODEL_CATALOG_UNAVAILABLE)
             personal_provider, personal_environment = _codex_provider(
                 runtime_config,
                 self._completions,
@@ -1164,6 +1184,7 @@ class ModelService:
                 thinking=thinking,
                 turn_id_provider=resolve_turn_id,
                 source_text=source_text,
+                runtime_model_ref=runtime_model_ref,
                 renewal_source=lambda: (
                     owner_id,
                     selected,
@@ -1184,6 +1205,7 @@ class ModelService:
                 key=selected,
                 model_run=model_run,
                 model_name=wire_model_name(str(runtime_config.get("model_name") or "").strip()),
+                runtime_model_ref=runtime_model_ref,
                 config=runtime_config,
                 billing=API_BILLING,
                 reasoning_options=reasoning_options,
@@ -1346,13 +1368,50 @@ class ModelService:
         user_id: str,
     ) -> list[dict[str, Any]]:
         scope = self._catalog_scope(config, document, selected_row)
-        rows = self._catalog_models(config, document)
+        owner_id = self._owner_id(user_id)
+        profiles = []
+        for profile in document.get("profiles") or ():
+            if profile.get(ENABLED_KEY) and is_oauth_connection(profile):
+                private = self._profiles.profile(str(profile["id"]), owner_id=owner_id) or {}
+                profile = {**profile, MODEL_DIRECTORY_KEY: private.get(MODEL_DIRECTORY_KEY)}
+            profiles.append(profile)
+        rows = [
+            *self._available(config),
+            *self._personal_items({"profiles": profiles}, preload=True),
+        ]
         self._mark_gateway_credential_gate(rows, config, user_id)
-        self._mark_subscription_gate(rows, self._owner_id(user_id))
-        return [
-            row
+        self._mark_subscription_gate(rows, owner_id)
+        scoped = [
+            (
+                {
+                    **row,
+                    "runtime_model_ref": "personal-"
+                    + hashlib.sha256(str(row["key"]).encode()).hexdigest(),
+                }
+                if scope[0] == BRIDGED_CATALOG_SCOPE
+                and row.get("source") == PERSONAL_MODEL_SOURCE
+                and row.get("billing") == API_BILLING
+                else row
+            )
             for row in sorted(rows, key=lambda item: str(item["key"]))
             if not row.get("disabled") and self._catalog_scope(config, document, row) == scope
+        ]
+        required_refs = set()
+        optional_sources: dict[str, set[str]] = {}
+        for row in scoped:
+            entry = self._catalog_entry(row)
+            if entry.optional_preload:
+                optional_sources.setdefault(entry.model_ref, set()).add(entry.native_catalog_source)
+            else:
+                required_refs.update((entry.model_ref, entry.approval_model_ref))
+        return [
+            row
+            for row in scoped
+            if not row.get(OPTIONAL_PRELOAD_KEY)
+            or (
+                (ref := self._catalog_entry(row).model_ref) not in required_refs
+                and len(optional_sources[ref]) == 1
+            )
         ]
 
     @staticmethod
@@ -1365,7 +1424,8 @@ class ModelService:
                 native_agent_messages=False,
             )
         return ModelCatalogEntry(
-            model_ref=wire_model_name(str(row.get("model_id") or row.get("model_name") or "")),
+            model_ref=str(row.get("runtime_model_ref") or "")
+            or wire_model_name(str(row.get("model_id") or row.get("model_name") or "")),
             capabilities=capabilities,
             context_window=_optional_int(row.get(CONTEXT_WINDOW_KEY)),
             approval_model_ref=str(row.get(GATEWAY_APPROVAL_MODEL_KEY) or ""),
@@ -1374,6 +1434,7 @@ class ModelService:
                 if capabilities.tool_protocol is ModelToolProtocol.PROVIDER_NATIVE
                 else ""
             ),
+            optional_preload=bool(row.get(OPTIONAL_PRELOAD_KEY)),
         )
 
     def _execution_catalog(
@@ -1469,7 +1530,16 @@ class ModelService:
         required_rows = {
             str(row["key"]): self._catalog_entry(row)
             for row in frozen_rows
-            if row.get("billing") == SUBSCRIPTION_BILLING or row["key"] == selected_key
+            if (row.get("billing") == SUBSCRIPTION_BILLING and not row.get(OPTIONAL_PRELOAD_KEY))
+            or row["key"] == selected_key
+        }
+        required_native_models = {
+            connection_id: {
+                entry.model_ref
+                for entry in required_rows.values()
+                if entry.native_catalog_source == connection_id
+            }
+            for connection_id in native_connections
         }
 
         def rejected(
@@ -1551,7 +1621,8 @@ class ModelService:
             conflicting_extras: set[str] = set()
             for connection_id, payload in zip(native_connections, payloads, strict=True):
                 source = payload.get("models")
-                if not isinstance(source, list) or not source:
+                required = required_native_models[connection_id]
+                if not isinstance(source, list) or (not source and required):
                     raise rejected(
                         (
                             CatalogValidationReason.EMPTY_MODELS
@@ -1590,7 +1661,6 @@ class ModelService:
                             row_index=row_index,
                             received_count=len(source),
                         )
-                required = native_models[connection_id]
                 missing = required.difference(definitions)
                 if missing:
                     raise rejected(
@@ -1602,7 +1672,10 @@ class ModelService:
                         missing_count=len(missing),
                     )
                 rows.update(
-                    {model_ref: copy.deepcopy(definitions[model_ref]) for model_ref in required}
+                    {
+                        model_ref: copy.deepcopy(definitions[model_ref])
+                        for model_ref in native_models[connection_id].intersection(definitions)
+                    }
                 )
                 for model_ref in definitions.keys() - admitted_refs:
                     definition = definitions[model_ref]
@@ -1634,7 +1707,7 @@ class ModelService:
 
     @staticmethod
     def _personal_items(
-        document: Mapping[str, Any], *, hidden: bool = False
+        document: Mapping[str, Any], *, hidden: bool = False, preload: bool = False
     ) -> list[dict[str, Any]]:
         """Project enabled connections' selected models, one visibility partition at a time.
 
@@ -1649,11 +1722,33 @@ class ModelService:
                 continue
             profile_id = str(profile.get("id") or "")
             vendor, vendor_preset_id = _vendor_label(profile, preset_labels)
-            for model in profile.get(SELECTED_MODELS_KEY) or ():
+            selected = profile.get(SELECTED_MODELS_KEY) or ()
+            selected_ids = {model.get(MODEL_ID_KEY) for model in selected}
+            models = selected
+            if preload and is_oauth_connection(profile):
+                directory = profile.get(MODEL_DIRECTORY_KEY)
+                discovered = directory.get("models") if isinstance(directory, Mapping) else None
+                by_id = {
+                    str(model.get(MODEL_ID_KEY) or ""): model
+                    for model in (discovered if isinstance(discovered, list) else ())
+                    if isinstance(model, Mapping)
+                }
+                for model in selected:
+                    model_id = str(model.get(MODEL_ID_KEY) or "")
+                    native = by_id.get(model_id)
+                    by_id[model_id] = (
+                        {**model, **_subscription_directory_capability(native)}
+                        if native is not None
+                        else model
+                    )
+                models = by_id.values()
+            for model in models:
                 model_id = str(model.get(MODEL_ID_KEY) or "")
                 if not model_id:
                     continue
-                if bool(model.get(MODEL_HIDDEN_KEY)) != hidden:
+                if bool(model.get(MODEL_HIDDEN_KEY)) != hidden and not (
+                    preload and is_oauth_connection(profile)
+                ):
                     continue
                 model_label = str(model.get(MODEL_LABEL_KEY) or "") or model_id
                 items.append(
@@ -1668,6 +1763,11 @@ class ModelService:
                         "model_label": model_label,
                         "model_name": model_id,
                         "model_id": model_id,
+                        **(
+                            {OPTIONAL_PRELOAD_KEY: True}
+                            if preload and model_id not in selected_ids
+                            else {}
+                        ),
                         **_personal_capability(model, profile, model_id),
                         "source": PERSONAL_MODEL_SOURCE,
                         "profile_id": profile_id,
@@ -1826,12 +1926,25 @@ def _personal_capability(
 
 
 def _subscription_directory_capability(native: Mapping[str, Any]) -> dict[str, Any]:
-    """Project modalities declared by the authenticated provider model directory."""
-
+    """Project the authenticated directory consistently for menu and execution."""
+    out: dict[str, Any] = {}
     modalities = _declared_list(native, INPUT_MODALITIES_KEY)
-    if not modalities or any(modality not in MODALITY_KINDS for modality in modalities):
-        return {}
-    return {INPUT_MODALITIES_KEY: modalities, **modality_flags(modalities)}
+    if modalities and all(modality in MODALITY_KINDS for modality in modalities):
+        out.update({INPUT_MODALITIES_KEY: modalities, **modality_flags(modalities)})
+    efforts = native.get(REASONING_EFFORTS_KEY)
+    options = native.get(REASONING_OPTIONS_KEY)
+    if efforts is not None:
+        out[REASONING_EFFORTS_KEY] = efforts
+    if options is not None:
+        out[REASONING_OPTIONS_KEY] = options
+    elif isinstance(efforts, list):
+        option: dict[str, Any] = {"kind": EFFORT_FORM, "values": efforts}
+        default = str(native.get("reasoning_effort") or "")
+        if default in efforts:
+            option["default"] = default
+        out[REASONING_OPTIONS_KEY] = [option] if efforts else []
+    out["reasoning_effort"] = native.get("reasoning_effort", "")
+    return out
 
 
 def _declared_list(entry: Mapping[str, Any], key: str) -> list[str] | None:
@@ -1864,6 +1977,7 @@ def _codex_provider(
     turn_id_provider: Callable[[str], str] | None = None,
     source_text: str | None = None,
     approval_model_ref: str = "",
+    runtime_model_ref: str = "",
     catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
     allow_tools: bool = True,
     renewal_source: Callable[[], object] | None = None,
@@ -1887,6 +2001,10 @@ def _codex_provider(
     )
     if (
         chat_completions
+        or (
+            runtime_model_ref
+            and runtime_model_ref != wire_model_name(str(config.get("model_name") or ""))
+        )
         or bool(session_id)
         or not allow_tools
         or reasoning_effort is not None
@@ -1906,7 +2024,10 @@ def _codex_provider(
         allowed_models = frozenset({selected_model, approval_model_ref} - {""})
 
         def request_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
-            if str(payload.get("model") or "") not in allowed_models:
+            model = str(payload.get("model") or "")
+            if runtime_model_ref and model == runtime_model_ref:
+                return {**payload, "model": selected_model}
+            if model not in allowed_models:
                 raise SessionModelUnavailableError(MODEL_UNAVAILABLE_ERROR)
             return dict(payload)
 
@@ -1914,6 +2035,7 @@ def _codex_provider(
             return (
                 config,
                 sorted(allowed_models),
+                runtime_model_ref,
                 user_id,
                 account_tokens.revision if account_tokens is not None else None,
                 renewal_source() if renewal_source is not None else None,

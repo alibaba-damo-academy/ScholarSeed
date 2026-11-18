@@ -5,7 +5,7 @@ build_bib.py — freeze the corpus bibliography and its cite keys, once, early.
 Why this exists
 ---------------
 The bibliography used to be built at the very end of the run, inside
-`phase05b_insert_assets.py`, from the cite keys that had actually been cited by
+the publisher, from the cite keys that had actually been cited by
 then. That works, but it puts the *construction* of a cite key after everything
 that has to spell one: the outline names papers, every section draft writes
 `\\cite{...}`, and each of those was relying on a key that no file yet owned.
@@ -208,7 +208,7 @@ def build(workspace: Path, include_cards=True) -> tuple[dict, dict]:
     _write_atomic(process / CITE_KEYS_FILENAME,
                   json.dumps(cite_keys, ensure_ascii=False, indent=2) + "\n")
 
-    # Read the file back through the same parser `phase05b_insert_assets.py`
+    # Read the file back through the same parser the publisher
     # uses to select from it. Rendering an entry the selector cannot find again
     # would be invisible here and would surface as a `% MISSING` line in the
     # finished bibliography, hours later.

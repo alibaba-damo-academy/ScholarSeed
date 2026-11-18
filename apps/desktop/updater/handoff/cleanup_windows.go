@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -22,23 +23,29 @@ const cleanupWriteAttributes = 0x100
 // inspected handle. It never opens file contents, follows links, changes ACLs,
 // or leaves workers running after returning. The caller owns the installation.
 func cleanRuntimeTree(ctx context.Context, directory string) (uint64, error) {
-	pins, err := pinLineage(filepath.Dir(directory))
+	return cleanQualifiedTree(ctx, directory, false, time.Time{})
+}
+
+func cleanQualifiedTree(ctx context.Context, filename string, archive bool, cutoff time.Time) (uint64, error) {
+	pins, err := pinLineage(filepath.Dir(filename))
 	if err != nil {
 		return 0, err
 	}
 	defer closeFiles(pins)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	c := runtimeCleanup{ctx: ctx, cancel: cancel, slots: make(chan struct{}, cleanupWorkers-1)}
-	err = c.remove(directory, 0)
+	c := runtimeCleanup{ctx: ctx, cancel: cancel, slots: make(chan struct{}, cleanupWorkers-1), archive: archive, cutoff: cutoff}
+	err = c.remove(filename, 0)
 	return c.files.Load(), err
 }
 
 type runtimeCleanup struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	slots  chan struct{}
-	files  atomic.Uint64
+	ctx     context.Context
+	cancel  context.CancelFunc
+	slots   chan struct{}
+	files   atomic.Uint64
+	archive bool
+	cutoff  time.Time
 }
 
 func (c *runtimeCleanup) remove(filename string, depth int) error {
@@ -54,8 +61,12 @@ func (c *runtimeCleanup) remove(filename string, depth int) error {
 	}
 	// Request metadata-only access without opening file contents.
 	// No delete sharing: the inspected object cannot be swapped before unlink.
+	sharing := uint32(syscall.FILE_SHARE_READ | syscall.FILE_SHARE_WRITE)
+	if c.archive && depth == 0 {
+		sharing = 0
+	}
 	handle, err := syscall.CreateFile(ptr, applicationDeleteAccess|applicationAttributeAccess,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING,
+		sharing, nil, syscall.OPEN_EXISTING,
 		syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return err
@@ -69,8 +80,13 @@ func (c *runtimeCleanup) remove(filename string, depth int) error {
 		return errors.New("runtime cleanup refuses redirected or multiply-linked objects")
 	}
 	directory := info.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY != 0
-	if depth == 0 && !directory {
-		return errors.New("runtime cleanup root is not a directory")
+	if depth == 0 {
+		if directory == c.archive {
+			return errors.New("runtime cleanup root has unexpected type")
+		}
+		if !c.cutoff.IsZero() && !time.Unix(0, info.LastWriteTime.Nanoseconds()).Before(c.cutoff) {
+			return nil
+		}
 	}
 	if directory {
 		// The DELETE handle pins identity while a second, delete-sharing handle

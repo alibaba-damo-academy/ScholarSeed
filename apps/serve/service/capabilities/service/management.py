@@ -224,10 +224,26 @@ class SkillManagement:
         return SkillManagementError(502, {"code": exc.code, "message": str(exc)})
 
     async def marketplace(
-        self, query: str = "", cursor: str = "", label: str = "", locale: str = "en"
+        self,
+        query: str = "",
+        cursor: str = "",
+        label: str = "",
+        locale: str = "en",
+        *,
+        include_attribution: bool = True,
     ) -> dict[str, Any]:
         try:
-            return await ClawHub(locale=locale).list(query=query, cursor=cursor, label=label)
+            return await ClawHub(locale=locale).list(
+                query=query, cursor=cursor, label=label, include_attribution=include_attribution
+            )
+        except ClawHubError as exc:
+            raise self.marketplace_error(exc) from exc
+
+    async def marketplace_attribution(
+        self, namespace: str, slug: str, version: str
+    ) -> dict[str, Any]:
+        try:
+            return await ClawHub().attribution(namespace, slug, version)
         except ClawHubError as exc:
             raise self.marketplace_error(exc) from exc
 

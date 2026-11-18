@@ -94,9 +94,8 @@ export async function reportMacRepair(
   }
 }
 
-async function reportMacRefusal(
+async function logMacRefusal(
   error: MacStartupAdmissionError,
-  headless: boolean,
   log: (message: string) => void
 ): Promise<void> {
   const diagnostic = JSON.stringify({
@@ -122,21 +121,14 @@ async function reportMacRefusal(
   )
   try {
     await Promise.race([
-      Promise.allSettled([
-        logging.catch(() => log('[startup] system admission diagnostic unavailable\n')),
-        headless ? Promise.resolve() : notifyMacRefusal(error.status),
-      ]),
+      logging.catch(() => log('[startup] system admission diagnostic unavailable\n')),
       new Promise<void>((resolve) => {
         deadline = setTimeout(resolve, REPORT_TIMEOUT_MS)
       }),
     ])
   } finally {
     clearTimeout(deadline)
-    try {
-      logging.child?.kill()
-    } finally {
-      app.exit(REFUSAL_EXIT_CODE)
-    }
+    logging.child?.kill()
   }
 }
 
@@ -152,7 +144,16 @@ export async function recoverStartupAdmission(
     process.platform === MACOS_PLATFORM &&
     (error instanceof MacStartupAdmissionError || updatePending)
   ) {
-    const status = error instanceof MacStartupAdmissionError ? error.status : 'unconfirmed'
+    const refusal =
+      error instanceof MacStartupAdmissionError
+        ? error
+        : new MacStartupAdmissionError('unconfirmed', error)
+    const status = refusal.status
+    try {
+      await logMacRefusal(refusal, log)
+    } catch {
+      log('[startup] system admission diagnostic unavailable\n')
+    }
     if (!headless && offerRepair && (status === 'failed' || status === 'unconfirmed')) {
       try {
         if (await offerRepair()) return
@@ -160,13 +161,12 @@ export async function recoverStartupAdmission(
         log(`[startup] repair entry refused: ${String(failure)}\n`)
       }
     }
-    return reportMacRefusal(
-      error instanceof MacStartupAdmissionError
-        ? error
-        : new MacStartupAdmissionError('unconfirmed', error),
-      headless,
-      log
-    )
+    try {
+      if (!headless) await notifyMacRefusal(status)
+    } finally {
+      app.exit(REFUSAL_EXIT_CODE)
+    }
+    return
   }
   if (headless) {
     app.exit(1)

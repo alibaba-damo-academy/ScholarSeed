@@ -23,6 +23,7 @@ from precheck import precheck
 from manuscript_publication import publish,audit,native_references,native_heading_ids
 from generation_errors import GenerationError
 from templates import LATEX_AUTHORING_GUIDANCE
+from task_fixtures import authoring_context
 
 CFG={'provider':'qwen','model':'fixture','base_url':'http://fixture.invalid','api_key':'fixture',
      'context_window':1000000,'capacity_verified':{'model_max_output':131072},'max_tokens':32768,
@@ -34,7 +35,7 @@ CFG={'provider':'qwen','model':'fixture','base_url':'http://fixture.invalid','ap
 class Model:
     def __init__(self):self.calls=[];self.systems=[];self.fail=None;self.bad_delta=False;self.active=0;self.peak=0
     async def chat_stream(self,messages,**kwargs):
-        packet=json.loads(messages[1]['content']);self.calls.append(packet);self.systems.append(messages[0]['content'])
+        packet=authoring_context(messages);self.calls.append(packet);self.systems.append(messages[0]['content'])
         assert 'response_format' not in kwargs  # Raw chapter text and a plain source delta.
         if 'sources' in packet:
             if self.bad_delta:text='not a valid delta'
@@ -47,7 +48,7 @@ class Model:
             if self.fail==sid:raise ConnectionError('fixture transport failure')
             text=(r'Mechanisms vary. $\bm{X}=\bm{U}\bm{V}^{\top}$. \citep{Keyp1}.'
                   if sid=='1' else 'A bounded synthesis of the evidence.')
-            if packet['shared_figures']:text+=r' Figure~\ref{fig:F1} explains the relationship.'
+            if packet['asset_contract']['figures']:text+=r' Figure~\ref{fig:F1} explains the relationship.'
         kwargs['_capture'].update(finish_reason='stop',usage={},partial_response=text)
         return text
 
@@ -140,10 +141,10 @@ class NativeTest(unittest.TestCase):
         (self.ws/'03_process/references.bib').write_text('@article{Keyp1,author={Ada Example},title={Evidence},year={2024},journal={Journal}}')
         def chapter(sid,title,role):return {'section_id':sid,'title':title,'role':role,
             'description':'Explain conditional evidence.','paper_ids':['p1'] if role=='analysis' else [],
-            'requires':[],'analysis_tasks':[{'task_id':'A1','kind':'compare','question':'Which mechanisms?',
+            'analysis_tasks':[{'task_id':'A1','kind':'compare','question':'Which mechanisms?',
                 'completion':'State supported differences.'}] if role=='analysis' else []}
         self.outline={'survey_title':'Mechanisms','topic':'Mechanisms','description':'Conditional mechanisms',
-            'review_thesis':'What mechanisms are supported?','organizing_axis':'Conditions', 'prerequisites':[],
+            'review_thesis':'What mechanisms are supported?','organizing_axis':'Conditions',
             'outline_tree':[chapter('0','Abstract','abstract'),chapter('1','Mechanisms','analysis'),
                             chapter('2','Conclusion','conclusion')]}
         atomic_json(self.ws/'04_outline/outline.json',self.outline)
@@ -211,7 +212,7 @@ class NativeTest(unittest.TestCase):
             async def chat_stream(self,messages,**kwargs):
                 self.messages.append(messages)
                 text=await super().chat_stream(messages,**kwargs)
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids') in (['1'],['2']):
                     text+='\nRetrieval augmented generation (RAG) uses external evidence.'
                     kwargs['_capture']['partial_response']=text
@@ -228,14 +229,14 @@ class NativeTest(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):json.loads(messages[2]['content'])
         self.assertEqual(messages[2]['content'],
                          (self.ws/'05_generation/repetition.txt').read_text())
-        self.assertNotIn('repetition_notes',json.loads(messages[1]['content']))
+        self.assertNotIn('repetition_notes',authoring_context(messages))
 
     def test_abstract_warnings_feed_existing_refinement_and_clear_after_repair(self):
         long_abstract = 'Detailed background. ' * 140 + '\n\nFurther details.'
         concise = 'Supported synthesis. ' * 80
         class AbstractModel(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_kind')=='abstract' or 'sources' in packet:
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text=(long_abstract if 'sources' not in packet else
@@ -258,7 +259,7 @@ class NativeTest(unittest.TestCase):
         configure(self.ws,{'section_instructions':{'0':'Use two paragraphs in the abstract.'}})
         class AbstractModel(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_kind')=='abstract':
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text='Supported question.\n\nSupported synthesis.'
@@ -276,7 +277,7 @@ class NativeTest(unittest.TestCase):
         class DuplicateBibliography(Model):
             async def chat_stream(self,messages,**kwargs):
                 text=await super().chat_stream(messages,**kwargs)
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     text+=r'\begin{thebibliography}{9}\bibitem{Keyp1}Evidence\end{thebibliography}'
                     kwargs['_capture']['partial_response']=text
@@ -349,7 +350,7 @@ class NativeTest(unittest.TestCase):
         atomic_json(self.ws/'04_outline/outline.json',self.outline)
         class BareTable(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text=(r'Mechanisms vary. Table~\ref{tab:T1} compares them. '
@@ -378,7 +379,7 @@ class NativeTest(unittest.TestCase):
         explanation = 'Retrieval-augmented generation (RAG) uses external evidence.'
         class UnchangedModel(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if 'sources' in packet or packet.get('chapter_ids')==['1']:
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text=(json.dumps({'edits':[],'issues':[]}) if 'sources' in packet else
@@ -403,7 +404,7 @@ class NativeTest(unittest.TestCase):
         atomic_json(self.ws/'04_outline/outline.json',self.outline)
         class SafeTable(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text=(r'Mechanisms vary. Table~\ref{tab:T1} compares them. '
@@ -431,7 +432,7 @@ class NativeTest(unittest.TestCase):
         atomic_json(self.ws/'04_outline/outline.json',self.outline)
         class MarkdownTable(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text=('Mechanisms vary. \\cite{Keyp1}.\n\n<a id="tab:T1"></a>\n\n'
@@ -452,7 +453,7 @@ class NativeTest(unittest.TestCase):
         class MarkdownImage(Model):
             async def chat_stream(self,messages,**kwargs):
                 text=await super().chat_stream(messages,**kwargs)
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     text+='\n\n![Unplanned image](unplanned.png)\n'
                     kwargs['_capture']['partial_response']=text
@@ -475,7 +476,7 @@ class NativeTest(unittest.TestCase):
             async def chat_stream(self,messages,**kwargs):
                 self.messages.append(messages)
                 text=await super().chat_stream(messages,**kwargs)
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     text+='\n\n![Missing](missing.png)\n'
                     kwargs['_capture']['partial_response']=text
@@ -511,7 +512,7 @@ class NativeTest(unittest.TestCase):
         extra=table('tab:extra','Additional supported comparison.')
         class RepairAssets(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text='Supported mechanisms. '+planned+extra
@@ -544,7 +545,7 @@ class NativeTest(unittest.TestCase):
         from test_native_asset_checks import table
         class ExtraTable(Model):
             async def chat_stream(self,messages,**kwargs):
-                packet=json.loads(messages[1]['content'])
+                packet=authoring_context(messages)
                 if packet.get('chapter_ids')==['1']:
                     self.calls.append(packet);self.systems.append(messages[0]['content'])
                     text=table('tab:extra','表1总结了方法。')
@@ -572,7 +573,7 @@ class NativeTest(unittest.TestCase):
             'description':'Only a related-work paragraph.','outline_tree':[]})
         model=Model();self.run_pipeline(model);gen=self.ws/'05_generation'
         packet=model.calls[0]
-        self.assertEqual(packet['chapter_opening'],'');self.assertEqual(packet['chapter_closing'],'')
+        self.assertNotIn('chapter_opening',packet);self.assertNotIn('chapter_closing',packet)
         self.assertEqual((gen/'chapters/component.tex').read_text(),'A bounded synthesis of the evidence.')
         source=(gen/'full_draft_v1.tex').read_text()
         self.assertNotIn(r'\section{',source);self.assertNotIn(r'\begin{abstract}',source)
@@ -581,8 +582,9 @@ class NativeTest(unittest.TestCase):
         class RepeatsOpening(Model):
             async def chat_stream(self,messages,**kwargs):
                 result=await super().chat_stream(messages,**kwargs)
-                packet=json.loads(messages[1]['content'])
-                return packet.get('chapter_opening','')+result if 'sources' not in packet else result
+                packet=authoring_context(messages)
+                opening=messages[-1]['content'].partition('\n\n')[2]
+                return opening+result if 'sources' not in packet else result
         model=RepeatsOpening();self.run_pipeline(model)
         self.assertEqual(len(model.calls),4)
         self.assertEqual(model.calls[-1]['sources']['main'].count(r'\section{Mechanisms}'),2)
@@ -702,8 +704,16 @@ class NativeTest(unittest.TestCase):
     def test_compile_failure_direct_repair_same_entry(self):
         self.run_pipeline(Model());v2=self.ws/'05_generation/full_draft_v2.tex';original=v2.read_text()
         v2.write_text(original.replace(r'\end{document}',r'\brokenCommand\end{document}'))
-        self.assertEqual(publish(self.ws)['status'],'FAILED')
-        v2.write_text(original);self.assertEqual(publish(self.ws)['status'],'SUCCESS')
+        failed=publish(self.ws)
+        self.assertEqual(failed['status'],'FAILED')
+        retained=Path(failed['compile']['log_path']).read_bytes()
+        v2.write_text(original)
+        succeeded=publish(self.ws)
+        self.assertEqual(succeeded['status'],'SUCCESS')
+        self.assertNotEqual(failed['compile']['origin']['invocation_id'],succeeded['compile']['origin']['invocation_id'])
+        self.assertNotEqual(failed['compile']['origin']['main_source_sha256'],succeeded['compile']['origin']['main_source_sha256'])
+        self.assertEqual(Path(failed['compile']['log_path']).read_bytes(),retained)
+        self.assertEqual(succeeded['compile']['diagnostic_pass_index'],succeeded['compile']['origin']['passes'][-1]['pass_index'])
 
     def test_real_cli_sse_raw_chapters_and_json_delta(self):
         import os,threading

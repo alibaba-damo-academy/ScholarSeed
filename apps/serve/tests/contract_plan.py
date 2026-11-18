@@ -19,14 +19,16 @@ import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from scholarseed_codex.profile import session_thread_config
 from service.capabilities.service.skills import SkillCatalog
+from service.chat.api.contracts import register_contract_routes
 from service.chat.api.plan import register_plan_routes
 from service.chat.persistence.artifacts import SessionArtifactStore
 from service.chat.persistence.catalog import SessionCatalogStore
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.evidence import SessionTrace
 from service.chat.runtime.live import LiveSession
-from service.chat.runtime.tools import execute_service_tool
+from service.chat.runtime.tools import execute_service_tool, session_service_tools
 from service.chat.service.events import EventService
 from service.chat.service.plan import (
     PlanConflict,
@@ -41,9 +43,12 @@ from service.chat.service.plan import (
 from service.chat.service.sessions import SessionService
 from service.platform.activity import Activities, ActivityDomain
 from service.platform.bridge import (
+    CONTRACT_DESCRIBE_ROUTE,
+    CONTRACT_LIST_ROUTE,
     PLAN_MAX_ITEMS,
     PLAN_ROUTE_PREFIX,
     PlanAction,
+    PlanEnable,
     PlanStructure,
     PlanWrite,
 )
@@ -1192,7 +1197,7 @@ class PlanContract(unittest.TestCase):
         self.assertIsNotNone(native)
         self.assertEqual(self.catalog.todos(SESSION)[0]["content"], "new task")
 
-    def live(self):
+    def live(self, *, product_plan=True):
         trace = SessionTrace(
             SESSION,
             self.database.parent,
@@ -1219,7 +1224,158 @@ class PlanContract(unittest.TestCase):
         )
         live.vendor_thread_id = THREAD
         asyncio.run(live.ledger.activate_turn("turn-1"))
+        if product_plan:
+            asyncio.run(
+                live.enable_plan(
+                    PlanEnable(purpose="user_requested", reason="Contract product tree"), "turn-1"
+                )
+            )
         return live
+
+    def test_ordinary_session_keeps_native_plan_and_artifact_delivery(self):
+        self.assertFalse(self.plans.enabled())
+        tools = session_service_tools(product_plan=self.plans.enabled())
+        names = frozenset(tool.name for tool in tools)
+        self.assertEqual(names, {"scholarseed_bridge", "publish_artifacts"})
+        self.assertTrue(session_thread_config(frozenset(), names)["tools.update_plan.enabled"])
+        self.plans.native(
+            [{"content": "Check result", "status": "in_progress"}],
+            runtime_id="codex",
+            vendor_thread_id=THREAD,
+            turn_id="turn-1",
+            item_id="",
+            key="native-only",
+            explanation=None,
+        )
+        self.assertFalse(self.plans.enabled())
+        self.write(self.command())
+        self.assertTrue(self.plans.enabled())
+        names = frozenset(tool.name for tool in session_service_tools(product_plan=True))
+        self.assertIn("update_plan", names)
+        self.assertFalse(session_thread_config(frozenset(), names)["tools.update_plan.enabled"])
+
+    def test_plan_enablement_is_durable_idempotent_and_release_opts_out(self):
+        live = self.live(product_plan=False)
+        enable = PlanEnable(purpose="workflow_required", reason="Literature review stages")
+        asyncio.run(live.enable_plan(enable, "turn-1"))
+        before = self.events.replay(SESSION)
+        asyncio.run(live.enable_plan(enable, "turn-1"))
+        self.assertEqual(self.events.replay(SESSION), before)
+        self.assertEqual(self.plans.current(), {"items": [], "plan": None})
+        self.assertEqual(self.catalog.todos(SESSION), ())
+        restored = SessionPlans(SESSION, ProductEventStore(self.database), self.catalog)
+        self.assertTrue(restored.enabled())
+        self.write(self.command())
+        self.write(
+            self.command(
+                operation="release",
+                expected_revision=1,
+                request_id="release",
+                reason="Task changed",
+            )
+        )
+        self.assertFalse(restored.enabled())
+        self.plans.native(
+            [{"content": "New task", "status": "pending"}],
+            runtime_id="codex",
+            vendor_thread_id=THREAD,
+            turn_id="turn-1",
+            item_id="",
+            key="after-release",
+            explanation=None,
+        )
+        self.assertFalse(restored.enabled())
+        asyncio.run(live.enable_plan(enable, "turn-1"))
+        self.assertTrue(restored.enabled())
+
+    def test_enablement_rechecks_turn_after_waiting_for_projection(self):
+        live = self.live(product_plan=False)
+
+        async def race():
+            await live._projection_lock.acquire()
+            waiting = asyncio.create_task(
+                live.enable_plan(
+                    PlanEnable(purpose="user_requested", reason="Track stages"), "turn-1"
+                )
+            )
+            await asyncio.sleep(0)
+            live.interrupting = True
+            live._projection_lock.release()
+            with self.assertRaisesRegex(PermissionError, "turn_inactive"):
+                await waiting
+
+        asyncio.run(race())
+        self.assertFalse(self.plans.enabled())
+
+    def test_plan_execution_and_discovery_require_explicit_enablement(self):
+        live = self.live(product_plan=False)
+        sessions = SimpleNamespace(bridge_caller=lambda sid: live if sid == SESSION else None)
+        app = FastAPI()
+        activities = Activities()
+        live.turn_activity = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(live.turn_activity.close)
+        register_plan_routes(app, sessions, activities=activities)
+        register_contract_routes(app, sessions.bridge_caller, activities=activities)
+        headers = {BRIDGE_SESSION_HEADER: SESSION, BRIDGE_TOKEN_HEADER: live.bridge_token}
+        with TestClient(app) as client:
+            for operation, body in (("get", {}), ("write", self.command().model_dump())):
+                denied = client.post(PLAN_ROUTE_PREFIX + operation, json=body, headers=headers)
+                self.assertEqual(denied.status_code, 403)
+                self.assertEqual(denied.json()["error"], "plan_not_enabled")
+            query = {"target_capability": "plan", "target_operation": "structure"}
+            self.assertEqual(
+                client.post(CONTRACT_DESCRIBE_ROUTE, json=query, headers=headers).json()["error"],
+                "plan_not_enabled",
+            )
+            listing = client.post(
+                CONTRACT_LIST_ROUTE, json={"capability": "plan"}, headers=headers
+            ).json()
+            self.assertEqual([row["operation"] for row in listing["entries"]], ["enable"])
+            artifact = client.post(
+                CONTRACT_DESCRIBE_ROUTE,
+                json={"target_capability": "artifact", "target_operation": "publish"},
+                headers=headers,
+            ).json()
+            self.assertTrue(artifact["ok"])
+            for purpose, reason in (("complex_task", "many steps"), ("user_requested", " ")):
+                invalid = client.post(
+                    PLAN_ROUTE_PREFIX + "enable",
+                    json={"purpose": purpose, "reason": reason},
+                    headers=headers,
+                )
+                self.assertEqual(invalid.status_code, 400)
+                self.assertFalse(self.plans.enabled())
+            response = client.post(
+                PLAN_ROUTE_PREFIX + "enable",
+                json={"purpose": "user_requested", "reason": "Track this task tree"},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["items"], [])
+            self.assertTrue(
+                client.post(CONTRACT_DESCRIBE_ROUTE, json=query, headers=headers).json()["ok"]
+            )
+            created = client.post(
+                PLAN_ROUTE_PREFIX + "write", json=self.command().model_dump(), headers=headers
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+
+    def test_disabled_callback_cannot_bypass_using_dedicated_or_bridge_tool(self):
+        for tool, args in (
+            ("update_plan", {"operation": "get"}),
+            ("scholarseed_bridge", {"capability": "plan", "operation": "get", "request": {}}),
+        ):
+            result = asyncio.run(
+                execute_service_tool(
+                    args,
+                    session_id=SESSION,
+                    token="test",
+                    local_socket=None,
+                    tool_name=tool,
+                    product_plan=False,
+                )
+            )
+            self.assertEqual(result, {"ok": False, "error": "plan_not_enabled"})
 
     def test_live_lock_wait_rechecks_stop_lifecycle(self) -> None:
         live = self.live()

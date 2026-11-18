@@ -68,12 +68,15 @@ class RevisionContracts(unittest.TestCase):
 
     def test_future_revision_precedes_structural_rejection_without_writes(self) -> None:
         store = SessionCatalogStore(self.database)
+        future = store._revisions().current + 1
         with closing(sqlite3.connect(self.database)) as connection, connection:
-            connection.execute(f"UPDATE {store._revisions().table} SET revision=2")
+            connection.execute(f"UPDATE {store._revisions().table} SET revision={future}")
             connection.execute("ALTER TABLE session_catalog ADD COLUMN future_column TEXT")
         before = self.database.read_bytes()
         with patch.object(SessionCatalogStore, "_connect", side_effect=AssertionError("write")):
-            with self.assertRaisesRegex(SchemaUpgradeRequired, "revision=2 supported=1"):
+            with self.assertRaisesRegex(
+                SchemaUpgradeRequired, f"revision={future} supported={future - 1}"
+            ):
                 SessionCatalogStore(self.database)
         self.assertEqual(self.database.read_bytes(), before)
 

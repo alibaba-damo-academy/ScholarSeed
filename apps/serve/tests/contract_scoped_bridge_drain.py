@@ -24,6 +24,7 @@ from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincip
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.live import LiveSession
 from service.platform.activity import Activities, ActivityDomain
+from service.platform.bridge import ArtifactPublishFailure
 from service.platform.http_activity import ServeApplication
 from service.platform.vocabulary import (
     BRIDGE_SESSION_HEADER,
@@ -70,7 +71,7 @@ class ScopedBridgeDrainContracts(unittest.IsolatedAsyncioTestCase):
         self.live.publish = AsyncMock()
         self.live.publish_artifact = AsyncMock(return_value={"id": "artifact"})
         self.live.display_card = AsyncMock(return_value={"id": "card"})
-        self.live.plans = SimpleNamespace(current=lambda: {"items": []})
+        self.live.plans = SimpleNamespace(current=lambda: {"items": []}, enabled=lambda: True)
         self.live.skill_state_by_name = AsyncMock(return_value=None)
         self.live.set_task_lease = Mock(wraps=self.live.set_task_lease)
         self.live.clear_task_lease = Mock(wraps=self.live.clear_task_lease)
@@ -133,12 +134,105 @@ class ScopedBridgeDrainContracts(unittest.IsolatedAsyncioTestCase):
             "workspace": "survey",
         }
 
+    async def test_batch_validates_all_structure_before_publishing_any_file(self):
+        for body in (
+            {},
+            {"files": []},
+            {"files": [{"path": "good.md"}, {"path": 2}]},
+            {"files": [{"path": "good.md"}, {"path": "bad.md", "role": "input"}]},
+            {"files": [{"path": "good.md", "extra": True}]},
+            {"files": [{"path": "good.md"}], "session_id": "other"},
+        ):
+            response = await self.client.post(
+                PREFIX + "artifact/publish-many", json=body, headers=self.headers
+            )
+            self.assertEqual(response.status_code, 400, response.text)
+        self.live.publish_artifact.assert_not_awaited()
+
+    async def test_batch_reports_partial_failure_and_retries_only_failed_items(self):
+        async def publish(path, role, *, turn_id):
+            if path == "missing.md":
+                raise ArtifactPublishFailure("artifact_publish_file_not_found")
+            return {"publication_id": path, "artifact_id": path, "sha256": "a" * 64}
+
+        self.live.publish_artifact.side_effect = publish
+        response = await self.client.post(
+            PREFIX + "artifact/publish-many",
+            json={"files": [{"path": "good.md"}, {"path": "missing.md"}, {"path": "analysis.py"}]},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result["status"], "partial")
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            [item["status"] for item in result["items"]], ["completed", "failed", "completed"]
+        )
+        self.assertEqual(result["retry_files"], [{"path": "missing.md", "role": "final"}])
+        self.live.publish_artifact.reset_mock(side_effect=True)
+        self.live.publish_artifact.return_value = {
+            "publication_id": "fixed",
+            "artifact_id": "fixed",
+            "sha256": "b" * 64,
+        }
+        retry = await self.client.post(
+            PREFIX + "artifact/publish-many",
+            json={"files": result["retry_files"]},
+            headers=self.headers,
+        )
+        self.assertEqual(retry.json()["status"], "completed")
+        self.live.publish_artifact.assert_awaited_once_with("missing.md", "final", turn_id="turn")
+
+    async def test_batch_file_failures_are_not_reported_as_success(self):
+        for code in (
+            "artifact_snapshot_source_changed",
+            "artifact_snapshot_access_denied",
+            "artifact_snapshot_busy",
+            "artifact_snapshot_unavailable",
+            "artifact_publish_path_invalid",
+        ):
+            self.live.publish_artifact.side_effect = ArtifactPublishFailure(code)
+            result = (
+                await self.client.post(
+                    PREFIX + "artifact/publish-many",
+                    json={"files": [{"path": "report.md"}]},
+                    headers=self.headers,
+                )
+            ).json()
+            self.assertEqual(result["status"], "failed")
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["items"][0]["error"], code)
+
+    async def test_batch_authenticates_scope_and_rechecks_between_items(self):
+        denied = await self.client.post(
+            PREFIX + "artifact/publish-many", json={"files": [{"path": "a.md"}]}
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.live.publish_artifact.assert_not_awaited()
+
+        async def publish(path, role, *, turn_id):
+            self.switch_turn()
+            return {"publication_id": "a", "artifact_id": "a", "sha256": "a" * 64}
+
+        self.live.publish_artifact.side_effect = publish
+        result = (
+            await self.client.post(
+                PREFIX + "artifact/publish-many",
+                json={"files": [{"path": "a.md"}, {"path": "b.md"}]},
+                headers=self.headers,
+            )
+        ).json()
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["items"][1]["error"], "bridge_access_denied")
+        self.live.publish_artifact.assert_awaited_once()
+
     async def test_admitted_scopes_continue_during_drain_and_expired_scopes_cannot(self):
         generation = self.activities.begin()
         requests = [
             ("history/search", {"query": "method"}),
             ("plan/get", {}),
             ("artifact/publish", {"path": "report.md", "role": "final"}),
+            ("artifact/publish-many", {"files": [{"path": "report.md"}]}),
             ("display-card", {"type": "example", "content": {"data": {}}}),
             ("skill/admit", {"path": str(self.script)}),
         ]
@@ -158,6 +252,7 @@ class ScopedBridgeDrainContracts(unittest.IsolatedAsyncioTestCase):
             ("history/search", {"query": "method"}),
             ("plan/get", {}),
             ("artifact/publish", {"path": "report.md", "role": "final"}),
+            ("artifact/publish-many", {"files": [{"path": "report.md"}]}),
             ("display-card", {"type": "example", "content": {"data": {}}}),
             ("skill/admit", {"path": str(self.script)}),
             ("task/activate", self.task_payload()),

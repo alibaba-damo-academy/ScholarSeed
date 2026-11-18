@@ -98,7 +98,7 @@ function stageSetup(temporary, goRoot, payload) {
     fs.mkdirSync(target, {recursive: true})
     for (const file of fs.readdirSync(path.join(MODULE, directory))) {
       if (file.endsWith('.go') || file === 'logo.png' ||
-          (directory === 'handoff' && file === 'retirement.ps1')) fs.copyFileSync(path.join(MODULE, directory, file), path.join(target, file))
+          (directory === 'handoff' && ['retirement.ps1', 'timeouts.json'].includes(file))) fs.copyFileSync(path.join(MODULE, directory, file), path.join(target, file))
     }
   }
   const entry = path.join(source, 'cmd/setup')

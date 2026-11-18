@@ -9,6 +9,55 @@ import { SKILLS_PATH } from '../../../../skills.ts'
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const FIXTURE = '/components/business/conversation.render.fixture.html'
 
+test('runtime notice is hidden only after its own failure card enters the rendered stream', async (context) => {
+  const fixture = await renderFixture(ROOT, {
+    launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+  })
+  context.after(() => fixture.close())
+  const page = await fixture.page(context)
+  for (const mode of ['alone', 'paired', 'reversed', 'independent']) {
+    await page.goto(new URL(`${FIXTURE}?runtimeFailure=${mode}`, fixture.url).href)
+    await page.getByRole('button', { name: 'Runtime failure', exact: true }).click()
+    await expect(
+      page.getByText('Agent 运行时事件需要处理。请检查当前操作与运行时状态。', { exact: true })
+    ).toHaveCount(mode === 'paired' || mode === 'reversed' ? 0 : 1)
+    if (mode !== 'alone') {
+      await expect(page.getByTestId('turn-recoverable-notice')).toBeVisible()
+      await expect(page.getByText('本轮未能完成。', { exact: true })).toBeVisible()
+    }
+    await page.getByRole('button', { name: '重建消息流', exact: true }).click()
+    await expect(
+      page.getByText('Agent 运行时事件需要处理。请检查当前操作与运行时状态。', { exact: true })
+    ).toHaveCount(mode === 'paired' || mode === 'reversed' ? 0 : 1)
+  }
+})
+
+test('only the final answer of a completed turn offers copy and branch actions', async (context) => {
+  const fixture = await renderFixture(ROOT, {
+    launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+  })
+  context.after(() => fixture.close())
+  const page = await fixture.page(context)
+  await page.goto(new URL(`${FIXTURE}?forkAnchor`, fixture.url).href)
+  await page.getByRole('button', { name: 'Fork anchor', exact: true }).click()
+  const item = (id: string) => page.locator(`[data-message-item-id="${id}"]`)
+  const branches = (id: string) => item(id).getByTestId('message-fork-task')
+  const copies = (id: string) => item(id).getByRole('button', { name: '复制消息' })
+  const checkRows = async () => {
+    await expect(branches('healthy-item')).toHaveCount(1)
+    await expect(branches('partial-item')).toHaveCount(0)
+    await expect(branches('final-item')).toHaveCount(1)
+    await expect(branches('failed-item')).toHaveCount(0)
+    await expect(copies('healthy-item')).toHaveCount(1)
+    await expect(copies('partial-item')).toHaveCount(0)
+    await expect(copies('final-item')).toHaveCount(1)
+    await expect(copies('failed-item')).toHaveCount(1)
+  }
+  await checkRows()
+  await page.getByRole('button', { name: '重建消息流', exact: true }).click()
+  await checkRows()
+})
+
 for (const kind of ['authorization', 'generic']) {
   test(`cancelled ${kind} question keeps its real terminal state without success or submission`, async (context) => {
     const fixture = await renderFixture(ROOT, {

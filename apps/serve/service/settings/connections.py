@@ -573,6 +573,8 @@ class ModelProfileStore:
             ):
                 raise ValueError("OAuth provider cannot be changed on an existing connection")
             normalized[CONNECTION_OWNER_KEY] = stamp
+            if isinstance(existing, dict) and MODEL_DIRECTORY_KEY in existing:
+                normalized[MODEL_DIRECTORY_KEY] = existing[MODEL_DIRECTORY_KEY]
         prefix = OAUTH_PROFILE_ID_PREFIX if is_oauth_connection(normalized) else PROFILE_ID_PREFIX
         final_id = requested_id or f"{prefix}{uuid.uuid4().hex}"
         # A connection the user just finished configuring is meant to be used; an update

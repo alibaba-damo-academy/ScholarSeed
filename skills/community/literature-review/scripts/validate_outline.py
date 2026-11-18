@@ -75,7 +75,7 @@ def _role_of(section: dict) -> str:
 
     Abstract is identified by `section_id == "0"` as well as by title, because
     the generator has always reserved that id for it and downstream code
-    (`collect_drafting_worklist`) special-cases the same id.
+    (the native chapter planner) special-cases the same id.
     """
     title = section.get("title", "")
     if str(section.get("section_id", "")).strip() == "0" or _title_matches(title, _ABSTRACT_WORDS):
@@ -111,7 +111,7 @@ def load_whitelist(workspace: Path) -> tuple[list[str], dict[str, str], str | No
     or <key>`, dating from when `outline_digest.py` mislabelled paper ids as
     cite keys and no real cite key existed anywhere. Real ones exist now
     (`03_process/cite_keys.json`, minted by `build_bib.py`), and accepting them
-    here would be actively harmful: `collect_drafting_worklist.py` resolves each
+    here would be actively harmful: the native chapter planner resolves each
     outline id with `cite_keys.get(pid)` — keyed by paper id — and *silently
     skips* whatever misses. An outline spelled in cite keys would therefore
     validate, then draft every section with an empty `allowed_papers` list and

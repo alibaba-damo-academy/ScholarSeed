@@ -14,6 +14,7 @@ import {
 import type { DomainNative } from '../../native/domains.cjs'
 import { VELOPACK_POLICY, type PackageKeys } from './nupkg.ts'
 import { validatedToolPrincipal } from './transfer.ts'
+import updateTimeouts from '../../updater/handoff/timeouts.json' with { type: 'json' }
 
 export const COMPONENT_DELIVERY = Object.freeze({
   archives: '.archives',
@@ -22,12 +23,20 @@ export const COMPONENT_DELIVERY = Object.freeze({
   packageManifest: 'lib/app/resources/components/runtime.json',
   receiptBytes: 4096,
   accessPolicy: 1,
-  timeout: 30 * 60_000,
+  timeout: updateTimeouts.operationMs,
   redirects: 3,
   reserveBytes: 64 * 1024 ** 2,
   temporarySuffix: '.part-000000000000',
 })
 const KEY_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
+
+export async function requireUpdateDiskSpace(directory: string, bytes: bigint): Promise<void> {
+  const space = await statfs(directory, { bigint: true })
+  if (space.bavail * space.bsize < bytes + BigInt(COMPONENT_DELIVERY.reserveBytes)) {
+    throw Object.assign(new Error('Insufficient disk space for update'), { code: 'ENOSPC' })
+  }
+}
+
 export interface ComponentProgress {
   kind: string
   phase: 'checking' | 'downloading' | 'verifying'
@@ -41,6 +50,7 @@ export interface ComponentDeliveryOptions {
   manifest: RuntimeManifest
   signal?: AbortSignal
   onProgress?: (progress: ComponentProgress) => void
+  onArchiveProgress?: (received: number, total: number) => void
   log?: (message: string) => void
 }
 export interface WindowsComponentDeliveryOptions extends ComponentDeliveryOptions {
@@ -521,7 +531,7 @@ export async function downloadRuntimeComponents(options: ComponentDeliveryOption
       pins.push(parent)
     }
     const pending: RuntimeComponent[] = []
-    let required = BigInt(COMPONENT_DELIVERY.reserveBytes)
+    let required = 0n
     for (const component of missing) {
       signal.throwIfAborted()
       required += BigInt(component.expandedBytes)
@@ -544,12 +554,23 @@ export async function downloadRuntimeComponents(options: ComponentDeliveryOption
         timing.finish(failed)
       }
     }
-    const space = await statfs(directory, { bigint: true })
-    if (space.bavail * space.bsize < required)
-      throw new Error('Insufficient disk space for runtime components')
+    await requireUpdateDiskSpace(directory, required)
+    const total = pending.reduce((bytes, component) => bytes + component.archiveBytes, 0)
+    let received = 0
     for (const component of pending) {
       signal.throwIfAborted()
-      await downloadComponent(options, component, signal)
+      await downloadComponent(
+        {
+          ...options,
+          onProgress: (progress) => {
+            options.onProgress?.(progress)
+            options.onArchiveProgress?.(received + progress.received, total)
+          },
+        },
+        component,
+        signal
+      )
+      received += component.archiveBytes
       options.onProgress?.({
         kind: component.kind,
         phase: 'verifying',

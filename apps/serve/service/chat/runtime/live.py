@@ -8,7 +8,8 @@ import json
 import mimetypes
 import secrets
 import uuid
-from dataclasses import asdict, replace
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -228,6 +229,7 @@ from service.chat.runtime.projection import (
 )
 from service.chat.runtime.tools import (
     SERVICE_TOOL_CAPABILITIES,
+    artifact_tool_missing_parameters,
     execute_service_tool,
 )
 from service.chat.runtime.utils import integer, optional_integer
@@ -266,12 +268,15 @@ from service.platform.bridge import (
     COMPONENT_HOST_PLUGIN,
     COMPONENT_REQUEST_MARKER,
     COMPONENT_SCHEMA_DEFAULT,
+    PLAN_CAPABILITY,
+    PLAN_NOT_ENABLED,
     PLAN_SOURCE,
     PLUGIN_INSTALL_CAPABILITY,
     SERVICE_PLAN_TOOL_NAME,
     ComponentInvocation,
     DisplayCardContent,
     PlanCommand,
+    PlanEnable,
     PluginInstallation,
 )
 from service.platform.citations import CitationAnswerFilter
@@ -298,6 +303,16 @@ SessionActivityObserver = Callable[["LiveSession"], None]
 
 
 PROGRESS_BATCH_BYTE_LIMIT = 1024 * 1024
+ARTIFACT_CORRECTION_CALLBACK_LIMIT = 32
+
+
+@dataclass
+class _ArtifactCorrection:
+    generation: int
+    native_turn_id: str
+    client_turn_id: str
+    pending_calls: set[str]
+    offered: bool = False
 
 
 class LiveSession:
@@ -494,6 +509,7 @@ class LiveSession:
         self._projection_lock = asyncio.Lock()
         self._service_callbacks: set[asyncio.Task[None]] = set()
         self._plan_tool_receipts: dict[tuple[int, str, str], dict] = {}
+        self._artifact_correction: _ArtifactCorrection | None = None
         self._projection_recovery_lock = asyncio.Lock()
         self._local_history: list[dict[str, Any]] = []
         self._message_snapshots = MessageSnapshots()
@@ -518,7 +534,7 @@ class LiveSession:
         self._rpc_evidence: list[RuntimeRpcEvidence] = []
         self._local_input_paths: dict[str, tuple[Path, InputKind]] = {}
         self._local_input_path_ids: dict[Path, str] = {}
-        self.restore_local_input_paths()
+        self.restore_local_input_paths(self._events.replay(self.id))
         self.ledger = SessionLedger(
             self.id,
             catalog,
@@ -969,6 +985,10 @@ class LiveSession:
         if frozen_request is not None:
             if frozen_request.command_id != turn_input.client_user_message_id:
                 raise RuntimeError("frozen runtime command does not match the current input")
+            if self.project_path == self.runtime_workdir:
+                await self._persistence.run(
+                    self._catalog.prepare_output, self.id, self.runtime_workdir
+                )
             return await driver.submit(
                 replace(
                     frozen_request,
@@ -989,6 +1009,9 @@ class LiveSession:
             for item in turn_input.items
         )
         if self.project_path == self.runtime_workdir:
+            output_dir = await self._persistence.run(
+                self._catalog.prepare_output, self.id, self.runtime_workdir
+            )
             record = self._catalog.get(self.id)
             if record is None:
                 raise RuntimeError("session context is unavailable")
@@ -998,6 +1021,7 @@ class LiveSession:
                     "text": session_context(
                         title=record.title if record.title_fallback is None else "",
                         cwd=self.runtime_workdir,
+                        output_dir=Path(output_dir) if output_dir is not None else None,
                     ),
                     "path": "",
                     "name": "",
@@ -1269,8 +1293,9 @@ class LiveSession:
             result: dict[str, Any] = {"ok": False, "error": "bridge_access_denied"}
         else:
             try:
+                arguments = prompt.get("arguments")
                 result = await execute_service_tool(
-                    prompt.get("arguments"),
+                    arguments,
                     session_id=self.id,
                     token=self.bridge_token,
                     local_socket=self.local_socket,
@@ -1278,6 +1303,14 @@ class LiveSession:
                     callback_turn_id=callback.native_turn_id,
                     tool_name=str(prompt.get("tool")),
                     workdir=self.runtime_workdir,
+                    product_plan=(
+                        (
+                            prompt.get("tool") == SERVICE_PLAN_TOOL_NAME
+                            or isinstance(arguments, Mapping)
+                            and arguments.get("capability") == PLAN_CAPABILITY
+                        )
+                        and await self._persistence.run(self.plans.enabled)
+                    ),
                 )
             except Exception:
                 self._logger.exception("service_tool_execution_failed session_id=%s", self.id)
@@ -1325,6 +1358,35 @@ class LiveSession:
             )
             if plan_receipt:
                 self._plan_tool_receipts[receipt_key] = plan_receipt
+        correction = None
+        if (
+            callback.native_item_id
+            and callback.native_turn_id == self.ledger.active_turn_id
+            and self.active_product_turn_id
+            and self.attachment_model_bridge_id()
+            and artifact_tool_missing_parameters(prompt.get("tool"), result)
+        ):
+            correction = self._artifact_correction
+            if (
+                correction is None
+                or correction.generation != generation
+                or correction.native_turn_id != callback.native_turn_id
+                or correction.client_turn_id != self.active_product_turn_id
+            ):
+                correction = self._artifact_correction = _ArtifactCorrection(
+                    generation, callback.native_turn_id, self.active_product_turn_id, set()
+                )
+            if correction.offered:
+                result["next_action"] = (
+                    "A correction was already offered in this turn. Report the missing required "
+                    "fields if publication could not be completed."
+                )
+                correction = None
+            elif len(correction.pending_calls) >= ARTIFACT_CORRECTION_CALLBACK_LIMIT:
+                correction = None
+            else:
+                correction.pending_calls.add(callback.native_item_id)
+        # Track the call before responding. The next model request can arrive before the RPC returns.
         receipt = await session.respond(
             RuntimeCallbackResponse(
                 request_id=callback.request_id,
@@ -1332,9 +1394,12 @@ class LiveSession:
                 values=result,
                 idempotency_key=callback.request_id,
                 responded_at=datetime.now(UTC).isoformat(),
+                allow_tool_correction=correction is not None,
             )
         )
         if receipt.state is not CommandState.APPLIED:
+            if correction is not None and receipt.state is CommandState.REJECTED:
+                correction.pending_calls.discard(callback.native_item_id)
             self._plan_tool_receipts.pop(receipt_key, None)
             self._logger.warning(
                 "service_tool_response_rejected session_id=%s request_id=%s",
@@ -1884,6 +1949,8 @@ class LiveSession:
             RuntimeEventKind.TURN_INTERRUPTED,
             RuntimeEventKind.TURN_UNKNOWN,
         }:
+            if self._artifact_correction and self._artifact_correction.native_turn_id == turn_id:
+                self._artifact_correction = None
             self._plan_tool_receipts = {
                 key: value for key, value in self._plan_tool_receipts.items() if key[1] != turn_id
             }
@@ -2264,6 +2331,18 @@ class LiveSession:
     @property
     def model_request_id(self) -> str:
         return self.auxiliary_model_request_id or self.active_product_turn_id
+
+    def observe_model_tool_outputs(self, client_turn_id: str, call_ids: set[str]) -> None:
+        correction = self._artifact_correction
+        if (
+            correction is not None
+            and correction.generation == self.attachment_generation
+            and correction.native_turn_id == self.ledger.active_turn_id
+            and correction.client_turn_id == client_turn_id == self.active_product_turn_id
+            and not correction.pending_calls.isdisjoint(call_ids)
+        ):
+            correction.offered = True
+            correction.pending_calls.clear()
 
     def content_source(self, client_turn_id: str) -> ContentSource | None:
         if client_turn_id and client_turn_id == self.auxiliary_model_request_id:
@@ -3043,10 +3122,10 @@ class LiveSession:
         registered = self._local_input_paths.get(reference_id or "")
         return canonical if registered is not None and registered[1] == InputKind.FILE else None
 
-    def restore_local_input_paths(self) -> None:
+    def restore_local_input_paths(self, events: Iterable[ProductEventRecord]) -> None:
         """Rehydrate sent local path references from the durable product event log."""
 
-        for event in self._events.replay(self.id):
+        for event in events:
             if event.kind != PRODUCT_EVENT_USER_MESSAGE:
                 continue
             references = event.payload.get("refs")
@@ -3074,6 +3153,31 @@ class LiveSession:
                 self._local_input_paths[reference_id] = (canonical, kind)
                 self._local_input_path_ids[canonical] = reference_id
 
+    async def enable_plan(self, command: PlanEnable, turn_id: str) -> None:
+        async with self._projection_lock:
+
+            def require_turn() -> None:
+                if (
+                    not self.running
+                    or self.interrupting
+                    or self.terminating
+                    or self.terminated
+                    or not turn_id
+                    or turn_id != self.publication_turn_id
+                ):
+                    raise PermissionError("plan_turn_inactive")
+
+            record = await self._persistence.run(
+                self.plans.enable,
+                command,
+                turn_id=turn_id,
+                runtime_id=self.runtime_id,
+                vendor_thread_id=self.vendor_thread_id,
+                require_turn=require_turn,
+            )
+            if record is not None:
+                self._trace_and_broadcast(record)
+
     async def write_plan(self, command: PlanCommand) -> ProductEventRecord:
         async with self._projection_lock:
 
@@ -3087,6 +3191,8 @@ class LiveSession:
                     or command.turn_id != self.publication_turn_id
                 ):
                     raise PermissionError("plan_turn_inactive")
+                if not self.plans.enabled():
+                    raise PermissionError(PLAN_NOT_ENABLED)
 
             record = await self._persistence.run(
                 self.plans.write,

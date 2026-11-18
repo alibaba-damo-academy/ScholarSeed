@@ -2890,6 +2890,7 @@ export type ProductEvent =
   | ProductEventBase<
       'turn_failed',
       {
+        incident_id?: string
         code?: string
         provider_error_code?: string
         message: string
@@ -3720,6 +3721,8 @@ export interface SkillLabel {
 }
 
 export interface MarketplaceSkill extends SkillAttributionInfo {
+  attributionDeferred?: boolean
+  nativeSlug?: string
   labels?: SkillLabel[] | null
   labelsStatus?: 'ready' | 'unavailable'
   namespace?: string
@@ -3755,6 +3758,7 @@ interface MarketplaceCacheEntry<Value> {
 }
 const marketplacePages = new Map<string, MarketplaceCacheEntry<MarketplacePage>>()
 const marketplaceLabels = new Map<string, MarketplaceCacheEntry<SkillLabel[]>>()
+const marketplaceAttributions = new Map<string, MarketplaceCacheEntry<SkillAttributionInfo>>()
 
 function cachedMarketplace<Value>(
   cache: Map<string, MarketplaceCacheEntry<Value>>,
@@ -3791,6 +3795,7 @@ function cachedMarketplace<Value>(
 export function clearMarketplaceCache(): void {
   marketplacePages.clear()
   marketplaceLabels.clear()
+  marketplaceAttributions.clear()
 }
 
 export async function getMarketplace(
@@ -3823,6 +3828,27 @@ export async function getMarketplaceLabels(locale: string): Promise<SkillLabel[]
     const data = (await response.json()) as { labels: SkillLabel[] }
     return data.labels
   })
+}
+
+export async function getMarketplaceAttribution(
+  namespace: string,
+  slug: string,
+  version: string
+): Promise<SkillAttributionInfo> {
+  return cachedMarketplace(
+    marketplaceAttributions,
+    JSON.stringify([namespace, slug, version]),
+    async () => {
+      const response = await deviceSkillFetch({
+        operation: 'marketplace-attribution',
+        namespace,
+        slug,
+        version,
+      })
+      if (!response.ok) throw new Error('marketplace_attribution_unavailable')
+      return response.json() as Promise<SkillAttributionInfo>
+    }
+  )
 }
 
 export async function getMarketplaceDetail(

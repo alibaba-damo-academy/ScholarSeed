@@ -2,10 +2,15 @@
 
 **English** · [简体中文](fallback.zh.md)
 
-Read only when the native plan tool is absent, or its legacy schema requires
-Bridge reconciliation. Do not replace an available native tool or migrate its tree.
+Read only after product-plan enablement when its dedicated tool is absent in
+this turn, or when the legacy product schema requires Bridge reconciliation.
+Native lightweight steps alone do not require this path or a product tree.
 
-Keep using this tool for the existing tree; do not switch to a native flat plan. If it is absent from the host, discover the current scholarseed_bridge plan/get, plan/structure and plan/action contracts. That lower-level Bridge uses capability/operation/request; do not mix its wrapper with this flat tool. Do not invoke product operations through shell scripts or inspect/inject Bridge credentials.
+Keep an existing product tree in its product service. Use the bundled
+scholarseed_bridge plan/get, plan/structure and plan/action contracts; discover
+them only when missing or stale. Bridge uses capability/operation/request;
+do not mix it with either native plan arguments or the dedicated flat product
+tool. Do not invoke product operations through shell scripts or inspect/inject Bridge credentials.
 
 Read the [Bridge protocol](../../README.md), then select the complete plan/get,
 plan/structure and plan/action contracts as needed. Read current state before

@@ -116,6 +116,7 @@ from service.chat.persistence.catalog import (
     SessionListState,
     SessionModelState,
     SessionOrderPlacement,
+    SessionOutputPolicy,
     SessionPrincipal,
     SessionStateConflictError,
     SessionStatus,
@@ -559,6 +560,7 @@ class SessionService:
         self._queue_cancellation: Callable[[str], Awaitable[None]] | None = None
         self._settlement_resume: Callable[[LiveSession], None] | None = None
         self._deletion: Callable[[SessionCatalogRecord], None] | None = None
+        self._storage_check: Callable[[], None] | None = None
         self._task_documents: Callable[[str, str], tuple[dict, ...]] = lambda _session, _project: ()
 
     def bind_task_documents(self, provider: Callable[[str, str], tuple[dict, ...]]) -> None:
@@ -574,6 +576,9 @@ class SessionService:
 
     def bind_deletion(self, callback: Callable[[SessionCatalogRecord], None]) -> None:
         self._deletion = callback
+
+    def bind_storage_check(self, callback: Callable[[], None]) -> None:
+        self._storage_check = callback
 
     def bind_turn_confirmation(self, callback: Callable[[str, str], Awaitable[None]]) -> None:
         self._turn_confirmation = callback
@@ -605,7 +610,7 @@ class SessionService:
             default_model_id=RETIRED_NATIVE_MODEL_KEY,
         )
 
-    def _recover_selected_model(
+    async def _recover_selected_model(
         self,
         session_id: str,
         principal: SessionPrincipal,
@@ -624,7 +629,9 @@ class SessionService:
             return state.selected_model_id
         if resolved == state.selected_model_id:
             return resolved
-        self._access.set_model(
+        await self._activities.finish_thread(
+            ActivityDomain.RUNTIME,
+            self._access.set_model,
             session_id,
             principal,
             resolved,
@@ -1038,13 +1045,22 @@ class SessionService:
     async def _restore_fork_history(
         self, live: LiveSession, *, expected_origin: SessionForkOrigin | None = None
     ) -> None:
-        origin = self._events.by_key(live.id, SESSION_FORK_KEY)
-        imported = self._events.by_key(live.id, SESSION_FORK_IMPORTED_KEY) is not None
+        origin = await self._activities.finish_thread(
+            ActivityDomain.RUNTIME, self._events.by_key, live.id, SESSION_FORK_KEY
+        )
+        imported = (
+            await self._activities.finish_thread(
+                ActivityDomain.RUNTIME, self._events.by_key, live.id, SESSION_FORK_IMPORTED_KEY
+            )
+            is not None
+        )
         fork_snapshots = self._fork_snapshots
         if origin is None or (imported and fork_snapshots is None):
             return
         await self._runtime.ensure_active(live)
-        target = self._access.get(live.id)
+        target = await self._activities.finish_thread(
+            ActivityDomain.RUNTIME, self._access.get, live.id
+        )
         if target is None:
             raise RuntimeError(SESSION_FORK_UNAVAILABLE)
         copied_workdir = (
@@ -1057,34 +1073,59 @@ class SessionService:
                     await guards.enter_async_context(source_live.lifecycle_lock)
                     if source_live.closing:
                         raise ValueError(SESSION_RUNNING_ERROR)
-                self._validate_fork_origin(expected_origin)
-            with self._events.transaction() as connection:
-                self._events.inherit_history(
+                await self._activities.finish_thread(
+                    ActivityDomain.RUNTIME, self._validate_fork_origin, expected_origin
+                )
+            await self._activities.finish_thread(
+                ActivityDomain.RUNTIME,
+                self._inherit_fork_history,
+                live.id,
+                origin,
+                target,
+                copied_workdir=copied_workdir,
+                imported=imported,
+            )
+        history = await self._activities.finish_thread(
+            ActivityDomain.RUNTIME, self._events.replay, live.id
+        )
+        live.restore_local_input_paths(history)
+
+    def _inherit_fork_history(
+        self,
+        session_id: str,
+        origin: ProductEventRecord,
+        target: SessionCatalogRecord,
+        *,
+        copied_workdir: Path | None,
+        imported: bool,
+    ) -> None:
+        fork_snapshots = self._fork_snapshots
+        with self._events.transaction() as connection:
+            self._events.inherit_history(
+                str(origin.payload["source_session_id"]),
+                target,
+                int(origin.payload["source_product_seq"]),
+                copied_workdir=copied_workdir,
+                connection=connection,
+                inherit_snapshot=(
+                    (
+                        lambda payload, current: fork_snapshots(
+                            str(origin.payload["source_session_id"]), session_id, payload, current
+                        )
+                    )
+                    if fork_snapshots is not None
+                    else None
+                ),
+                snapshots_only=imported,
+            )
+            if not imported:
+                self._artifacts.inherit_history(
                     str(origin.payload["source_session_id"]),
-                    target,
+                    session_id,
                     int(origin.payload["source_product_seq"]),
                     copied_workdir=copied_workdir,
                     connection=connection,
-                    inherit_snapshot=(
-                        (
-                            lambda payload, current: fork_snapshots(
-                                str(origin.payload["source_session_id"]), live.id, payload, current
-                            )
-                        )
-                        if fork_snapshots is not None
-                        else None
-                    ),
-                    snapshots_only=imported,
                 )
-                if not imported:
-                    self._artifacts.inherit_history(
-                        str(origin.payload["source_session_id"]),
-                        live.id,
-                        int(origin.payload["source_product_seq"]),
-                        copied_workdir=copied_workdir,
-                        connection=connection,
-                    )
-        live.restore_local_input_paths()
 
     async def _create(
         self,
@@ -1195,6 +1236,11 @@ class SessionService:
                 status=SessionStatus.READY,
                 title=SESSION_TITLE_DEFAULT,
                 title_fallback=SessionTitleFallback.NEW_SESSION,
+                output_policy=(
+                    SessionOutputPolicy.MANAGED
+                    if project_path == runtime_workdir
+                    else SessionOutputPolicy.LEGACY
+                ),
                 display_parent_session_id=display_parent_session_id,
                 created_at=time.time(),
                 required_capabilities=required_capabilities,
@@ -1253,7 +1299,7 @@ class SessionService:
                 and session_id not in self._sessions
             ):
                 self._access.set_archived(session_id, principal, True)
-        return self._snapshot(live, readiness=readiness), HTTP_OK
+        return await self._snapshot(live, readiness=readiness), HTTP_OK
 
     def fork_origin(
         self, session_id: str, principal: SessionPrincipal
@@ -1345,18 +1391,24 @@ class SessionService:
     ) -> tuple[dict[str, Any], int]:
         with resume_stage(session_id, ResumeStage.ACCESS):
             try:
-                self._access.require(session_id, principal)
+                await self._activities.finish_thread(
+                    ActivityDomain.RUNTIME, self._access.require, session_id, principal
+                )
             except SessionAccessError:
                 return {"ok": False, "error": "session_not_found"}, HTTP_NOT_FOUND
-            record = self._access.get(session_id)
+            record = await self._activities.finish_thread(
+                ActivityDomain.RUNTIME, self._access.get, session_id
+            )
         if record is None:
             return {"ok": False, "error": "session_not_found"}, HTTP_NOT_FOUND
         if record.archived:
             return {"ok": False, "error": SESSION_ARCHIVED_ERROR}, HTTP_CONFLICT
         with resume_stage(session_id, ResumeStage.PROJECT):
             try:
-                self._require_registered_project(
-                    Path(record.project_path) if record.project_path else None
+                await self._activities.finish_thread(
+                    ActivityDomain.RUNTIME,
+                    self._require_registered_project,
+                    Path(record.project_path) if record.project_path else None,
                 )
             except ValueError as error:
                 return {"ok": False, "error": str(error)}, HTTP_CONFLICT
@@ -1375,8 +1427,10 @@ class SessionService:
                 if safe_error == RESOURCE_HOST_CONFIGURATION_CONFLICT:
                     return {"ok": False, "error": safe_error}, HTTP_CONFLICT
                 return {"ok": False, "error": RESOURCE_HOST_CONTEXT_REQUIRED}, HTTP_UNAVAILABLE
-            return self._snapshot(existing, readiness=readiness), HTTP_OK
-        activation = self._access.activation(session_id)
+            return await self._snapshot(existing, readiness=readiness), HTTP_OK
+        activation = await self._activities.finish_thread(
+            ActivityDomain.RUNTIME, self._access.activation, session_id
+        )
         if record.runtime_id == LEGACY_RUNTIME_ID or activation is None:
             return {"ok": False, "error": "legacy_session_readonly"}, HTTP_CONFLICT
         executable = self._settings.runtime_executable()
@@ -1388,13 +1442,21 @@ class SessionService:
         if not readiness.ready:
             return self._readiness_error(readiness), HTTP_UNAVAILABLE
         was_inflight = record.status in {SessionStatus.RUNNING, SessionStatus.WAITING_HIL}
-        recovery_hil = self._access.pending_hil(record.session_id) if was_inflight else ()
+        recovery_hil = (
+            await self._activities.finish_thread(
+                ActivityDomain.RUNTIME, self._access.pending_hil, record.session_id
+            )
+            if was_inflight
+            else ()
+        )
         mode = record.policy_id or ASK_PERMISSION_MODE
         with resume_stage(session_id, ResumeStage.MODEL):
-            resume_state = self._model_state(session_id)
+            resume_state = await self._activities.finish_thread(
+                ActivityDomain.RUNTIME, self._model_state, session_id
+            )
             # 登出会让会话存量选择指向被门禁置灰的内置模型；resume 时把会话选择修复到
             # 目录解析出的生效模型（未登录时为第一个可用模型），避免整条会话卡在不可执行键上。
-            resume_model = self._recover_selected_model(
+            resume_model = await self._recover_selected_model(
                 session_id, principal, resume_state, actor_id
             )
         live: LiveSession | None = None
@@ -1414,10 +1476,14 @@ class SessionService:
                     executable=readiness.executable or executable,
                     process_environment=skill_environment,
                     user_id=actor_id,
-                    writable_roots=self._writable_roots(
-                        Path(record.project_path)
-                        if record.project_path
-                        else Path(record.runtime_workdir)
+                    writable_roots=await self._activities.finish_thread(
+                        ActivityDomain.RUNTIME,
+                        self._writable_roots,
+                        (
+                            Path(record.project_path)
+                            if record.project_path
+                            else Path(record.runtime_workdir)
+                        ),
                     ),
                 )
             with resume_stage(session_id, ResumeStage.ACTIVATE):
@@ -1425,10 +1491,18 @@ class SessionService:
             with resume_stage(session_id, ResumeStage.FORK):
                 await self._restore_fork_history(live)
             self._sessions[session_id] = live
-            if self._access.pending_turn_settlement(session_id) is not None:
+            pending = await self._activities.finish_thread(
+                ActivityDomain.RUNTIME, self._access.pending_turn_settlement, session_id
+            )
+            if pending is not None:
                 if self._settlement_resume is None:
                     raise RuntimeError("pending turn settlement has no recovery owner")
-                self._access.mark_turn_recovery_blocked(session_id, True)
+                await self._activities.finish_thread(
+                    ActivityDomain.RUNTIME,
+                    self._access.mark_turn_recovery_blocked,
+                    session_id,
+                    True,
+                )
             elif was_inflight:
                 await self._publish_recovery(live, record, recovery_hil)
         except Exception as exc:
@@ -1441,7 +1515,9 @@ class SessionService:
                     failure["code"],
                 )
                 return failure, HTTP_CONFLICT
-            self._access.mark_turn_recovery_blocked(session_id, True)
+            await self._activities.finish_thread(
+                ActivityDomain.RUNTIME, self._access.mark_turn_recovery_blocked, session_id, True
+            )
             if live is not None:
                 await live.aclose()
             failure = _runtime_failure_payload(exc, operation="resume")
@@ -1457,7 +1533,7 @@ class SessionService:
             )
             return failure, 500
         with resume_stage(session_id, ResumeStage.SNAPSHOT):
-            return self._snapshot(live, readiness=readiness), HTTP_OK
+            return await self._snapshot(live, readiness=readiness), HTTP_OK
 
     async def check_recovery(
         self,
@@ -1550,11 +1626,18 @@ class SessionService:
                 item_id=request.vendor_item_id or "",
                 idempotency_key=(f"{SESSION_RECOVERY_HIL_KEY_PREFIX}:{request.product_request_id}"),
             )
-            self._access.expire_hil(request.product_request_id)
+            await self._activities.finish_thread(
+                ActivityDomain.RUNTIME, self._access.expire_hil, request.product_request_id
+            )
         recovery_turn_id = record.last_turn_id or ""
         unknown_turns = tuple(
             row
-            for row in self._access.uncertainties(record.session_id, unresolved_only=True)
+            for row in await self._activities.finish_thread(
+                ActivityDomain.RUNTIME,
+                self._access.uncertainties,
+                record.session_id,
+                unresolved_only=True,
+            )
             if row.kind is UncertaintyKind.TURN
             and row.state in {UncertaintyState.EXECUTING, UncertaintyState.UNKNOWN}
         )
@@ -1570,7 +1653,9 @@ class SessionService:
                 )
             if recovery_turn_id not in {turn.correlation_id for turn in unknown_turns}:
                 recovery_turn_id = unknown_turns[0].correlation_id
-            self._access.update_status(
+            await self._activities.finish_thread(
+                ActivityDomain.RUNTIME,
+                self._access.update_status,
                 record.session_id,
                 SessionStatus.ERROR,
                 turn_id=recovery_turn_id,
@@ -1585,7 +1670,9 @@ class SessionService:
                 f"{SESSION_RECOVERY_TURN_KEY_PREFIX}:{recovery_turn_id or record.session_id}"
             ),
         )
-        self._access.update_status(
+        await self._activities.finish_thread(
+            ActivityDomain.RUNTIME,
+            self._access.update_status,
             record.session_id,
             SessionStatus.INTERRUPTED,
             turn_id=recovery_turn_id,
@@ -1666,17 +1753,42 @@ class SessionService:
             ),
         }
 
-    def _snapshot(self, live: LiveSession, *, readiness: Any) -> dict[str, Any]:
+    def _snapshot_data(self, live: LiveSession) -> tuple[SessionModelState | None, dict[str, Any]]:
         record = self._access.get(live.id)
         pending = self._access.pending_turn_settlement(live.id)
         recovery_blocked = bool(pending and pending.recovery_blocked)
         model_state = self._model_state(live.id) if record is not None else None
+        return model_state, {
+            **self._title_projection(record),
+            "display_parent_session_id": record.display_parent_session_id if record else None,
+            "pending_hil": live.pending_hil_snapshot(blocking_only=False),
+            "uncertain_operations": live.ledger.uncertainty_snapshot(),
+            "recovery_blocked": recovery_blocked,
+            "recovery_pending": pending is not None,
+            **(
+                self._events.recovery_snapshot(live.id, pending.native_turn_id)
+                if recovery_blocked and pending
+                else {}
+            ),
+            "todos": list(record.todos) if record is not None else [],
+            "todo_turn_id": record.todo_turn_id if record is not None else None,
+            "todo_explanation": record.todo_explanation if record is not None else None,
+            "last_turn_id": record.last_turn_id if record is not None else None,
+            "last_turn_status": record.last_turn_status if record is not None else None,
+            "artifacts": live.artifact_snapshot(),
+        }
+
+    async def _snapshot(self, live: LiveSession, *, readiness: Any) -> dict[str, Any]:
+        model_state, data = await self._activities.finish_thread(
+            ActivityDomain.RUNTIME, self._snapshot_data, live
+        )
+        recovery_blocked = data["recovery_blocked"]
         selected_model_id = (
             model_state.selected_model_id if model_state is not None else live.model_id
         )
         return {
+            **data,
             "session_id": live.id,
-            **self._title_projection(record),
             "runtime_id": live.runtime_id,
             "runtime": runtime_payload(
                 runtime_id=live.runtime_id,
@@ -1703,31 +1815,15 @@ class SessionService:
             "workdir": str(live.runtime_workdir),
             "runtime_workdir": str(live.runtime_workdir),
             "project_path": str(live.project_path) if live.project_path else None,
-            "display_parent_session_id": record.display_parent_session_id if record else None,
             "resumed": live.resumed,
             "last_seq": live.last_seq,
-            "pending_hil": live.pending_hil_snapshot(blocking_only=False),
-            "uncertain_operations": live.ledger.uncertainty_snapshot(),
             "unknown_outcome": live.ledger.has_unknown_outcome,
             "running": live.turn_active and not recovery_blocked,
             "active_turn_id": (
                 (live.ledger.active_turn_id or None) if not recovery_blocked else None
             ),
-            "recovery_blocked": recovery_blocked,
-            "recovery_pending": pending is not None,
-            **(
-                self._events.recovery_snapshot(live.id, pending.native_turn_id)
-                if recovery_blocked and pending
-                else {}
-            ),
             "interrupting": live.interrupting,
             "last_interrupt_succeeded": live.last_interrupt_succeeded,
-            "todos": list(record.todos) if record is not None else [],
-            "todo_turn_id": record.todo_turn_id if record is not None else None,
-            "todo_explanation": record.todo_explanation if record is not None else None,
-            "last_turn_id": record.last_turn_id if record is not None else None,
-            "last_turn_status": record.last_turn_status if record is not None else None,
-            "artifacts": live.artifact_snapshot(),
         }
 
     def status(
@@ -2656,6 +2752,8 @@ class SessionService:
             self._logger.exception("session_deletion_failed session_id=%s", session_id)
             return {"ok": False, "error": SESSION_DELETION_FAILED}, HTTP_INTERNAL_ERROR
         self._access.release(session_id, principal)
+        if self._storage_check is not None:
+            self._storage_check()
         return {"ok": True, "session_id": session_id}, HTTP_OK
 
     async def rename(
@@ -4254,10 +4352,16 @@ class SessionService:
         deadline: float | None = None,
         on_wait: ResourceWaitObserver | None = None,
         purpose: ResourcePurpose = ResourcePurpose.TURN,
+        wait_for_quiescence: bool = False,
     ) -> None:
         try:
             await self._prepare_turn(
-                live, request_id=request_id, deadline=deadline, on_wait=on_wait, purpose=purpose
+                live,
+                request_id=request_id,
+                deadline=deadline,
+                on_wait=on_wait,
+                purpose=purpose,
+                wait_for_quiescence=wait_for_quiescence,
             )
         except Exception as error:
             if getattr(error, "safe_error", "") == RESOURCE_HOST_CONFIGURATION_CONFLICT:
@@ -4296,6 +4400,7 @@ class SessionService:
         deadline: float | None = None,
         on_wait: ResourceWaitObserver | None = None,
         purpose: ResourcePurpose = ResourcePurpose.TURN,
+        wait_for_quiescence: bool = False,
     ) -> None:
         """Apply current intent and admit execution without holding locks during resource waits."""
         if live.prediction_task is not None and live.prediction_task is not asyncio.current_task():
@@ -4335,7 +4440,7 @@ class SessionService:
             model_state = self._model_state(live.id)
             # 与 resume 同一条修复语义：登出后置灰的存量选择在每轮准入前对齐到目录
             # 当前可执行的键（未登录时为第一个可用模型），发生切换即落盘。
-            selected_model = self._recover_selected_model(
+            selected_model = await self._recover_selected_model(
                 live.id,
                 SessionPrincipal(record.principal_id),
                 model_state,
@@ -4405,7 +4510,7 @@ class SessionService:
         while True:
             if restart or retained_product_turn:
                 try:
-                    if request_id:
+                    if request_id or wait_for_quiescence:
                         await self._runtime.wait_until_suspended(live, deadline=deadline)
                     elif not await live.suspend_runtime():
                         raise RuntimeError("runtime admission requires a quiescent session")
@@ -4743,7 +4848,9 @@ class SessionService:
                         apply_now = True
             if apply_now:
                 try:
-                    await self.prepare_turn(live, purpose=ResourcePurpose.SESSION)
+                    await self.prepare_turn(
+                        live, purpose=ResourcePurpose.SESSION, wait_for_quiescence=True
+                    )
                 except Exception as error:
                     return (
                         {

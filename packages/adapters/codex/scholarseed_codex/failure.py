@@ -133,6 +133,7 @@ _TERMINAL_CODES = (
 _CODE_BY_MESSAGE = {
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
     PROVIDER_CONTENT_POLICY_MESSAGE.casefold(): CONTENT_SAFETY_BLOCKED,
+    "idle timeout waiting for sse": "timeout",
 }
 # 瞬时 5xx 家族（与 serve ``rejections.TRANSIENT_PROVIDER_HTTP_STATUSES`` 同集合）统一归
 # server_error：只有 Codex 散文、没有结构化码时也能恢复「暂时不可用」语义。
@@ -199,7 +200,8 @@ def provider_failure(value: Any) -> ProviderFailure:
         code = nested_code or code
         message = nested_message or message
     if not code:
-        code = _CODE_BY_MESSAGE.get(message.casefold(), "")
+        normalized_message = _CODEX_STREAM_DISCONNECTED_PREFIX.sub("", message, count=1)
+        code = _CODE_BY_MESSAGE.get(normalized_message.casefold(), "")
     if not code and http_status is not None:
         code = _CODE_BY_HTTP_STATUS.get(http_status, "")
     code = _canonical_provider_code(code, probe_text)

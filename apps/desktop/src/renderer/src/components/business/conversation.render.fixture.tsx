@@ -12,6 +12,7 @@ import { literaturePublicComponents } from '../../features/literature/Component'
 import { fileRecovery, saveRecovery } from '../../features/assistant/recovery'
 import { documentWorkspaces, DocumentWorkspaceContext } from '../../features/workbench/workspace'
 import type { ConvItem, Thread, TurnOutcome } from '../../model'
+import { describeTurnFailure } from '../../failures'
 import { StoreProvider, useApp } from '../../store'
 import { Button, Textarea, ToastProvider } from '../ui'
 import { InteractionPolicyProvider } from './Interactions'
@@ -569,6 +570,101 @@ export function Fixture(): React.JSX.Element {
       style={compact ? { height: COMPACT_HEIGHT } : undefined}
     >
       <div className={compact ? 'hidden' : 'flex-none'}>
+        {new URLSearchParams(location.search).has('forkAnchor') && (
+          <Button
+            onClick={() =>
+              set({
+                activeSession: SESSION_ID,
+                threads: {
+                  [SESSION_ID]: {
+                    id: SESSION_ID,
+                    sessionId: SESSION_ID,
+                    title: 'Fork anchor',
+                    lastSeq: 1,
+                    status: 'done',
+                    running: false,
+                    turnOutcomes: {
+                      healthy: 'completed',
+                      recovered: 'completed',
+                      failed: 'failed',
+                    },
+                    conversation: [
+                      {
+                        kind: 'agent',
+                        text: 'Healthy response',
+                        turnId: 'healthy',
+                        itemId: 'healthy-item',
+                      },
+                      {
+                        kind: 'agent',
+                        text: 'Interrupted fragment',
+                        turnId: 'recovered',
+                        itemId: 'partial-item',
+                      },
+                      {
+                        kind: 'agent',
+                        text: 'Recovered response',
+                        turnId: 'recovered',
+                        itemId: 'final-item',
+                      },
+                      {
+                        kind: 'agent',
+                        text: 'Failed response',
+                        turnId: 'failed',
+                        itemId: 'failed-item',
+                      },
+                    ],
+                  },
+                },
+              })
+            }
+          >
+            Fork anchor
+          </Button>
+        )}
+        {new URLSearchParams(location.search).has('runtimeFailure') && (
+          <Button
+            onClick={() => {
+              const notice: ConvItem = {
+                kind: 'status',
+                text: { key: 'runtime.failed' },
+                incidentId: 'provider',
+                turnId: 'failed-turn',
+              }
+              const mode = new URLSearchParams(location.search).get('runtimeFailure')
+              const card: ConvItem = {
+                ...describeTurnFailure({
+                  message: 'provider failed',
+                  incident_id: mode === 'independent' ? 'other' : 'provider',
+                  retryable: true,
+                }),
+                turnId: 'failed-turn',
+              }
+              set({
+                activeSession: SESSION_ID,
+                threads: {
+                  [SESSION_ID]: {
+                    id: SESSION_ID,
+                    title: 'Runtime failure',
+                    sessionId: SESSION_ID,
+                    lastSeq: 0,
+                    running: false,
+                    status: 'failed',
+                    turnOutcomes: { 'failed-turn': 'failed' },
+                    conversation:
+                      mode === 'alone'
+                        ? [notice]
+                        : mode === 'reversed'
+                          ? [card, notice]
+                          : [notice, card],
+                  },
+                },
+              })
+            }}
+          >
+            Runtime failure
+          </Button>
+        )}
         {new URLSearchParams(location.search).has('geometry') && (
           <>
             <Button onClick={openGeometry}>组合历史</Button>

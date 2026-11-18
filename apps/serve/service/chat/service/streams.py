@@ -680,6 +680,9 @@ class CompletionDiagnostic:
     stream_retries: int = 0
     tcp_connects: int = 0
     tls_handshakes: int = 0
+    first_connect_failure_category: str = ""
+    waiting_for_connect_retry: bool = False
+    cancellation_source: str = ""
     upstream_end: str = StreamEnd.NOT_STARTED.value
     failure_type: str = ""
     transport: TransportObservation = field(default_factory=TransportObservation)
@@ -938,6 +941,13 @@ class CompletionDiagnostic:
             "upstream": self.upstream.snapshot(),
             "downstream": self.downstream.snapshot(),
         }
+        if phase == "finished":
+            if self.first_connect_failure_category:
+                fields["first_connect_failure_category"] = self.first_connect_failure_category
+            if self.cancellation_source:
+                fields["cancellation_source"] = self.cancellation_source
+                if self.waiting_for_connect_retry:
+                    fields["cancelled_during_connect_backoff"] = True
         LOGGER.info("%s session_id=%s %s", DIAGNOSTIC_EVENT, self.session_id, json.dumps(fields))
         if self.notify is not None:
             self.notify(self.session_id, fields)

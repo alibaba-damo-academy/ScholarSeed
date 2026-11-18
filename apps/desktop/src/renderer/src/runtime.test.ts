@@ -21,6 +21,7 @@ import {
   formatTurnFailure,
   isRecoverableTurnFailure,
   sameTurnFailureMessage,
+  presentRuntimeFailures,
 } from './failures.ts'
 import {
   projectHistorySnapshot,
@@ -74,6 +75,56 @@ import {
 import type { ConvItem, QueuedMessage, RuntimeStatusMessage, Thread } from './model.ts'
 import { mergeQueuedOutbox, releaseQueuedOutbox, retainQueuedOutbox } from './outbox.ts'
 import { optimisticQueuedMessage, shouldPresentQueuedMessage } from './queue.ts'
+
+test('turn failure keeps its explicit incident reference without inferring one for old events', () => {
+  assert.equal(
+    describeTurnFailure({ message: 'provider failed', incident_id: 'provider' }).incidentId,
+    'provider'
+  )
+  assert.equal(describeTurnFailure({ message: 'provider failed' }).incidentId, undefined)
+})
+
+test('only an explicitly represented ordinary failure hides its runtime failed notice', () => {
+  const notice: ConvItem = {
+    kind: 'status',
+    text: { key: 'runtime.failed' },
+    incidentId: 'provider',
+    turnId: 'turn',
+  }
+  const card: ConvItem = {
+    ...describeTurnFailure({ message: 'provider failed', incident_id: 'provider' }),
+    turnId: 'turn',
+  }
+  for (const items of [
+    [notice, card],
+    [card, notice],
+  ]) {
+    assert.deepEqual(presentRuntimeFailures(items), [card])
+    assert.equal(items.length, 2)
+  }
+  // An error omitted by the caller's presentation rules cannot own this notice.
+  assert.deepEqual(presentRuntimeFailures([notice]), [notice])
+  for (const unrelated of [
+    { ...card, incidentId: undefined },
+    { ...card, incidentId: 'independent' },
+    { ...card, turnId: 'another-turn' },
+    { ...card, failure: undefined, turnUnknown: { reason: 'unconfirmed' as const } },
+  ])
+    assert.deepEqual(presentRuntimeFailures([notice, unrelated]), [notice, unrelated])
+  for (const key of [
+    'runtime.detected',
+    'runtime.retrying',
+    'runtime.recovered',
+    'runtime.recoveryFailed',
+  ] as const) {
+    const other: ConvItem = { ...notice, text: { key } }
+    assert.deepEqual(presentRuntimeFailures([other, card]), [other, card])
+  }
+  const independent: ConvItem = { ...notice, incidentId: 'independent' }
+  assert.deepEqual(presentRuntimeFailures([notice, independent, card]), [independent, card])
+  const successful: ConvItem = { kind: 'agent', text: 'Done', turnId: 'turn' }
+  assert.deepEqual(presentRuntimeFailures([notice, successful]), [notice, successful])
+})
 
 test('known workbench identity survives only a verified same-instance accepted drain', () => {
   const current = { backendReady: true, workbenchReady: true, serviceInstanceId: 'instance' }

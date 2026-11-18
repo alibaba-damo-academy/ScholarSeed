@@ -19,10 +19,23 @@ import {
   verifySquirrelReplacement,
   squirrelHelpersAbsent,
   squirrelLaunchSuperseded,
+  legacySquirrelPublisherAbsent,
+  squirrelPreparedDevice,
 } from './squirrelstartup.ts'
 import type { SquirrelHandoff } from './squirrel.ts'
 
 const now = 1_800_000_000_000
+
+test('legacy publisher inventory rejects another copy and incomplete process evidence', () => {
+  const app = '/Applications/Example.app/Contents/MacOS/Example'
+  const current = `12 ${app}\n13 /usr/bin/true\n`
+  assert.equal(legacySquirrelPublisherAbsent(current, 12, app), true)
+  assert.equal(legacySquirrelPublisherAbsent(current + '14 /other copy/Example\n', 12, app), false)
+  assert.equal(legacySquirrelPublisherAbsent(current + '14 Example\n', 12, app), false)
+  assert.equal(legacySquirrelPublisherAbsent(current + '14 /unknown/ShipIt\n', 12, app), false)
+  assert.equal(legacySquirrelPublisherAbsent(current + 'malformed\n', 12, app), false)
+  assert.equal(legacySquirrelPublisherAbsent('13 /usr/bin/true\n', 12, app), false)
+})
 test('superseded build evidence requires a strictly later valid build than both endpoints', () => {
   const expected = { sourceBuild: '202610271711', targetBuild: '202610271723' }
   assert.equal(squirrelLaunchSuperseded('202610280721', expected), true)
@@ -449,6 +462,37 @@ test(
       })
     )
     const bound = await bindSquirrelRequest(directory, bundle, target, current)
+    const owner = join(dirname(state), 'CandidatePreparation')
+    const prepared = join(directory, 'native-copy', 'Example.app')
+    await mkdir(owner, { mode: 0o700 })
+    await mkdir(prepared, { recursive: true })
+    const identity = (path: string) => {
+      const { dev, ino, uid } = lstatSync(path)
+      return { dev, ino, uid }
+    }
+    const native = {
+      state: 'ready',
+      binding,
+      source: bound.source,
+      target: bound.target,
+      candidate: {
+        path: realpathSync(prepared),
+        parent: identity(dirname(prepared)),
+        item: identity(prepared),
+      },
+    }
+    const journal = join(owner, 'journal.plist')
+    await writeFile(journal, JSON.stringify({ schema: '1', record: native }), { mode: 0o600 })
+    execFileSync('/usr/bin/plutil', ['-convert', 'binary1', journal])
+    const ready = await bindSquirrelRequest(directory, bundle, target, current, directory)
+    assert.equal(squirrelPreparedDevice(ready.prepared), identity(prepared).dev)
+    await rename(prepared, prepared + '.old')
+    await mkdir(prepared)
+    assert.equal(squirrelPreparedDevice(ready.prepared), undefined)
+    assert.equal(
+      (await bindSquirrelRequest(directory, bundle, target, current, directory)).prepared,
+      undefined
+    )
     await assert.rejects(
       bindSquirrelRequest(directory, bundle, target, {
         ...current,
@@ -600,6 +644,12 @@ test(
     )
     await rm(state)
     assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
+    assert.equal(
+      await inspectSquirrelIdle(directory, bundle, application, current, async () => {
+        throw new Error('replacement validation failed with no native state')
+      }),
+      false
+    )
   }
 )
 
@@ -690,9 +740,22 @@ test(
       owned.helper = active
       await once(active, 'spawn')
       assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), expected)
+      assert.equal(
+        await inspectSquirrelStartup(current, directory, bundle, application),
+        expected ? 'failed' : 'restoring'
+      )
+      if (expected) {
+        // macOS can still report a live image whose executable no longer resolves.
+        await rm(other)
+        const status = await inspectSquirrelStartup(current, directory, bundle, application)
+        assert.equal(status, 'restoring')
+        const oldBuild = { version: '0.2.0', buildNumber: '202610130001' }
+        assert.equal(squirrelAdmission(oldBuild, current, status), 'exit')
+      }
       const stopped = once(active, 'exit')
       active.kill()
       await stopped
+      assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'failed')
     }
     await rm(acknowledgement)
     assert.equal(

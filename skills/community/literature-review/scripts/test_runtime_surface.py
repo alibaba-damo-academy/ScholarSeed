@@ -260,7 +260,7 @@ class CurrentSurfaceTest(unittest.TestCase):
     def test_every_subcommand_accepts_shared_output_options(self):
         commands = ('workflow', 'doctor', 'info', 'stages', 'import-search', 'run',
                     'resume', 'compile', 'init', 'evidence', 'outline', 'templates',
-                    'citations', 'figures', 'manuscript', 'writing', 'finalize',
+                    'citations', 'figures', 'manuscript', 'writing',
                     'status', 'papers')
         for command in commands:
             with self.subTest(command=command):
@@ -379,25 +379,7 @@ class CurrentSurfaceTest(unittest.TestCase):
         self.assertFalse(report.blocking)
         self.assertTrue(report.warnings)
 
-    def test_default_discovery_omits_legacy_but_explicit_discovery_retains_it(self):
-        normal = self.cli('--help')
-        legacy = self.cli('--legacy-help')
-        for name in ('resume', 'finalize'):
-            self.assertNotIn(name, normal)
-            self.assertIn(name, legacy)
-        self.assertNotIn('produce', self.cli('writing', '--help'))
-        self.assertIn('produce', self.cli('--legacy-help', 'writing', '--help'))
-        self.assertNotIn('read-cards', self.cli('manuscript', '--help'))
-        self.assertNotIn('generation_prep', self.cli('stages'))
-        self.assertIn('generation_prep', self.cli('stages', '--include-legacy'))
-        self.assertNotIn('generation_merge', json.loads(self.cli('info'))['stages'])
 
-    def test_hidden_compatibility_invocation_still_dispatches(self):
-        with patch.object(sys, 'argv', ['slr', 'writing', 'produce', '--dry-run']), \
-             patch.object(slr, 'cmd_writing', return_value=0) as command:
-            self.assertEqual(slr.main(), 0)
-        self.assertEqual(command.call_args.args[0].action, 'produce')
-        self.assertTrue(command.call_args.args[0].dry_run)
 
     def test_current_imports_do_not_load_old_verifiers_or_jieba(self):
         program = '''import sys, importlib.abc

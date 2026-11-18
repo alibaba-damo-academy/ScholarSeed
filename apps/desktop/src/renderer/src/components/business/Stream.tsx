@@ -38,6 +38,7 @@ import { deliveryLabel } from '../../delivery'
 import {
   authenticationRecoveryAction,
   formatTurnFailure,
+  presentRuntimeFailures,
   isRecoverableTurnFailure,
 } from '../../failures'
 import { feedback, renderFeedback } from '../../contracts/feedback'
@@ -595,10 +596,12 @@ export function Stream({
     state.turnLaunch !== null || hasQueuedMessageAwaitingRuntime(thread.queuedMessages ?? [])
   const cardArtifacts = useCardArtifacts(conv)
   const artifactCardTypes = useArtifactCardTypes()
-  const presented = transcriptPresentationItems(currentConv).filter(
-    (item) =>
-      (thread.readOnly || !isDockedInstallation(item)) &&
-      (item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id))
+  const presented = presentRuntimeFailures(
+    transcriptPresentationItems(currentConv).filter(
+      (item) =>
+        (thread.readOnly || !isDockedInstallation(item)) &&
+        (item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id))
+    )
   )
   const activeTurnId = Object.entries(thread.turnOutcomes ?? {})
     .filter(([, outcome]) => outcome === 'running')
@@ -1454,6 +1457,7 @@ export function Stream({
                         skillNames={skillNames}
                         awaitingConfirmation={pendingTurnIds.has(row.item.turnId)}
                         latestAgent={index === latestAgentRow}
+                        finalAnswer={finalAgentRows.has(index)}
                         sourcesContent={
                           finalAgentRows.has(index) && row.item.turnId
                             ? renderTurnSources(row.item.turnId)
@@ -1878,6 +1882,7 @@ function Item({
   skillNames,
   awaitingConfirmation,
   latestAgent,
+  finalAnswer,
   sourcesContent,
   trailingContent,
   running,
@@ -1891,6 +1896,7 @@ function Item({
   skillNames: SkillNames
   awaitingConfirmation: boolean
   latestAgent: boolean
+  finalAnswer: boolean
   sourcesContent?: React.ReactNode
   trailingContent?: React.ReactNode
   running: boolean
@@ -1935,8 +1941,13 @@ function Item({
         <AgentMsg
           latest={latestAgent}
           citationEnabled={interactions.citationEnabled}
-          copyEnabled={!awaitingConfirmation && turnOutcome !== 'running'}
+          copyEnabled={
+            !awaitingConfirmation &&
+            turnOutcome !== 'running' &&
+            (turnOutcome !== 'completed' || finalAnswer)
+          }
           forkEnabled={
+            finalAnswer &&
             !awaitingConfirmation &&
             interactions.forkEnabled &&
             !readOnly &&

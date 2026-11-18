@@ -3,9 +3,31 @@ package handoff
 import (
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
+
+func TestPreCommitWaitRespectsDeadlineAndClosedInput(t *testing.T) {
+	commands := make(chan string, 1)
+	commands <- "start"
+	if err := takeCommand(commands, "start", time.Now().Add(-time.Second)); err == nil {
+		t.Fatal("accepted command after deadline")
+	}
+	closed := make(chan string)
+	close(closed)
+	status, err := os.CreateTemp(t.TempDir(), "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer status.Close()
+	if err = writeWorkerStatus(status, workerStatus{Nonce: "nonce", Event: "authorized"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = waitWorkerStatus(&recoveryWorker{}, status, "nonce", "authorized", closed, time.Now().Add(time.Second)); err == nil || err.Error() != "handoff cancelled before authorization" {
+		t.Fatalf("closed input did not cancel worker authorization: %v", err)
+	}
+}
 
 type recoveryWorker struct {
 	order    *[]string

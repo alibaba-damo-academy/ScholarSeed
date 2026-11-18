@@ -7,8 +7,9 @@ const SCRIPT_SUFFIX = '.sh'
 const WINDOWS_PLATFORM = 'win32'
 const WINDOWS_INSTALLER_EXTENSION = '.exe'
 const MACOS_INSTALLER_EXTENSION = '.dmg'
+const PREPARED_SUFFIX = `${MACOS_INSTALLER_EXTENSION}.prepared`
 
-export type UpdateArtifactKind = 'payload' | 'mount' | 'script' | 'other'
+export type UpdateArtifactKind = 'payload' | 'prepared' | 'mount' | 'script' | 'other'
 
 /** 工作目录里的一个条目。`empty` 只对目录有意义，由调用方读目录时填。 */
 export interface UpdateArtifactEntry {
@@ -48,6 +49,7 @@ export function stagedInstallerName(
 export function updateArtifactKind(name: string): UpdateArtifactKind {
   if (name.startsWith(MOUNT_PREFIX)) return 'mount'
   if (name.startsWith(SCRIPT_PREFIX) && name.endsWith(SCRIPT_SUFFIX)) return 'script'
+  if (name.startsWith(PAYLOAD_PREFIX) && name.endsWith(PREPARED_SUFFIX)) return 'prepared'
   if (
     name.startsWith(PAYLOAD_PREFIX) &&
     (name.endsWith(WINDOWS_INSTALLER_EXTENSION) || name.endsWith(MACOS_INSTALLER_EXTENSION))
