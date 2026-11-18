@@ -17,46 +17,11 @@
     }
   },
   "stages": {
-    "retrieval_annotate": {
-      "provider": "qwen",
-      "model": "qwen3.8-max",
-      "timeout": 60,
-      "max_tokens": 500,
-      "thinking": false,
-      "context_window": 1000000,
-      "capacity_verified": {
-        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
-        "checked_at": "2026-09-14",
-        "model_context": 1000000,
-        "model_max_output": 131072,
-        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
-      },
-      "stream": true,
-      "request_deadline_sec": 1800
-    },
     "processing": {
       "provider": "qwen",
       "model": "qwen3.8-max",
       "timeout": 600,
       "max_tokens": 16000,
-      "thinking": false,
-      "context_window": 1000000,
-      "capacity_verified": {
-        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
-        "checked_at": "2026-09-14",
-        "model_context": 1000000,
-        "model_max_output": 131072,
-        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
-      },
-      "stream": true,
-      "request_deadline_sec": 1800
-    },
-    "refinement_full": {
-      "provider": "qwen",
-      "model": "qwen3.8-max",
-      "timeout": 300,
-      "max_tokens": 32000,
-      "temperature": 0.2,
       "thinking": false,
       "context_window": 1000000,
       "capacity_verified": {
@@ -75,50 +40,13 @@
       "quality": "high",
       "timeout": 300
     },
-    "drafting": {
-      "provider": "qwen",
-      "model": "qwen3.8-max",
-      "timeout": 600,
-      "max_tokens": 16000,
-      "temperature": 0.2,
-      "thinking": false,
-      "context_window": 1000000,
-      "capacity_verified": {
-        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
-        "checked_at": "2026-09-14",
-        "model_context": 1000000,
-        "model_max_output": 131072,
-        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
-      },
-      "stream": true,
-      "request_deadline_sec": 1800
-    },
     "outline_generation": {
       "provider": "qwen",
       "model": "qwen3.8-max",
       "timeout": 900,
       "max_tokens": 16384,
-      "temperature": 0.2,
-      "thinking": false,
-      "max_attempts": 2,
-      "context_window": 1000000,
-      "capacity_verified": {
-        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
-        "checked_at": "2026-09-14",
-        "model_context": 1000000,
-        "model_max_output": 131072,
-        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
-      },
-      "stream": true,
-      "request_deadline_sec": 1800
-    },
-    "manuscript_generation": {
-      "provider": "qwen",
-      "model": "qwen3.8-max",
-      "timeout": 900,
-      "max_tokens": 65536,
-      "temperature": 0.2,
-      "thinking": false,
+      "temperature": 0.6,
+      "thinking": true,
       "max_attempts": 2,
       "context_window": 1000000,
       "capacity_verified": {

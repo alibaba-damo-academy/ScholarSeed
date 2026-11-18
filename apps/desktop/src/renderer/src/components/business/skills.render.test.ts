@@ -903,6 +903,12 @@ test('plugin-create is visible in both system and user catalogs', async () => {
     await page.getByTestId('skills-add').click()
     const create = page.getByTestId('skills-create')
     await expect(create).toBeEnabled()
+    const uploadIcon = page.getByRole('menuitem', { name: /本地上传/ }).locator('svg')
+    const uploadStroke = await uploadIcon.evaluate((icon: SVGSVGElement) => {
+      const scale = icon.getBoundingClientRect().width / icon.viewBox.baseVal.width
+      return Number.parseFloat(getComputedStyle(icon).strokeWidth) * scale
+    })
+    assert.ok(Math.abs(uploadStroke - 1.2) < 0.001)
     await create.click()
     const use = page.getByRole('dialog')
     await expect(
@@ -2633,6 +2639,33 @@ test(
     }
   }
 )
+
+test('installed skills and marketplace use the same responsive column count', async () => {
+  const baseUrl = await fixtureUrl()
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+  try {
+    const page = await browser.newPage()
+    for (const width of [900, 1900]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.goto(new URL('/__skills?marketData=1&scrollMarket=1', baseUrl).href)
+      const marketCard = page.getByTestId('marketplace-card-market-0')
+      await expect(marketCard).toBeVisible()
+      const marketColumns = await marketCard
+        .locator('..')
+        .evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(' ').length)
+      assert.ok(width === 900 ? marketColumns === 2 : marketColumns > 3)
+      await openInstalledSkills(page)
+      const installedCard = page.getByTestId('skill-card-skill-0')
+      await expect(installedCard).toBeVisible()
+      const installedColumns = await installedCard
+        .locator('..')
+        .evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(' ').length)
+      assert.equal(installedColumns, marketColumns)
+    }
+  } finally {
+    await browser.close()
+  }
+})
 
 test(
   'skills catalog uses compact cards, isolated tab searches and a scrolling list',

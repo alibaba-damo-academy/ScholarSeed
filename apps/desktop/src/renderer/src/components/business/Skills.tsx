@@ -130,6 +130,7 @@ const SEARCH_EMPTY_CLASS =
   'min-h-[var(--vds-skills-empty-height)] w-full flex-1 content-center [&_.vds-empty-state\\_\\_title]:text-[length:var(--vds-font-body-lv2)] [&_.vds-empty-state\\_\\_title]:text-[var(--vds-text-secondary)]'
 const GRID_CLASS =
   'grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2 lg:grid-cols-3 [@media(width>1600px)]:[&>*]:max-w-[var(--vds-skills-card-max-width)] [@media(width>1600px)]:grid-cols-[repeat(auto-fill,minmax(var(--vds-skills-card-min-width),1fr))]'
+const ADD_SKILL_UPLOAD_STROKE = 1.8
 const CARD_CLASS =
   'group relative isolate flex flex-col gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] !bg-transparent hover:!bg-[var(--vds-bg-gray-default-transparent)] py-[var(--vds-space-3)] !shadow-none'
 const DIALOG_CLASS =
@@ -242,7 +243,7 @@ function AddSkillButton({
           </span>
         </DropdownMenuItem>
         <DropdownMenuItem className="h-auto" onSelect={onUpload}>
-          <Upload aria-hidden="true" />
+          <Upload aria-hidden="true" style={{ strokeWidth: ADD_SKILL_UPLOAD_STROKE }} />
           <span className="flex flex-col">
             <span>{t('uploadSkill')}</span>
             <span className="text-[var(--vds-text-tertiary)] text-[length:var(--vds-font-caption)]">
@@ -919,7 +920,7 @@ export function Skills({ navigation }: { navigation?: React.ReactNode } = {}): R
                   visible.some((skill) => skill.group === group.id)
               ).map((group) => (
                 <section key={group.id} className="mt-[var(--vds-space-6)] first:mt-0">
-                  <div className="grid grid-cols-1 gap-[var(--vds-space-4)] md:grid-cols-2 lg:grid-cols-3">
+                  <div className={GRID_CLASS}>
                     {visible
                       .filter((skill) => skill.group === group.id)
                       .map((skill) => {

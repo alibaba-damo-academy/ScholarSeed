@@ -61,6 +61,7 @@ def describe_init(mode=STANDARD, field=None):
                           'publication': {key: value for key, value in publication_defaults[language].items()
                                           if value is not None}} for language in publication_defaults],
             'optional_fields': ', '.join(sorted(REQUEST_FIELDS - set(INIT_FIELDS))),
+            'full_contract_query': 'writing configure --describe-input',
             'field_query': 'init --mode ' + mode + ' --describe-input --field <path>; '
                            'paths include constraints.values.required_section, constraints.values.table_count, '
                            'publication.citation_style, retrieval.corpus_size and length_unit',
@@ -108,7 +109,7 @@ def describe_input(operation,workspace=None):
     elif operation=='writing.configure':
         fields={'intent':'immutable original user request, supplied by init',
           'language':['CHINESE','ENGLISH'],'user_requests':'ordered array of actual verbatim follow-ups',
-          'effective_requirements':'string; required with user_requests',
+          'effective_requirements':'string; optional on the first request without user_requests; required when user_requests contains verbatim follow-ups, summarizing the updated requirements',
           'user_instructions':'string of actual user instructions',
           'stage_instructions':'optional string; cannot override the task',
           'output_scope':['survey','section'],'selected_section_ids':'unique top-level numeric-string IDs, e.g. ["3"]; section scope only',
@@ -187,21 +188,18 @@ def describe_input(operation,workspace=None):
           fields={'survey_title':'string; may be empty for an unsectioned component','topic':'string','description':'task description',
                   'review_thesis':'nonempty review question/argument for a sectioned document',
                   'organizing_axis':'nonempty organizing principle for a sectioned document',
-                  'prerequisites':'array, may be empty','outline_tree':'ordered top-level nodes; [] for unsectioned component'},
-          node={'required':['section_id','title','description','role','paper_ids','requires','analysis_tasks'],
+                  'outline_tree':'ordered top-level nodes; [] for unsectioned component'},
+          node={'required':['section_id','title','description','role','paper_ids','analysis_tasks'],
                 'section_id':'unique numeric string, e.g. 2','title':'reader-facing string','description':'scope and argumentative purpose',
                 'language':'default, chinese or english; default inherits the writing contract language',
                 'role':sorted(ROLES),'paper_ids':'array of actual selected IDs; substantive chapters need evidence allocation',
-                'requires':'array of declared prerequisite IDs','depends_on':'optional top-level IDs; no self-reference/cycles',
                 'analysis_tasks':'array; analysis role needs at least one',
                 'subsections':{'type':'optional one-level array','required':['section_id','title','description'],
                                'section_id':'numeric child path, e.g. 2.1','paper_ids':'optional selected IDs'},
                 'figures':'optional nested figure plans','tables':'optional nested table plans'},
           analysis_task={'required':['task_id','kind','question','completion'],'task_id':'unique string',
                          'kind':sorted(ANALYSIS_KINDS),'question':'nonempty string','completion':'nonempty criterion','axes':'optional string array'},
-          prerequisite={'required':['id','kind','requirement','owner_section_id'],'id':'unique string',
-                        'kind':['concept','notation','problem','evaluation','protocol'],'requirement':'nonempty string',
-                        'owner_section_id':'existing nonterminal section/subsection ID','paper_ids':'optional selected IDs'},
+          authoring='Chapters run independently in parallel. Put definitions and evaluation conventions in local descriptions or analytical tasks and assign their supporting papers directly. Preserve document reading order without execution edges.',
           asset=asset,
           ownership='Nest assets under their owner. A chapter-owned asset may appear in that chapter or its subsections; a subsection-owned asset must stay within that subsection, not a sibling or another chapter. Ownership follows source structure, not the PDF float page. Root assets only for an unsectioned component. F/T IDs are unique.',
           next_action='Main edits the current complete outline and submits outline configure --request FILE; this validates without an LLM. Do not rerun outline generate for revisions.')

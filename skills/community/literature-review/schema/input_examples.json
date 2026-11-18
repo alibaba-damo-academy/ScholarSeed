@@ -1,11 +1,24 @@
 {
-  "progress": [{"ok":true,"turn_id":"actual-current-turn","plan":null,"items":[],"actions":{}}],
+  "progress": [
+    {
+      "ok": true,
+      "turn_id": "actual-current-turn",
+      "plan": null,
+      "items": [],
+      "actions": {}
+    }
+  ],
   "writing.plan-packet": [],
   "writing.plan-resolve": [],
   "papers.import-selected": [],
   "outline.import": [],
   "writing.plan-complete": [],
-  "writing.plan-decide": [{"packet_id":"actual-packet-id","action":"proceed"}],
+  "writing.plan-decide": [
+    {
+      "packet_id": "actual-packet-id",
+      "action": "proceed"
+    }
+  ],
   "writing.configure": [
     {
       "user_requests": [
@@ -152,17 +165,6 @@
       "description": "Compare mechanisms and their evidence boundaries.",
       "review_thesis": "Which mechanisms are supported under which conditions?",
       "organizing_axis": "Mechanism, assumptions and evidence limitations",
-      "prerequisites": [
-        {
-          "id": "P1",
-          "kind": "concept",
-          "requirement": "Define the comparison terms.",
-          "owner_section_id": "1",
-          "paper_ids": [
-            "p1"
-          ]
-        }
-      ],
       "outline_tree": [
         {
           "section_id": "0",
@@ -170,18 +172,16 @@
           "description": "Summarize scope, synthesis and limitations.",
           "role": "abstract",
           "paper_ids": [],
-          "requires": [],
           "analysis_tasks": []
         },
         {
           "section_id": "1",
           "title": "Foundations",
-          "description": "Define the shared concepts and scope.",
+          "description": "Define the shared concepts and scope. Introduce Define the comparison terms.",
           "role": "foundation",
           "paper_ids": [
             "p1"
           ],
-          "requires": [],
           "analysis_tasks": []
         },
         {
@@ -192,12 +192,6 @@
           "paper_ids": [
             "p1",
             "p2"
-          ],
-          "requires": [
-            "P1"
-          ],
-          "depends_on": [
-            "1"
           ],
           "analysis_tasks": [
             {
@@ -261,7 +255,6 @@
           "description": "Synthesize supported conclusions and remaining questions.",
           "role": "conclusion",
           "paper_ids": [],
-          "requires": [],
           "analysis_tasks": []
         }
       ]

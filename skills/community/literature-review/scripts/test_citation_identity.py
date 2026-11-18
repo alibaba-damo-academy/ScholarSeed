@@ -43,10 +43,10 @@ class CitationIdentityTest(unittest.TestCase):
                   'evidence': '## Paper Example2024\nMethod: Supported result',
                   'related_papers': [{'paper_id': '987654321', 'title': 'Evidence'}],
                   'shared_tables': [], 'shared_figures': [], 'chapter_kind': 'component'}
-        payload = json.loads(chapter_messages(packet, keys)[1]['content'])
+        payload = json.loads(chapter_messages(packet, keys)[1]['content'].split('\n', 1)[1].split('\n', 1)[0])
         self.assertNotIn('987654321', json.dumps(payload))
         self.assertEqual(payload['assigned_cite_keys'], ['Example2024'])
-        self.assertEqual(payload['confirmed_full_outline']['cite_keys'], ['Example2024'])
+        self.assertEqual(payload['document_context']['cite_keys'], ['Example2024'])
         self.assertEqual(payload['related_papers'][0]['cite_key'], 'Example2024')
 
     def test_only_exact_numeric_citation_ids_are_repaired(self):
