@@ -43,6 +43,8 @@ class ModelCatalogEntry:
     approval_model_ref: str = ""
     # Opaque identity of the connection supplying a native catalog definition.
     native_catalog_source: str = ""
+    # Admission policy, independent of the definition retained by an existing host.
+    optional_preload: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)

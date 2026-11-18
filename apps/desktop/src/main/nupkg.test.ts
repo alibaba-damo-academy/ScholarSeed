@@ -164,6 +164,8 @@ test('Windows paths reject traversal, streams, device names and ambiguous normal
     'x /y',
     'x//y',
     'com¹.txt',
+    'CONIN$',
+    'lib/CONOUT$.txt',
   ])
     assert.throws(() => packagePath(name))
   assert.equal(packagePath('lib/app/resources/书深.txt'), 'lib/app/resources/书深.txt')

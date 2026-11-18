@@ -103,8 +103,17 @@ def retryable_connect_failure(exc: BaseException, category: str) -> bool:
 
 
 def retryable_pre_response_failure(exc: BaseException, category: str) -> bool:
-    return category == TransportFailureCategory.CONNECTION_RESET.value or retryable_connect_failure(
-        exc, category
+    # generate by onesec-code-guardian skill
+    # The outer HTTPX type identifies connection establishment. A reset while
+    # writing or reading can happen after the server has accepted the request.
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) and (
+        category
+        in (
+            TransportFailureCategory.CONNECTION_RESET.value,
+            TransportFailureCategory.CONNECTION_REFUSED.value,
+            TransportFailureCategory.NETWORK_UNREACHABLE.value,
+        )
+        or retryable_connect_failure(exc, category)
     )
 
 
@@ -124,7 +133,13 @@ def transport_category(
         return TransportFailureCategory.PROXY
     if any(isinstance(error, socket.gaierror) for error in chain):
         return TransportFailureCategory.DNS
-    if any(isinstance(error, ssl.SSLError) for error in chain):
+    ssl_errors = tuple(error for error in chain if isinstance(error, ssl.SSLError))
+    if ssl_errors:
+        # SSLWantReadError means TLS was waiting for bytes when the read timed out.
+        if isinstance(chain[0], httpx.ReadTimeout) and all(
+            isinstance(error, ssl.SSLWantReadError) for error in ssl_errors
+        ):
+            return TransportFailureCategory.READ_TIMEOUT
         return TransportFailureCategory.TLS
     if any(isinstance(error, httpx.ConnectTimeout) for error in chain):
         return TransportFailureCategory.CONNECT_TIMEOUT

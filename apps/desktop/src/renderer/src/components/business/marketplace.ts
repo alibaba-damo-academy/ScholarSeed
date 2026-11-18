@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   clearMarketplaceCache,
   getMarketplace,
+  getMarketplaceAttribution,
   getMarketplaceDetail,
   getMarketplaceLabels,
   installMarketplaceSkill,
@@ -86,6 +87,7 @@ export function useMarketplace({
   const [detailFailed, setDetailFailed] = React.useState(false)
   const generation = React.useRef(0)
   const pagination = React.useRef<number | null>(null)
+  const attributionLoading = React.useRef(new Set<string>())
   const normalizedQuery = query.trim()
 
   React.useEffect(() => {
@@ -141,6 +143,36 @@ export function useMarketplace({
       generation.current += 1
     }
   }, [enabled, normalizedQuery, label, locale, revision])
+
+  const loadAttribution = React.useCallback(async (skill: MarketplaceSkill): Promise<void> => {
+    const { namespace, nativeSlug, version } = skill
+    if (!namespace || !nativeSlug || !version) return
+    const request = generation.current
+    const key = JSON.stringify([request, namespace, nativeSlug, version])
+    if (attributionLoading.current.has(key)) return
+    attributionLoading.current.add(key)
+    try {
+      const source = await getMarketplaceAttribution(namespace, nativeSlug, version).catch(() => ({
+        attributionStatus: 'unavailable' as const,
+      }))
+      if (request !== generation.current) return
+      setCatalogue(
+        (current) =>
+          current && {
+            ...current,
+            items: current.items.map((item) =>
+              item.namespace === namespace &&
+              item.nativeSlug === nativeSlug &&
+              item.version === version
+                ? { ...item, ...source, attributionDeferred: false }
+                : item
+            ),
+          }
+      )
+    } finally {
+      attributionLoading.current.delete(key)
+    }
+  }, [])
 
   React.useEffect(() => {
     let current = true
@@ -239,6 +271,7 @@ export function useMarketplace({
     labelsLoading,
     labelsFailed,
     catalogue,
+    loadAttribution,
     loading,
     failed,
     installing,

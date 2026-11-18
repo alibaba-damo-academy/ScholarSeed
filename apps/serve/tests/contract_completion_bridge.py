@@ -48,11 +48,7 @@ from service.chat.service.completions import (
 )
 from service.chat.service.models import SessionModelSpec, _codex_provider
 from service.chat.service.namespaces import NamespaceTools
-from service.chat.service.rejections import (
-    TRANSIENT_PROVIDER_FAILURE_CODE,
-    TRANSIENT_PROVIDER_FAILURE_MESSAGE,
-    terminal_provider_failure,
-)
+from service.chat.service.rejections import terminal_provider_failure
 from service.chat.service.streams import (
     SSE_BUFFER_LIMIT,
     NativeResponseNormalizer,
@@ -111,8 +107,10 @@ def forward_contract(
     upstream_responses: tuple[tuple[int, bytes, dict[str, str]], ...] = (),
     upstream_stream: httpx.AsyncByteStream | None = None,
     raise_server_exceptions: bool = True,
+    request_headers: dict[str, str] | None = None,
     diagnostics: list[tuple[str, dict]] | None = None,
     sources: list[tuple[str, str, dict]] | None = None,
+    tool_outputs: list[tuple[str, str, set[str]]] | None = None,
     credential_resolver: Callable[[str, str], Awaitable[ModelCredential]] | None = None,
     credential_revocation_handler: Callable[[str, str, int, str], str] | None = None,
 ):
@@ -151,6 +149,11 @@ def forward_contract(
         source_endpoints=source_endpoints,
         content_source=lambda _session, _turn: ContentSource(source_text, source_references),
         on_sources=observe_sources if sources is not None else None,
+        on_tool_outputs=(
+            (lambda session, turn, ids: tool_outputs.append((session, turn, ids)))
+            if tool_outputs is not None
+            else None
+        ),
         on_diagnostic=(
             (lambda session, fields: diagnostics.append((session, dict(fields))))
             if diagnostics is not None
@@ -191,9 +194,172 @@ def forward_contract(
             response = client.post(
                 f"{MODEL_BRIDGE_ROUTE_PREFIX}{registration.bridge_id}/v1/responses",
                 json=payload,
+                headers=request_headers,
             )
             client.portal.call(bridge.close)
     return response, captured
+
+
+def test_tool_output_observation_preserves_call_ids_on_both_wire_protocols() -> None:
+    for protocol, body in (
+        (ModelWireProtocol.RESPONSES, b'{"id":"resp_contract","output":[]}'),
+        (
+            ModelWireProtocol.CHAT_COMPLETIONS,
+            b'{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}',
+        ),
+    ):
+        observed: list[tuple[str, str, set[str]]] = []
+        response, _requests = forward_contract(
+            {
+                "model": "alias",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "name": "publish_artifacts",
+                        "call_id": "call-missing-path",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-missing-path",
+                        "output": "Missing required field",
+                    },
+                    {
+                        "type": "function_call",
+                        "name": "publish_artifacts",
+                        "call_id": "call-without-output",
+                        "arguments": "{}",
+                    },
+                ],
+            },
+            body,
+            wire_protocol=protocol,
+            turn_id_provider=lambda _session: "publish-turn",
+            tool_outputs=observed,
+        )
+        assert response.status_code == 200, response.content
+        assert observed == [("search-contract", "publish-turn", {"call-missing-path"})]
+
+
+def test_native_routing_headers_roundtrip() -> None:
+    """The native client owns turn state; the bridge must not drop or retain it."""
+    state = "opaque+/state=with-padding" * 16
+    body = b'data: {"type":"response.completed","response":{"id":"resp_test","output":[]}}\n\n'
+    diagnostics: list[tuple[str, dict]] = []
+    for streaming in (True, False):
+        response, captured = forward_contract(
+            {"model": "alias", "input": [], "stream": streaming},
+            body,
+            wire_protocol=ModelWireProtocol.RESPONSES,
+            request_headers={
+                "session-id": "native-session",
+                "thread-id": "native-thread",
+                "x-codex-turn-state": state,
+                "Authorization": "Bearer caller-secret",
+                "Cookie": "caller-cookie",
+                "x-unreviewed": "do-not-forward",
+            },
+            upstream_responses=(
+                (
+                    200,
+                    body,
+                    {
+                        "x-codex-turn-state": state,
+                        "set-cookie": "upstream-cookie",
+                        "x-unreviewed": "do-not-return",
+                    },
+                ),
+            ),
+            diagnostics=diagnostics,
+        )
+        check(
+            "native routing identifiers reach upstream",
+            all(
+                captured[0].headers.get(k) == v
+                for k, v in {
+                    "session-id": "native-session",
+                    "thread-id": "native-thread",
+                    "x-codex-turn-state": state,
+                }.items()
+            ),
+        )
+        check(
+            "turn state returns intact to native client",
+            response.headers.get("x-codex-turn-state") == state,
+        )
+        check(
+            "routing does not replace product credentials",
+            captured[0].headers.get("authorization") == "Bearer contract-key",
+        )
+        check(
+            "request header allowlist excludes cookies and unknown fields",
+            "cookie" not in captured[0].headers and "x-unreviewed" not in captured[0].headers,
+        )
+        check(
+            "response header allowlist excludes cookies and unknown fields",
+            "set-cookie" not in response.headers and "x-unreviewed" not in response.headers,
+        )
+    check("opaque turn state is absent from diagnostics", state not in json.dumps(diagnostics))
+    response, captured = forward_contract(
+        {"model": "alias", "input": [], "stream": False},
+        b'{"choices":[]}',
+        wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS,
+        request_headers={"x-codex-turn-state": state, "session-id": "native-session"},
+        upstream_responses=((200, b'{"choices":[]}', {"x-codex-turn-state": state}),),
+    )
+    check(
+        "chat conversion does not inherit native routing",
+        "x-codex-turn-state" not in captured[0].headers
+        and "session-id" not in captured[0].headers
+        and "x-codex-turn-state" not in response.headers,
+    )
+
+
+def test_native_turn_state_is_not_retained_by_bridge() -> None:
+    async def run() -> None:
+        seen: list[str | None] = []
+
+        def upstream(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("x-codex-turn-state"))
+            return httpx.Response(
+                200,
+                json={"id": "resp_test", "output": []},
+                headers={"x-codex-turn-state": "issued-for-this-response"},
+            )
+
+        bridge = CompletionBridge("http://127.0.0.1:8770")
+        bridge._clients[False] = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        registrations = [
+            bridge.register(
+                endpoint=RESPONSES_ENDPOINT,
+                responses_endpoint=RESPONSES_ENDPOINT,
+                api_key="contract-key",
+                session_id=session,
+                wire_protocol=ModelWireProtocol.RESPONSES,
+                trust_env=False,
+            )
+            for session in ("session-a", "session-b")
+        ]
+        payload = {"model": "model", "input": [], "stream": False}
+        try:
+            for registration, headers in (
+                (registrations[0], {}),
+                (registrations[0], {"X-Codex-Turn-State": "same-turn-state"}),
+                (registrations[1], {}),
+                (registrations[0], {}),
+            ):
+                response = await bridge.forward(
+                    registration.bridge_id, payload, request_headers=headers
+                )
+                assert response.status_code == 200
+        finally:
+            await bridge.close()
+        check(
+            "routing state stays request-local across pooled sessions and new turns",
+            seen == [None, "same-turn-state", None, None],
+        )
+
+    asyncio.run(run())
 
 
 def test_generation_registration_excludes_tools() -> None:
@@ -1634,6 +1800,12 @@ def _permanent_tls_failure(cause: ssl.SSLError) -> httpx.ConnectError:
     return error
 
 
+def _unavailable_connection(error_number: int) -> httpx.ConnectError:
+    error = httpx.ConnectError("synthetic connection failure")
+    error.__cause__ = OSError(error_number, "synthetic")
+    return error
+
+
 def test_connect_phase_failures_retry_before_request_is_sent() -> None:
     payload = {"model": "alias", "stream": False, "input": "Continue"}
     success = b'{"id":"response-1","output":[]}'
@@ -1649,6 +1821,8 @@ def test_connect_phase_failures_retry_before_request_is_sent() -> None:
         for maker, category in (
             (_tls_sever, "tls"),
             (_transient_dns_failure, "dns"),
+            (lambda: _unavailable_connection(errno_module.ECONNREFUSED), "connection_refused"),
+            (lambda: _unavailable_connection(errno_module.ENETUNREACH), "network_unreachable"),
             (lambda: httpx.ConnectError("secret-connect-detail"), "connect_error"),
         ):
             with _captured_bridge_warnings() as messages:
@@ -1825,90 +1999,86 @@ def test_non_tls_connect_failures_keep_three_attempt_budget() -> None:
     )
 
 
-def test_request_reset_retries_before_response_headers() -> None:
-    payload = {
-        "model": "alias",
-        "stream": True,
-        "input": "Continue",
-        "tools": [{"type": "web_search"}],
-    }
-    success = (
-        b'data: {"type":"response.created","response":{"id":"response-1"}}\n\n'
-        b'data: {"type":"response.completed","response":{"id":"response-1",'
-        b'"status":"completed"}}\n\n'
-    )
-
-    async def no_delay(_seconds: float) -> None:
-        return None
-
-    with patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
-        for error_number in (errno_module.EPIPE, errno_module.ECONNRESET):
-            diagnostics: list[tuple[str, dict]] = []
-            with _captured_bridge_warnings() as messages:
-                response, captured = forward_contract(
-                    payload,
-                    success,
-                    send_exc=(_request_reset(error_number), None),
-                    diagnostics=diagnostics,
-                )
-            retries = [
-                message
-                for message in messages
-                if message.startswith("model_bridge_upstream_request_retry")
-            ]
-            emitted = diagnostics[-1][1] if diagnostics else {}
-            check(
-                f"request-stage reset {error_number} recovers without failing the turn",
-                response.status_code == 200
-                and b"response.completed" in response.content
-                and len(captured) == 2
-                and len(retries) == 1
-                and emitted.get("attempt") == 2
-                and emitted.get("request_retries") == 1
-                and emitted.get("connect_retries") == 0,
-                f"status={response.status_code} calls={len(captured)} diagnostic={emitted}",
-            )
-
+def test_request_reset_before_response_headers_is_not_replayed() -> None:
+    for error_number in (errno_module.EPIPE, errno_module.ECONNRESET):
         diagnostics = []
-        with _captured_bridge_warnings() as messages:
-            exhausted, captured = forward_contract(
-                payload,
-                b"",
-                send_exc=_request_reset(errno_module.EPIPE),
-                diagnostics=diagnostics,
-            )
-    emitted = diagnostics[-1][1] if diagnostics else {}
+        result, captured = forward_contract(
+            {"model": "alias", "stream": True, "input": "Continue"},
+            b"",
+            send_exc=_request_reset(error_number),
+            diagnostics=diagnostics,
+        )
+        emitted = diagnostics[-1][1]
+        check(
+            f"request reset {error_number} does not prove the request was unsent",
+            result.status_code == 502
+            and "code" not in result.json()["error"]
+            and len(captured) == 1
+            and emitted.get("attempt") == 1
+            and emitted.get("request_retries") == 0
+            and emitted.get("transport_category") == "connection_reset",
+        )
+
+
+def test_connect_retry_backoff_can_be_cancelled() -> None:
+    diagnostics = []
+
+    backoff = 123.0
+    sleep = asyncio.sleep
+
+    async def cancel_backoff(delay: float) -> None:
+        if delay == backoff:
+            raise asyncio.CancelledError()
+        await sleep(delay)
+
+    with (
+        patch("service.chat.service.completions._retry_backoff_delay", return_value=backoff),
+        patch("service.chat.service.completions.asyncio.sleep", new=cancel_backoff),
+    ):
+        _, captured = forward_contract(
+            {"model": "alias", "stream": True, "input": "Continue"},
+            b"",
+            send_exc=(_unavailable_connection(errno_module.ENETUNREACH), None),
+            diagnostics=diagnostics,
+            raise_server_exceptions=False,
+        )
+    emitted = diagnostics[-1][1]
     check(
-        "request-stage reset exhausts the bridge budget with a safe transient code",
-        exhausted.status_code == 502
-        and exhausted.json()["error"]
-        == {
-            "code": TRANSIENT_PROVIDER_FAILURE_CODE,
-            "message": TRANSIENT_PROVIDER_FAILURE_MESSAGE,
-        }
-        and len(captured) == 3
-        and emitted.get("attempt") == 3
-        and emitted.get("request_retries") == 2
+        "cancelling during connection backoff prevents the next attempt",
+        len(captured) == 1
+        and emitted.get("attempt") == 1
         and emitted.get("connect_retries") == 0
-        and len(messages) == 3,
-        f"status={exhausted.status_code} calls={len(captured)} diagnostic={emitted}",
+        and emitted.get("first_connect_failure_category") == "network_unreachable"
+        and emitted.get("cancellation_source") == "request_task"
+        and emitted.get("cancelled_during_connect_backoff") is True
+        and emitted.get("end_reason") == "cancelled",
+        str(emitted),
     )
 
+
+def test_request_read_timeout_with_ssl_wait_is_not_replayed() -> None:
+    error = httpx.ReadTimeout("synthetic read timeout")
+    error.__cause__ = TimeoutError()
+    error.__cause__.__cause__ = ssl.SSLWantReadError()
     diagnostics = []
-    unrelated, captured = forward_contract(
-        payload,
+    result, captured = forward_contract(
+        {"model": "selected", "input": "test", "stream": True},
         b"",
-        send_exc=httpx.ReadError("secret-unclassified-read-error"),
+        send_exc=error,
         diagnostics=diagnostics,
     )
-    emitted = diagnostics[-1][1] if diagnostics else {}
+    emitted = diagnostics[-1][1]
     check(
-        "unclassified request read error is not replayed as a reset",
-        unrelated.status_code == 502
+        "SSL waiting during a read timeout keeps the timeout classification without replay",
+        result.status_code == 502
+        and "code" not in result.json()["error"]
         and len(captured) == 1
+        and emitted.get("attempt") == 1
+        and emitted.get("connect_retries") == 0
         and emitted.get("request_retries") == 0
-        and "code" not in unrelated.json()["error"],
-        f"status={unrelated.status_code} calls={len(captured)} diagnostic={emitted}",
+        and emitted.get("transport_category") == "read_timeout"
+        and emitted.get("transport_root_type") == "SSLWantReadError",
+        f"status={result.status_code} calls={len(captured)} diagnostic={emitted}",
     )
 
 
@@ -2044,8 +2214,8 @@ def test_transport_failure_is_attributable() -> None:
     ]
     message = failed[0] if failed else ""
     check(
-        "transport sever returns 502 after the bridge retry budget",
-        response.status_code == 502 and len(captured) == 3,
+        "transport sever returns 502 without replaying an unknown request",
+        response.status_code == 502 and len(captured) == 1,
         str(response.status_code),
     )
     check("transport sever is logged exactly once", len(failed) == 1, str(len(failed)))
@@ -3546,6 +3716,9 @@ def test_stream_diagnostics_preserve_usage_without_content() -> None:
 
 
 def main() -> int:
+    test_tool_output_observation_preserves_call_ids_on_both_wire_protocols()
+    test_native_routing_headers_roundtrip()
+    test_native_turn_state_is_not_retained_by_bridge()
     test_stream_diagnostics_preserve_usage_without_content()
     test_generation_registration_excludes_tools()
     test_credential_diagnostics_exclude_secrets()
@@ -3730,7 +3903,9 @@ def main() -> int:
     test_transient_tls_succeeds_on_seventh_attempt()
     test_tls_handshake_timeout_succeeds_on_seventh_attempt()
     test_non_tls_connect_failures_keep_three_attempt_budget()
-    test_request_reset_retries_before_response_headers()
+    test_request_reset_before_response_headers_is_not_replayed()
+    test_request_read_timeout_with_ssl_wait_is_not_replayed()
+    test_connect_retry_backoff_can_be_cancelled()
     test_response_body_reset_does_not_replay_request()
     test_permanent_tls_failures_do_not_retry()
     test_permanent_dns_failure_does_not_retry()

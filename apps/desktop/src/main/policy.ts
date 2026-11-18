@@ -57,8 +57,6 @@ function createPolicyIo(home: string, native: DomainNative, coordinator: string)
   if (!isAbsolute(home)) throw new Error(POLICY_IO_ERROR)
   const directory = join(home, BROWSER_DIRECTORY)
   type Occupancy = ReturnType<typeof beginDomains>
-  let reader:
-    { domains: Occupancy; acquire: () => unknown; release: (handle: unknown) => void } | undefined
   let closed = false
 
   const verifyBarriers = (domains: Occupancy): void => {
@@ -70,20 +68,8 @@ function createPolicyIo(home: string, native: DomainNative, coordinator: string)
     }
   }
 
-  const closeDomains = (domains: Occupancy): void => {
-    try {
-      domains.close()
-    } catch (error) {
-      retainUncertainDirectoryOwnership(domains, error)
-      throw new Error(POLICY_IO_ERROR, { cause: error })
-    }
-  }
-
   const close = (): void => {
     closed = true
-    const active = reader
-    reader = undefined
-    if (active) closeDomains(active.domains)
   }
 
   const lockBinding = (domains: Occupancy) => {
@@ -94,10 +80,10 @@ function createPolicyIo(home: string, native: DomainNative, coordinator: string)
 
   const transaction = <T>(
     roots: string[],
-    run: (domains: ReturnType<typeof beginDomains>, lock: (pin: unknown) => void) => T
+    run: (domains: Occupancy, lock: (pin: unknown) => void) => T
   ): T => {
     assertDirectoryOwnership()
-    let domains: ReturnType<typeof beginDomains> | undefined
+    let domains: Occupancy | undefined
     const locks: { handle: unknown; release: (handle: unknown) => void }[] = []
     let uncertain = false
     try {
@@ -154,62 +140,15 @@ function createPolicyIo(home: string, native: DomainNative, coordinator: string)
   const parse = (bytes: Buffer | null): StoredPolicy =>
     bytes === null ? emptyPolicy() : parsePolicy(bytes.toString('utf8'))
 
-  const acquireReader = () => {
-    let domains: Occupancy | undefined
-    try {
-      domains = beginDomains(native, coordinator, [home, directory])
-      domains.occupy()
-      verifyBarriers(domains)
-      return { domains, ...lockBinding(domains) }
-    } catch (error) {
-      if (uncertainRelease(error)) retainUncertainDirectoryOwnership(domains, error)
-      else if (domains) closeDomains(domains)
-      throw error
-    }
-  }
-
-  const readRecord = (): Buffer | null => {
+  const read = (): StoredPolicy => {
     if (closed) throw new Error(POLICY_IO_ERROR)
-    assertDirectoryOwnership()
-    const active = (reader ??= acquireReader())
-    let lock: unknown
-    try {
-      lock = active.acquire()
-    } catch (error) {
-      if (uncertainRelease(error)) {
-        reader = undefined
-        retainUncertainDirectoryOwnership(active, error)
-      }
-      throw error
-    }
-    let uncertain = false
-    let discard = false
-    try {
-      return active.domains.read(directory, POLICY_LEAF, MAX_POLICY_BYTES)
-    } catch (error) {
-      uncertain = uncertainRelease(error)
-      discard = true
-      if (uncertain) retainUncertainDirectoryOwnership(active, lock, error)
-      throw error
-    } finally {
-      if (discard) reader = undefined
-      if (!uncertain) {
-        try {
-          active.release(lock)
-        } catch (error) {
-          reader = undefined
-          retainUncertainDirectoryOwnership(active, lock, error)
-          throw new Error(POLICY_IO_ERROR, { cause: error })
-        }
-        if (discard) closeDomains(active.domains)
-      }
-    }
-  }
-
-  const read = (): StoredPolicy =>
-    retry(performance.now() + READ_RETRY_BUDGET_MILLISECONDS, () => {
+    return retry(performance.now() + READ_RETRY_BUDGET_MILLISECONDS, () => {
       try {
-        return parse(readRecord())
+        // Release the shared Home lease after each read so storage maintenance can proceed.
+        const bytes = transaction([home, directory], (domains) =>
+          domains.read(directory, POLICY_LEAF, MAX_POLICY_BYTES)
+        )
+        return parse(bytes)
       } catch (error) {
         if (errorCode(error) !== 'ERR_LEASE_MISSING') throw error
       }
@@ -235,6 +174,7 @@ function createPolicyIo(home: string, native: DomainNative, coordinator: string)
         throw Object.assign(new Error(POLICY_IO_ERROR), { code: 'ERR_LEASE_CHANGED' })
       })
     })
+  }
 
   const write = (expectedRevision: number, next: StoredPolicy, deadline: number): void => {
     const bytes = Buffer.from(JSON.stringify(next), 'utf8')

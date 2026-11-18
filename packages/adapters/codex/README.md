@@ -9,6 +9,21 @@ An independent adapter for the official Codex App Server. It converts unified Ru
 - **Does not** depend on the `scholarseed` product backend (`apps/serve`) or Desktop;
 - Does not own product authentication, product sessions, or UI logic — those belong to Serve.
 
+### Native planning / 原生计划
+
+Ordinary conversations keep the pinned Codex version's native `update_plan` enabled,
+including after work has started. Its native schema and description are unchanged;
+the model decides whether planning helps the task. Product base instructions do not
+add plan creation or state-maintenance requirements. A same-name service tool disables
+the native tool only for the existing opt-in structured-plan flow; generation-only
+requests continue to disable planning. Native plan snapshots do not activate that
+product flow or its `operation=get` continuation prompt.
+
+普通对话持续启用固定 Codex 版本的原生 `update_plan`，执行途中也可开始使用。
+沿用原生参数和说明，由模型判断计划是否有助于完成任务；产品基础提示不额外要求
+建计划或维护计划状态。仅已有的显式结构化计划流程通过同名服务工具替代原生工具；
+generation-only 仍禁用计划。原生计划快照不会激活产品计划流程或其 `operation=get` 续聊提示。
+
 <a id="提供什么"></a>
 ## What It Provides
 

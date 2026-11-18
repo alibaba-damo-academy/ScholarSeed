@@ -17,6 +17,8 @@ from scholarseed_runtime.contract import RuntimeServiceTool
 from service.chat.runtime.utils import request_file
 from service.chat.service.contracts import contract_query, describe_contract, operation_choices
 from service.platform.bridge import (
+    ARTIFACT_BATCH_OPERATION,
+    ARTIFACT_BATCH_TOOL_NAME,
     BLOCKING_CHECKPOINTS,
     BLOCKING_OPERATIONS,
     BRIDGE_CALLBACK_REQUEST_HEADER,
@@ -29,8 +31,12 @@ from service.platform.bridge import (
     CONTRACT_CAPABILITY,
     CONTRACT_DESCRIBE_OPERATION,
     PLAN_ACTION_STATUSES,
+    PLAN_CAPABILITY,
     PLAN_COMPLETE_ACTION,
+    PLAN_ENABLE_OPERATION,
+    PLAN_NOT_ENABLED,
     SERVICE_PLAN_TOOL_NAME,
+    ArtifactsPublish,
     ContractDescribe,
     PlanAction,
     PlanRead,
@@ -45,8 +51,8 @@ from service.platform.vocabulary import (
 )
 
 SERVICE_BRIDGE_TOOL_NAME = "scholarseed_bridge"
-PLAN_CAPABILITY = "plan"
 PLAN_MODEL_OPERATIONS = ("get", "create", "update", "revise", "release", *PLAN_ACTION_STATUSES)
+BRIDGE_INVALID_PARAMETERS = "bridge_invalid_parameters"
 MISSING_PARAMETER_ERROR = "missing"
 BRIDGE_VALIDATION_ACTION = (
     "Correct validation_errors using the current operation contract. "
@@ -204,11 +210,61 @@ SERVICE_PLAN_TOOL = RuntimeServiceTool(
     ),
     input_schema=plan_tool_schema(),
 )
-SESSION_SERVICE_TOOLS = (SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL)
+
+
+def artifact_tool_schema() -> dict[str, Any]:
+    schema = ArtifactsPublish.model_json_schema()
+    schema["properties"]["files"]["items"] = schema.pop("$defs")["ArtifactPublish"]
+    return schema
+
+
+SERVICE_ARTIFACT_TOOL = RuntimeServiceTool(
+    name=ARTIFACT_BATCH_TOOL_NAME,
+    description=(
+        "Publish explicitly requested deliverables after writing and verification. "
+        "Follow the scholarseed-product-operations artifacts guide. "
+        "Paths are cwd-relative; user-requested code is eligible. No contract query is needed. "
+        "Returns completed/partial/failed and per-file receipts; correct and retry only retry_files."
+    ),
+    input_schema=artifact_tool_schema(),
+)
+SESSION_SERVICE_TOOLS = (SERVICE_BRIDGE_TOOL, SERVICE_ARTIFACT_TOOL)
+
+
+def session_service_tools(*, product_plan: bool) -> tuple[RuntimeServiceTool, ...]:
+    return (
+        (SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL, SERVICE_ARTIFACT_TOOL)
+        if product_plan
+        else SESSION_SERVICE_TOOLS
+    )
+
+
 SERVICE_TOOL_CAPABILITIES = {
     SERVICE_BRIDGE_TOOL_NAME: None,
     SERVICE_PLAN_TOOL_NAME: PLAN_CAPABILITY,
+    ARTIFACT_BATCH_TOOL_NAME: "artifact",
 }
+
+
+def artifact_tool_missing_parameters(tool_name: object, result: Mapping[str, Any]) -> bool:
+    """Recognize missing fields in the typed tool's local preflight result."""
+    if (
+        tool_name != ARTIFACT_BATCH_TOOL_NAME
+        or result.get("ok") is not False
+        or result.get("error") != BRIDGE_INVALID_PARAMETERS
+        or result.get("tool_schema") is not SERVICE_ARTIFACT_TOOL.input_schema
+    ):
+        return False
+    errors = result.get("validation_errors")
+    if not isinstance(errors, list):
+        return False
+    for error in errors:
+        if not isinstance(error, Mapping) or error.get("type") != MISSING_PARAMETER_ERROR:
+            continue
+        match error.get("path"):
+            case ["files"] | ["files", int(), "path"]:
+                return True
+    return False
 
 
 async def execute_service_tool(
@@ -221,19 +277,33 @@ async def execute_service_tool(
     callback_turn_id: str = "",
     tool_name: str = SERVICE_BRIDGE_TOOL_NAME,
     workdir: Path | None = None,
+    product_plan: bool = True,
 ) -> dict[str, Any]:
     if tool_name not in SERVICE_TOOL_CAPABILITIES:
         return {"ok": False, "error": "bridge_access_denied"}
     if not isinstance(arguments, Mapping):
         return {"ok": False, "error": "bridge_invalid_parameters"}
+    if not product_plan and (
+        tool_name == SERVICE_PLAN_TOOL_NAME
+        or arguments.get("capability") == PLAN_CAPABILITY
+        and arguments.get("operation") != PLAN_ENABLE_OPERATION
+    ):
+        return {"ok": False, "error": PLAN_NOT_ENABLED}
     capability_override = SERVICE_TOOL_CAPABILITIES[tool_name]
     legacy_plan = (
         tool_name == SERVICE_PLAN_TOOL_NAME
         and set(arguments) == {"operation", "request"}
         and arguments.get("operation") in ("get", "write")
     )
-    model_plan = capability_override is not None and not legacy_plan
-    if model_plan:
+    model_plan = tool_name == SERVICE_PLAN_TOOL_NAME and not legacy_plan
+    model_artifacts = tool_name == ARTIFACT_BATCH_TOOL_NAME
+    if model_artifacts:
+        arguments = {
+            "capability": "artifact",
+            "operation": ARTIFACT_BATCH_OPERATION,
+            "request": arguments,
+        }
+    elif model_plan:
         mutation = arguments.get("operation")
         if mutation not in PLAN_MODEL_OPERATIONS:
             return {
@@ -273,7 +343,7 @@ async def execute_service_tool(
         return {"ok": False, "error": "bridge_invalid_parameters"}
     entry = BRIDGE_REQUESTS.get((capability, operation))
     if entry is None:
-        return operation_choices(capability)
+        return operation_choices(capability, product_plan=product_plan)
     request_type, route = entry.request_type, entry.route
     if ("request" in arguments) == ("request_file" in arguments):
         return {
@@ -303,7 +373,7 @@ async def execute_service_tool(
         errors = error.errors(include_url=False, include_context=False, include_input=False)
         result = {
             "ok": False,
-            "error": "bridge_invalid_parameters",
+            "error": BRIDGE_INVALID_PARAMETERS,
             "valid_parameters": list(request_type.model_fields),
             "invalid_parameters": list(
                 dict.fromkeys(
@@ -335,7 +405,18 @@ async def execute_service_tool(
         if capability_override is not None:
             result.pop("describe")
             result.pop("contract_version")
-            if legacy_plan:
+            if model_artifacts:
+                result["tool_schema"] = SERVICE_ARTIFACT_TOOL.input_schema
+                if artifact_tool_missing_parameters(tool_name, result):
+                    result["next_action"] = (
+                        "No files were published. Correct the missing fields once using tool_schema "
+                        "and verified session-relative paths. Do not guess paths or repeat the same arguments."
+                    )
+                else:
+                    result["next_action"] = (
+                        "Correct validation_errors using the publish_artifacts schema; no files were published."
+                    )
+            elif legacy_plan:
                 result["request_schema"] = request_type.model_json_schema()
                 result["next_action"] = (
                     "Keep the declared get/write tool's request envelope. Correct request using "

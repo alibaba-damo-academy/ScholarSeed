@@ -326,7 +326,6 @@ import {
 } from './features/resources/search'
 import { runWebSearchRoute } from './features/resources/driver'
 import {
-  isMissingDocumentFailure,
   resolveDocumentLocation,
   resolveDocumentRevealPath,
   type DocumentSource,
@@ -374,7 +373,6 @@ export type { AccountSettingsPage, MainView } from '../../navigation'
  */
 
 export type WorkspaceLoadState = 'loading' | 'ready' | 'error'
-const NAVIGATION_SESSION_NOT_FOUND_CODE = 'session_not_found'
 
 function preparationSnapshot(state: AppState): PreparationSnapshot {
   return {
@@ -7044,15 +7042,8 @@ export function StoreProvider({
             openable: true,
           }
           snapshot = { ...snapshot, sessions: upsertSessionNode(snapshot.sessions, node) }
-        } else if (
-          !opened ||
-          !('error' in opened) ||
-          opened.code !== NAVIGATION_SESSION_NOT_FOUND_CODE
-        ) {
-          navigationRestoreStarted.current = false
-          setState((current) =>
-            currentRestore() ? { ...current, workspaceLoadState: 'error' } : current
-          )
+        } else {
+          actRef.current.returnHome()
           return
         }
       }
@@ -7079,25 +7070,28 @@ export function StoreProvider({
         const documents = workspace.getSnapshot()
         const documentTab = documents.tabs[documentTabId]
         const document = documentTab ? documents.sessions[documentTab.sessionId] : undefined
-        if (document?.loadFailure && isMissingDocumentFailure(document.loadFailure)) {
+        if (!document || document.loadFailure) {
           workspace.closeCleanTab(documentTabId)
           actRef.current.returnHome()
           return
-        } else {
-          workspace.setTabNavigationView(
-            documentTabId,
-            navigationView === 'literature' ? 'literature' : 'resource'
-          )
         }
-      } else if (target?.kind === 'tab') {
-        const searches = await listLiteratureSearches()
-        if (!currentRestore()) return
-        const restored = restoredWorkbenchTab(target.id, searches, location.projectId)
-        if (
-          restored &&
-          (restored.projectId === undefined || restored.projectId === location.projectId)
+        workspace.setTabNavigationView(
+          documentTabId,
+          navigationView === 'literature' ? 'literature' : 'resource'
         )
-          tab = projectLiterature && restored.kind === 'literature' ? tab : restored
+      } else if (target?.kind === 'tab') {
+        const restored =
+          restoredWorkbenchTab(target.id, [], location.projectId) ??
+          restoredWorkbenchTab(target.id, await listLiteratureSearches(), location.projectId)
+        if (!currentRestore()) return
+        if (
+          !restored ||
+          (restored.projectId !== undefined && restored.projectId !== location.projectId)
+        ) {
+          actRef.current.returnHome()
+          return
+        }
+        tab = projectLiterature && restored.kind === 'literature' ? tab : restored
       }
       const settings = settingsSurface.current!.project({
         accountSettingsPage: location.settingsPage,
@@ -7132,11 +7126,8 @@ export function StoreProvider({
       }, navigation)
     })().catch((error: unknown) => {
       if (!currentRestore()) return
-      navigationRestoreStarted.current = false
       console.error('Navigation restoration failed', error)
-      setState((current) =>
-        currentRestore() ? { ...current, workspaceLoadState: 'error' } : current
-      )
+      actRef.current.returnHome()
     })
     return () => {
       active = false

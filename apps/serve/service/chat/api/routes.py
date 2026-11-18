@@ -294,6 +294,11 @@ def create_chat_app(
         if live is not None:
             await live.observe_sources(client_turn_id, fields)
 
+    def observe_tool_outputs(session_id: str, client_turn_id: str, call_ids: set[str]) -> None:
+        live = sessions.get(session_id)
+        if live is not None:
+            live.observe_model_tool_outputs(client_turn_id, call_ids)
+
     def content_source(session_id: str, client_turn_id: str) -> ContentSource | None:
         live = sessions.get(session_id)
         return live.content_source(client_turn_id) if live is not None else None
@@ -307,6 +312,7 @@ def create_chat_app(
         on_model=observe_model,
         on_diagnostic=observe_completion,
         on_sources=observe_sources,
+        on_tool_outputs=observe_tool_outputs,
         turn_ids=session_turn_id,
         content_source=content_source,
         source_endpoints=(DEEPRD_GATEWAY_BASE_URL,),

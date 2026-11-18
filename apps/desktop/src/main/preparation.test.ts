@@ -29,6 +29,48 @@ function deferred() {
   return { promise, resolve }
 }
 
+test('archive limits block the same candidate across backoff and restart but allow newer builds', async () => {
+  let checkpoint: PreparationCheckpoint | null = null
+  let now = 1_000
+  const attempts: string[] = []
+  const candidate = release('202611170001')
+  const newer = release('202611170002')
+  const persistence = {
+    load: () => checkpoint,
+    save: (value: PreparationCheckpoint) => {
+      checkpoint = value
+    },
+    failed: (error: unknown) => {
+      throw error
+    },
+  }
+  const queue = () =>
+    new UpdatePreparation(
+      async ({ candidate }) => {
+        attempts.push(candidate.id)
+        return candidate.id === newer.id ? true : 'archive-limit'
+      },
+      persistence,
+      TEST_POLICY,
+      () => now
+    )
+  const original = queue()
+  original.observe(candidate)
+  assert.equal(original.background(true), true)
+  await original.settled()
+  now += 10 * TEST_POLICY.retryMaxMs
+  assert.deepEqual(original.decision(true), { reason: 'archive-limit' })
+  assert.equal(original.background(true), false)
+  const fresh = queue()
+  fresh.observe(candidate)
+  assert.equal(fresh.background(true), false)
+  assert.equal(fresh.request(candidate), false)
+  fresh.observe(newer)
+  assert.equal(fresh.background(true), true)
+  await fresh.settled()
+  assert.deepEqual(attempts, [candidate.id, newer.id])
+})
+
 const TEST_POLICY = {
   coalesceMs: 300,
   intervalMs: 10_000,
@@ -531,8 +573,10 @@ test('background coalesces releases without interrupting work and waits after su
   assert.deepEqual(seen, [first.id, newest.id])
 })
 
-test('slow failures back off from completion across new builds and process restart', async () => {
+test('Windows failures back off from completion across new builds and process restart', async () => {
   let now = 1000
+  const policy = backgroundPreparationPolicy('win32')
+  assert.ok(policy)
   let saved: PreparationCheckpoint | null = null
   const persistence = {
     load: () => saved,
@@ -547,28 +591,30 @@ test('slow failures back off from completion across new builds and process resta
       return false
     },
     persistence,
-    TEST_POLICY,
-    () => now
+    policy,
+    () => now,
+    () => 0
   )
   queue.observe(release('202610131000'))
   queue.background(true)
   await queue.settled()
-  assert.equal(queue.nextBackgroundAt, now + TEST_POLICY.retryBaseMs)
+  assert.equal(queue.nextBackgroundAt, now + policy.retryBaseMs)
   const newest = release('202610131002')
   queue.observe(newest)
   assert.equal(queue.background(true), false)
   const restored = new UpdatePreparation(
     async () => false,
     persistence,
-    TEST_POLICY,
-    () => now
+    policy,
+    () => now,
+    () => 0
   )
   restored.observe(newest)
   assert.equal(restored.background(true), false)
-  now += TEST_POLICY.retryBaseMs
+  now += policy.retryBaseMs
   assert.equal(restored.background(true), true)
   await restored.settled()
-  assert.equal(restored.nextBackgroundAt, now + TEST_POLICY.retryBaseMs * 2)
+  assert.equal(restored.nextBackgroundAt, now + policy.retryBaseMs * 2)
 })
 
 test('disabled background and a cold ready receipt do not reprepare; manual bypass still works', async () => {
@@ -724,9 +770,9 @@ test('manual resume labels a paused background attempt as manual', async () => {
   assert.equal(queue.claim(first), true)
 })
 
-test('only macOS opts into preparation admission and jitter respects the retry cap', async () => {
+test('macOS and Windows opt into preparation admission and jitter respects the retry cap', async () => {
   assert.ok(backgroundPreparationPolicy('darwin'))
-  assert.equal(backgroundPreparationPolicy('win32'), undefined)
+  assert.ok(backgroundPreparationPolicy('win32'))
   let now = 1000
   const queue = new UpdatePreparation(
     async () => false,

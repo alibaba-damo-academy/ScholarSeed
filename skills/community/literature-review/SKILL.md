@@ -13,8 +13,8 @@ description_zh: >-
   快速模式基于摘要生成Markdown，不含图片；标准模式支持全文分析、
   图表及Markdown、PDF或DOCX交付。
 metadata:
-  version: "2026.11.17+1"
-version: "2026.11.17+1"
+  version: "2026.11.17+12"
+version: "2026.11.17+12"
 ---
 # Literature review
 
@@ -37,6 +37,12 @@ You clarify the task, explain the plan, maintain progress, delegate independent 
 ScholarSeed prepares the selected papers and reports which are usable or still missing material. The commands below
 use those results to analyze papers, draft and revise the manuscript, format citations and export files.
 Use these commands rather than implementing a separate writing or publication process.
+
+Run long commands in the foreground of the host's managed command tool, not with
+`nohup` or a shell `&`. A tool's yield/wait interval limits how long that call waits
+for output, not how long the command may run. If it returns a running session ID,
+continue waiting on that same session through the host's continuation tool until
+exit; do not relaunch the command or replace continuation with `sleep` and PID polling.
 
 The installed Skill and product implementation are inputs to this workflow, not
 editable task artifacts. Work on request data, manuscripts and deliverables in
@@ -237,7 +243,13 @@ Use these existing fields to construct the request:
 | Specified papers and additional search | `supplement` | Use the specified papers and search for more within the agreed scope and number. |
 | Search by topic | `discover` | Search for papers on the agreed topic; selected papers are not required to start. |
 
-Use `init --describe-input --field FIELD` only when unsure of a field's shape or supported values. Init consumes
+Use `init --describe-input --field FIELD` only when unsure of a field's shape or supported values.
+When several fields are unclear, `writing configure --describe-input` returns the
+complete writing-request contract and examples in one call. A first request without
+`user_requests` may omit `effective_requirements`; nonempty verbatim follow-ups require
+that field to summarize the updated requirements. `sources.policy` controls permitted
+sources; `papers budget` uses its own `policy` field to describe count calculation,
+so `configured_supplement` does not change a `discover` source policy. Init consumes
 the request and saves the task requirements in `01_input/writing_request.json`. Saving this file records intent;
 the plan decision and final-corpus evidence authorization remain separate product checkpoints.
 
@@ -320,36 +332,28 @@ effective requirements.
 
 ## 7. Maintain one host progress tracker
 
-Call the host's declared progress tool directly. Do not save its responses to JSON files or run `slr progress`.
-Use the actual tool schema to choose flat or legacy; do not identify the protocol from an `actions` field.
-No additional Skill-file read is required for the tracker procedure.
+This execution workflow requires persistent stage tracking across its checkpoints.
+After the execution agreement allows work, load the product operations plan guide
+through the current Skill inventory. If no product plan is enabled, use its
+`plan/enable` operation with `purpose=workflow_required` and a reason identifying
+this literature-review workflow. A draft agreement or a discussion alone does not
+require enabling the tracker. Task activation and plan enablement are separate;
+neither substitutes for the execution agreement or full-text authorization.
 
-New trackers contain `materials`, `evidence`, `writing` and `publication`. If a tracker already exists, continue it and select
-its actual owning item from `get` rather than replacing its IDs or tree. Scope changes use a separate host `revise`
-operation.
+Follow the single product plan guide for the declared protocol: on the first
+activation turn use the Bridge path; on later turns use the declared product tool.
+Do not send product `operation` arguments to a native lightweight `update_plan`.
+Keep existing product IDs and stages on continuation. New trackers contain
+`materials`, `evidence`, `writing` and `publication`; scope changes use `revise`.
+Do not save progress JSON or run `slr progress`.
 
-| Operation | Flat tool | Actually declared legacy get/write tool |
-| --- | --- | --- |
-| Read current state | Call `update_plan` with `operation=get` alone. Read its actual IDs, revision, turn_id and allowed actions directly. | Call `operation=get, request={}` and read the returned state directly. |
-| Create a tracker | Declare four pending steps without status fields. After submitting create, read `get` again before generating a start action. | Use the actual declared schema and returned state. Do not send a flat payload to the older tool. |
-| Start a stage | Call `operation=start` with the actual `step_ids`. Execution actions never include `items` or status fields. | Submit the declared write payload preserving the complete tree and setting only the actual leaf to `in_progress` before work. |
-| Complete a stage and start the next | Call `finish` for the previous step, read `get` again, then call `start` for the next step using the new revision. One finish call does not start another step. | Use the actual write contract for the observed transitions, retaining the complete tree. |
-| Wait at a checkpoint | Call `pause` with the observed reason. Read `get` and call `start` before handling the reply. | Use `needs_confirmation`, then read current state and resume before handling the reply. |
-| Recover from a write problem | After a known revision conflict, read `get` again. For an uncertain identical retry, retain and reuse its original payload. | Apply the same observation and retry rule using the actual legacy payload. |
-
-Every flat mutation carries the observed `plan_id`, `expected_revision` (the returned revision), `turn_id`,
-and a new unique `request_id` for a new operation. Generate an ID with a host-supported UUID facility when needed.
-For create only, use a new plan ID and revision 0 when no plan metadata exists. Read get before each new mutation.
-The host validates and performs the write. If the stage already has the intended state, continue without another
-mutation. Never predict the next revision or start work after create alone. An uncertain identical retry reuses
-the exact original arguments and request_id; a known conflict requires a new read and corrected request.
-
-Start a stage before its work and mark it `completed` after observing the result. Use `--reason` for an observed block or
-failure; paper, chapter and tool details belong in progress text. Routine progress changes execution state, not tracker
-structure.
-
-Finish an existing group only after all children finish and the host permits finish. The host aggregates timing; it does
-not automatically complete parents.
+Update at real stage boundaries, not per paper, command or verification. Start
+before work; complete only with observed evidence, preferring the supported
+`complete` action. Use the revision and state returned by each successful write;
+read again only when state is missing, stale or conflicting. Keep checkpoint
+pause/resume and parent-child completion rules from the plan guide. Publication
+must begin before publishing. Never fabricate execution times or remove required
+verification to reduce bookkeeping.
 
 ## 8. Stage 2 — Import materials and assemble the corpus
 
@@ -470,6 +474,10 @@ Once Quick evidence is ready or the Standard outline is confirmed, complete `evi
 
 The selected mode determines writing. Quick produces the requested Markdown in one call.
 Standard assembles the completed chapters and assets, then applies one complete-source delta refinement.
+Chapters, including the lightweight abstract, are generated independently in parallel.
+Keep definitions and their supporting papers in each chapter's plan; do not create
+chapter execution dependencies. The figure author uses confirmed plans and records
+without waiting for chapter prose. Required assets must still finish before assembly.
 This pass edits the manuscript without paper abstracts or cards, preserves scientific meaning and
 reports ambiguous scientific changes instead of guessing or adding claims.
 When found, the script supplies a compact natural-language list of possible cross-chapter
@@ -514,6 +522,16 @@ compatibility fallback, not the complete list of papers used by a full-text revi
 Edit `full_draft_v2` and its dependencies when corrections are needed, then republish. Delivery copies are outputs, not the
 source to edit.
 
+Successful `manuscript publish` and `workflow publish` responses expose the final file
+in the top-level singular `deliverable` field. Use that path; `source` is the editable
+manuscript, not the delivered file. PDF image paths are in `inspection_scope.pages`
+and `pages_to_read`, not in an assumed `files` or `deliverables` collection.
+For compilation diagnostics, `compile.origin` identifies the invocation and main-source
+hash; `diagnostic_pass_index` and `log_path` identify the retained final-pass log.
+Compare those records rather than inferring a stale run from identical overflow values.
+Log glyph dumps alone do not establish unresolved citations; use the citation and
+bibliography checks and inspect the actual rendered page.
+
 Quick publishes the Markdown file directly with bibliography formatting only; its working bibliography and input
 snapshots remain internal. In Standard Markdown, a native forest `.tex` source may be an image target. Preserve that
 source and its dependencies so the publisher can render the actual tree and embed it in DOCX.
@@ -531,6 +549,10 @@ and explain which delivery or display failed and what remains available. Do not 
 that a publication card exists when the call failed.
 
 ## 12. Recover an interrupted or failed task
+
+Consume the command's returned report paths rather than guessing numbered directories.
+`workflow` reports contain `steps` and a boundary `result`; individual stage reports
+have their own fields and do not necessarily contain `steps`.
 
 Use the command's diagnostic, named logs and `next_action` to select the recovery. Preserve completed sibling tasks and raw
 responses. `--from` runs the named stage and later stages; `--from review-packet` reuses an existing outline.

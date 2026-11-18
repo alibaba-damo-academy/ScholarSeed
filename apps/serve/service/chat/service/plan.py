@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import get_args
 
 from service.chat.constants import (
+    PRODUCT_EVENT_PLAN_ENABLEMENT,
     PRODUCT_EVENT_PLAN_SNAPSHOT,
     PRODUCT_EVENT_TOOL_COMPLETED,
     PRODUCT_EVENT_TOOL_STARTED,
@@ -36,6 +37,7 @@ from service.platform.bridge import (
     SERVICE_PLAN_TOOL_NAME,
     PlanAction,
     PlanCommand,
+    PlanEnable,
     PlanNode,
     PlanStatus,
     PlanStructure,
@@ -535,6 +537,48 @@ class SessionPlans:
         event = self.events.latest_kind(self.session_id, PRODUCT_EVENT_PLAN_SNAPSHOT)
         return dict(event.payload) if event else {"items": [], "plan": None}
 
+    def enabled(self) -> bool:
+        """Legacy structured trees retain their owner; native steps never opt in."""
+        snapshot = self.events.latest_kind(self.session_id, PRODUCT_EVENT_PLAN_SNAPSHOT)
+        selection = self.events.latest_kind(self.session_id, PRODUCT_EVENT_PLAN_ENABLEMENT)
+        if selection and (snapshot is None or selection.product_seq > snapshot.product_seq):
+            return selection.payload.get("enabled") is True
+        if snapshot:
+            source = (snapshot.payload.get("plan") or {}).get("source")
+            if source == PLAN_SOURCE:
+                return True
+            if source == PLAN_RELEASED_SOURCE:
+                return False
+        return bool(selection and selection.payload.get("enabled") is True)
+
+    def enable(
+        self,
+        command: PlanEnable,
+        *,
+        turn_id: str,
+        runtime_id: str,
+        vendor_thread_id: str,
+        require_turn: Callable[[], None],
+    ) -> ProductEventRecord | None:
+        with self.events.transaction() as connection:
+            require_turn()
+            if self.enabled():
+                return None
+            selection = self.events.latest_kind(
+                self.session_id, PRODUCT_EVENT_PLAN_ENABLEMENT, connection=connection
+            )
+            return self.events.append(
+                session_id=self.session_id,
+                runtime_id=runtime_id,
+                vendor_thread_id=vendor_thread_id,
+                vendor_turn_id=turn_id,
+                vendor_item_id=None,
+                kind=PRODUCT_EVENT_PLAN_ENABLEMENT,
+                payload={"enabled": True, **command.model_dump()},
+                idempotency_key=f"plan-enable:{turn_id}:{selection.product_seq if selection else 0}",
+                connection=connection,
+            )
+
     def write(
         self,
         command: PlanCommand,
@@ -701,6 +745,18 @@ class SessionPlans:
                 explanation=command.reason or None,
                 connection=connection,
             )
+            if operation == "release":
+                self.events.append(
+                    session_id=self.session_id,
+                    runtime_id=runtime_id,
+                    vendor_thread_id=vendor_thread_id,
+                    vendor_turn_id=command.turn_id,
+                    vendor_item_id=None,
+                    kind=PRODUCT_EVENT_PLAN_ENABLEMENT,
+                    payload={"enabled": False},
+                    idempotency_key=f"{key}:enablement",
+                    connection=connection,
+                )
         return event
 
     def native(

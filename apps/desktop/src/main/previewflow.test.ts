@@ -15,6 +15,7 @@ import {
 import { isNewerRelease } from './version.ts'
 import type { LatestVersionMeta, PreviewUpdatePolicy } from '../updates.ts'
 import type * as Updater from './updater.ts'
+import { retryUpdate } from './retry.ts'
 
 type PreviewFixtureExports = Pick<
   typeof Updater,
@@ -112,6 +113,10 @@ function harness(channel = 'preview', stored?: unknown) {
   let rejected: unknown
   const context = {
     ...preview,
+    process: { platform: 'darwin' },
+    MACOS_PLATFORM: 'darwin',
+    UPDATE_CACHE_PROFILE_DIRNAME: 'profiles',
+    updateProfileKey: () => 'profile',
     structuredClone,
     AbortController,
     isPreviewUpdateChannel,
@@ -140,6 +145,12 @@ function harness(channel = 'preview', stored?: unknown) {
     },
     readRecord: (path: string) => {
       if (path.endsWith('rejected.json')) {
+        assert.equal(
+          path,
+          channel === 'preview'
+            ? '/owned/updates/preview/rejected.json'
+            : '/owned/updates/rejected.json'
+        )
         rejectedReads++
         if (rejected !== undefined) return Buffer.from(JSON.stringify(rejected))
         throw Object.assign(new Error('missing'), { code: 'ENOENT' })
@@ -149,6 +160,7 @@ function harness(channel = 'preview', stored?: unknown) {
       if (stored === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
       return Buffer.from(JSON.stringify(stored))
     },
+    retryUpdate,
     getJson: async (url: string) => {
       requests.push(new URL(url))
       return responder ? responder() : response

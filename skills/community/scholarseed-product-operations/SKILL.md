@@ -1,13 +1,13 @@
 ---
 name: scholarseed-product-operations
-version: "2026.11.16+5"
+version: "2026.11.18+1"
 description: >-
   Use ScholarSeed product operations, conversation components, local code execution
   and project edits. Covers resources/PDFs, retrieval, history, delivery/imports,
   plans, MCP, webpages and permission recovery. Load for choosing displayed rows,
   even if no card was requested. Skip for self-contained text answers and feature discussion.
 metadata:
-  version: "2026.11.16+5"
+  version: "2026.11.18+1"
 ---
 
 # ScholarSeed Product Operations

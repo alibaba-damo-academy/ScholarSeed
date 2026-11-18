@@ -70,7 +70,7 @@ func main() {
 			handoff.WriteSandboxDiagnostic(os.Stdout, os.Stderr, err)
 			os.Exit(handoff.SandboxExitCode(err))
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(handoff.Event{Event: "error", Message: err.Error()})
+		_ = json.NewEncoder(os.Stdout).Encode(handoff.FailureEvent(err))
 		if failure := recoveryFailure(*request, *worker, err); failure != nil {
 			if presentationErr := showRecovery(p.RecoveryMessages, failure); presentationErr != nil {
 				fmt.Fprintln(os.Stderr, presentationErr)

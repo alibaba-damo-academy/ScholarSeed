@@ -70,6 +70,8 @@ const CREDENTIAL_ENV_PREFIXES = [
 // The published version is a plain three-part SemVer; the build stamp lives in its
 // own field, so a version string never carries a timestamp or a commit suffix.
 const SEMVER_VERSION = /^\d+\.\d+\.\d+$/
+const VERSION_BRANCH = /^(?:preview|release)\/(\d+\.\d+\.\d+)$/
+const UNKNOWN_BRANCH = 'unknown'
 const BUILD_NUMBER = /^\d{12}$/
 // Beijing 恒为 UTC+8（中国无夏令时），构建号直接加该固定秒数偏移。
 const BUILD_NUMBER_OFFSET_SECONDS = 8 * 3600
@@ -88,61 +90,13 @@ const BUILD_TYPES = {
 }
 const OBSOLETE_ENV_PREFIX = 'VEDA_'
 const OBSOLETE_ENV_ALLOWED = new Set(['VEDA_DESKTOP_DEFAULT_CONFIG'])
-// P1 实验开关（proposal 108 §6）：=1 时生成 ZIP 直解压候选包（useZip + differentialPackage:false
-// 成对写入）。默认（未设/为空）保持 package.json 现状。实验对照与生产启用由门槛决定，
-// 不由这个开关单方面翻转。
-const NSIS_ZIP_ENV = 'SCHOLARSEED_NSIS_USE_ZIP'
 
-/**
- * NSIS 配置解析 + 配对不变量守卫。
- *
- * 26.15.7 NsisTarget 的归档格式是 `!isBuildDifferentialAware && useZip ? "zip" : "7z"`，
- * 而模板 defines（COMPRESSION_METHOD/ZIP_COMPRESSION）只看 useZip：单独启用 useZip 会把
- * 7z 字节以 app-64.zip 之名嵌进安装器，运行期 nsisunz 解压必失败（不可安装产物）。
- * 因此 useZip 为 true 时 differentialPackage 必须显式为 false，缺一即拒绝构建。
- */
-function resolveNsisConfiguration(base, env = process.env) {
-  const nsis = { ...(base.nsis || {}) }
-  const requested = String(env[NSIS_ZIP_ENV] || '').trim()
-  if (requested === '1') {
-    nsis.useZip = true
-    nsis.differentialPackage = false
-  } else if (requested !== '') {
-    throw new Error(`${NSIS_ZIP_ENV} accepts only "1" (ZIP candidate) or unset/empty (default)`)
-  }
-  if (nsis.useZip === true && nsis.differentialPackage !== false) {
-    throw new Error(
-      'nsis.useZip=true requires nsis.differentialPackage=false: electron-builder would otherwise embed a 7z archive named app-64.zip, producing an uninstallable installer'
-    )
-  }
-  return nsis
-}
-
-/**
- * 构建证据（proposal 108 §3/§12「模板漂移」）：manifest 声明版本、实际解析版本与
- * NSIS 解压模板摘要一起进 result.json。升级 electron-builder 后模板摘要变化即提示
- * 重跑路径/日志/故障矩阵，不以注释里的旧版本作证据。
- */
-async function builderEvidence(nsisConfiguration) {
-  const { verify } = loadDependencies()
+function builderEvidence() {
   const builderManifest = require.resolve('electron-builder/package.json', { paths: [DESKTOP] })
   const libraryManifest = createRequire(builderManifest).resolve('app-builder-lib/package.json')
-  const declared =
-    (PACKAGE.devDependencies && PACKAGE.devDependencies['electron-builder']) ||
-    (PACKAGE.dependencies && PACKAGE.dependencies['electron-builder']) ||
-    ''
-  const template = path.join(
-    path.dirname(libraryManifest),
-    'templates',
-    'nsis',
-    'include',
-    'extractAppPackage.nsh'
-  )
   return {
-    declaredVersion: declared,
+    declaredVersion: PACKAGE.devDependencies['electron-builder'],
     resolvedVersion: JSON.parse(fs.readFileSync(libraryManifest, 'utf8')).version,
-    extractTemplateSha256: fs.existsSync(template) ? await verify.sha256(template) : null,
-    nsis: nsisConfiguration,
   }
 }
 
@@ -438,17 +392,46 @@ Windows installer requires vpk 1.2.161 (--vpk); --velopack-base selects a prior 
 function provenance(snapshot = sourceSnapshot(REPO), repo = REPO) {
   const commit = snapshot.commit
   const currentBranch = command('git', ['branch', '--show-current'], { cwd: repo })
-  const branch = currentBranch || 'unknown'
+  const branch = currentBranch || UNKNOWN_BRANCH
   const remote = DEFAULT_REMOTE
   return { branch, commit, remote, clean: snapshot.clean, snapshot }
 }
 
-function sourceInputs(args, repo = REPO) {
+function versionBranches(source, repo, environment) {
+  if (source.branch !== UNKNOWN_BRANCH) return [source.branch]
+  if (environment.CI_COMMIT_REF_NAME) {
+    if (environment.CI_COMMIT_SHA !== source.commit) {
+      throw new Error('CI source ref must be bound to the checked-out commit')
+    }
+    return [environment.CI_COMMIT_REF_NAME]
+  }
+  const remotePrefix = `${DEFAULT_REMOTE}/`
+  const branches = command('git', ['for-each-ref', '--points-at', source.commit,
+    '--format=%(refname:lstrip=2)', 'refs/heads', `refs/remotes/${DEFAULT_REMOTE}`], { cwd: repo })
+    .split(/\r?\n/).map(ref => ref.startsWith(remotePrefix) ? ref.slice(remotePrefix.length) : ref)
+    .filter(ref => VERSION_BRANCH.test(ref))
+  if (new Set(branches.map(ref => VERSION_BRANCH.exec(ref)[1])).size > 1) {
+    throw new Error('source commit has conflicting version branches; check out the intended branch or supply a commit-bound CI ref')
+  }
+  return branches
+}
+
+function sourceInputs(args, repo = REPO, environment = process.env) {
   const snapshot = sourceSnapshot(repo)
   if ((args.type !== 'dev' || args.candidate) && !snapshot.clean) {
     throw new Error('package requires a clean worktree')
   }
-  return provenance(snapshot, repo)
+  const source = provenance(snapshot, repo)
+  if (args.type !== 'dev' || args.candidate) {
+    const version = args.version || environment.SCHOLARSEED_DESKTOP_VERSION || PACKAGE.version
+    for (const branch of versionBranches(source, repo, environment)) {
+      const expected = VERSION_BRANCH.exec(branch)?.[1]
+      if (expected && expected !== version) {
+        throw new Error(`source branch ${branch} does not match build version ${version}`)
+      }
+    }
+  }
+  return source
 }
 
 /**
@@ -688,7 +671,6 @@ function writeBuilderConfiguration(context, args) {
   if (selected.platform === 'darwin')
     extraResources.push({ from: path.join(context.resourceRoot, 'desktop'), to: 'desktop' })
   const filename = path.join(context.runDirectory, 'electron-builder.json')
-  const nsisConfiguration = resolveNsisConfiguration(PACKAGE.build)
   const protectedGeneration = context.closure?.protected?.generation
   if (typeof protectedGeneration !== 'string' || !/^[a-f0-9]{64}$/.test(protectedGeneration)) {
     throw new Error('verified protected generation is required before packaging')
@@ -696,7 +678,6 @@ function writeBuilderConfiguration(context, args) {
   const config = {
     ...PACKAGE.build,
     files: [...PACKAGE.build.files, `out/protected/${protectedGeneration}/**/*`],
-    nsis: nsisConfiguration,
     electronDist:
       cachedElectronDistribution(context, args) ||
       path.join(DESKTOP, 'node_modules', 'electron', 'dist'),
@@ -728,7 +709,6 @@ function writeBuilderConfiguration(context, args) {
   }
   fs.accessSync(path.join(DESKTOP, selected.icon), fs.constants.R_OK)
   verify.atomicJSON(filename, config)
-  context.nsis = nsisConfiguration
   return filename
 }
 
@@ -830,7 +810,7 @@ async function main(argv = process.argv.slice(2)) {
     return null
   }
   const parsed = buildArguments(argv)
-  const source = sourceInputs({ type: buildType(argv, parsed), candidate: parsed.candidate })
+  const source = sourceInputs({ type: buildType(argv, parsed), candidate: parsed.candidate, version: parsed.version })
   const mutex = acquireMutex()
   try {
     // Locked npm dependencies are installed before any third-party module is loaded,
@@ -904,7 +884,6 @@ async function main(argv = process.argv.slice(2)) {
       archType: args.target.archType,
       installer: args.target.installer,
       appId: args.platform === 'win32' ? product.product_id : PACKAGE.build.appId,
-      nsisGuid: PACKAGE.build.nsis?.guid,
       productName: PACKAGE.build.productName,
       icon: path.join(DESKTOP, args.target.icon),
       runtime,
@@ -1173,7 +1152,7 @@ async function main(argv = process.argv.slice(2)) {
       verify.atomicJSON(path.join(runDirectory, 'installer.json'), installer)
     }
     source.snapshotAfter = assertSource(source)
-    builder ||= args.platform === 'win32' ? { engine: 'velopack', version: velopack.VERSION } : await builderEvidence(context.nsis || resolveNsisConfiguration(PACKAGE.build))
+    builder ||= args.platform === 'win32' ? { engine: 'velopack', version: velopack.VERSION } : builderEvidence()
     const base = context.resultBase || resultBase(context, args, source, runtime, builder)
     base.source = source
     verify.atomicJSON(context.file, context)
@@ -1209,7 +1188,6 @@ module.exports = {
   localDmgbuild,
   installedDmgbuild,
   logDmgCopy,
-  resolveNsisConfiguration,
   payloadStatistics,
   resultBase,
 }

@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { ConvItem } from './model.ts'
+import { describeTurnFailure } from './failures.ts'
 import { activityRows, processRows } from './activity.ts'
 import type { HistoryResult, ProductEvent } from './api.ts'
 import { feedback } from './contracts/feedback.ts'
 import type { AssistantContextRef } from './contracts/assistant.ts'
+
 import {
   appendOptimisticUserMessage,
   isUserHistoryTurn,
@@ -39,6 +41,23 @@ import {
   upsertUserMessageEvent,
   upsertConversationArtifact,
 } from './transcript.ts'
+
+test('failed history replay retains the causal reference when an old matching card already exists', () => {
+  const event: ProductEvent = {
+    v: 2,
+    seq: 10,
+    ts: 1000,
+    session_id: 'session',
+    type: 'turn_failed',
+    turn_id: 'turn',
+    data: { message: 'provider failed', incident_id: 'provider' },
+  }
+  const old: ConvItem = { ...describeTurnFailure({ message: 'provider failed' }), turnId: 'turn' }
+  const replayed = projectActivityEvents([old], [event])
+  assert.equal(replayed.length, 1)
+  assert.equal(replayed[0].kind === 'error' && replayed[0].incidentId, 'provider')
+  assert.deepEqual(projectActivityEvents(replayed, [event]), replayed)
+})
 
 test('bridge search receipts survive history replay as distinct search records', () => {
   const events = ['WCAG', 'HTML'].map((query, index) => ({

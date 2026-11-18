@@ -9,13 +9,16 @@ from __future__ import annotations
 import os
 import re
 import sys
+import unicodedata
+from contextlib import closing, contextmanager
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Iterator
 
 from service.brand import HOME_ENV, default_home
 from service.content.domain.model import PROJECT_STATE_DIRNAME
 from service.platform.registry import LEGACY_DIRECTORY, REGISTRY_DIRECTORY
-from service.platform.storage import account_directory
+from service.platform.storage import DIRECTORY_ACL_READ_ACCESS, account_directory, open_directory
 
 
 def global_home() -> Path:
@@ -116,6 +119,15 @@ DESKTOP_HANDOFF_DB: Path = SERVICE_DIR / "handoff.sqlite3"
 SESSION_RUNTIME_DIR: Path = SERVICE_DIR / "sessions"
 SESSION_OUTPUT_DIRNAME = "outputs"
 PROJECT_SESSION_OUTPUT_DIRNAME = "output"
+MANAGED_OUTPUT_DEFAULT_NAME = "session"
+MANAGED_OUTPUT_NAME_CHARS = 64
+MANAGED_OUTPUT_NAME_BYTES = 180
+MANAGED_OUTPUT_MAX_CANDIDATES = 10000
+MANAGED_OUTPUT_CONFLICT = "session_output_conflict"
+MANAGED_OUTPUT_RESERVED_NAME = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", re.IGNORECASE
+)
+MANAGED_OUTPUT_INVALID_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
 SESSION_ARTIFACT_OBJECTS_RELATIVE = ".artifacts/objects"
 SESSION_ATTACHMENT_DIRNAME = "attachments"
 # serve 产品级设置（例如新会话的默认权限策略），与模型/provider config 隔离，不能写入
@@ -150,6 +162,68 @@ SERVICE_DATABASES: tuple[Path, ...] = (
     RESOURCE_IMPORTS_DB,
     DESKTOP_HANDOFF_DB,
 )
+
+
+def managed_output_name(title: str) -> str:
+    """One readable leaf with the same naming rules on macOS and Windows."""
+    name = MANAGED_OUTPUT_INVALID_CHARACTERS.sub("-", unicodedata.normalize("NFKC", title))
+    name = " ".join(name.split())[:MANAGED_OUTPUT_NAME_CHARS].strip(" .")
+    name = (
+        name.encode("utf-8")[:MANAGED_OUTPUT_NAME_BYTES]
+        .decode("utf-8", errors="ignore")
+        .rstrip(" .")
+    )
+    name = name or MANAGED_OUTPUT_DEFAULT_NAME
+    if MANAGED_OUTPUT_RESERVED_NAME.match(name):
+        name = f"{MANAGED_OUTPUT_DEFAULT_NAME}-{name}"
+    return name
+
+
+@contextmanager
+def managed_output_directory(cwd: Path, relative: str | None, title: str) -> Iterator[str]:
+    """Pin an existing binding, or create exclusively; never adopt an occupied leaf.
+
+    The catalog commits its binding while these handles are held. A failed commit
+    or process crash can leave an unbound directory: preserve it, and let the next
+    attempt choose another name. No scanning, deletion or permission grant occurs.
+    """
+    try:
+        if relative is not None:
+            parts = PurePosixPath(relative).parts
+            if (
+                len(parts) != 2
+                or parts[0] != PROJECT_SESSION_OUTPUT_DIRNAME
+                or PurePosixPath(*parts).as_posix() != relative
+                or MANAGED_OUTPUT_INVALID_CHARACTERS.search(parts[1])
+                or parts[1] in {".", ".."}
+            ):
+                raise ValueError(MANAGED_OUTPUT_CONFLICT)
+            with closing(open_directory(cwd, parts)):
+                yield relative
+            return
+        with closing(open_directory(cwd, (), final_access=DIRECTORY_ACL_READ_ACCESS)) as root:
+            try:
+                root.mkdir(PROJECT_SESSION_OUTPUT_DIRNAME, inherit_acl=True)
+            except FileExistsError:
+                pass
+            with closing(
+                open_directory(
+                    cwd, (PROJECT_SESSION_OUTPUT_DIRNAME,), final_access=DIRECTORY_ACL_READ_ACCESS
+                )
+            ) as output:
+                stem = managed_output_name(title)
+                for number in range(1, MANAGED_OUTPUT_MAX_CANDIDATES + 1):
+                    name = stem if number == 1 else f"{stem}（{number}）"
+                    try:
+                        output.mkdir(name, inherit_acl=True)
+                    except FileExistsError:
+                        continue
+                    with closing(output.directory(name)):
+                        yield PurePosixPath(PROJECT_SESSION_OUTPUT_DIRNAME, name).as_posix()
+                    return
+                raise ValueError(MANAGED_OUTPUT_CONFLICT)
+    except OSError as error:
+        raise ValueError(MANAGED_OUTPUT_CONFLICT) from error
 
 
 def task_python_root(cwd: Path) -> Path:

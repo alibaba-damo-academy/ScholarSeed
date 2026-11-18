@@ -39,6 +39,16 @@ def description(operation,workspace=None):
 
 
 class RequestExampleTest(unittest.TestCase):
+    def test_init_can_locate_the_complete_contract_and_followup_requirements(self):
+        described = describe_init()
+        operation = described['full_contract_query'].split()[:2]
+        contract = description('.'.join(operation))
+        self.assertIn('effective_requirements', contract['fields'])
+        self.assertIn('constraints', contract['fields'])
+        validate_request({'intent': 'Review the supplied papers.'})
+        with self.assertRaisesRegex(ValueError, 'effective_requirements'):
+            validate_request({'intent': 'Review the supplied papers.', 'user_requests': ['Focus on retrieval.']})
+
     def test_source_plugin_and_skill_versions_pass_the_runtime_identity_contract(self):
         expected=(ROOT/'VERSION').read_text().strip()
         front,_=parse_skill_frontmatter((ROOT/'SKILL.md').read_text())
@@ -105,7 +115,7 @@ class RequestExampleTest(unittest.TestCase):
         prompts = []
         for role in sorted(ROLES):
             for output_format in ('latex_pdf', 'markdown'):
-                for shared_tables in ([], [{'table_id': 'T1'}]):
+                for shared_tables in ([], [{'table_id': 'T1', 'label': 'tab:T1'}]):
                     packet = {'chapter_kind': role, 'output_format': output_format,
                               'shared_tables': shared_tables}
                     prompts.append(((role, output_format, bool(shared_tables)),

@@ -3,6 +3,35 @@
 
 FastAPI backend and product composition root. The distribution is `scholarseed`, and the namespace is `service`.
 
+## On-demand product plans / 按需产品计划
+
+Ordinary sessions retain the native lightweight plan tool and artifact delivery;
+they do not register the structured product `update_plan`. The optional
+`plan/enable` Bridge operation requires a declared user or workflow need. It
+persists selection without creating steps, authorizing work or starting clocks.
+Until enabled, execution and contract discovery reject the other plan operations;
+discovery exposes only the activation contract. Activation is not a security grant.
+The enabling turn uses Bridge; the next turn refreshes a changed tool profile
+through the existing history-preserving native-thread replacement path.
+
+Existing structured trees retain their service, revisions and timing rules.
+`release` preserves history and opts out; native-only steps never opt in. The
+selection is stored in `plan_enablement` events alongside existing plan snapshots,
+without a new database or schema migration. Product retrieval, PDF and artifact
+operations remain independent. The literature-review execution workflow enables
+its tracker through the shared product plan guide, not by merely loading a Skill.
+
+普通会话保留原生轻量计划和产物交付，不默认注册结构化产品 `update_plan`。
+只有明确的用户或工作流需求才通过 `plan/enable` 启用；该操作只持久保存选择，
+不创建步骤、不授权工作、不开始计时。未启用时，其他计划操作及其完整契约发现均被拒绝，
+发现只提供启用契约。启用本身不是安全授权。本轮通过 Bridge 使用，下一回合才通过
+既有的保留历史机制更换原生线程和工具配置，不在执行中热切换。
+
+已有产品树保留原服务、版本和计时规则；`release` 保留历史并退出。原生轻量步骤不自动
+启用产品计划。选择通过 `plan_enablement` 事件与既有快照共同恢复，不新增数据库或迁移。
+检索、PDF 和产物功能独立可用。文献综述的执行流程按统一计划指南启用阶段跟踪，
+仅加载 Skill 或讨论写作方案不启用。
+
 <a id="职责与边界"></a>
 ## Responsibilities and Boundaries
 
@@ -41,6 +70,36 @@ a completion receipt.
 `Activities.observe_thread` and `Activities.to_thread` release the count in the worker's `finally`, completing cleanup before publishing its result or exception. Completion callbacks remain an idempotent cleanup fallback for work that never starts and retrieve unobserved exceptions. Cancelling the awaiting coroutine does not release the count for a worker that is still running. An observation barrier grants no new execution admission during maintenance; callback scheduling or waiting for another event-loop tick is not proof that the actual work has completed.
 
 <a id="task-archive-consent--任务归档确认"></a>
+## Session restoration I/O / 会话恢复 I/O
+
+`Activities.finish_thread` composes the existing tracked worker and completion
+barrier. Session restoration uses it for catalog access, project validation,
+writable-root admission, model persistence, recovery writes, fork-history
+transactions and durable snapshot reads. Repeated cancellation is delivered only
+after the worker completes, so the caller retains its open/lifecycle locks and
+activity ownership until actual I/O cleanup. Maintenance still rejects new roots
+and waits for admitted work; this is not permission to skip resource draining.
+
+Runtime calls, asynchronous locks, live session state and final memory projections
+remain on the event loop. Durable fork replay is loaded in a worker before local
+input references are applied on the loop; the existing worker-owned constructor
+still hydrates its initial history. SQLite notification initialization and commit
+delivery, ownership checks, directory qualification and permission failures are
+unchanged. The same mechanism applies on macOS and Windows without changing HTTP
+deadlines or retry policy. Windows cold-entry and restart acceptance require the
+corresponding installed package; local contracts are not that evidence.
+
+`Activities.finish_thread` 组合既有受管工作线程与完成屏障。会话恢复中的目录读取、
+项目校验、可写根准入、模型持久化、恢复写入、分支历史事务和持久快照读取复用该
+机制。重复取消也须等工作线程完成才向调用方交付，因此打开锁、生命周期锁和活动
+归属持续到实际 I/O 清理完成。维护仍拒绝新 root 并等待已准入工作，不跳过资源排空。
+
+Runtime 调用、异步锁、会话内存状态和最终内存投影仍由事件循环持有。分支历史先在
+工作线程读取，再在循环内恢复本地输入引用；既有工作线程构造路径仍完成首次历史
+加载。SQLite 通知初始化及提交派发、归属校验、目录资格和权限失败语义保持不变。
+macOS 与 Windows 使用同一机制，不改变 HTTP 截止或重试策略。Windows 冷进入及
+重启验收须使用对应安装包，本地契约测试不能替代该证据。
+
 ## Task Archive Consent
 
 The archive request accepts `stop_running`. When false, the session owner uses its
@@ -120,6 +179,23 @@ model callback identity and cannot replace operations that require it. Never cop
 The wheel retains this CLI. Desktop bundles place its relocatable launcher in `backend/compat/`, outside the Agent PATH; other launchers remain in `backend/bin/`. Compatibility callers must have a valid host-provided scope. The CLI does not provide model callback identity and cannot replace operations that require it. Do not copy credentials.
 
 Desktop always starts with `auth-mode=off` and `ownership-axis=machine`; standalone Serve supports an explicitly configured authentication mode. Model connection credentials are independent of the local HTTP access mode.
+
+<a id="native-responses-routing"></a>
+## Native Responses Routing / 原生 Responses 路由
+
+The model bridge forwards only `session-id`, `thread-id`, and `x-codex-turn-state`
+from native Responses requests, and returns `x-codex-turn-state` from successful
+Responses replies. The native client owns the opaque state: it replays it within
+one turn and starts fresh on the next turn. The bridge never stores it in a
+registration, credential, or pooled HTTP client. Chat Completions conversion does
+not inherit these headers; product authentication and revocation remain authoritative.
+This preserves the upstream routing contract; it does not guarantee prompt-cache hits.
+
+模型桥接仅向原生 Responses 上游透传请求中的 `session-id`、`thread-id` 与
+`x-codex-turn-state`，并从成功的 Responses 响应回传 `x-codex-turn-state`。
+原生客户端负责该不透明状态的生命周期：同一轮内回传，下一轮重新获取。
+桥接不将它保存在注册项、凭据或共享 HTTP 客户端中，Chat Completions 转换路径
+不继承这些头；产品认证与撤销仍由既有机制控制。该行为修复路由协议，不保证缓存命中。
 
 <a id="responses-summary-dialects--responses-摘要方言"></a>
 ## Responses Summary Dialects

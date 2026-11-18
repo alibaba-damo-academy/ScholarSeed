@@ -621,6 +621,44 @@ def test_permission_downgrade_uses_current_authorization() -> None:
 
 
 class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_permission_switch_waits_for_transient_runtime_activity(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, catalog = _service(live, _Credentials(CURRENT))
+        suspend = live.suspend_runtime
+        attempts = 0
+
+        async def transient_activity() -> bool:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return False
+            return await suspend()
+
+        live.suspend_runtime = transient_activity
+        result, status = await service.set_mode(SESSION_ID, OWNER, "bypassPermissions")
+
+        self.assertEqual(status, 200, result)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(runtime.quiescence_deadlines, [None])
+        self.assertEqual(result["active_mode"], "bypassPermissions")
+        self.assertEqual(catalog.get(SESSION_ID).policy_id, "bypassPermissions")
+
+    async def test_permission_switch_wait_failure_preserves_active_mode(self) -> None:
+        live = _Live(environment=CURRENT)
+        service, runtime, catalog = _service(live, _Credentials(CURRENT))
+        runtime.wait_until_suspended = AsyncMock(
+            side_effect=SessionActivationError("resource_wait_timeout")
+        )
+        result, status = await service.set_mode(SESSION_ID, OWNER, "bypassPermissions")
+
+        self.assertEqual(status, 500)
+        runtime.wait_until_suspended.assert_awaited_once()
+        self.assertEqual(result["mode"], "bypassPermissions")
+        self.assertEqual(result["active_mode"], "ask")
+        self.assertTrue(result["deferred"])
+        self.assertEqual(catalog.get(SESSION_ID).policy_id, "bypassPermissions")
+        self.assertEqual(runtime.policies, [])
+
     async def test_selecting_active_mode_cancels_next_turn_without_runtime_update(self) -> None:
         for active in (RuntimePermissionMode.ASK, RuntimePermissionMode.SAFE_AUTO):
             for pending in (False, True):
@@ -1184,7 +1222,14 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         live.runtime_session.mode = RuntimePermissionMode.BYPASS
         service, runtime, catalog = _service(live, _Credentials(CURRENT))
         catalog.set_policy(SESSION_ID, OWNER, RuntimePermissionMode.BYPASS.value)
-        with patch.object(live, "suspend_runtime", AsyncMock(return_value=False)):
+        with (
+            patch.object(live, "suspend_runtime", AsyncMock(return_value=False)),
+            patch.object(
+                runtime,
+                "wait_until_suspended",
+                AsyncMock(side_effect=SessionActivationError("resource_wait_timeout")),
+            ) as wait,
+        ):
             payload, status = await service.set_mode(
                 SESSION_ID, OWNER, RuntimePermissionMode.ASK.value
             )
@@ -1192,6 +1237,7 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(payload["mode"], RuntimePermissionMode.ASK.value)
             self.assertEqual(payload["active_mode"], RuntimePermissionMode.BYPASS.value)
             self.assertTrue(payload["deferred"])
+            wait.assert_awaited_once()
             with self.assertRaisesRegex(RuntimeError, "quiescent"):
                 await service.prepare_turn(live)
         self.assertEqual(catalog.get(SESSION_ID).policy_id, RuntimePermissionMode.ASK.value)

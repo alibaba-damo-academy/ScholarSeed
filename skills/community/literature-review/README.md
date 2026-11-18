@@ -18,6 +18,20 @@ Quick defaults to Markdown without a template. The execution plan shows these se
 
 ## Task Preparation
 
+Long-running commands stay in the host's managed foreground session; a yield interval is not an execution deadline. Continue the returned session rather than detaching with `nohup` or shell backgrounding. `writing configure --describe-input` provides the complete input contract when several fields need clarification.
+
+The outline example includes a figure with narrative paper tokens in both content planning and visual guidance, alongside plain IDs in paper_ids. Quick and explicit no-figure requests omit this figure example; assets remain in the middle section of the survey excerpt.
+
+Chapter drafting requests the complete body, including every planned subsection and analysis task; only the script-provided heading is omitted. Abstracts retain their separate body-only framing.
+
+Source completion also covers figure/table narrative fields and updates each asset's own source list, preserving empty lists that authorize corpus-wide evidence. Optional asset qualifications use an array (`[]` when empty); unused visual guidance may be omitted or `""`, not null. Quick treats the complete citation token as an opaque identity and demonstrates its placement in prose.
+
+The survey outline example places its table-bearing section between two prose sections to demonstrate continuation after an asset. It illustrates layout, not a required chapter count or complete survey; single-component examples retain their requested scope.
+
+Chinese abstracts default to 300–600 Chinese characters; English abstracts remain at 150–250 words. Length checks are advisory, and explicit user or template requirements take precedence. Quick citation guidance includes an inline prose example using the complete supplied token.
+
+Outline normalization adds exact cited corpus papers omitted from a section's source list and records the additions. Sections with explicit local instructions require review instead of automatic expansion. Chapter inputs identify document-wide asset assignments; only table-owning chapters receive table layout and caption guidance. Quick model inputs provide complete citation tokens rather than bare citation keys.
+
 Standard evidence extraction uses the framework's shared `card`, `common_fields`,
 and `source_map` block protocol, also used by AI reading. It does not generate
 another user-facing reading. The framework assembles the same validated L1 JSON;
@@ -55,6 +69,11 @@ execution agreement explains how settings and defaults affect the user's work.
 Provide technical detail when requested.
 
 ## Architecture
+
+Quick uses its single Markdown worker; Standard uses native chapter generation,
+asset assembly, source refinement and publication. These are the only writing
+paths. Shared template preambles are owned by the layout module. Task setup and
+approval remain management operations, not separate authoring engines.
 
 The main agent owns user intent, the execution agreement, coordination,
 exceptions, and delivery checks. The search subagent uses the independent
@@ -150,9 +169,10 @@ consumes the prepared list; the public CLI no longer accepts assembled per-paper
 `items[]`. Existing material snapshots remain readable. Receipts do not renew
 turn activation or grant full-text access.
 
-Update the host tracker directly with `update_plan`; do not save progress JSON
-or call `slr progress`. Read the new revision after completing a stage and
-before starting the next. Start publication before publishing.
+Enable the persistent product tracker only for the agreed execution workflow,
+using the product operations plan guide. Follow its Bridge/dedicated-tool routing,
+reuse returned revisions and update only at stage boundaries. Do not save progress
+JSON or call `slr progress`. Start publication before publishing.
 
 Use the source-permission mapping in [SKILL.md](SKILL.md) when constructing
 requests. Keep exact parameter values in requests and explain the permitted
@@ -179,6 +199,29 @@ sources, abstracts, authors, or years rather than fabricating metadata.
 
 ## Paper Identity
 
+Authoring contexts separate task/settings JSON from unescaped paper evidence.
+They keep user requests, research scope
+and applicable constraints, not execution estimates, confirmation settings or source
+locators. Chapter input contains one local plan and one complete local asset inventory;
+figure/table meaning, qualifications, ownership and reference labels remain available.
+Abstracts still run concurrently, using type-specific contributions, headline findings,
+conditions and author-stated limitations instead of complete cards. Selected fields
+remain untruncated; sparse cards fall back to the original abstract. Other chapters
+retain their assigned full business-content cards. Quick model input retains titles,
+years, abstracts and complete citation tokens, without author lists or duplicate bare
+citation keys. Internal bibliography mappings retain the original citation keys.
+The figure brief supplies shared requirements and mode contracts once; per-figure
+packets contain local plans and evidence references without choosing an image mode
+or size unless already specified. No saved cards or user requirements are rewritten.
+Outline plans contain no chapter dependency graph. Necessary definitions and their
+sources belong in local descriptions, analytical tasks and paper assignments.
+Chapter roles determine evidence scope, not execution order. Abstracts remain
+parallel with a lightweight global view; figures use confirmed plans and records
+without waiting for chapter prose. Assembly still waits for required assets, and
+the existing full-source refinement reconciles the completed text. Source-file and
+asset dependencies needed for publication are unchanged. Older workspaces are not
+silently migrated to the new outline protocol.
+
 Use the original `paper_id` only for internal association. Outline requests use
 P aliases; citations in prose use explicit markers such as `[[paper:P01]]`. The
 adapter restores structured IDs and inline citation keys from the request map.
@@ -192,6 +235,8 @@ come from the evidence actually supplied. Valid IDs do not prove a scientific
 claim is supported by the original paper.
 
 ## Publication
+
+The final file is returned as singular `deliverable`; `source` names the editable manuscript. Workflow and stage reports retain their distinct schemas. For LaTeX, `compile.origin` records an invocation ID, the main source file's SHA-256 (not the whole dependency closure), and a manifest under `_logs/compilation/`. Each LaTeX/BibTeX command has an ordered pass record and retained output/engine-log snapshots. `diagnostic_pass_index` selects the final diagnostic pass, and `log_path` points to its retained log. The engine-log change marker records filesystem change, not a guarantee of complete input provenance. Identical overflow values do not prove a stale run, and log glyph dumps are not citation-validation results.
 
 PDF uses the existing Chinese or English LaTeX templates. Markdown and DOCX
 share a native Markdown source. DOCX exports locally through python-docx and
@@ -227,6 +272,8 @@ references without guessing authors, years, or journals. Markdown edits must
 retain the full empty-anchor attribute so metadata remains available on reopening.
 
 ## Time and Models
+
+Outline generation uses temperature 0.6 and enables thinking through the boolean `enable_thinking` request field. Other stages retain their existing settings.
 
 Processing times are soft estimates, not cutoffs. Continue agreed work when it
 takes longer, explaining completed work, the current stage, and an

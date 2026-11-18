@@ -161,56 +161,6 @@
       }
     },
     {
-      "id": "generation_prep",
-      "legacy": true,
-      "title": "Legacy section preparation",
-      "description": "Legacy section preparation only. New work uses evidence build, outline generate, manuscript prepare and manuscript generate.",
-      "command": [
-        "scholarseed-skill-python",
-        "${SLR_HOME}/scripts/legacy_stage.py",
-        "generation_prep"
-      ],
-      "cwd": "workspace",
-      "timeout_sec": 600,
-      "reads": [
-        "04_outline/outline.json",
-        "03_process/paper_cards.json"
-      ],
-      "writes": [
-        "05_generation/_internal/drafting_worklist.json",
-        "05_generation/_internal/tables_worklist.json",
-        "05_generation/_internal/figures_worklist.json",
-        "05_generation/_internal/cite_keys.json",
-        "05_generation/_internal/query_meta.json"
-      ],
-      "status": {
-        "kind": "trailing_json"
-      }
-    },
-    {
-      "id": "generation_merge",
-      "legacy": true,
-      "title": "Legacy section merge",
-      "description": "Validate and merge legacy section artifacts only. Current tasks use manuscript generate to assemble full v1 and refine it into editable v2, then workflow publish.",
-      "command": [
-        "scholarseed-skill-python",
-        "${SLR_HOME}/scripts/legacy_stage.py",
-        "generation_merge"
-      ],
-      "cwd": "workspace",
-      "timeout_sec": 900,
-      "reads": [
-        "05_generation/section_drafts/",
-        "05_generation/_internal/drafting_worklist.json"
-      ],
-      "writes": [
-        "05_generation/full_draft_v1.tex"
-      ],
-      "status": {
-        "kind": "trailing_json"
-      }
-    },
-    {
       "id": "generation_publish",
       "title": "Compile the editable native v2",
       "description": "Compile current source and dependencies; content diagnostics are advisory. Never regenerate or reassemble v2.",

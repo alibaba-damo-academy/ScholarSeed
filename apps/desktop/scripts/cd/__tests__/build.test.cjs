@@ -14,7 +14,6 @@ require('./texlive.test.cjs')
 require('./engine.test.cjs')
 require('./enginecheck.test.cjs')
 require('./vpk.test.cjs')
-require('./installer.test.cjs')
 require('./setup.test.cjs')
 require('./installation.test.cjs')
 require('./registration.test.cjs')
@@ -30,6 +29,7 @@ require('./browser.test.cjs')
 require('./mutex.test.cjs')
 require('./shipit.test.cjs')
 require('./recovery.test.cjs')
+require('./source.test.cjs')
 require('./squirrel.test.cjs')
 require('../../../native/shipit/artifact.test.cjs')
 const assert = require('node:assert/strict')
@@ -59,7 +59,6 @@ const {
   installerArtifacts,
   localDmgbuild,
   writeBuilderConfiguration,
-  resolveNsisConfiguration,
   payloadStatistics,
 } = require('../build.cjs')
 const { budget: smokeBudget } = require('../../../../../scripts/ci/smoke.json')
@@ -165,448 +164,6 @@ test('build failures remain nonzero after the builder asynchronous cleanup hook'
   assert.equal(result.status, 1, result.stderr)
 })
 
-test('Windows handshake writer checks each file operation independently', () => {
-  const source = fs.readFileSync(path.join(sourceDirectory, '../../resources/installer.nsh'), 'utf8')
-  const writer = source.match(/    Function ssWriteReady\r?\n([\s\S]*?)    FunctionEnd/)[1]
-  assert.match(writer, /ClearErrors\s+\$\{if\} \$ssReadyResult/)
-  const writes =
-    writer.match(/FileWriteUTF16LE[^\r\n]*\r?\n\s*IfErrors ss_ready_close_failed/g) || []
-  assert.equal(writes.length, 7)
-  assert.match(writer, /FileClose \$R2\s+IfErrors ss_ready_failed/)
-  assert.match(writer, /ss_ready_close_failed:\s+FileClose \$R2\s+ss_ready_failed:\s+SetErrors/)
-})
-
-test(
-  'Windows handshake writer isolates prior errors and reports file failures',
-  {
-    skip:
-      process.platform !== 'win32' || !process.env.NSISDIR
-        ? 'Requires Windows and NSISDIR pointing to the packaging NSIS toolchain'
-        : false,
-  },
-  async (context) => {
-    const source = fs.readFileSync(path.join(sourceDirectory, '../../resources/installer.nsh'), 'utf8')
-    const writer = source.match(/    Function ssWriteReady\r?\n[\s\S]*?    FunctionEnd/)
-    assert.ok(writer, 'The test must execute the production handshake writer')
-    const compiler = path.join(process.env.NSISDIR, 'makensis.exe')
-    const failureCode = 13
-    for (const result of ['elevation-required', 'ready']) {
-      for (const scenario of ['clean', 'prior-error', 'blocked-file']) {
-        await context.test(`${result}: ${scenario}`, () => {
-          const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-handshake-'))
-          context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-          const executable = path.join(directory, 'writer.exe')
-          const outputName = result === 'ready' ? 'ready.ini' : 'elevation.ini'
-          const output = path.join(directory, outputName)
-          if (scenario === 'blocked-file') fs.mkdirSync(output)
-          const script = `
-Unicode true
-RequestExecutionLevel user
-SilentInstall silent
-OutFile "${executable}"
-!include "LogicLib.nsh"
-!define SS_ELEVATION_REQUIRED "elevation-required"
-!define SS_ELEVATION_FILE "elevation.ini"
-!define SS_READY_FILE "ready.ini"
-!define SS_HANDSHAKE_SCHEMA 1
-!define SS_NATIVE_WAIT_TIMEOUT 258
-Var ssReadyResult
-Var ssUpdateId
-Var ssNonce
-Var ssInstallerPid
-Var ssNativeProcess
-Var ssProcessLow
-Var ssProcessHigh
-Var ssProtocolSchema
-Var ssMaintenance
-Var ssControllerPid
-Var ssControllerLow
-Var ssControllerHigh
-${nativeFunction(NATIVE_PRIVILEGES, 'ssProcessCreation')}
-${nativeFunction(NATIVE_INSTALLER, 'ssWriteControllerRecord')}
-${writer[0]}
-Section
-  StrCpy $ssProtocolSchema "1"
-  StrCpy $ssMaintenance "0"
-  StrCpy $ssControllerPid "0"
-  StrCpy $ssControllerLow "0"
-  StrCpy $ssControllerHigh "0"
-  StrCpy $R1 "${directory}"
-  StrCpy $ssReadyResult "${result}"
-  StrCpy $ssUpdateId "regression-update"
-  StrCpy $ssNonce "regression-nonce"
-  System::Call 'kernel32::GetCurrentProcessId() i .r0'
-  StrCpy $ssInstallerPid $0
-  ${scenario === 'prior-error' ? 'SetErrors' : 'ClearErrors'}
-  Call ssWriteReady
-  IfErrors failed
-  SetErrorLevel 0
-  Quit
-failed:
-  SetErrorLevel ${failureCode}
-SectionEnd
-`
-          const compiled = spawnSync(compiler, ['/INPUTCHARSET', 'UTF8', '/V2', '/WX', '-'], {
-            input: script,
-            encoding: 'utf8',
-            timeout: 30_000,
-          })
-          assert.equal(
-            compiled.status,
-            0,
-            `${compiled.error || ''}${compiled.stdout}${compiled.stderr}`
-          )
-          const executed = spawnSync(executable, [], { stdio: 'ignore', timeout: 15_000 })
-          const shouldFail = scenario === 'blocked-file'
-          assert.equal(
-            executed.status,
-            shouldFail ? failureCode : 0,
-            `${executed.error || ''}${executed.stdout}${executed.stderr}`
-          )
-          if (scenario === 'blocked-file') return
-          const record = fs.readFileSync(output, 'utf16le')
-          assert.equal(record.charCodeAt(0), 0xfeff)
-          const fields = Object.fromEntries(
-            record
-              .slice(1)
-              .trim()
-              .split('\r\n')
-              .map((line) => line.split('='))
-          )
-          assert.deepEqual(Object.keys(fields), [
-            'schemaVersion',
-            'updateId',
-            'nonce',
-            'installerPid',
-            'installerCreationLow',
-            'installerCreationHigh',
-            'result',
-          ])
-          assert.equal(fields.schemaVersion, '1')
-          assert.equal(fields.updateId, 'regression-update')
-          assert.equal(fields.nonce, 'regression-nonce')
-          assert.equal(fields.result, result)
-          assert.ok(Number(fields.installerPid) > 0)
-          assert.ok(
-            Number(fields.installerCreationLow) !== 0 || Number(fields.installerCreationHigh) !== 0
-          )
-        })
-      }
-    }
-  }
-)
-const NATIVE_PRIVILEGES = fs.readFileSync(
-  path.join(sourceDirectory, '../../resources/privileges.nsh'),
-  'utf8'
-)
-const NATIVE_INSTALLER = fs.readFileSync(path.join(sourceDirectory, '../../resources/installer.nsh'), 'utf8')
-const NATIVE_SKIP =
-  process.platform !== 'win32' || !process.env.NSISDIR
-    ? 'Requires Windows and NSISDIR pointing to the packaging NSIS toolchain'
-    : false
-
-function nativeFunction(source, name) {
-  const selected = source.match(new RegExp(`\\bFunction ${name}\\r?\\n[\\s\\S]*?\\bFunctionEnd`))
-  assert.ok(selected, `Missing production function ${name}`)
-  return selected[0]
-}
-
-function nativeFixture(context, functions, section, expectedExit = 0, prepare = () => {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-privileges-'))
-  context.after(() =>
-    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-  )
-  const executable = path.join(directory, 'probe.exe')
-  prepare(directory)
-  const constants = [
-    ...`${NATIVE_PRIVILEGES}\n${NATIVE_INSTALLER}`.matchAll(/^\s*!define SS_[^\r\n]+/gm),
-  ]
-    .map((match) => match[0])
-    .join('\n')
-  const handlesMatch = NATIVE_PRIVILEGES.match(/!macro ssCloseNativeHandle[\s\S]*?!macroend/)
-  assert.ok(handlesMatch, 'Missing production macro ssCloseNativeHandle in privileges.nsh')
-  const handles = handlesMatch[0]
-  const names = [...new Set(`${functions}\n${section}`.match(/\$ss[A-Za-z0-9_]+/g))]
-  const variables = names.map((name) => `Var ${name.slice(1)}`).join('\n')
-  const initialize = names.map((name) => `StrCpy ${name} 0`).join('\n')
-  const script = `Unicode true
-RequestExecutionLevel user
-SilentInstall silent
-OutFile "${executable}"
-!include "LogicLib.nsh"
-!include "FileFunc.nsh"
-${constants}
-${variables}
-${handles}
-${functions}
-Section
-  StrCpy $OUTDIR "${directory}"
-${initialize}
-${section}
-SectionEnd
-`
-  const compiled = spawnSync(
-    path.join(process.env.NSISDIR, 'makensis.exe'),
-    ['/INPUTCHARSET', 'UTF8', '/V2', '/WX', '-'],
-    { input: script, encoding: 'utf8', timeout: 30_000 }
-  )
-  assert.equal(compiled.status, 0, `${compiled.error || ''}${compiled.stdout}${compiled.stderr}`)
-  const executed = spawnSync(executable, [], { stdio: 'ignore', timeout: 15_000 })
-  assert.equal(executed.status, expectedExit, `${executed.error || ''}; exit=${executed.status}`)
-  return directory
-}
-
-test('Windows update permissions follow registered scope without a shell worker', () => {
-  assert.match(
-    NATIVE_INSTALLER,
-    /!macro preInit\s+!ifndef BUILD_UNINSTALLER\s+Call ssPrivilegeInit/
-  )
-  assert.doesNotMatch(
-    NATIVE_PRIVILEGES,
-    /GetShellWindow|CreateProcessWithTokenW|ssWrapper|ssUserWorker/
-  )
-  const init = nativeFunction(NATIVE_INSTALLER, 'ssHandshakeInit')
-  assert.match(init, /ReadRegStr \$R0 HKCU/)
-  assert.match(init, /ReadRegStr \$R3 HKLM/)
-  assert.match(init, /\$ssOriginalElevated == 1/)
-  assert.match(init, /setInstallModePerAllUsers/)
-  assert.match(init, /setInstallModePerUser/)
-})
-
-test(
-  'Windows privilege probe reads the real primary token and creation time',
-  { skip: NATIVE_SKIP },
-  (context) => {
-    const functions = ['ssInspectToken', 'ssProcessCreation']
-      .map((name) => nativeFunction(NATIVE_PRIVILEGES, name))
-      .join('\n')
-    const directory = nativeFixture(
-      context,
-      functions,
-      `
-  System::Call 'advapi32::OpenProcessToken(p -1, i \${SS_NATIVE_TOKEN_QUERY}, *p .r0) i .r1'
-  StrCmp $1 0 failed
-  StrCpy $ssNativeToken $0
-  Call ssInspectToken
-  IfErrors failed
-  !insertmacro ssCloseNativeHandle $ssNativeToken
-  StrCpy $ssNativeProcess -1
-  Call ssProcessCreation
-  IfErrors failed
-  FileOpen $0 "$OUTDIR\\probe.txt" w
-  FileWrite $0 "$ssNativeSid,$ssNativeElevated,$ssNativeIntegrity,$ssNativeSession,$ssProcessLow,$ssProcessHigh"
-  FileClose $0
-  SetErrorLevel 0
-  Quit
-  failed:
-  !insertmacro ssCloseNativeHandle $ssNativeToken
-  SetErrorLevel 13
-  `
-    )
-    const [sid, elevated, integrity, session, low, high] = fs
-      .readFileSync(path.join(directory, 'probe.txt'), 'utf8')
-      .split(',')
-    const identity = spawnSync(
-      path.join(process.env.SystemRoot, 'System32', 'whoami.exe'),
-      ['/user', '/fo', 'csv', '/nh'],
-      { encoding: 'utf8' }
-    )
-    assert.equal(identity.status, 0)
-    const sidMatch = identity.stdout.match(/S-1-5-[\d-]+/)
-    assert.ok(sidMatch, `whoami output did not contain a SID: ${identity.stdout}`)
-    assert.equal(sid, sidMatch[0])
-    assert.ok(['0', '1'].includes(elevated))
-    assert.ok(Number.isInteger(Number(integrity)) && Number(integrity) >= 0)
-    assert.ok(Number.isInteger(Number(session)) && Number(session) >= 0)
-    assert.ok(Number(low) !== 0 || Number(high) !== 0)
-  }
-)
-
-test(
-  'Windows maintenance decision rejects ambiguous records and binds the live controller identity',
-  { skip: NATIVE_SKIP },
-  async (context) => {
-    const functions = [
-      'ssStrLen', 'ssTrimEnd', 'ssReadField', 'ssCheckMaintenanceRecord',
-      'ssReadControllerRecord', 'ssReadMaintenanceDecision',
-    ].map((name) => nativeFunction(NATIVE_INSTALLER, name)).join('\n')
-    const lines = [
-      'schemaVersion=2', 'updateId=transaction', 'nonce=0123456789abcdef0123456789abcdef',
-      'controllerPid=1234', 'controllerCreationLow=-123', 'controllerCreationHigh=456',
-      'decision=commit',
-    ]
-    const encode = (value, bom = true) => Buffer.from(`${bom ? '\ufeff' : ''}${value.join('\r\n')}\r\n`, 'utf16le')
-    const cases = [
-      ['commit', encode(lines), 0],
-      ['cancel', encode([...lines.slice(0, -1), 'decision=cancel']), 0],
-      ['wrong-schema', encode(['schemaVersion=1', ...lines.slice(1)]), 13],
-      ['missing-bom', encode(lines, false), 13],
-      ['wrong-controller', encode(lines.map((line) => line.replace('Pid=1234', 'Pid=1235'))), 13],
-      ['wrong-creation', encode(lines.map((line) => line.replace('Low=-123', 'Low=-124'))), 13],
-      ['duplicate', encode([...lines.slice(0, 3), lines[2], ...lines.slice(3)]), 13],
-      ['unknown', encode([...lines, 'extra=value']), 13],
-      ['duplicate-decision', encode([...lines, 'decision=cancel']), 13],
-      ['invalid-decision', encode([...lines.slice(0, -1), 'decision=install']), 13],
-      ['embedded-nul', encode([...lines.slice(0, -1), 'decision=commit\0hidden']), 13],
-      ['odd-bytes', Buffer.concat([encode(lines), Buffer.from([0])]), 13],
-      ['oversize', Buffer.alloc(8194), 13],
-    ]
-    for (const [name, record, expectedExit] of cases) {
-      await context.test(name, () => nativeFixture(context, functions, `
-  StrCpy $ssUpdateId "transaction"
-  StrCpy $ssNonce "0123456789abcdef0123456789abcdef"
-  StrCpy $ssControllerPid "1234"
-  StrCpy $ssControllerLow "-123"
-  StrCpy $ssControllerHigh "456"
-  FileOpen $R2 "$OUTDIR\\decision.ini" r
-  IfErrors failed
-  Call ssReadMaintenanceDecision
-  IfErrors failed_close
-  FileClose $R2
-  SetErrorLevel 0
-  Quit
-failed_close:
-  FileClose $R2
-failed:
-  SetErrorLevel 13
-`, expectedExit, (directory) => fs.writeFileSync(path.join(directory, 'decision.ini'), record)))
-    }
-  }
-)
-
-test(
-  'Windows maintenance ready echoes schema and controller without changing schema one',
-  { skip: NATIVE_SKIP },
-  (context) => {
-    const functions = nativeFunction(NATIVE_PRIVILEGES, 'ssProcessCreation') + '\n' +
-      ['ssWriteControllerRecord', 'ssWriteReady'].map((name) => nativeFunction(NATIVE_INSTALLER, name)).join('\n')
-    const directory = nativeFixture(context, functions, `
-  StrCpy $R1 $OUTDIR
-  StrCpy $ssMaintenance "1"
-  StrCpy $ssProtocolSchema "2"
-  StrCpy $ssReadyResult "ready"
-  StrCpy $ssUpdateId "transaction"
-  StrCpy $ssNonce "0123456789abcdef0123456789abcdef"
-  StrCpy $ssControllerPid "1234"
-  StrCpy $ssControllerLow "-123"
-  StrCpy $ssControllerHigh "456"
-  System::Call 'kernel32::GetCurrentProcessId() i .r0'
-  StrCpy $ssInstallerPid $0
-  Call ssWriteReady
-  IfErrors failed
-  SetErrorLevel 0
-  Quit
-failed:
-  SetErrorLevel 13
-`)
-    const record = fs.readFileSync(path.join(directory, 'ready.ini'), 'utf16le')
-    assert.equal(record.charCodeAt(0), 0xfeff)
-    const fields = Object.fromEntries(record.slice(1).trim().split('\r\n').map((line) => line.split('=')))
-    assert.deepEqual(Object.keys(fields), ['schemaVersion', 'updateId', 'nonce', 'installerPid',
-      'installerCreationLow', 'installerCreationHigh', 'controllerPid', 'controllerCreationLow',
-      'controllerCreationHigh', 'result'])
-    assert.equal(fields.schemaVersion, '2')
-    assert.equal(fields.controllerPid, '1234')
-    assert.equal(fields.controllerCreationLow, '-123')
-    assert.equal(fields.controllerCreationHigh, '456')
-  }
-)
-
-test(
-  'Windows maintenance controller fails closed for creation SID session and inaccessible process',
-  { skip: NATIVE_SKIP },
-  async (context) => {
-    const functions = ['ssInspectToken', 'ssRequireOrdinaryToken', 'ssProcessCreation', 'ssBindController', 'ssCheckController']
-      .map((name) => nativeFunction(NATIVE_PRIVILEGES, name)).join('\n')
-    for (const scenario of ['creation', 'sid', 'session', 'missing']) {
-      await context.test(scenario, () => nativeFixture(context, functions, `
-  System::Call 'advapi32::OpenProcessToken(p -1, i \${SS_NATIVE_TOKEN_QUERY_DUPLICATE}, *p .r0) i .r1'
-  StrCmp $1 0 failed
-  StrCpy $ssNativeToken $0
-  Call ssInspectToken
-  IfErrors failed
-  !insertmacro ssCloseNativeHandle $ssNativeToken
-  StrCpy $ssOriginalSid $ssNativeSid
-  StrCpy $ssCallerSid $ssNativeSid
-  StrCpy $ssOriginalSession $ssNativeSession
-  StrCpy $ssNativeProcess -1
-  Call ssProcessCreation
-  StrCpy $ssNativeProcess 0
-  IfErrors failed
-  StrCpy $ssControllerLow $ssProcessLow
-  StrCpy $ssControllerHigh $ssProcessHigh
-  System::Call 'kernel32::GetCurrentProcessId() i .r0'
-  StrCpy $ssControllerPid $0
-  ${scenario === 'creation' ? 'IntOp $ssControllerLow $ssControllerLow + 1' : ''}
-  ${scenario === 'sid' ? 'StrCpy $ssCallerSid "S-1-5-18"' : ''}
-  ${scenario === 'session' ? 'IntOp $ssOriginalSession $ssOriginalSession + 1' : ''}
-  ${scenario === 'missing' ? 'StrCpy $ssControllerPid 0' : ''}
-  Call ssBindController
-  IfErrors rejected
-  !insertmacro ssCloseNativeHandle $ssControllerHandle
-  Goto failed
-rejected:
-  !insertmacro ssCloseNativeHandle $ssControllerHandle
-  SetErrorLevel 0
-  Quit
-failed:
-  SetErrorLevel 13
-`))
-    }
-  }
-)
-
-test('Windows maintenance cannot downgrade to legacy wait or installer-owned restart', () => {
-  const init = nativeFunction(NATIVE_INSTALLER, 'ssHandshakeInit')
-  const exchange = nativeFunction(NATIVE_INSTALLER, 'ssHandshakeExchange')
-  const privilege = nativeFunction(NATIVE_PRIVILEGES, 'ssPrivilegeInit')
-  assert.match(privilege, /\$ssMaintenance == "1"[\s\S]*Call ssRequireOrdinaryToken/)
-  assert.match(init, /ss_init_legacy:\s+\$\{if\} \$ssMaintenance == "1"[\s\S]*Call ssHandshakeFail/)
-  assert.match(exchange, /Call ssCheckController\s+IfErrors ss_exchange_controller\s+\$\{else\}\s+Call ssWaitOldProcessExit/)
-  assert.match(nativeFunction(NATIVE_INSTALLER, 'ssLaunchUpdatedAppOnce'), /StrCmp \$ssMaintenance "1" ss_launch_done/)
-})
-
-test(
-  'Windows privilege diagnostics write valid JSON and preserve the caller error flag',
-  { skip: NATIVE_SKIP },
-  (context) => {
-    const directory = nativeFixture(
-      context,
-      nativeFunction(NATIVE_INSTALLER, 'ssLogEvent'),
-      `
-  StrCpy $ssHome $OUTDIR
-  CreateDirectory "$ssHome\\logs"
-  StrCpy $ssInstallerPid 101
-  StrCpy $ssActualPid 202
-  StrCpy $ssOriginalElevated 0
-  StrCpy $ssOriginalIntegrity 8192
-  StrCpy $ssPluginAdmin 1
-  StrCpy $ssCallerElevated 0
-  StrCpy $ssCallerIntegrity 8192
-  StrCpy $ssUpdateId "test-update"
-  StrCpy $ssLogPhase "privileges"
-  StrCpy $ssLogEventName "verified"
-  StrCpy $ssLogResult "native-token"
-  SetErrors
-  Call ssLogEvent
-  IfErrors preserved
-  SetErrorLevel 13
-  Quit
-  preserved:
-  SetErrorLevel 0
-  `
-    )
-    const record = JSON.parse(fs.readFileSync(path.join(directory, 'logs/install.log'), 'utf8'))
-    assert.equal(record.processId, 101)
-    assert.equal(record.actualProcessId, '202')
-    assert.equal(record.tokenElevated, '0')
-    assert.equal(record.integrityLevel, '8192')
-    assert.equal(record.pluginAdmin, '1')
-    assert.equal(record.callerElevated, '0')
-    assert.equal(record.result, 'native-token')
-  }
-)
-
 test('packaging targets preserve independent macOS and Windows artwork', () => {
   const desktopRoot = path.join(sourceDirectory, '../..')
   for (const [source, destination] of [['resources/tray.png', 'tray.png'], ['resources/tray.ico', 'tray.ico'], ['resources/tray-white.ico', 'tray-white.ico'], ['resources/windows.ico', 'windows-tray.ico']]) {
@@ -683,14 +240,6 @@ const SUBPROCESS_SOURCE = fs.readFileSync(
   path.join(sourceDirectory, '../../src/main/subprocess.ts'),
   'utf8'
 )
-const UPDATE_CONTRACT_SOURCE = fs.readFileSync(
-  path.join(sourceDirectory, '../../src/updates.ts'),
-  'utf8'
-)
-const AUTHENTICODE_SOURCE = fs.readFileSync(
-  path.join(sourceDirectory, '../../src/main/authenticode.ts'),
-  'utf8'
-)
 const CODESIGN_SOURCE = fs.readFileSync(
   path.join(sourceDirectory, '../../src/main/codesign.ts'),
   'utf8'
@@ -701,10 +250,6 @@ const NOTARIZATION_SOURCE = fs.readFileSync(
 )
 const NATIVE_NOTARIZATION_SOURCE = fs.readFileSync(
   path.join(sourceDirectory, '../../native/notarization.c'),
-  'utf8'
-)
-const INSTALLER_NSH = fs.readFileSync(
-  path.join(sourceDirectory, '../../resources/installer.nsh'),
   'utf8'
 )
 const COMPONENTS_CJS_SOURCE = fs.readFileSync(
@@ -998,7 +543,7 @@ test('build output directory is stable per type, platform, and architecture', ()
     path.join(release, 'release-darwin-arm64')
   )
 })
-test('Windows x64 uses NSIS and requires signing inputs unless explicitly candidate', () => {
+test('Windows x64 uses Velopack and requires signing inputs unless explicitly candidate', () => {
   const base = [
     '--platform',
     'win32',
@@ -1020,114 +565,10 @@ test('Windows x64 uses NSIS and requires signing inputs unless explicitly candid
 test('Windows signer changes only ScholarSeed-owned executables', () => {
   assert.equal(ownedExecutable('C:/app/ScholarSeed.exe'), true)
   assert.equal(ownedExecutable('C:/app/scholarseed-0.2.0-windows-amd64.exe'), true)
-  assert.equal(ownedExecutable('C:/app/__uninstaller-nsis-scholarseed-desktop.exe'), true)
   assert.equal(ownedExecutable('C:/app/resources/backend/codex-runtime/bin/codex.exe'), false)
   assert.equal(ownedExecutable('C:/app/resources/backend/python/Scripts/scholarseed.exe'), false)
   assert.equal(ownedExecutable('C:/app/resources/backend/python/python.exe'), false)
   assert.equal(ownedExecutable('C:/app/resources/updater/update-owner.exe'), false)
-})
-// 抽出 verifyWindowsInstaller 真正发给 PowerShell 的脚本字面量。CLM 安全断言必须针对这段脚本、
-// 而不是整个 updater.ts 源码：后者的 JSDoc 会点名 Add-Type / [PSCustomObject] / [Console]:: 这些被禁
-// 构造来解释「为什么不用」，对整文件 doesNotMatch 会被注释误触发（上一轮就踩过同名陷阱）。
-function windowsVerifyScript() {
-  const source = ts.createSourceFile('updater.ts', UPDATER_SOURCE, ts.ScriptTarget.Latest, true)
-  const verifier = source.statements.find(
-    (statement) =>
-      ts.isFunctionDeclaration(statement) && statement.name?.text === 'verifyWindowsInstaller'
-  )
-  assert.ok(verifier, 'verifyWindowsInstaller not found')
-  const declaration = verifier.body.statements
-    .filter(ts.isVariableStatement)
-    .flatMap((statement) => [...statement.declarationList.declarations])
-    .find((declaration) => declaration.name.getText(source) === 'script')
-  assert.ok(declaration?.initializer, 'script literal not found')
-  return runInNewContext(declaration.initializer.getText(source), {
-    WINDOWS_INSTALLER_ENV: 'SCHOLARSEED_UPDATE_INSTALLER',
-    WINDOWS_VERIFY_REPORT_ENV: 'SCHOLARSEED_UPDATE_VERIFY_REPORT',
-    // 报告契约值在 authenticode.ts 只存一份；这里的字面量必须与它一致，下面单独钉死。
-    AUTHENTICODE_REPORT_KEYS: {
-      languageMode: 'LanguageMode',
-      status: 'Status',
-      subject: 'Subject',
-    },
-  })
-}
-test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdlet, no shell', () => {
-  // bug 87042987：受限语言模式（WDAC/AppLocker 企业终端管控）下 Add-Type、[PSCustomObject] 类型转换、
-  // [Console]::OutputEncoding 静态属性赋值全部被禁，内联 WinVerifyTrust 脚本必然非零退出 → 校验
-  // fail-closed 永久阻断安装。改用内置 cmdlet Get-AuthenticodeSignature（受限模式允许运行）+ 属性 get。
-  const script = windowsVerifyScript()
-  assert.match(script, /Get-AuthenticodeSignature/)
-  assert.match(script, /\.SignerCertificate\.Subject/)
-  // 被禁构造一个都不能出现在真正下发的脚本里（只查抽出的 script，注释里点名不算）。
-  assert.doesNotMatch(script, /Add-Type/)
-  assert.doesNotMatch(script, /\[Console\]::/)
-  assert.doesNotMatch(script, /\[PSCustomObject\]/)
-  assert.doesNotMatch(script, /WinVerifyTrust/)
-  assert.doesNotMatch(script, /\[Convert\]::|\[uint32\]/)
-  // 判定输入一律走 `-Encoding UTF8` 的报告文件，脚本什么都不往 stdout 写（bug 87108457）：证书 DN 带
-  // 中文属地属性（L=杭州市 / S=浙江省 / OID.1.3.6.1.4.1.311.60.2.1.1=西湖区），而 powershell.exe 的
-  // stdout 按本机控制台代码页编码（中文 Windows 是 936/GBK），Node 侧解码一旦与实际代码页不一致，这几个
-  // 属性就变成 U+FFFD，与构建期冻结的期望串必然不符 → 一次**解码降级**被误判成「发布者不符」的**安全
-  // 拦截**、更新永久阻断。真机（PS 5.1.17763 / chcp 936）已实测否掉两条更省事的路：ConvertTo-Json 不会
-  // 把非 ASCII 转义成 \uXXXX；chcp 探测在现场客户端里已存在却仍回退到 UTF-8。文件编码由 cmdlet 参数
-  // 显式决定，与代码页和序列化器实现都无关。
-  assert.match(script, /ConvertTo-Json -Compress/)
-  assert.match(script, /Set-Content -LiteralPath \$env:SCHOLARSEED_UPDATE_VERIFY_REPORT/)
-  assert.match(script, /-Encoding UTF8/)
-  assert.doesNotMatch(script, /Write-Output/)
-  assert.match(UPDATER_SOURCE, /WINDOWS_VERIFY_REPORT_ENV = 'SCHOLARSEED_UPDATE_VERIFY_REPORT'/)
-  // 枚举字段一律先 [string] 再进 JSON：否则序列化出来是底层整数，Node 侧拿到 0 而不是 'Valid'。
-  assert.match(script, /\[string\]\$signature\.Status/)
-  assert.match(script, /\[string\]\$ExecutionContext\.SessionState\.LanguageMode/)
-  // 报告从文件读、读完即删；文件名带一次性 UUID，上一轮残留不可能被冒充成本轮结果。报告不合规 ==
-  // 校验没能执行，归 verify-env-unavailable，不得落成发布者不符的安全拦截。
-  assert.match(UPDATER_SOURCE, /parseAuthenticodeReport\(readVerifyReport\(reportPath\)\)/)
-  assert.match(UPDATER_SOURCE, /if \(result\.status !== 0 \|\| report === null\) \{/)
-  assert.match(UPDATER_SOURCE, /randomUUID\(\)/)
-  assert.match(UPDATER_SOURCE, /VERIFY_REPORT_SUFFIX = '\.verify\.json'/)
-  assert.match(UPDATER_SOURCE, /rmSync\(reportPath, \{ force: true \}\)/)
-  assert.doesNotMatch(UPDATER_SOURCE, /parseAuthenticodeReport\(result\.stdout\)/)
-  assert.doesNotMatch(UPDATER_SOURCE, /\^SUBJECT=/)
-  // 契约值单一来源：脚本插值的键名与解析器读的键名都出自 authenticode.ts，且必须与上面沙箱里的
-  // 字面量一致（否则脚本与解析器会各自漂移，而两侧的形状断言都还是绿的）。
-  assert.match(AUTHENTICODE_SOURCE, /languageMode: 'LanguageMode'/)
-  assert.match(AUTHENTICODE_SOURCE, /status: 'Status'/)
-  assert.match(AUTHENTICODE_SOURCE, /subject: 'Subject'/)
-  assert.match(AUTHENTICODE_SOURCE, /export function parseAuthenticodeReport/)
-  // U+FFFD 是编码降级的指纹，真实证书 DN 里不可能出现；出现即拒绝判定。
-  assert.match(AUTHENTICODE_SOURCE, /includes\(REPLACEMENT_CHARACTER\)\) return null/)
-  // fail-closed：仅 Valid 放行，且发布者必须与打包策略一致。三档判定与 DN 同发布者判定归
-  // authenticode.ts（纯函数、有单测），updater 只消费判定结果。
-  assert.match(AUTHENTICODE_SOURCE, /AUTHENTICODE_VALID = 'Valid'/)
-  assert.match(AUTHENTICODE_SOURCE, /export function classifyAuthenticodeStatus/)
-  assert.match(AUTHENTICODE_SOURCE, /export function publisherSubjectsMatch/)
-  assert.match(UPDATER_SOURCE, /classifyAuthenticodeStatus\(status\)/)
-  assert.match(UPDATER_SOURCE, /publisherSubjectsMatch\(subject, expectedPublisher\)/)
-  assert.doesNotMatch(UPDATER_SOURCE, /subject !== expectedPublisher/)
-  // 启动 NSIS 仍不经 shell、参数由常量拼装（proposal 108 §5.2 起为新握手协议：--updated +
-  // /SCHOLARSEED_UPDATE_ID=<uuid>，不再传 /S 与 --force-run——/S 会抑制进度页，--force-run 会让
-  // installSection 的 isForceRun&&Silent 分支成为第二个拉起者）。旧断言钉死的三元组已被协议取代，
-  // 这里替换为同等强度的新不变量：参数形态、env 交接、commit 前置、以及「新客户端永不再传
-  // /S、--force-run」的否定断言（带引号字面量形态，避开中文注释里的提及）。
-  assert.match(UPDATER_SOURCE, /WINDOWS_UPDATE_ARGUMENT = '--updated'/)
-  assert.match(
-    UPDATER_SOURCE,
-    /spawn\(installer, \[WINDOWS_UPDATE_ARGUMENT, `\$\{UPDATE_ID_ARGUMENT_PREFIX\}\$\{updateId\}`\]/
-  )
-  assert.match(UPDATER_SOURCE, /\[HANDSHAKE_HOME_ENV\]: desktopHome\(\)/)
-  assert.match(UPDATER_SOURCE, /\[HANDSHAKE_NONCE_ENV\]: request\.nonce/)
-  assert.match(
-    UPDATER_SOURCE,
-    /publishHandshakeDecision\(directory, request, DECISION_COMMIT, log, assertAuthorized\)/
-  )
-  assert.doesNotMatch(UPDATER_SOURCE, /'\/S'/)
-  assert.doesNotMatch(UPDATER_SOURCE, /'--force-run'/)
-  assert.match(
-    UPDATER_SOURCE,
-    /verifyWindowsInstaller\(installer, config\.expectedWindowsPublisher, log\)/
-  )
-  assert.doesNotMatch(UPDATER_SOURCE, /spawn\(installer,[\s\S]{0,160}shell:/)
 })
 test('Windows subprocess output is decoded by console code page, not blindly as UTF-8', () => {
   // bug 87042987 次生缺陷：中文 Windows 的 powershell.exe 按 GBK(936) 输出，无条件 toString('utf8')
@@ -1138,22 +579,6 @@ test('Windows subprocess output is decoded by console code page, not blindly as 
   assert.match(SUBPROCESS_SOURCE, /WINDOWS_CODE_PAGE_ENCODINGS/)
   assert.match(SUBPROCESS_SOURCE, /'936': 'gbk'/)
   assert.doesNotMatch(SUBPROCESS_SOURCE, /chunk\.toString\('utf8'\)/)
-  // 探测只服务日志/stderr 可读性：判定输入走 ASCII-only JSON 报告，与探测结果无关。探测有两条静默
-  // 回退（chcp 没跑成、TextDecoder 不认标签），87108457 现场因此无法定论是哪一条 —— 实际选用的编码
-  // 必须落进 update.log。
-  assert.match(SUBPROCESS_SOURCE, /encoding: string/)
-  assert.match(UPDATER_SOURCE, /stdoutEncoding=\$\{result\.encoding\}/)
-})
-test('Windows install failures are classified and never surface raw stderr to the user', () => {
-  // bug 87042987：区分「校验环境不可用」与「签名不可信」，原始诊断只落 update.log，界面给结构化本地化
-  // 文案（手动安装引导 / 安全拦截），不再把可能乱码的 PowerShell stderr 插值进用户可见串。
-  assert.match(UPDATER_SOURCE, /install_verify_unavailable/)
-  assert.match(UPDATER_SOURCE, /install_signature_untrusted/)
-  // 本机不可判定是独立分类：主进程标注、渲染层映射文案，两侧都要有，缺一侧就会退回笼统说法。
-  assert.match(UPDATER_SOURCE, /install_signature_indeterminate/)
-  assert.match(UPDATE_FEATURE_SOURCE, /install_signature_indeterminate/)
-  assert.match(UPDATER_SOURCE, /class UpdateVerifyError extends Error/)
-  assert.match(UPDATER_SOURCE, /\{ ok: false, errorFallback: updateInstallFallback\(error\) \}/)
 })
 test('macOS install gate requires local Developer ID identity and offline ticket verification', () => {
   // 运行时安装门绝不再以 'spctl' 作在线评估硬门：企业管控网 TLS 拦截会让 syspolicyd 的在线公证
@@ -1210,217 +635,6 @@ test('the updater never blocks the main process with a synchronous spawn', () =>
   assert.match(UPDATER_SOURCE, /MACOS_SIGNATURE_COMMAND_TIMEOUT_MS/)
   assert.match(UPDATER_SOURCE, /MACOS_STAGE_COPY_TIMEOUT_MS/)
 })
-test('Windows update recreates a missing desktop shortcut (customInstall safety net)', () => {
-  // 更新时 electron-builder 的 addDesktopLink 在 $keepShortcuts=="true" 下只把旧名快捷方式 Rename 成
-  // 新名；旧卸载器已删、或改名致旧路径对不上时既不 Rename 也不 Create（RECREATE 分支被
-  // ${ifNot} ${isUpdated} 挡死，createDesktopShortcut:"always" 也无效）→ 桌面快捷方式永久丢失。
-  // resources/installer.nsh 的 customInstall 必须无条件补建缺失的快捷方式。真机踩过，钉死。
-  assert.match(INSTALLER_NSH, /!macro customInstall/)
-  assert.match(INSTALLER_NSH, /\$\{ifNot\} \$\{FileExists\} "\$newDesktopLink"/)
-  assert.match(INSTALLER_NSH, /CreateShortCut "\$newDesktopLink"/)
-  assert.match(INSTALLER_NSH, /CreateShortCut "\$newStartMenuLink"/)
-})
-
-test('Windows installer.nsh carries the update handshake contract (proposal 108 P0)', () => {
-  // 源码形态契约（同 customInstall 兜底的钉法）：运行时行为待 Windows 真机出包验证，
-  // 但这些结构一旦漂移，握手/单拉起/legacy 兼容会静默失效。
-  // 1. customInit 接管握手；协议参数缺失 → legacy（旧客户端 /S --force-run 路径保留）。
-  const customInit = INSTALLER_NSH.match(/\n!macro customInit\r?\n([\s\S]*?)\n!macroend/)[1]
-  assert.match(customInit, /Call ssHandshakeInit/)
-  assert.ok(
-    customInit.indexOf('!insertmacro ssRequireNativeUserScope') <
-      customInit.indexOf('Call ssHandshakeInit')
-  )
-  assert.match(INSTALLER_NSH, /StrCpy \$ssHandshakeMode "legacy"/)
-  assert.match(INSTALLER_NSH, /\$\{GetOptions\} \$R0 "\$\{SS_UPDATE_ID_OPTION\}" \$ssUpdateId/)
-  // 2. updateId 过 UUID 形状闸后才参与路径拼接（防路径穿越，与 Node 侧同判据）。
-  assert.match(INSTALLER_NSH, /Call ssValidateUuid\r?\n\s*IfErrors ss_init_fail_uuid/)
-  // 3. 握手文件是 UTF-16LE（不依赖系统代码页，bug 87108457 同源纪律）。写侧带 /BOM；
-  // 读侧不带 —— FileReadUTF16LE 没有 /BOM 旗标（真机 makensis 验证，267a5d905 前身修复）。
-  assert.match(INSTALLER_NSH, /FileReadUTF16LE \$R2 \$R4/)
-  assert.doesNotMatch(INSTALLER_NSH, /FileReadUTF16LE \/BOM/)
-  assert.match(INSTALLER_NSH, /FileWriteUTF16LE \/BOM \$R2 "schemaVersion=/)
-  // NSIS 无内建 $PID：安装器进程号必须显式 GetCurrentProcessId 取得。
-  assert.match(INSTALLER_NSH, /GetCurrentProcessId\(\) i \.r0/)
-  assert.match(INSTALLER_NSH, /installerPid=\$ssInstallerPid/)
-  // reparse 拒绝走 FileFunc 宏形式（原生指令形式在真机上不成立）。
-  assert.match(INSTALLER_NSH, /\$\{GetFileAttributes\} "\$R1" "REPARSE_POINT" \$R6/)
-  // 4. cancel 与决策超时都必须在卸载前 Quit（绝不带活流程进 installSection）。
-  assert.match(INSTALLER_NSH, /ss_decision_cancel:[\s\S]{0,400}?Goto ss_exchange_failed/)
-  assert.match(INSTALLER_NSH, /ss_decision_timeout:[\s\S]{0,600}?Goto ss_exchange_failed/)
-  // 5. 旧进程退出超时必须中止且不强杀：等待循环里不得出现任何 kill 原语。
-  assert.match(INSTALLER_NSH, /ss_exchange_oldproc:[\s\S]{0,600}?SS_HANDOFF_REJECTED/)
-  assert.doesNotMatch(INSTALLER_NSH, /nsProcess|taskkill|TerminateProcess/)
-  // 6. 自动拉起唯一所有者：ssLaunchUpdatedAppOnce（单次守卫，继承原发起进程身份）。
-  assert.match(INSTALLER_NSH, /StrCmp \$ssLaunchAttempted "1" ss_launch_done/)
-  assert.match(INSTALLER_NSH, /Exec '"\$appExe" --updated --scholarseed-update-id=\$ssUpdateId'/)
-  assert.match(INSTALLER_NSH, /!define MUI_PAGE_CUSTOMFUNCTION_PRE ssFinishPre/)
-  // 7. customInstall 只置成功标志，绝不自己拉起（否则出现第二个启动者）。
-  // 行首锚定：文件头注释里也提到 "!macro customInstall" 字样，不能抢先命中。
-  const customInstall = INSTALLER_NSH.match(/\n!macro customInstall\r?\n([\s\S]*?)\n!macroend/)
-  assert.ok(customInstall, 'customInstall macro not found')
-  assert.match(customInstall[1], /StrCpy \$ssInstallComplete "1"/)
-  assert.doesNotMatch(customInstall[1], /Exec/)
-  // 8. install.log 行是 ASCII JSON、与 update.log 共享 updateId。
-  assert.match(INSTALLER_NSH, /"schemaVersion":\$\{SS_HANDSHAKE_SCHEMA\},"timestampLocal":"/)
-  assert.match(INSTALLER_NSH, /FileWrite \$ssLogHandle "\$ssUpdateId"/)
-  // 8b. 2026-09-22 真机 install.log 恒 0 字节后的加固形态（运行时待 Windows 出包验证）：
-  // 句柄用具名 Var 不借 $9；20 个寄存器全自保存（GetTime 会扫 $0-$9/$R0-$R9，扫掉调用方的
-  // $R1 握手目录就是静默错写）；目录已存在跳过 CreateDirectory；时间戳分段写，杜绝
-  // "$ssTimeDayT" 这种 T/Z 被并进变量名（最长标识符解析）展开成空串的串。
-  const ssLogEvent = INSTALLER_NSH.match(/\n\s*Function ssLogEvent\r?\n([\s\S]*?)\n\s*FunctionEnd/)
-  assert.ok(ssLogEvent, 'ssLogEvent function not found')
-  assert.match(ssLogEvent[1], /FileOpen \$ssLogHandle/)
-  assert.match(ssLogEvent[1], /FileWrite \$ssLogHandle /)
-  assert.doesNotMatch(ssLogEvent[1], /FileOpen \$9 |FileWrite \$9 |FileClose \$9/)
-  assert.match(ssLogEvent[1], /Push \$R9/)
-  assert.match(ssLogEvent[1], /Pop \$0\s*\r?\n\s*(;[^\n]*\r?\n\s*)?FunctionEnd|Pop \$0\s*$/)
-  assert.match(ssLogEvent[1], /IfFileExists "\$ssHome\\logs" ss_log_dir_ok/)
-  assert.doesNotMatch(ssLogEvent[1], /\$ssTimeDayT|\$ssTimeSecondZ/)
-  // 行头先落盘再 GetTime，且 GetTime 后立刻 ClearErrors：第四轮真机定论 NSIS 3.0.4.1 的
-  // FileFunc GetTime 写不出输出变量（"U" 选项无效）且留错误标志，标志残留既让 FileOpen 后的
-  // IfErrors 误跳（三轮 0 字节真凶），也让 log-dir 检查误判 log-dir-unavailable。
-  // 旧顺序（GetTime 在 FileOpen 前）与残留标志都禁止回归；时间戳改本地时间字段 timestampLocal。
-  assert.doesNotMatch(ssLogEvent[1], /\$\{GetTime\}[\s\S]*?FileOpen \$ssLogHandle/)
-  assert.match(ssLogEvent[1], /\$\{GetTime\} "" "L" [^\n]*\r?\n\s*ClearErrors/)
-  assert.match(
-    ssLogEvent[1],
-    /FileWrite \$ssLogHandle '\{"schemaVersion":\$\{SS_HANDSHAKE_SCHEMA\},"timestampLocal":"'/
-  )
-  assert.match(
-    ssLogEvent[1],
-    /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" w\r?\n\s*IfErrors ss_log_done\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*FileWrite \$ssLogHandle '\{"schemaVersion":/
-  )
-  // 第二轮真机证明 'a'+FileSeek 组合仍 0 字节（ready.ini 的 'w'+UTF16LE 每轮成功）：弃用 append，
-  // 首条日志前轮转旧文件（崩溃轮证据保留一代），本体 'w' 写；轮转每轮只发生一次。
-  assert.doesNotMatch(ssLogEvent[1], /FileSeek/)
-  assert.match(ssLogEvent[1], /StrCmp \$ssLogRotated "1" ss_log_open/)
-  assert.match(ssLogEvent[1], /Delete "\$ssHome\\logs\\\$\{SS_INSTALL_PREV_LOG\}"/)
-  assert.match(
-    ssLogEvent[1],
-    /Rename "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" "\$ssHome\\logs\\\$\{SS_INSTALL_PREV_LOG\}"/
-  )
-  assert.match(ssLogEvent[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" w/)
-  // 8c. 探针矩阵与 Node 尺寸探针已完成使命（第四轮定根因、第五轮验收全绿）并全撤：
-  // install.log 自身（本轮最后完成相位一行 + install-prev 上一轮同义）就是之后的证据通道；
-  // 崩溃归因靠「崩溃前最后完成相位」足够 confine。禁止探针设施回归。
-  assert.doesNotMatch(INSTALLER_NSH, /ssProbeWritePrimitives|SS_PROBE_|install-probe-/)
-  assert.doesNotMatch(UPDATER_SOURCE, /installerLogSizes|INSTALLER_LOG_PROBE_FILES|install-probe-/)
-  // 9. 协议模式跳掉 assisted 非静默必弹的「安装模式」选择页（2026-09-22 真机事故：只不传 /S
-  //    而不跳页时，自动更新停在该页等人工点击，安装始终没发生）。模板在页 PRE 里给的钩子
-  //    customInstallMode 置 isForceCurrentInstall 走 setInstallModePerUser+Abort 跳页分支；
-  //    仅当确有 per-user 旧安装时才强制（否则回退模板默认页），卸载器构建不得引用握手 Var。
-  const customInstallMode = INSTALLER_NSH.match(
-    /\n\s*!macro customInstallMode\r?\n([\s\S]*?)\n\s*!macroend/
-  )
-  assert.ok(customInstallMode, 'customInstallMode macro not found')
-  assert.match(customInstallMode[1], /!ifndef BUILD_UNINSTALLER/)
-  assert.match(customInstallMode[1], /\$ssHandshakeMode == "protocol"/)
-  assert.match(customInstallMode[1], /\$ssInstallScope == "\$\{SS_SCOPE_USER\}"/)
-  assert.match(customInstallMode[1], /StrCpy \$isForceCurrentInstall "1"/)
-  const ssHandshakeInit = INSTALLER_NSH.match(
-    /\n\s*Function ssHandshakeInit\r?\n([\s\S]*?)\n\s*FunctionEnd/
-  )
-  assert.ok(ssHandshakeInit, 'ssHandshakeInit function not found')
-  assert.doesNotMatch(ssHandshakeInit[1], /per-machine-unsupported/)
-  assert.match(ssHandshakeInit[1], /UAC_RunElevated/)
-  assert.match(ssHandshakeInit[1], /UAC_AsUser_Call Function ssHandshakeExchange/)
-  assert.match(ssHandshakeInit[1], /ReadRegStr \$ssTargetDir HKLM/)
-  assert.match(ssHandshakeInit[1], /StrCmp \$INSTDIR \$ssTargetDir 0 ss_init_inner_fail/)
-  const exchange = INSTALLER_NSH.match(
-    /\n\s*Function ssHandshakeExchange\r?\n([\s\S]*?)\n\s*FunctionEnd/
-  )
-  assert.ok(exchange)
-  // A missing HKLM key is normal for per-user installs. Its sticky error must
-  // not turn a successful ready-file open into a rejected handoff (87319861).
-  const writeReady = INSTALLER_NSH.match(
-    /\n\s*Function ssWriteReady\r?\n([\s\S]*?)\n\s*FunctionEnd/
-  )[1]
-  assert.match(writeReady, /ClearErrors\s+\$\{if\} \$ssReadyResult/)
-  assert.match(writeReady, /FileClose \$R2\s+IfErrors ss_ready_failed/)
-  assert.match(exchange[1], /"ready-write-failed"[\s\S]*?Call ssWriteReady/)
-  assert.match(exchange[1], /ss_exchange_failed:[\s\S]*?Call ssLogEvent/)
-  assert.doesNotMatch(exchange[1], /\bQuit\b/)
-  assert.match(exchange[1], /StrCpy \$R9 "\$\{SS_HANDOFF_REJECTED\}"/)
-  assert.match(exchange[1], /Call ssWaitOldProcessExit/)
-  assert.match(exchange[1], /StrCpy \$R9 "\$\{SS_HANDOFF_COMMITTED\}"/)
-  assert.match(INSTALLER_NSH, /UAC_AsUser_Call Function ssLaunchUpdatedAppOnce/)
-  assert.match(INSTALLER_NSH, /UAC_AsUser_Call Function ssCompleteUserInstall/)
-  assert.match(INSTALLER_NSH, /Call ssWaitAllProcessesExit/)
-  // 10. 协议 spawn 不得带窗口隐藏旗标：GUI 子系统无控制台可藏，而该旗标的 SW_HIDE 会隐掉安装器
-  //     第一个窗口，把任何「等用户」状态变成看不见的模态挂死（同事故）。
-  const protocolSpawn = UPDATER_SOURCE.match(
-    /spawn\(installer, \[WINDOWS_UPDATE_ARGUMENT[\s\S]*?\n    \}\)/
-  )
-  assert.ok(protocolSpawn, 'protocol spawn block not found')
-  assert.doesNotMatch(protocolSpawn[0], /windowsHide/)
-  assert.doesNotMatch(UPDATER_SOURCE, /windowsInstallModeProbe|per-machine-install-manual/)
-  assert.match(UPDATER_SOURCE, /new InstallerReadiness/)
-  assert.match(
-    UPDATER_SOURCE,
-    /if \(!publishHandshakeDecision\(directory, request, DECISION_COMMIT, log, assertAuthorized\)\)/
-  )
-})
-test('legacy Windows install waits for the old app to exit before touching files', () => {
-  // 真实用户场景：旧版本仍在运行，用户运行新安装器 → 旧卸载器关不掉进程（其取消路径退出码 0
-  // 被 handleUninstallResult 当成卸载成功），安装继续覆盖被占用文件，报「不能打开要写入的文件
-  // Uninstall ScholarSeed.exe」。默认 CHECK_APP_RUNNING 在 per-machine 内层提权实例被
-  // ${UAC_IsInnerInstance} 守卫整体跳过，legacy 又不受 proposal 108 握手保护，于是没有闸门。
-  // 修法：legacy 进入页面序列前 fail-closed 等待 —— 检测到运行就提示手动退出并轮询，彻底退出
-  // 才继续，取消/静默超时即中止；全程只查询、绝不强杀。
-  assert.match(INSTALLER_NSH, /!macro ssDetectAppRunning _RETURN/)
-  // 纯查询：tasklist + findstr 管道按镜像名锚定，不依赖 PowerShell 语言模式。
-  assert.match(INSTALLER_NSH, /\/C tasklist \/FI "USERNAME eq %USERNAME%"/)
-  assert.match(INSTALLER_NSH, /findstr\.exe" \/B \/I \/C:/)
-  const enforce = INSTALLER_NSH.match(
-    /\n\s*Function ssEnforceAppClosed\r?\n([\s\S]*?)\n\s*FunctionEnd/
-  )
-  assert.ok(enforce, 'ssEnforceAppClosed function not found')
-  assert.match(enforce[1], /!insertmacro ssDetectAppRunning \$R0/)
-  // ssDetectAppRunning 的返回语义：0 = 仍在运行，非 0（含 nsExec 的 "error"）= 未检测到。
-  // 极性必须写成「非 0 才继续」——单标签形式 StrCmp $R0 "0" ss_eac_closed 会把 0（在跑）
-  // 当成已关闭，导致在跑的放行、没跑的反而空等超时。真机探针抓到的正是这个反极性。
-  assert.equal((enforce[1].match(/StrCmp \$R0 "0" 0 ss_eac_closed/g) || []).length, 2)
-  assert.doesNotMatch(enforce[1], /StrCmp \$R0 "0" ss_eac_closed/)
-  // 手动关闭提示：Retry 重新检测，Cancel 中止；静默不弹窗、限时等待。
-  assert.match(enforce[1], /!insertmacro ssLocalizedMessage \$R9 "ScholarSeed is still running\./)
-  assert.match(enforce[1], /MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$R9"/)
-  assert.match(enforce[1], /\/SD IDCANCEL IDRETRY ss_eac_ui_wait/)
-  assert.match(enforce[1], /ss_eac_ui_wait:\r?\n\s*Goto ss_eac_ui_loop/)
-  assert.doesNotMatch(enforce[1], /StrCmp \$R2 "1" ss_eac_ui_wait/)
-  assert.match(INSTALLER_NSH, /StrCpy \$\{_OUTPUT\} "\$\{_ENGLISH\}"/)
-  assert.match(INSTALLER_NSH, /\$LANGUAGE == \$\{LANG_SIMPCHINESE\}/)
-  assert.match(INSTALLER_NSH, /\$LANGUAGE == \$\{LANG_TRADCHINESE\}/)
-  // Schema 2 adds a localized in-app retry message to the existing failure box.
-  assert.equal((INSTALLER_NSH.match(/!insertmacro ssLocalizedMessage \$R9 /g) || []).length, 12)
-  assert.equal(
-    (
-      INSTALLER_NSH.match(
-        /MessageBox MB_(?:RETRYCANCEL\|MB_ICONEXCLAMATION|OK\|MB_ICONSTOP) "\$R9"/g
-      ) || []
-    ).length,
-    11
-  )
-  assert.match(enforce[1], /IfSilent ss_eac_silent_setup/)
-  assert.match(enforce[1], /IntCmp \$R1 \$\{SS_OLDPROC_WAIT_ROUNDS\} ss_eac_silent_abort/)
-  // 取消与静默超时都必须中止安装，只有「确认已退出」才落回 Pop 继续。
-  assert.match(enforce[1], /ss_eac_ui_loop:[\s\S]*?MessageBox[\s\S]*?Quit/)
-  const silentAbort = enforce[1].match(/ss_eac_silent_abort:\r?\n([\s\S]*?)\n\s*ss_eac_closed:/)
-  assert.ok(silentAbort, 'silent timeout must have its own block before successful close')
-  const abortInstructions = silentAbort[1]
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith(';'))
-  assert.equal(abortInstructions.at(-1), 'Quit', 'timeout must terminate before the success block')
-  assert.doesNotMatch(silentAbort[1], /^\s*(?:Goto|Return|Pop|Abort)\b/m)
-  assert.match(enforce[1], /ss_eac_closed:/)
-  // 与 proposal 108 同纪律：闸门内不得出现任何强杀原语。
-  assert.doesNotMatch(enforce[1], /nsProcess|taskkill|TerminateProcess/)
-  // legacy 分支必须调用它；协议分支继续由 ssWaitOldProcessExit 按 callerPid 收敛。
-  assert.match(INSTALLER_NSH, /IfErrors ss_init_legacy/)
-  assert.match(INSTALLER_NSH, /ss_init_legacy:[\s\S]{0,200}?Call ssEnforceAppClosed/)
-})
-
 test('runtime store 收敛为 <home>/runtime，独立覆盖轴已删除（proposal 112）', () => {
   // 旧组件 store 根解析口在 components.cjs；backend 经
   // runtimeStoreRoot(desktopHome()) 取 <home>/runtime，不再有 SCHOLARSEED_RUNTIME_STORE 覆盖档。
@@ -1434,34 +648,6 @@ test('runtime store 收敛为 <home>/runtime，独立覆盖轴已删除（propos
   )
   // .cmd 继承解释器的输出由 components.test.cjs 验证，
   // 此处只保证源码不再残留覆盖档常量。
-})
-test('uninstaller clears re-acquirable caches: transient-only on update, full sweep on real uninstall', () => {
-  // 用户目录残留的是「可再获取」缓存（组件 store 数 GB + 暂存包），不是用户数据；NSIS 卸载器
-  // 默认只清 INSTDIR。两档语义钉死：版本更新（旧卸载器带 --updated）只删不一致瞬态
-  // （staging/locks），components/manifests 必须活过更新（proposal 108 P2a 跨版本命中）；
-  // 真卸载整删 store 与暂存包缓存，但 .scholarseed 其余内容一字不动。更新档不碰暂存包缓存——
-  // 新安装器正从其中那个 exe 运行。
-  const customUnInstall = INSTALLER_NSH.match(/\n!macro customUnInstall\r?\n([\s\S]*?)\n!macroend/)
-  assert.ok(customUnInstall, 'customUnInstall macro not found')
-  // store 根 = <home>\runtime；home 取注册表 SCHOLARSEED_HOME（收敛后唯一数据根），否则默认。
-  assert.match(customUnInstall[1], /ReadRegStr \$R0 HKCU "Environment" "SCHOLARSEED_HOME"/)
-  assert.match(customUnInstall[1], /StrCpy \$R0 "\$PROFILE\\\.scholarseed"/)
-  assert.match(customUnInstall[1], /StrCpy \$R0 "\$R0\\runtime"/)
-  assert.match(customUnInstall[1], /DeleteRegValue HKCU "Environment" "SCHOLARSEED_HOME"/)
-  assert.doesNotMatch(customUnInstall[1], /SCHOLARSEED_RUNTIME_STORE/)
-  assert.match(
-    customUnInstall[1],
-    /\$\{if\} \$\{isUpdated\}\r?\n\s*RMDir \/r "\$R0\\staging"\r?\n\s*RMDir \/r "\$R0\\locks"\r?\n\s*\$\{else\}\r?\n\s*RMDir \/r "\$R0"/
-  )
-  // 不得整删用户 home 或 .scholarseed 根（用户数据）：只允许删 $R0（store 根）与暂存包缓存。
-  assert.doesNotMatch(customUnInstall[1], /RMDir \/r "\$PROFILE"/)
-  assert.doesNotMatch(customUnInstall[1], /RMDir \/r "\$R0\\(?!staging|locks)/)
-  // 目录名与 TS 事实源逐字对齐，防 nsh 手抄走样。
-  assert.match(STORAGE_SOURCE, /SCHOLARSEED_HOME_DIRNAME = '\.scholarseed'/)
-  assert.match(COMPONENTS_CJS_SOURCE, /const RUNTIME_DIRNAME = 'runtime'/)
-  assert.match(COMPONENTS_CJS_SOURCE, /const STAGING_DIRNAME = 'staging'/)
-  assert.match(COMPONENTS_CJS_SOURCE, /const LOCKS_DIRNAME = 'locks'/)
-  assert.match(UPDATER_SOURCE, /UPDATE_CACHE_DIRNAME = 'scholarseed-update'/)
 })
 test('data location is runtime read-only; container root is the only runtime-mutable axis (proposal 112)', () => {
   // 桥：storage-config 只读概览（含首启门控 firstLaunchEligible）+ commit-data-home 仅首启一次性
@@ -1533,124 +719,6 @@ test('data location is runtime read-only; container root is the only runtime-mut
     /project-root-browse|project-root-input|saveWorkspaceRoot/
   )
 })
-test('first-install wizard offers an optional component store location, skipped otherwise', () => {
-  // 首装高级步骤：留空 = 默认（透明），仅非空且校验通过才登记 env；非首装场景全部 PRE 跳页。
-  assert.match(
-    INSTALLER_NSH,
-    /!macro customPageAfterChangeDir\r?\n\s*!insertmacro MUI_PAGE_INIT\r?\n\s*PageEx custom\r?\n\s*PageCallbacks ssStorePagePre ssStorePageLeave/
-  )
-  const pre = INSTALLER_NSH.match(/\n\s*Function ssStorePagePre\r?\n([\s\S]*?)\n\s*FunctionEnd/)
-  assert.ok(pre, 'ssStorePagePre function not found')
-  assert.match(pre[1], /\$\{if\} \$\{isUpdated\}\r?\n\s*Abort/)
-  assert.match(pre[1], /\$\{if\} \$hasPerUserInstallation == "1"\r?\n\s*Abort/)
-  assert.match(pre[1], /\$\{if\} \$hasPerMachineInstallation == "1"\r?\n\s*Abort/)
-  // 触发判据读注册表（升级路径 env 恒非空），且默认 home 已有数据时不引导（防 orphan）。
-  assert.match(pre[1], /ReadRegStr \$R0 HKCU "Environment" "\$\{SS_HOME_ENV\}"/)
-  assert.match(pre[1], /StrCmp \$R0 "" ss_store_check_data\r?\n\s*Abort/)
-  assert.match(pre[1], /\$\{if\} \$\{FileExists\} "\$PROFILE\\\.scholarseed\\\*\.\*"\r?\n\s*Abort/)
-  assert.doesNotMatch(pre[1], /SCHOLARSEED_RUNTIME_STORE/)
-  const leave = INSTALLER_NSH.match(/\n\s*Function ssStorePageLeave\r?\n([\s\S]*?)\n\s*FunctionEnd/)
-  assert.ok(leave, 'ssStorePageLeave function not found')
-  assert.match(leave[1], /StrCmp \$R4 "" ss_leave_done/)
-  assert.match(leave[1], /StrCmp \$R5 "\\\\" ss_store_valid/)
-  assert.match(leave[1], /CreateDirectory "\$R4\\ScholarSeedWriteProbe"/)
-  assert.match(leave[1], /RMDir "\$R4\\ScholarSeedWriteProbe"/)
-  // 用户选父目录 P → home = P\.scholarseed；写注册表 + 同步安装器进程 env（自动拉起继承）。
-  assert.match(leave[1], /WriteRegStr HKCU "Environment" "\$\{SS_HOME_ENV\}" "\$R4\\\.scholarseed"/)
-  assert.match(
-    leave[1],
-    /System::Call 'kernel32::SetEnvironmentVariable\(t "\$\{SS_HOME_ENV\}", t "\$R4\\\.scholarseed"\)'/
-  )
-  assert.doesNotMatch(leave[1], /SCHOLARSEED_RUNTIME_STORE/)
-  assert.match(leave[1], /SendMessageTimeout\(i 0xffff, i 0x001A/)
-  // 页回调必须住在 customHeader 宏内：installer.nsh 被拼进 sharedHeader、先于模板各 include，
-  // 顶层代码解析时 LogicLib/nsDialogs 未加载，${if}/${NSD_*} 直接 Invalid command（CI 真机踩过）。
-  const header = INSTALLER_NSH.match(/!macro customHeader\r?\n([\s\S]*?)\n\s*!endif\r?\n!macroend/)
-  assert.ok(header, 'customHeader macro not found')
-  assert.match(header[1], /Function ssStorePagePre/)
-  assert.match(header[1], /Function ssStorePageLeave/)
-  assert.match(header[1], /Function ssStoreBrowse/)
-  assert.doesNotMatch(INSTALLER_NSH, /^Function /m)
-})
-test('customInstall reconciles a legacy component-store registration into SCHOLARSEED_HOME once', () => {
-  // proposal 112 §6.E：升级期把 legacy 组件仓库轴协调进 home。触发判据必须读注册表
-  // （升级路径 env 恒非空），分支 1 持久化 home + SetEnvironmentVariable，分支 2 不动 home
-  // 仅写告知值（Software\${APP_ID}，非 Environment），两分支都撤旧轴。
-  const customInstall = INSTALLER_NSH.match(/\n!macro customInstall\r?\n([\s\S]*?)\n!macroend/)
-  assert.ok(customInstall, 'customInstall macro not found')
-  assert.match(customInstall[1], /UAC_AsUser_Call Function ssCompleteUserInstall/)
-  const completion = INSTALLER_NSH.match(
-    /\n\s*Function ssCompleteUserInstall\r?\n([\s\S]*?)\n\s*FunctionEnd/
-  )
-  assert.ok(completion, 'ssCompleteUserInstall function not found')
-  const body = completion[1]
-  assert.match(body, /ReadRegStr \$R0 HKCU "Environment" "\$\{SS_HOME_ENV\}"/)
-  assert.match(body, /ReadRegStr \$R1 HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE"/)
-  // 分支 2 门：默认 home 有数据则不动 home。
-  assert.match(body, /\$\{if\} \$\{FileExists\} "\$PROFILE\\\.scholarseed\\\*\.\*"/)
-  // 分支 1：写 home + 同步进程 env，使自动拉起的新 app 继承（NEW-6）。
-  assert.match(body, /WriteRegStr HKCU "Environment" "\$\{SS_HOME_ENV\}" "\$R2"/)
-  assert.match(
-    body,
-    /System::Call 'kernel32::SetEnvironmentVariable\(t "\$\{SS_HOME_ENV\}", t "\$R2"\)'/
-  )
-  // WM_SETTINGCHANGE 的 lParam 必须为 "Environment"，否则 explorer 不刷新 env，
-  // 快捷方式启动的新进程读不到注册表 home → 数据分裂（评审 MAJOR-2）。
-  assert.match(body, /SendMessageTimeout\(i 0xffff, i 0x001A, p 0, t "Environment"/)
-  // 「旧 store 可删」告知延后到后续里程碑：本里程碑不写悬空的 notice 注册表值。
-  assert.doesNotMatch(body, /LegacyRuntimeStoreNotice/)
-  // 收尾撤旧轴。
-  assert.match(body, /DeleteRegValue HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE"/)
-})
-test('the updater refuses to spawn a second installer while a previous one is alive', () => {
-  // 2026-09-22 真机事故：重拉的客户端对着还挂着的安装器再 spawn 一个，被模板
-  // ALLOW_ONLY_ONE_INSTALLER_INSTANCE 的 CreateMutex 命中后 Abort（退出码 2、无 ready.ini），
-  // 用户拿到一张「更新安装失败」卡，而真安装器窗口还停在向导页等点击。闸门 = 握手目录里
-  // ready.ini 的 installerPid + 创建时刻双判据（PID 被复用即视为已退，见 handshake.ts），
-  // 命中时回报独立分类，而不是笼统失败诱导用户对着互斥量重试。
-  assert.match(UPDATER_SOURCE, /async function findRunningProtocolInstaller/)
-  assert.match(
-    UPDATER_SOURCE,
-    /readyPointsToLiveProcess\(record, Number\(record\.installerPid\), low, high\)/
-  )
-  assert.match(UPDATER_SOURCE, /event: 'concurrent-installer'/)
-  assert.match(UPDATER_SOURCE, /return \{ ok: false, errorFallback: 'install_already_running' \}/)
-  // 分类三层齐全：契约类型、主进程标注、渲染层文案映射，缺一层就退回笼统「安装失败」。
-  assert.match(UPDATE_CONTRACT_SOURCE, /\| 'install_already_running'/)
-  assert.match(UPDATE_FEATURE_SOURCE, /install_already_running/)
-})
-test(
-  'Windows updater command parses as PowerShell before signature verification',
-  {
-    skip: process.platform !== 'win32' && 'requires the Windows PowerShell parser',
-  },
-  () => {
-    // Syntax gate on the actual command expression (shared extractor catches script assembly
-    // regressions), not packaged application/update acceptance.
-    const script = windowsVerifyScript()
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        [
-          '$tokens = $null;',
-          '$errors = $null;',
-          '[void][System.Management.Automation.Language.Parser]::ParseInput(',
-          '$env:SCHOLARSEED_TEST_UPDATE_SCRIPT, [ref]$tokens, [ref]$errors);',
-          'if ($errors.Count) { $errors | Out-String | Write-Output; exit 1 }',
-        ].join(' '),
-      ],
-      {
-        encoding: 'utf8',
-        env: { ...process.env, SCHOLARSEED_TEST_UPDATE_SCRIPT: script },
-      }
-    )
-    assert.ifError(result.error)
-    assert.equal(result.status, 0, result.stderr || result.stdout)
-  }
-)
 // ── 更新面三条不变量（bug 86968393）─────────────────────────────────────────
 // updater.ts / index.ts 都导不进 node --test（依赖 electron 与无扩展名相对导入），
 // 所以这三条按源码形状钉住；行为本身由渲染层纯函数测试与真实产品验收覆盖。
@@ -2012,12 +1080,8 @@ test('builder evidence resolves the selected Electron Builder dependency graph w
   const manifest = require.resolve('electron-builder/package.json', { paths: [path.resolve(sourceDirectory, '../..')] })
   const owner = createRequire(manifest)
   const library = owner.resolve('app-builder-lib/package.json')
-  const template = path.join(path.dirname(library), 'templates', 'nsis', 'include', 'extractAppPackage.nsh')
-  const configuration = { differentialPackage: false }
-  const evidence = await builderEvidence(configuration)
+  const evidence = builderEvidence()
   assert.equal(evidence.resolvedVersion, JSON.parse(fs.readFileSync(library, 'utf8')).version)
-  assert.equal(evidence.extractTemplateSha256, crypto.createHash('sha256').update(fs.readFileSync(template)).digest('hex'))
-  assert.deepEqual(evidence.nsis, configuration)
 })
 
 test('Electron Builder template rendering remains compatible with the EJS override', () => {
@@ -2718,7 +1782,6 @@ test('electron-builder receives one frozen resource set instead of merging packa
         filter: ['InfoPlist.strings'],
       }
     )
-    assert.deepEqual(config.nsis, {})
     assert.deepEqual(config.electronLanguages, PACKAGE.build.electronLanguages)
     assert.equal(config.dmg.format, PACKAGE.build.dmg.format)
     assert.deepEqual(config.mac.signIgnore, [
@@ -2829,37 +1892,7 @@ test('local signing preserves only reviewed upstream signed runtimes', () => {
   )
   assert.equal(preserveReviewedRuntime(`${app}/Contents/Resources/backend/bin/rg`), false)
 })
-test('NSIS useZip 与 differentialPackage 必须成对，缺一半拒绝构建（proposal 108 §6）', () => {
-  // 默认：package.json 现状原样通过，不含 useZip
-  const current = resolveNsisConfiguration(PACKAGE.build, {})
-  assert.deepEqual(current, {})
-  assert.equal(Object.hasOwn(current, 'useZip'), false)
-  // 实验开关 =1：成对写入，其余键保留
-  const zip = resolveNsisConfiguration(PACKAGE.build, { SCHOLARSEED_NSIS_USE_ZIP: '1' })
-  assert.equal(zip.useZip, true)
-  assert.equal(zip.differentialPackage, false)
-  assert.equal(Object.hasOwn(zip, 'shortcutName'), false)
-  // 开关取值非法
-  assert.throws(
-    () => resolveNsisConfiguration(PACKAGE.build, { SCHOLARSEED_NSIS_USE_ZIP: 'yes' }),
-    /accepts only "1"/
-  )
-  // 单独 useZip = 不可安装产物（7z 字节被命名成 app-64.zip），必须拒绝
-  assert.throws(() => resolveNsisConfiguration({ nsis: { useZip: true } }, {}), /app-64\.zip/)
-  // differentialPackage:true 视同缺失
-  assert.throws(
-    () => resolveNsisConfiguration({ nsis: { useZip: true, differentialPackage: true } }, {}),
-    /app-64\.zip/
-  )
-  // 成对出现放行；显式关闭 useZip 不受影响
-  assert.equal(
-    resolveNsisConfiguration({ nsis: { useZip: true, differentialPackage: false } }, {}).useZip,
-    true
-  )
-  assert.equal(resolveNsisConfiguration({ nsis: { useZip: false } }, {}).useZip, false)
-})
-
-test('生成的 electron-builder.json 携带解析后的 NSIS 配置且不引入 useZip 默认值', () => {
+test('Windows dir packaging excludes legacy NSIS configuration and resources', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-nsis-config-'))
   try {
     const context = {
@@ -2881,14 +1914,14 @@ test('生成的 electron-builder.json 携带解析后的 NSIS 配置且不引入
       target: require('../../shared/target.cjs').target('win32', 'x86_64'),
     })
     const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
-    assert.equal(Object.hasOwn(config.nsis, 'useZip'), false)
-    assert.deepEqual(config.nsis, {})
+    assert.equal(Object.hasOwn(config, 'nsis'), false)
     assert.deepEqual(config.win.target, [{ target: 'dir', arch: ['x64'] }])
     assert.equal(config.extraFiles, undefined)
     assert.deepEqual(config.extraResources.find(entry => entry.to === 'components'), {from: path.join(context.resourceRoot, 'components'), to: 'components'})
     assert.deepEqual(config.extraResources.find(entry => entry.to === 'renderer').filter, ['**/*', '!office{,/**/*}'])
     assert.deepEqual(config.extraResources.find(entry => entry.to === 'backend').filter, ['**/*', '!python{,/**/*}', '!texlive{,/**/*}', '!powershell{,/**/*}', '!codex-runtime{,/**/*}', '!office{,/**/*}', '!components{,/**/*}'])
-    assert.deepEqual(context.nsis, config.nsis)
+    assert.equal(context.nsis, undefined)
+    assert.equal(config.extraResources.some((entry) => /\.nsh$/i.test(entry.from)), false)
     assert.equal(config.extraResources.find((item) => item.to === 'updater'), undefined)
     assert.equal(config.extraResources.find((item) => item.to === 'desktop'), undefined)
   } finally {

@@ -1,4 +1,4 @@
-// codesign.ts — macOS 代码签名身份的纯解析与离线信任判定（Windows 侧对应 authenticode.ts）。
+// Parse macOS code signing identity and evaluate offline trust.
 //
 // updater.ts 跑 `codesign -d --verbose=4` 拿到签名元数据文本；本模块持有两件事的判定：这段文本
 // 怎么解析才可信，以及解析出的身份是否满足「同一 Developer ID 签名者」的离线信任锚。不导入

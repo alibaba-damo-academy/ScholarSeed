@@ -11,10 +11,12 @@ just to transfer bytes or verify file format; load them only if the requested ou
 needs source discovery, content interpretation or library operations. Preserve all
 current-turn search, network and write restrictions; a direct link never bypasses them.
 
-Before preparing a file deliverable, read the bundled [artifact contract](../contracts/artifact.jsonl)
-for `artifact/publish`, not a literature acquisition or import operation. Use the
-[Bridge fallback](../README.md) only if the contract is
-missing or stale.
+Use the typed `publish_artifacts` tool for delivery; no preliminary contract read or
+describe call is needed. If this tool is unavailable in an older host, use the bundled
+[artifact contract](../contracts/artifact.jsonl) for `artifact/publish` and the
+[Bridge fallback](../README.md) only if the contract is missing or stale.
+The legacy `scholarseed_bridge` entry uses `capability=artifact`, `operation=publish`,
+and `request={"path":"relative/path","role":"final"}` for one file.
 Never invoke the Bridge through shell or inspect its credentials. After the requested
 operation and necessary verification, publish the deliverables, inspect each successful
 publication receipt and finish. A failed stage is not permission to repeat successful
@@ -23,14 +25,20 @@ stages or expand the task.
 ### File delivery
 
 Finish each independent user-facing deliverable in the actual session output
-directory, then publish its final revision with
-the `scholarseed_bridge` model tool with `capability=artifact`, `operation=publish`, and
-`request={"path":"relative/path","role":"final"}`.
+directory, then declare them together with
+`publish_artifacts({"files":[{"path":"relative/a.md","role":"final"},{"path":"relative/analysis.py","role":"final"}]})`.
+Declare only intended deliverables; never scan and publish the whole output directory.
+The response has `completed`, `partial`, or `failed` status and per-item receipts.
+Invalid structure rejects the whole request. When required fields are missing, follow
+`next_action` and use verified paths in the corrected arguments.
+File errors allow partial success. For these errors, correct and submit only `retry_files`.
+Repeated submissions in the same turn reuse the existing publication, while changed
+bytes produce a new revision. A later turn retains the existing turn-specific publication semantics.
 Use `final` for the main result and `supporting` for additional result deliverables.
 Use `intermediate` for a stage result explicitly delivered for the user to review
 or use independently, such as a proposal draft or a stage analysis report. A file
 is not a stage deliverable merely because it was generated during execution.
-Publish it with the same operation and `request={"path":"relative/path","role":"intermediate"}`.
+Declare it in `files` as `{"path":"relative/path","role":"intermediate"}`.
 Stage deliverables belong in artifact lists and the task overview, not conversation
 file cards. Result deliverables appear in both the lists and conversation cards.
 The product tracks other new and changed files as working files; only published
@@ -56,6 +64,7 @@ does not authorize import. Do not preload that guide for ordinary delivery.
 ## Session output location
 
 SESSION_DIR means the actual output directory already selected for this conversation.
+The host-supplied output_dir already exists; use it directly without directory setup or collision checks.
 Use the host-supplied location or, for a new project conversation, follow the host's
 session-directory instructions once and reuse that exact path. Do not change cwd,
 derive a second directory from a title/ID, or assume an output prefix. Honor explicit

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   rmSync,
   rmdirSync,
+  realpathSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -15,7 +19,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import type { discardPreviewPreparation } from './updater.ts'
-import { planUpdatePrune, stagedInstallerName } from './staging.ts'
+import { planUpdatePrune, stagedInstallerName, updateArtifactKind } from './staging.ts'
 
 // Exercise the production cleanup against real files, with the application and
 // native handoff boundaries controlled. This is not signed installer acceptance.
@@ -30,6 +34,9 @@ const names = new Set([
   'pruneUpdateArtifacts',
   'candidateStateDirectory',
   'updateCacheDir',
+  'updateCacheRoot',
+  'updateProfileKey',
+  'pruneInactiveMacCache',
   'readyStatePath',
 ])
 const declarations = source.statements.filter(
@@ -41,24 +48,43 @@ const code = ts.transpileModule(declarations.map((node) => node.getText(source))
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
 
-function setup(t: test.TestContext, preview = true, handoff = false) {
-  const root = mkdtempSync(join(tmpdir(), 'preview-cache-'))
-  t.after(() => rmSync(root, { recursive: true, force: true }))
+function setup(
+  t: test.TestContext,
+  preview = true,
+  handoff = false,
+  profile = 'primary',
+  base?: string
+) {
+  const root = base ?? realpathSync(mkdtempSync(join(tmpdir(), 'preview-cache-')))
+  if (!base) t.after(() => rmSync(root, { recursive: true, force: true }))
   const stateRoot = join(root, 'state')
-  mkdirSync(stateRoot)
+  mkdirSync(stateRoot, { recursive: true })
   let cleared = 0
   const exports = {} as {
     cache: () => string
+    cacheRoot: () => string
+    pruneInactive: () => Promise<void>
     state: () => string
     ready: () => string
     discardPreviewPreparation: typeof discardPreviewPreparation
   }
   runInNewContext(
     code +
-      '\nexports.cache = updateCacheDir; exports.state = candidateStateDirectory; exports.ready = readyStatePath;',
+      '\nexports.cache = updateCacheDir; exports.cacheRoot = updateCacheRoot; exports.pruneInactive = () => pruneInactiveMacCache(() => {}); exports.state = candidateStateDirectory; exports.ready = readyStatePath;',
     {
       exports,
       join,
+      createHash,
+      process: { platform: 'darwin' },
+      MACOS_PLATFORM: 'darwin',
+      desktopStorage: () => ({ home: stateRoot, userData: join(root, profile) }),
+      UPDATE_CACHE_PROFILE_DIRNAME: 'profiles',
+      INACTIVE_UPDATE_CACHE_RETENTION_MS: 7 * 24 * 60 * 60_000,
+      updateArtifactKind,
+      lstatSync,
+      realpathSync,
+      existsSync,
+      removeUpdateArtifact: async (path: string) => rmSync(path, { recursive: true, force: true }),
       readdirSync,
       rmSync,
       rmdirSync,
@@ -90,12 +116,14 @@ function setup(t: test.TestContext, preview = true, handoff = false) {
   writeFileSync(join(state, 'preparation.json'), '{}')
   return {
     root,
+    cacheRoot: exports.cacheRoot(),
     cache,
     state,
     partial,
     ready: exports.ready(),
     cleared: () => cleared,
     discard: () => exports.discardPreviewPreparation(() => {}),
+    pruneInactive: exports.pruneInactive,
   }
 }
 
@@ -138,13 +166,36 @@ test('preview paths cannot clear same-version release payloads, records or recov
     join(releaseState, 'squirrel.json'),
   ]
   for (const path of shared) writeFileSync(path, 'release-or-legacy')
-  assert.equal(h.cache, join(releaseCache, 'preview'))
-  assert.equal(h.state, join(releaseState, 'preview'))
+  assert.equal(h.cache, join(h.cacheRoot, 'preview'))
+  assert.ok(h.state.startsWith(join(releaseState, 'profiles')))
   assert.equal(h.ready, join(h.state, 'ready.json'))
   h.discard()
   for (const path of shared) assert.equal(readFileSync(path, 'utf8'), 'release-or-legacy')
   const release = setup(t, false)
-  assert.equal(release.cache, join(release.root, 'cache', 'scholarseed-update'))
-  assert.equal(release.state, join(release.root, 'state'))
+  assert.equal(release.cache, release.cacheRoot)
+  assert.ok(release.state.startsWith(join(release.root, 'state', 'profiles')))
   assert.equal(release.ready, join(release.state, 'ready.json'))
+})
+
+test('inactive lane pruning removes only stale artifacts owned by the same profile', async (t) => {
+  const active = setup(t, true)
+  const other = setup(t, false, false, 'other-profile', active.root)
+  assert.notEqual(other.state, active.state)
+  const payload = join(active.cacheRoot, 'scholarseed-0.3.0-202610200001.dmg')
+  const prepared = payload + '.prepared'
+  writeFileSync(payload, 'stale download')
+  mkdirSync(prepared)
+  for (const path of [payload, prepared, other.partial]) utimesSync(path, 0, 0)
+  const mount = join(active.cacheRoot, 'mount-active')
+  mkdirSync(mount)
+  const owned = join(mount, 'mounted')
+  writeFileSync(owned, 'mounted')
+  await active.pruneInactive()
+  assert.equal(existsSync(payload), true)
+  rmSync(owned)
+  await active.pruneInactive()
+  assert.equal(existsSync(payload), false)
+  assert.equal(existsSync(prepared), false)
+  assert.equal(existsSync(other.partial), true)
+  assert.equal(existsSync(active.partial), true)
 })

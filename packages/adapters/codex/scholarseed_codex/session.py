@@ -1208,8 +1208,10 @@ class CodexRuntimeSession:
                 normalized = replace(normalized, sequence=self._sequence)
         if isinstance(normalized, RuntimeEvent):
             normalized = replace(normalized, event_id=self._event_id(event.session_id))
+        # Save callback identity before the service can send its response.
+        loop_tripped = self._loop_guard.observe(event)
         await self._publish_observation(normalized)
-        if self._loop_guard.observe(event):
+        if loop_tripped:
             await self._publish_loop_incident(event, REPEATED_TOOL_LOOP_ERROR)
             task = asyncio.create_task(self._interrupt_loop(event))
             self._tasks.add(task)
@@ -1719,6 +1721,10 @@ class CodexRuntimeSession:
     async def respond(self, response: RuntimeCallbackResponse) -> CommandReceipt:
         values = response.values if isinstance(response.values, Mapping) else {}
         if response.decision == CallbackKind.DYNAMIC_TOOL.value:
+            correction = self._loop_guard.respond(
+                response.request_id,
+                allow_correction=response.allow_tool_correction and values.get("ok") is False,
+            )
             payload = json_value(values)
             resolved = await self._native.resolve_tool(
                 response.request_id,
@@ -1729,6 +1735,8 @@ class CodexRuntimeSession:
                     ),
                 ),
             )
+            if not resolved:
+                self._loop_guard.discard_correction(correction)
             return CommandReceipt(
                 response.idempotency_key,
                 CommandState.APPLIED if resolved else CommandState.REJECTED,
