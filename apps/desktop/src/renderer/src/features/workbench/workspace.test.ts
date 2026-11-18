@@ -29,6 +29,32 @@ import {
 
 const source = { kind: 'project' as const, path: 'notes/readme.md' }
 
+test('readonly Office review drafts never serialize stale editor bytes', async () => {
+  const documents = loader()
+  const workspace = new DocumentWorkspace({
+    ...documents,
+    async load(requested) {
+      const document = (await documents.load(requested)) as LoadedDocument
+      return {
+        ...document,
+        viewer: 'office',
+        capabilities: { ...document.capabilities, can_edit: false, can_save: false },
+      }
+    },
+  })
+  const tabId = await workspace.open({ kind: 'project', path: 'draft.docx' }, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.setExternalDirty(sessionId, true)
+  let serialized = false
+  workspace.registerSaveDelegate(sessionId, async () => {
+    serialized = true
+    return new Uint8Array([1, 2, 3])
+  })
+  assert.equal(await workspace.reviewDraftBytes(sessionId), null)
+  assert.equal(serialized, false)
+  assert.equal(workspace.getSnapshot().sessions[sessionId].dirty, true)
+})
+
 test('page tabs share dock placement without creating document sessions', async () => {
   const workspace = new DocumentWorkspace(loader())
   const documentId = await workspace.open(source, 'preview')

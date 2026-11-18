@@ -23,7 +23,7 @@ const NATIVE_FILES = [
   'libraries.cjs',
   'shipit/compilation.cjs',
 ]
-const NATIVE_LIBRARIES = ['lease.node', 'fonts.node', 'notarization.node']
+const NATIVE_LIBRARIES = ['lease.node', 'repair.node', 'notarization.node']
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const SOURCES = {
   'shipit/compilation.cjs': fs.readFileSync(path.resolve(__dirname, '../../../native/shipit/compilation.cjs'), 'utf8'),

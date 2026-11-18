@@ -50,24 +50,20 @@ test('real compiler and signer freeze final bytes without rewriting provenance',
   t.diagnostic(JSON.stringify({ platform: process.platform, original: build.libraries, frozen }))
 })
 
-test('actual Node and Electron load both prepared libraries and enumerate system font files', () => {
+test('actual Node and Electron load the prepared lease library', () => {
   const driver = path.join(root, 'load.cjs')
   fs.writeFileSync(
     driver,
     `process.on('uncaughtException', error => { console.error(error); process.exit(1); });
 const api = require(${JSON.stringify(path.join(output, 'lease.node'))});
-const fonts = require(${JSON.stringify(path.join(output, 'fonts.node'))});
 const policy = ${JSON.stringify(policy.electron)};
 if (process.env.SCHOLARSEED_STAGING_HOST === 'electron') {
   if (process.versions.electron !== policy || !require('electron').app) throw new Error('Electron host required');
 } else if (process.versions.electron) throw new Error('Node host required');
 const lease = api.acquire(${JSON.stringify(path.join(root, 'loaded.lock'))}, true);
 api.release(lease);
-fonts.enumerateFonts().then(catalog => {
-  if (!Array.isArray(catalog) || !catalog.length || catalog.some(face => !face.path || !face.postscriptName)) throw new Error('Native font enumeration failed');
-  console.log('native-staging-loaded:' + catalog.length);
-  process.exit(0);
-}).catch(error => { console.error(error); process.exit(1); });
+console.log('native-staging-loaded');
+process.exit(0);
 `
   )
   for (const host of [process.execPath, electron]) {
@@ -228,7 +224,7 @@ test('native signature preservation binds one app and verifies bytes before and 
     assert.equal(guard.ignore(path.join(resources, 'Nested.app', 'Contents', 'Resources', 'app.asar.unpacked', 'out', 'main', name)), false)
   }
   guard.verify()
-  fs.writeFileSync(path.join(libraryDirectory, 'fonts.node'), Buffer.from('changed'))
+  fs.writeFileSync(path.join(libraryDirectory, 'lease.node'), Buffer.from('changed'))
   assert.throws(() => guard.verify(), /digest/)
   assert.throws(() => nativeSignatureGuard(app, frozen), /digest/)
 })

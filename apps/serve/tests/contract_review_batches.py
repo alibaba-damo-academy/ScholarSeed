@@ -183,6 +183,41 @@ class ReviewBatchTests(unittest.IsolatedAsyncioTestCase):
             b"candidate",
         )
 
+    async def test_office_accept_reject_keep_exact_bytes_without_an_editor(self) -> None:
+        for suffix in ("doc", "docx", "xls", "xlsx", "ppt", "pptx"):
+            for action in (ReviewAction.ACCEPT, ReviewAction.REJECT):
+                with self.subTest(suffix=suffix, action=action):
+                    path = f"resources/{action.value}.{suffix}"
+                    baseline = b"baseline office bytes\x00"
+                    candidate = b"candidate office bytes\x00"
+                    file_id = self._seed(path, baseline)
+                    captured = await self._capture(
+                        f"office-{suffix}-{action.value}", {path: candidate}
+                    )
+                    batch = self.batches.batch(self.project.id, captured.batch_id)
+                    member = batch.members[0]
+                    decision = ReviewBatchDecision(
+                        file_id,
+                        member.review_id,
+                        member.pending_revision,
+                        action,
+                        member.candidate_revision,
+                    )
+                    completed = self.batches.commit(
+                        self.project.id, batch.id, (decision,), f"office-{suffix}-{action.value}"
+                    )
+                    self.assertEqual(completed.batch.state, ReviewBatchState.COMPLETED)
+                    expected = candidate if action is ReviewAction.ACCEPT else baseline
+                    self.assertEqual((Path(self.project.root) / path).read_bytes(), expected)
+                    self.assertEqual(
+                        self.batches.content(self.project.id, batch.id, file_id, "base")[0],
+                        baseline,
+                    )
+                    self.assertEqual(
+                        self.batches.content(self.project.id, batch.id, file_id, "candidate")[0],
+                        candidate,
+                    )
+
     async def test_completed_decisions_replay_without_reapplying_files(self) -> None:
         for actions in (
             (ReviewAction.REJECT,),

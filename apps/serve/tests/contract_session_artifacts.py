@@ -1008,47 +1008,24 @@ class SessionArtifactContract(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), after)
                 self.assertEqual(receipt.revision, f"sha256:{sha256(after).hexdigest()}")
 
-    def test_file_change_safe_spreadsheet_can_be_saved(self) -> None:
-        def workbook_bytes(value: str) -> bytes:
-            workbook = Workbook()
-            sheet = workbook.active
-            assert sheet is not None
-            sheet["A1"] = value
-            output = BytesIO()
-            workbook.save(output)
-            workbook.close()
-            return output.getvalue()
+    def test_file_change_spreadsheet_edit_is_closed_and_bytes_preserved(self) -> None:
+        self._assert_spreadsheet_replacement_is_readonly(b"not a spreadsheet")
 
-        before = workbook_bytes("before")
-        after = workbook_bytes("after")
-        original_path = "outputs/data.xlsx"
-        target = self.root / SESSION_ID / original_path
-        target.write_bytes(before)
-        artifact = self.index(
-            key="safe-spreadsheet",
-            original_path=original_path,
-            content_sha256=sha256(before).hexdigest(),
-            size_bytes=len(before),
-            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        artifact_id = artifact_identity(artifact)
-        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
-
-        self.assertTrue(reader.editable(SESSION_ID, artifact_id))
-        reader.write_raw(
-            SESSION_ID,
-            artifact_id,
-            after,
-            f"sha256:{sha256(before).hexdigest()}",
-        )
-
-        self.assertEqual(target.read_bytes(), after)
-
-    def test_file_change_rejects_unsafe_spreadsheet_replacement(self) -> None:
+    def test_file_change_valid_spreadsheet_replacement_is_readonly(self) -> None:
         workbook = Workbook()
         sheet = workbook.active
         assert sheet is not None
-        sheet["A1"] = "safe"
+        sheet["A1"] = "after"
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        self._assert_spreadsheet_replacement_is_readonly(output.getvalue())
+
+    def _assert_spreadsheet_replacement_is_readonly(self, replacement: bytes) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        assert sheet is not None
+        sheet["A1"] = "before"
         output = BytesIO()
         workbook.save(output)
         workbook.close()
@@ -1057,23 +1034,26 @@ class SessionArtifactContract(unittest.TestCase):
         target = self.root / SESSION_ID / original_path
         target.write_bytes(before)
         artifact = self.index(
-            key="unsafe-spreadsheet-replacement",
+            key="closed-spreadsheet",
             original_path=original_path,
             content_sha256=sha256(before).hexdigest(),
             size_bytes=len(before),
             mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+        artifact_id = artifact_identity(artifact)
         reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
 
+        self.assertFalse(reader.editable(SESSION_ID, artifact_id))
         with self.assertRaisesRegex(ArtifactReadError, ARTIFACT_EDIT_UNAVAILABLE):
             reader.write_raw(
                 SESSION_ID,
-                artifact_identity(artifact),
-                b"not a spreadsheet",
+                artifact_id,
+                replacement,
                 f"sha256:{sha256(before).hexdigest()}",
             )
-
+        self.assertFalse(reader.editable(SESSION_ID, artifact_id))
         self.assertEqual(target.read_bytes(), before)
+        self.assertEqual(reader.export_bytes(SESSION_ID, artifact_id)[0], before)
 
     def test_publication_without_verified_content_cannot_be_edited(self) -> None:
         artifact = self.index(source_kind=ArtifactSource.ARTIFACT_PUBLISH)
@@ -1213,7 +1193,6 @@ class SessionArtifactContract(unittest.TestCase):
             ("report.md", b"original = 1\n", b"edited = 2\n"),
             ("notes.txt", b"original = 1\n", b"edited = 2\n"),
             ("script.py", b"original = 1\n", b"edited = 2\n"),
-            ("table.xlsx", workbook_bytes("original"), workbook_bytes("edited")),
         )
         for filename, original, changed in cases:
             with self.subTest(filename=filename):
@@ -1257,6 +1236,32 @@ class SessionArtifactContract(unittest.TestCase):
                 )
                 self.assertEqual(content.read_artifact(publication.content), original)
                 reader.write_raw(SESSION_ID, artifact_id, original, receipt.revision)
+
+        original = workbook_bytes("original")
+        (self.root / SESSION_ID / "table.xlsx").write_bytes(original)
+        publication = publications.publish(
+            PublicationCommand(
+                "",
+                SESSION_ID,
+                "turn-a",
+                "table.xlsx",
+                "table.xlsx",
+                ArtifactRole.FINAL,
+                "table.xlsx",
+            ),
+            provenance={},
+        )
+        session = self.catalog.get(SESSION_ID)
+        assert session is not None
+        payload, _events = publications.project(publication, session, self.events, self.artifacts)
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+        reader.bind_content(content)
+        raw, _media, editable, revision = reader.read_document(SESSION_ID, payload["artifact_id"])
+        self.assertFalse(editable)
+        self.assertEqual(raw, original)
+        with self.assertRaisesRegex(ArtifactReadError, ARTIFACT_EDIT_UNAVAILABLE):
+            reader.write_raw(SESSION_ID, payload["artifact_id"], workbook_bytes("edited"), revision)
+        self.assertEqual(content.read_artifact(publication.content), original)
 
     def test_working_changes_never_replace_or_delete_publications(self) -> None:
         published = replace(self.index(source_kind=ArtifactSource.ARTIFACT_PUBLISH), role="final")

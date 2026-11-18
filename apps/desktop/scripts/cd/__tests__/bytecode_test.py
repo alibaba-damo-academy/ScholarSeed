@@ -58,6 +58,30 @@ class BytecodeTests(unittest.TestCase):
         freeze(self.component)
         self.assertEqual(before, Path(importlib.util.cache_from_source(str(dotted))).read_bytes())
 
+    def test_independent_compiler_histories_produce_identical_cache_bytes(self):
+        self.source.write_text(
+            'a = {"foo", 2, 3}\ndef f():\n    return {"foo", 2, 3}\n', encoding="utf-8"
+        )
+        program = """
+import hashlib, importlib.util, runpy, sys
+from pathlib import Path
+freeze = runpy.run_path(sys.argv[1])["freeze"]
+held = compile("import foo", "prior.py", "exec") if sys.argv[3] == "prior" else None
+root = Path(sys.argv[2])
+freeze(root)
+cache = Path(importlib.util.cache_from_source(str(root / "python/Lib/sample.py")))
+print(hashlib.sha256(cache.read_bytes()).hexdigest())
+"""
+        compiler = str(Path(__file__).parent.parent / "bytecode.py")
+        results = [
+            subprocess.check_output(
+                [sys.executable, "-I", "-B", "-c", program, compiler, str(self.component), history],
+                text=True,
+            ).strip()
+            for history in ("fresh", "prior", "fresh")
+        ]
+        self.assertEqual(len(set(results)), 1, results)
+
     def test_relocated_import_uses_cache_after_mtime_change_and_does_not_write(self):
         freeze(self.component)
         target = self.root / "installed 中文 space"
@@ -97,14 +121,30 @@ assert sys.dont_write_bytecode
 
     def test_invalid_source_and_sourceless_cache_fail(self):
         self.source.write_text("def invalid(:\n", encoding="utf-8")
-        with self.assertRaises(py_compile.PyCompileError):
+        with self.assertRaises(py_compile.PyCompileError) as raised:
             freeze(self.component)
+        self.assertEqual(raised.exception.file, "python/Lib/sample.py")
+        self.assertNotIn(str(self.component), str(raised.exception))
         self.source.write_text("x = 1\n", encoding="utf-8")
         orphan = self.library / "missing.pyc"
         orphan.write_bytes(b"do not adopt or delete")
         with self.assertRaisesRegex(ValueError, "source-less"):
             freeze(self.component)
         self.assertEqual(orphan.read_bytes(), b"do not adopt or delete")
+
+    def test_compiler_failures_preserve_error_type_and_logical_filename(self):
+        for error_type in (ValueError, RecursionError, MemoryError):
+            with self.subTest(error_type=error_type.__name__):
+                with patch("builtins.compile", side_effect=error_type("compiler failed")):
+                    with self.assertRaises(py_compile.PyCompileError) as raised:
+                        freeze(self.component)
+                self.assertEqual(raised.exception.exc_type_name, error_type.__name__)
+                self.assertEqual(raised.exception.file, "python/Lib/sample.py")
+
+    def test_source_read_failure_remains_an_io_error(self):
+        with patch.object(Path, "read_bytes", side_effect=PermissionError("source refused")):
+            with self.assertRaisesRegex(PermissionError, "source refused"):
+                freeze(self.component)
 
     def test_failed_directory_scan_cannot_publish_partial_cache_inventory(self):
         inaccessible = self.library / "unreadable"

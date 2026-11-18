@@ -46,7 +46,6 @@
     "src/browser.ts",
     "src/browserdiagnostics.ts",
     "src/startup.ts",
-    "src/fonts.ts",
     "src/pdfe.ts",
     "src/delivery.ts",
     "src/vault.ts",

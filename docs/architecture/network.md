@@ -282,13 +282,13 @@ retry policy, terminal state, or frontend error cards. Do not recollect vendor r
 <a id="本地资产与安装期网络不能混算"></a>
 ## Local Assets and Installation-Time Network Must Be Counted Separately
 
-The Office frame currently points to the bundled `/office/` assets, fonts are imported through npm CSS, and citation styles reference vendored files through
+Office previews use local format readers, fonts are imported through npm CSS, and citation styles reference vendored files through
 the product Skill's local registry. Source URLs in an asset inventory do not automatically become runtime requests, but these static facts also do not prove that the entire viewer, files, or third-party runtimes have zero egress.
 Verification must cover actual loading paths, build artifacts, and runtime requests; searching for a few SDK names is insufficient.
 Changes to these local assets must not silently introduce remote-download, font, stylesheet, or telemetry dependencies. If new egress is needed,
 obtain authorization for the relevant scope first and record the source, data, and verification evidence. Regression checks must cover actual consumption and artifacts;
 do not reuse CDN assertions from an old page that current tests do not contain, and do not treat missing assertions as permission to add egress.
-The entry points are [Office frame](../../apps/desktop/src/renderer/src/features/workbench/office/frame.ts),
+The entry points are [Office preview](../../apps/desktop/src/renderer/src/features/workbench/OfficeDocument.tsx),
 [font imports](../../apps/desktop/src/renderer/src/main.tsx), and the
 [citation-style registry](../../skills/community/literature-review/lib/citation_styles.py).
 

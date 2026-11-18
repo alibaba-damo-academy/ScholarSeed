@@ -1,11 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { PDFE_CHANNEL, type PdfeNativeBridge } from '../pdfe'
-import {
-  OFFICE_FONT_CATALOG_CHANNEL,
-  OFFICE_FONT_READ_CHANNEL,
-  OFFICE_FONT_CACHE_READ_CHANNEL,
-  OFFICE_FONT_CACHE_WRITE_CHANNEL,
-} from '../fonts'
 import { WINDOW_FULLSCREEN_CHANNEL } from '../window'
 
 if (process.isMainFrame) {
@@ -32,16 +26,6 @@ if (process.isMainFrame) {
       ipcRenderer.on(WINDOW_FULLSCREEN_CHANNEL, receive)
       return () => ipcRenderer.removeListener(WINDOW_FULLSCREEN_CHANNEL, receive)
     },
-    requestOfficeFontAccess: async () => {
-      await ipcRenderer.invoke(OFFICE_FONT_CATALOG_CHANNEL)
-      return true
-    },
-    listOfficeFonts: () => ipcRenderer.invoke(OFFICE_FONT_CATALOG_CHANNEL),
-    readOfficeFont: (id) => ipcRenderer.invoke(OFFICE_FONT_READ_CHANNEL, id),
-    readOfficeFontCache: (fingerprint) =>
-      ipcRenderer.invoke(OFFICE_FONT_CACHE_READ_CHANNEL, fingerprint),
-    writeOfficeFontCache: (fingerprint, cache) =>
-      ipcRenderer.invoke(OFFICE_FONT_CACHE_WRITE_CHANNEL, fingerprint, cache),
   }
   contextBridge.exposeInMainWorld('pdfe', bridge)
 }

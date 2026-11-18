@@ -722,11 +722,7 @@ class ForkTests(unittest.TestCase):
             self.catalog,
             artifacts,
             self.events,
-            SimpleNamespace(
-                project=lambda *_args: SimpleNamespace(
-                    can_edit=True, can_save=True, can_edit_artifact=True
-                )
-            ),
+            SimpleNamespace(project=lambda *_args: SimpleNamespace(can_edit=True, can_save=True)),
         )
         self.assertEqual(
             service.read_text("child", artifact_identity(copied))["content"], "branch report"

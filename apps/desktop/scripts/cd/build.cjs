@@ -133,7 +133,6 @@ function loadDependencies() {
     brandLauncher: require('./branding.cjs').brandLauncher,
     normalizeTexliveTree: require('./texlive.cjs').normalizeTexliveTree,
     verify: require('./verify.cjs'),
-    verifyOfficeAssets: require('../pre/office-assets.cjs').verifyOfficeAssets,
     bundle: require('./bundle.cjs').bundle,
     packWindowsComponents: require('./bundle.cjs').packWindowsComponents,
     targets: require('../shared/target.cjs'),
@@ -660,10 +659,10 @@ function writeBuilderConfiguration(context, args) {
       ? { ...entry, from: path.join(context.resourceRoot, path.basename(entry.from)) }
       : entry
   )
+  extraResources.find(entry => entry.to === 'renderer').filter = ['**/*', '!office{,/**/*}']
   if (selected.platform === 'win32') {
     const backend = extraResources.find(entry => entry.to === 'backend')
-    backend.filter = ['**/*', ...[...Object.values(WINDOWS_BUNDLED_RUNTIME_DIRS), 'components'].map(name => `!${name}{,/**/*}`)]
-    extraResources.find(entry => entry.to === 'renderer').filter = ['**/*', '!office{,/**/*}']
+    backend.filter = ['**/*', ...[...Object.values(WINDOWS_BUNDLED_RUNTIME_DIRS), 'office', 'components'].map(name => `!${name}{,/**/*}`)]
     extraResources.push({ from: path.join(context.resourceRoot, 'components'), to: 'components' })
     extraResources.push({ from: path.join(context.resourceRoot, 'handoff'), to: 'handoff' })
   }
@@ -826,7 +825,6 @@ async function main(argv = process.argv.slice(2)) {
       targets,
       verify,
       verifyBuiltClosure,
-      verifyOfficeAssets,
     } = loadDependencies()
     const { hostArch } = targets
     const args = options(argv)
@@ -1105,7 +1103,6 @@ async function main(argv = process.argv.slice(2)) {
         )
       }
       verify.atomicJSON(context.file, context)
-      await verifyOfficeAssets(DESKTOP)
       const vite = path.join(
         DESKTOP,
         'node_modules',

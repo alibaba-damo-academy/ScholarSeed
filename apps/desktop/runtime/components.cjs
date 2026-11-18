@@ -102,12 +102,12 @@ const RUNTIME_MANIFEST_FILENAME = 'runtime.json'
 const COMPONENT_RECEIPT_FILENAME = '.scholarseed-component.json'
 const RUNTIME_DOMAIN = 'scholarseed.runtime-components'
 const RUNTIME_MANIFEST_LIMIT = 32 * 1024 * 1024
-const RUNTIME_COMPONENT_KINDS = Object.freeze([...COMPONENT_KINDS, 'codex', 'office', 'electron'])
+const RUNTIME_COMPONENT_KINDS = Object.freeze([...COMPONENT_KINDS, 'codex', 'electron'])
 const COMPONENT_KIND_PATTERN = /^[a-z][a-z0-9-]{0,31}$/
 const MAX_RUNTIME_COMPONENTS = 32
 const COMPONENT_VERSION_PATTERN = /^[a-z0-9][a-z0-9.-]{0,62}-r[1-9][0-9]*$/
-const WINDOWS_BUNDLED_RUNTIME_DIRS = Object.freeze({ python: 'python', texlive: 'texlive', powershell: 'powershell', codex: 'codex-runtime', office: 'office' })
-const RUNTIME_ENTRIES = Object.freeze({ python: PYTHON_ENTRY_RELATIVE, texlive: 'texlive/bin/windows', powershell: POWERSHELL_ENTRY_RELATIVE, codex: 'bin/codex.exe', office: 'zeta-20250513/manifest.json', electron: 'ScholarSeedEngine.exe' })
+const WINDOWS_BUNDLED_RUNTIME_DIRS = Object.freeze({ python: 'python', texlive: 'texlive', powershell: 'powershell', codex: 'codex-runtime' })
+const RUNTIME_ENTRIES = Object.freeze({ python: PYTHON_ENTRY_RELATIVE, texlive: 'texlive/bin/windows', powershell: POWERSHELL_ENTRY_RELATIVE, codex: 'bin/codex.exe', electron: 'ScholarSeedEngine.exe' })
 function portableRuntimePath(value) {
   return typeof value === 'string' && value.length > 0 && value.split('/').every(part =>
     part && part !== '.' && part !== '..' && !/[\\:<>"|?*\x00-\x1f\x7f]/.test(part) &&
@@ -179,7 +179,7 @@ function bundledWindowsRuntime(appDirectory) {
     const component = manifest.components.find(item => item.kind === kind)
     if (!component) throw new Error(`required runtime component missing: ${kind}`)
     const root = path.join(path.dirname(appDirectory), RUNTIME_DIRNAME, component.kind, component.version)
-    return [component.kind, component.kind === 'office' ? root : path.join(root, ...component.entry.split('/'))]
+    return [component.kind, path.join(root, ...component.entry.split('/'))]
   }))
 }
 

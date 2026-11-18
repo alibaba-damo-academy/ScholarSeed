@@ -92,15 +92,6 @@ import {
 import type { AuthorizationScope } from '../main/authorization'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DesktopAuthSnapshot } from '../main/handoff'
-import type { OfficeClipboardResult } from '../main/clipboard'
-import {
-  OFFICE_FONT_CATALOG_CHANNEL,
-  OFFICE_FONT_READ_CHANNEL,
-  OFFICE_FONT_CACHE_READ_CHANNEL,
-  OFFICE_FONT_CACHE_WRITE_CHANNEL,
-  type OfficeFontCatalog,
-  type OfficeFontCache,
-} from '../fonts'
 import type {
   StartUpdateResult,
   UpdateDiagnosis,
@@ -120,13 +111,7 @@ import {
 import type { AttentionSnapshot } from '../attention'
 import type { SystemPermissionTarget, SystemPermissionsSnapshot } from '../permissions'
 import type { CommitDataHomeResult, StorageConfig } from '../storage'
-import {
-  OFFICE_IMAGE_CHANNEL,
-  REMOTE_IMAGE_CHANNEL,
-  type OfficeImageSource,
-  type OfficeImageResult,
-  type RemoteImageResult,
-} from '../images'
+import { REMOTE_IMAGE_CHANNEL, type RemoteImageResult } from '../images'
 import {
   IMPORT_PICKER_CHANNEL,
   IMPORT_PICKER_PREVIEW,
@@ -583,10 +568,6 @@ const bridge = {
   pickDir(): Promise<string | null> {
     return ipcRenderer.invoke('scholarseed:pick-dir')
   },
-  /** 用户触发的 Office 图片选择或剪贴板读取，不接受文件路径。 */
-  acquireOfficeImage(source: OfficeImageSource): Promise<OfficeImageResult> {
-    return ipcRenderer.invoke(OFFICE_IMAGE_CHANNEL, source)
-  },
   readRemoteImage(url: string): Promise<RemoteImageResult> {
     return ipcRenderer.invoke(REMOTE_IMAGE_CHANNEL, url)
   },
@@ -602,9 +583,6 @@ const bridge = {
   },
   writeClipboardImage(bytes: Uint8Array): Promise<FeedbackClipboardImageResult> {
     return ipcRenderer.invoke(FEEDBACK_CLIPBOARD_IMAGE_CHANNEL, bytes)
-  },
-  readOfficeClipboard(): Promise<OfficeClipboardResult> {
-    return ipcRenderer.invoke('scholarseed:read-office-clipboard')
   },
   /** 资料导入：按指定范围多选本地资料，返回绝对路径数组。 */
   pickImport(target: ImportPickerTarget): Promise<string[]> {
@@ -628,21 +606,6 @@ const bridge = {
         }
   ): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
     return ipcRenderer.invoke('scholarseed:save-copy', payload)
-  },
-  requestOfficeFontAccess(): Promise<boolean> {
-    return ipcRenderer.invoke('scholarseed:office-font-access')
-  },
-  listOfficeFonts(): Promise<OfficeFontCatalog> {
-    return ipcRenderer.invoke(OFFICE_FONT_CATALOG_CHANNEL)
-  },
-  readOfficeFont(id: string): Promise<Uint8Array> {
-    return ipcRenderer.invoke(OFFICE_FONT_READ_CHANNEL, id)
-  },
-  readOfficeFontCache(fingerprint: string): Promise<OfficeFontCache | null> {
-    return ipcRenderer.invoke(OFFICE_FONT_CACHE_READ_CHANNEL, fingerprint)
-  },
-  writeOfficeFontCache(fingerprint: string, cache: OfficeFontCache): Promise<void> {
-    return ipcRenderer.invoke(OFFICE_FONT_CACHE_WRITE_CHANNEL, fingerprint, cache)
   },
   syncUpdateDiagnostics(): Promise<void> {
     return ipcRenderer.invoke(FEEDBACK_DIAGNOSTICS_CHANNEL)

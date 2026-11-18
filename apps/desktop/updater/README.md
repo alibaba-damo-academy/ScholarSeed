@@ -283,7 +283,7 @@ The official SDK applies authenticated full packages or deltas against a verifie
 base. An unavailable or invalid base/delta falls back to the full package. A signed
 member inventory verifies reconstructed ZIP contents independently of compression.
 SDK installation/cache and nested component paths retain the conservative MAX_PATH
-budget, including Python, TeX Live, PowerShell, Codex, Office and Electron destinations.
+budget, including Python, TeX Live, PowerShell, Codex and Electron destinations.
 All candidate paths are checked before stopping the application.
 
 Personal installations keep SDK packages in `<installation>/packages`. Each
@@ -480,7 +480,7 @@ Final signed launcher/helper startup acceptance is required in
 addition to native readiness probes.
 Existing pre-Velopack component directories are left untouched.
 The authenticated manifest accepts 1–32 uniquely named component kinds. Current
-Python/TeX/PowerShell/Codex/Office requirements belong to build recipes and consumers,
+Python/TeX/PowerShell/Codex requirements belong to build recipes and consumers,
 not to a fixed extraction whitelist. A signed update may add a new kind without
 replacing the installed helper first; it follows the same validation and reuse rules.
 

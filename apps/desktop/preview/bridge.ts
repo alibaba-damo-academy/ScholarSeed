@@ -56,14 +56,6 @@ const BROWSER_ROUTES = {
 
 export interface PreviewBridgeOptions {
   native?: PdfeNativeBridge
-  fonts?: Pick<
-    PdfeNativeBridge,
-    | 'requestOfficeFontAccess'
-    | 'listOfficeFonts'
-    | 'readOfficeFont'
-    | 'readOfficeFontCache'
-    | 'writeOfficeFontCache'
-  >
   instance: string
   scene: string
   pageId?: string
@@ -290,13 +282,8 @@ export function createPreviewBridge(
           systemVersion: options.native.systemVersion,
           fullscreen: options.native.fullscreen,
           onFullscreenChange: options.native.onFullscreenChange,
-          requestOfficeFontAccess: options.native.requestOfficeFontAccess,
-          listOfficeFonts: options.native.listOfficeFonts,
-          readOfficeFont: options.native.readOfficeFont,
-          readOfficeFontCache: options.native.readOfficeFontCache,
-          writeOfficeFontCache: options.native.writeOfficeFontCache,
         }
-      : (options.fonts ?? {})),
+      : {}),
     syncAuthorizedRoots: async (scope, roots) =>
       synchronize({ scope, roots, mode: PREVIEW_ROOT_MODES.replace }),
     addAuthorizedRoot: async (scope, root) =>

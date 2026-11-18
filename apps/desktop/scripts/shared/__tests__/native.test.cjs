@@ -30,9 +30,9 @@ test('native asset resolution externalizes only exact emitted platform library p
 })
 
 test('Darwin-only repair libraries are not declared for another platform', () => {
-  assert.deepEqual(libraries('darwin'), ['lease.node', 'fonts.node', 'notarization.node', 'repair.node'])
-  assert.deepEqual(libraries('win32'), ['lease.node', 'fonts.node', 'notification.node', 'velopack.node'])
-  assert.deepEqual(libraries('linux'), ['lease.node', 'fonts.node'])
+  assert.deepEqual(libraries('darwin'), ['lease.node', 'notarization.node', 'repair.node'])
+  assert.deepEqual(libraries('win32'), ['lease.node', 'notification.node', 'velopack.node'])
+  assert.deepEqual(libraries('linux'), ['lease.node'])
   assert.deepEqual(SUPPORT_UNITS, ['cleanup.m', 'preparation.m', 'readiness.m'])
   for (const name of ['Foundation', 'AppKit', 'Security', 'ServiceManagement']) {
     const index = REPAIR_FLAGS.indexOf(name)

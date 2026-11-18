@@ -65,11 +65,6 @@
     "fixedTailwindColor": 0,
     "visualInlineStyle": 1
   },
-  "src/renderer/src/features/workbench/office/frame.ts": {
-    "rawColor": 1,
-    "fixedTailwindColor": 0,
-    "visualInlineStyle": 0
-  },
   "src/renderer/src/features/workbench/pdf/Page.tsx": {
     "rawColor": 1,
     "fixedTailwindColor": 0,

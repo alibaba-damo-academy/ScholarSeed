@@ -262,7 +262,6 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--cases-root", default=str(SERVICE_CASES_DIR))
     ap.add_argument("--renderer-dist", default="")
-    ap.add_argument("--office-root", default="")
     ap.add_argument(
         "--shutdown-timeout-seconds",
         type=float,
@@ -384,7 +383,6 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
         cases_root=Path(args.cases_root),
         product=args.product,
         renderer_dist=str(dist) if dist else "",
-        office_root=args.office_root,
         auth_mode=auth_mode,
         ownership_axis=ownership_axis,
         local_bridge_root=SERVICE_BRIDGE_DIR,

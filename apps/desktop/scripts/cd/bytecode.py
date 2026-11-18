@@ -134,6 +134,24 @@ def inspect(component: Path, scope: Path = SCOPE) -> dict:
     }
 
 
+def compile_source(source: Path, filename: str) -> None:
+    # CPython's marshal output depends on constant interning from earlier
+    # compilations (cpython#129724). Keep a preparation compilation alive so
+    # the final pass sees the same constants regardless of import history.
+    data = source.read_bytes()
+    try:
+        prepared = compile(data, filename, "exec", dont_inherit=True, optimize=OPTIMIZATION)
+    except Exception as error:
+        raise py_compile.PyCompileError(type(error), error, filename) from error
+    py_compile.compile(
+        str(source),
+        dfile=prepared.co_filename,
+        doraise=True,
+        optimize=OPTIMIZATION,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+
+
 def freeze(component: Path, scope: Path = SCOPE) -> dict:
     component, sources, caches = scan(component, scope)
     # Remove previous tags/optimization levels only after all inputs pass.
@@ -141,13 +159,7 @@ def freeze(component: Path, scope: Path = SCOPE) -> dict:
     for cache in caches:
         cache.unlink()
     for source in sorted(sources):
-        py_compile.compile(
-            str(source),
-            dfile=source.relative_to(component).as_posix(),
-            doraise=True,
-            optimize=OPTIMIZATION,
-            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
-        )
+        compile_source(source, source.relative_to(component).as_posix())
     return inspect(component, scope)
 
 

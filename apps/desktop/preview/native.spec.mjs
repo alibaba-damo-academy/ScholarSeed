@@ -27,7 +27,6 @@ import { PREVIEW_DIAGNOSTIC_EVENT } from './bridge.ts'
 import { defaultSelectionPrompts } from '../src/prompts.ts'
 import { PREVIEW_DOCUMENTS } from './documents.ts'
 import { PREVIEW_SEARCH } from './searches.ts'
-import { PREVIEW_OFFICE_FRAME_PATH, previewOfficeFrameParameters } from './frames.ts'
 import { PREVIEW_CONTENT } from './content.ts'
 import { PREVIEW_ARTIFACTS } from './publications.ts'
 import { PREVIEW_CONVERSATION } from './conversation.ts'
@@ -3572,78 +3571,15 @@ test('native version comparison preserves one file and both immutable Monaco rev
   })
 })
 
-test('native legacy XLS uses its bounded Office child runtime and dedicated compilation policy', async ({}, testInfo) => {
+test('native legacy XLS exposes its external-open fallback without an Office engine', async ({}, testInfo) => {
   await normalUi(testInfo, async () => {
     await scenario('page-resource', 'resource-browse')
     await product.getByTestId('project-library').click()
     await selectNativeLibraryCategory(layoutZh.materials)
-    const sample = PREVIEW_DOCUMENTS.find(document => document.path === 'sample.xls')
-    const opening = product.waitForResponse(response => new URL(response.url()).pathname === '/api/workbench/open' && new URL(response.url()).searchParams.get('path') === sample.path && response.request().method() === 'GET')
-    await product.getByTestId('material-' + sample.path).getByRole('button', { name: sample.path, exact: true }).click()
-    const opened = await opening
-    expect(opened.status()).toBe(200)
-    const projection = await opened.json()
-    expect(projection.viewer).toBe('office')
-    expect(projection.processor).toBe('xls')
-    expect(projection.revision).toBe('sha256:' + sample.sha256)
-    const document = product.locator('iframe[data-testid="office-editor"][title="sample.xls"]')
-    await expect(document).toHaveAttribute('data-runtime-ready', 'true')
-    await expect(document).toHaveAttribute('data-document-ready', 'true')
-    await expect(document).toBeVisible()
-    const child = document.contentFrame()
-    await expect(child.locator('#qtcanvas')).toBeVisible()
-    const bounds = await document.evaluate(element => {
-      const rectangle = element.getBoundingClientRect()
-      return { left: rectangle.left, top: rectangle.top, right: rectangle.right, bottom: rectangle.bottom, width: rectangle.width, height: rectangle.height, viewportWidth: innerWidth, viewportHeight: innerHeight }
-    })
-    expect(bounds.width).toBeGreaterThan(0)
-    expect(bounds.height).toBeGreaterThan(0)
-    expect(bounds.left).toBeGreaterThanOrEqual(-FRAME_GEOMETRY_ROUNDING_PX)
-    expect(bounds.top).toBeGreaterThanOrEqual(-FRAME_GEOMETRY_ROUNDING_PX)
-    expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth + FRAME_GEOMETRY_ROUNDING_PX)
-    expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight + FRAME_GEOMETRY_ROUNDING_PX)
-    const childUrl = new URL(await document.getAttribute('src'))
-    expect(childUrl.origin).toBe(manifest.origin)
-    expect(childUrl.pathname).toBe(PREVIEW_OFFICE_FRAME_PATH)
-    expect(previewOfficeFrameParameters(childUrl).locale).toBe('zh')
-    const childResponse = await product.request.get(childUrl.href)
-    expect(childResponse.status()).toBe(200)
-    const policy = childResponse.headers()['content-security-policy']
-    expect(policy).toContain("'unsafe-eval'")
-    await child.locator('html').evaluate(element => {
-      element.dataset.pdfeOfficeViolations = '[]'
-      const violations = []
-      document.addEventListener('securitypolicyviolation', event => {
-        violations.push({ directive: event.effectiveDirective, blockedURI: event.blockedURI, policy: event.originalPolicy })
-        element.dataset.pdfeOfficeViolations = JSON.stringify(violations)
-      })
-      document.addEventListener('click', () => {
-        const script = document.createElement('script')
-        script.textContent = "try { document.documentElement.dataset.pdfeOfficeCompilation = String(Function('return 7')()) } catch (error) { document.documentElement.dataset.pdfeOfficeCompilation = error.name }"
-        document.body.appendChild(script)
-        script.remove()
-      }, { once: true, capture: true })
-    })
-    await child.locator('#qtcanvas').click()
-    await expect(child.locator('html')).toHaveAttribute('data-pdfe-office-compilation', '7')
-    await expect(child.locator('html')).toHaveAttribute('data-pdfe-office-violations', '[]')
-    await child.locator('html').evaluate(() => {
-      document.addEventListener('click', () => {
-        const object = document.createElement('object')
-        object.id = 'pdfe-office-csp-object'
-        object.data = 'data:text/html,<p>PDFE blocked object probe</p>'
-        document.body.appendChild(object)
-      }, { once: true, capture: true })
-    })
-    await child.locator('#qtcanvas').click()
-    await expect.poll(() => child.locator('html').getAttribute('data-pdfe-office-violations').then(value => JSON.parse(value).some(violation => violation.directive === 'object-src'))).toBe(true)
-    const violations = JSON.parse(await child.locator('html').getAttribute('data-pdfe-office-violations'))
-    expect(violations).toHaveLength(1)
-    expect(violations[0]).toEqual({ directive: 'object-src', blockedURI: 'data', policy })
-    await child.locator('#pdfe-office-csp-object').evaluate(element => element.remove())
-    await expect(product.getByText('无法解析文件路径。', { exact: false })).toHaveCount(0)
-    writeFileSync(testInfo.outputPath('office-child-policy.json'), JSON.stringify({ projection, bounds, childUrl: childUrl.href, policy, compilation: '7', violations }, null, 2))
-    await product.screenshot({ path: testInfo.outputPath('xls-child-runtime.png'), animations: 'disabled' })
+    await product.getByTestId('material-sample.xls').getByRole('button', { name: 'sample.xls', exact: true }).click()
+    await expect(product.getByTestId('office-unavailable')).toBeVisible()
+    await expect(product.locator('iframe[data-testid="office-editor"]')).toHaveCount(0)
+    await product.screenshot({ path: testInfo.outputPath('xls-external-open.png') })
   })
 })
 

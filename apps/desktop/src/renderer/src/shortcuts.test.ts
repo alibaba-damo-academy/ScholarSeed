@@ -302,11 +302,6 @@ test('runtime consumers use the shared shortcut registry', () => {
   )
   assert.match(source('./features/workbench/PdfDocument.tsx'), /pdf\.find/)
   assert.doesNotMatch(source('./features/workbench/OfficeDocument.tsx'), /matchesShortcut/)
-  assert.doesNotMatch(source('./features/workbench/office/frame.ts'), /shortcuts:/)
-  assert.doesNotMatch(
-    source('./features/workbench/office/office-thread.js'),
-    /input_command|input_text|InsertText/
-  )
 })
 
 test('shortcut settings implementation remains available while its settings entry is commented out', () => {

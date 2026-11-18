@@ -9,7 +9,6 @@ import { renderFixture } from '../src/test-helpers/render.ts'
 import { RENDERER_OPTIMIZE_DEPS, supportedFontSources } from '../renderer.ts'
 import { WORKSPACE_WINDOW_SIZE } from '../src/window.ts'
 import { createPreviewService } from './service.ts'
-import { servePreviewOfficeFrame } from './plugin.ts'
 import { PREVIEW_HOME } from './home.ts'
 import zh from './locales/zh.json' with { type: 'json' }
 import en from './locales/en.json' with { type: 'json' }
@@ -117,7 +116,6 @@ test(
               },
               configureServer(server) {
                 server.middlewares.use((request, response, next) => {
-                  if (!servePreviewOfficeFrame(request, response))
                     service.middleware(request, response, next)
                 })
               },

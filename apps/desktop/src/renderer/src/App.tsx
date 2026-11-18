@@ -74,7 +74,6 @@ import { LITERATURE_TAB, OVERVIEW_TAB, PROJECTS_TAB } from './features/workbench
 import { INITIAL_AI_PANEL_STATE } from './features/assistant/state'
 import { INITIAL_LITERATURE_STATE } from './features/literature/state'
 import { INITIAL_RESOURCE_STATE } from './features/resources/state'
-import { OFFICE_RUNTIME_ROOT_ID, OfficeRuntimeProvider } from './features/workbench/office/runtime'
 import { featureRegistry } from './app/composition'
 import { ErrorBoundary } from './app/Error'
 import { projectBackendAvailability } from './runtime'
@@ -1036,135 +1035,129 @@ function AppMain({
       : { label: t('workspaceLoading.reload'), run: retryWorkspaceLoad }
 
   return (
-    <OfficeRuntimeProvider ready={workspaceReady && state.backendReady}>
-      <div
-        className={`vds-app-shell h-[var(--vds-app-shell-viewport-height)] min-h-[var(--vds-app-shell-viewport-height)] flex flex-col relative overflow-hidden bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] has-[.vds-workbench]:before:hidden before:fixed before:inset-x-0 before:top-0 before:z-[var(--vds-app-shell-drag-region-z-index)] before:h-[var(--vds-app-shell-drag-region-height)] before:content-[''] before:[-webkit-app-region:drag]${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
-      >
-        <div
-          id={OFFICE_RUNTIME_ROOT_ID}
-          className="vds-office-runtime-layer pointer-events-none fixed inset-0 z-[var(--vds-z-content)]"
+    <div
+      className={`vds-app-shell h-[var(--vds-app-shell-viewport-height)] min-h-[var(--vds-app-shell-viewport-height)] flex flex-col relative overflow-hidden bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] has-[.vds-workbench]:before:hidden before:fixed before:inset-x-0 before:top-0 before:z-[var(--vds-app-shell-drag-region-z-index)] before:h-[var(--vds-app-shell-drag-region-height)] before:content-[''] before:[-webkit-app-region:drag]${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
+    >
+      {/* PRD 2.1.1: no full-width titlebar — the sidebar owns the window row
+        and the account chrome, the composer owns the model pill. */}
+      {!workspaceVisible && workspaceFailed ? (
+        <FeedbackRecovery
+          title={workspaceTitle}
+          detail={workspaceDetail}
+          actionLabel={workspaceAction?.label}
+          onAction={workspaceAction?.run}
+          actions={
+            <Button disabled={!state.projectsLoaded} onClick={act.returnHome}>
+              {t('navigation.returnHome')}
+            </Button>
+          }
         />
-        {/* PRD 2.1.1: no full-width titlebar — the sidebar owns the window row
-          and the account chrome, the composer owns the model pill. */}
-        {!workspaceVisible && workspaceFailed ? (
-          <FeedbackRecovery
-            title={workspaceTitle}
-            detail={workspaceDetail}
-            actionLabel={workspaceAction?.label}
-            onAction={workspaceAction?.run}
-            actions={
-              <Button disabled={!state.projectsLoaded} onClick={act.returnHome}>
-                {t('navigation.returnHome')}
-              </Button>
-            }
-          />
-        ) : !workspaceVisible ? (
-          <Progress
-            surface="screen"
-            title={workspaceTitle}
-            detail={workspaceDetail}
-            error={workspaceFailed}
-            actionLabel={workspaceAction?.label}
-            onAction={workspaceAction?.run}
-            actions={
-              <Button disabled={!state.projectsLoaded} onClick={act.returnHome}>
-                {t('navigation.returnHome')}
-              </Button>
-            }
-          />
-        ) : (
-          <div className="vds-workspace-body flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-            {workspaceFailed && (
-              <Alert
-                tone="error"
-                title={workspaceTitle}
-                description={workspaceDetail}
-                action={
-                  <Button variant="secondary" onClick={workspaceAction?.run}>
-                    {workspaceAction?.label}
-                  </Button>
-                }
-              />
+      ) : !workspaceVisible ? (
+        <Progress
+          surface="screen"
+          title={workspaceTitle}
+          detail={workspaceDetail}
+          error={workspaceFailed}
+          actionLabel={workspaceAction?.label}
+          onAction={workspaceAction?.run}
+          actions={
+            <Button disabled={!state.projectsLoaded} onClick={act.returnHome}>
+              {t('navigation.returnHome')}
+            </Button>
+          }
+        />
+      ) : (
+        <div className="vds-workspace-body flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          {workspaceFailed && (
+            <Alert
+              tone="error"
+              title={workspaceTitle}
+              description={workspaceDetail}
+              action={
+                <Button variant="secondary" onClick={workspaceAction?.run}>
+                  {workspaceAction?.label}
+                </Button>
+              }
+            />
+          )}
+          <div className="flex min-h-0 min-w-0 flex-1">
+            {WORKBENCH_VIEWS.includes(state.mainView) ? (
+              <WorkbenchShell />
+            ) : (
+              <>
+                <Sidebar />
+                <ErrorBoundary embedded key={state.activeSession ?? 'draft'}>
+                  <Conversation key={state.activeSession ?? 'draft'} />
+                </ErrorBoundary>
+              </>
             )}
-            <div className="flex min-h-0 min-w-0 flex-1">
-              {WORKBENCH_VIEWS.includes(state.mainView) ? (
-                <WorkbenchShell />
-              ) : (
-                <>
-                  <Sidebar />
-                  <ErrorBoundary embedded key={state.activeSession ?? 'draft'}>
-                    <Conversation key={state.activeSession ?? 'draft'} />
-                  </ErrorBoundary>
-                </>
-              )}
-            </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {workspaceReady && (
-          <NativeSettingsPortal
+      {workspaceReady && (
+        <NativeSettingsPortal
+          open={Boolean(state.accountSettingsPage)}
+          onFailure={() => act.openSettings(null)}
+        >
+          <Dialog
             open={Boolean(state.accountSettingsPage)}
-            onFailure={() => act.openSettings(null)}
+            onOpenChange={(open) => {
+              if (!open) act.openSettings(null)
+            }}
           >
-            <Dialog
-              open={Boolean(state.accountSettingsPage)}
-              onOpenChange={(open) => {
-                if (!open) act.openSettings(null)
-              }}
+            <DialogContent
+              aria-label={accountText('settings.title')}
+              className="!z-[var(--vds-z-modal)] !h-[min(720px,calc(100vh-48px))] !w-[min(920px,calc(100vw-48px))] !max-w-none overflow-hidden !p-0"
+              closeButtonClassName="z-[6] !right-3 !top-3"
+              overlayClassName="!z-[var(--vds-z-overlay)]"
             >
-              <DialogContent
-                aria-label={accountText('settings.title')}
-                className="!z-[var(--vds-z-modal)] !h-[min(720px,calc(100vh-48px))] !w-[min(920px,calc(100vw-48px))] !max-w-none overflow-hidden !p-0"
-                closeButtonClassName="z-[6] !right-3 !top-3"
-                overlayClassName="!z-[var(--vds-z-overlay)]"
-              >
-                {state.accountSettingsPage && (
-                  <AccountPanel
-                    embedded
-                    page={state.accountSettingsPage}
-                    browserSettingsSection={state.browserSettingsSection}
-                    isBrowserSettingsCurrent={act.captureSettingsSurface()}
-                    onPage={act.openSettings}
-                    onClose={() => act.openSettings(null)}
-                    onLogin={onLogin}
-                    onLogout={async () => {
-                      const result = await onLogout()
-                      if (result.ok) act.openSettings(null)
-                      return result
-                    }}
-                  />
-                )}
-              </DialogContent>
-            </Dialog>
-          </NativeSettingsPortal>
-        )}
+              {state.accountSettingsPage && (
+                <AccountPanel
+                  embedded
+                  page={state.accountSettingsPage}
+                  browserSettingsSection={state.browserSettingsSection}
+                  isBrowserSettingsCurrent={act.captureSettingsSurface()}
+                  onPage={act.openSettings}
+                  onClose={() => act.openSettings(null)}
+                  onLogin={onLogin}
+                  onLogout={async () => {
+                    const result = await onLogout()
+                    if (result.ok) act.openSettings(null)
+                    return result
+                  }}
+                />
+              )}
+            </DialogContent>
+          </Dialog>
+        </NativeSettingsPortal>
+      )}
 
-        {workspaceReady && state.projectForm && <ProjectFormHost />}
+      {workspaceReady && state.projectForm && <ProjectFormHost />}
 
-        {workspaceReady && <ProjectManageDialogs />}
+      {workspaceReady && <ProjectManageDialogs />}
 
-        {workspaceReady && state.confirmDelete && <ConfirmDialog />}
-        {workspaceReady && state.sessionArchive && <ArchiveDialog />}
-        {workspaceReady && state.sessionRename?.mode === 'dialog' && (
-          <SessionRenameDialog key={state.sessionRename.sessionId} />
-        )}
+      {workspaceReady && state.confirmDelete && <ConfirmDialog />}
+      {workspaceReady && state.sessionArchive && <ArchiveDialog />}
+      {workspaceReady && state.sessionRename?.mode === 'dialog' && (
+        <SessionRenameDialog key={state.sessionRename.sessionId} />
+      )}
 
-        <LanguageSwitchDialog />
+      <LanguageSwitchDialog />
 
-        {workspaceReady && state.foregroundNotice && <ForegroundNotice />}
-        {workspaceReady && state.resource.notice && <ResourceNoticeToast />}
-        {workspaceReady && state.foregroundError && <ForegroundError />}
+      {workspaceReady && state.foregroundNotice && <ForegroundNotice />}
+      {workspaceReady && state.resource.notice && <ResourceNoticeToast />}
+      {workspaceReady && state.foregroundError && <ForegroundError />}
 
-        {/* 安装/重启遮罩挂在视图分支之外：安装可从活动栏、0.1 侧栏或「关于书深」任一处
-          发起，而那些表面按 mainView 互斥挂载。 */}
-        <UpdateOverlay />
-        {/* 积分预警同理挂在视图分支之外：对话轮在工作台与会话视图都会发生。 */}
-        <CreditsWarningToast />
-        {featureRegistry.globalSurfaces.map((surface) => (
-          <React.Fragment key={surface.id}>{surface.render()}</React.Fragment>
-        ))}
-      </div>
-    </OfficeRuntimeProvider>
+      {/* 安装/重启遮罩挂在视图分支之外：安装可从活动栏、0.1 侧栏或「关于书深」任一处
+        发起，而那些表面按 mainView 互斥挂载。 */}
+      <UpdateOverlay />
+      {/* 积分预警同理挂在视图分支之外：对话轮在工作台与会话视图都会发生。 */}
+      <CreditsWarningToast />
+      {featureRegistry.globalSurfaces.map((surface) => (
+        <React.Fragment key={surface.id}>{surface.render()}</React.Fragment>
+      ))}
+    </div>
   )
 }
 

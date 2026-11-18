@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(sourceDirectory, 'windows-sign.cjs'), '
 function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sign-batch-test-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  const files = (options.names || ['lease.node', 'fonts.node', 'velopack.node']).map(name => path.join(root, name))
+  const files = (options.names || ['lease.node', 'notification.node', 'velopack.node']).map(name => path.join(root, name))
   for (const file of files) fs.writeFileSync(file, `unsigned:${path.basename(file)}`)
   const env = Object.fromEntries(['CLIENT', 'SERVER', 'USER', 'KEY', 'DOMAIN', 'PUBLISHER']
     .map(name => [`SCHOLARSEED_WINDOWS_SIGN_${name}`, `fixture-${name}`]))
@@ -81,7 +81,7 @@ test('single-file callers retain one-file signing and verification', async t => 
   await f.signFile(f.files[0])
   assert.equal(f.calls.remote, 1)
   assert.equal(f.calls.verified.length, 2)
-  assert.equal(fs.readFileSync(f.files[1], 'utf8'), 'unsigned:fonts.node')
+  assert.equal(fs.readFileSync(f.files[1], 'utf8'), 'unsigned:notification.node')
 })
 
 test('empty lists and case-insensitive basename collisions fail before remote signing', async t => {

@@ -64,7 +64,6 @@ import { DocumentExternalOpen, DocumentFallbackActions } from './External'
 import { isHtmlDocument } from './html'
 import { preserveTextSelectionForContextMenu, retainsDocumentSelection } from './focus'
 import { isMissingDocumentFailure } from './api'
-import { useOfficeRuntime } from './office/runtime'
 import { VersionHistory } from './VersionHistory'
 import { showUnsavedIndicator } from './utils'
 import {
@@ -765,7 +764,6 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
   const state = useDocumentWorkspace()
   const workspace = useWorkspaceController()
   const drag = useDocumentDrag()
-  const officeRuntime = useOfficeRuntime()
   const project = selectedProject(appState)?.id ?? ''
   const dockRef = useRef<HTMLDivElement>(null)
 
@@ -784,11 +782,6 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
   useEffect(() => {
     documentWorkspaces.reclaimResources()
   }, [state.sessions, state.tabs])
-
-  useEffect(() => {
-    officeRuntime.setInteractionBlocked(Boolean(drag.draggingTabId))
-    return () => officeRuntime.setInteractionBlocked(false)
-  }, [drag.draggingTabId, officeRuntime])
 
   useEffect(() => {
     if (hidden) return undefined

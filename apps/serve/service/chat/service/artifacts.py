@@ -332,8 +332,6 @@ class ArtifactService:
             return False
         projection = self._formats.project(record.original_path, content)
         artifact_editable = projection.can_edit and projection.can_save
-        if record.source_kind in {ArtifactSource.FILE_CHANGE, ArtifactSource.ARTIFACT_PUBLISH}:
-            artifact_editable = artifact_editable or projection.can_edit_artifact
         return (
             record.source_kind is ArtifactSource.FILE_CHANGE
             or (
