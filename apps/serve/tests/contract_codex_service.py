@@ -1393,7 +1393,14 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, " ".join(base.split()))
-        for detail in ("expected_revision", "step_ids", "SCHOLARSEED_TASK_PYTHON"):
+        for detail in (
+            "expected_revision",
+            "step_ids",
+            "SCHOLARSEED_TASK_PYTHON",
+            "Use a plan when requested",
+            "plan state and execution state",
+            "required task guidance for plan operations",
+        ):
             with self.subTest(detail=detail):
                 self.assertNotIn(detail, base)
         self.assertIn("SCHOLARSEED_TASK_PYTHON", developer)
@@ -1417,9 +1424,6 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             "avoid dumping large files or unbounded command output into context",
             "Quote paths and external values for the actual shell",
             "never interpolate them as executable syntax",
-            "Use a plan when requested",
-            "plan state and execution state faithful to actual work",
-            "including before reporting completion",
             "Do not treat truncated required instructions as fully read",
             "continue in bounded chunks",
         ):
@@ -1635,7 +1639,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         for capability in (
             "Your capabilities, when supported by the current session",
             "Work with user requests, host-provided context and workspace files",
-            "Communicate progress and results, and create or update plans when useful",
+            "Communicate progress and results",
             "Use declared tools to inspect files, run commands and apply patches",
             "Follow the current sandbox and approval policy",
             "request approval only through the supported mechanism when permitted",
@@ -5355,6 +5359,18 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("declared tool contract", request.items[0]["text"])
             else:
                 self.assertEqual(request.items, ())
+
+    async def test_native_plan_progress_does_not_enable_product_plan_recovery(self) -> None:
+        for status in ("in_progress", "completed"):
+            await self.emit(
+                RuntimeEventKind.PLAN_UPDATED,
+                sequence=70 if status == "in_progress" else 71,
+                payload={"todos": [{"content": "Verify results", "status": status}]},
+            )
+            self.assertFalse(self.live.plans.enabled())
+            with patch.object(self.live.runtime_driver, "submit", new=AsyncMock()) as submit:
+                await self.live.run_runtime(TurnInput(items=(), client_user_message_id="client-a"))
+            self.assertEqual(submit.await_args.args[0].items, ())
 
     async def test_answer_model_snapshot_survives_tail_frame_and_history_reload(self) -> None:
         selected = ModelRun(
