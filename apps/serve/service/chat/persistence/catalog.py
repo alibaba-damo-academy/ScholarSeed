@@ -12,7 +12,7 @@ import sqlite3
 import time
 from contextlib import ExitStack, closing, nullcontext
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -54,7 +54,7 @@ from service.chat.constants import (
 )
 from service.chat.persistence import journal
 from service.chat.persistence.utils import begin_write, validate_transaction
-from service.paths import SESSION_CATALOG_DB
+from service.paths import MANAGED_OUTPUT_CONFLICT, SESSION_CATALOG_DB, managed_output_directory
 from service.persistence.limits import SQLITE_VALUE_BYTES
 from service.persistence.notifications import NotificationConnection
 from service.persistence.project import (
@@ -114,7 +114,7 @@ QUEUE_RECOVERY_UNKNOWN_ERROR = "runtime_submission_outcome_unknown"
 QUEUE_RECOVERY_WAIT_INTERRUPTED = "runtime_resource_wait_interrupted"
 INITIAL_ATTACHMENT_GENERATION = 0
 PORTABLE_HISTORY_ROLES = frozenset(("user", "assistant"))
-SESSION_SCHEMA_REVISION = 1
+SESSION_SCHEMA_REVISION = 2
 SESSION_SCHEMA_OWNER = "session_catalog"
 LEGACY_SESSION_TABLE = "session_access"
 LEGACY_RUNTIME_ID = "legacy_damoagent"
@@ -180,6 +180,11 @@ CATALOG_COLUMNS = frozenset(
 )
 
 
+class SessionOutputPolicy(IntEnum):
+    LEGACY = 0
+    MANAGED = 1
+
+
 class SessionStatus(str, Enum):
     """Persisted product-session lifecycle states."""
 
@@ -203,6 +208,8 @@ CATALOG_ADDITIVE_COLUMNS = {
     "runtime_workdir": "TEXT NOT NULL DEFAULT ''",
     "project_path": "TEXT",
     "output_root": "TEXT NOT NULL DEFAULT ''",
+    "output_policy": "INTEGER NOT NULL DEFAULT 0",
+    "managed_output_path": "TEXT",
     "codex_version": "TEXT",
     "model_id": "TEXT",
     "policy_id": "TEXT",
@@ -438,6 +445,8 @@ class SessionCatalogRecord:
     display_parent_session_id: str | None = None
     detached_parent_session_id: str | None = None
     display_order: int | None = None
+    output_policy: SessionOutputPolicy = SessionOutputPolicy.LEGACY
+    managed_output_path: str | None = None
 
     @property
     def runtime_workdir_path(self) -> Path | None:
@@ -769,8 +778,15 @@ class SessionCatalogStore:
     def _revisions(cls) -> Revisions:
         return Revisions(
             SESSION_SCHEMA_OWNER,
-            (Migration(SESSION_SCHEMA_REVISION, 0, cls._initialize_structure),),
+            (
+                Migration(1, 0, cls._initialize_structure),
+                Migration(SESSION_SCHEMA_REVISION, 1, cls._migrate_output),
+            ),
         )
+
+    @classmethod
+    def _migrate_output(cls, connection: sqlite3.Connection) -> None:
+        cls._add_catalog_columns(connection, cls._columns(connection, SESSION_CATALOG_TABLE))
 
     @classmethod
     def _inspect_structure(cls, connection: sqlite3.Connection) -> SessionSchema:
@@ -1279,6 +1295,8 @@ class SessionCatalogStore:
                 runtime_workdir TEXT NOT NULL,
                 project_path TEXT,
                 output_root TEXT NOT NULL,
+                output_policy INTEGER NOT NULL DEFAULT 0,
+                managed_output_path TEXT,
                 codex_version TEXT,
                 model_id TEXT,
                 policy_id TEXT,
@@ -3441,6 +3459,8 @@ class SessionCatalogStore:
             runtime_workdir=str(row["runtime_workdir"]),
             project_path=cls._optional(row, "project_path"),
             output_root=str(row["output_root"]),
+            output_policy=SessionOutputPolicy(row["output_policy"]),
+            managed_output_path=cls._optional(row, "managed_output_path"),
             codex_version=cls._optional(row, "codex_version"),
             model_id=cls._optional(row, "model_id"),
             policy_id=cls._optional(row, "policy_id"),
@@ -3554,6 +3574,7 @@ class SessionCatalogStore:
         thinking: ModelThinking | None = None,
         title_fallback: SessionTitleFallback | None = None,
         display_parent_session_id: str | None = None,
+        output_policy: SessionOutputPolicy = SessionOutputPolicy.LEGACY,
     ) -> SessionCatalogRecord:
         """Allocate a durable product identity before creating a native thread."""
 
@@ -3566,6 +3587,9 @@ class SessionCatalogStore:
         empty = [name for name, value in required.items() if not value.strip()]
         if empty:
             raise ValueError(f"required session fields are empty: {', '.join(empty)}")
+        output_policy = SessionOutputPolicy(output_policy)
+        if output_policy is SessionOutputPolicy.MANAGED and project_path != runtime_workdir:
+            raise ValueError(MANAGED_OUTPUT_CONFLICT)
         capabilities = tuple(RuntimeCapabilityName(value) for value in required_capabilities)
         if title_fallback is not None:
             title_fallback = SessionTitleFallback(title_fallback)
@@ -3594,6 +3618,7 @@ class SessionCatalogStore:
                     or existing.runtime_workdir != runtime_workdir
                     or existing.project_path != project_path
                     or existing.output_root != output_root
+                    or existing.output_policy != output_policy
                     or activation.required_capabilities != capabilities
                 ):
                     raise SessionStateConflictError("session allocation idempotency conflict")
@@ -3608,7 +3633,7 @@ class SessionCatalogStore:
                 f"INSERT INTO {SESSION_CATALOG_TABLE} "
                 "(session_id, principal_id, runtime_id, runtime_workdir, project_path, "
                 "output_root, codex_version, model_id, policy_id, status, title, title_fallback, created_at, "
-                "updated_at, display_parent_session_id, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "updated_at, display_parent_session_id, display_order, output_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session_id,
                     creator.user_id,
@@ -3626,6 +3651,7 @@ class SessionCatalogStore:
                     timestamp,
                     display_parent_session_id,
                     display_order,
+                    output_policy,
                 ),
             )
             connection.execute(
@@ -4799,6 +4825,34 @@ class SessionCatalogStore:
             connection.close()
         return self.model_state(session_id)
 
+    def prepare_output(self, session_id: str, cwd: Path) -> str | None:
+        """Serialize first-turn allocation with its durable session binding."""
+        with closing(self._connect()) as connection, connection:
+            begin_write(connection, self._database)
+            record = self._record(
+                connection.execute(
+                    f"SELECT * FROM {SESSION_CATALOG_TABLE} WHERE session_id = ?", (session_id,)
+                ).fetchone()
+            )
+            if record is None:
+                raise SessionAccessError("session not found")
+            if record.output_policy is SessionOutputPolicy.LEGACY:
+                return None
+            if record.runtime_workdir != str(cwd) or record.project_path != str(cwd):
+                raise SessionStateConflictError(MANAGED_OUTPUT_CONFLICT)
+            with managed_output_directory(
+                cwd,
+                record.managed_output_path,
+                record.title if record.title_fallback is None else "",
+            ) as relative:
+                if record.managed_output_path is None:
+                    connection.execute(
+                        f"UPDATE {SESSION_CATALOG_TABLE} SET managed_output_path = ? WHERE session_id = ?",
+                        (relative, session_id),
+                    )
+                connection.commit()
+                return str(cwd / relative)
+
     def relocate(
         self,
         session_id: str,
@@ -4825,10 +4879,11 @@ class SessionCatalogStore:
             result = connection.execute(
                 f"""
                 UPDATE {SESSION_CATALOG_TABLE}
-                SET runtime_workdir = ?, project_path = ?, output_root = ?, updated_at = ?
+                SET managed_output_path = CASE WHEN project_path = ? THEN managed_output_path ELSE NULL END,
+                    runtime_workdir = ?, project_path = ?, output_root = ?, updated_at = ?
                 WHERE session_id = ? AND {condition}
                 """,
-                (*roots, timestamp, session_id, *owner_params),
+                (project_path, *roots, timestamp, session_id, *owner_params),
             )
             if result.rowcount != 1:
                 raise SessionAccessError("session not found")

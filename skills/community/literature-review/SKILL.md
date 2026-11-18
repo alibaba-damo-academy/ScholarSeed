@@ -13,8 +13,8 @@ description_zh: >-
   快速模式基于摘要生成Markdown，不含图片；标准模式支持全文分析、
   图表及Markdown、PDF或DOCX交付。
 metadata:
-  version: "2026.11.17+1"
-version: "2026.11.17+1"
+  version: "2026.11.17+2"
+version: "2026.11.17+2"
 ---
 # Literature review
 
@@ -320,36 +320,28 @@ effective requirements.
 
 ## 7. Maintain one host progress tracker
 
-Call the host's declared progress tool directly. Do not save its responses to JSON files or run `slr progress`.
-Use the actual tool schema to choose flat or legacy; do not identify the protocol from an `actions` field.
-No additional Skill-file read is required for the tracker procedure.
+This execution workflow requires persistent stage tracking across its checkpoints.
+After the execution agreement allows work, load the product operations plan guide
+through the current Skill inventory. If no product plan is enabled, use its
+`plan/enable` operation with `purpose=workflow_required` and a reason identifying
+this literature-review workflow. A draft agreement or a discussion alone does not
+require enabling the tracker. Task activation and plan enablement are separate;
+neither substitutes for the execution agreement or full-text authorization.
 
-New trackers contain `materials`, `evidence`, `writing` and `publication`. If a tracker already exists, continue it and select
-its actual owning item from `get` rather than replacing its IDs or tree. Scope changes use a separate host `revise`
-operation.
+Follow the single product plan guide for the declared protocol: on the first
+activation turn use the Bridge path; on later turns use the declared product tool.
+Do not send product `operation` arguments to a native lightweight `update_plan`.
+Keep existing product IDs and stages on continuation. New trackers contain
+`materials`, `evidence`, `writing` and `publication`; scope changes use `revise`.
+Do not save progress JSON or run `slr progress`.
 
-| Operation | Flat tool | Actually declared legacy get/write tool |
-| --- | --- | --- |
-| Read current state | Call `update_plan` with `operation=get` alone. Read its actual IDs, revision, turn_id and allowed actions directly. | Call `operation=get, request={}` and read the returned state directly. |
-| Create a tracker | Declare four pending steps without status fields. After submitting create, read `get` again before generating a start action. | Use the actual declared schema and returned state. Do not send a flat payload to the older tool. |
-| Start a stage | Call `operation=start` with the actual `step_ids`. Execution actions never include `items` or status fields. | Submit the declared write payload preserving the complete tree and setting only the actual leaf to `in_progress` before work. |
-| Complete a stage and start the next | Call `finish` for the previous step, read `get` again, then call `start` for the next step using the new revision. One finish call does not start another step. | Use the actual write contract for the observed transitions, retaining the complete tree. |
-| Wait at a checkpoint | Call `pause` with the observed reason. Read `get` and call `start` before handling the reply. | Use `needs_confirmation`, then read current state and resume before handling the reply. |
-| Recover from a write problem | After a known revision conflict, read `get` again. For an uncertain identical retry, retain and reuse its original payload. | Apply the same observation and retry rule using the actual legacy payload. |
-
-Every flat mutation carries the observed `plan_id`, `expected_revision` (the returned revision), `turn_id`,
-and a new unique `request_id` for a new operation. Generate an ID with a host-supported UUID facility when needed.
-For create only, use a new plan ID and revision 0 when no plan metadata exists. Read get before each new mutation.
-The host validates and performs the write. If the stage already has the intended state, continue without another
-mutation. Never predict the next revision or start work after create alone. An uncertain identical retry reuses
-the exact original arguments and request_id; a known conflict requires a new read and corrected request.
-
-Start a stage before its work and mark it `completed` after observing the result. Use `--reason` for an observed block or
-failure; paper, chapter and tool details belong in progress text. Routine progress changes execution state, not tracker
-structure.
-
-Finish an existing group only after all children finish and the host permits finish. The host aggregates timing; it does
-not automatically complete parents.
+Update at real stage boundaries, not per paper, command or verification. Start
+before work; complete only with observed evidence, preferring the supported
+`complete` action. Use the revision and state returned by each successful write;
+read again only when state is missing, stale or conflicting. Keep checkpoint
+pause/resume and parent-child completion rules from the plan guide. Publication
+must begin before publishing. Never fabricate execution times or remove required
+verification to reduce bookkeeping.
 
 ## 8. Stage 2 — Import materials and assemble the corpus
 

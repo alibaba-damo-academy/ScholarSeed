@@ -310,14 +310,18 @@ async def model_catalog_argument(
     if entries:
         models: list[dict[str, Any]] = []
         native_models: dict[str, dict[str, Any]] = {}
-        if source is not None:
+        required_native = tuple(
+            entry.model_ref
+            for entry in entries.values()
+            if entry.capabilities.tool_protocol is ModelToolProtocol.PROVIDER_NATIVE
+            and (not entry.optional_preload or entry.model_ref in required)
+        )
+        if source is not None and not (
+            not required_native and isinstance(source, dict) and source.get("models") == []
+        ):
             bound = bind_native_models(
                 source,
-                tuple(
-                    entry.model_ref
-                    for entry in entries.values()
-                    if entry.capabilities.tool_protocol is ModelToolProtocol.PROVIDER_NATIVE
-                ),
+                required_native,
                 "",
             )
             native_models = {row["slug"]: row for row in bound["models"]}
@@ -326,6 +330,8 @@ async def model_catalog_argument(
                 models.append(standard_model(entry))
                 continue
             if entry.model_ref not in native_models:
+                if entry.optional_preload and entry.model_ref not in required:
+                    continue
                 raise ValueError(f"{MODEL_NOT_FOUND_ERROR}: {entry.model_ref}")
             row = copy.deepcopy(native_models[entry.model_ref])
             row["auto_review_model_override"] = entry.approval_model_ref or entry.model_ref
@@ -370,5 +376,10 @@ async def model_catalog_argument(
         raise ValueError(f"{MODEL_NOT_FOUND_ERROR}: {sorted(missing)[0]}")
     payload = json.dumps(catalog, ensure_ascii=False, sort_keys=True).encode(TEXT_ENCODING)
     path = store_model_catalog(Path(request.process_environment[CODEX_HOME_ENV]), payload)
-    snapshot = ModelCatalogSnapshot(path, payload, tuple(sorted(required)), tuple(entries.values()))
+    snapshot = ModelCatalogSnapshot(
+        path,
+        payload,
+        tuple(sorted(required)),
+        tuple(entry for entry in entries.values() if entry.model_ref in available),
+    )
     return await select(snapshot) if select is not None else snapshot.argument

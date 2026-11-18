@@ -763,6 +763,33 @@
   },
   "planning": {
     "operations": {
+      "enable": {
+        "additionalProperties": false,
+        "description": "Explicit opt-in; this does not authorize work or create a task tree.",
+        "properties": {
+          "purpose": {
+            "enum": [
+              "user_requested",
+              "workflow_required"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purpose",
+          "reason"
+        ],
+        "title": "PlanEnable",
+        "type": "object",
+        "x-bridge-guidance": "Enable a persistent product task tree only for an explicit user request or a workflow that requires that tracker. Ordinary product tools, multiple steps, long tasks and reading a Skill do not require it. This grants no execution permission. Continue through plan/get, structure and action in this turn; the dedicated product tool is selected at the next turn boundary."
+      },
       "get": {
         "additionalProperties": false,
         "properties": {},
@@ -1270,6 +1297,6 @@
   },
   "identity": {
     "version": "1.0.0",
-    "sha256": "0b0f126dcf170c84a086bcbc88504dfc4ddec43001ca5e9d4cd6c9ca08d04ce2"
+    "sha256": "eecb8fcf5ada50043aa9b197b46467a63779a222527c8dbe55d105d4ab2c6135"
   }
 }

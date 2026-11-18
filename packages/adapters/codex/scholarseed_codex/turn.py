@@ -90,6 +90,7 @@ from scholarseed_runtime.contract.history import (
     TurnStatus,
 )
 from scholarseed_runtime.contract.incident import (
+    INCIDENT_ID_KEY,
     RUNTIME_TURN_NOT_SUBMITTED,
     RuntimeIncident,
     RuntimeIncidentKind,
@@ -1728,7 +1729,7 @@ class CodexTurnRuntime:
                     failure.diagnostic_code,
                     failure.http_status,
                 )
-            await self._close_provider_incident(
+            provider_incident_id = await self._close_provider_incident(
                 turn_id,
                 recovered=status == TurnStatus.COMPLETED,
                 generation=self._generation,
@@ -1757,6 +1758,11 @@ class CodexTurnRuntime:
                     ),
                     "process_generation": self._generation,
                     "resolved_ambiguous_incident_id": resolved_ambiguous_incident_id,
+                    **(
+                        {INCIDENT_ID_KEY: provider_incident_id}
+                        if status == TurnStatus.FAILED and provider_incident_id
+                        else {}
+                    ),
                 },
             )
             self.ambiguous_submission_id = ""
@@ -1814,7 +1820,7 @@ class CodexTurnRuntime:
         recovered: bool,
         generation: int,
         failure: ProviderFailure | None = None,
-    ) -> None:
+    ) -> str | None:
         if not self.provider_incident_id:
             return
         if self.provider_incident_turn_id and self.provider_incident_turn_id != turn_id:
@@ -1845,6 +1851,7 @@ class CodexTurnRuntime:
             if recovered and terminal_failure.retryability is RuntimeRetryability.TERMINAL
             else None
         )
+        return incident.incident_id
 
     async def connection_lost(self, incident: RuntimeIncident, exit_generation: int) -> None:
         self.fs_watch_id = ""

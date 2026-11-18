@@ -17,8 +17,9 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -101,6 +102,7 @@ from service.chat.active import (
     base_instructions,
     developer_instructions,
 )
+from service.chat.api.artifacts import register_artifact_routes
 from service.chat.api.settings import mount_setting_routes
 from service.chat.constants import (
     PRODUCT_EVENT_ANSWER_SOURCES,
@@ -198,11 +200,12 @@ from service.platform.activity import (
     MaintenanceActive,
     MaintenanceStale,
 )
-from service.platform.bridge import ComponentInvocation, PluginInstallation
+from service.platform.bridge import ComponentInvocation, PlanEnable, PluginInstallation
 from service.platform.citations import CITATION_SCHEME
 from service.platform.content import ArtifactScopeKind, RootKind
 from service.platform.files import FILE_ACCESS_DENIED, FILE_ACCESS_FAILED, read_file_raw
 from service.platform.toolchain import CompilerResources
+from service.platform.vocabulary import BRIDGE_SESSION_HEADER, BRIDGE_TOKEN_HEADER
 from service.settings.capabilities import apply_capability, bundled_registry
 from service.settings.catalog import (
     DEEPRD_GATEWAY_BASE_URL,
@@ -3302,6 +3305,39 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         ensure.assert_awaited_once()
         self.assertIs(ensure.await_args.kwargs["purpose"], ResourcePurpose.TURN)
 
+    async def test_product_plan_selection_changes_only_at_turn_boundary(self) -> None:
+        async def factory(request):
+            session = FakeRuntimeSession(FakeAdapter(self.skill_file))
+            session.binding = (
+                request.binding
+                if hasattr(request, "binding")
+                else replace(
+                    session.binding,
+                    opaque_session_ref="product-plan-thread",
+                    profile=service_tool_profile(request.service_tools),
+                )
+            )
+            return session
+
+        runtime, provider = self.runtime_service(factory)
+        await runtime.ensure_active(self.live)
+        previous = self.live.runtime_session
+        previous_thread = self.live.vendor_thread_id
+        self.live.plans.enable(
+            PlanEnable(purpose="user_requested", reason="Track a persistent task tree"),
+            turn_id="turn-1",
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=previous_thread,
+            require_turn=lambda: None,
+        )
+        await runtime.ensure_active(self.live, purpose=ResourcePurpose.SESSION)
+        self.assertIs(self.live.runtime_session, previous)
+        await runtime.ensure_active(self.live, purpose=ResourcePurpose.TURN)
+        self.assertIsNot(self.live.runtime_session, previous)
+        self.assertNotEqual(self.live.vendor_thread_id, previous_thread)
+        self.assertIn("update_plan", {tool.name for tool in provider.opened[-1].service_tools})
+        self.assertTrue(self.live.plans.enabled())
+
     async def test_turn_refresh_replaces_dormant_runtime_without_retained_turn(self) -> None:
         runtime, provider = self.runtime_service()
         provider.resource_policy = replace(provider.resource_policy, refresh_before_turn=True)
@@ -4790,7 +4826,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 self.live._persistence,
                 "run",
-                new=AsyncMock(side_effect=OSError("state unavailable")),
+                new=AsyncMock(side_effect=[True, OSError("state unavailable")]),
             ),
             patch.object(self.adapter, "resolve_hil", wraps=self.adapter.resolve_hil) as respond,
             patch.object(self.logger, "warning") as warning,
@@ -6192,6 +6228,97 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         ).history(PRODUCT_SESSION_ID)
         self.assertEqual(history["todo_turn_id"], "turn-1")
         self.assertEqual(history["todo_explanation"], "先完成可复现实验")
+
+    async def test_batch_publication_reuses_snapshots_versions_projection_and_retry(self) -> None:
+        activities = Activities()
+        lease = activities.enter(ActivityDomain.TURN)
+        self.addCleanup(lease.close)
+        self.live.turn_activity = lease
+        self.live.bridge_token = "batch-fixture"
+        turn = patch.object(
+            type(self.live.ledger),
+            "active_turn_id",
+            new_callable=PropertyMock,
+            return_value="turn-batch",
+        )
+        turn.start()
+        self.addCleanup(turn.stop)
+        app = FastAPI()
+        register_artifact_routes(
+            app, lambda key: self.live if key == self.live.id else None, activities=activities
+        )
+        headers = {BRIDGE_SESSION_HEADER: self.live.id, BRIDGE_TOKEN_HEADER: self.live.bridge_token}
+        files = [
+            {"path": f"outputs/{name}", "role": "final"}
+            for name in ("hello.md", "values.json", "analysis.py", "missing.md")
+        ]
+        for file in files[:3]:
+            (self.workdir / file["path"]).write_text("original", encoding="utf-8")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+
+            async def publish(items):
+                response = await client.post(
+                    "/api/internal/bridge/artifact/publish-many",
+                    headers=headers,
+                    json={"files": items},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                return response.json()
+
+            first = await publish(files)
+            self.assertEqual(first["status"], "partial")
+            self.assertEqual(len(self.artifacts.list_session(self.live.id)), 3)
+            repeated = await publish(files)
+            self.assertEqual(repeated, first)
+            self.assertEqual(len(self.events.replay(self.live.id)), 6)
+            (self.workdir / files[0]["path"]).write_text("new revision", encoding="utf-8")
+            changed = await publish(files[:1])
+            self.assertEqual(changed["status"], "completed")
+            self.assertNotEqual(
+                changed["items"][0]["publication_id"], first["items"][0]["publication_id"]
+            )
+            reader = ArtifactService(
+                self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy()
+            )
+            reader.bind_content(self.content)
+            self.assertEqual(
+                reader.read_text(self.live.id, first["items"][0]["artifact_id"])["content"],
+                "original",
+            )
+            self.assertEqual(
+                reader.read_text(self.live.id, changed["items"][0]["artifact_id"])["content"],
+                "new revision",
+            )
+            (self.workdir / files[-1]["path"]).write_text("fixed", encoding="utf-8")
+            retry = await publish(first["retry_files"])
+            self.assertEqual(retry["status"], "completed")
+            self.assertEqual(len(self.artifacts.list_session(self.live.id)), 5)
+            rejected = await publish(
+                [
+                    {"path": "../outside.txt"},
+                    {"path": str(self.output_root / "hello.md")},
+                    {"path": "C:\\outside.txt"},
+                ]
+            )
+            self.assertEqual(rejected["status"], "failed")
+            self.assertEqual(len(self.artifacts.list_session(self.live.id)), 5)
+            folder = self.output_root / "package"
+            folder.mkdir()
+            (folder / "member.md").write_text("member", encoding="utf-8")
+            package = await publish([{"path": "outputs/package"}])
+            self.assertEqual(package["status"], "completed")
+            records = self.live._publications.store(
+                self.live.project_id, self.live.id
+            ).list_session(self.live.id)
+            restored = next(
+                row
+                for row in records
+                if row.publication_id == package["items"][0]["publication_id"]
+            )
+            self.assertEqual(restored.content.kind, "directory")
+            self.assertEqual(len(self.content.artifact_manifest(restored.content).entries), 1)
 
     async def test_explicit_artifact_publish_is_content_bound_and_idempotent(self) -> None:
         artifact_file = self.output_root / "published.md"
@@ -8705,7 +8832,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(personal_intent.approval_model_ref, "")
 
     async def test_retry_budget_follows_endpoint_ownership(self) -> None:
-        """内置网关路 Codex 侧不重试(0)，BYOK 直连路保留一次瞬时重连(1)；0 不被当 falsy 丢掉。"""
+        """Gateway streams retry five times; request zero and BYOK one remain explicit."""
 
         bridge = CompletionBridge(
             "http://127.0.0.1:9999", source_endpoints=(DEEPRD_GATEWAY_BASE_URL,)
@@ -8732,7 +8859,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             byok_provider["request_max_retries"], model_module.BYOK_REQUEST_MAX_RETRIES
         )
-        self.assertEqual(model_module.GATEWAY_STREAM_MAX_RETRIES, 0)
+        self.assertEqual(model_module.GATEWAY_STREAM_MAX_RETRIES, 5)
         self.assertEqual(model_module.BYOK_STREAM_MAX_RETRIES, 1)
         gateway_spec = model_module.SessionModelSpec(
             key="qwen3.8-max",
@@ -8742,8 +8869,23 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             codex_provider=gateway_provider,
         )
         intent, _ = gateway_spec.runtime_model()
-        self.assertEqual(intent.transport.stream_max_retries, 0)
+        self.assertEqual(intent.transport.stream_max_retries, 5)
         self.assertEqual(intent.transport.request_max_retries, 0)
+        sampling_provider, _ = model_module._codex_provider(
+            {"model_name": "qwen3.8-max", "base_url": DEEPRD_GATEWAY_BASE_URL},
+            bridge,
+            allow_tools=False,
+        )
+        sampling_spec = model_module.SessionModelSpec(
+            key="qwen3.8-max",
+            model_name="qwen3.8-max",
+            config={},
+            billing="api",
+            codex_provider=sampling_provider,
+        )
+        sampling_intent, _ = sampling_spec.runtime_model()
+        self.assertEqual(sampling_intent.transport.stream_max_retries, 5)
+        self.assertEqual(sampling_intent.transport.request_max_retries, 0)
         byok_spec = model_module.SessionModelSpec(
             key="minimax-m2.1",
             model_name="minimax-m2.1",

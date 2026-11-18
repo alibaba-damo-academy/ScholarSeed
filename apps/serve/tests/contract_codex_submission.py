@@ -872,6 +872,7 @@ class EmptyReplacementLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             user_id="owner",
             process_environment={},
             closing=False,
+            plans=SimpleNamespace(enabled=lambda: False),
         )
         original = service._activation_revision(live)
         live.closing = True

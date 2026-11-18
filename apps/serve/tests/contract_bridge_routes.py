@@ -121,6 +121,7 @@ class BridgeRoutesContract(unittest.TestCase):
             bridge_token="private",
             publication_turn_id="turn",
             bridge_activity=self.lease,
+            plans=SimpleNamespace(enabled=lambda: True),
         )
         sessions = SimpleNamespace(
             bridge_caller=lambda session_id: live if session_id == live.id else None
@@ -156,6 +157,7 @@ class BridgeRoutesContract(unittest.TestCase):
             bridge_token="private",
             publication_turn_id="turn",
             bridge_activity=self.lease,
+            plans=SimpleNamespace(enabled=lambda: True),
         )
         sessions = SimpleNamespace(
             bridge_caller=lambda session_id: live if session_id == live.id else None
@@ -186,6 +188,7 @@ class BridgeRoutesContract(unittest.TestCase):
             bridge_token="private",
             publication_turn_id="turn",
             bridge_activity=self.lease,
+            plans=SimpleNamespace(enabled=lambda: True),
         )
         sessions = SimpleNamespace(bridge_caller=Mock(side_effect=[live, live, None]))
         app = FastAPI()
@@ -208,6 +211,7 @@ class BridgeRoutesContract(unittest.TestCase):
             bridge_token="private",
             publication_turn_id="turn",
             bridge_activity=self.lease,
+            plans=SimpleNamespace(enabled=lambda: True),
         )
         app = FastAPI()
         register_contract_routes(

@@ -38,6 +38,7 @@ import { deliveryLabel } from '../../delivery'
 import {
   authenticationRecoveryAction,
   formatTurnFailure,
+  presentRuntimeFailures,
   isRecoverableTurnFailure,
 } from '../../failures'
 import { feedback, renderFeedback } from '../../contracts/feedback'
@@ -595,10 +596,12 @@ export function Stream({
     state.turnLaunch !== null || hasQueuedMessageAwaitingRuntime(thread.queuedMessages ?? [])
   const cardArtifacts = useCardArtifacts(conv)
   const artifactCardTypes = useArtifactCardTypes()
-  const presented = transcriptPresentationItems(currentConv).filter(
-    (item) =>
-      (thread.readOnly || !isDockedInstallation(item)) &&
-      (item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id))
+  const presented = presentRuntimeFailures(
+    transcriptPresentationItems(currentConv).filter(
+      (item) =>
+        (thread.readOnly || !isDockedInstallation(item)) &&
+        (item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id))
+    )
   )
   const activeTurnId = Object.entries(thread.turnOutcomes ?? {})
     .filter(([, outcome]) => outcome === 'running')

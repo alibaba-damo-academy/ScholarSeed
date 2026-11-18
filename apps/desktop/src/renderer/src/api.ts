@@ -2890,6 +2890,7 @@ export type ProductEvent =
   | ProductEventBase<
       'turn_failed',
       {
+        incident_id?: string
         code?: string
         provider_error_code?: string
         message: string

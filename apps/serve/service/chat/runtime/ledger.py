@@ -12,6 +12,7 @@ from scholarseed_runtime.contract import CommandState, DeliveryClass, RuntimeEve
 from scholarseed_runtime.contract.command import ThreadReplacementProof
 from scholarseed_runtime.contract.history import TurnStatus
 from scholarseed_runtime.contract.incident import (
+    INCIDENT_ID_KEY,
     RuntimeIncident,
     RuntimeIncidentKind,
     RuntimeIncidentScope,
@@ -928,6 +929,13 @@ class SessionLedger:
                     "status": str(payload.get("status") or outcome),
                     "message": self._terminal_safe_error(event),
                     "resolved_incident_ids": list(resolved),
+                    **(
+                        {INCIDENT_ID_KEY: payload[INCIDENT_ID_KEY]}
+                        if outcome == PRODUCT_TURN_OUTCOME_FAILED
+                        and isinstance(payload.get(INCIDENT_ID_KEY), str)
+                        and payload[INCIDENT_ID_KEY]
+                        else {}
+                    ),
                     **(
                         {"reason": RuntimeIncidentKind.PROCESS_EXIT.value}
                         if outcome == PRODUCT_TURN_OUTCOME_INTERRUPTED

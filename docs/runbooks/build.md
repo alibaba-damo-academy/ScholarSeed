@@ -145,6 +145,28 @@ gain release eligibility. `preview`/`release` (including candidates) and full in
 acceptance workflows still require a clean worktree. The local relaxation does not waive
 inventory, native-platform, protected-resource, or required macOS ad-hoc-signing checks.
 
+For `preview`/`release`, including unsigned candidates, a source branch named
+`preview/<x.y.z>` or `release/<x.y.z>` must match the effective build version
+(`--version`, then `SCHOLARSEED_DESKTOP_VERSION`, then Desktop `package.json`).
+This check runs before dependency preparation, signing, and packaging. For detached
+CI checkouts, `CI_COMMIT_REF_NAME` is checked only when `CI_COMMIT_SHA` matches the
+captured source commit; a supplied but unbound CI ref is rejected. Without a CI ref,
+detached checkouts use versioned local/origin refs that point exactly at the source
+commit; conflicting version lines are rejected until the intended branch is selected.
+Ordinary task branches and detached commits without a versioned ref keep their existing
+source contract; the builder does not infer a version branch from a timestamp. Local `dev` builds
+remain available for work on a different version line. These checks do not replace
+verification of the exact commit and installed package payload.
+
+`preview`/`release`（包括未签名候选包）的源码分支若命名为 `preview/<x.y.z>` 或
+`release/<x.y.z>`，必须与实际构建版本一致；版本依次取 `--version`、
+`SCHOLARSEED_DESKTOP_VERSION`、Desktop `package.json`。检查发生在依赖准备、签名和
+打包之前。CI 分离检出只有在 `CI_COMMIT_SHA` 与已捕获的源码提交一致时，才采用
+`CI_COMMIT_REF_NAME` 进行检查；传入但未绑定提交的 CI ref 会被拒绝。没有 CI ref 时，
+分离检出检查精确指向源码提交的本地和 origin 版本 ref；版本线冲突时，须先选定实际分支。
+普通任务分支和没有版本 ref 的分离提交沿用既有源码契约，不从时间戳推断版本分支。本地 `dev` 构建仍可
+用于其他版本线的开发。这些检查不替代精确提交和已安装包内容的验证。
+
 | Type | Purpose | Signing |
 |---|---|---|
 | `dev` | Local development package | macOS ad-hoc; Windows unsigned; validate the selected stage |

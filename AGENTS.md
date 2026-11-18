@@ -134,7 +134,7 @@ Runtime is a contract/Gateway distribution, not an agent Harness. Do not recreat
 built wheel, update consumers of moved symbols, and keep contract, Gateway,
 Trace and vendor execution in their respective Owners.
 
-### Resident Prompt Budget
+### Resident Context and Capability Budget
 
 **Do not expand `baseInstructions.md` or `developerInstructions.md`: every conversation pays the context/latency cost.**
 Exceptions require minimal content essential on every call, unsafe to load on demand,
@@ -143,6 +143,13 @@ Base replaces Codex's foundation (identity, language, pre-Skill safeguards);
 Developer adds universal product constraints, not development rules.
 Put task details in matching product/research Skill references and development rules in scoped `AGENTS.md`.
 Never bypass this gate through tool descriptions or dynamic injection.
+
+- Keep specialist workflows opt-in; define their triggers and load instructions and tools only when needed.
+  Using a product feature does not automatically require a plan or other state-maintenance workflow.
+- Apply this boundary to default tools, bridges and dynamic context too; moving text into a Skill is insufficient.
+  Keep deterministic bookkeeping in backend code where possible.
+- Verify ordinary conversations incur no specialist workflow overhead, while activation, continuation and exit work.
+  Preserve existing task recovery and backend permission checks; support performance claims with measurements.
 
 ### Code Engineering Rules (hard gates)
 

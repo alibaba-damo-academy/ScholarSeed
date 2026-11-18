@@ -428,29 +428,30 @@ def test_execution_catalog_groups_only_compatible_connections() -> None:
                 personal_model_key(direct["id"], "direct-model"), user_id="catalog-owner"
             )
         entries = {entry.model_ref: entry for entry in first_spec.catalog_models}
+        first_ref, second_ref = first_spec.runtime_model_ref, second_spec.runtime_model_ref
         check(
             "product bridge connections compile one catalog regardless of selection",
             first_spec.catalog_models == second_spec.catalog_models,
         )
         check(
             "execution catalog excludes direct, disabled and other-owner connections",
-            set(entries) == {"bridge-a", "bridge-b"},
+            first_ref != second_ref and set(entries) == {first_ref, second_ref},
             str(entries),
         )
         check(
             "each entry retains its own context window",
-            [entries["bridge-a"].context_window, entries["bridge-b"].context_window]
+            [entries[first_ref].context_window, entries[second_ref].context_window]
             == [32000, 64000],
         )
         check(
             "each entry retains its own reasoning levels",
-            entries["bridge-a"].capabilities.reasoning_efforts == ("low",)
-            and entries["bridge-b"].capabilities.reasoning_efforts == ("high",),
+            entries[first_ref].capabilities.reasoning_efforts == ("low",)
+            and entries[second_ref].capabilities.reasoning_efforts == ("high",),
         )
         check(
             "each entry retains its own input modalities",
-            entries["bridge-a"].capabilities.input_modalities == ("text",)
-            and entries["bridge-b"].capabilities.input_modalities == ("text", "image"),
+            entries[first_ref].capabilities.input_modalities == ("text",)
+            and entries[second_ref].capabilities.input_modalities == ("text", "image"),
         )
         check(
             "direct Responses connection stays isolated",
@@ -472,8 +473,8 @@ def test_execution_catalog_prefers_selected_api_connection() -> None:
         with patch.object(model_module, "load_builtin_work_config", return_value={}):
             spec = service.session_spec(key)
             check(
-                "identical model definitions deduplicate across bridged connections",
-                len(spec.catalog_models) == 1,
+                "bridged connections have separate identities even for identical model definitions",
+                len(spec.catalog_models) == 2,
             )
             unrelated = store.upsert(
                 profile_values(wire_api="chat_completions", models=("other-model",))
@@ -486,13 +487,24 @@ def test_execution_catalog_prefers_selected_api_connection() -> None:
             second_spec = service.session_spec(personal_model_key(second["id"], "same-slug"))
             check(
                 "same wire model retains the context window of the selected connection",
-                [spec.catalog_models[0].context_window for spec in (first_spec, second_spec)]
+                [
+                    next(
+                        e.context_window
+                        for e in candidate.catalog_models
+                        if e.model_ref == candidate.runtime_model_ref
+                    )
+                    for candidate in (first_spec, second_spec)
+                ]
                 == [32000, 64000],
             )
             other_spec = service.session_spec(personal_model_key(unrelated["id"], "other-model"))
             check(
                 "an unrelated selection remains usable in the presence of collisions",
-                [entry.model_ref for entry in other_spec.catalog_models] == ["other-model"],
+                len(other_spec.catalog_models) == 3
+                and first_spec.catalog_models
+                == second_spec.catalog_models
+                == other_spec.catalog_models
+                and first_spec.runtime_model_ref == spec.runtime_model_ref,
             )
             store.upsert(
                 {
@@ -510,8 +522,16 @@ def test_execution_catalog_prefers_selected_api_connection() -> None:
             ]
             check(
                 "same-connection aliases retain the definition of the exact selected key",
-                [spec.catalog_models[0].context_window for spec in alias_specs] == [32000, 64000]
-                and all(len(spec.catalog_models) == 1 for spec in alias_specs),
+                [
+                    next(
+                        e.context_window
+                        for e in candidate.catalog_models
+                        if e.model_ref == candidate.runtime_model_ref
+                    )
+                    for candidate in alias_specs
+                ]
+                == [32000, 64000]
+                and alias_specs[0].catalog_models == alias_specs[1].catalog_models,
             )
 
 
@@ -542,6 +562,15 @@ def test_execution_catalog_keeps_builtin_and_dashscope_approval_distinct() -> No
             check(
                 "selection keeps its own upstream endpoint", upstream.endpoint.startswith(endpoint)
             )
+            if endpoint == preset["base_url"]:
+                check(
+                    "the private runtime reference translates to the original model on the same connection",
+                    intent.model_ref != spec.model_name
+                    and upstream.request_policy({"model": intent.model_ref})["model"]
+                    == spec.model_name
+                    and entries[GATEWAY_MODEL_KEY].approval_model_ref
+                    == "qwen3-next-80b-a3b-thinking",
+                )
             check(
                 "selection keeps its own approval model in the runtime catalog",
                 intent.approval_model_ref

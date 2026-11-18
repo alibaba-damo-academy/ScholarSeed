@@ -150,9 +150,10 @@ consumes the prepared list; the public CLI no longer accepts assembled per-paper
 `items[]`. Existing material snapshots remain readable. Receipts do not renew
 turn activation or grant full-text access.
 
-Update the host tracker directly with `update_plan`; do not save progress JSON
-or call `slr progress`. Read the new revision after completing a stage and
-before starting the next. Start publication before publishing.
+Enable the persistent product tracker only for the agreed execution workflow,
+using the product operations plan guide. Follow its Bridge/dedicated-tool routing,
+reuse returned revisions and update only at stage boundaries. Do not save progress
+JSON or call `slr progress`. Start publication before publishing.
 
 Use the source-permission mapping in [SKILL.md](SKILL.md) when constructing
 requests. Keep exact parameter values in requests and explain the permitted

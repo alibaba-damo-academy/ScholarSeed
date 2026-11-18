@@ -116,6 +116,7 @@ from service.chat.persistence.catalog import (
     SessionListState,
     SessionModelState,
     SessionOrderPlacement,
+    SessionOutputPolicy,
     SessionPrincipal,
     SessionStateConflictError,
     SessionStatus,
@@ -1231,6 +1232,11 @@ class SessionService:
                 status=SessionStatus.READY,
                 title=SESSION_TITLE_DEFAULT,
                 title_fallback=SessionTitleFallback.NEW_SESSION,
+                output_policy=(
+                    SessionOutputPolicy.MANAGED
+                    if project_path == runtime_workdir
+                    else SessionOutputPolicy.LEGACY
+                ),
                 display_parent_session_id=display_parent_session_id,
                 created_at=time.time(),
                 required_capabilities=required_capabilities,
@@ -4340,10 +4346,16 @@ class SessionService:
         deadline: float | None = None,
         on_wait: ResourceWaitObserver | None = None,
         purpose: ResourcePurpose = ResourcePurpose.TURN,
+        wait_for_quiescence: bool = False,
     ) -> None:
         try:
             await self._prepare_turn(
-                live, request_id=request_id, deadline=deadline, on_wait=on_wait, purpose=purpose
+                live,
+                request_id=request_id,
+                deadline=deadline,
+                on_wait=on_wait,
+                purpose=purpose,
+                wait_for_quiescence=wait_for_quiescence,
             )
         except Exception as error:
             if getattr(error, "safe_error", "") == RESOURCE_HOST_CONFIGURATION_CONFLICT:
@@ -4382,6 +4394,7 @@ class SessionService:
         deadline: float | None = None,
         on_wait: ResourceWaitObserver | None = None,
         purpose: ResourcePurpose = ResourcePurpose.TURN,
+        wait_for_quiescence: bool = False,
     ) -> None:
         """Apply current intent and admit execution without holding locks during resource waits."""
         if live.prediction_task is not None and live.prediction_task is not asyncio.current_task():
@@ -4491,7 +4504,7 @@ class SessionService:
         while True:
             if restart or retained_product_turn:
                 try:
-                    if request_id:
+                    if request_id or wait_for_quiescence:
                         await self._runtime.wait_until_suspended(live, deadline=deadline)
                     elif not await live.suspend_runtime():
                         raise RuntimeError("runtime admission requires a quiescent session")
@@ -4829,7 +4842,9 @@ class SessionService:
                         apply_now = True
             if apply_now:
                 try:
-                    await self.prepare_turn(live, purpose=ResourcePurpose.SESSION)
+                    await self.prepare_turn(
+                        live, purpose=ResourcePurpose.SESSION, wait_for_quiescence=True
+                    )
                 except Exception as error:
                     return (
                         {

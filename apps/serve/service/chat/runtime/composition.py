@@ -138,8 +138,8 @@ from service.chat.runtime.selection import RuntimeDiscovery, RuntimeGateway
 from service.chat.runtime.timing import ActivationStage, InvocationTiming
 from service.chat.runtime.tools import (
     SERVICE_BRIDGE_TOOL,
-    SESSION_SERVICE_TOOLS,
     execute_service_tool,
+    session_service_tools,
 )
 from service.chat.runtime.utils import runtime_failure
 from service.chat.service.cards import CardRegistry
@@ -1337,6 +1337,14 @@ class LiveSessionService:
     ) -> None:
         self._execution_scope(live.user_id)
         binding = self._catalog.runtime_binding(live.id)
+        plan_profile_changed = (
+            purpose is ResourcePurpose.TURN
+            and binding is not None
+            and binding.profile
+            != service_tool_profile(
+                session_service_tools(product_plan=await live.persistence.run(live.plans.enabled))
+            )
+        )
         rejected = (
             await live.persistence.run(
                 self._events.rejected_turns, live.id, binding.opaque_session_ref
@@ -1344,7 +1352,11 @@ class LiveSessionService:
             if binding is not None
             else frozenset()
         )
-        if rejected and live.runtime_session is not None and not await live.suspend_runtime():
+        if (
+            (rejected or plan_profile_changed)
+            and live.runtime_session is not None
+            and not await live.suspend_runtime()
+        ):
             raise SessionActivationError(SESSION_OPEN_UNKNOWN)
         await self.activation.ensure_active(
             live, purpose=purpose, request_id=request_id, deadline=deadline, on_wait=on_wait
@@ -1533,6 +1545,7 @@ class LiveSessionService:
             self._catalog.runtime_binding(live.id),
             record.archived,
             live.closing,
+            live.plans.enabled(),
         )
 
     @staticmethod
@@ -1879,7 +1892,7 @@ class LiveSessionService:
                 "session's working files. File bytes reflect fork creation time, not a historical turn."
             )
         binding = self._catalog.runtime_binding(live.id)
-        service_tools = SESSION_SERVICE_TOOLS
+        service_tools = session_service_tools(product_plan=live.plans.enabled())
         replaces = (
             binding
             if binding
@@ -2271,6 +2284,7 @@ class LiveSessionService:
                             workdir=cwd,
                             callback_request_id=callback.request_id,
                             callback_turn_id=callback.native_turn_id,
+                            product_plan=False,
                         )
                     except Exception:
                         self._logger.exception(
