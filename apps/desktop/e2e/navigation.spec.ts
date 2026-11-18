@@ -116,8 +116,8 @@ test('已删除项目和会话的启动记录回退，不覆盖尚未恢复的�
     await expect(page.getByText('对话暂时没有加载完成', { exact: true })).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'deleted-session-fallback.png') })
     await seedProject(page, runtime)
+    await expect.poll(async () => (await persistedLocation(desktop))?.projectId).toBeTruthy()
     const projectId = (await persistedLocation(desktop))?.projectId
-    expect(projectId).toBeTruthy()
     const removed = await page.request.delete(`${await apiBase(page)}/api/content/projects/${encodeURIComponent(projectId!)}`)
     expect(removed.ok()).toBe(true)
     await waitContentOperation(page, removed)
@@ -127,6 +127,46 @@ test('已删除项目和会话的启动记录回退，不覆盖尚未恢复的�
     await expect(page.getByTestId('workbench-home-space')).toBeVisible()
     await expect.poll(async () => (await persistedLocation(desktop))?.projectId).toBeNull()
     await page.screenshot({ path: join(runtime.artifacts, 'deleted-project-fallback.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('重启时无法恢复上次的检索标签，自动回到应用内首页', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const preferencesPath = join(runtime.userData, PREFERENCES_FILE)
+  writeFileSync(preferencesPath, JSON.stringify({
+    language: 'zh',
+    storageFirstLaunchSeen: true,
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map((group) => [group, true])) }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, {
+    preserveNavigation: true,
+    nativeWindowLifecycle: true,
+  })
+  try {
+    let page = await desktop.launch()
+    await initialize(page)
+    await expect(page.getByTestId('workbench-home-space')).toBeVisible()
+    await desktop.close()
+
+    const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+    writeFileSync(preferencesPath, JSON.stringify({
+      ...preferences,
+      lastLocation: {
+        ...HOME_LOCATION,
+        view: 'literature',
+        target: { kind: 'tab', id: 'literature-search:deleted-search' },
+        aiPanelOpen: true,
+      },
+    }))
+
+    page = await desktop.launch()
+    await initialize(page)
+    await expect(page.getByTestId('workbench-home-space')).toBeVisible()
+    await expect.poll(() => persistedLocation(desktop)).toEqual(HOME_LOCATION)
+    await page.screenshot({ path: join(runtime.artifacts, 'unavailable-page-home.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
