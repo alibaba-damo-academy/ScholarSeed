@@ -318,11 +318,14 @@ export function UpdatePanel({
       <span className={PANEL_ERROR_TEXT_CLASS_NAME} data-testid="update-panel-error">
         {updateFailureText(failure, t, accountUpdateText)}
       </span>
-      {candidate && phase === 'failed' && failure?.origin === 'download' && (
-        <span data-testid="update-panel-resumable">
-          {state?.resumable === false ? t('update.failedDiscarded') : t('update.failedRetained')}
-        </span>
-      )}
+      {candidate &&
+        phase === 'failed' &&
+        failure?.origin === 'download' &&
+        state?.resumable !== undefined && (
+          <span data-testid="update-panel-resumable">
+            {state.resumable ? t('update.failedRetained') : t('update.failedDiscarded')}
+          </span>
+        )}
       {stage === 'ready' && (
         <span data-testid="update-panel-retry-hint">{t('update.installRetryHint')}</span>
       )}

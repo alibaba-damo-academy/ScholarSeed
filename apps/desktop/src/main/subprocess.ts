@@ -87,9 +87,7 @@ export function stopChildProcess(
 }
 
 // chcp.com 报的活动控制台代码页 → TextDecoder 标签。中文 Windows 是 936(GBK)；不在表里或探测
-// 失败都退回 UTF-8。**这只影响日志/stderr 的可读性**：签名校验的判定输入走 `Set-Content -Encoding
-// UTF8` 写出的报告文件（见 authenticode.ts parseAuthenticodeReport），与这里的探测结果无关，探测
-// 失败不会再变成一次安全拦截。
+// 失败都退回 UTF-8。探测结果只影响子进程诊断的可读性。
 const WINDOWS_CODE_PAGE_ENCODINGS: Readonly<Record<string, string>> = {
   '932': 'shift_jis',
   '936': 'gbk',

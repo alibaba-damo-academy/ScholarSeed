@@ -289,8 +289,30 @@ All candidate paths are checked before stopping the application.
 Personal installations keep SDK packages in `<installation>/packages`. Each
 installation has its own package cache and SDK lock; uninstall removes these
 files with the installation. The updater copy used for delta preparation also
-lives there. Installed paths remain explicit `RootAppDir` paths; no per-user
+lives there. The same-user SDK preparation copies it from the installation for
+each attempt and validates the reconstructed package inventory. Native publisher
+and Authenticode checks apply to the pinned installation updater used at handoff.
+Installed paths remain explicit `RootAppDir` paths; no per-user
 package cache or fallback to it is introduced when the root is unwritable.
+
+Delta 准备在原用户权限下使用从安装目录复制的更新器，并完整校验重建包清单。
+交接阶段的原生发布者及 Authenticode 校验覆盖固定句柄持有的安装目录更新器。
+
+With the installation lock held, native preparation reclaims recognized
+download and extraction staging directories older than 24 hours. Component ZIPs
+older than 30 days are eligible only when a prior publication receipt identifies
+them and neither the installed nor the target manifest references them.
+Cleanup uses no-follow handles, skips busy entries, and bounds each sweep by
+time and entry count. Desktop pins active download staging until cleanup.
+The shared `handoff/timeouts.json` sets the operation and worker-stop budgets for
+both Desktop and the native helper. Desktop allows an additional exit grace
+period after the worker-stop budget.
+
+原生准备在持有安装根锁时回收超过 24 小时的受识别下载与解压暂存目录。超过
+30 天的组件 ZIP 仅在历史发布凭据可识别、当前版和目标版均未引用时才可回收。
+回收通过不跟随重解析点的句柄执行，跳过占用项，并限制单轮耗时和数量。桌面进程
+在下载期间固定暂存目录。桌面端和原生助手共用 `handoff/timeouts.json` 定义
+操作与 worker 停止预算，桌面端额外预留协调器退出时间。
 
 The original-user handoff coordinator still runs outside the installation in
 `%LOCALAPPDATA%/ScholarSeedUpdates`: official apply terminates processes inside

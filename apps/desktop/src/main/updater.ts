@@ -1,12 +1,9 @@
-import { applicationExecutable } from './resources.ts'
 import { retryUpdate, transientUpdateFailure, UpdateTransportError } from './retry.ts'
 import { desktopDirectoryWriter } from './writer'
 // ScholarSeed desktop update client. The main process is the single state owner;
 // release identity comes from the immutable packaged product.json policy.
 
 import { app, autoUpdater, shell } from 'electron'
-import { spawn } from 'child_process'
-import type { ChildProcess } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
 import {
   ActivationCandidateChanged,
@@ -24,7 +21,6 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmdirSync,
   rmSync,
   statSync,
@@ -80,12 +76,6 @@ import { isPreviewUpdateChannel } from '../updates.ts'
 import type { PreviewUpdatePolicy, PreviewUpdateLine } from '../updates.ts'
 import type { PreparationCheckpoint } from './preparation.ts'
 
-import {
-  AUTHENTICODE_REPORT_KEYS,
-  classifyAuthenticodeStatus,
-  parseAuthenticodeReport,
-  publisherSubjectsMatch,
-} from './authenticode.ts'
 import { LOGS_DIRNAME, resolveProductConfig } from './backend'
 import { desktopHome } from './storage'
 import { classifyMacosTrust, parseCodesignIdentity } from './codesign.ts'
@@ -98,34 +88,6 @@ import {
 import { readMachArchitectures } from './macho.ts'
 import { PreparedArchive, PreparedArtifactChangedError, preparedIdentity } from './prepared.ts'
 import { systemCacheDir } from './cachedir.ts'
-import {
-  DECISION_CANCEL,
-  DECISION_COMMIT,
-  DECISION_FILE,
-  DECISION_KEYS,
-  ELEVATION_FILE,
-  HANDSHAKE_HOME_ENV,
-  HANDSHAKE_NONCE_ENV,
-  HANDSHAKE_PID_ENV,
-  HANDSHAKE_SCHEMA_VERSION,
-  INSTALL_SUBDIRNAME,
-  READY_FILE,
-  READY_POLL_INTERVAL_MS,
-  InstallerReadiness,
-  REQUEST_FILE,
-  REQUEST_KEYS,
-  UPDATE_ID_ARGUMENT_PREFIX,
-  encodeRecord,
-  handshakeDirectory,
-  isValidUpdateId,
-  newNonce,
-  newUpdateId,
-  parseReady,
-  readyPointsToLiveProcess,
-  serializeRecord,
-  splitFiletime,
-} from './handshake.ts'
-import type { HandshakeDecision, HandshakeRequest, ReadyRecord, ReadyOutcome } from './handshake.ts'
 import {
   MACOS_HDIUTIL,
   mountPointsOfImage,
@@ -171,22 +133,6 @@ const MACOS_ARM64_ARCH_TYPE = 'darwin-arm64'
 const MACOS_ARM64 = 'arm64'
 const MACOS_X86_64 = 'x86_64'
 const WINDOWS_PLATFORM = 'win32'
-const WINDOWS_POWERSHELL = 'powershell.exe'
-const WINDOWS_WHOAMI = 'whoami.exe'
-// 新协议不传 /S 与 --force-run：/S 会连进度页一起抑制，--force-run 会让 installSection 的
-// ${isForceRun}&&${Silent} 分支成为第二个拉起者。「更新仅进度窗」靠 installer.nsh 的
-// customInstallMode 钩子实现（协议模式跳掉 assisted 必弹的安装模式选择页），而不是靠 /S——
-// 2026-09-22 真机事故：只不传 /S 而不跳页时，自动更新停在该页等人工点击，安装始终没发生。
-// 旧 0.2.0 客户端仍会带 /S --force-run 调新安装器，兼容路径在 installer.nsh（legacy 模式）。
-const WINDOWS_UPDATE_ARGUMENT = '--updated'
-const WINDOWS_INSTALLER_ENV = 'SCHOLARSEED_UPDATE_INSTALLER'
-// 校验脚本把 JSON 报告写进这个 env 指定的文件（而不是 stdout）：stdout 按控制台代码页编码，
-// 承载不了证书 DN 里的中文属地属性；文件编码由 `Set-Content -Encoding UTF8` 显式决定。
-const WINDOWS_VERIFY_REPORT_ENV = 'SCHOLARSEED_UPDATE_VERIFY_REPORT'
-const VERIFY_REPORT_SUFFIX = '.verify.json'
-// Status 的三档语义（valid / 确证坏 / 本机不可判定）与发布者 DN 的同发布者判定在
-// authenticode.ts：纯判定、可单测。用内置 cmdlet 而非内联 WinVerifyTrust，是因为后者依赖
-// Add-Type / [PSCustomObject] / 静态属性赋值，在 PowerShell 受限语言模式下全部被禁（bug 87042987）。
 const MACOS_DITTO = '/usr/bin/ditto'
 const PRODUCT_APPLICATION = 'ScholarSeed.app'
 // 同一镜像已经挂着时 hdiutil attach 恒报 resource busy（报错文案还随系统语言本地化，不能
@@ -206,8 +152,6 @@ const MACOS_SIGNATURE_COMMAND_TIMEOUT_MS = 180_000
 const MACOS_STAGE_COPY_TIMEOUT_MS = 600_000
 // Fast compression keeps Squirrel's whole-download NSData below its native limit.
 const MACOS_ZIP_COMPRESSION_LEVEL = '1'
-// 更新后拉起的新实例用它在启动期把 app-started / health-confirmed 绑回本轮 updateId。
-const UPDATE_ID_ARGUMENT = '--scholarseed-update-id='
 // 结构化事件行的 schema 版本（提案 §5.1 字段契约）。
 const UPDATE_EVENT_SCHEMA_VERSION = 1
 const READY_STATE_FILE = 'ready.json'
@@ -441,19 +385,16 @@ function monotonicUpdateResult(
 }
 
 async function getJson(url: string, log: LogSink, signal?: AbortSignal): Promise<unknown> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   try {
     const response = await fetch(url, {
-      signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) throw new UpdateTransportError(response.status)
     return await response.json()
   } catch (error) {
     log(`[update] request failed ${url}: ${String(error)}\n`)
     throw error
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -869,8 +810,7 @@ function sha512OfFile(path: string, signal?: AbortSignal): Promise<string> {
  *
  * 主进程的 log sink（index.ts pushLog）只写 stdout 与一条渲染层 IPC：Windows 安装包是 GUI
  * 子系统、没有控制台，stdout 无处可看；那条 IPC 渲染层没有消费者；而且安装一旦发起，app 立刻
- * quit()，内存缓冲也没了。更新又必须在 packaged 应用里跑（installWindows 对 !app.isPackaged
- * 直接抛错）。所以要在真机上按日志定位「2 分钟花在哪一步」，这些行必须自己落盘。放在 logs/ 下
+ * quit()，内存缓冲也没了。要在真机上定位更新各阶段耗时，这些行必须自己落盘。放在 logs/ 下
  * 还能被问题反馈的日志打包一并收走。写失败只吞掉——日志是附带动作，绝不能把一次更新搞砸。
  */
 export async function closeUpdateLog(): Promise<void> {
@@ -939,15 +879,10 @@ async function runLoggedCommand(
  * 平台中立：Windows(Authenticode) 与 macOS(codesign 离线信任锚) 共用同一套分类与文案映射。
  */
 type UpdateVerifyFailure =
-  | 'verify-env-unavailable'
-  | 'signature-untrusted'
-  | 'signature-indeterminate'
-  | 'notarization-indeterminate'
-  | 'publisher-mismatch'
+  'verify-env-unavailable' | 'signature-untrusted' | 'notarization-indeterminate'
 
 /**
- * 带类别的校验失败。installWindows / macOS 准备与安装据此把「校验环境不可用」与「签名不可信」分开上报；
- * 原始诊断（可能含代码页乱码的 PowerShell stderr）只落 update.log，不进用户文案。
+ * Classification for macOS verification. Detailed diagnostics stay in update.log.
  */
 class UpdateVerifyError extends Error {
   constructor(
@@ -958,159 +893,10 @@ class UpdateVerifyError extends Error {
   }
 }
 
-/**
- * 读回校验脚本写出的报告文件，读完即删。任何失败都返回空串 —— 调用方按「校验没能执行」fail-closed，
- * 不会因为读不到报告而放行安装。
- */
-function readVerifyReport(reportPath: string): string {
-  try {
-    return readFileSync(reportPath, 'utf8')
-  } catch {
-    return ''
-  } finally {
-    try {
-      rmSync(reportPath, { force: true })
-    } catch {
-      // 删不掉也只是留一个一次性 UUID 文件名的残留，下一次校验不会读到它。
-    }
-  }
-}
-
-/**
- * 校验待装 Windows 安装包的 Authenticode 签名，要求签名可信且发布者与打包策略一致。
- *
- * 用 PowerShell 内置 cmdlet `Get-AuthenticodeSignature`，而不是内联 C# 调 WinVerifyTrust：后者依赖
- * `Add-Type -TypeDefinition`、`[PSCustomObject]@{}` 类型转换和 `[Console]::OutputEncoding` 静态属性
- * 赋值，这三类构造在 PowerShell **受限语言模式**（WDAC/AppLocker/Device Guard 企业终端管控强制）下
- * 全部被禁，脚本必然非零退出，签名校验 fail-closed 永久阻断安装（bug 87042987）。微软文档明确：受限
- * 模式下「native commands and PowerShell cmdlets」照常运行，被禁的是 Add-Type、类型转换与非 core 类型的
- * 静态成员访问。`Get-AuthenticodeSignature` 是签名模块 cmdlet，读取返回对象的 `.Status` /
- * `.SignerCertificate.Subject` 是属性 get，不涉及被禁的方法调用或类型转换。
- *
- * 脚本刻意只用受限模式安全的构造：不 Add-Type、不 [Console]::、不 [PSCustomObject]、不 [uint32]/[Convert]::
- * 静态调用；事实经 `ConvertTo-Json -Compress` 汇成一份 JSON 报告后由 `Set-Content -Encoding UTF8` 写进
- * 一次性文件，Node 按 UTF-8 读回 —— **判定输入完全不经 stdout**。证书 DN 含本地化中文属地属性，而
- * powershell.exe 的 stdout 按本机控制台代码页编码（中文 Windows 是 936/GBK），Node 侧解码一旦与实际
- * 代码页不一致就把 DN 打成 U+FFFD，进而被误判成「发布者不符」的安全拦截、更新永久阻断（bug
- * 87108457）。真机实测已排除两条更省事的出路：本机 chcp 探测（现场客户端已含该探测却仍回退 UTF-8，
- * 且回退不落日志）、以及靠 `ConvertTo-Json` 把非 ASCII 转义成 `\uXXXX`（PS 5.1.17763 实测不转义）。
- * 文件编码由 cmdlet 参数显式决定，与代码页和序列化器实现都无关。报告不合规即按「校验没能执行」处理
- * —— 传输/解码降级永远不落成「发布者不符」的安全拦截（见 authenticode.ts parseAuthenticodeReport）。
- * 任一步不通过都抛 UpdateVerifyError（fail-closed），绝不放行未验证的包。
- *
- * 代价：cmdlet 走系统默认验签策略（可能联网抓 AIA / 做吊销检查），不像 WinVerifyTrust 能显式关联网。
- * 上一轮真机实测该校验约 1990ms；用户报的「≥2min 才安装」已定位在退出后 NSIS 静默解压、与验签无关，故
- * 此处以「在所有终端（含受限模式）都能完成校验」优先于「极致离线提速」。安装包字节仍由 SHA-512 对着
- * HTTPS 下发的发布元数据钉死（下载时一次、安装前再一次），发布者身份由下面的 Subject 比对强制。
- *
- * 结果三分而非二分：非 Valid 的 Status 里，NotSigned / HashMismatch / NotSupportedFileFormat 是
- * 包级确证坏；NotTrusted / UnknownError / Incompatible 往往是本机链/吊销/兼容状态。后者在签名者与
- * 打包策略一致时单独成一类 fallback（见 authenticode.ts）—— 文案不再引导「重新下载」那条必然复现
- * 的死路，而是引导修复本机环境后重试安装。任何一档都不放行安装（fail-closed 不变）。
- */
-export async function verifyWindowsInstaller(
-  installer: string,
-  expectedPublisher: string,
-  log: LogSink
-): Promise<void> {
-  if (!expectedPublisher) throw new Error('packaged product policy has no Windows publisher')
-  const startedAt = Date.now()
-  // 报告文件与暂存包同目录（updateCacheDir，我们自己创建并已证明可写），文件名带一次性 UUID：
-  // 上一轮的残留不可能被冒充成本轮结果，也不给同机其他进程留一个可预测的替换目标。
-  const reportPath = join(
-    dirname(installer),
-    `${basename(installer)}.${randomUUID()}${VERIFY_REPORT_SUFFIX}`
-  )
-  // 整段作为 PowerShell -Command 传入。除下面插值的常量外不含任何 ${，避免 JS 模板误插值。
-  // 只用受限语言模式允许的构造：cmdlet 调用 + 属性 get + [string] 转换（core 类型）+ hashtable
-  // 字面量，无 Add-Type / [PSCustomObject] / [Console]:: 静态赋值 / [Convert]:: 静态调用。
-  //
-  // 脚本刻意**什么都不往 stdout 写**：stdout 按控制台代码页编码，承载不了 DN 里的中文属地属性，
-  // 而真机实测 ConvertTo-Json 也不会把它转义成 ASCII（PS 5.1.17763）。报告一律走 -Encoding UTF8
-  // 的文件，编码由 cmdlet 参数决定（bug 87108457）。
-  const script = `
-$ErrorActionPreference = 'Stop'
-$signature = Get-AuthenticodeSignature -FilePath $env:${WINDOWS_INSTALLER_ENV}
-$subject = ''
-if ($signature.SignerCertificate) { $subject = [string]$signature.SignerCertificate.Subject }
-$report = @{ ${AUTHENTICODE_REPORT_KEYS.languageMode} = [string]$ExecutionContext.SessionState.LanguageMode; ${AUTHENTICODE_REPORT_KEYS.status} = [string]$signature.Status; ${AUTHENTICODE_REPORT_KEYS.subject} = $subject } | ConvertTo-Json -Compress
-Set-Content -LiteralPath $env:${WINDOWS_VERIFY_REPORT_ENV} -Value $report -Encoding UTF8
-`
-  const result = await runCommandAsync(
-    WINDOWS_POWERSHELL,
-    ['-NoProfile', '-NonInteractive', '-Command', script],
-    {
-      env: {
-        ...process.env,
-        [WINDOWS_INSTALLER_ENV]: installer,
-        [WINDOWS_VERIFY_REPORT_ENV]: reportPath,
-      },
-      windowsHide: true,
-    }
-  )
-  // stdout 只作诊断，绝不参与判定。
-  const report = parseAuthenticodeReport(readVerifyReport(reportPath))
-  // 两类情况都归「校验**没能执行**」而不是「签名不可信」：命令没跑成（PowerShell 缺失/被策略
-  // 拦截/非零退出），或跑成了但报告读不到、不满足 JSON 契约、或仍带着 U+FFFD 编码降级指纹。
-  // 传输/解码降级绝不能变成一次发布者不符的安全拦截（bug 87108457）。原始输出与实际选用的解码
-  // 编码一并落盘供定位，界面给手动安装引导（见 updateInstallFallback）。
-  if (result.status !== 0 || report === null) {
-    persistUpdateLog(
-      result.status === 0
-        ? `[update] Windows verification report is unusable: path=${reportPath} stdoutEncoding=${result.encoding} stdout=${result.stdout}\n`
-        : `[update] Windows verification command failed: exit=${result.status} stdoutEncoding=${result.encoding} stderr=${result.stderr} stdout=${result.stdout}\n`
-    )
-    throw new UpdateVerifyError(
-      'Windows Authenticode verification could not be performed',
-      'verify-env-unavailable'
-    )
-  }
-  const { status, subject, languageMode } = report
-  // LanguageMode 一并落盘：受限语言模式(FullLanguage/ConstrainedLanguage)是这类验签失败的关键背景，
-  // 出问题时只有这行能说明当时 PowerShell 处于哪种模式（bug 87042987 的回归验证要求）。
-  logTiming(log, `Authenticode status=${status} langMode=${languageMode}`, startedAt)
-  // 判定输入与解码编码原样落盘：这两行是区分「确证不可信」与「本机不可判定」、以及发布者 DN 形态
-  // 差异的唯一证据；反馈日志包会收走 update.log（feedback.py UPDATE_LOG），下一次同类工单才能定论。
-  persistUpdateLog(
-    `[update] Windows Authenticode verdict input: status=${status} subject=${subject} stdoutEncoding=${result.encoding}\n`
-  )
-  const verdict = classifyAuthenticodeStatus(status)
-  if (verdict !== 'valid') {
-    // 不可判定且签名者与打包策略一致：缺的是本机的链/吊销状态，不是包的身份 —— 单独上报，
-    // 文案引导修复环境后重试。不可判定但签名者不符、或包级确证坏：按不可信安全拦截。
-    if (verdict === 'indeterminate' && publisherSubjectsMatch(subject, expectedPublisher)) {
-      persistUpdateLog(
-        `[update] Windows installer signature trust undecidable on this machine: status=${status}\n`
-      )
-      throw new UpdateVerifyError(
-        `Windows installer signature trust could not be determined on this machine: ${status}`,
-        'signature-indeterminate'
-      )
-    }
-    persistUpdateLog(`[update] Windows installer signature not trusted: status=${status}\n`)
-    throw new UpdateVerifyError(
-      `Windows installer signature is not trusted: ${status}`,
-      'signature-untrusted'
-    )
-  }
-  if (!publisherSubjectsMatch(subject, expectedPublisher)) {
-    // 把「实际 vs 期望」的发布者 DN 落盘：换验证原语后若 Subject 字符串格式有出入，只有这行能说明是
-    // 格式差异还是真的换了签名者。界面只走 errorFallback 笼统文案，不呈现 DN。
-    persistUpdateLog(
-      `[update] Windows publisher mismatch: got "${subject}" expected "${expectedPublisher}"\n`
-    )
-    throw new UpdateVerifyError(
-      'Windows installer signature differs from packaged product policy',
-      'publisher-mismatch'
-    )
-  }
-}
-
 /** 把校验/安装异常映射成结构化 errorFallback；原始文本只落日志，不进用户文案（Windows/macOS 共用）。 */
 function updateInstallFallback(error: unknown): UpdateInstallFallback {
   if (error instanceof UpdateVerifyError) {
     if (error.kind === 'verify-env-unavailable') return 'install_verify_unavailable'
-    if (error.kind === 'signature-indeterminate') return 'install_signature_indeterminate'
     if (error.kind === 'notarization-indeterminate') return 'install_notarization_indeterminate'
     return 'install_signature_untrusted'
   }
@@ -1123,7 +909,7 @@ function updateInstallFallback(error: unknown): UpdateInstallFallback {
 
 /**
  * 结构化更新事件行（提案 108 §5.1 字段契约）：JSON 单行，同时进 log sink 与 update.log。
- * 跨进程（NSIS 侧 install.log）用 timestampUtc + updateId 关联；进程内耗时用 elapsedMs。
+ * Correlate events by updateId and use elapsedMs for durations.
  */
 interface UpdateEventFields {
   phase: string
@@ -1158,379 +944,6 @@ export function logUpdateEvent(log: LogSink, fields: UpdateEventFields): void {
   })}\n`
   log(line)
   persistUpdateLog(line)
-}
-
-/**
- * 当前用户 SID（whoami 是原生 exe，不经 PowerShell、不受受限语言模式影响，同 chcp.com 的
- * 选择理由）。取不到返回 null：调用方 fail-closed 走手动流程，不猜一个身份继续握手。
- */
-async function windowsUserSid(): Promise<string | null> {
-  try {
-    const result = await runCommandAsync(WINDOWS_WHOAMI, ['/user', '/nh'])
-    if (result.status !== 0) {
-      persistUpdateLog(`[update] whoami failed: exit=${result.status} stderr=${result.stderr}\n`)
-      return null
-    }
-    const match = result.stdout.match(/S-\d+(?:-\d+)+/)
-    if (!match) persistUpdateLog(`[update] whoami output has no SID: stdout=${result.stdout}\n`)
-    return match ? match[0] : null
-  } catch (error) {
-    persistUpdateLog(`[update] whoami could not run: ${String(error)}\n`)
-    return null
-  }
-}
-
-/**
- * 指定进程的创建时刻（Windows FILETIME，uint64 十进制串）。用 PowerShell 而非 wmic：
- * wmic 在 Win11 24H2+ 已移除。脚本只用受限语言模式允许的构造（cmdlet + 属性 get +
- * DateTime 这一 core 类型的方法调用），同 verifyWindowsInstaller 的纪律（bug 87042987）。
- */
-async function windowsProcessCreationFiletime(pid: number): Promise<string | null> {
-  const script =
-    `$target = Get-Process -Id $env:${HANDSHAKE_PID_ENV} -ErrorAction Stop\n` +
-    'Write-Output ([string]$target.StartTime.ToFileTimeUtc())'
-  try {
-    const result = await runCommandAsync(
-      WINDOWS_POWERSHELL,
-      ['-NoProfile', '-NonInteractive', '-Command', script],
-      { env: { ...process.env, [HANDSHAKE_PID_ENV]: String(pid) } }
-    )
-    const text = result.stdout.trim()
-    if (result.status !== 0 || !/^\d{1,20}$/.test(text)) {
-      persistUpdateLog(
-        `[update] process creation filetime unavailable: exit=${result.status} stdout=${text} stderr=${result.stderr}\n`
-      )
-      return null
-    }
-    return text
-  } catch (error) {
-    persistUpdateLog(`[update] process creation filetime probe failed: ${String(error)}\n`)
-    return null
-  }
-}
-
-/**
- * 上一轮协议安装器是否仍活着：扫握手目录里的 ready.ini，用 installerPid + 创建时刻双重比对。
- *
- * 没有这道闸时，重拉的客户端会对还挂着的安装器再 spawn 一个：模板的
- * ALLOW_ONLY_ONE_INSTALLER_INSTANCE 互斥量命中后直接 Abort（退出码 2），新实例把失败卡甩给
- * 用户，而真正挂着的那个安装器窗口还在等点击（2026-09-22 真机事故形态）。创建时刻一致才算
- * 同一进程，PID 被复用即视为已退（见 handshake.ts readyPointsToLiveProcess）。
- */
-async function findRunningProtocolInstaller(): Promise<ReadyRecord | null> {
-  let entries: string[]
-  try {
-    entries = readdirSync(join(updateStateDirectory(), INSTALL_SUBDIRNAME))
-  } catch {
-    return null // 握手目录还没建过：不可能有挂着的安装器。
-  }
-  for (const entry of entries) {
-    if (!isValidUpdateId(entry)) continue
-    let record: ReadyRecord | null = null
-    try {
-      record = readInstallerRecord(join(updateStateDirectory(), INSTALL_SUBDIRNAME, entry))
-    } catch {
-      continue // 没有 ready.ini 或写到一半：本轮握手没成立过，不构成并发安装器。
-    }
-    if (record === null) continue
-    const creation = await windowsProcessCreationFiletime(Number(record.installerPid))
-    if (creation === null) continue
-    const { low, high } = splitFiletime(creation)
-    if (readyPointsToLiveProcess(record, Number(record.installerPid), low, high)) return record
-  }
-  return null
-}
-
-function readInstallerRecord(directory: string): ReadyRecord | null {
-  for (const filename of [READY_FILE, ELEVATION_FILE]) {
-    try {
-      const record = parseReady(readFileSync(join(directory, filename)))
-      if (record !== null) return record
-    } catch {
-      continue
-    }
-  }
-  return null
-}
-
-/**
- * 轮询 ready.ini 直到有效 ready、超时或安装器先行退出。
- *
- * 三种非 ready 结局语义不同：文件存在且解析成功但身份不符（updateId/nonce 对不上）是
- * **协议失败**，立即返回，不等超时——目录里有别的写者；解析不成立（尚未写完/还没创建）
- * 继续轮询；安装器退出（exit/error）说明握手对端没了，立即返回。
- */
-function waitForInstallerReady(
-  directory: string,
-  request: HandshakeRequest,
-  child: ChildProcess,
-  signal?: AbortSignal
-): Promise<ReadyOutcome | 'cancelled'> {
-  return new Promise((resolve) => {
-    let settled = false
-    const readiness = new InstallerReadiness(request, child.pid!, Date.now())
-    function finish(outcome: ReadyOutcome | 'cancelled'): void {
-      if (settled) return
-      settled = true
-      clearInterval(timer)
-      child.off('exit', onExit)
-      child.off('error', onError)
-      signal?.removeEventListener('abort', onAbort)
-      resolve(outcome)
-    }
-    function onExit(code: number | null): void {
-      persistUpdateLog(`[update] installer exited during handshake with code ${code}\n`)
-      finish('installer-exited')
-    }
-    function onError(error: Error): void {
-      persistUpdateLog(`[update] installer spawn error during handshake: ${String(error)}\n`)
-      finish('installer-exited')
-    }
-    const onAbort = (): void => finish('cancelled')
-    const timer = setInterval(() => {
-      if (settled) return
-      let record: ReadyRecord | null = null
-      try {
-        record = readInstallerRecord(directory)
-      } catch {
-        record = null
-      }
-      const outcome = readiness.observe(record, Date.now())
-      if (outcome !== null) finish(outcome)
-    }, READY_POLL_INTERVAL_MS)
-    child.once('exit', onExit)
-    child.once('error', onError)
-    signal?.addEventListener('abort', onAbort, { once: true })
-    if (signal?.aborted) onAbort()
-  })
-}
-
-/**
- * 决策单写者：commit/cancel 一经发布不得改变（提案 §5.2 第 3 条）。
- * 临时文件 + 同目录 rename 保证安装器读到的要么是缺失、要么是完整记录。
- * 发布失败只落日志——cancel 发布失败时安装器会等满自己的 60s 决策超时后退出，
- * 语义仍是安全侧。
- */
-function publishHandshakeDecision(
-  directory: string,
-  request: HandshakeRequest,
-  decision: HandshakeDecision,
-  log: LogSink,
-  assertAuthorized?: () => void
-): boolean {
-  const temporary = join(directory, `decision-${randomUUID()}.tmp`)
-  try {
-    writeFileSync(
-      temporary,
-      encodeRecord(
-        serializeRecord(DECISION_KEYS, {
-          schemaVersion: HANDSHAKE_SCHEMA_VERSION,
-          updateId: request.updateId,
-          nonce: request.nonce,
-          decision,
-        })
-      )
-    )
-    if (decision === DECISION_COMMIT && !assertAuthorized)
-      throw new Error('activation authorization is required')
-    assertAuthorized?.()
-    renameSync(temporary, join(directory, DECISION_FILE))
-    logUpdateEvent(log, {
-      phase: 'handoff',
-      event: 'decision',
-      result: decision,
-      updateId: request.updateId,
-    })
-    return true
-  } catch (error) {
-    try {
-      rmSync(temporary, { force: true })
-    } catch (cleanupError) {
-      persistUpdateLog(`[update] decision temporary cleanup failed: ${String(cleanupError)}\n`)
-    }
-    persistUpdateLog(`[update] decision publish failed (${decision}): ${String(error)}\n`)
-    return false
-  }
-}
-
-export async function installWindows(
-  installer: string,
-  meta: LatestVersionMeta,
-  log: LogSink,
-  authorize?: (candidate: LatestVersionMeta) => Promise<() => void>,
-  signal?: AbortSignal
-): Promise<StartUpdateResult> {
-  const fromVersion = app.getVersion()
-  const toVersion = `${meta.version}-${meta.build_number}`
-  const updateId = newUpdateId()
-  let child: ChildProcess | null = null
-  let directory: string | null = null
-  let request: HandshakeRequest | null = null
-  try {
-    if (!app.isPackaged) {
-      throw new Error('automatic Windows update requires an installed packaged application')
-    }
-    const running = await findRunningProtocolInstaller()
-    if (running !== null) {
-      // 上一轮安装器还活着（停在进度窗或等人点向导）：再 spawn 只会被模板互斥量 Abort 成
-      // 一次「安装失败」。不退出 app、不动暂存包，把结局标成独立分类让界面说清在等什么。
-      logUpdateEvent(log, {
-        phase: 'installer-start',
-        event: 'concurrent-installer',
-        result: 'blocked',
-        errorCode: 'installer-alive',
-        updateId: running.updateId,
-        fromVersion,
-        toVersion,
-      })
-      return { ok: false, errorFallback: 'install_already_running' }
-    }
-    const config = resolveDesktopConfig(log)
-    await verifyWindowsInstaller(installer, config.expectedWindowsPublisher, log)
-
-    // 握手上下文（SID + 进程创建时刻）任一取不到就不做自动交接：不退出 app，
-    // 打开完整安装包走手动流程；自动握手要求原用户上下文完整。
-    const sid = await windowsUserSid()
-    const filetime = await windowsProcessCreationFiletime(process.pid)
-    if (sid === null || filetime === null) {
-      logUpdateEvent(log, {
-        phase: 'installer-start',
-        event: 'handoff-context-unavailable',
-        result: 'manual',
-        errorCode: sid === null ? 'caller-sid-unavailable' : 'caller-creation-time-unavailable',
-        updateId,
-        fromVersion,
-        toVersion,
-      })
-      const assertAuthorized = await authorize?.(meta)
-      signal?.throwIfAborted()
-      if (!assertAuthorized) throw new Error('activation authorization is required')
-      assertAuthorized()
-      await shell.openPath(installer)
-      return { ok: true, mode: 'manual' }
-    }
-
-    const { low, high } = splitFiletime(filetime)
-    request = {
-      schemaVersion: HANDSHAKE_SCHEMA_VERSION,
-      updateId,
-      nonce: newNonce(),
-      callerSid: sid,
-      callerPid: String(process.pid),
-      callerCreationLow: low,
-      callerCreationHigh: high,
-      fromVersion,
-      toVersion,
-      installDir: resolve(dirname(applicationExecutable(app))),
-    }
-    directory = handshakeDirectory(join(updateStateDirectory(), 'install'), updateId)
-    mkdirSync(directory, { recursive: true })
-    writeFileSync(
-      join(directory, REQUEST_FILE),
-      encodeRecord(serializeRecord(REQUEST_KEYS, request))
-    )
-
-    signal?.throwIfAborted()
-    const spawnStartedAt = Date.now()
-    // spawn 选项不带窗口隐藏旗标：GUI 子系统无控制台可藏，而该旗标的 SW_HIDE 会隐掉安装器
-    // 第一个窗口——任何「等用户」状态（fail-closed 弹窗、模板交互页）都会变成看不见的模态
-    // 挂死（2026-09-23 真机：安装模式页被隐 → 安装器永生 → B 闸永久拦死后续更新）。
-    child = spawn(installer, [WINDOWS_UPDATE_ARGUMENT, `${UPDATE_ID_ARGUMENT_PREFIX}${updateId}`], {
-      detached: true,
-      stdio: 'ignore',
-      env: {
-        ...process.env,
-        [HANDSHAKE_HOME_ENV]: desktopHome(),
-        [HANDSHAKE_NONCE_ENV]: request.nonce,
-      },
-    })
-    if (!child.pid) throw new Error('Windows installer did not start')
-    logUpdateEvent(log, {
-      phase: 'installer-start',
-      event: 'spawn',
-      result: 'ok',
-      updateId,
-      fromVersion,
-      toVersion,
-    })
-
-    const outcome = await waitForInstallerReady(directory, request, child, signal)
-    const elapsedMs = Date.now() - spawnStartedAt
-    if (outcome !== 'ready') {
-      publishHandshakeDecision(directory, request, DECISION_CANCEL, log)
-      child.unref()
-      logUpdateEvent(log, {
-        phase: 'installer-ready',
-        event: 'wait',
-        result: outcome,
-        errorCode: outcome,
-        updateId,
-        fromVersion,
-        toVersion,
-        elapsedMs,
-      })
-      return outcome === 'cancelled'
-        ? { ok: false, cancelled: true }
-        : { ok: false, errorFallback: 'install_failed' }
-    }
-    const assertAuthorized = await authorize?.(meta)
-    signal?.throwIfAborted()
-    if (!assertAuthorized) throw new Error('activation authorization is required')
-    assertAuthorized()
-    if (!publishHandshakeDecision(directory, request, DECISION_COMMIT, log, assertAuthorized)) {
-      throw new Error('Windows update commit could not be persisted')
-    }
-    logUpdateEvent(log, {
-      phase: 'installer-ready',
-      event: 'wait',
-      result: 'ok',
-      updateId,
-      fromVersion,
-      toVersion,
-      elapsedMs,
-    })
-    // commit 已发布才 unref：安装器接下来等本进程退出（≤60s），随后卸载/安装/拉起。
-    child.unref()
-    child = null
-    return { ok: true, mode: 'auto' }
-  } catch (error) {
-    // 原始诊断（含可能的代码页乱码 stderr）只落 update.log；回报结构化分类，界面给本地化文案。
-    if (child && directory && request) {
-      publishHandshakeDecision(directory, request, DECISION_CANCEL, log)
-      child.unref()
-    }
-    persistUpdateLog(`[update] Windows install failed: ${String(error)}\n`)
-    return signal?.aborted
-      ? { ok: false, cancelled: true }
-      : { ok: false, errorFallback: updateInstallFallback(error) }
-  }
-}
-
-/** 新实例启动参数里的本轮 updateId；形状不合法一律视为没有（防路径/日志注入）。 */
-export function pendingUpdateId(argv: string[] = process.argv): string | null {
-  const value = argv.find((argument) => argument.startsWith(UPDATE_ID_ARGUMENT))
-  if (!value) return null
-  const candidate = value.slice(UPDATE_ID_ARGUMENT.length)
-  return isValidUpdateId(candidate) ? candidate : null
-}
-
-/**
- * 更新后新实例的启动闭环事件（提案 §5.2）：app-started 在窗口就绪后、health-confirmed
- * 在 bootstrap 已等到 /api/healthz 之后（index.ts 调用点保证该顺序）。Shell 拉起成功
- * 不等于健康成功，两条事件分开落，install.log 的 launch 结果只覆盖前者。
- */
-export function logUpdateLifecycleEvent(
-  event: 'app-started' | 'health-confirmed',
-  updateId: string,
-  log: LogSink
-): void {
-  logUpdateEvent(log, {
-    phase: event === 'app-started' ? 'launch' : 'health-confirmed',
-    event,
-    result: 'ok',
-    updateId,
-    fromVersion: app.getVersion(),
-  })
 }
 
 function realpathOrSelf(path: string): string {
@@ -2545,7 +1958,7 @@ export async function stageUpdate(
  * 安装已暂存的更新包。
  *
  * A live macOS receipt reuses only the final ZIP; source identity and current
- * trust are refreshed from the digest-bound read-only DMG before handoff. Restored state and Windows still
+ * trust are refreshed from the digest-bound read-only DMG before handoff. Restored state still
  * recheck the installer. The native feed always verifies the actual ZIP bytes.
  */
 export async function installStagedUpdate(
@@ -2555,6 +1968,7 @@ export async function installStagedUpdate(
   authorize?: (candidate: LatestVersionMeta) => Promise<() => void>,
   prepareLaunch?: (candidate: LatestVersionMeta) => Promise<SquirrelLaunchCleanup>
 ): Promise<StartUpdateResult> {
+  if (process.platform !== MACOS_PLATFORM) return { ok: false, error: NO_STAGED_UPDATE }
   if (!authorize) {
     log('[update] activation authorization is required\n')
     return { ok: false, errorFallback: 'activation_authorization_required' }
@@ -2563,33 +1977,22 @@ export async function installStagedUpdate(
   if (!staged) return { ok: false, error: NO_STAGED_UPDATE }
   let nativeReady = false
   let handoffReady = false
-  const installation =
-    process.platform === WINDOWS_PLATFORM
-      ? undefined
-      : new InstallationProgress(
-          (progress) =>
-            onProgress({ ...progress, phase: nativeReady ? 'installing' : 'preparing' }),
-          signal,
-          (event) =>
-            logUpdateEvent(log, {
-              ...event,
-              fromVersion: app.getVersion(),
-              // 带上 build_number（与 Windows 路径对齐）：日志才看得出装的是哪个构建，同一 version
-              // 可有多个 build（bug 87435837 现场正因缺它无法从日志定位目标产物）。
-              toVersion: `${staged.meta.version}-${staged.meta.build_number}`,
-            })
-        )
+  const installation = new InstallationProgress(
+    (progress) => onProgress({ ...progress, phase: nativeReady ? 'installing' : 'preparing' }),
+    signal,
+    (event) =>
+      logUpdateEvent(log, {
+        ...event,
+        fromVersion: app.getVersion(),
+        toVersion: `${staged.meta.version}-${staged.meta.build_number}`,
+      })
+  )
   let discardLaunch: SquirrelLaunchCleanup | undefined
   try {
-    if (installation) installation.step('package')
-    else onProgress({ phase: 'verifying' })
+    installation.step('package')
     // A live receipt binds the previously checked DMG to the verified final ZIP.
-    // Windows and restored/mismatched macOS state still require installer recheck.
-    if (
-      !installation ||
-      !staged.archive ||
-      !macPrepared?.receipt.matches(staged.meta, staged.archive)
-    ) {
+    // Restored or mismatched macOS state still requires an installer recheck.
+    if (!staged.archive || !macPrepared?.receipt.matches(staged.meta, staged.archive)) {
       const startedAt = Date.now()
       const actual = await retryUpdate(() => sha512OfFile(staged.path, signal), signal)
       logTiming(
@@ -2603,101 +2006,97 @@ export async function installStagedUpdate(
         throw new Error('staged installer no longer matches its release metadata')
       }
     }
-    if (installation) {
-      if (macHandoffCommitted() && !macHandoffReady())
-        throw new Error('Squirrel handoff requires recovery')
-      if (!staged.archive) throw new Error('Squirrel archive is not prepared')
-      let prepared = macPrepared
-      if (!prepared?.receipt.matches(staged.meta, staged.archive)) {
-        if (prepared) await removeUpdateArtifact(prepared.workspace)
-        macPrepared = null
-        prepared = await prepareDmg(staged.path, staged.meta, installation, log)
-        macPrepared = prepared
-        // Replace stale disk hints only with this process's verified conversion.
-        writeReadyState({ ...staged, archive: prepared.receipt.archive })
-      }
-      const startedAt = Date.now()
-      const frozen = await retryUpdate(
-        () =>
-          prepared!.receipt.revalidate(
-            () =>
-              withMountedDmg(staged.path, installation, log, (source) =>
-                verifyMountedNotarization(source, log, installation, 'source')
-              ),
-            signal
-          ),
-        signal
-      )
-      logTiming(log, 'final ZIP and current source trust recheck', startedAt)
-      logUpdateEvent(log, {
-        phase: 'macos-install',
-        event: 'reuse-prepared-archive',
-        updateId: staged.meta.id,
-      })
-      // Background identity is byte-bound; native Squirrel must validate the actual
-      // extracted ZIP before emitting update-downloaded. Never quit on this receipt.
-      // The pinned feed verifies the full final ZIP before and during every transfer.
-      // A receipt grants no installation authorization.
-      signal?.throwIfAborted()
-      squirrel ??= new SquirrelInstallation(
-        autoUpdater,
-        squirrelHandoffPath(),
-        (event, errorCode) => {
-          logUpdateEvent(log, {
-            phase: 'macos-install',
-            event,
-            errorCode,
-            updateId: staged.meta.id,
-            toVersion: staged.meta.version,
-          })
-          // A committed handoff whose native installer terminally fails will never relaunch
-          // the target; drop the launch context so this live session recovers storage and
-          // future updates instead of carrying a dead transaction.
-          discardLaunch = discardOnTerminalSquirrelFailure(event, discardLaunch)
-        },
-        undefined,
-        (identity) =>
-          bindSquirrelRequest(
-            systemCacheDir(),
-            resolveDesktopConfig(log).bundleId,
-            resolve(dirname(process.execPath), '..', '..'),
-            identity
-          )
-      )
-      installation.step('helper')
-      await squirrel.prepare(
-        frozen,
-        {
-          version: staged.meta.version,
-          buildNumber: staged.meta.build_number,
-          candidate: staged.meta.id,
-          at: Date.now(),
-          state: 'requested',
-        },
-        () => authorize(staged.meta)
-      )
-      signal?.throwIfAborted()
-      if (!squirrel.ready || !prepareLaunch)
-        throw new Error('Mac update native readiness is required')
-      nativeReady = true
-      installation.step('saving')
-      discardLaunch = await prepareLaunch(staged.meta)
-      await commitWithActivation(
-        () => authorize(staged.meta),
-        (guard) => {
-          signal?.throwIfAborted()
-          guard()
-          if (!squirrel?.ready) throw new Error('Mac update native readiness was revoked')
-        }
-      )
-      handoffReady = true
-      installation.finish('handoff')
-      return { ok: true, mode: 'auto' }
+    if (macHandoffCommitted() && !macHandoffReady())
+      throw new Error('Squirrel handoff requires recovery')
+    if (!staged.archive) throw new Error('Squirrel archive is not prepared')
+    let prepared = macPrepared
+    if (!prepared?.receipt.matches(staged.meta, staged.archive)) {
+      if (prepared) await removeUpdateArtifact(prepared.workspace)
+      macPrepared = null
+      prepared = await prepareDmg(staged.path, staged.meta, installation, log)
+      macPrepared = prepared
+      // Replace stale disk hints only with this process's verified conversion.
+      writeReadyState({ ...staged, archive: prepared.receipt.archive })
     }
-    onProgress({ phase: 'installing', install_stage: 'preparing' })
-    return await installWindows(staged.path, staged.meta, log, authorize, signal)
+    const startedAt = Date.now()
+    const frozen = await retryUpdate(
+      () =>
+        prepared!.receipt.revalidate(
+          () =>
+            withMountedDmg(staged.path, installation, log, (source) =>
+              verifyMountedNotarization(source, log, installation, 'source')
+            ),
+          signal
+        ),
+      signal
+    )
+    logTiming(log, 'final ZIP and current source trust recheck', startedAt)
+    logUpdateEvent(log, {
+      phase: 'macos-install',
+      event: 'reuse-prepared-archive',
+      updateId: staged.meta.id,
+    })
+    // Background identity is byte-bound; native Squirrel must validate the actual
+    // extracted ZIP before emitting update-downloaded. Never quit on this receipt.
+    // The pinned feed verifies the full final ZIP before and during every transfer.
+    // A receipt grants no installation authorization.
+    signal?.throwIfAborted()
+    squirrel ??= new SquirrelInstallation(
+      autoUpdater,
+      squirrelHandoffPath(),
+      (event, errorCode) => {
+        logUpdateEvent(log, {
+          phase: 'macos-install',
+          event,
+          errorCode,
+          updateId: staged.meta.id,
+          toVersion: staged.meta.version,
+        })
+        // A committed handoff whose native installer terminally fails will never relaunch
+        // the target; drop the launch context so this live session recovers storage and
+        // future updates instead of carrying a dead transaction.
+        discardLaunch = discardOnTerminalSquirrelFailure(event, discardLaunch)
+      },
+      undefined,
+      (identity) =>
+        bindSquirrelRequest(
+          systemCacheDir(),
+          resolveDesktopConfig(log).bundleId,
+          resolve(dirname(process.execPath), '..', '..'),
+          identity
+        )
+    )
+    installation.step('helper')
+    await squirrel.prepare(
+      frozen,
+      {
+        version: staged.meta.version,
+        buildNumber: staged.meta.build_number,
+        candidate: staged.meta.id,
+        at: Date.now(),
+        state: 'requested',
+      },
+      () => authorize(staged.meta)
+    )
+    signal?.throwIfAborted()
+    if (!squirrel.ready || !prepareLaunch)
+      throw new Error('Mac update native readiness is required')
+    nativeReady = true
+    installation.step('saving')
+    discardLaunch = await prepareLaunch(staged.meta)
+    await commitWithActivation(
+      () => authorize(staged.meta),
+      (guard) => {
+        signal?.throwIfAborted()
+        guard()
+        if (!squirrel?.ready) throw new Error('Mac update native readiness was revoked')
+      }
+    )
+    handoffReady = true
+    installation.finish('handoff')
+    return { ok: true, mode: 'auto' }
   } catch (error) {
-    installation?.finish(
+    installation.finish(
       signal?.aborted && (!macHandoffCommitted() || macHandoffReady()) ? 'cancelled' : 'failed'
     )
     persistUpdateLog(`[update] installation failed: ${String(error)}\n`)
@@ -2711,13 +2110,13 @@ export async function installStagedUpdate(
       }
     }
     if (error instanceof PreparedArtifactChangedError) macPrepared = null
-    if (installation && signal?.aborted && (!macHandoffCommitted() || macHandoffReady()))
+    if (signal?.aborted && (!macHandoffCommitted() || macHandoffReady()))
       return { ok: false, cancelled: true }
     if (error instanceof UpdateVerifyError)
       return { ok: false, errorFallback: updateInstallFallback(error) }
     return { ok: false, error: String(error) }
   } finally {
-    installation?.dispose()
+    installation.dispose()
     if (!handoffReady) discardLaunch?.()
     if (squirrel && !squirrel.committed) {
       squirrel.dispose()

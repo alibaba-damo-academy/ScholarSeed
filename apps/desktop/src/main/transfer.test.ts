@@ -11,6 +11,7 @@ import ts from 'typescript'
 import { ComponentDiagnostics, ComponentTimer, COMPONENT_TIMING } from './timing.ts'
 import { commitWithActivation, ActivationExpired } from './update-authorization.ts'
 import type { WindowsTransfer } from './transfer.ts'
+import updateTimeouts from '../../updater/handoff/timeouts.json' with { type: 'json' }
 import {
   inspectionResult,
   TransferEvents,
@@ -102,6 +103,26 @@ test('early commit acknowledgement cannot bypass authorization phase', async () 
   const events = new TransferEvents()
   events.push('{"event":"started"}')
   await assert.rejects(events.expect('authorized'), /expected authorized, received started/)
+})
+
+test('handoff retains the native error code alongside diagnostic detail', async () => {
+  const events = new TransferEvents()
+  const pending = events.expect('ready')
+  events.push(
+    '{"event":"error","code":"ERR_UPDATE_INSTALL_VERIFICATION","message":"native diagnostic"}'
+  )
+  await assert.rejects(pending, {
+    code: 'ERR_UPDATE_INSTALL_VERIFICATION',
+    message: 'Windows handoff: native diagnostic',
+  })
+})
+
+test('cleanup uncertainty survives an earlier cancellation', async () => {
+  const events = new TransferEvents()
+  events.fail(new WindowsHandoffCancelled())
+  events.push('{"event":"error","code":"ERR_UPDATE_HANDOFF_CLEANUP_UNCONFIRMED"}')
+  assert.equal(events.cleanupUnconfirmed, true)
+  await assert.rejects(events.expect('authorized'), WindowsHandoffCancelled)
 })
 
 test('handoff protocol bounds queued messages and event sizes', async () => {
@@ -197,6 +218,7 @@ for (const outcome of [
   'refused',
   'cancelled',
   'helper-exited',
+  'worker-exited-before-authorization',
   'helper-error',
   'early-ack',
   'closed',
@@ -220,12 +242,19 @@ for (const outcome of [
       write(chunk, _encoding, callback) {
         const { command } = JSON.parse(chunk.toString())
         commands.push(command)
-        queueMicrotask(() => emit(command === 'start' ? 'authorized' : 'started'))
+        queueMicrotask(() => {
+          if (outcome === 'worker-exited-before-authorization') child.emit('close', 1, null)
+          else emit(command === 'start' ? 'authorized' : 'started')
+        })
         callback()
       },
       final(callback) {
         if (!['close-timeout', 'initialization-close-timeout'].includes(outcome))
-          queueMicrotask(() => child.emit('close', 0, null))
+          queueMicrotask(() => {
+            if (!['helper-exited', 'worker-exited-before-authorization'].includes(outcome))
+              emit('cleanup-complete')
+            child.emit('close', 0, null)
+          })
         callback()
       },
     })
@@ -237,6 +266,7 @@ for (const outcome of [
       },
       process: { platform: 'win32', pid: 123, env: { LOCALAPPDATA: 'C:\\profile' } },
       ...win32,
+      updateTimeouts,
       randomUUID,
       createInterface,
       Buffer,
@@ -253,7 +283,13 @@ for (const outcome of [
         return child
       },
       setTimeout: (callback: () => void, ms: number) =>
-        setTimeout(callback, outcome.endsWith('close-timeout') && ms === 5_000 ? 10 : ms),
+        setTimeout(
+          callback,
+          outcome.endsWith('close-timeout') &&
+            ms === updateTimeouts.workerStopMs + updateTimeouts.coordinatorExitGraceMs
+            ? 10
+            : ms
+        ),
       clearTimeout,
       ComponentDiagnostics,
       ComponentTimer,
@@ -307,6 +343,14 @@ for (const outcome of [
           throw new ActivationExpired()
       }
     })
+    if (outcome === 'worker-exited-before-authorization') {
+      await assert.rejects(pending, /handoff exited/)
+      await assert.rejects(transfer.close(), /exit is unconfirmed/)
+      assert.equal(requests, 0)
+      child.stdout.end()
+      child.stderr.end()
+      return
+    }
     await entered
     assert.deepEqual(commands, ['start'])
     if (outcome === 'cancelled') controller.abort(new Error('cancelled'))
@@ -323,7 +367,8 @@ for (const outcome of [
     } else {
       await assert.rejects(pending)
       assert.deepEqual(commands, ['start'])
-      if (outcome === 'close-timeout') await assert.rejects(transfer.close(), /exit is unconfirmed/)
+      if (outcome === 'close-timeout' || outcome === 'helper-exited')
+        await assert.rejects(transfer.close(), /exit is unconfirmed/)
       else await transfer.close()
       assert.equal(child.stdin.writableEnded, true)
     }

@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+func TestFailureEventClassifiesVerificationWithoutParsingDiagnostics(t *testing.T) {
+	diagnostic := errors.New("verification operation failed")
+	classified := FailureEvent(fmt.Errorf("%w: %w", errInstallVerification, diagnostic))
+	if classified.Code != "ERR_UPDATE_INSTALL_VERIFICATION" || classified.Message != "update file verification failed: verification operation failed" {
+		t.Fatalf("unexpected verification event: %+v", classified)
+	}
+	unclassified := FailureEvent(errors.New(classified.Message))
+	if unclassified.Code != "" || unclassified.Message != classified.Message {
+		t.Fatalf("unexpected unclassified event: %+v", unclassified)
+	}
+}
+
 func TestUpdatePresentationFinishesBeforeRestart(t *testing.T) {
 	workerFailure := errors.New("component extraction failed")
 	launchFailure := errors.New("launch denied")

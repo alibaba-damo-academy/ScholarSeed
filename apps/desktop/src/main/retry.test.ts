@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import { retryUpdate, transientUpdateFailure, UpdateTransportError } from './retry.ts'
 import ts from 'typescript'
-import { MACOS_PREPARATION_POLICY, UpdatePreparation } from './preparation.ts'
+import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import { nextUpdateCheckAt } from './checks.ts'
 import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
 
@@ -45,10 +45,9 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
   const ipc = new Map<string, (...args: unknown[]) => Promise<unknown>>()
   let prepares = 0
   const timers: number[] = []
-  const policy =
-    platform === 'darwin'
-      ? { ...MACOS_PREPARATION_POLICY, coalesceMs: 0, intervalMs: 0 }
-      : undefined
+  const platformPolicy = backgroundPreparationPolicy(platform)
+  assert.ok(platformPolicy)
+  const policy = { ...platformPolicy, coalesceMs: 0, intervalMs: 0 }
   const preparation = new UpdatePreparation(
     async () => {
       prepares++
@@ -104,6 +103,7 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
       macHandoffCommitted: () => false,
       macPreparationReady: () => true,
       updateLaneUnsupported: () => false,
+      archType: () => 'windows-amd64',
       logUpdateEvent: () => {},
     },
     updateChecks: {

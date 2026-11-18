@@ -224,10 +224,10 @@ function harness(home: string, recordPath: string, channel: string, platform = '
       ...exports,
       readAnnouncedKey: () => null,
       updateLaneUnsupported: () => false,
+      archType: () => 'darwin-arm64',
       syncMacUpdateDiagnostics: async () => undefined,
       macStartupStatus: async () =>
         inspectSquirrelStartup(readSquirrelHandoff(recordPath)!, home, 'fixture', home),
-      pendingUpdateId: () => undefined,
       startMacDeferredCleanup: () => undefined,
     },
     updateSnapshot: null as UpdateSnapshot | null,
