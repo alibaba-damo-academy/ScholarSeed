@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+from contextlib import nullcontext
 from typing import Any
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -17,6 +18,7 @@ from service.capabilities.service.attribution import (
     MAX_REGISTRATION_BYTES,
     REGISTRATION_FILE_NAME,
     parse_attribution,
+    parse_attribution_summary,
     unavailable_attribution,
 )
 from service.capabilities.service.install import MAX_DOCUMENT_BYTES, MAX_PACKAGE_BYTES
@@ -48,6 +50,8 @@ CLAWHUB_SKILLS_PATH = "/api/v1/skills"
 CLAWHUB_SEARCH_PATH = "/api/v1/search"
 SKILLHUB_CATALOG_PATH = "/api/web/skills"
 SKILLHUB_LABELS_PATH = "/api/web/labels"
+SKILLHUB_LABELS_EXPANSION = "labels"
+SKILLHUB_CATALOG_EXPANSIONS = f"{SKILLHUB_LABELS_EXPANSION},attribution"
 SKILLHUB_LOCALE_PATTERN = re.compile(r"^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$")
 SKILLHUB_COPY_LOCALES = ("en", "zh")
 SKILLHUB_LABEL_TYPES = frozenset({"RECOMMENDED", "PRIVILEGED"})
@@ -240,10 +244,16 @@ class ClawHub:
         except httpx.HTTPError:
             raise ClawHubError("Unable to reach ClawHub") from None
 
-    async def _value(self, path: str, *, params: dict[str, Any] | None = None) -> Any:
-        async with self._client() as client:
+    async def _value(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> Any:
+        async with self._client() if client is None else nullcontext(client) as active_client:
             data = await self._bytes(
-                client, self.base + path, CLAWHUB_MAX_JSON_BYTES, params=params
+                active_client, self.base + path, CLAWHUB_MAX_JSON_BYTES, params=params
             )
         try:
             result = json.loads(data)
@@ -257,8 +267,14 @@ class ClawHub:
             return result["data"]
         return result
 
-    async def _json(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        result = await self._value(path, params=params)
+    async def _json(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> dict[str, Any]:
+        result = await self._value(path, params=params, client=client)
         if not isinstance(result, dict):
             raise ClawHubError("SkillHub returned an invalid object")
         return result
@@ -266,9 +282,11 @@ class ClawHub:
     async def labels(self) -> list[dict[str, str]]:
         return _labels(await self._value(SKILLHUB_LABELS_PATH))
 
-    async def _metadata(self, namespace: str, slug: str) -> dict[str, Any]:
+    async def _metadata(
+        self, namespace: str, slug: str, *, client: httpx.AsyncClient | None = None
+    ) -> dict[str, Any]:
         metadata = await self._json(
-            f"{CLAWHUB_SKILLS_PATH}/{_identifier(namespace)}/{_identifier(slug)}"
+            f"{CLAWHUB_SKILLS_PATH}/{_identifier(namespace)}/{_identifier(slug)}", client=client
         )
         if metadata.get("slug") != slug or metadata.get("namespace") != namespace:
             raise ClawHubError("SkillHub metadata identity mismatch")
@@ -286,15 +304,17 @@ class ClawHub:
                     target[locale] = value.strip()
         return {"display_names": names, "descriptions": descriptions}
 
-    async def attribution(self, namespace: str, slug: str, version: str) -> dict[str, Any]:
+    async def attribution(
+        self, namespace: str, slug: str, version: str, *, client: httpx.AsyncClient | None = None
+    ) -> dict[str, Any]:
         namespace_id, slug_id, version_id = (
             _identifier(value) for value in (namespace, slug, version)
         )
         path = f"{CLAWHUB_SKILLS_PATH}/{namespace_id}/{slug_id}/versions/{version_id}/file"
         try:
-            async with self._client() as client:
+            async with self._client() if client is None else nullcontext(client) as active_client:
                 payload = await self._bytes(
-                    client,
+                    active_client,
                     self.base + path,
                     MAX_REGISTRATION_BYTES,
                     params={"path": REGISTRATION_FILE_NAME},
@@ -370,19 +390,58 @@ class ClawHub:
 
         return list(await asyncio.gather(*(enrich(row) for row in rows)))
 
-    async def list(self, *, query: str = "", cursor: str = "", label: str = "") -> dict[str, Any]:
+    async def list(
+        self,
+        *,
+        query: str = "",
+        cursor: str = "",
+        label: str = "",
+        include_attribution: bool = True,
+    ) -> dict[str, Any]:
         if len(query) > CLAWHUB_QUERY_MAX or len(cursor) > CLAWHUB_CURSOR_MAX:
             raise ClawHubError("Marketplace query exceeds limit", code="invalid_query")
         if cursor and (not cursor.isascii() or not cursor.isdecimal()):
             raise ClawHubError("Invalid marketplace page", code="invalid_query")
         page = int(cursor or "0")
-        params: dict[str, Any] = {"size": CLAWHUB_PAGE_SIZE, "page": page, "sort": "newest"}
+        params: dict[str, Any] = {
+            "size": CLAWHUB_PAGE_SIZE,
+            "page": page,
+            "sort": "newest",
+            "include": SKILLHUB_CATALOG_EXPANSIONS,
+        }
         if query.strip():
             params["q"] = query.strip()
         if label:
             _identifier(label)
             params["label"] = label
-        result = await self._json(SKILLHUB_CATALOG_PATH, params=params)
+
+        async def drop_registry_cookies(request: httpx.Request) -> None:
+            request.headers.pop("cookie", None)
+
+        async with self._client() as client:
+            client.event_hooks["request"].append(drop_registry_cookies)
+            return await self._list_page(
+                client, page, params, include_attribution=include_attribution
+            )
+
+    async def _list_page(
+        self,
+        client: httpx.AsyncClient,
+        page: int,
+        params: dict[str, Any],
+        *,
+        include_attribution: bool,
+    ) -> dict[str, Any]:
+        try:
+            result = await self._json(SKILLHUB_CATALOG_PATH, params=params, client=client)
+        except ClawHubError as exc:
+            if exc.status != httpx.codes.BAD_REQUEST:
+                raise
+            result = await self._json(
+                SKILLHUB_CATALOG_PATH,
+                params={**params, "include": SKILLHUB_LABELS_EXPANSION},
+                client=client,
+            )
         rows, total = result.get("items"), result.get("total")
         if (
             not isinstance(rows, list)
@@ -393,6 +452,8 @@ class ClawHub:
         ):
             raise ClawHubError("ClawHub returned an invalid catalogue")
         items = []
+        needs_metadata = []
+        source_items = []
         for row in rows:
             if not isinstance(row, dict) or not isinstance(row.get("namespace"), str):
                 raise ClawHubError("SkillHub returned an invalid identity")
@@ -416,16 +477,38 @@ class ClawHub:
                 labels=None,
                 labelsStatus=SKILLHUB_LABELS_UNAVAILABLE,
             )
+            if row.get("labels") is not None:
+                try:
+                    native.update(labels=_labels(row["labels"]), labelsStatus=SKILLHUB_LABELS_READY)
+                except ClawHubError:
+                    pass  # Older or incomplete catalogue projections use the verified detail path.
+            if not native["provider"] or native["labelsStatus"] != SKILLHUB_LABELS_READY:
+                needs_metadata.append(native)
+            source = (
+                parse_attribution_summary(row.get("attribution"), slug)
+                if native["version"]
+                else None
+            )
+            if source is not None:
+                native.update(source)
+            elif include_attribution:
+                source_items.append(native)
+            elif native["version"]:
+                native["attributionDeferred"] = True
             items.append(native)
         gate = asyncio.Semaphore(CLAWHUB_METADATA_CONCURRENCY)
 
         async def provider(item: dict[str, Any]) -> None:
             try:
                 async with gate:
-                    metadata = await self._metadata(item["namespace"], item["nativeSlug"])
-                item["provider"] = str(metadata.get("ownerDisplayName") or "")
-                item["labels"] = _labels(metadata.get("labels"))
-                item["labelsStatus"] = SKILLHUB_LABELS_READY
+                    metadata = await self._metadata(
+                        item["namespace"], item["nativeSlug"], client=client
+                    )
+                if not item["provider"]:
+                    item["provider"] = str(metadata.get("ownerDisplayName") or "")
+                if item["labelsStatus"] != SKILLHUB_LABELS_READY:
+                    item["labels"] = _labels(metadata.get("labels"))
+                    item["labelsStatus"] = SKILLHUB_LABELS_READY
             except ClawHubError:
                 item["providerUnavailable"] = True
 
@@ -435,11 +518,14 @@ class ClawHub:
                 return
             async with gate:
                 item.update(
-                    await self.attribution(item["namespace"], item["nativeSlug"], item["version"])
+                    await self.attribution(
+                        item["namespace"], item["nativeSlug"], item["version"], client=client
+                    )
                 )
 
         await asyncio.gather(
-            *(provider(item) for item in items), *(attribution(item) for item in items)
+            *(provider(item) for item in needs_metadata),
+            *(attribution(item) for item in source_items),
         )
         return {
             "items": items,

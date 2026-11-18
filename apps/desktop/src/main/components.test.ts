@@ -262,6 +262,20 @@ test('cancellation cleans partial bytes and a later retry can complete', async (
     assert.deepEqual(await readFile(componentArchivePath(root, component())), payload)
   }))
 
+test('archive progress is cumulative across the pending component downloads', async (t) =>
+  fixture(async (root) => {
+    const progress: [number, number][] = []
+    t.mock.method(globalThis, 'fetch', async () => new Response(payload))
+    await downloadRuntimeComponents({
+      ...options(root, manifest([component(), component('texlive')])),
+      onArchiveProgress: (received, total) => progress.push([received, total]),
+    })
+    assert.deepEqual(progress, [
+      [payload.length, payload.length * 2],
+      [payload.length * 2, payload.length * 2],
+    ])
+  }))
+
 test('redirects are bounded and refuse downgrade before issuing an HTTP request', async (t) =>
   fixture(async (root) => {
     const downgrade = t.mock.method(

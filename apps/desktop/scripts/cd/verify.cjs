@@ -5,6 +5,12 @@ const os = require('node:os')
 const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFileSync, spawnSync } = require('node:child_process')
+const { readMachArchitectures } = require('../../src/main/macho.ts')
+const { notarizationHash } = require('../../src/main/notarization.ts')
+const {
+  archiveApplicationArguments, assertSquirrelArchiveSize, MACOS_ARCHIVE_TIMEOUT_MS,
+  MACOS_DITTO, preflightApplicationArchive, verifyApplicationArchive,
+} = require('../../src/main/archive.ts')
 
 const { removeTemporary, TIMEOUT_MS: TEMP_CLEANUP_TIMEOUT_MS } = require('../shared/temporary-cleanup.cjs')
 const { target } = require('../shared/target.cjs')
@@ -614,11 +620,23 @@ function trustCommand(stage, executable, args) {
   }
 }
 
-function macTrust(application, frozen) {
-  const result = spawnSync('codesign', ['-d', '--verbose=4', application], { encoding: 'utf8' })
+async function macTrust(application, frozen) {
+  const codesign = '/usr/bin/codesign'
+  const result = spawnSync(codesign, ['-d', '--verbose=4', application], {
+    encoding: 'utf8', timeout: MAC_TRUST_TIMEOUT_MS,
+  })
+  if (result.status !== 0) throw result.error || new Error('Could not read macOS signature metadata')
   const output = `${result.stdout || ''}\n${result.stderr || ''}`
-  trustCommand('seal', 'codesign', ['--verify', '--deep', '--strict', application])
+  trustCommand('seal', codesign, ['--verify', '--deep', '--strict', application])
   if (!frozen.signingRequired) return { signature: 'ad-hoc' }
+  const architectures = await readMachArchitectures(layout(application, frozen).executable)
+  for (const arch of architectures) {
+    const slice = spawnSync(codesign, ['-d', '--verbose=4', '--arch', arch, application], {
+      encoding: 'utf8', timeout: MAC_TRUST_TIMEOUT_MS,
+    })
+    if (slice.status !== 0) throw slice.error || new Error(`Could not read ${arch} signature metadata`)
+    notarizationHash(`${slice.stdout || ''}\n${slice.stderr || ''}`)
+  }
   trustCommand('staple', 'xcrun', ['stapler', 'validate', application])
   trustCommand('gatekeeper', 'spctl', ['--assess', '--type', 'execute', '--verbose=4', application])
   const teamId = output.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim() || ''
@@ -788,7 +806,7 @@ async function verifyApplication(application, frozen, runtimeCheck) {
   const signed = !unsignedPackageCheck(frozen)
   // Assess the whole signed bundle before a short probe triggers first-launch
   // scanning, then wait out the kernel first-exec scan before the runtime probes.
-  let trust = frozen.platform === 'darwin' && signed ? macTrust(application, frozen) : null
+  let trust = frozen.platform === 'darwin' && signed ? await macTrust(application, frozen) : null
   // Ad-hoc lanes sign without a Developer ID but still pay the kernel first-exec
   // scan, so the handshake must cover every signed macOS application.
   if (frozen.platform === 'darwin' && signed) {
@@ -1002,8 +1020,25 @@ async function verify(builderContext) {
     verifyWindowsSignature(installer, frozen.product.config.expected_windows_publisher)
   }
   const application = JSON.parse(fs.readFileSync(path.join(frozen.runDirectory, 'app.json')))
+  let archiveBudget = null
   const image = frozen.platform === 'darwin'
-    ? await verifyImage(installer, application.path, frozen, verifyApplication)
+    ? await verifyImage(installer, application.path, frozen, async (mounted, context, runtimeCheck) => {
+        const validated = await verifyApplication(mounted, context, runtimeCheck)
+        if (context.signingRequired) {
+          await preflightApplicationArchive(mounted)
+          const directory = fs.mkdtempSync(path.join(context.runDirectory, 'update-archive-'))
+          const archive = path.join(directory, 'application.zip')
+          try {
+            command(MACOS_DITTO, archiveApplicationArguments(mounted, archive), {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
+            const size = fs.statSync(archive).size
+            assertSquirrelArchiveSize(size)
+            archiveBudget = { size, ...await verifyApplicationArchive(archive) }
+          } finally {
+            bestEffortRemoveTemporary(directory)
+          }
+        }
+        return validated
+      })
     : null
   const checked = image ? image.checked : await verifyApplication(application.path, frozen, true)
   // sha512 is unconditional: the update service imports a build from this digest and
@@ -1020,6 +1055,7 @@ async function verify(builderContext) {
     trust: checked.trust,
   }
   if (image) evidence.installed_check.sha256 = evidence.sha256
+  if (archiveBudget) evidence.installed_check.update_archive = archiveBudget
   atomicJSON(path.join(frozen.runDirectory, 'app.json'), image
     ? await verifyApplication(application.path, frozen, false)
     : checked)

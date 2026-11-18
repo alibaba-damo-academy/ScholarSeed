@@ -391,7 +391,7 @@ func startWorker(executable string, args []string, elevate bool) (workerProcess,
 		return nil, err
 	}
 	if info.Process == 0 {
-		return nil, errors.New("elevation returned no process handle")
+		return nil, fmt.Errorf("%w: elevation returned no process handle", errWorkerCleanupUnconfirmed)
 	}
 	return &windowsWorker{info.Process}, nil
 }

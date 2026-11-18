@@ -253,7 +253,9 @@ export function UpdatePanel({
     status =
       state?.installation?.step === 'helper'
         ? accountUpdateText('update.helper')
-        : t('update.backgroundPreparing')
+        : state?.restartPreparing
+          ? t('update.restartPreparing')
+          : t('update.backgroundPreparing')
   else if (phase === 'verifying') status = t('update.verifying')
   else if (phase === 'manual') status = t('update.manualHint')
   else if (presentation === 'dialog' && stage === 'ready' && !failed)
@@ -318,11 +320,14 @@ export function UpdatePanel({
       <span className={PANEL_ERROR_TEXT_CLASS_NAME} data-testid="update-panel-error">
         {updateFailureText(failure, t, accountUpdateText)}
       </span>
-      {candidate && phase === 'failed' && failure?.origin === 'download' && (
-        <span data-testid="update-panel-resumable">
-          {state?.resumable === false ? t('update.failedDiscarded') : t('update.failedRetained')}
-        </span>
-      )}
+      {candidate &&
+        phase === 'failed' &&
+        failure?.origin === 'download' &&
+        state?.resumable !== undefined && (
+          <span data-testid="update-panel-resumable">
+            {state.resumable ? t('update.failedRetained') : t('update.failedDiscarded')}
+          </span>
+        )}
       {stage === 'ready' && (
         <span data-testid="update-panel-retry-hint">{t('update.installRetryHint')}</span>
       )}

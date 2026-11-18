@@ -67,6 +67,7 @@ export type DeviceSkillRequest =
   | { operation: 'marketplace'; query: string; cursor: string; label?: string; locale?: string }
   | { operation: 'marketplace-labels'; locale: string }
   | { operation: 'marketplace-detail'; slug: string; version: string; locale?: string }
+  | { operation: 'marketplace-attribution'; namespace: string; slug: string; version: string }
   | { operation: 'marketplace-install'; slug: string; version: string; enabled?: boolean }
   | { operation: 'marketplace-update'; name: string; version: string; expectedVersion: string }
 export interface DeviceSkillResponse {
@@ -190,7 +191,12 @@ export function skillRequest(request: DeviceSkillRequest): { path: string; init:
     }
     case 'marketplace':
       return {
-        path: `${SKILLS_PATH}/marketplace?${new URLSearchParams({ query: request.query, cursor: request.cursor, ...(request.label ? { label: request.label } : {}), ...(request.locale ? { locale: request.locale } : {}) })}`,
+        path: `${SKILLS_PATH}/marketplace?${new URLSearchParams({ query: request.query, cursor: request.cursor, include_attribution: 'false', ...(request.label ? { label: request.label } : {}), ...(request.locale ? { locale: request.locale } : {}) })}`,
+        init: { method: 'GET' },
+      }
+    case 'marketplace-attribution':
+      return {
+        path: `${SKILLS_PATH}/marketplace/items/${encodeURIComponent(request.namespace)}/${encodeURIComponent(request.slug)}/attribution?${new URLSearchParams({ version: request.version })}`,
         init: { method: 'GET' },
       }
     case 'marketplace-detail':

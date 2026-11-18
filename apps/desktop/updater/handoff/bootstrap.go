@@ -208,6 +208,9 @@ func (p Policy) Bootstrap(ctx context.Context, root, baseURL string, progress fu
 	if component == nil {
 		return result, errors.New("runtime manifest has no Electron component")
 	}
+	if updaterExists && manifestExists {
+		sweepUpdateCache(ctx, root, p.ProductID, runtime, runtime)
+	}
 	timing.event.Version = component.Version
 	end()
 	end = timing.start(timingReadiness)

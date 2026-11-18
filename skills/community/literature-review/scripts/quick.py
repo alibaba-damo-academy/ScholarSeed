@@ -6,19 +6,21 @@ import json
 import shutil
 from pathlib import Path
 
-from bibliography import resolve as resolve_citations, read_information
-from citation_identity import normalize_citations, require_evidence_references, referenced_keys
+from authoring import authoring_task, context_message
+from bibliography import read_information
+from bibliography import resolve as resolve_citations
+from citation_identity import normalize_citations, referenced_keys, require_evidence_references
 from evidence import read, save
 from generation_errors import GenerationError, diagnostic
 from load_model_config import load_stage_config
 from paper_materials import evidence_records, require_ready, text_present
+from planning import require_plan
 from platform_io import file_lock
 from processing.build_bib import build as build_bibliography
 from scripted_generation import invoke
 from strategy import QUICK, require_capabilities
 from task_contract import publication_view, read_request
 from task_input import task_input
-from planning import require_plan
 from writing_prompt_guidance import MANUSCRIPT_WRITING_GUIDANCE, TASK_GUIDANCE
 
 SELECTED = "02_retrieval/selected_paper.json"
@@ -45,10 +47,16 @@ and its evidence limits. Keep any proposed interpretation qualified and separate
 from findings attributed to a source; do not turn familiar technical background
 into an unreported result of that paper. Qualify or omit unsupported comparisons.
 
-Citations in this editable source use each paper's exact citation_token, such as
-\cite{Smith2024}. The user's numeric citation style is the final display style:
-the publisher assigns numbers after drafting. Copy citation_token at the claim,
-including grouped keys inside one cite command. Paper order is not a citation
+Citations in this editable source copy the paper's complete citation_token verbatim
+at the supported claim. Treat the entire token as an opaque source identity,
+including its backslash, braces, year and full key; do not reconstruct it from metadata.
+Citation-format demonstration only (not a source for this task):
+Given citation_token \cite{Lin2024SearchAgent} for an abstract describing iterative
+query refinement, valid Markdown prose is:
+该方法通过迭代改写查询组织文献检索\cite{Lin2024SearchAgent}。
+Continue the actual requested review using the supplied paper abstracts and their tokens.
+The user's numeric citation style is the final display style:
+the publisher assigns numbers after drafting. Paper order is not a citation
 identity. This source protocol keeps each attribution bound to its actual paper. No sentence
 IDs or evidence-card extraction are required. The publisher supplies references.
 Choose the form and organization from original_user_requests and effective_requirements.
@@ -128,9 +136,7 @@ def manuscript_packet(workspace):
     require_capabilities(request)
     keys = read(workspace / KEYS)
     records = evidence_records(workspace)
-    task = task_input(workspace)
-    if isinstance(task.get("sources"), dict):
-        task["sources"] = {"policy": task["sources"].get("policy")}
+    task = authoring_task(task_input(workspace))
     packet = {
         "task": task,
         "language": request["language"],
@@ -138,17 +144,12 @@ def manuscript_packet(workspace):
         "papers": [
             {
                 "cite_key": keys[identity],
-                "citation_token": "\\cite{" + keys[identity] + "}",
-                **{key: paper.get(key) for key in ("title", "authors", "year", "abstract")},
+                **{key: paper.get(key) for key in ("title", "year", "abstract")},
             }
             for identity, paper in records.items()
         ],
         "output_format": "markdown",
         "evidence_kind": "abstract",
-        "citation_protocol": {
-            "source": "Copy papers[].citation_token for inline citations; the publisher converts these keys to numeric references.",
-            "final_style": "numeric",
-        },
     }
     generation = workspace / "05_generation"
     generation.mkdir(parents=True, exist_ok=True)
@@ -164,6 +165,28 @@ def manuscript_packet(workspace):
         )
         save(workspace / PACKET, packet)
     return packet
+
+
+def draft_messages(packet):
+    metadata = {key: value for key, value in packet.items() if key != "papers"}
+    evidence = "\n\n".join(
+        "## Paper\ncitation_token: \\cite{"
+        + paper["cite_key"]
+        + "}\nTitle: "
+        + str(paper.get("title") or "")
+        + "\nYear: "
+        + str(paper.get("year") or "")
+        + "\nAbstract:\n"
+        + str(paper.get("abstract") or "")
+        for paper in packet["papers"]
+    )
+    return [
+        {
+            "role": "system",
+            "content": TASK_GUIDANCE + "\n" + MANUSCRIPT_WRITING_GUIDANCE + "\n" + DRAFT_GUIDANCE,
+        },
+        {"role": "user", "content": context_message(metadata, evidence)},
+    ]
 
 
 async def generate(workspace, config=None, client=None):
@@ -198,17 +221,7 @@ async def generate(workspace, config=None, client=None):
             text, metrics = await invoke(
                 workspace,
                 "quick_draft",
-                [
-                    {
-                        "role": "system",
-                        "content": TASK_GUIDANCE
-                        + "\n"
-                        + MANUSCRIPT_WRITING_GUIDANCE
-                        + "\n"
-                        + DRAFT_GUIDANCE,
-                    },
-                    {"role": "user", "content": json.dumps(packet, ensure_ascii=False)},
-                ],
+                draft_messages(packet),
                 config,
                 client=client,
                 json_output=False,
@@ -249,11 +262,15 @@ def main():
         if read_request(args.workspace).get("execution", {}).get("mode") != QUICK:
             raise ValueError("abstract preparation belongs to Quick mode")
         information = read_information(args.workspace)
-        lookup = asyncio.run(resolve_citations(args.workspace, read(args.workspace / SELECTED), information))
+        lookup = asyncio.run(
+            resolve_citations(args.workspace, read(args.workspace / SELECTED), information)
+        )
         result = prepare_abstracts(args.workspace)
-        result['bibliographic_metadata_lookup'] = lookup
+        result["bibliographic_metadata_lookup"] = lookup
         report = read(args.workspace / REPORT)
-        report['bibliographic_metadata_lookup'] = {key: value for key, value in lookup.items() if key != 'items'}
+        report["bibliographic_metadata_lookup"] = {
+            key: value for key, value in lookup.items() if key != "items"
+        }
         save(args.workspace / REPORT, report)
     except (ValueError, OSError) as error:
         print(json.dumps(diagnostic(error), ensure_ascii=False))

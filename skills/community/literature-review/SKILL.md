@@ -13,8 +13,8 @@ description_zh: >-
   快速模式基于摘要生成Markdown，不含图片；标准模式支持全文分析、
   图表及Markdown、PDF或DOCX交付。
 metadata:
-  version: "2026.11.17+2"
-version: "2026.11.17+2"
+  version: "2026.11.17+12"
+version: "2026.11.17+12"
 ---
 # Literature review
 
@@ -37,6 +37,12 @@ You clarify the task, explain the plan, maintain progress, delegate independent 
 ScholarSeed prepares the selected papers and reports which are usable or still missing material. The commands below
 use those results to analyze papers, draft and revise the manuscript, format citations and export files.
 Use these commands rather than implementing a separate writing or publication process.
+
+Run long commands in the foreground of the host's managed command tool, not with
+`nohup` or a shell `&`. A tool's yield/wait interval limits how long that call waits
+for output, not how long the command may run. If it returns a running session ID,
+continue waiting on that same session through the host's continuation tool until
+exit; do not relaunch the command or replace continuation with `sleep` and PID polling.
 
 The installed Skill and product implementation are inputs to this workflow, not
 editable task artifacts. Work on request data, manuscripts and deliverables in
@@ -237,7 +243,13 @@ Use these existing fields to construct the request:
 | Specified papers and additional search | `supplement` | Use the specified papers and search for more within the agreed scope and number. |
 | Search by topic | `discover` | Search for papers on the agreed topic; selected papers are not required to start. |
 
-Use `init --describe-input --field FIELD` only when unsure of a field's shape or supported values. Init consumes
+Use `init --describe-input --field FIELD` only when unsure of a field's shape or supported values.
+When several fields are unclear, `writing configure --describe-input` returns the
+complete writing-request contract and examples in one call. A first request without
+`user_requests` may omit `effective_requirements`; nonempty verbatim follow-ups require
+that field to summarize the updated requirements. `sources.policy` controls permitted
+sources; `papers budget` uses its own `policy` field to describe count calculation,
+so `configured_supplement` does not change a `discover` source policy. Init consumes
 the request and saves the task requirements in `01_input/writing_request.json`. Saving this file records intent;
 the plan decision and final-corpus evidence authorization remain separate product checkpoints.
 
@@ -462,6 +474,10 @@ Once Quick evidence is ready or the Standard outline is confirmed, complete `evi
 
 The selected mode determines writing. Quick produces the requested Markdown in one call.
 Standard assembles the completed chapters and assets, then applies one complete-source delta refinement.
+Chapters, including the lightweight abstract, are generated independently in parallel.
+Keep definitions and their supporting papers in each chapter's plan; do not create
+chapter execution dependencies. The figure author uses confirmed plans and records
+without waiting for chapter prose. Required assets must still finish before assembly.
 This pass edits the manuscript without paper abstracts or cards, preserves scientific meaning and
 reports ambiguous scientific changes instead of guessing or adding claims.
 When found, the script supplies a compact natural-language list of possible cross-chapter
@@ -506,6 +522,16 @@ compatibility fallback, not the complete list of papers used by a full-text revi
 Edit `full_draft_v2` and its dependencies when corrections are needed, then republish. Delivery copies are outputs, not the
 source to edit.
 
+Successful `manuscript publish` and `workflow publish` responses expose the final file
+in the top-level singular `deliverable` field. Use that path; `source` is the editable
+manuscript, not the delivered file. PDF image paths are in `inspection_scope.pages`
+and `pages_to_read`, not in an assumed `files` or `deliverables` collection.
+For compilation diagnostics, `compile.origin` identifies the invocation and main-source
+hash; `diagnostic_pass_index` and `log_path` identify the retained final-pass log.
+Compare those records rather than inferring a stale run from identical overflow values.
+Log glyph dumps alone do not establish unresolved citations; use the citation and
+bibliography checks and inspect the actual rendered page.
+
 Quick publishes the Markdown file directly with bibliography formatting only; its working bibliography and input
 snapshots remain internal. In Standard Markdown, a native forest `.tex` source may be an image target. Preserve that
 source and its dependencies so the publisher can render the actual tree and embed it in DOCX.
@@ -523,6 +549,10 @@ and explain which delivery or display failed and what remains available. Do not 
 that a publication card exists when the call failed.
 
 ## 12. Recover an interrupted or failed task
+
+Consume the command's returned report paths rather than guessing numbered directories.
+`workflow` reports contain `steps` and a boundary `result`; individual stage reports
+have their own fields and do not necessarily contain `steps`.
 
 Use the command's diagnostic, named logs and `next_action` to select the recovery. Preserve completed sibling tasks and raw
 responses. `--from` runs the named stage and later stages; `--from review-packet` reuses an existing outline.

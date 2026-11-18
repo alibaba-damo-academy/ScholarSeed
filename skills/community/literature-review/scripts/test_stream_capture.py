@@ -10,6 +10,16 @@ from light_llm import _OpenAICompatLLM
 
 
 class StreamCaptureTest(unittest.TestCase):
+    def test_thinking_toggle_uses_enable_thinking_on_the_wire(self):
+        with patch("openai.AsyncOpenAI", return_value=SimpleNamespace()):
+            model = _OpenAICompatLLM("fixture-model", "https://fixture.invalid/v1", "fixture-token")
+        model.cache_bust = False
+        for enabled in (True, False):
+            model.thinking = enabled
+            request = model._create_kwargs([], {"temperature": 0.6})
+            self.assertEqual(request["extra_body"], {"enable_thinking": enabled})
+            self.assertEqual(request["temperature"], 0.6)
+
     def test_usage_only_chunk_and_actual_model_are_preserved(self):
         class Usage(SimpleNamespace):
             def model_dump(self):

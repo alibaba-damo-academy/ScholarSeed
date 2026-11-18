@@ -14,7 +14,8 @@ sys.path.insert(0, str(ROOT / 'lib'))
 import slr_paths
 slr_paths.bootstrap(__file__)
 sys.path.insert(0, str(ROOT / 'scripts'))
-from authoring import authoring_card
+from authoring import authoring_card, authoring_task
+from figure_authoring import authoring_packet, CAPTION_GUIDANCE, PROMPT_GUIDANCE, RENDERING_CONTRACT
 from evidence import read, save
 from writing_contract import read_request, require_approval, select_outline, explicit_length_budget
 from output_spec import read_output_spec
@@ -60,7 +61,7 @@ def validate_plan(ws, outline, preparing=False):
     compile_plan(outline,set(allowed))
 
 
-def prepare(ws, assets=None, legacy_cards=False):
+def prepare(ws):
     from paper_materials import require_ready
     require_ready(ws)
     if is_quick(ws):
@@ -105,9 +106,6 @@ def prepare(ws, assets=None, legacy_cards=False):
     internal = ws / '05_generation/_internal'
     save(internal / 'query_meta.json', meta)
     effective = copy.deepcopy(outline)
-    if assets:
-        raise GenerationError('OUTLINE_REQUIRED','asset plans must be configured in outline.json before confirmation; prepare --assets cannot add or move them',
-                              '04_outline/outline.json',next_action='Use outline configure --request with the complete revised outline, then honor its approval policy.')
     validate_plan(ws, effective, preparing=True)
     from asset_plan import derive,retire_unplanned
     asset_plan=derive(effective)
@@ -145,14 +143,13 @@ def prepare(ws, assets=None, legacy_cards=False):
     parts = []
     save(internal / 'figures_worklist.json', {'preparation_id':preparation_id, 'language': language, 'scope': meta.get('scope','speed'), 'items': figures})
     brief = {'workspace': str(ws), 'skill': str(ROOT), 'language': language,
-             'task': task, 'preparation_id': preparation_id,
-             'figures': [{k: it[k] for k in ('figure_id','section_id','section_title','purpose','content_plan','caption_draft','visual_guidance','qualifications')} for it in figures],
+             'task': authoring_task(task), 'preparation_id': preparation_id,
+             'figures': [{k: it[k] for k in ('figure_id','section_id','section_title')} for it in figures],
              'evidence_paths': ['05_generation/_internal/writing_evidence.json'],
              'ownership': 'Submit rendering fields through figures plan --request; CLI owns the internal worklist. Own generated figure files only. Do not edit outline, manuscript, tables or task identity.'}
     from asset_prompt_guidance import FIGURE_DESIGN_GUIDANCE
     brief['rendering_guidance'] = FIGURE_DESIGN_GUIDANCE
     brief['completion_policy'] = 'Generate prepared figures concurrently, then return completed asset paths for direct integration. No visual review, inspection receipt or refinement pass.'
-    from figure_authoring import authoring_packet, CAPTION_GUIDANCE, PROMPT_GUIDANCE
     relevant=list(dict.fromkeys(pid for item in figures for pid in item['paper_ids']))
     evidence_path=internal/'figure_evidence.json'
     save(evidence_path, {'papers':{keys[pid]:{'cite_key':keys[pid],
@@ -160,11 +157,11 @@ def prepare(ws, assets=None, legacy_cards=False):
     brief['evidence_path']=evidence_path.relative_to(ws).as_posix()
     brief['prompt_guidance']=PROMPT_GUIDANCE
     brief['caption_guidance']=CAPTION_GUIDANCE
+    brief['rendering_contract']=RENDERING_CONTRACT
     for item,summary in zip(figures,brief['figures']):
         path=internal/'figure_authoring'/f"{item['figure_id']}.json"
-        save(path,authoring_packet(authoring_view(item,keys),task,evidence_path.relative_to(ws).as_posix(),preparation_id))
-        summary.update(authoring_packet=path.relative_to(ws).as_posix(),section_description=item['section_description'],
-                       evidence_scope=item['evidence_scope'])
+        save(path,authoring_packet(authoring_view(item,keys),evidence_path.relative_to(ws).as_posix(),preparation_id))
+        summary.update(authoring_packet=path.relative_to(ws).as_posix())
     save(internal / 'figure_brief.json', brief)
     budget = explicit_length_budget(ws, language)
     strategy=read_request(ws)['writing_strategy']

@@ -86,6 +86,27 @@ def parse_attribution(payload: bytes | None, name: str) -> dict[str, Any]:
         return unavailable_attribution(ATTRIBUTION_INVALID)
 
 
+def parse_attribution_summary(value: Any, name: str) -> dict[str, Any] | None:
+    """Validate the display projection returned by a registry that supports catalogue expansion."""
+    if not isinstance(value, dict):
+        return None
+    status = value.get("status")
+    if status in (ATTRIBUTION_MISSING, ATTRIBUTION_INVALID):
+        return unavailable_attribution(status)
+    if status != ATTRIBUTION_READY or "authors" not in value or "source" not in value:
+        return None
+    try:
+        payload = json.dumps(
+            {"slug": name, "authors": value["authors"], "source": value["source"]},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    except (ValueError, RecursionError):
+        return None
+    result = parse_attribution(payload, name)
+    return result if result["attributionStatus"] == ATTRIBUTION_READY else None
+
+
 def read_attribution(directory: Path, name: str) -> dict[str, Any]:
     path = filesystem_path(directory / REGISTRATION_FILE_NAME)
     try:

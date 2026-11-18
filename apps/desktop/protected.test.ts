@@ -18,6 +18,7 @@ test('standalone protected generation builder exists', () => {
 
 const desktop = fileURLToPath(new URL('.', import.meta.url))
 const DEPENDENCY_DIRECTORY = 'node_modules'
+const HANDOFF_TIMEOUTS = 'updater/handoff/timeouts.json'
 const INSPECTION_PROBE_TIMEOUT_MS = 10000
 function isolatedSource() {
   const container = mkdtempSync(join(tmpdir(), 'protected-build-'))
@@ -28,6 +29,8 @@ function isolatedSource() {
   })
   for (const file of ['electron.vite.config.ts', 'protected.ts', 'renderer.ts', 'endpoints.ts', 'package-lock.json', 'package.json', 'tsconfig.base.json', 'tsconfig.web.json']) cpSync(join(desktop, file), join(root, file))
   for (const owner of ['runtime', 'scripts', 'native']) cpSync(join(desktop, owner), join(root, owner), { recursive: true })
+  mkdirSync(dirname(join(root, HANDOFF_TIMEOUTS)), { recursive: true })
+  cpSync(join(desktop, HANDOFF_TIMEOUTS), join(root, HANDOFF_TIMEOUTS))
   cpSync(join(desktop, '../../packages/ui'), join(container, 'packages/ui'), {
     recursive: true, filter: source => basename(source) !== DEPENDENCY_DIRECTORY,
   })
@@ -107,6 +110,18 @@ async function compileOwner(root: string, bundle: Awaited<ReturnType<typeof buil
   return compile({ configFile: false, root, logLevel: 'error', plugins: [...plugins, ...compilationPlugins(bundle)],
     build: { ssr: true, target: 'node24', write: false, rolldownOptions: { input: join(root, entry), external: ['electron'], output: { format: 'cjs' } } } })
 }
+test('production SSR compiles the frozen updater handoff timeouts', { timeout: 60000 }, async () => {
+  const fixture = isolatedSource()
+  try {
+    const entry = 'src/main/handoff-probe.ts'
+    writeFileSync(join(fixture.root, entry), `export { default } from '../../${HANDOFF_TIMEOUTS}' with { type: 'json' }\n`)
+    const bundle = await buildProtected({ desktopRoot: fixture.root, command: 'build', mode: 'production' })
+    await compileOwner(fixture.root, bundle, entry)
+    const filename = join(fixture.root, HANDOFF_TIMEOUTS)
+    writeFileSync(filename, readFileSync(filename, 'utf8') + '\n')
+    await assert.rejects(compileOwner(fixture.root, bundle, entry), /protected_assets_unavailable/)
+  } finally { fixture.dispose() }
+})
 test('same snapshot freezes package metadata and rejects mutations', { timeout: 60000 }, async () => {
   const fixture = isolatedSource()
   try {

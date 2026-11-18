@@ -188,10 +188,20 @@ def register_capability_routes(
 
     @router.get("/api/capabilities/skills/marketplace")
     async def marketplace(
-        query: str = "", cursor: str = "", label: str = "", locale: str = "en"
+        query: str = "",
+        cursor: str = "",
+        label: str = "",
+        locale: str = "en",
+        include_attribution: bool = True,
     ) -> dict[str, Any]:
         return await managed(
-            manager.marketplace(query=query, cursor=cursor, label=label, locale=locale)
+            manager.marketplace(
+                query=query,
+                cursor=cursor,
+                label=label,
+                locale=locale,
+                include_attribution=include_attribution,
+            )
         )
 
     @router.get("/api/capabilities/skills/marketplace/labels")
@@ -203,6 +213,10 @@ def register_capability_routes(
         slug: str, version: str = "", locale: str = "en"
     ) -> dict[str, Any]:
         return await managed(manager.marketplace_detail(slug, version, locale))
+
+    @router.get("/api/capabilities/skills/marketplace/items/{namespace}/{slug}/attribution")
+    async def marketplace_attribution(namespace: str, slug: str, version: str) -> dict[str, Any]:
+        return await managed(manager.marketplace_attribution(namespace, slug, version))
 
     @router.post("/api/capabilities/skills/marketplace/items/{slug}/install")
     async def marketplace_install(

@@ -6,12 +6,12 @@ import unittest
 
 import test_native_pipeline as native
 from chapter_plan import compile_plan
-from figure_dependencies import context
 from manuscript import prepare
 from task_contract import atomic_json, configure
 from chapter_pipeline import chapter_system
 from templates import LATEX_AUTHORING_GUIDANCE
-from native_document import load_renderer, extension
+from native_document import extension
+import layouts as renderer
 
 
 class PacketTest(unittest.TestCase):
@@ -19,7 +19,6 @@ class PacketTest(unittest.TestCase):
         self.assertNotIn('diagrams', LATEX_AUTHORING_GUIDANCE)
         self.assertNotIn('forest', LATEX_AUTHORING_GUIDANCE)
         self.assertNotIn('TikZ', LATEX_AUTHORING_GUIDANCE)
-        renderer = load_renderer()
         for language, preamble in (('english', renderer.PREAMBLE_EN), ('chinese', renderer.PREAMBLE_ZH)):
             with self.subTest(language=language):
                 prompt = chapter_system({'chapter_kind': 'section', 'output_format': 'latex_pdf',
@@ -28,7 +27,14 @@ class PacketTest(unittest.TestCase):
                 for package in ('amsmath', 'amssymb', 'bm', 'booktabs', 'array', 'tabularx',
                                 'longtable', 'graphicx', 'caption', 'hyperref', 'natbib'):
                     self.assertIn(package, preamble)
-                    self.assertIn(package, LATEX_AUTHORING_GUIDANCE)
+                    if package in ('amsmath', 'amssymb', 'bm', 'hyperref', 'natbib'):
+                        self.assertIn(package, prompt)
+                self.assertNotIn('tabularx', prompt)
+                self.assertNotIn('CAPTION CONTENT', prompt)
+                table_prompt = chapter_system({'chapter_kind': 'section', 'output_format': 'latex_pdf',
+                                               'shared_tables': [{'table_id': 'T1'}]})
+                self.assertIn('tabularx', table_prompt)
+                self.assertIn('CAPTION CONTENT', table_prompt)
 
     def test_latex_capabilities_reach_every_chapter_kind(self):
         for kind in ('abstract', 'section', 'component'):
@@ -64,7 +70,8 @@ class PacketTest(unittest.TestCase):
         p = json.loads((self.ws / "05_generation/_internal/chapter_packets/0.json").read_text())
         self.assertEqual(p["assigned_paper_ids"], ["p1"])
         self.assertNotIn("response_skeleton", p)
-        self.assertIn("conditional mechanism", p["evidence"])
+        self.assertIn("A bounded supported result.", p["evidence"])
+        self.assertNotIn("conditional mechanism", p["evidence"])
         self.assertEqual(len(p["confirmed_full_outline"]["outline_tree"]), 3)
 
     def test_chapters_keep_business_evidence_without_copying_it_to_refinement(self):
@@ -85,57 +92,20 @@ class PacketTest(unittest.TestCase):
             self.assertIn("21 percent on D with 40 labels; only under A", packet["evidence"])
             self.assertNotIn("LOCAL_SOURCE_SENTINEL", packet["evidence"])
             self.assertNotIn("LOCAL_REGION_SENTINEL", packet["evidence"])
-            self.assertIn("Some original content was unavailable.", packet["evidence"])
+            self.assertNotIn("Some original content was unavailable.", packet["evidence"])
         contract = json.loads((self.ws / "05_generation/_internal/manuscript_contract.json").read_text())
         self.assertNotIn("evidence", contract)
         self.assertNotIn("writing_evidence", contract)
         self.assertEqual(card_path.read_bytes(), before)
 
-    def test_dependency_cycle_rejected_before_call(self):
+    def test_retired_dependency_fields_rejected_before_call(self):
         outline = copy.deepcopy(self.fixture.outline)
         outline["outline_tree"][1]["depends_on"] = ["2"]
-        with self.assertRaisesRegex(ValueError, "cycle"):
+        with self.assertRaisesRegex(ValueError, "retired"):
             compile_plan(outline, {"p1"})
 
-    def test_figure_context_reads_completed_native_chapter(self):
-        self.assert_figure_context('latex_pdf')
 
-    def test_figure_context_reads_docx_markdown_prerequisites(self):
-        self.assert_figure_context('docx')
 
-    def assert_figure_context(self, output_format):
-        configure(self.ws, {'publication': {'format': output_format}})
-        outline = self.fixture.outline
-        outline["outline_tree"][0]["role"] = "foundation"
-        outline["outline_tree"][0]["paper_ids"] = ["p1"]
-        outline["prerequisites"] = [
-            {
-                "id": "P1",
-                "kind": "notation",
-                "requirement": "Define notation",
-                "owner_section_id": "0",
-            }
-        ]
-        outline["outline_tree"][1]["requires"] = ["P1"]
-        outline["outline_tree"][1]["figures"] = [
-            {
-                "figure_id": "F1",
-                "purpose": "Show relation",
-                "content_plan": "Actual relation",
-                "caption_draft": "Relation.",
-                "visual_guidance": "Simple",
-                "paper_ids": ["p1"],
-            }
-        ]
-        atomic_json(self.ws / "04_outline/outline.json", outline)
-        prepare(self.ws)
-        self.assertEqual(context(self.ws, "F1")["status"], "WAITING")
-        p = self.ws / ('05_generation/chapters/0.' + extension(output_format))
-        p.parent.mkdir(parents=True)
-        p.write_text("Actual prerequisite prose.")
-        result = context(self.ws, "F1")
-        self.assertEqual(result["status"], "READY")
-        self.assertEqual(result["sections"][0]["body_md"], "Actual prerequisite prose.")
 
 
 def load_tests(loader, tests, pattern):

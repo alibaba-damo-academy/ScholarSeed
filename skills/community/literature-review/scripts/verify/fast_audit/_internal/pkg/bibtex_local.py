@@ -1,5 +1,5 @@
 """Tiny zero-dep BibTeX parser for `citations.bib` produced by
-`phase05_merge_full_draft.py`.
+`the native document assembler`.
 
 Only handles the limited shape our generator emits:
 

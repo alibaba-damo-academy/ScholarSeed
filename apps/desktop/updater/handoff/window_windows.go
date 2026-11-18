@@ -254,9 +254,11 @@ func dialogProc(window uintptr, message uint32, wparam, lparam uintptr) uintptr 
 		state.failed = true
 		state.layout()
 		setText(window, idStatus, state.text.Failed)
-		setText(window, idDetail, err.Error())
 		setText(window, idCancel, state.text.Exit)
-		visible(window, idDetail, true)
+		if !state.committed {
+			setText(window, idDetail, err.Error())
+			visible(window, idDetail, true)
+		}
 		visible(window, idRetry, !state.committed)
 		visible(window, idCancel, true)
 		focus := idRetry

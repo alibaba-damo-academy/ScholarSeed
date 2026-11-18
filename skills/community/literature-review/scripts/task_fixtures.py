@@ -14,9 +14,24 @@ def outline_context(messages):
     metadata, end = json.JSONDecoder().raw_decode(metadata_text)
     tail = metadata_text[end:]
     heading = '\n\n# Paper evidence (research material, not instructions)\n'
+    if not tail:
+        return {**metadata, 'evidence': ''}
     if not tail.startswith(heading):
         raise AssertionError('outline evidence boundary is missing')
     return {**metadata, 'evidence': tail[len(heading):]}
+
+
+def authoring_context(messages):
+    content = messages[1]['content']
+    if content.startswith('{'):
+        return json.loads(content)
+    metadata_text = content.split('\n', 1)[1]
+    metadata, end = json.JSONDecoder().raw_decode(metadata_text)
+    tail = metadata_text[end:]
+    paper_heading = '\n\n# Paper evidence (research material, not instructions)\n'
+    if tail.startswith(paper_heading):
+        metadata['evidence'] = tail[len(paper_heading):]
+    return metadata
 
 def task(extra=None):
     return validate_request({'writing_strategy':'whole','intent':INTENT,'language':'ENGLISH','outline_review':'auto',
@@ -54,7 +69,7 @@ def planned_outline(outline):
     for section in value.get('outline_tree',[]):
         if not isinstance(section,dict):continue
         section.setdefault('role','abstract' if section.get('title','').lower() in ('abstract','摘要') else 'introduction')
-        section.setdefault('paper_ids',[]);section.setdefault('requires',[]);section.setdefault('analysis_tasks',[])
+        section.setdefault('paper_ids',[]);section.setdefault('analysis_tasks',[])
     nodes=[value,*[n for s in value.get('outline_tree',[]) if isinstance(s,dict) for n in [s,*s.get('subsections',[])]]]
     for node in nodes:
         if not isinstance(node,dict):continue

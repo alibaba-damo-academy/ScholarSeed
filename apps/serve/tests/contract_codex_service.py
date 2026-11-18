@@ -1393,7 +1393,14 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, " ".join(base.split()))
-        for detail in ("expected_revision", "step_ids", "SCHOLARSEED_TASK_PYTHON"):
+        for detail in (
+            "expected_revision",
+            "step_ids",
+            "SCHOLARSEED_TASK_PYTHON",
+            "Use a plan when requested",
+            "plan state and execution state",
+            "required task guidance for plan operations",
+        ):
             with self.subTest(detail=detail):
                 self.assertNotIn(detail, base)
         self.assertIn("SCHOLARSEED_TASK_PYTHON", developer)
@@ -1417,9 +1424,6 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             "avoid dumping large files or unbounded command output into context",
             "Quote paths and external values for the actual shell",
             "never interpolate them as executable syntax",
-            "Use a plan when requested",
-            "plan state and execution state faithful to actual work",
-            "including before reporting completion",
             "Do not treat truncated required instructions as fully read",
             "continue in bounded chunks",
         ):
@@ -1635,7 +1639,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         for capability in (
             "Your capabilities, when supported by the current session",
             "Work with user requests, host-provided context and workspace files",
-            "Communicate progress and results, and create or update plans when useful",
+            "Communicate progress and results",
             "Use declared tools to inspect files, run commands and apply patches",
             "Follow the current sandbox and approval policy",
             "request approval only through the supported mechanism when permitted",
@@ -4673,6 +4677,65 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             provider.reservations["fixture-reservation-1"].state, ResourceState.CANCELLED
         )
 
+    async def test_artifact_correction_waits_for_model_input_and_is_offered_once(self) -> None:
+        await self.emit(RuntimeEventKind.TURN_STARTED, sequence=1, payload={})
+        self.live.active_product_turn_id = "publication-turn"
+        self.live.held_model_bridge_id = "publication-bridge"
+        session = self.live.runtime_session
+        self.assertIsNotNone(session)
+
+        async def submit(item: str, arguments: dict, tool: str = "publish_artifacts") -> None:
+            await self.live._respond_service_callback(
+                RuntimeCallbackRequest(
+                    schema_version=1,
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=PRODUCT_SESSION_ID,
+                    native_session_id=VENDOR_THREAD_ID,
+                    native_turn_id="turn-1",
+                    native_item_id=item,
+                    request_id=item,
+                    audience=CallbackAudience.SERVICE,
+                    kind=CallbackKind.DYNAMIC_TOOL,
+                    blocking=True,
+                    prompt={"tool": tool, "arguments": arguments},
+                    response_contract={},
+                    observed_at="",
+                )
+            )
+
+        with patch.object(
+            session,
+            "respond",
+            new=AsyncMock(return_value=CommandReceipt("publication-test", CommandState.APPLIED)),
+        ) as respond:
+            await submit("first-batch-0", {"files": [{}]})
+            self.live.observe_model_tool_outputs("wrong-product-turn", {"first-batch-0"})
+            self.live.observe_model_tool_outputs("publication-turn", {"unrelated-call"})
+            for index in range(1, 5):
+                await submit(f"first-batch-{index}", {"files": [{}]})
+            for call in respond.await_args_list:
+                self.assertTrue(call.args[0].allow_tool_correction)
+                self.assertEqual(
+                    call.args[0].values["validation_errors"][0]["path"], ["files", 0, "path"]
+                )
+
+            self.live.observe_model_tool_outputs("publication-turn", {"first-batch-4"})
+            await submit("correction-failed", {})
+            response = respond.await_args.args[0]
+            self.assertFalse(response.allow_tool_correction)
+            self.assertIn("already offered", response.values["next_action"])
+            self.assertEqual(response.values["validation_errors"][0]["path"], ["files"])
+
+            self.live.active_product_turn_id = "next-product-turn"
+            await submit("next-turn", {})
+            self.assertTrue(respond.await_args.args[0].allow_tool_correction)
+
+            for index in range(1, live_module.ARTIFACT_CORRECTION_CALLBACK_LIMIT):
+                await submit(f"unobserved-{index}", {})
+            self.assertTrue(respond.await_args.args[0].allow_tool_correction)
+            await submit("beyond-defer-limit", {})
+            self.assertFalse(respond.await_args.args[0].allow_tool_correction)
+
     async def test_plan_callback_recovery_is_bound_to_the_exact_tool_and_persisted(self) -> None:
         await self.emit(RuntimeEventKind.TURN_STARTED, sequence=1, payload={})
         arguments = {"operation": "finish", "plan_id": "plan", "step_ids": ["deliver"]}
@@ -5355,6 +5418,18 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("declared tool contract", request.items[0]["text"])
             else:
                 self.assertEqual(request.items, ())
+
+    async def test_native_plan_progress_does_not_enable_product_plan_recovery(self) -> None:
+        for status in ("in_progress", "completed"):
+            await self.emit(
+                RuntimeEventKind.PLAN_UPDATED,
+                sequence=70 if status == "in_progress" else 71,
+                payload={"todos": [{"content": "Verify results", "status": status}]},
+            )
+            self.assertFalse(self.live.plans.enabled())
+            with patch.object(self.live.runtime_driver, "submit", new=AsyncMock()) as submit:
+                await self.live.run_runtime(TurnInput(items=(), client_user_message_id="client-a"))
+            self.assertEqual(submit.await_args.args[0].items, ())
 
     async def test_answer_model_snapshot_survives_tail_frame_and_history_reload(self) -> None:
         selected = ModelRun(

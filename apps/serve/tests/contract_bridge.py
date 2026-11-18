@@ -14,6 +14,7 @@ from service.chat.runtime import tools as service_tools
 from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL, SERVICE_PLAN_TOOL, execute_service_tool
 from service.chat.service.contracts import describe_contract
 from service.platform.bridge import (
+    ARTIFACT_BATCH_TOOL_NAME,
     BRIDGE_REQUESTS,
     CONTRACT_GUIDANCE_KEY,
     CONTRACT_PREREQUISITES_KEY,
@@ -61,6 +62,42 @@ class BridgeToolContracts(unittest.TestCase):
         self.assertEqual(result["error"], "bridge_invalid_parameters")
         self.assertNotIn("describe", result)
         self.assertEqual(result["tool_schema"], tool.input_schema)
+        self.assertFalse(service_tools.artifact_tool_missing_parameters(tool.name, result))
+
+    def test_batch_tool_guides_one_correction_for_missing_required_arguments(self):
+        for arguments, path in (
+            ({}, ["files"]),
+            ({"files": [{"path": "output/a.md"}, {"role": "supporting"}]}, ["files", 1, "path"]),
+        ):
+            with (
+                self.subTest(path=path),
+                patch("service.chat.runtime.tools.httpx.AsyncClient") as client,
+            ):
+                result = asyncio.run(
+                    execute_service_tool(
+                        arguments,
+                        session_id="session",
+                        token="fixture",
+                        local_socket=Path("/unused.sock"),
+                        tool_name=ARTIFACT_BATCH_TOOL_NAME,
+                    )
+                )
+                client.assert_not_called()
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["validation_errors"][0]["path"], path)
+                self.assertIn("once", result["next_action"])
+                self.assertTrue(
+                    service_tools.artifact_tool_missing_parameters(ARTIFACT_BATCH_TOOL_NAME, result)
+                )
+                self.assertFalse(
+                    service_tools.artifact_tool_missing_parameters(SERVICE_BRIDGE_TOOL.name, result)
+                )
+        self.assertFalse(
+            service_tools.artifact_tool_missing_parameters(
+                ARTIFACT_BATCH_TOOL_NAME,
+                {"ok": False, "status": "partial", "retry_files": [{"path": "missing.md"}]},
+            )
+        )
 
     def test_bridge_request_sources_are_exclusive_and_preserve_inline_contracts(self):
         validator = Draft202012Validator(SERVICE_BRIDGE_TOOL.input_schema)

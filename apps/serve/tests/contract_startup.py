@@ -42,6 +42,118 @@ from service.settings.credentials import ModelCredentialStore
 
 
 class StartupContracts(unittest.TestCase):
+    def test_storage_maintenance_refuses_live_home_and_preserves_legacy_history(self) -> None:
+        root = make_directory("storage-maintenance-")
+        self.addCleanup(shutil.rmtree, root)
+        home = root / "home"
+        workspace = root / "workspace"
+        workspace.mkdir()
+        program = r"""
+import asyncio
+import subprocess
+import sys
+from contextlib import closing
+
+from httpx import ASGITransport, AsyncClient
+from service.bootstrap import _storage_native, create_app
+from service.chat.persistence import blocks
+from service.chat.persistence.catalog import SessionPrincipal, SessionStatus
+from service.chat.service.maintenance import inspect_session_storage
+from service.paths import SESSION_BLOCKS_DIR, SESSION_CATALOG_DB, coordination_root
+from service.persistence.project import connect, transaction
+from service.platform.activity import ActivityDomain, ActivityPhase
+from service.platform.domains import Domains
+from service.platform.registry import REGISTRY_DIRECTORY, RegistryNative
+
+def maintain():
+    return subprocess.run(
+        [sys.executable, '-m', 'service.cli.serve', 'maintain-session-storage'],
+        capture_output=True, text=True, timeout=30,
+    )
+
+async def verify():
+    app = create_app(auth=False, auth_mode='off', ownership_axis='machine')
+    catalog = app.state.session_catalog
+    catalog.register(
+        'legacy', SessionPrincipal('local'), runtime_id='codex', vendor_thread_id='thread',
+        vendor_session_id='process', runtime_workdir=str(app.state.workspace),
+        project_path=None, output_root=str(app.state.workspace), codex_version='test',
+        model_id='unused', policy_id='workspace-write', status=SessionStatus.READY,
+        title='legacy', created_at=1.0,
+    )
+    with transaction(SESSION_CATALOG_DB, immediate=True) as db:
+        db.execute(
+            "INSERT INTO session_portable_history(session_id,ordinal,role,text) VALUES (?,?,?,?)",
+            ('legacy', 0, 'user', 'retained original'),
+        )
+    with closing(connect(SESSION_CATALOG_DB)) as db:
+        db.execute('BEGIN IMMEDIATE')
+        with blocks.BlockStore(db, SESSION_CATALOG_DB) as store:
+            store.append(dict(event_id=1, session_id='legacy', runtime_id='codex',
+                vendor_thread_id='thread', vendor_turn_id='turn', vendor_item_id='item',
+                kind='message_delta', payload='{"delta":"orphan"}', client_turn_id=None,
+                schema_version=1, product_seq=1, idempotency_key='orphan', created_at=1.0))
+        db.rollback()
+    orphan = SESSION_BLOCKS_DIR / blocks._name('legacy')
+    assert orphan.is_file() and inspect_session_storage(SESSION_CATALOG_DB) is True
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://contract') as client:
+            with app.state.activities.enter(ActivityDomain.TURN, root=True):
+                refused = await asyncio.to_thread(maintain)
+                assert refused.returncode == 1 and 'ERR_LEASE_BUSY' in refused.stderr, refused.stderr
+                response = await client.get('/api/serve/sessions?limit=60&scope=all')
+                assert response.status_code == 200, response.text
+                assert response.json()['sessions'][0]['session_id'] == 'legacy'
+                assert app.state.activities.snapshot().phase is ActivityPhase.OPEN
+            assert catalog.portable_history('legacy')[0].text == 'retained original'
+            assert inspect_session_storage(SESSION_CATALOG_DB) is True
+    app.state.storage_domains.close()
+
+    coordinator = coordination_root()
+    native = _storage_native(None)
+    if coordinator.name == REGISTRY_DIRECTORY:
+        native = RegistryNative(native, coordinator)
+    writer = Domains(native, str(coordinator), (str(SESSION_BLOCKS_DIR),))
+    try:
+        writer.occupy()
+        writer.admit()
+        refused = await asyncio.to_thread(maintain)
+        assert refused.returncode == 1 and 'ERR_LEASE_BUSY' in refused.stderr, refused.stderr
+        assert orphan.is_file(), 'maintenance must preserve blocks while a descendant owns the directory'
+    finally:
+        writer.close()
+    for _ in range(2):
+        result = await asyncio.to_thread(maintain)
+        assert result.returncode == 0 and 'maintenance complete' in result.stdout, result.stderr
+    assert not orphan.exists() and inspect_session_storage(SESSION_CATALOG_DB) is False
+
+    reopened = create_app(auth=False, auth_mode='off', ownership_axis='machine')
+    async with reopened.router.lifespan_context(reopened):
+        assert reopened.state.session_catalog.portable_history('legacy')[0].text == 'retained original'
+        async with AsyncClient(transport=ASGITransport(app=reopened), base_url='http://contract') as client:
+            response = await client.get('/api/serve/sessions?limit=60&scope=all')
+            assert response.status_code == 200, response.text
+            assert response.json()['sessions'][0]['session_id'] == 'legacy'
+    reopened.state.storage_domains.close()
+
+asyncio.run(verify())
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            env=dict(
+                os.environ,
+                SCHOLARSEED_HOME=str(home),
+                DAMOATRACE_HOME=str(home),
+                DAMOATRACE_LEDGER_ROOT=str(home / "projects"),
+                SCHOLARSEED_CODEX_HOME=str(home / "codex"),
+                SCHOLARSEED_DEFAULT_WORKSPACE=str(workspace),
+            ),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_future_assistant_columns_do_not_block_startup_or_session_listing(self) -> None:
         root = make_directory("forward-schema-")
         self.addCleanup(shutil.rmtree, root)

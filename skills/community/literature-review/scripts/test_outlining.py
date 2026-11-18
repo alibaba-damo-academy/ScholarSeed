@@ -135,6 +135,7 @@ class OutlinePromptTest(unittest.TestCase):
                 "markdown" if mode == "quick" else "docx",
             )
             self.assertEqual("QUICK MARKDOWN TABLES" in messages[0]["content"], mode == "quick")
+            self.assertEqual('"figure_id": "F1"' in messages[0]["content"], mode == "standard")
         self.task["original_user_requests"] = ["Include one comparison diagram."]
         self.task["constraints"] = [{"kind": "figure_count", "value": {"min": 1}}]
         messages, _ = build_prompt(
@@ -153,6 +154,16 @@ class OutlinePromptTest(unittest.TestCase):
         self.assertIn("requested abstract", messages[0]["content"])
         self.assertEqual(outline_context(messages)["required_outline_nodes"][0]["section_id"], "0")
 
+    def test_no_figure_contract_excludes_figure_example(self):
+        self.task["constraints"] = [{"kind": "figure_count", "value": {"max": 0}}]
+        messages, _ = build_prompt(
+            self.task,
+            {"output_scope": "survey", "execution": {"mode": "standard"}},
+            {"papers": self.papers},
+            "docx",
+        )
+        self.assertNotIn('"figure_id": "F1"', messages[0]["content"])
+
     def test_unknown_scope_preserves_uncertainty(self):
         messages, _ = self.build("unknown")
         self.assertIn("UNRESOLVED SCOPE", messages[0]["content"])
@@ -162,7 +173,7 @@ class OutlinePromptTest(unittest.TestCase):
         _, adapter = self.build()
         outline = {
             "description": "P_bb stays in prose",
-            "prerequisites": [{"paper_ids": ["P01"]}],
+            "supporting_groups": [{"paper_ids": ["P01"]}],
             "outline_tree": [
                 {
                     "paper_ids": ["P02"],
@@ -173,7 +184,7 @@ class OutlinePromptTest(unittest.TestCase):
         }
         result = restore_ids(outline, adapter)
         self.assertEqual(result["description"], "P_bb stays in prose")
-        self.assertEqual(result["prerequisites"][0]["paper_ids"], ["100"])
+        self.assertEqual(result["supporting_groups"][0]["paper_ids"], ["100"])
         self.assertEqual(result["outline_tree"][0]["cite_keys"], ["Smith2024"])
         self.assertEqual(
             result["outline_tree"][0]["subsections"][0]["tables"][0]["paper_ids"], ["900"]

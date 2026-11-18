@@ -136,11 +136,11 @@ class AssetChecksTest(unittest.TestCase):
                 'output_format':'latex_pdf','shared_tables':[],'shared_figures':[],
                 'confirmed_full_outline':{'outline_tree':[{'section_id':'2','tables':[{'table_id':'T9'}]}]}}
         sent=chapter_messages(packet)
-        self.assertEqual(json.loads(sent[1]['content'])['asset_contract']['tables'],[])
+        self.assertEqual(json.loads(sent[1]['content'].split('\n',1)[1].split('\n',1)[0])['asset_contract']['tables'],[])
         self.assertTrue(sent[-1]['content'].endswith(packet['chapter_opening']))
         self.assertNotIn('asset_contract',packet)
         packet['shared_tables']=[{'table_id':'T1','label':'tab:T1','section_id':'1.2','caption_draft':'Methods.'}]
-        local=json.loads(chapter_messages(packet)[1]['content'])['asset_contract']['tables']
+        local=json.loads(chapter_messages(packet)[1]['content'].split('\n',1)[1].split('\n',1)[0])['asset_contract']['tables']
         self.assertEqual(local,[packet['shared_tables'][0]])
         self.assertNotIn('T9',json.dumps(local))
 
