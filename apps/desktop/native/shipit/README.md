@@ -422,6 +422,14 @@ must both be absent under no-follow ancestor traversal; live paths, symlinks, un
 fields, permissions errors and uncertain closure refuse. There is no age-based
 expiry, device-number normalization, historical directory deletion or ack fabrication.
 
+Automatic supersession and independent orphan repair allow completed Cleanup
+records whose launch is recorded and whose cleanup list is empty. An unconfirmed
+launch or pending cleanup blocks recovery. The complete Cleanup journal remains
+part of the proof, and its committed records continue to guard against replay.
+
+自动接管和独立修复都允许已确认启动且待清理列表为空的历史记录。尚未确认启动或仍有待清理项时，
+恢复流程会停止。完整的 Cleanup 日志仍参与核验，已提交记录继续防止旧请求被重放。
+
 The successor must use a different request ID and source under the same update cache,
 and the same target path. Its live native request must exactly match the frozen
 request, remain unauthorized for installation, and have no pending rollback preference.

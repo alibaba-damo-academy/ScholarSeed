@@ -519,16 +519,16 @@ BOOL SSPreparationReconcile(NSURL *source, NSURL *target, NSDictionary *binding,
   if (!currentSource || !currentTarget || ![currentTarget[@"path"] isEqual:record[@"target"][@"path"]] || [currentSource[@"path"] isEqual:oldSource] ||
       ![[oldSource stringByDeletingLastPathComponent].stringByDeletingLastPathComponent isEqual:[currentSource[@"path"] stringByDeletingLastPathComponent].stringByDeletingLastPathComponent] ||
       Overlaps(currentSource[@"path"], currentTarget[@"path"]) || Overlaps(oldDirectory, currentSource[@"path"]) || Overlaps(oldDirectory, currentTarget[@"path"])) return Fail(error, ESTALE);
-  NSDictionary *cleanup = SSCleanupMaintenanceSnapshot(error);
+  NSDictionary *cleanup = SSCleanupIdleMaintenanceSnapshot(error);
   NSDictionary *qualified = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
   NSDictionary *observed = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
   NSDictionary *journal = observed ? [NSPropertyListSerialization propertyListWithData:observed[@"data"] options:0 format:NULL error:error] : nil;
-  if (!cleanup || ![cleanup[@"recordCount"] isEqual:@0] || !qualified || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isEqual:record]) return Fail(error, ESTALE);
+  if (!cleanup || !qualified || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isEqual:record]) return Fail(error, ESTALE);
   if (!AbsentPath(oldSource, error) || !AbsentPath(oldDirectory, error)) return NO;
   if (!verify(error)) return Fail(error, EPERM);
   NSDictionary *fresh = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
   if (![currentSource isEqual:Capture(source.path, YES)] || ![currentTarget isEqual:Capture(target.path, YES)] ||
-      ![cleanup isEqual:SSCleanupMaintenanceSnapshot(error)] ||
+      ![cleanup isEqual:SSCleanupIdleMaintenanceSnapshot(error)] ||
       ![qualified isEqual:SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error)] ||
       ![fresh[@"snapshot"] isEqual:observed[@"snapshot"]]) return Fail(error, ESTALE);
   if (!AbsentPath(oldSource, error) || !AbsentPath(oldDirectory, error) || !ArchiveJournal(observed[@"data"], SSPreparationSupersededPrefix, error)) return NO;
@@ -819,11 +819,11 @@ static NSDictionary *OrphanObservation(NSURL *source, NSURL *target, NSDictionar
       ![expected[@"kind"] isEqual:SSPreparationOrphanKind] || ![expected[@"binding"] isEqual:binding] ||
       ![expected[@"journal"] isKindOfClass:NSDictionary.class] || ![expected[@"state"] isKindOfClass:NSDictionary.class])) { Fail(error, EINVAL); return nil; }
   if (!planning && activity() != SSPreparationActivityAbsent) return OrphanRefused(error, @"activity", EBUSY);
-  NSDictionary *cleanup = SSCleanupMaintenanceSnapshot(error);
+  NSDictionary *cleanup = SSCleanupIdleMaintenanceSnapshot(error);
   NSDictionary *qualification = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
   NSDictionary *currentJournal = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
   NSDictionary *journal = currentJournal ? [NSPropertyListSerialization propertyListWithData:currentJournal[@"data"] options:0 format:NULL error:error] : nil;
-  if (!cleanup || ![cleanup[@"recordCount"] isEqual:@0] || !qualification || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isKindOfClass:NSDictionary.class]) return OrphanRefused(error, @"journal", ESTALE);
+  if (!cleanup || !qualification || ![journal isKindOfClass:NSDictionary.class] || journal.count != 2 || ![journal[@"schema"] isEqual:SSPreparationSchema] || ![journal[@"record"] isKindOfClass:NSDictionary.class]) return OrphanRefused(error, @"journal", ESTALE);
   NSData *journalBytes = expected ? ProofBytes(expected[@"journalBytes"]) : currentJournal[@"data"];
   NSDictionary *original = journalBytes ? [NSPropertyListSerialization propertyListWithData:journalBytes options:0 format:NULL error:error] : nil;
   if (![original isKindOfClass:NSDictionary.class]) return OrphanRefused(error, @"journal", ESTALE);
@@ -869,7 +869,7 @@ static NSDictionary *OrphanObservation(NSURL *source, NSURL *target, NSDictionar
   }
   if (!planning && activity() != SSPreparationActivityAbsent) return OrphanRefused(error, @"final-activity", EBUSY);
   if (![sourceCapture isEqual:Capture(source.path, YES)] || ![targetCapture isEqual:Capture(target.path, YES)]) return OrphanRefused(error, @"final-scope", ESTALE);
-  if (![cleanup isEqual:SSCleanupMaintenanceSnapshot(error)]) return OrphanRefused(error, @"final-cleanup", ESTALE);
+  if (![cleanup isEqual:SSCleanupIdleMaintenanceSnapshot(error)]) return OrphanRefused(error, @"final-cleanup", ESTALE);
   if (![qualification isEqual:SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error)]) return OrphanRefused(error, @"final-qualification", ESTALE);
   if (![currentJournal[@"snapshot"] isEqual:SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error)[@"snapshot"]]) return OrphanRefused(error, @"final-journal", ESTALE);
   NSDictionary *finalState = ObserveState(state, error);
