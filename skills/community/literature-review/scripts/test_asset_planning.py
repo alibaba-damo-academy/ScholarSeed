@@ -148,7 +148,9 @@ class AssetCountTransferTest(unittest.TestCase):
             request = read_request(ws)
             messages, _ = build_prompt(task, request, {'papers': []}, 'markdown')
             context = outline_context(messages)
-            self.assertEqual(context['task']['constraints'], task['constraints'])
+            self.assertEqual(context['task']['constraints'],
+                             [{key: value for key, value in constraint.items() if key != 'enforcement'}
+                              for constraint in task['constraints']])
             limits, _ = derive_from_task(ws)
             self.assertEqual((limits['min_figures'], limits['max_figures']), (2, 2))
             self.assertEqual((limits['min_tables'], limits['max_tables']), (1, 1))

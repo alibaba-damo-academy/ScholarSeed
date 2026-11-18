@@ -16,6 +16,7 @@ from planning import complete, decide, packet
 from quick import prepare_abstracts
 from task_contract import atomic_json, configure, digest, publication_view, read_request
 from workflow import advance
+from task_fixtures import authoring_context
 
 
 class DraftModel:
@@ -23,10 +24,10 @@ class DraftModel:
         self.calls = []
 
     async def chat_stream(self, messages, **options):
-        value = json.loads(messages[1]["content"])
+        value = authoring_context(messages)
         self.calls.append(value)
         options["_capture"]["finish_reason"] = "stop"
-        key = value["papers"][0]["cite_key"]
+        key = value["allowed_cite_keys"][0]
         body = "A supported comparison from the original abstract " + r"\cite{" + key + "}."
         return body
 
@@ -86,9 +87,7 @@ class ModeBoundaryTest(unittest.TestCase):
                     result = fixture.run_pipeline(model)
                     self.assertEqual(result["model_calls"], 1)
                     self.assertEqual(len(model.calls), 1)
-                    self.assertEqual(
-                        model.calls[0]["papers"][0]["abstract"], "A bounded supported result."
-                    )
+                    self.assertIn("A bounded supported result.", model.calls[0]["evidence"])
                     self.assertNotIn("card", json.dumps(model.calls))
                     self.assertNotIn("confirmed_outline", model.calls[0])
                     self.assertIn("inference cost", model.calls[0]["task"]["effective_requirements"])

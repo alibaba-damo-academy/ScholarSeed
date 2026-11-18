@@ -2,6 +2,7 @@
 """Regression checks for the ScholarSeed model environment contract."""
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
@@ -35,6 +36,15 @@ FIXTURE = {
 
 
 class ModelEnvironmentContractTest(unittest.TestCase):
+    def test_outline_settings_match_the_example_without_changing_other_stages(self):
+        for filename in ("model_config.fast.json", "model_config.fast.example.json"):
+            stages = json.loads((ROOT / "config" / filename).read_text())["stages"]
+            self.assertEqual(stages["outline_generation"]["temperature"], 0.6)
+            self.assertIs(stages["outline_generation"]["thinking"], True)
+            for stage in ("chapter_generation", "refinement_delta"):
+                self.assertEqual(stages[stage]["temperature"], 0.2)
+                self.assertIs(stages[stage]["thinking"], False)
+
     def _load(self, stage: str, env: dict[str, str]) -> dict:
         with patch.object(load_model_config, "_load_raw", return_value=FIXTURE), \
              patch.dict(os.environ, env, clear=True):

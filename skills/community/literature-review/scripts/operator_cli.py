@@ -24,7 +24,6 @@ from task_contract import validate_template_value
 from manuscript import check_contract
 from validate_figures_meta import _shape_errors
 from figure_caption import caption_text
-from figure_dependencies import context
 from materials import import_materials
 from budget import search_started, timing
 from planning import require_plan, completed_outline_amendment, resume_outline_amendment, begin_outline_amendment, complete_outline_amendment
@@ -216,9 +215,6 @@ def figure_plan(ws,value):
         if mode=='image' and candidate.get('_image_size') not in ('wide','square','tall'): raise ValueError(loc+'/_image_size: expected wide, square or tall')
         problems=_shape_errors(candidate,candidate)
         if problems: raise ValueError(loc+': '+'; '.join(problems))
-        if read_request(ws)['writing_strategy']=='chapter_delta':
-            dependency=context(ws,fid)
-            if dependency['status']!='READY':raise ValueError('figure awaits prerequisite chapters: '+', '.join(dependency['missing_sections']))
         items[fid].update({**patch,'_caption':caption_text(candidate['_caption'])})
     atomic_json(path,current)
     return {'status':'SUCCESS','preparation_id':current['preparation_id'],'updated_ids':sorted(seen),'next_action':'figures plan-generate'}

@@ -163,34 +163,6 @@ def reference_issues(asset_plan,outline,sections,markdown,component_body=''):
     return issues
 
 
-def table_issues(tables,asset_plan,keys,key_index):
-    """Accumulate identity, scope, column and evidence errors for every table."""
-    from writing import cite_keys
-    planned={a['table_id']:a for a in asset_plan['shared_tables']};seen=set();issues=[]
-    def add(code,tid,message,**data):issues.append({'code':code,'asset_id':tid if isinstance(tid,str) or tid is None else repr(tid),'message':message,**data})
-    for i,table in enumerate(tables):
-        if not isinstance(table,dict):add('TABLE_SHAPE',None,'table must be an object',location=f'tables/{i}');continue
-        tid=table.get('table_id')
-        if not isinstance(tid,str) or tid not in planned:
-            add('ASSET_UNPLANNED',tid,'table is absent from the confirmed outline',location=f'tables/{i}');continue
-        if tid in seen:add('ASSET_DUPLICATE',tid,'table ID appears more than once')
-        seen.add(tid);plan=planned[tid]
-        if table.get('section_id')!=plan['section_id']:add('ASSET_OWNER',tid,'table belongs to a different section',expected=plan['section_id'],actual=table.get('section_id'))
-        for field in ('purpose','content_plan','row_unit','comparison_dimensions','paper_ids','qualifications'):
-            if field in table and table[field]!=plan.get(field):add('ASSET_PLAN_CHANGED',tid,'submitted table changes confirmed '+field)
-        if not isinstance(table.get('caption'),str) or not table['caption'].strip():add('TABLE_SHAPE',tid,'table caption required')
-        columns=table.get('columns');expected=table_columns(plan)
-        if columns!=expected:add('TABLE_COLUMNS',tid,'table columns differ from the confirmed row unit and comparison dimensions',expected=expected,actual=columns)
-        rows=table.get('rows')
-        if not isinstance(rows,list) or not rows:add('TABLE_SHAPE',tid,'table requires evidence rows');continue
-        allowed={key_index[p] for p in plan['paper_ids'] if p in key_index} if plan['paper_ids'] else keys
-        for index,row in enumerate(rows):
-            if not isinstance(row,list) or len(row)!=len(expected) or any(not isinstance(c,str) for c in row):
-                add('TABLE_SHAPE',tid,'table row shape differs from planned columns',row=index);continue
-            cited=cite_keys(' '.join(row))
-            if not cited or cited-allowed:add('TABLE_EVIDENCE',tid,'comparison row must cite planned corpus evidence',row=index,unknown_cite_keys=sorted(cited-allowed))
-    for tid in sorted(set(planned)-seen):add('ASSET_MISSING',tid,'planned table is missing',section_id=planned[tid]['section_id'])
-    return issues
 
 
 def fail_if_issues(issues):

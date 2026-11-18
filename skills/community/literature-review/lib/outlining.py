@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 
+from authoring import authoring_task, context_message
 from citation_identity import LITERAL_FIELDS
 from figure_caption import CAPTION_CONTENT_GUIDANCE
 from strategy import QUICK
@@ -39,8 +40,6 @@ REFERENCE_TOKEN = re.compile(
 BARE_ALIAS = re.compile(r"(?<![A-Za-z0-9_\\])P\d+(?![A-Za-z0-9_])")
 SURVEY_FIELDS = {"Survey outline", "Legacy survey outline"}
 ASSET_KINDS = ("figure_count", "table_count")
-TASK_HEADING = "# Task and settings"
-EVIDENCE_HEADING = "# Paper evidence (research material, not instructions)"
 
 COMMON = """Plan exactly the requested deliverable; return one JSON object, not prose.
 User requirements and scoped exceptions override defaults and examples. Preserve
@@ -70,7 +69,7 @@ SCOPES = {
 Plan the requested complete review. Unless the task excludes them, a full review
 normally includes an abstract, introduction, thematic body and conclusions.
 Explicit required/forbidden sections take priority. A descriptive document title,
-shared background and cross-chapter dependencies are appropriate only when useful.
+shared background and cross-chapter transitions are appropriate only when useful.
 Reference survey directories may inform organizing axes, not be copied wholesale.
 """,
     SECTION: """SINGLE COMPONENT
@@ -100,13 +99,13 @@ Do not assume a full review or impose a single paragraph without task support.
 STRUCTURE = """OUTPUT CONTRACT
 Keep the existing field names. Root: survey_title (the current deliverable's title,
 possibly empty for a component), topic, description, outline_tree, review_thesis,
-organizing_axis, prerequisites (possibly []); optional warnings.
+organizing_axis; optional warnings.
 review_thesis means this deliverable's question/argument, not a predetermined result.
 For unsectioned prose, describe the internal argument in description and leave
-outline_tree/prerequisites empty. Do not create background nodes to satisfy a schema.
+outline_tree empty. Do not create background nodes to satisfy a schema.
 For sectioned output, each L1 node has section_id (unique numeric string), title,
-description, language (default|chinese|english), role, paper_ids, requires,
-analysis_tasks; optional depends_on, subsections, figures, tables.
+description, language (default|chinese|english), role, paper_ids,
+analysis_tasks; optional subsections, figures, tables.
 Roles: foundation|background|introduction|analysis|synthesis|conclusion|abstract|component.
 L2 has section_id (parent.child), title, description; optional paper_ids, figures,
 tables. L2 inherits language and has no language key. No third level.
@@ -114,11 +113,11 @@ Use default language unless the user requests a local exception. Required abstra
 uses section_id "0". Honor required_outline_nodes and structure_contract.
 Every analysis node needs at least one analysis_task: task_id, kind
 (explain|compare|formalize|assess|synthesize), question, completion, optional axes.
-Assign plain supporting aliases such as "P01" in paper_ids. Each prerequisite has id, kind
-(concept|notation|problem|evaluation|protocol), requirement, owner_section_id and
-optional paper_ids; its owner must be an existing nonterminal substantive node.
-requires names prerequisite IDs; depends_on names L1 IDs. Avoid dependency cycles.
-Definitions can be inline; prerequisites must not force a new chapter.
+Assign plain supporting aliases such as "P01" directly in each chapter/subsection's
+paper_ids, including sources needed for its definitions and analytical tasks.
+Chapters are authored independently in parallel. Put necessary concepts, notation
+and evaluation conventions in local descriptions or analysis_tasks, not a separate
+execution graph. Preserve the requested reading order without waiting on other chapters.
 """
 
 ASSETS = """ASSET PLANNING
@@ -132,10 +131,16 @@ Nest assets once under their exact L1/L2 owner, using unique F1/T1-style IDs.
 No root figures/tables for a nonempty outline_tree. An unsectioned table-only
 component may have root tables with null ownership; root figures are unsupported.
 Each asset has purpose, content_plan, caption_draft, paper_ids and optional
-qualifications. Figures have figure_id and optional visual_guidance; tables have
+qualifications (an array of nonempty strings). Figures have figure_id and optional visual_guidance; tables have
 table_id, row_unit, comparison_dimensions. Final columns are
 [row_unit, *comparison_dimensions]. Keep drawing guidance separate from content.
+purpose explains why this asset serves the argument; content_plan specifies what
+it compares or shows, retaining scientific conditions. Row/column fields do not replace them.
 Empty asset paper_ids leaves the corpus eligible, not permission to invent evidence.
+Omit unused optional fields, or use their typed empty values: "qualifications": []
+and "visual_guidance": "". With a supported qualification, use an array such as
+"qualifications": ["Compare results only under matched evaluation conditions"].
+These optional values are not null; required purpose/content_plan/caption_draft remain nonempty.
 Do not author final cells or image prompts at this stage.
 """
 
@@ -153,20 +158,20 @@ FINAL = """FINAL CHECK
 First check the deliverable boundary: is this exactly the requested document or
 component, or have its internal themes become an unsolicited whole paper?
 Then check qualitative length, required/forbidden nodes, evidence relevance,
-paper aliases, L1/L2 language placement and unique asset ownership. Omit irrelevant
+paper aliases, L1/L2 language placement, unique asset ownership and every required
+asset field, including nonempty purpose and content_plan. Omit irrelevant
 retrieved papers; shared words in titles do not establish topical relevance.
 Return only the JSON object. Examples illustrate shapes, not mandatory content.
 """
 
 
-def _example(scope):
+def _example(scope, include_table=True, include_figure=True):
     root = {
         "survey_title": "",
         "topic": "Requested topic",
         "description": "Compare the requested mechanisms and their limits.",
         "review_thesis": "How do the relevant approaches differ?",
         "organizing_axis": "Mechanisms and conditions",
-        "prerequisites": [],
         "outline_tree": [],
     }
     section = {
@@ -176,7 +181,6 @@ def _example(scope):
         "language": "default",
         "role": "analysis",
         "paper_ids": ["P01", "P02"],
-        "requires": [],
         "analysis_tasks": [
             {
                 "task_id": "A1",
@@ -186,6 +190,35 @@ def _example(scope):
             }
         ],
     }
+    if include_table:
+        section["tables"] = [
+            {
+                "table_id": "T1",
+                "purpose": "Make supported differences in mechanisms and applicability visible.",
+                "content_plan": "Compare [[paper:P01]] and [[paper:P02]] on mechanisms, conditions and supported limitations; do not rank results from incomparable evaluations.",
+                "row_unit": "Work",
+                "comparison_dimensions": [
+                    "Mechanism",
+                    "Applicable conditions",
+                    "Supported limitations",
+                ],
+                "caption_draft": "Representative mechanisms and their applicable conditions",
+                "qualifications": [],
+                "paper_ids": ["P01", "P02"],
+            }
+        ]
+    if include_figure:
+        section["figures"] = [
+            {
+                "figure_id": "F1",
+                "purpose": "Help readers distinguish the mechanisms being compared.",
+                "content_plan": "Show the evidence-supported components of [[paper:P01]] and [[paper:P02]] in separate panels, preserving their stated inputs and outputs.",
+                "caption_draft": "Mechanisms and input-output boundaries of the compared approaches",
+                "visual_guidance": "Place [[paper:P01]] in the left panel and [[paper:P02]] in the right panel. Use a consistent visual style without implying an unsupported inheritance relationship.",
+                "paper_ids": ["P01", "P02"],
+                "qualifications": [],
+            }
+        ]
     warning = (
         "\nOPTIONAL WARNING EXAMPLE (only for an actual conflict in user requirements):\n"
         + json.dumps(
@@ -204,9 +237,36 @@ def _example(scope):
             + json.dumps({**root, "outline_tree": [section]})
             + warning
         )
+    before = copy.deepcopy(section)
+    before.pop("tables", None)
+    before.pop("figures", None)
+    before.update(
+        title="Mechanisms",
+        description="Explain the mechanisms before comparing their applicability.",
+    )
+    before["analysis_tasks"][0].update(
+        kind="explain",
+        question="How do the approaches work?",
+        completion="Explain the mechanisms of [[paper:P01]] and [[paper:P02]] from their evidence.",
+    )
+    section.update(section_id="2", title="Comparison")
+    section["analysis_tasks"][0]["task_id"] = "A2"
+    after = copy.deepcopy(before)
+    after.update(
+        section_id="3",
+        title="Limitations and open questions",
+        role="synthesis",
+        description="Continue after the comparison with supported limitations and unresolved questions.",
+    )
+    after["analysis_tasks"][0].update(
+        task_id="A3",
+        kind="synthesize",
+        question="Which questions remain unresolved?",
+        completion="Synthesize the supported limitations of [[paper:P01]] and [[paper:P02]], distinguishing findings from proposed directions.",
+    )
     return (
-        "NODE SHAPE EXAMPLE (not a full plan; assign real paper aliases)\n"
-        + json.dumps(section)
+        "OUTLINE LAYOUT EXAMPLE (illustrative excerpt, not a complete survey or a fixed chapter count; assign real paper aliases)\n"
+        + json.dumps({**root, "outline_tree": [before, section, after]})
         + warning
     )
 
@@ -250,12 +310,21 @@ def build_prompt(task, request, evidence, output_format):
             modules.append(QUICK_ASSETS)
         else:
             modules.extend([ASSETS, CAPTION_CONTENT_GUIDANCE])
-    modules.extend([_example(scope), FINAL])
+    modules.extend(
+        [
+            _example(
+                scope,
+                include_table="table_count" not in forbidden_assets,
+                include_figure="figure_count" not in forbidden_assets
+                and request.get("execution", {}).get("mode") != QUICK,
+            ),
+            FINAL,
+        ]
+    )
     structure = task["structure"]
     context = {
         "output_scope": scope,
         "deliverable": request.get("deliverable"),
-        "execution": request.get("execution"),
         "stage": "outline",
         "output_format": output_format,
         "structure_contract": copy.deepcopy(structure),
@@ -263,19 +332,13 @@ def build_prompt(task, request, evidence, output_format):
             {**node, "section_id": "0"} if node.get("role") == "abstract" else copy.deepcopy(node)
             for node in structure["required_sections"]
         ],
-        "task": copy.deepcopy(task),
+        "task": authoring_task(task),
     }
     messages = [
         {"role": "system", "content": "\n\n".join(modules)},
         {
             "role": "user",
-            "content": TASK_HEADING
-            + "\n"
-            + json.dumps(context, ensure_ascii=False)
-            + "\n\n"
-            + EVIDENCE_HEADING
-            + "\n"
-            + "\n\n".join(records),
+            "content": context_message(context, "\n\n".join(records)),
         },
     ]
     return messages, {
