@@ -42,6 +42,16 @@ test('marketplace labels and filters preserve remote identity and language in de
   assert.equal(url.searchParams.get('label'), 'research')
   assert.equal(url.searchParams.get('locale'), 'zh')
   assert.equal(url.searchParams.get('cursor'), '2')
+  assert.equal(url.searchParams.get('include_attribution'), 'false')
+  assert.equal(
+    skillRequest({
+      operation: 'marketplace-attribution',
+      namespace: 'research',
+      slug: 'paper--review',
+      version: '1.2.3',
+    }).path,
+    `${SKILLS_PATH}/marketplace/items/research/paper--review/attribution?version=1.2.3`
+  )
   assert.match(
     skillRequest({ operation: 'list', surface: SKILL_SURFACE_SETTINGS, locale: 'en' }).path,
     /locale=en/
