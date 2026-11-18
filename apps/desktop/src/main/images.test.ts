@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { extname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
@@ -26,8 +25,6 @@ function acquisition(
   }
   const dependencies: Record<string, unknown> = {
     electron: {
-      clipboard: { read: async () => [], readText: async () => '' },
-      dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ['/sample.png'] }) },
       nativeImage: { createFromBuffer: () => image },
     },
     'node:fs/promises': {
@@ -41,16 +38,11 @@ function acquisition(
       },
     },
     'node:path': { extname },
-    'node:url': { fileURLToPath },
-    './localization': { mainLocalization: () => ({ getFixedT: () => (key: string) => key }) },
     './remote': { readRemoteImage: async () => new Uint8Array([1]) },
     '../images': contract,
   }
   const exports: {
-    acquireOfficeImage?: (
-      window: unknown,
-      source: contract.OfficeImageSource
-    ) => Promise<contract.OfficeImageResult>
+    readSelectedImage?: (path: string) => Promise<contract.OfficeImageResult>
     acquireRemoteImage?: (source: unknown) => Promise<contract.RemoteImageResult>
   } = {}
   const output = ts.transpileModule(readFileSync(new URL('./images.ts', import.meta.url), 'utf8'), {
@@ -73,7 +65,7 @@ function acquisition(
     process,
   })
   return {
-    run: () => exports.acquireOfficeImage!({}, 'file').then((result) => structuredClone(result)),
+    run: () => exports.readSelectedImage!('/sample.png').then((result) => structuredClone(result)),
     remote: () =>
       exports.acquireRemoteImage!('https://example.test/image').then((result) =>
         structuredClone(result)
@@ -104,30 +96,30 @@ test('image pixel limit remains inclusive and errors carry the enforced limit ac
   assert.equal(accepted.status, 'image')
   assert.equal(boundary.state.reads, 1)
   const oversized = acquisition({ height: 4_001 })
-  assert.deepEqual(await oversized.run(), {
-    status: 'error',
-    code: 'pixel_limit',
-    maxPixels: contract.OFFICE_IMAGE_MAX_PIXELS,
+  await assert.rejects(oversized.run(), (error: unknown) => {
+    assert.ok(error instanceof contract.OfficeImageError)
+    assert.deepEqual(structuredClone(error.failure), {
+      code: 'pixel_limit',
+      maxPixels: contract.OFFICE_IMAGE_MAX_PIXELS,
+    })
+    return true
   })
 })
 
 test('file size rejection prevents reading bytes and retains the exact IPC limit', async () => {
   const oversized = acquisition({ fileSize: contract.OFFICE_IMAGE_MAX_BYTES + 1 })
-  const result = await oversized.run()
-  assert.deepEqual(result, {
-    status: 'error',
-    code: 'invalid_file',
-    maxBytes: contract.OFFICE_IMAGE_MAX_BYTES,
+  await assert.rejects(oversized.run(), (error: unknown) => {
+    assert.ok(error instanceof contract.OfficeImageError)
+    assert.deepEqual(structuredClone(error.failure), {
+      code: 'invalid_file',
+      maxBytes: contract.OFFICE_IMAGE_MAX_BYTES,
+    })
+    return true
   })
   assert.equal(oversized.state.reads, 0)
-  assert.deepEqual(structuredClone(result), result)
 })
 
-test('unknown image read errors preserve diagnostics while supplying a stable display code', async () => {
+test('unknown selected-image read errors preserve the original diagnostics', async () => {
   const failure = acquisition({ failure: new Error('EACCES: source file') })
-  assert.deepEqual(await failure.run(), {
-    status: 'error',
-    code: 'read_failed',
-    message: 'EACCES: source file',
-  })
+  await assert.rejects(failure.run(), { message: 'EACCES: source file' })
 })

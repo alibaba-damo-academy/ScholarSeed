@@ -386,7 +386,7 @@ test('standalone opens promote in-flight embedded previews in either request ord
   }
 })
 
-test('embedded exclusive-viewer opens preserve placement on success and failure', async () => {
+test('embedded read-only preview opens preserve placement on success and failure', async () => {
   for (const failed of [false, true]) {
     const requested = { ...source, path: 'notes/report.docx' }
     const base = loader()
@@ -1988,26 +1988,26 @@ function officeLoader(): DocumentLoader {
   return {
     async load(requested): Promise<LoadedDocument> {
       const markdown = requested.path.endsWith('.md')
+      const csv = requested.path.endsWith('.csv')
+      const spreadsheet = csv || requested.path.endsWith('.xlsx')
       return {
-        documentId: `project:current:${requested.path}`,
+        documentId: documentIdFor(requested),
         source: requested,
-        viewer: markdown ? 'markdown' : requested.path.endsWith('.xlsx') ? 'spreadsheet' : 'office',
-        processor: requested.path.endsWith('.xlsx') ? 'xlsx' : null,
+        viewer: markdown ? 'markdown' : spreadsheet ? 'spreadsheet' : 'office',
+        processor: csv ? 'csv' : null,
         capabilities: {
           can_preview: true,
-          can_edit: true,
+          can_edit: markdown || csv,
           can_select: true,
           can_annotate: false,
-          can_save: true,
+          can_save: markdown || csv,
           can_version: false,
           can_diff: false,
           pending: [],
         },
         revision: `sha256:${requested.path}`,
-        mediaType: markdown
-          ? 'text/markdown'
-          : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        contentKind: markdown ? 'text' : 'binary',
+        mediaType: markdown ? 'text/markdown' : csv ? 'text/csv' : 'application/octet-stream',
+        contentKind: markdown || csv ? 'text' : 'binary',
         bytes: markdown ? new TextEncoder().encode('# Notes') : new Uint8Array([1, 2, 3]),
       }
     },
@@ -2017,45 +2017,76 @@ function officeLoader(): DocumentLoader {
   }
 }
 
-test('editable XLSX opens in preview until the user explicitly requests editing', async () => {
-  const workspace = new DocumentWorkspace(officeLoader())
-  const source = { kind: 'project' as const, path: 'results.xlsx' }
-  const preview = await workspace.open(source)
-  assert.equal(workspace.getSnapshot().tabs[preview].viewKind, 'preview')
-  const edit = await workspace.open(source, 'edit')
-  assert.equal(workspace.getSnapshot().tabs[edit].viewKind, 'edit')
-  assert.equal(
-    workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[edit].sessionId].dirty,
-    false
-  )
+test('Office and XLSX edit requests normalize to the same read-only preview tab', async () => {
+  for (const path of ['report.docx', 'slides.pptx', 'results.xlsx', 'legacy.doc', 'legacy.xls']) {
+    const workspace = new DocumentWorkspace(officeLoader())
+    const source = { kind: 'project' as const, path }
+    const preview = await workspace.open(source)
+    const editing = await workspace.open(source, 'edit')
+    assert.equal(editing, preview)
+    const state = workspace.getSnapshot()
+    assert.equal(state.tabs[editing].viewKind, 'preview')
+    assert.equal(state.sessions[state.tabs[editing].sessionId].capabilities.can_edit, false)
+  }
 })
 
-test('an explicit XLSX edit request during preview loading retains the requested mode', async () => {
+test('an XLSX edit request during preview loading remains read-only', async () => {
   const workspace = new DocumentWorkspace(officeLoader())
   const source = { kind: 'project' as const, path: 'results.xlsx' }
   const preview = workspace.open(source)
   const editing = workspace.open(source, 'edit')
   await preview
-  const edit = await editing
-  assert.equal(workspace.getSnapshot().tabs[edit].viewKind, 'edit')
+  const tabId = await editing
+  assert.equal(workspace.getSnapshot().tabs[tabId].viewKind, 'preview')
+  assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 1)
 })
 
-test('native Office previews keep independent tabs alongside the exclusive editor', async () => {
+test('Office requests never publish an editor tab while loading or after failure', async () => {
+  for (const path of ['failed.docx', 'failed.xlsx']) {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const workspace = new DocumentWorkspace({
+      ...officeLoader(),
+      async load() {
+        await gate
+        return {
+          kind: DOCUMENT_LOAD_FAILURE_KIND,
+          code: 'document_not_found',
+          message: 'missing',
+          retryable: false,
+          status: 404,
+        }
+      },
+    })
+    const opening = workspace.open({ kind: 'project', path }, 'edit')
+    assert.ok(
+      Object.values(workspace.getSnapshot().tabs).every((tab) => tab.viewKind === 'preview')
+    )
+    release?.()
+    const tabId = await opening
+    const state = workspace.getSnapshot()
+    assert.equal(state.tabs[tabId].viewKind, 'preview')
+    assert.equal(state.sessions[state.tabs[tabId].sessionId].loadState, 'error')
+  }
+})
+
+test('native previews and multiple CSV editors coexist without closing a dirty document', async () => {
   const workspace = new DocumentWorkspace(officeLoader())
-  const editor = await workspace.open({ kind: 'project', path: 'editor.docx' }, 'edit')
-  workspace.setExternalDirty(workspace.getSnapshot().tabs[editor].sessionId, true)
-  const previews = []
-  for (const path of ['first.docx', 'second.xlsx', 'third.pptx']) {
-    previews.push(await workspace.open({ kind: 'project', path }, 'preview'))
+  const original = await workspace.open({ kind: 'project', path: 'first.csv' })
+  const sessionId = workspace.getSnapshot().tabs[original].sessionId
+  workspace.setExternalDirty(sessionId, true)
+  for (const path of ['second.csv', 'third.csv', 'report.docx', 'slides.pptx', 'results.xlsx']) {
+    await workspace.open({ kind: 'project', path })
   }
   const state = workspace.getSnapshot()
-  assert.equal(Object.keys(state.tabs).length, 4)
-  assert.ok(state.tabs[editor])
+  assert.equal(Object.keys(state.tabs).length, 6)
+  assert.equal(state.sessions[sessionId].dirty, true)
   assert.equal(state.pendingClose, null)
-  for (const tabId of previews) assert.equal(state.tabs[tabId].viewKind, 'preview')
 })
 
-test('native previews in another project do not close an existing Office tab', async () => {
+test('native previews in another project preserve all existing Office tabs', async () => {
   const registry = new DocumentWorkspaceRegistry(officeLoader())
   const first = registry.forProject('first')
   const second = registry.forProject('second')
@@ -2065,7 +2096,7 @@ test('native previews in another project do not close an existing Office tab', a
   assert.equal(Object.keys(second.getSnapshot().tabs).length, 1)
 })
 
-test('imported Office resources use native preview without replacing prior tabs', async () => {
+test('imported Office resources use read-only preview without replacing prior tabs', async () => {
   const workspace = new DocumentWorkspace(officeLoader())
   for (const path of ['first.docx', 'second.xlsx']) {
     await workspace.openImported(
@@ -2077,160 +2108,164 @@ test('imported Office resources use native preview without replacing prior tabs'
   assert.ok(Object.values(workspace.getSnapshot().tabs).every((tab) => tab.viewKind === 'preview'))
 })
 
-test('promoting a native preview to editing retains dirty-owner confirmation', async () => {
-  const workspace = new DocumentWorkspace(officeLoader())
-  const owner = await workspace.open({ kind: 'project', path: 'owner.docx' }, 'edit')
-  const sessionId = workspace.getSnapshot().tabs[owner].sessionId
-  workspace.setExternalDirty(sessionId, true)
-  const source = { kind: 'project' as const, path: 'candidate.xlsx' }
-  await workspace.open(source, 'preview')
-  await workspace.open(source, 'edit')
-  assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId: owner, sessionId })
+test('a CSV open failure preserves the original clean tab and exposes its own error tab', async () => {
+  const base = officeLoader()
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested) {
+      if (requested.path === 'missing.csv')
+        return {
+          kind: DOCUMENT_LOAD_FAILURE_KIND,
+          code: 'document_not_found',
+          message: 'missing',
+          retryable: false,
+          status: 404,
+        }
+      return base.load(requested)
+    },
+  })
+  const original = await workspace.open({ kind: 'project', path: 'first.csv' })
+  const failed = await workspace.open({ kind: 'project', path: 'missing.csv' })
+  const state = workspace.getSnapshot()
+  assert.ok(state.tabs[original])
+  assert.equal(state.sessions[state.tabs[failed].sessionId].loadState, 'error')
 })
 
-test('opening another Office-family document replaces the clean owner', async () => {
-  const workspace = new DocumentWorkspace(officeLoader())
-  const first = await workspace.open({ kind: 'project', path: 'first.docx' }, 'edit')
-  const second = await workspace.open({ kind: 'project', path: 'second.xlsx' }, 'edit')
-  const state = workspace.getSnapshot()
-
-  assert.equal(state.tabs[first], undefined)
-  assert.ok(state.tabs[second])
+test('reopening a failed CSV reuses its one existing tab across view requests', async () => {
+  const workspace = new DocumentWorkspace({
+    ...officeLoader(),
+    async load() {
+      return {
+        kind: DOCUMENT_LOAD_FAILURE_KIND,
+        code: 'document_not_found',
+        message: 'missing',
+        retryable: false,
+        status: 404,
+      }
+    },
+  })
+  const source = { kind: 'project' as const, path: 'missing.csv' }
+  const failed = await workspace.open(source, 'edit')
+  const reopened = await workspace.open(source, 'preview')
+  assert.equal(reopened, failed)
+  assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 1)
   assert.equal(
-    Object.values(state.sessions).filter(
-      (session) => session.viewer === 'office' || session.viewer === 'spreadsheet'
-    ).length,
-    1
+    workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[failed].sessionId].loadState,
+    'error'
   )
 })
 
-test('Office-family replacement stays on the current owner until the candidate is loaded', async () => {
+test('loading another CSV exposes its own tab while retaining the first editor', async () => {
   let releaseCandidate: (() => void) | undefined
   const candidateGate = new Promise<void>((resolve) => {
     releaseCandidate = resolve
   })
   const base = officeLoader()
-  const deferredLoader: DocumentLoader = {
+  const workspace = new DocumentWorkspace({
     ...base,
     async load(requested) {
-      if (requested.path === 'second.xlsx') await candidateGate
+      if (requested.path === 'second.csv') await candidateGate
       return base.load(requested)
     },
-  }
-  const workspace = new DocumentWorkspace(deferredLoader)
-  const first = await workspace.open({ kind: 'project', path: 'first.docx' }, 'edit')
-  const opening = workspace.open({ kind: 'project', path: 'second.xlsx' }, 'edit')
-
-  assert.deepEqual(Object.keys(workspace.getSnapshot().tabs), [first])
-  assert.equal(workspace.getSnapshot().focusedTabId, first)
-  assert.deepEqual(workspace.getSnapshot().pendingExclusiveOpen, {
-    requestId: 2,
-    ownerTabId: first,
   })
-
+  const first = await workspace.open({ kind: 'project', path: 'first.csv' })
+  const opening = workspace.open({ kind: 'project', path: 'second.csv' })
+  const loading = workspace.getSnapshot()
+  assert.ok(loading.tabs[first])
+  assert.equal(Object.keys(loading.tabs).length, 2)
   releaseCandidate?.()
   const second = await opening
-  const state = workspace.getSnapshot()
-  assert.deepEqual(Object.keys(state.tabs), [second])
-  assert.equal(state.focusedTabId, second)
-  assert.equal(state.pendingExclusiveOpen, null)
+  assert.ok(workspace.getSnapshot().tabs[first])
+  assert.ok(workspace.getSnapshot().tabs[second])
 })
 
-test('the latest Office-family request wins when candidate loads finish out of order', async () => {
+test('independent CSV opens survive out-of-order loading completion', async () => {
   const releases = new Map<string, () => void>()
   const base = officeLoader()
-  const deferredLoader: DocumentLoader = {
+  const workspace = new DocumentWorkspace({
     ...base,
     async load(requested) {
-      if (requested.path !== 'first.docx') {
+      if (requested.path !== 'first.csv') {
         await new Promise<void>((resolve) => {
           releases.set(requested.path, resolve)
         })
       }
       return base.load(requested)
     },
-  }
-  const workspace = new DocumentWorkspace(deferredLoader)
-  await workspace.open({ kind: 'project', path: 'first.docx' }, 'edit')
-  const secondOpening = workspace.open({ kind: 'project', path: 'second.xlsx' }, 'edit')
-  const thirdOpening = workspace.open({ kind: 'project', path: 'third.pptx' }, 'edit')
-
-  assert.deepEqual(workspace.getSnapshot().pendingExclusiveOpen, {
-    requestId: 3,
-    ownerTabId: workspace.getSnapshot().focusedTabId,
   })
-
-  releases.get('third.pptx')?.()
+  const first = await workspace.open({ kind: 'project', path: 'first.csv' })
+  const secondOpening = workspace.open({ kind: 'project', path: 'second.csv' })
+  const thirdOpening = workspace.open({ kind: 'project', path: 'third.csv' })
+  releases.get('third.csv')?.()
   const third = await thirdOpening
-  releases.get('second.xlsx')?.()
-  await secondOpening
-
+  releases.get('second.csv')?.()
+  const second = await secondOpening
   const state = workspace.getSnapshot()
-  assert.deepEqual(Object.keys(state.tabs), [third])
-  assert.equal(state.sessions[state.tabs[third].sessionId].source.path, 'third.pptx')
-  assert.equal(state.pendingExclusiveOpen, null)
+  for (const tabId of [first, second, third]) assert.ok(state.tabs[tabId])
+  assert.equal(state.pendingClose, null)
 })
 
-test('canceling a dirty Office replacement keeps the original owner', async () => {
+test('canceling a dirty CSV close preserves every independently opened tab', async () => {
   const workspace = new DocumentWorkspace(officeLoader())
-  const first = await workspace.open({ kind: 'project', path: 'first.docx' }, 'edit')
-  const firstSession = workspace.getSnapshot().tabs[first].sessionId
-  workspace.setExternalDirty(firstSession, true)
-  const candidate = await workspace.open({ kind: 'project', path: 'second.docx' }, 'edit')
-
-  assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId: first, sessionId: firstSession })
+  const first = await workspace.open({ kind: 'project', path: 'first.csv' })
+  const sessionId = workspace.getSnapshot().tabs[first].sessionId
+  workspace.setExternalDirty(sessionId, true)
+  const second = await workspace.open({ kind: 'project', path: 'second.csv' })
+  workspace.requestClose(first)
+  assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId: first, sessionId })
   await workspace.resolveClose('cancel')
   const state = workspace.getSnapshot()
   assert.ok(state.tabs[first])
-  assert.equal(state.tabs[candidate], undefined)
-  assert.equal(state.focusedTabId, first)
+  assert.ok(state.tabs[second])
+  assert.equal(state.sessions[sessionId].dirty, true)
 })
 
-test('the registry replaces a clean Office owner across project workspaces', async () => {
+test('cross-project CSV opens do not evict or block a dirty editor', async () => {
   const registry = new DocumentWorkspaceRegistry(officeLoader())
-  const firstWorkspace = registry.forProject('first-project')
-  const secondWorkspace = registry.forProject('second-project')
-  await firstWorkspace.open(
-    { kind: 'project', project: 'first-project', path: 'first.docx' },
-    'edit'
-  )
-  await secondWorkspace.open(
-    { kind: 'project', project: 'second-project', path: 'second.docx' },
-    'edit'
-  )
-
-  assert.equal(Object.keys(firstWorkspace.getSnapshot().tabs).length, 0)
-  assert.equal(Object.keys(secondWorkspace.getSnapshot().tabs).length, 1)
+  const first = registry.forProject('first')
+  const second = registry.forProject('second')
+  const owner = await first.open({ kind: 'project', project: 'first', path: 'first.csv' })
+  const sessionId = first.getSnapshot().tabs[owner].sessionId
+  first.setExternalDirty(sessionId, true)
+  const candidate = await second.open({ kind: 'project', project: 'second', path: 'second.csv' })
+  assert.ok(first.getSnapshot().tabs[owner])
+  assert.ok(second.getSnapshot().tabs[candidate])
+  assert.equal(first.getSnapshot().sessions[sessionId].dirty, true)
 })
 
-test('the registry rejects a cross-project Office replacement while the owner is dirty', async () => {
-  const registry = new DocumentWorkspaceRegistry(officeLoader())
-  const firstWorkspace = registry.forProject('first-project')
-  const secondWorkspace = registry.forProject('second-project')
-  const owner = await firstWorkspace.open(
-    { kind: 'project', project: 'first-project', path: 'first.docx' },
-    'edit'
-  )
-  firstWorkspace.setExternalDirty(firstWorkspace.getSnapshot().tabs[owner].sessionId, true)
-  const candidate = await secondWorkspace.open(
-    { kind: 'project', project: 'second-project', path: 'second.docx' },
-    'edit'
-  )
-
-  assert.ok(firstWorkspace.getSnapshot().tabs[owner])
-  assert.equal(secondWorkspace.getSnapshot().tabs[candidate], undefined)
+test('read-only Office previews support ordinary relocation and split projections', async () => {
+  for (const path of ['report.docx', 'results.xlsx', 'legacy.doc']) {
+    const workspace = new DocumentWorkspace(officeLoader())
+    const original = await workspace.open({ kind: 'project', path })
+    const sessionId = workspace.getSnapshot().tabs[original].sessionId
+    assert.equal(workspace.canRelocateTab(original), true)
+    assert.equal(workspace.canSplitTab(original, 'right', false), true)
+    const duplicate = await workspace.splitTab(original, 'right', false)
+    assert.ok(duplicate)
+    assert.equal(workspace.getSnapshot().tabs[duplicate].sessionId, sessionId)
+    assert.equal(await workspace.moveTabToTab(duplicate, original, 'before'), true)
+    assert.equal(Object.keys(workspace.getSnapshot().sessions).length, 1)
+  }
 })
 
-test('Office-family tabs reject every layout relocation API', async () => {
+test('opening a CSV from another pane focuses its one existing editor and preserves dirty state', async () => {
   const workspace = new DocumentWorkspace(officeLoader())
-  const office = await workspace.open({ kind: 'project', path: 'report.docx' }, 'edit')
-  const markdown = await workspace.open({ kind: 'project', path: 'notes.md' }, 'edit')
-
-  assert.equal(workspace.canRelocateTab(office), false)
-  assert.equal(workspace.canSplitTab(office, 'right', false), false)
-  assert.deepEqual(workspace.moveTargetsForTab(office), [])
-  assert.equal(workspace.reorderTab(office, markdown, 'after'), false)
-  assert.equal(await workspace.moveTabToTab(office, markdown, 'before'), false)
+  const source = { kind: 'project' as const, path: 'results.csv' }
+  const csv = await workspace.open(source)
+  const sessionId = workspace.getSnapshot().tabs[csv].sessionId
+  workspace.setExternalDirty(sessionId, true)
+  const markdown = await workspace.open({ kind: 'project', path: 'notes.md' })
+  const split = await workspace.splitTab(markdown, 'right', false)
+  assert.ok(split)
+  const reopened = await workspace.open(source)
+  assert.equal(reopened, csv)
+  assert.equal(
+    Object.values(workspace.getSnapshot().tabs).filter((tab) => tab.sessionId === sessionId).length,
+    1
+  )
+  assert.equal(workspace.getSnapshot().sessions[sessionId].dirty, true)
+  assert.equal(workspace.canSplitTab(csv, 'right', false), false)
+  assert.equal(workspace.canRelocateTab(csv), false)
 })
 
 test('explicit conflict overwrite retries with the latest revision and closes the tab', async () => {
@@ -3009,15 +3044,15 @@ test('an Office change made while its save delegate is serializing stays dirty',
   assert.equal(session.saveState, 'dirty')
 })
 
-test('dirty Office tabs reject cross-pane moves without serializing', async () => {
+test('view-owned CSV editors retain their existing relocation boundary without implicit save', async () => {
   let commits = 0
-  const officeSource = { kind: 'project' as const, path: 'draft.docx' }
+  const officeSource = { kind: 'project' as const, path: 'draft.csv' }
   const officeLoader: DocumentLoader = {
     async load() {
       return {
-        documentId: 'project:current:draft.docx',
+        documentId: 'project:current:draft.csv',
         source: officeSource,
-        viewer: 'office',
+        viewer: 'spreadsheet',
         processor: null,
         capabilities: {
           can_preview: true,
@@ -3030,7 +3065,7 @@ test('dirty Office tabs reject cross-pane moves without serializing', async () =
           pending: [],
         },
         revision: 'sha256:office-initial',
-        mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        mediaType: 'text/csv',
         bytes: new Uint8Array([1, 2, 3]),
       }
     },
@@ -3142,7 +3177,7 @@ test('the same document view opens as a new projection in another focused leaf',
   )
 })
 
-test('splitting an editable Office tab is rejected', async () => {
+test('legacy Office edit requests split as read-only preview projections', async () => {
   const officeSource = { kind: 'project' as const, path: 'draft.docx' }
   const workspace = new DocumentWorkspace({
     async load() {
@@ -3172,13 +3207,15 @@ test('splitting an editable Office tab is rejected', async () => {
   })
   const editTabId = await workspace.open(officeSource, 'edit')
   const previewTabId = await workspace.splitTab(editTabId, 'right', false)
-  assert.equal(previewTabId, null)
+  assert.ok(previewTabId)
   const state = workspace.getSnapshot()
-  assert.equal(state.tabs[editTabId].viewKind, 'edit')
-  assert.equal(Object.keys(state.tabs).length, 1)
+  assert.equal(state.tabs[editTabId].viewKind, 'preview')
+  assert.equal(state.tabs[previewTabId].viewKind, 'preview')
+  assert.equal(state.tabs[previewTabId].sessionId, state.tabs[editTabId].sessionId)
+  assert.equal(Object.keys(state.tabs).length, 2)
 })
 
-test('reopening the same Office document preserves its sole editor tab', async () => {
+test('reopening the same Office document preserves its existing preview tab', async () => {
   const officeSource = { kind: 'project' as const, path: 'draft.docx' }
   const workspace = new DocumentWorkspace({
     async load() {
@@ -3212,7 +3249,7 @@ test('reopening the same Office document preserves its sole editor tab', async (
   const nextEditTabId = await workspace.open(officeSource, 'edit')
   const state = workspace.getSnapshot()
   assert.equal(nextEditTabId, editTabId)
-  assert.equal(state.tabs[nextEditTabId].viewKind, 'edit')
+  assert.equal(state.tabs[nextEditTabId].viewKind, 'preview')
   assert.equal(state.sessions[sessionId].dirty, true)
   assert.equal(Object.keys(state.tabs).length, 1)
 })

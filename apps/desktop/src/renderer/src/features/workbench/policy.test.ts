@@ -3,24 +3,11 @@ import test from 'node:test'
 
 import { viewerPolicy } from './policy.ts'
 
-test('Office-family viewers share one exclusive non-relocatable runtime group', () => {
-  for (const viewer of ['office', 'spreadsheet'] as const) {
-    assert.deepEqual(viewerPolicy(viewer), {
-      defaultViewKind: 'preview',
-      exclusiveGroup: 'office',
-      canMove: false,
-      canSplit: false,
-      canCompareInParallel: false
-    })
-  }
+test('read-only Office viewers open in preview and CSV uses editing', () => {
+  assert.equal(viewerPolicy('office').defaultViewKind, 'preview')
+  assert.equal(viewerPolicy('spreadsheet', 'results.csv').defaultViewKind, 'edit')
 })
 
-test('ordinary viewers retain layout operations', () => {
-  assert.deepEqual(viewerPolicy('markdown'), {
-    defaultViewKind: 'edit',
-    exclusiveGroup: null,
-    canMove: true,
-    canSplit: true,
-    canCompareInParallel: true
-  })
+test('Markdown retains editing as its default view', () => {
+  assert.equal(viewerPolicy('markdown').defaultViewKind, 'edit')
 })

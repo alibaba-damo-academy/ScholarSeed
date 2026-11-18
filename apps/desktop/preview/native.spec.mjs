@@ -1905,16 +1905,14 @@ test('native fulltext authorization scenes show pending authorized rejected and 
   await product.screenshot({ path: testInfo.outputPath('authorization-results.png') })
 })
 
-test('native product uses top-level shared renderer, real OS fonts and isolated secure windows', async ({}, testInfo) => {
+test('native product uses top-level shared renderer without Office font APIs and isolated secure windows', async ({}, testInfo) => {
   const available = await app.evaluate(({ screen }) => screen.getPrimaryDisplay().workAreaSize.width)
   const width = pdfeWindowWidth(available)
   const observed = await product.evaluate(async () => {
-    const fonts = await window.scholarseed.listOfficeFonts()
-    return { platform: window.scholarseed.platform, kind: window.pdfe.kind, dock: window.pdfe.dock, topLevel: window.top === window, legacyViewport: Boolean(document.getElementById('scholarseed-preview-viewport')), width: innerWidth, height: innerHeight, faceCount: fonts.faceCount, fontFiles: fonts.fonts.length }
+    return { platform: window.scholarseed.platform, kind: window.pdfe.kind, dock: window.pdfe.dock, topLevel: window.top === window, legacyViewport: Boolean(document.getElementById('scholarseed-preview-viewport')), width: innerWidth, height: innerHeight, officeFontsAvailable: 'listOfficeFonts' in window.scholarseed }
   })
   expect(observed).toMatchObject({ platform: process.platform, kind: 'product', dock: 'docked', topLevel: true, legacyViewport: false, width: width - pdfeDockWidth(width, PDFE_CONTROL_SIZE.width), height: WORKSPACE_WINDOW_SIZE.height })
-  expect(observed.faceCount).toBeGreaterThan(1)
-  expect(observed.fontFiles).toBeGreaterThan(1)
+  expect(observed.officeFontsAvailable).toBe(false)
   expect(await app.evaluate(() => process.env.OPENAI_API_KEY)).toBeUndefined()
   const systemVersion = await app.evaluate(() => process.getSystemVersion())
   expect(await product.evaluate(() => window.scholarseed.systemVersion)).toContain(systemVersion)

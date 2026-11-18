@@ -1,12 +1,10 @@
-/** User-initiated Office image acquisition; never accepts a filesystem path. */
-export const OFFICE_IMAGE_CHANNEL = 'scholarseed:office-image'
+/** Shared image acquisition limits and results for import and remote images. */
 export const REMOTE_IMAGE_CHANNEL = 'scholarseed:remote-image'
 export type RemoteImageResult = Extract<OfficeImageResult, { status: 'image' | 'error' }>
 export const OFFICE_IMAGE_BYTES_PER_MIB = 1024 * 1024
 export const OFFICE_IMAGE_MAX_BYTES = 32 * OFFICE_IMAGE_BYTES_PER_MIB
 export const OFFICE_IMAGE_MAX_PIXELS = 40_000_000
 export const OFFICE_IMAGE_MEDIA_TYPE = 'image/png'
-export type OfficeImageSource = 'file' | 'clipboard'
 export type OfficeImageResult =
   | { status: 'image'; bytes: Uint8Array }
   | { status: 'text'; text: string }

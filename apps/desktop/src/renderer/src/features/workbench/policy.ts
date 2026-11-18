@@ -1,46 +1,29 @@
 import type { ViewerKind } from '../../contracts/workbench.ts'
-import { usesOfficePreview } from './preview/routing.ts'
-
-export const OFFICE_EXCLUSIVE_GROUP = 'office' as const
+import { usesCsvDocument } from './preview/routing.ts'
 
 export interface ViewerPolicy {
   defaultViewKind: 'preview' | 'edit'
-  exclusiveGroup: typeof OFFICE_EXCLUSIVE_GROUP | null
-  canMove: boolean
-  canSplit: boolean
-  canCompareInParallel: boolean
+  canRelocate: boolean
+  canDuplicate: boolean
 }
 
 const DEFAULT_VIEWER_POLICY: ViewerPolicy = {
   defaultViewKind: 'preview',
-  exclusiveGroup: null,
-  canMove: true,
-  canSplit: true,
-  canCompareInParallel: true,
+  canRelocate: true,
+  canDuplicate: true,
 }
-
-const OFFICE_VIEWER_POLICY: ViewerPolicy = {
-  defaultViewKind: 'preview',
-  exclusiveGroup: OFFICE_EXCLUSIVE_GROUP,
-  canMove: false,
-  canSplit: false,
-  canCompareInParallel: false,
+// The native CSV worker is view-owned; relocating or duplicating its unsaved
+// model requires a separate session-lifetime implementation.
+const CSV_VIEWER_POLICY: ViewerPolicy = {
+  defaultViewKind: 'edit',
+  canRelocate: false,
+  canDuplicate: false,
 }
-
 const VIEWER_POLICIES: Partial<Record<ViewerKind, ViewerPolicy>> = {
   markdown: { ...DEFAULT_VIEWER_POLICY, defaultViewKind: 'edit' },
-  office: OFFICE_VIEWER_POLICY,
-  spreadsheet: OFFICE_VIEWER_POLICY,
 }
 
-export function viewerPolicy(viewer: ViewerKind): ViewerPolicy {
+export function viewerPolicy(viewer: ViewerKind, path = ''): ViewerPolicy {
+  if (usesCsvDocument(path)) return CSV_VIEWER_POLICY
   return VIEWER_POLICIES[viewer] ?? DEFAULT_VIEWER_POLICY
-}
-
-export function viewerExclusiveGroup(
-  viewer: ViewerKind,
-  path: string,
-  viewKind: string
-): ViewerPolicy['exclusiveGroup'] {
-  return usesOfficePreview(path, viewKind) ? null : viewerPolicy(viewer).exclusiveGroup
 }
