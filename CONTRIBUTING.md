@@ -11,7 +11,7 @@ You can contribute a research workflow as a plugin without changing ScholarSeed'
 ### 1. Choose a development path
 
 - **Create with ScholarSeed:** in an installed ScholarSeed application with `plugin-create` enabled, describe the research scenario, inputs, expected outputs, and required tools in a conversation. Review the generated sources and package before installing it. This path does not require cloning or building the whole application.
-- **Develop manually:** follow the [creation tutorial](doc/plugins/create.md), which builds a paper-reading-notes plugin. For source development of ScholarSeed itself, use [Environment Setup](#environment-setup) and [Install and Run](#install-and-run).
+- **Develop manually:** follow the [creation tutorial](developer-docs/plugins/create.md), which builds a paper-reading-notes plugin. For source development of ScholarSeed itself, use [Environment Setup](#environment-setup) and [Install and Run](#install-and-run).
 
 Keep plugin sources in their own directory. A plugin normally contains `SKILL.md`, `.scholarseed-plugin.json`, and the scripts/resources it needs. Conversation cards and their preview scenarios are optional; a Skill does not automatically provide a custom card.
 
@@ -21,18 +21,18 @@ Use the existing guides as the technical reference rather than copying internal 
 
 | Guide | What to use it for |
 | --- | --- |
-| [Overview](doc/plugins.md) | Plugin concepts, supported scope, and installation |
-| [Create a plugin](doc/plugins/create.md) | Source layout, a working example, and packaging |
-| [Conversation cards](doc/plugins/cards.md) | Optional custom cards, state, and interaction |
-| [Runtime](doc/plugins/runtime.md) | Execution, permissions, and lifecycle |
-| [API reference](doc/plugins/api.md) | Host contracts and supported capabilities |
-| [Testing](doc/plugins/testing.md) | Validation, previews, installation, and real-task checks |
+| [Overview](developer-docs/plugins.md) | Plugin concepts, supported scope, and installation |
+| [Create a plugin](developer-docs/plugins/create.md) | Source layout, a working example, and packaging |
+| [Conversation cards](developer-docs/plugins/cards.md) | Optional custom cards, state, and interaction |
+| [Runtime](developer-docs/plugins/runtime.md) | Execution, permissions, and lifecycle |
+| [API reference](developer-docs/plugins/api.md) | Host contracts and supported capabilities |
+| [Testing](developer-docs/plugins/testing.md) | Validation, previews, installation, and real-task checks |
 
 Declare the plugin's identity, version, compatibility, and dependencies as required by these guides. Use supported host APIs; a capability declaration alone does not implement a handler. Card iframe isolation is not a general-purpose sandbox for Skill scripts.
 
 ### 3. Validate and package
 
-For manual development, run these commands in a Python environment containing the backend that matches your target ScholarSeed version. A system Python installation alone is not sufficient. The [creation tutorial](doc/plugins/create.md) explains the descriptor and `request.json` used here.
+For manual development, run these commands in a Python environment containing the backend that matches your target ScholarSeed version. A system Python installation alone is not sufficient. The [creation tutorial](developer-docs/plugins/create.md) explains the descriptor and `request.json` used here.
 
 ```bash
 python -m service.cli.plugins describe
