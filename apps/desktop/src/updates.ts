@@ -140,6 +140,8 @@ export type UpdateInstallFallback =
   | 'install_failed'
   | 'install_verification_failed'
   | 'install_verify_unavailable'
+  | 'install_archive_limit'
+  | 'install_disk_space'
   | 'install_signature_untrusted'
   | 'install_notarization_indeterminate'
   | 'install_in_use'
@@ -177,6 +179,8 @@ export interface UpdateSnapshot {
   currentVersion: string
   /** User requested restart; the prepared release is pinned until this attempt ends. */
   restartPending?: boolean
+  /** A user-requested restart is preparing without blocking the Workbench. */
+  restartPreparing?: boolean
   checkedAt?: number
   candidate?: LatestVersionMeta
   latestCandidate?: LatestVersionMeta

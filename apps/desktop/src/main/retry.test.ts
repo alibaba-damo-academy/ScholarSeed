@@ -5,6 +5,7 @@ import test from 'node:test'
 import { retryUpdate, transientUpdateFailure, UpdateTransportError } from './retry.ts'
 import ts from 'typescript'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
+import type { PreparationCheckpoint } from './preparation.ts'
 import { nextUpdateCheckAt } from './checks.ts'
 import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
 
@@ -129,6 +130,48 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
   }
 }
 
+test('a persisted archive limit projects the failure on the first cold update check', async () => {
+  const h = await harness('darwin')
+  let checkpoint: PreparationCheckpoint | null = null
+  const persistence = {
+    load: () => checkpoint,
+    save: (value: PreparationCheckpoint) => {
+      checkpoint = value
+    },
+    failed: (error: unknown) => {
+      throw error
+    },
+  }
+  const old = new UpdatePreparation(
+    async () => 'archive-limit',
+    persistence,
+    backgroundPreparationPolicy('darwin')
+  )
+  old.offer(newer)
+  await old.settled()
+  h.context.updatePreparation = new UpdatePreparation(
+    async () => {
+      assert.fail('cold start must not prepare the rejected archive again')
+    },
+    persistence,
+    backgroundPreparationPolicy('darwin')
+  )
+  h.context.updateSnapshot = { phase: 'idle', currentVersion: '0.2.0' }
+  for (const enabled of [true, false]) {
+    h.context.loadRendererPreferences = () => ({ autoDownloadUpdates: enabled })
+    h.context.updateSnapshot = { phase: 'idle', currentVersion: '0.2.0' }
+    h.check(newer)
+    assert.equal(h.context.updateSnapshot.phase, 'failed')
+    assert.equal(h.context.updateSnapshot.errorFallback, 'install_archive_limit')
+    assert.equal(h.context.updateSnapshot.errorOrigin, 'preparation')
+    h.context.updateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
+    h.check(newer)
+    assert.equal(h.context.updateSnapshot.phase, 'ready')
+    assert.equal(h.context.updateSnapshot.candidate?.id, first.id)
+    assert.equal(h.context.updateSnapshot.latestCandidate, undefined)
+  }
+})
+
 for (const platform of ['win32', 'darwin'] as const)
   test(`${platform} install rejection survives periodic and failed manual checks`, async () => {
     const h = await harness(platform)
@@ -155,9 +198,11 @@ test('native preparation never publishes a workbench-blocking restart, while qui
   context.updateInstallAbort = controller
   runInNewContext("publishUpdateSnapshot({...updateSnapshot, phase: 'preparing'})", context)
   assert.equal(context.updateSnapshot.restartPending, false)
+  assert.equal(context.updateSnapshot.restartPreparing, true)
   assert.equal(context.updateSnapshot.phase, 'preparing')
   runInNewContext("publishUpdateSnapshot({...updateSnapshot, phase: 'installing'})", context)
   assert.equal(context.updateSnapshot.restartPending, true)
+  assert.equal(context.updateSnapshot.restartPreparing, false)
   controller.abort()
   runInNewContext("publishUpdateSnapshot({...updateSnapshot, phase: 'ready'})", context)
   assert.equal(context.updateSnapshot.restartPending, false)

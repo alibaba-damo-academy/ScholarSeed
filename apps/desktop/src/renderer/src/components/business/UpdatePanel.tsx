@@ -253,7 +253,9 @@ export function UpdatePanel({
     status =
       state?.installation?.step === 'helper'
         ? accountUpdateText('update.helper')
-        : t('update.backgroundPreparing')
+        : state?.restartPreparing
+          ? t('update.restartPreparing')
+          : t('update.backgroundPreparing')
   else if (phase === 'verifying') status = t('update.verifying')
   else if (phase === 'manual') status = t('update.manualHint')
   else if (presentation === 'dialog' && stage === 'ready' && !failed)

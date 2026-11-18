@@ -29,6 +29,48 @@ function deferred() {
   return { promise, resolve }
 }
 
+test('archive limits block the same candidate across backoff and restart but allow newer builds', async () => {
+  let checkpoint: PreparationCheckpoint | null = null
+  let now = 1_000
+  const attempts: string[] = []
+  const candidate = release('202611170001')
+  const newer = release('202611170002')
+  const persistence = {
+    load: () => checkpoint,
+    save: (value: PreparationCheckpoint) => {
+      checkpoint = value
+    },
+    failed: (error: unknown) => {
+      throw error
+    },
+  }
+  const queue = () =>
+    new UpdatePreparation(
+      async ({ candidate }) => {
+        attempts.push(candidate.id)
+        return candidate.id === newer.id ? true : 'archive-limit'
+      },
+      persistence,
+      TEST_POLICY,
+      () => now
+    )
+  const original = queue()
+  original.observe(candidate)
+  assert.equal(original.background(true), true)
+  await original.settled()
+  now += 10 * TEST_POLICY.retryMaxMs
+  assert.deepEqual(original.decision(true), { reason: 'archive-limit' })
+  assert.equal(original.background(true), false)
+  const fresh = queue()
+  fresh.observe(candidate)
+  assert.equal(fresh.background(true), false)
+  assert.equal(fresh.request(candidate), false)
+  fresh.observe(newer)
+  assert.equal(fresh.background(true), true)
+  await fresh.settled()
+  assert.deepEqual(attempts, [candidate.id, newer.id])
+})
+
 const TEST_POLICY = {
   coalesceMs: 300,
   intervalMs: 10_000,
