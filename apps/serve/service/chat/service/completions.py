@@ -1520,12 +1520,6 @@ class CompletionBridge:
                     status_code=400,
                 )
             endpoint = upstream.responses_endpoint
-            logger.info(
-                "model_bridge_native_tools session_id=%s types=%s tool_count=%d",
-                upstream.session_id,
-                native_tool_types,
-                len(chat_request.get("tools") or []),
-            )
         if upstream.request_policy is not None:
             try:
                 chat_request = upstream.request_policy(chat_request)
@@ -1551,6 +1545,22 @@ class CompletionBridge:
                 )
             except ValueError:
                 return JSONResponse({"error": {"code": MODEL_REQUEST_INVALID}}, status_code=400)
+        if native_response:
+            native_tool_types = sorted(
+                {
+                    tool["type"]
+                    for tool in chat_request.get("tools", [])
+                    if isinstance(tool, Mapping)
+                    and tool.get("type")
+                    and tool["type"] != CHAT_COMPLETIONS_TOOL_TYPE
+                }
+            )
+            logger.info(
+                "model_bridge_native_tools session_id=%s types=%s tool_count=%d",
+                upstream.session_id,
+                native_tool_types,
+                len(chat_request.get("tools") or []),
+            )
         chat_request["model"] = upstream.route_model(chat_request.get("model"))
         call.diagnostic.routed_model = str(chat_request["model"])
         call.diagnostic.wire_protocol = protocol.value

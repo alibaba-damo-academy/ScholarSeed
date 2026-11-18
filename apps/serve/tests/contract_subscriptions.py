@@ -684,6 +684,28 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotEqual(restored, original)
 
+    async def test_web_search_follows_current_turn_policy_without_forcing_or_duplicating_it(self):
+        connection = await self.connected()
+        allowed = set()
+        self.subscriptions._web_search_allowed = allowed.__contains__
+        registration = self.subscriptions.register(OWNER, connection, MODEL, "chat", {})
+        project = self.bridge._upstreams[registration.bridge_id].request_policy
+        payload = {"model": MODEL, "input": [], "tools": [{"type": "function", "name": "read"}]}
+        self.assertEqual(project(payload)["tools"], payload["tools"])
+        allowed.add("chat")
+        result = project(payload)
+        self.assertEqual(result["tools"], [*payload["tools"], {"type": "web_search"}])
+        self.assertNotIn("tool_choice", result)
+        self.assertEqual(project(result)["tools"], result["tools"])
+        allowed.clear()
+        self.assertEqual(project(payload)["tools"], payload["tools"])
+        allowed.add("generation")
+        tool_free = self.subscriptions.register(
+            OWNER, connection, MODEL, "generation", {}, allow_tools=False
+        )
+        generation_policy = self.bridge._upstreams[tool_free.bridge_id].request_policy
+        self.assertNotIn("tools", generation_policy({"model": MODEL, "input": []}))
+
     async def test_active_subscription_reregistration_preserves_calls_and_resolvers(self):
         connection = await self.connected()
         originalCatalog = AsyncMock(return_value={"models": []})
