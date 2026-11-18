@@ -13,7 +13,7 @@ const REPO = resolve(__dirname, '../../..')
 const MARKER = 'Office removal acceptance'
 const SAVED_CELL = 'Saved without Office WASM'
 
-test('CSV editors coexist without an Office owner and read-only Office previews split normally', async ({}, testInfo) => {
+test('CSV editors coexist without an Office owner and read-only Office previews split in the minimum full workbench', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   // Only this fresh test profile disables autosave to exercise unsaved CSV state.
   const preferences = join(runtime.userData, RENDERER_PREFERENCES_FILE)
@@ -36,6 +36,11 @@ test('CSV editors coexist without an Office owner and read-only Office previews 
       (window, minimum) => window.setSize(minimum.width, minimum.height),
       WORKSPACE_WINDOW_MINIMUM
     )
+    expect(await native.evaluate((window) => window.getSize())).toEqual([
+      WORKSPACE_WINDOW_MINIMUM.width,
+      WORKSPACE_WINDOW_MINIMUM.height,
+    ])
+    await expect(page.getByTestId('workspace-conversation')).toHaveAttribute('data-mode', 'floating')
     writeFileSync(join(resources, 'parallel-first.csv'), 'Name,Value\nOriginal,42\n')
     writeFileSync(join(resources, 'parallel-second.csv'), 'Name,Value\nSecond,24\n')
     copyFileSync(
