@@ -47,17 +47,22 @@ test('asset host rejects hostile Host, traversal and symlink resources', async (
   await symlink(join(outside, 'private.js'), join(root, 'assets', 'linked.js'))
   await symlink(outside, join(root, 'assets', 'external'), 'junction')
   const host = await serveAssets(root)
-  const status = (path: string, hostname?: string): Promise<number> => new Promise((resolve, reject) => {
-    const call = request(host.url + '/', {
-      path,
-      headers: hostname ? { Host: hostname } : {},
-    }, response => {
-      response.resume()
-      resolve(response.statusCode!)
+  const status = (path: string, hostname?: string): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const call = request(
+        host.url + '/',
+        {
+          path,
+          headers: hostname ? { Host: hostname } : {},
+        },
+        (response) => {
+          response.resume()
+          resolve(response.statusCode!)
+        }
+      )
+      call.on('error', reject)
+      call.end()
     })
-    call.on('error', reject)
-    call.end()
-  })
   try {
     assert.equal(await status('/', 'attacker.invalid'), 403)
     for (const path of ['/%2e%2e/index.html', '/assets/../index.html', '/%00', '/C:%5cfile'])
@@ -71,10 +76,10 @@ test('asset host rejects hostile Host, traversal and symlink resources', async (
   }
 })
 
-test('Office component is bound independently from renderer resources', async () => {
+test('removed Office resources cannot be served even if a stale directory exists', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'desktop-assets-')))
   const renderer = join(root, 'renderer')
-  const office = join(root, 'component')
+  const office = join(renderer, 'office')
   await mkdir(renderer)
   await mkdir(office)
   await writeFile(join(renderer, 'index.html'), 'index')
@@ -82,10 +87,6 @@ test('Office component is bound independently from renderer resources', async ()
   const host = await serveAssets(renderer)
   try {
     assert.equal((await fetch(host.url + '/office/runtime.js')).status, 404)
-    await host.setOfficeRoot(office)
-    const response = await fetch(host.url + '/office/runtime.js')
-    assert.equal(response.headers.get('Content-Type'), 'text/javascript')
-    assert.equal(await response.text(), 'office')
   } finally {
     await host.close()
     await rm(root, { recursive: true })

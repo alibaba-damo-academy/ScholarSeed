@@ -47,7 +47,7 @@ export async function buildPdfe(origin = PREVIEW_ORIGIN) {
   }
   fs.writeFileSync(path.join(application, 'package.json'), JSON.stringify({ name: 'scholarseed-pdfe', version: packageJson.version, main: 'main.cjs' }), { mode: 0o600, flag: 'wx' })
   fs.writeFileSync(path.join(application, 'pdfe.json'), JSON.stringify(manifest), { mode: 0o600, flag: 'wx' })
-  await build({ entryPoints: [path.join(desktop, 'src/main/pdfe.ts')], outfile: path.join(application, 'main.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron', './lease.node', './fonts.node'], sourcemap: true })
+  await build({ entryPoints: [path.join(desktop, 'src/main/pdfe.ts')], outfile: path.join(application, 'main.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron', './lease.node'], sourcemap: true })
   await build({ entryPoints: [path.join(desktop, 'src/preload/pdfe.ts')], outfile: path.join(application, 'preload.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron'], sourcemap: true })
   const nativeDirectory = path.join(output, 'native')
   const frozen = await prepareNative({ directory: nativeDirectory, signing: { mode: process.platform === 'darwin' ? 'ad-hoc-local-only' : 'unsigned-dev' }, runContract: false, artifacts })

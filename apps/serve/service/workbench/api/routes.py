@@ -50,12 +50,7 @@ from service.workbench.domain.model import (
     content_kind_for,
     viewer_for,
 )
-from service.workbench.service.images import (
-    OFFICE_IMAGE_MAX_BYTES,
-    persist_image,
-    release_office_image,
-    stage_office_image,
-)
+from service.workbench.service.images import persist_image
 from service.workbench.service.records import PdfRecordStore
 from service.workbench.service.regions import crop as crop_region
 from service.workbench.service.regions import manifest as region_manifest
@@ -88,7 +83,6 @@ ERROR_STATUS = {
 CONTENT_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/content"
 ANNOTATIONS_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/assets/{{asset_id}}/pdf/records"
 MANAGED_COPY_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/managed-copy"
-OFFICE_IMAGES_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/office-images"
 PDF_REGIONS_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/pdf/regions"
 RANGE_NOT_SATISFIABLE_STATUS = 416
 PARTIAL_CONTENT_STATUS = 206
@@ -492,37 +486,6 @@ def register_workbench_routes(app: FastAPI) -> None:
         except ContentError as exc:
             raise _fail(exc) from exc
         return {"path": relative}
-
-    @app.post(OFFICE_IMAGES_ROUTE)
-    async def workbench_office_image(
-        request: Request, path: str = Query(...), project: str | None = Query(default=None)
-    ) -> dict:
-        payload = bytearray()
-        async for chunk in request.stream():
-            if len(payload) + len(chunk) > OFFICE_IMAGE_MAX_BYTES:
-                raise _fail(ContentError("file_too_large"))
-            payload.extend(chunk)
-        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        try:
-            return stage_office_image(
-                _content(request), project or "", path, bytes(payload), media_type
-            )
-        except ContentError as exc:
-            raise _fail(exc) from exc
-
-    @app.delete(OFFICE_IMAGES_ROUTE, status_code=NO_CONTENT_STATUS)
-    async def workbench_release_office_image(
-        request: Request,
-        path: str = Query(...),
-        lease: str = Query(...),
-        project: str | None = Query(default=None),
-    ) -> Response:
-        revision = _expected_revision(request.headers.get("if-match"))
-        try:
-            release_office_image(_content(request), project or "", path, lease, revision)
-        except ContentError as exc:
-            raise _fail(exc) from exc
-        return Response(status_code=NO_CONTENT_STATUS)
 
     @app.get(ANNOTATIONS_ROUTE)
     async def workbench_pdf_annotations(  # type: ignore[unused-ignore]

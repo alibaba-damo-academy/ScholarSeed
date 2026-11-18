@@ -8,7 +8,6 @@ import {
   FEEDBACK_LIMITS,
   FEEDBACK_HTTP_RATE_LIMITED,
 } from '../../../feedback.ts'
-import { OFFICE_CLIPBOARD_ERROR } from '../../../clipboard.ts'
 import { BROWSER_ERROR } from '../../../browser.ts'
 
 import type { RendererPreferences } from '../../../preferences.ts'
@@ -22,7 +21,6 @@ type BrowserBridge = Omit<
   | 'pickImportPreview'
   | 'trashToken'
   | 'openTrash'
-  | 'acquireOfficeImage'
   | 'readRemoteImage'
 >
 type UpdateState = Awaited<ReturnType<ScholarSeedBridge['getUpdateState']>>
@@ -123,7 +121,6 @@ export function createBrowserBridge(environment: BrowserEnvironment): BrowserBri
       ok: false,
       error: FEEDBACK_CLIPBOARD_IMAGE_ERROR.unavailable,
     }),
-    readOfficeClipboard: async () => ({ ok: false, error: OFFICE_CLIPBOARD_ERROR.failed }),
     preferences: environment.preferences,
     reconcilePreferences: environment.reconcilePreferences,
     savePreferences: environment.savePreferences,
@@ -156,19 +153,6 @@ export function createBrowserBridge(environment: BrowserEnvironment): BrowserBri
     pickDir: async () => null,
     pickExecutable: async () => null,
     saveFileCopy: environment.saveFileCopy,
-    requestOfficeFontAccess: async () => false,
-    listOfficeFonts: async () => {
-      throw new Error('Office fonts require Desktop')
-    },
-    readOfficeFont: async () => {
-      throw new Error('Office fonts require Desktop')
-    },
-    readOfficeFontCache: async () => {
-      throw new Error('Office fonts require Desktop')
-    },
-    writeOfficeFontCache: async () => {
-      throw new Error('Office fonts require Desktop')
-    },
     setAuthToken: environment.setAuthToken,
     getAuthToken: environment.getAuthToken,
     getDeviceInfo: environment.getDeviceInfo,

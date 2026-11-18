@@ -134,45 +134,6 @@ test('desktop can close and relaunch against the same isolated runtime', async (
   }
 })
 
-test('Office clipboard acquisition reads real Electron image and text payloads', async ({}, testInfo) => {
-  const desktop = new DesktopSession(createRuntime(testInfo), testInfo)
-  try {
-    const page = await desktop.launch()
-    await desktop.app!.evaluate(async ({ clipboard }) => {
-      const state = globalThis as typeof globalThis & { savedClipboard?: Electron.ClipboardItem[] }
-      state.savedClipboard = await clipboard.read()
-      await clipboard.writeText('Office clipboard compatibility')
-    })
-    const text = await page.evaluate(() => window.scholarseed.acquireOfficeImage!('clipboard'))
-    expect(text).toEqual({ status: 'text', text: 'Office clipboard compatibility' })
-    const original = await desktop.app!.evaluate(async ({ clipboard, ClipboardItem, nativeImage }) => {
-      const image = nativeImage.createFromBitmap(Buffer.from([0, 0, 255, 255]), { width: 1, height: 1 })
-      const bytes = image.toPNG()
-      await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(bytes)], { type: 'image/png' }) })])
-      return Array.from(bytes)
-    })
-    const result = await page.evaluate(async () => {
-      const image = await window.scholarseed.acquireOfficeImage!('clipboard')
-      return image.status === 'image' ? { ...image, bytes: Array.from(image.bytes) } : image
-    })
-    expect(result).toEqual({ status: 'image', bytes: original })
-    desktop.assertNoPageErrors()
-  } finally {
-    if (desktop.app) await desktop.app.evaluate(async ({ clipboard, ClipboardItem }) => {
-      const state = globalThis as typeof globalThis & { savedClipboard?: Electron.ClipboardItem[] }
-      if (state.savedClipboard) {
-        const copies = await Promise.all(state.savedClipboard.map(async item => {
-          const entries = await Promise.all(item.types.map(async type => [type, await item.getType(type)] as const))
-          return new ClipboardItem(Object.fromEntries(entries))
-        }))
-        await clipboard.write(copies)
-      }
-    })
-    await desktop.attachArtifacts()
-    await desktop.close()
-  }
-})
-
 test('rich feedback clipboard exposes HTML and a readable plain fallback to Chromium', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({

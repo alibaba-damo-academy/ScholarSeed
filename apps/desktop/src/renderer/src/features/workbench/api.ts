@@ -511,7 +511,9 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
       if (!opened.ok) return responseFailure(opened)
       const projection = (await opened.json()) as AttachmentProjection
       let bytes = new Uint8Array()
-      if (projection.capabilities.can_preview) {
+      // Legacy Office sources cannot be previewed in-app but their exact bytes
+      // remain available for an explicit export.
+      if (projection.capabilities.can_preview || projection.viewer === 'office') {
         let contentUrl = `${base()}${rawUrl(source)}`
         if (
           projection.viewer === 'spreadsheet' &&
@@ -857,43 +859,6 @@ export class ImageOperationError extends Error {
     super(code)
     this.name = 'ImageOperationError'
   }
-}
-
-export interface OfficeImageLease {
-  lease: string
-  path: string
-  revision: string
-}
-
-export async function stageOfficeImage(
-  source: DocumentSource,
-  bytes: Uint8Array
-): Promise<OfficeImageLease> {
-  if (source.kind !== 'project') throw new ImageOperationError('stageUnsupported')
-  const response = await fetch(`${base()}/api/workbench/office-images?${paramsFor(source)}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'image/png' },
-    body: new Blob([new Uint8Array(bytes)]),
-  })
-  if (!response.ok) throw new ImageOperationError('stageFailed', response.status)
-  return response.json() as Promise<OfficeImageLease>
-}
-
-export async function releaseOfficeImage(
-  source: DocumentSource,
-  lease: OfficeImageLease
-): Promise<void> {
-  if (source.kind !== 'project') throw new ImageOperationError('stageUnsupported')
-  const params = paramsFor(source)
-  params.set('lease', lease.lease)
-  const response = await fetch(`${base()}/api/workbench/office-images?${params}`, {
-    method: 'DELETE',
-    credentials: 'include',
-    headers: { 'If-Match': `"${lease.revision}"` },
-  })
-  if (!response.ok && response.status !== 404)
-    throw new ImageOperationError('releaseFailed', response.status)
 }
 
 /** Persist first; the editor stores only this portable, URI-encoded relative path. */

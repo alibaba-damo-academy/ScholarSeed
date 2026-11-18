@@ -73,18 +73,7 @@ import {
   StartupState,
 } from '../startup'
 import { resolveStartupAccountBase } from './backend'
-import { OfficeFontFiles } from './fontfiles'
-import {
-  OFFICE_FONT_CATALOG_CHANNEL,
-  OFFICE_FONT_READ_CHANNEL,
-  OFFICE_FONT_CACHE_READ_CHANNEL,
-  OFFICE_FONT_CACHE_WRITE_CHANNEL,
-  OFFICE_FONT_CACHE_DIRECTORY,
-  type NativeFontFace,
-} from '../fonts'
 import { desktopPersistence, closeDesktopPersistence } from './persistence'
-import officeManifest from '../renderer/public/office/zeta-20250513/manifest.json'
-import officeFontManifest from '../renderer/public/fonts/sources.json'
 import { userInfo } from 'node:os'
 import {
   applicationBundle,
@@ -346,13 +335,10 @@ import {
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy, savePathCopy, SAVE_COPY_SENDER_ERROR } from './save'
 import { blocksRendererReload, prepareRendererLoad } from './reload'
-import { installOfficeFontPermission } from './fonts'
-import { acquireOfficeImage, acquireRemoteImage, readSelectedImage } from './images'
+import { acquireRemoteImage, readSelectedImage } from './images'
 import {
-  OFFICE_IMAGE_CHANNEL,
   REMOTE_IMAGE_CHANNEL,
   OfficeImageError,
-  type OfficeImageSource,
   type OfficeImageResult,
   type RemoteImageResult,
 } from '../images'
@@ -361,7 +347,7 @@ import {
   requiresSingleInstanceLock,
   resolveDeveloperToolsEnabled,
 } from './environment'
-import { readOfficeClipboard, writeClipboardContent } from './clipboard'
+import { writeClipboardContent } from './clipboard'
 import { canCopySelection, SELECTION_COPY_ROLE } from './contextmenu'
 import { openSystemPermission, readSystemPermissions } from './permissions'
 import type { SystemPermissionTarget } from '../permissions'
@@ -409,10 +395,6 @@ const coordinationReclamation = new CoordinationReclamation(
   coordinationRoot,
   pushLog
 )
-// The native bundle closure verifies this literal CommonJS load before packaging.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const nativeFonts = require('./fonts.node') as { enumerateFonts: () => Promise<NativeFontFace[]> }
-
 let completeUpdateLaunch: (() => void) | undefined
 let updateRepairActive = false
 let macShutdownReady = false
@@ -627,7 +609,6 @@ let backendRestartTimer: ReturnType<typeof setTimeout> | null = null
 let backendStart: Promise<boolean> | null = null
 let lastBackendPort: number | undefined
 let ipcHandlersRegistered = false
-let requestOfficeFontAccess: (() => Promise<boolean>) | null = null
 let updateInstallationInProgress = false
 let updateRestartRequested = false
 // 进行中安装的取消信号与拦截起点（bug 87253073）：遮罩的「取消安装」靠它 abort 准备链，
@@ -2034,10 +2015,6 @@ async function prepareManagedRuntime(onReused: () => void): Promise<boolean> {
     runtimePreparation = null
   }
   if (appQuitting) return false
-  if (assetServer) {
-    const officeRoot = bundledWindowsRuntime(dirname(applicationResources(app))).office
-    await assetServer.setOfficeRoot(officeRoot)
-  }
   return true
 }
 
@@ -3641,51 +3618,6 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     diagnostics.completed('ipc-reconcile')
     return result
   })
-  ipcMain.handle('scholarseed:office-font-access', (event) =>
-    isMainWindowSender(event.sender) ? (requestOfficeFontAccess?.() ?? false) : false
-  )
-  const officeFonts: OfficeFontFiles = new OfficeFontFiles(() => nativeFonts.enumerateFonts())
-  const officeFontCache = {
-    directory: join(desktopStorage().userData, OFFICE_FONT_CACHE_DIRECTORY),
-    namespace: JSON.stringify([officeManifest, officeFontManifest]),
-  }
-  ipcMain.handle(OFFICE_FONT_CACHE_READ_CHANNEL, async (event, fingerprint: unknown) => {
-    if (!isMainWindowSender(event.sender, event.senderFrame))
-      throw new Error('Invalid Office cache sender')
-    officeFonts.assertFingerprint(fingerprint)
-    const result = await desktopPersistence().request('cache', {
-      ...officeFontCache,
-      fingerprint,
-      mode: 'load',
-    })
-    officeFonts.assertFingerprint(fingerprint)
-    return result
-  })
-  ipcMain.handle(
-    OFFICE_FONT_CACHE_WRITE_CHANNEL,
-    async (event, fingerprint: unknown, cache: unknown) => {
-      if (!isMainWindowSender(event.sender, event.senderFrame))
-        throw new Error('Invalid Office cache sender')
-      officeFonts.assertFingerprint(fingerprint)
-      await desktopPersistence().request('cache', {
-        ...officeFontCache,
-        fingerprint,
-        mode: 'save',
-        value: cache,
-      })
-      officeFonts.assertFingerprint(fingerprint)
-    }
-  )
-  ipcMain.handle(OFFICE_FONT_CATALOG_CHANNEL, (event) => {
-    if (!isMainWindowSender(event.sender, event.senderFrame))
-      throw new Error('Invalid Office font sender')
-    return officeFonts.catalog()
-  })
-  ipcMain.handle(OFFICE_FONT_READ_CHANNEL, (event, id: unknown) => {
-    if (!isMainWindowSender(event.sender, event.senderFrame) || typeof id !== 'string')
-      throw new Error('Invalid Office font request')
-    return officeFonts.read(id)
-  })
   ipcMain.handle('scholarseed:system-permissions', () => readSystemPermissions())
   ipcMain.handle('scholarseed:system-permission-open', (event, id: SystemPermissionTarget) => {
     if (!isMainWindowSender(event.sender, event.senderFrame)) return false
@@ -3818,13 +3750,6 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   // 不用渲染层的 `navigator.clipboard.writeText`: 它要求 document 处于聚焦态,
   // 而桌面端用户很容易在点菜单/切窗口时失焦, 那时写入会直接被拒绝。
   // 主进程的 clipboard 不受聚焦限制, 是桌面端应该走的路径。
-  ipcMain.handle(OFFICE_IMAGE_CHANNEL, (event, source: OfficeImageSource) => {
-    const win = aliveMainWindow()
-    if (!win || !isMainWindowSender(event.sender, event.senderFrame)) {
-      return { status: 'error', code: 'invalid_sender' } satisfies OfficeImageResult
-    }
-    return acquireOfficeImage(win, source)
-  })
   ipcMain.handle(REMOTE_IMAGE_CHANNEL, (event, input: unknown) => {
     if (!event.senderFrame || !isMainWindowSender(event.sender, event.senderFrame)) {
       return { status: 'error', code: 'invalid_sender' } satisfies RemoteImageResult
@@ -3872,24 +3797,6 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     } catch {
       return { ok: false, error: FEEDBACK_CLIPBOARD_IMAGE_ERROR.failed }
     }
-  })
-
-  ipcMain.handle('scholarseed:read-office-clipboard', async (event) => {
-    if (!isMainWindowSender(event.sender)) {
-      return { ok: false, error: FAILURE_CODES.clipboardForbidden }
-    }
-    const items = await clipboard.read()
-    const readType = async (mime: string): Promise<string> => {
-      const item = items.find((candidate) => candidate.types.includes(mime))
-      if (!item) return ''
-      const value = await item.getType(mime)
-      return value instanceof Blob ? value.text() : ''
-    }
-    return readOfficeClipboard({
-      readHTML: () => readType('text/html'),
-      readRTF: () => readType('text/rtf'),
-      readText: () => clipboard.readText(),
-    })
   })
 
   // 资料导入用的多选文件/文件夹选择器。资料库使用统一入口，
@@ -4620,12 +4527,6 @@ async function createWindow(
     () => windowPresentationAllowed() && !startupScreen
   )
   if (process.platform === WINDOWS_PLATFORM) mainWindow.setMenuBarVisibility(false)
-
-  requestOfficeFontAccess = installOfficeFontPermission(
-    mainWindow.webContents.session,
-    mainWindow.webContents,
-    rendererUrl
-  ).requestAccess
 
   // open target=_blank / external links in the system browser, not a new window
   const updateHost = createPortalHost(mainWindow, {

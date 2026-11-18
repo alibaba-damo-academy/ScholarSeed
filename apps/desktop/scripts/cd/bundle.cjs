@@ -8,8 +8,6 @@ const { timed, timedAsync } = require('../../../../scripts/shared/timing.cjs')
 const assembly = require('./assembly.cjs')
 const compression = require('./compression.cjs')
 const { ARCHIVES_DIRECTORY, runtimeTreeEvidence, runtimeComponent, freezeRuntimeManifest } = require('./windows-runtime.cjs')
-const { officeContentId } = require('./payload.cjs')
-const { OFFICE_COMPONENT_DIRECTORY, stageOfficeComponent } = require('../pre/office-assets.cjs')
 const { artifact: texliveArtifact, probe: probeTexlive, PLATFORM_DIRECTORY, stageVerifiedTexlive } = require('../../runtime/texlive.cjs')
 const { artifact: powershellArtifact, probe: probePowerShell, stageVerifiedPowerShell } = require('../../runtime/powershell.cjs')
 const { SKILL_PYTHON_MODULE, skillPythonLauncherPath, writeSkillPythonLauncher } = require('../../runtime/python.cjs')
@@ -398,16 +396,14 @@ async function packWindowsComponents(context, args, environment) {
   const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'))
   if (receipt.entrypoint !== RUNTIME_ENTRIES.codex || !/^[a-f0-9]{64}$/.test(receipt.archive_sha256 || ''))
     throw new Error('invalid vendored Codex runtime receipt')
-  const desktop = path.resolve(__dirname, '../..')
-  const officeRoot = await stageOfficeComponent(desktop, path.join(context.runDirectory, OFFICE_COMPONENT_DIRECTORY))
   if (!context.electron) throw new Error('Windows component assembly requires prepared Electron')
-  const extraContentIds = {codex: sha256FileSync(receiptPath), office: await officeContentId(officeRoot), electron: context.electron.contentId}
-  for (const [kind, root] of [['codex', codexRoot], ['office', officeRoot], ['electron', context.electron.root]]) {
+  const extraContentIds = {codex: sha256FileSync(receiptPath), electron: context.electron.contentId}
+  for (const [kind, root] of [['codex', codexRoot], ['electron', context.electron.root]]) {
     fullInventory.push(compression.pack({cacheRoot: context.componentCacheRoot, repo: context.repo, kind, target: plan.target,
       contentId: extraContentIds[kind], pythonArchiveSha256: context.runtime.sha256, python, root,
       output: path.join(finalDirectory, `${kind}.zip`), entry: RUNTIME_ENTRIES[kind]}, environment))
   }
-  const allKinds = [...kinds, 'codex', 'office', 'electron']
+  const allKinds = [...kinds, 'codex', 'electron']
   for (const [index, kind] of allKinds.entries()) cache.reuse(path.join(finalDirectory, `${kind}.zip`), fullInventory[index])
   const componentInputs = {...extraContentIds, ...Object.fromEntries(manifest.components.map(component => [component.kind, component.contentId]))}
   const runtimeManifest = freezeRuntimeManifest(context, args,

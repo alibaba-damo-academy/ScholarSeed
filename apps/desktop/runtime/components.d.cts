@@ -1,5 +1,5 @@
-export const WINDOWS_BUNDLED_RUNTIME_DIRS: Readonly<{ python: 'python'; texlive: 'texlive'; powershell: 'powershell'; codex: 'codex-runtime'; office: 'office' }>
-export function bundledWindowsRuntime(appDirectory: string): { python: string; texlive: string; powershell: string; codex: string; office: string; electron: string }
+export const WINDOWS_BUNDLED_RUNTIME_DIRS: Readonly<{ python: 'python'; texlive: 'texlive'; powershell: 'powershell'; codex: 'codex-runtime' }>
+export function bundledWindowsRuntime(appDirectory: string): { python: string; texlive: string; powershell: string; codex: string; electron: string }
 export const APP_COMPONENTS_FILENAME: string
 export const COMPONENTS_DIRNAME: string
 export const COMPONENT_KINDS: readonly string[]

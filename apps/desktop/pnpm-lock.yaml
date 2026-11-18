@@ -260,9 +260,6 @@ importers:
       yauzl:
         specifier: 3.4.0
         version: 3.4.0
-      zetajs:
-        specifier: 1.2.0
-        version: 1.2.0
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -5249,9 +5246,6 @@ packages:
   yocto-queue@0.1.0:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
-
-  zetajs@1.2.0:
-    resolution: {integrity: sha512-lAY5Q7qvvGYlmsMyuAByL/re9uIbDmJhHLXvF2FNhOdnv8V1/jUTS5EwIB6dAohFtzrd9HhP//5eoAvNGc9hPA==}
 
   zip-stream@4.1.1:
     resolution: {integrity: sha512-9qv4rlDiopXg4E69k+vMHjNN63YFMe9sZMrdlvKnCjlCRWeCBswPPMPUfx+ipsAWq1LXHe70RcbaHdJJpS6hyQ==}
@@ -11385,8 +11379,6 @@ snapshots:
       pend: 1.2.0
 
   yocto-queue@0.1.0: {}
-
-  zetajs@1.2.0: {}
 
   zip-stream@4.1.1:
     dependencies:

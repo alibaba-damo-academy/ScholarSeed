@@ -102,7 +102,6 @@ function cleanupNativeBuild(directory, failure) {
 function nativeSourceFiles(platform) {
   return [
     'lease.c',
-    'fonts.c',
     ...(platform === 'win32' ? ['notification.c', 'notification.h', 'notification.test.c'] : []),
     'libraries.cjs',
     'directory.c',
@@ -331,12 +330,6 @@ async function compileNative({
       invoke(notificationContract, [], selected)
     }
     invoke(compiler, arguments_, selected)
-    const fontArguments = arguments_.filter(argument => ![
-      path.join(NATIVE, 'directory.c'), '-ladvapi32', '-lntdll',
-    ].includes(argument)).map(argument => argument === path.join(NATIVE, 'lease.c')
-      ? path.join(NATIVE, 'fonts.c') : argument === output ? path.join(directory, 'fonts.node') : argument)
-    fontArguments.push(...(platform === 'darwin' ? ['-framework', 'CoreText', '-framework', 'CoreFoundation'] : ['-ldwrite']))
-    invoke(compiler, fontArguments, selected)
     if (platform === 'win32') {
       const notificationArguments = arguments_.filter(argument => ![
         path.join(NATIVE, 'directory.c'), '-ladvapi32', '-lntdll',

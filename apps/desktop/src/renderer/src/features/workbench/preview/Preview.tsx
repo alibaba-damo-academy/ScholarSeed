@@ -87,17 +87,20 @@ export function Preview({ bytes, title, revision, tabId }: Props): React.JSX.Ele
       target.scrollTop = 0
       target.scrollLeft = 0
       void DOCUMENT_READERS[format](bytes, content).then(
-        (result) => {
+        async (result) => {
           if (!active) {
             result.dispose()
             return
           }
           mounted = result
           reader.current = result
-          void Promise.resolve(result.zoom(INITIAL_ZOOM)).catch(() => {
+          try {
+            // Slide zoom may replace rendered nodes; readiness includes that render.
+            await result.zoom(INITIAL_ZOOM)
+          } catch {
             if (active) setFailed(true)
-          })
-          setLoading(false)
+          }
+          if (active) setLoading(false)
         },
         () => {
           if (active) {

@@ -105,7 +105,6 @@ const PREPARATION_PROFILE = Object.freeze({
     node('scripts/pre/toolchain.cjs', ['ensure']),
     workspace('install'),
     workspace('skillsInstall'),
-    node('apps/desktop/scripts/pre/office-assets.cjs'),
     node('scripts/pre/toolchain.cjs', ['doctor'])
   ])
 })

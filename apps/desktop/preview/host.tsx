@@ -30,7 +30,6 @@ import { dropSession } from '../src/renderer/src/account'
 import type { AccountSettingsPage, BrowserSettingsSection } from '../src/navigation.ts'
 import { useApp } from '../src/renderer/src/store'
 import { useThemeEffect } from '../src/renderer/src/theme'
-import { OfficeFrameFactoryContext } from '../src/renderer/src/features/workbench/office/transport'
 import { PREVIEW_CATALOG, type PreviewScenario } from './catalog.ts'
 import {
   PREVIEW_DIAGNOSTIC_EVENT,
@@ -39,7 +38,6 @@ import {
 } from './bridge.ts'
 import zh from './locales/zh.json'
 import en from './locales/en.json'
-import { previewOfficeFrameFactory } from './frames.ts'
 import { previewDirectoryPicker, type PreviewDirectoryChoice } from './directory.ts'
 import { TranslationProvider } from '../src/renderer/src/features/translation/context'
 import { createPreviewTranslation } from './translation'
@@ -333,8 +331,6 @@ export function mountPreviewHost(pageId: string): Root {
   if (!page.target)
     throw new Error(`Preview page has no supported host or navigation target: ${pageId}`)
   return mountPreviewRenderer(
-    <OfficeFrameFactoryContext.Provider value={previewOfficeFrameFactory}>
-      <App />
-    </OfficeFrameFactoryContext.Provider>
+    <App />
   )
 }

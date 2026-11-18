@@ -696,7 +696,7 @@ def _invalid_workbook_bytes() -> bytes:
     return output.getvalue()
 
 
-def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> None:
+def test_spreadsheets_preview_readonly_and_fail_closed_for_complex_xlsx() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-spreadsheet-"))
     try:
         (project / "results.csv").write_text("sample,value\nalpha,7\n", encoding="utf-8")
@@ -741,6 +741,7 @@ def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> No
             and csv_open.get("capabilities", {}).get("can_version") is True
             and simple_open.get("capabilities", {}).get("can_edit") is False
             and simple_open.get("capabilities", {}).get("can_save") is False
+            and simple_open.get("capabilities", {}).get("can_preview") is True
             and simple_open.get("capabilities", {}).get("can_version") is True,
             f"csv={csv_open} single={single_open} simple={simple_open}",
         )
@@ -796,24 +797,41 @@ def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> No
         shutil.rmtree(project, ignore_errors=True)
 
 
-def test_office_documents_are_preview_only() -> None:
+def test_office_documents_preview_only_modern_formats_and_export_legacy() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-office-readonly-"))
     try:
-        names = ("document.doc", "document.docx", "workbook.xls", "slides.ppt", "slides.pptx")
-        for name in names:
+        modern = ("document.docx", "slides.pptx")
+        legacy = ("document.doc", "workbook.xls", "slides.ppt")
+        for name in (*modern, *legacy):
             (project / name).write_bytes(b"office-content")
         client = _client(project)
-        for name in names:
+        for name in modern:
             opened = client.get("/api/workbench/open", params={"path": name})
             payload = opened.json()
             capabilities = payload.get("capabilities", {})
             check(
-                f"{name} 仅提供可选择的版本化预览",
+                f"{name} 提供可选择的版本化轻量预览",
+                opened.status_code == 200
+                and payload.get("viewer") == "office"
+                and payload.get("processor") is None
+                and capabilities.get("can_preview") is True
+                and capabilities.get("can_select") is True
+                and capabilities.get("can_version") is True
+                and capabilities.get("can_edit") is False
+                and capabilities.get("can_save") is False,
+                opened.text,
+            )
+        for name in legacy:
+            opened = client.get("/api/workbench/open", params={"path": name})
+            payload = opened.json()
+            capabilities = payload.get("capabilities", {})
+            check(
+                f"{name} 明确不可应用内预览但保留版本导出",
                 opened.status_code == 200
                 and payload.get("viewer") == "office"
                 and payload.get("processor") == ("xls" if name.endswith(".xls") else None)
-                and capabilities.get("can_preview") is True
-                and capabilities.get("can_select") is True
+                and capabilities.get("can_preview") is False
+                and capabilities.get("can_select") is False
                 and capabilities.get("can_version") is True
                 and capabilities.get("can_edit") is False
                 and capabilities.get("can_save") is False,
@@ -1479,87 +1497,6 @@ def test_markdown_images_persist() -> None:
         shutil.rmtree(project, ignore_errors=True)
 
 
-def test_office_image_leases() -> None:
-    project = Path(tempfile.mkdtemp(prefix="office-images-"))
-    try:
-        for name in ("document.docx", "other.docx"):
-            (project / name).write_bytes(b"document")
-        client = _client(project)
-        route = "/api/workbench/office-images"
-        image = BytesIO()
-        Image.new("RGB", (2, 2), "blue").save(image, format="PNG")
-        payload = image.getvalue()
-        response = client.post(
-            route,
-            params={"path": "document.docx"},
-            content=payload,
-            headers={"Content-Type": "image/png"},
-        )
-        check("office image staged", response.status_code == 200, response.text)
-        if response.status_code != 200:
-            return
-        lease = response.json()
-        asset = project / lease["path"]
-        check("office image temporary namespace", lease["path"].startswith(".assert/tmp-img/"))
-        check("office image bytes stored", asset.read_bytes() == payload)
-        params = {"path": "document.docx", "lease": lease["lease"]}
-        missing_revision = client.delete(route, params=params)
-        check(
-            "office image cleanup requires revision",
-            missing_revision.status_code == 428 and asset.exists(),
-        )
-        wrong = client.delete(route, params=params, headers={"If-Match": "wrong"})
-        check("office image cleanup checks revision", wrong.status_code == 412 and asset.exists())
-        other = client.delete(
-            route, params={**params, "path": "other.docx"}, headers={"If-Match": lease["revision"]}
-        )
-        check("office image scoped to document", other.status_code == 404 and asset.exists())
-        traversal = client.delete(
-            route,
-            params={**params, "lease": "../document.docx"},
-            headers={"If-Match": lease["revision"]},
-        )
-        check("office image rejects forged path", traversal.status_code == 400 and asset.exists())
-        removed = client.delete(route, params=params, headers={"If-Match": lease["revision"]})
-        check("office image exact cleanup", removed.status_code == 204 and not asset.exists())
-        check("office source preserved", (project / "document.docx").read_bytes() == b"document")
-        for path, media, data in (
-            ("missing.docx", "image/png", payload),
-            ("document.docx", "image/svg+xml", b"<svg/>"),
-            ("document.docx", "image/png", b"not-png"),
-            ("document.docx", "image/png", b"\x89PNG\r\n\x1a\n"),
-        ):
-            rejected = client.post(
-                route, params={"path": path}, content=data, headers={"Content-Type": media}
-            )
-            check(f"office image rejects {path} {media} {len(data)}", rejected.status_code >= 400)
-        (project / "text.md").write_text("text")
-        non_docx = client.post(
-            route,
-            params={"path": "text.md"},
-            content=payload,
-            headers={"Content-Type": "image/png"},
-        )
-        check("office image rejects non-DOCX source", non_docx.status_code == 400)
-        subdir = project / "nested"
-        subdir.mkdir()
-        (subdir / "document.docx").write_bytes(b"document")
-        with tempfile.TemporaryDirectory(prefix="office-image-outside-") as outside:
-            (subdir / ".assert").symlink_to(outside, target_is_directory=True)
-            escaped = client.post(
-                route,
-                params={"path": "nested/document.docx"},
-                content=payload,
-                headers={"Content-Type": "image/png"},
-            )
-            check(
-                "office image rejects symlink escape",
-                escaped.status_code >= 400 and not list(Path(outside).iterdir()),
-            )
-    finally:
-        shutil.rmtree(project, ignore_errors=True)
-
-
 def test_html_read_permission_failure_and_retry() -> None:
     with tempfile.TemporaryDirectory() as directory:
         project = Path(directory)
@@ -1611,12 +1548,11 @@ if __name__ == "__main__":
     test_bmp_images_are_preview_only()
     test_product_mime_registry_precedes_host()
     test_manual_raw_versioning_does_not_invent_preview_capabilities()
-    test_office_image_leases()
     test_markdown_images_persist()
     test_large_editor_commit_crosses_old_64mib_ceiling()
     test_registered_preview_crosses_content_default_and_stops_at_500_mib()
-    test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx()
-    test_office_documents_are_preview_only()
+    test_spreadsheets_preview_readonly_and_fail_closed_for_complex_xlsx()
+    test_office_documents_preview_only_modern_formats_and_export_legacy()
     test_editor_formats_open_save_and_reopen()
     test_open_binds_existing_snapshot()
     test_readonly_file_capabilities_and_save()

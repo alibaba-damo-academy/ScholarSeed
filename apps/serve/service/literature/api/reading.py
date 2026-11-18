@@ -107,7 +107,7 @@ def _attachment_projection(
     """CSV editing belongs to project files; literature copies retain their readonly contract."""
     projection = formats.project(name, payload)
     if PurePath(name).suffix.lower() == CSV_SUFFIX:
-        return replace(projection, can_edit=False, can_save=False, can_edit_artifact=False)
+        return replace(projection, can_edit=False, can_save=False)
     return projection
 
 

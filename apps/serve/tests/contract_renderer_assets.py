@@ -15,25 +15,16 @@ from service.platform.web import mount_renderer
 
 
 class RendererAssetContractTests(unittest.TestCase):
-    def test_shared_office_assets_keep_same_origin_and_fail_missing_files(self) -> None:
+    def test_removed_office_directory_is_not_a_static_mount(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            renderer = root / "renderer"
-            renderer.mkdir()
+            renderer = Path(directory)
             (renderer / "index.html").write_text("renderer", encoding="utf-8")
-            office = root / "shared-office"
-            zeta = office / "zeta-20250513"
-            zeta.mkdir(parents=True)
-            (zeta / "manifest.json").write_text("{}", encoding="utf-8")
-            (zeta / "soffice.wasm").write_bytes(b"\x00asm")
             app = FastAPI()
-            mount_renderer(app, str(renderer), str(office))
+            mount_renderer(app, str(renderer))
             with TestClient(app) as client:
                 response = client.get("/office/zeta-20250513/soffice.wasm")
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.headers["content-type"], "application/wasm")
-                self.assertEqual(client.get("/office/zeta-20250513/missing.wasm").status_code, 404)
-                self.assertEqual(client.get("/").text, "renderer")
+                self.assertEqual(response.text, "renderer")
+                self.assertNotEqual(response.headers["content-type"], "application/wasm")
 
     def test_long_renderer_paths_serve_assets_without_escaping_mount(self) -> None:
         for minimum in (225, 275):

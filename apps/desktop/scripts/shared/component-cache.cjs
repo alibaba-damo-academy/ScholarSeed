@@ -20,7 +20,6 @@ const RECIPE_FILES = {
     'apps/desktop/package.json', 'apps/desktop/pnpm-lock.yaml'],
   powershell: ['apps/desktop/runtime/powershell.cjs', 'apps/desktop/scripts/cd/payload.py'],
   codex: ['apps/desktop/scripts/cd/compression.cjs', 'apps/desktop/scripts/cd/payload.py'],
-  office: ['apps/desktop/scripts/cd/compression.cjs', 'apps/desktop/scripts/cd/payload.py'],
   electron: ['apps/desktop/scripts/cd/engine.cjs', 'apps/desktop/runtime/electron/bootstrap.cjs',
     'apps/desktop/runtime/electron/package.json', 'apps/desktop/runtime/electron.json',
     'apps/desktop/scripts/cd/compression.cjs', 'apps/desktop/scripts/cd/payload.py']

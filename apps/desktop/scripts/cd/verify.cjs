@@ -341,6 +341,10 @@ function verifySignedRuntime(filename, teamId) {
 async function verifyContent(application, frozen, signed = false, execute = true) {
   await shipit.verify(application, frozen, signed)
   const current = layout(application, frozen)
+  if (fs.existsSync(path.join(current.resources, 'renderer', 'office')) ||
+      fs.existsSync(path.join(current.resources, 'backend', 'office'))) {
+    throw new Error('retired Office runtime must not be packaged')
+  }
   verifyNotices(current.resources, frozen.notices)
   const closure = verifyAsarClosure(current.resources, frozen.native)
   const { asar_bytes, ...compiledClosure } = closure
@@ -450,7 +454,6 @@ async function verifyComponentArchives(application, frozen, current, closure) {
   for (const tree of Object.values(WINDOWS_BUNDLED_RUNTIME_DIRS)) {
     if (fs.existsSync(path.join(backend, tree))) throw new Error(`duplicate bundled runtime tree: ${tree}`)
   }
-  if (fs.existsSync(path.join(current.resources, 'renderer', 'office'))) throw new Error('duplicate bundled Office runtime')
   const directory = path.join(current.resources, COMPONENTS_DIRNAME)
   const manifestFile = path.join(directory, RUNTIME_MANIFEST_FILENAME)
   if (await sha256(manifestFile) !== frozen.runtime.manifestSha256) throw new Error('runtime envelope differs from frozen build')

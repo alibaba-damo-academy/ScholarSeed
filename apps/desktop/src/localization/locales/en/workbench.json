@@ -348,46 +348,8 @@
     "preferencesFailed": "The language preference could not be saved. Check the issue and try again."
   },
   "officeDocument": {
-    "searching": "Searching…",
-    "searchFailed": "Search failed",
-    "notFound": "No matches",
-    "search": "Search Office document",
-    "searchContent": "Find in document",
-    "fullSearch": "Search document",
-    "previous": "Previous match",
-    "next": "Next match",
-    "slideNavigation": "Slide navigation",
-    "previousSlide": "Previous slide",
-    "nextSlide": "Next slide",
-    "closeSearch": "Close search",
-    "allocating": "Allocating Office editor…",
-    "spare": "Spare Office runtime",
-    "close": "Close",
-    "languagePending": "Office language will update automatically after the document is saved.",
-    "undoPolish": "AI polish",
-    "undoInsertImage": "Insert image"
-  },
-  "officeWarmup": {
-    "title": "Preparing Office",
-    "permission": "Requesting system font access…",
-    "catalog": "Indexing system fonts…",
-    "reading": "Read {{done}}/{{total}} fonts ({{size}} MiB)",
-    "runtime": "Fonts are ready. Initializing Office…",
-    "slow": "Initialization is taking longer on this device. Office is still preparing in the background.",
-    "recoveringTitle": "Recovering Office prewarm",
-    "recovering": "Runtime resource loading was interrupted. Automatic retry {{attempt}} is in progress.",
-    "retryCountdown": "Automatic retry {{attempt}} starts in {{seconds}} seconds.",
-    "errorTitle": "Office prewarm did not complete",
-    "failures": {
-      "fontPermission": "System font access was denied. Check system settings and retry.",
-      "fontCatalog": "The system font catalog could not be read. Check font access settings and retry.",
-      "fontRead": "System fonts could not be fully read. Retry the operation.",
-      "runtimeAssets": "Office runtime resources did not load completely. Retry the operation.",
-      "runtimeInitialization": "The Office engine could not initialize. Retry the operation.",
-      "runtimeExecution": "The Office runtime encountered an error. Retry the operation.",
-      "warmupTimeout": "Office background prewarm did not complete within 10 minutes. Retry the operation."
-    },
-    "retry": "Retry now"
+    "unavailableTitle": "Open this file in another application",
+    "unavailableDetail": "In-app preview is unavailable for this format. Save a copy or open it with a system application."
   },
   "markdown": {
     "saved": "Saved",
@@ -471,26 +433,6 @@
     "pasteLink": "Paste link...",
     "returnToSource": "Return to citation"
   },
-  "officeFrame": {
-    "starting": "Starting ZetaOffice…",
-    "reload": "Reload",
-    "runtimeError": "ZetaOffice runtime error",
-    "startFailed": "ZetaOffice startup failed",
-    "prepareFonts": "Preparing system fonts…",
-    "fontsUnsupported": "This environment cannot read system fonts",
-    "fontsEmpty": "No usable system fonts were found",
-    "loading": "Loading local Office runtime assets…",
-    "assetsFailed": "ZetaOffice runtime assets failed to load",
-    "initializing": "Initializing ZetaOffice runtime…",
-    "editable": "Office document is editable",
-    "readonly": "Read-only Office document preview",
-    "pasteFailed": "Paste failed. Clipboard content could not be preserved.",
-    "permission": "System font permission is required to open Office files",
-    "isolation": "Office editing requires cross-origin isolation",
-    "readingFonts": "Reading system fonts: {{done}}/{{total}}…",
-    "loadingFonts": "Loading ZetaOffice ({{fontTotal}} system fonts, {{size}} MiB)…",
-    "imageFailed": "Image transfer failed:"
-  },
   "selection": {
     "changed": "The file or selection has changed. Generate again.",
     "timeout": "The editor has not confirmed the result. Check the original text before replacing again.",
@@ -512,27 +454,7 @@
     "unknown": "Image operation failed: {{detail}}"
   },
   "officeError": {
-    "cells_protected": "This worksheet has mixed cell protection settings and cannot enable lightweight editing.",
-    "workbook_protected": "This workbook contains protected content or formulas and cannot enable lightweight editing.",
-    "formula_rejected": "Only ordinary cell value edits are supported. The formula input was undone.",
-    "structure_rejected": "Only existing object content can be edited. The slide or object structure change was undone.",
-    "finish_editing": "Finish the current edit before saving the file.",
-    "undo_failed": "The unsupported operation could not be undone. Undo this change before continuing.",
-    "protection_failed": "Content protection validation failed. The original file was not written. Reopen the file.",
-    "image_invalid": "The image dimensions are invalid.",
-    "image_failed": "Image insertion failed. Please retry.",
-    "editing_unavailable": "Safe content editing is unavailable for this file. Open it in an external app.",
-    "document_unavailable": "This Office file could not be loaded. Verify the file is intact and retry.",
-    "policy_failed": "Office command restrictions could not be applied. Open the file in an external app.",
-    "formula_policy_failed": "Formula editing permissions could not be configured. Close the document and retry.",
-    "image_pending": "Finish inserting the image before saving.",
-    "image_permission": "Importing images requires local image access in the desktop app.",
-    "reveal_changed": "The file has changed and the original match no longer exists.",
-    "reveal_missing": "The search content was not found in this document.",
-    "reveal_timeout": "Locating the document content timed out. Please retry.",
-    "paste_failed": "Paste failed. Please retry.",
-    "unknown": "Office operation failed: {{detail}}",
-    "operationFailed": "Office operation failed."
+    "reveal_missing": "The search content was not found in this document."
   },
   "imageAcquisition": {
     "pixelLimit": "The image exceeds the limit of {{maxPixels}} pixels.",

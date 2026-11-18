@@ -2647,7 +2647,7 @@ export class DocumentWorkspace {
 
   async reviewDraftBytes(sessionId: string): Promise<Uint8Array | null> {
     let session = this.state.sessions[sessionId]
-    if (!session || !session.dirty) return null
+    if (!session || !session.dirty || !session.capabilities.can_save) return null
     const delegate = Array.from(this.saveDelegates.get(sessionId)?.values() ?? []).at(-1)
     delegate?.prepare?.()
     if (delegate?.beforeSave) {

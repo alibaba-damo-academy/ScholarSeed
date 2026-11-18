@@ -138,7 +138,7 @@ test('default CI and CD chains reuse their exact specialized recipe', () => {
   assert.equal(preparation[0].file, 'scripts/pre/toolchain.cjs')
   assert.equal(preparation.at(-1).args[0], 'doctor')
   assert.ok(preparation.some(step => step.method === 'install'))
-  assert.ok(preparation.some(step => step.file === 'apps/desktop/scripts/pre/office-assets.cjs'))
+  assert.ok(!preparation.some(step => step.file?.includes('office-assets')))
   assert.equal(resolveCommand(['pre']).profile, PREPARATION_PROFILE.id)
   assert.equal(PREPARATION_PROFILE.id, 'desktop-development')
 })
@@ -149,7 +149,6 @@ test('two-command startup prepares dependencies and bundled skills without priva
     { kind: 'node', file: 'scripts/pre/toolchain.cjs', args: ['ensure'] },
     { kind: 'workspace', method: 'install', args: [] },
     { kind: 'workspace', method: 'skillsInstall', args: [] },
-    { kind: 'node', file: 'apps/desktop/scripts/pre/office-assets.cjs', args: [] },
     { kind: 'node', file: 'scripts/pre/toolchain.cjs', args: ['doctor'] }
   ])
   assert.deepEqual(resolveCommand(['dev']).steps, [
