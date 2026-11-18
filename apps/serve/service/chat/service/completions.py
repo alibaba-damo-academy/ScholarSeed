@@ -1720,25 +1720,11 @@ class CompletionBridge:
                     call.diagnostic.max_attempts = max_attempts
                     if attempt >= max_attempts or not retryable:
                         raise
-                    request_reset = (
-                        diagnostics["category"] == TransportFailureCategory.CONNECTION_RESET.value
-                    )
-                    if request_reset:
-                        call.diagnostic.request_retries += 1
-                    else:
-                        call.diagnostic.connect_retries += 1
-                    if diagnostics["category"] == TransportFailureCategory.TLS.value:
-                        call.diagnostic.tls_retries += 1
                     backoff_delay = _retry_backoff_delay(attempt)
                     logger.warning(
-                        "%s session_id=%s "
+                        "model_bridge_upstream_connect_retry session_id=%s "
                         "failure_type=%s category=%s attempt=%d max_attempts=%d "
                         "delay_seconds=%.3f",
-                        (
-                            "model_bridge_upstream_request_retry"
-                            if request_reset
-                            else "model_bridge_upstream_connect_retry"
-                        ),
                         upstream.session_id,
                         diagnostics["failure_type"],
                         diagnostics["category"],
@@ -1746,10 +1732,13 @@ class CompletionBridge:
                         max_attempts,
                         backoff_delay,
                     )
-                    attempt += 1
                     await asyncio.sleep(backoff_delay)
                     if call.revoked or not upstream.active:
                         raise asyncio.CancelledError() from error
+                    call.diagnostic.connect_retries += 1
+                    if diagnostics["category"] == TransportFailureCategory.TLS.value:
+                        call.diagnostic.tls_retries += 1
+                    attempt += 1
                     continue
                 if call.revoked:
                     await response.aclose()
