@@ -43,6 +43,7 @@ from service.bootstrap import (  # noqa: E402
     PRODUCT_ALL,
     PRODUCT_CHOICES,
     create_app,
+    maintain_session_storage_offline,
 )
 
 startup_checkpoint("serve.bootstrap_imported")
@@ -228,6 +229,30 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     if argv and argv[0] == "client":
         return _client_main(argv[1:])
+    if argv and argv[0] == "maintain-session-storage":
+        parser = argparse.ArgumentParser(
+            prog="scholarseed-serve maintain-session-storage",
+            description="Maintain local session storage after all users of the data directory exit.",
+        )
+        parser.parse_args(argv[1:])
+        logging.basicConfig(level=logging.INFO)
+        try:
+            pending = maintain_session_storage_offline()
+        except Exception as error:
+            print(f"Session storage maintenance failed: {error}", file=sys.stderr)
+            return 1
+        if pending is None:
+            print(
+                "Session storage probe was busy or exceeded its budget. Retry later.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "Session storage maintenance pending; run again."
+            if pending
+            else "Session storage maintenance complete."
+        )
+        return 0
 
     arguments_started = time.monotonic()
     ap = argparse.ArgumentParser(prog="scholarseed-serve")
