@@ -10,7 +10,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generation.citation_formats import CitationResolver, parse_bib_file
-from figure_dependencies import wait_contexts
 from task_contract import configure
 from taxonomy import render_trees
 from generation_errors import GenerationError
@@ -171,25 +170,6 @@ class HandoffTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "children"):
             transition(snapshot, "parent", "completed")
 
-    def test_wait_is_bounded_and_technical_errors_propagate(self):
-        waiting = {"figure_id": "F1", "status": "WAITING", "missing_sections": ["2"]}
-        ready = {"figure_id": "F1", "status": "READY", "sections": [{"body_md": "Actual text"}]}
-        with (
-            patch("figure_dependencies.context", side_effect=[waiting, ready]),
-            patch("figure_dependencies.time.monotonic", side_effect=[0, 0]),
-            patch("figure_dependencies.time.sleep") as sleep,
-        ):
-            result = wait_contexts(Path("."), ["F1"], 1)
-        self.assertEqual(result["status"], "READY")
-        sleep.assert_called_once()
-        with (
-            patch("figure_dependencies.context", return_value=waiting),
-            patch("figure_dependencies.time.monotonic", side_effect=[0, 1]),
-        ):
-            self.assertEqual(wait_contexts(Path("."), ["F1"], 1)["status"], "WAITING")
-        with patch("figure_dependencies.context", side_effect=ValueError("invalid binding")):
-            with self.assertRaisesRegex(ValueError, "invalid binding"):
-                wait_contexts(Path("."), ["F1"], 1)
 
     @unittest.skipUnless(shutil.which("xelatex"), "XeLaTeX unavailable")
     def test_native_tree_has_real_pixels_and_resolved_citations(self):

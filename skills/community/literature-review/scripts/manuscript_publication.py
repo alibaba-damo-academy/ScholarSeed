@@ -22,7 +22,7 @@ import slr_paths
 slr_paths.bootstrap(__file__)
 from evidence import read,save
 from compilation import bibliography as bibliography_diagnosis
-from compilation import layout as layout_diagnosis, LAYOUT_ERROR
+from compilation import layout as layout_diagnosis, LAYOUT_ERROR, CompilationRun, LATEX_PASS, BIBTEX_PASS, PRECOMPILE_PHASE, PUBLICATION_PHASE
 from generation_diagnostics import GenerationError, diagnostic
 from usage import accumulate
 from publication_files import dependencies,source_bundle
@@ -160,17 +160,18 @@ def precompile(ws, source):
     command = [engine, '-interaction=nonstopmode', '-halt-on-error', '-file-line-error',
                '-output-directory='+str(destination), source.name]
     started = time.monotonic()
+    compilation = CompilationRun(ws, source, PRECOMPILE_PHASE)
+    log = destination/(source.stem+'.log')
     try:
-        result = subprocess.run(command, cwd=source.parent, env=environment,
-                                capture_output=True, text=True, errors='replace',
-                                timeout=PRECOMPILE_TIMEOUT_SECONDS)
+        result = compilation.run(LATEX_PASS, command, lambda: subprocess.run(
+            command, cwd=source.parent, env=environment, capture_output=True,
+            text=True, errors='replace', timeout=PRECOMPILE_TIMEOUT_SECONDS), log)
     except subprocess.TimeoutExpired:
         return {'status': 'TIMEOUT', 'engine': engine,
-                'duration_sec': round(time.monotonic()-started, 3)}
+                'duration_sec': round(time.monotonic()-started, 3), 'origin': compilation.origin()}
     except OSError as error:
-        return {'status': 'UNAVAILABLE', 'engine': engine, 'reason': str(error)}
+        return {'status': 'UNAVAILABLE', 'engine': engine, 'reason': str(error), 'origin': compilation.origin()}
     output = result.stdout + result.stderr
-    log = destination/(source.stem+'.log')
     save(destination/'command.log', output)
     lines = output.splitlines()
     contexts = ['\n'.join(lines[index:index+COMPILE_CONTEXT_LINES])
@@ -183,7 +184,9 @@ def precompile(ws, source):
         errors = [issue['context'] for issue in layout['issues']] + [layout['next_action']]
     return {'status': 'SUCCESS' if clean else 'FAILED',
             'engine': engine, 'duration_sec': round(time.monotonic()-started, 3),
-            'returncode': result.returncode, 'log': str(log),
+            'returncode': result.returncode,
+            'log': compilation.origin()['passes'][-1]['engine_log_path'] or str(log),
+            'origin': compilation.origin(),
             'layout': layout, 'errors': [] if clean else errors}
 
 def publication_source(ws):
@@ -471,21 +474,29 @@ def _publish(ws,env):
         save(tracker,TRACKING_TEX)
         command=[engine,'-interaction=nonstopmode','-halt-on-error','-jobname='+source.stem,
                  r'\input{_internal/publication_page_tracking.tex}\input{'+source.name+'}']
-        logs=[];first=_run(command,gen,env);logs.append(first.stdout+first.stderr)
+        compilation = CompilationRun(ws, source, PUBLICATION_PHASE)
+        engine_log = source.with_suffix('.log')
+        first=compilation.run(LATEX_PASS, command, lambda: _run(command,gen,env), engine_log)
+        logs=[first.stdout+first.stderr]
         bibliography_required = r'\bibliography{' in text
         bib=None
         aux_exists=(gen/(source.stem+'.aux')).exists()
         bib_available=bool(shutil.which('bibtex'))
         if aux_exists and bibliography_required and bib_available:
-            bib=_run(['bibtex',source.stem],gen,env);logs.append(bib.stdout+bib.stderr)
+            bib_command = ['bibtex',source.stem]
+            bib=compilation.run(BIBTEX_PASS, bib_command, lambda: _run(bib_command,gen,env), source.with_suffix('.blg'))
+            logs.append(bib.stdout+bib.stderr)
         bib_diagnosis=bibliography_diagnosis(bibliography_required,bib_available,aux_exists,bib)
         bibliography_ok=bib_diagnosis['status'] in ('SUCCESS','NOT_REQUIRED')
         final=first
         for _ in range(2):
-            final=_run(command,gen,env);logs.append(final.stdout+final.stderr)
+            final=compilation.run(LATEX_PASS, command, lambda: _run(command,gen,env), engine_log)
+            logs.append(final.stdout+final.stderr)
         save(ws/'_logs/publication_compile.log','\n'.join(logs))
         pdf=source.with_suffix('.pdf')
-        log=source.with_suffix('.log').read_text(errors='replace') if source.with_suffix('.log').exists() else ''
+        origin = compilation.origin()
+        final_log = origin['passes'][-1]['engine_log_path']
+        log=Path(final_log).read_text(errors='replace') if final_log else ''
         log_lines=log.splitlines()
         fatal=[line for line in log_lines if line.startswith('!')]
         contexts=['\n'.join(log_lines[i:i+7]) for i,line in enumerate(log_lines) if line.startswith('!')]
@@ -497,7 +508,8 @@ def _publish(ws,env):
         diagnosis={'verdict':'bibliography_conflict' if duplicate_definitions else
                    'layout_failed' if compiled and layout['status']=='FAILED' else
                    'clean' if clean else 'compile_failed','final_pass_rc':final.returncode,
-                   'fatal_errors':fatal,'log_path':str(source.with_suffix('.log')),
+                   'fatal_errors':fatal,'log_path':final_log,
+                   'origin':origin, 'diagnostic_pass_index':origin['passes'][-1]['pass_index'],
                    'error_contexts':contexts,
                    'bibliography_ok': bibliography_ok, 'bibliography':bib_diagnosis, 'layout':layout,
                    'log_warnings':[line for line in log.splitlines() if 'Warning' in line or 'Overfull' in line]}

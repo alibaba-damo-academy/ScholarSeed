@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm, truncate } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8, type Zippable } from 'fflate'
-import { verifyApplicationArchive } from './archive.ts'
+import {
+  preflightApplicationArchive,
+  UpdateArchiveLimitError,
+  verifyApplicationArchive,
+} from './archive.ts'
 
 const APP = 'ScholarSeed.app/'
 const CONTENT = `${APP}Contents/Info.plist`
@@ -19,6 +23,16 @@ const LOCAL_HEADER_BYTES = 30
 const RESERVED_DEFLATE_BLOCK = 0x07
 const EMPTY = new Uint8Array()
 const LINK = { os: 3, attrs: (0xa1ff << 16) >>> 0 }
+
+test('a mounted source beyond the ZIP expansion limit fails before archiving', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'archive-budget-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const large = join(directory, 'large')
+  await writeFile(large, 'small')
+  await preflightApplicationArchive(directory)
+  await truncate(large, 4 * 1024 ** 3 + 1)
+  await assert.rejects(preflightApplicationArchive(directory), UpdateArchiveLimitError)
+})
 async function fixture(
   t: { after: (f: () => Promise<void>) => void },
   entries: Zippable,

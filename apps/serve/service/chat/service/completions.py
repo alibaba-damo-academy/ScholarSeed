@@ -106,6 +106,10 @@ COMPLETION_STATUS_INCOMPLETE = "incomplete"
 COMPLETION_STATUS_COMPLETED = "completed"
 COMPLETION_STATUS_FAILED = "failed"
 CHAT_COMPLETIONS_TOOL_TYPE = "function"
+TOOL_OUTPUT_ITEM_FIELDS = (
+    ("input", "type", "function_call_output", "call_id"),
+    ("messages", "role", "tool", "tool_call_id"),
+)
 NAMED_TOOL_TYPES = frozenset((CHAT_COMPLETIONS_TOOL_TYPE, "custom", NAMESPACE_TOOL_TYPE))
 REASONING_ITEM_TYPE = "reasoning"
 REASONING_TEXT_TYPE = "reasoning_text"
@@ -146,6 +150,13 @@ HTTP_CORE_TRACE_EXTENSION = "trace"
 class TransportStage(str, Enum):
     REQUEST = "request"
     RESPONSE_BODY = "response_body"
+
+
+class CancellationSource(str, Enum):
+    TURN_QUIESCE = "turn_quiesce"
+    BRIDGE_REVOKE = "bridge_revoke"
+    REQUEST_TASK = "request_task"
+    STREAM_CONSUMER = "stream_consumer"
 
 
 class ToolInputFailure(str, Enum):
@@ -247,7 +258,9 @@ class CompletionCall:
     closing: asyncio.Task | None = None
     before_output: Callable[[str, str, bytes], Awaitable[None]] | None = None
 
-    def revoke(self) -> None:
+    def revoke(self, source: CancellationSource = CancellationSource.BRIDGE_REVOKE) -> None:
+        if not self.revoked:
+            self.diagnostic.cancellation_source = source.value
         self.revoked = True
         self.loop.call_soon_threadsafe(self._cancel)
 
@@ -342,6 +355,8 @@ class CompletionStream(StreamingResponse):
                 and self.call.diagnostic.upstream_end == StreamEnd.CANCELLED.value
             ):
                 reason = StreamEnd.CONSUMER_CLOSED.value
+            if reason in (StreamEnd.CANCELLED.value, StreamEnd.CONSUMER_CLOSED.value):
+                self.call.diagnostic.cancellation_source = CancellationSource.STREAM_CONSUMER.value
             try:
                 await self.call.close()
             finally:
@@ -653,6 +668,7 @@ class CompletionBridge:
         on_model: Callable[[str, str, str], None] | None = None,
         on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
         on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
+        on_tool_outputs: Callable[[str, str, set[str]], None] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         content_source: Callable[[str, str], ContentSource | None] | None = None,
         source_endpoints: Sequence[str] = (),
@@ -663,6 +679,7 @@ class CompletionBridge:
         self._on_model = on_model
         self._on_diagnostic = on_diagnostic
         self._on_sources = on_sources
+        self._on_tool_outputs = on_tool_outputs
         self._turn_ids = turn_ids
         self._content_source = content_source
         self._source_endpoints = tuple(source_endpoints)
@@ -714,7 +731,7 @@ class CompletionBridge:
         )
         tasks = tuple(call.task for call in calls if call.task is not None)
         for call in calls:
-            call.revoke()
+            call.revoke(CancellationSource.TURN_QUIESCE)
         await asyncio.gather(*(call.close() for call in calls))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -1375,7 +1392,7 @@ class CompletionBridge:
         try:
             if call.before_output is not None:
                 await call.before_output(upstream.session_id, diagnostic.turn_id, b"")
-            result = await self._forward(upstream, payload, call, request_headers)
+            result = await self._forward(bridge_id, upstream, payload, call, request_headers)
             if not call.streaming and result.status_code < 400 and call.before_output is not None:
                 await call.before_output(
                     upstream.session_id, diagnostic.turn_id, bytes(result.body)
@@ -1385,6 +1402,8 @@ class CompletionBridge:
             return result
         except asyncio.CancelledError:
             reason = StreamEnd.REVOKED.value if call.revoked else StreamEnd.CANCELLED.value
+            if not call.revoked:
+                diagnostic.cancellation_source = CancellationSource.REQUEST_TASK.value
             raise
         except Exception as error:
             reason = StreamEnd.BRIDGE_ERROR.value
@@ -1400,6 +1419,7 @@ class CompletionBridge:
 
     async def _forward(
         self,
+        bridge_id: str,
         upstream: CompletionUpstream,
         payload: Mapping[str, Any],
         call: CompletionCall,
@@ -1675,13 +1695,26 @@ class CompletionBridge:
                 captured_turn_id,
                 len(source.text),
             )
-        if self._before_request is not None:
-            await self._before_request(
-                upstream.session_id,
-                captured_turn_id,
-                chat_request,
-                self._request_authority(upstream, endpoint, protocol),
-            )
+        if self._before_request is not None or self._on_tool_outputs is not None:
+            authority = self._request_authority(upstream, endpoint, protocol)
+            if self._before_request is not None:
+                await self._before_request(
+                    upstream.session_id, captured_turn_id, chat_request, authority
+                )
+            if (
+                self._on_tool_outputs is not None
+                and upstream.allow_tools
+                and upstream.session_id
+                and captured_turn_id
+                and not call.revoked
+                and authority.current()
+                and (
+                    self._held_registration is None
+                    or self._held_registration(upstream.session_id) == bridge_id
+                )
+                and (call_ids := _tool_output_ids(chat_request))
+            ):
+                self._on_tool_outputs(upstream.session_id, captured_turn_id, call_ids)
         client, call.diagnostic.client_pool_hit = self._client(upstream.trust_env)
         call.diagnostic.max_attempts = UPSTREAM_RETRY_MAX_ATTEMPTS
         send_started_at = time.perf_counter()
@@ -1711,6 +1744,8 @@ class CompletionBridge:
                 except httpx.TransportError as error:
                     diagnostics = transport_diagnostics(error)
                     retryable = retryable_pre_response_failure(error, diagnostics["category"])
+                    if retryable and not call.diagnostic.first_connect_failure_category:
+                        call.diagnostic.first_connect_failure_category = diagnostics["category"]
                     max_attempts = (
                         UPSTREAM_TLS_RETRY_MAX_ATTEMPTS
                         if retryable
@@ -1720,25 +1755,11 @@ class CompletionBridge:
                     call.diagnostic.max_attempts = max_attempts
                     if attempt >= max_attempts or not retryable:
                         raise
-                    request_reset = (
-                        diagnostics["category"] == TransportFailureCategory.CONNECTION_RESET.value
-                    )
-                    if request_reset:
-                        call.diagnostic.request_retries += 1
-                    else:
-                        call.diagnostic.connect_retries += 1
-                    if diagnostics["category"] == TransportFailureCategory.TLS.value:
-                        call.diagnostic.tls_retries += 1
                     backoff_delay = _retry_backoff_delay(attempt)
                     logger.warning(
-                        "%s session_id=%s "
+                        "model_bridge_upstream_connect_retry session_id=%s "
                         "failure_type=%s category=%s attempt=%d max_attempts=%d "
                         "delay_seconds=%.3f",
-                        (
-                            "model_bridge_upstream_request_retry"
-                            if request_reset
-                            else "model_bridge_upstream_connect_retry"
-                        ),
                         upstream.session_id,
                         diagnostics["failure_type"],
                         diagnostics["category"],
@@ -1746,10 +1767,15 @@ class CompletionBridge:
                         max_attempts,
                         backoff_delay,
                     )
-                    attempt += 1
+                    call.diagnostic.waiting_for_connect_retry = True
                     await asyncio.sleep(backoff_delay)
                     if call.revoked or not upstream.active:
                         raise asyncio.CancelledError() from error
+                    call.diagnostic.waiting_for_connect_retry = False
+                    call.diagnostic.connect_retries += 1
+                    if diagnostics["category"] == TransportFailureCategory.TLS.value:
+                        call.diagnostic.tls_retries += 1
+                    attempt += 1
                     continue
                 if call.revoked:
                     await response.aclose()
@@ -2711,6 +2737,23 @@ def _response_message_to_chat(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     if all(part["type"] == "text" for part in parts):
         return {"role": role, "content": "".join(str(part["text"]) for part in parts)}
     return {"role": role, "content": parts}
+
+
+def _tool_output_ids(payload: Mapping[str, Any]) -> set[str]:
+    call_ids = set()
+    for container, kind_field, kind, id_field in TOOL_OUTPUT_ITEM_FIELDS:
+        items = payload.get(container)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if (
+                isinstance(item, Mapping)
+                and item.get(kind_field) == kind
+                and isinstance(call_id := item.get(id_field), str)
+                and call_id
+            ):
+                call_ids.add(call_id)
+    return call_ids
 
 
 def _function_call_output_to_chat(call_id: str, output: Any) -> list[dict[str, Any]]:

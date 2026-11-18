@@ -52,6 +52,7 @@ from service.platform.vocabulary import (
 
 SERVICE_BRIDGE_TOOL_NAME = "scholarseed_bridge"
 PLAN_MODEL_OPERATIONS = ("get", "create", "update", "revise", "release", *PLAN_ACTION_STATUSES)
+BRIDGE_INVALID_PARAMETERS = "bridge_invalid_parameters"
 MISSING_PARAMETER_ERROR = "missing"
 BRIDGE_VALIDATION_ACTION = (
     "Correct validation_errors using the current operation contract. "
@@ -245,6 +246,27 @@ SERVICE_TOOL_CAPABILITIES = {
 }
 
 
+def artifact_tool_missing_parameters(tool_name: object, result: Mapping[str, Any]) -> bool:
+    """Recognize missing fields in the typed tool's local preflight result."""
+    if (
+        tool_name != ARTIFACT_BATCH_TOOL_NAME
+        or result.get("ok") is not False
+        or result.get("error") != BRIDGE_INVALID_PARAMETERS
+        or result.get("tool_schema") is not SERVICE_ARTIFACT_TOOL.input_schema
+    ):
+        return False
+    errors = result.get("validation_errors")
+    if not isinstance(errors, list):
+        return False
+    for error in errors:
+        if not isinstance(error, Mapping) or error.get("type") != MISSING_PARAMETER_ERROR:
+            continue
+        match error.get("path"):
+            case ["files"] | ["files", int(), "path"]:
+                return True
+    return False
+
+
 async def execute_service_tool(
     arguments: object,
     *,
@@ -351,7 +373,7 @@ async def execute_service_tool(
         errors = error.errors(include_url=False, include_context=False, include_input=False)
         result = {
             "ok": False,
-            "error": "bridge_invalid_parameters",
+            "error": BRIDGE_INVALID_PARAMETERS,
             "valid_parameters": list(request_type.model_fields),
             "invalid_parameters": list(
                 dict.fromkeys(
@@ -385,9 +407,15 @@ async def execute_service_tool(
             result.pop("contract_version")
             if model_artifacts:
                 result["tool_schema"] = SERVICE_ARTIFACT_TOOL.input_schema
-                result["next_action"] = (
-                    "Correct validation_errors using the publish_artifacts schema; no files were published."
-                )
+                if artifact_tool_missing_parameters(tool_name, result):
+                    result["next_action"] = (
+                        "No files were published. Correct the missing fields once using tool_schema "
+                        "and verified session-relative paths. Do not guess paths or repeat the same arguments."
+                    )
+                else:
+                    result["next_action"] = (
+                        "Correct validation_errors using the publish_artifacts schema; no files were published."
+                    )
             elif legacy_plan:
                 result["request_schema"] = request_type.model_json_schema()
                 result["next_action"] = (

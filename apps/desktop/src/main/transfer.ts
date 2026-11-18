@@ -7,6 +7,7 @@ import { basename, dirname, join, relative, isAbsolute } from 'node:path'
 import { createInterface } from 'node:readline'
 import { ComponentDiagnostics, ComponentTimer, COMPONENT_TIMING } from './timing.ts'
 import { commitWithActivation, type HandoffAuthorization } from './update-authorization.ts'
+import updateTimeouts from '../../updater/handoff/timeouts.json' with { type: 'json' }
 
 const POLICY = Object.freeze({
   schema: 1,
@@ -14,9 +15,9 @@ const POLICY = Object.freeze({
   helper: 'handoff.exe',
   externalDirectory: 'ScholarSeedUpdates',
   requestPrefix: 'request-',
-  timeout: 30 * 60_000,
+  timeout: updateTimeouts.operationMs,
   acknowledgementTimeout: 30_000,
-  closeTimeout: 5_000,
+  closeTimeout: updateTimeouts.workerStopMs + updateTimeouts.coordinatorExitGraceMs,
   copyRetryMs: 100,
   eventBytes: 16 * 1024,
   sidSubauthorityMaximum: 0xffffffff,
@@ -48,8 +49,17 @@ export function componentProgress(value: unknown): ComponentProgress {
 }
 type Operation = 'group' | 'prepare' | 'apply' | 'inspect'
 interface Event {
-  event: 'progress' | 'ready' | 'authorized' | 'started' | 'complete' | 'cancelled' | 'error'
+  event:
+    | 'progress'
+    | 'ready'
+    | 'authorized'
+    | 'started'
+    | 'complete'
+    | 'cancelled'
+    | 'error'
+    | 'cleanup-complete'
   message?: string
+  code?: string
   progress?: ComponentProgress
   packageSha256?: string
   packageBytes?: number
@@ -107,6 +117,8 @@ export class WindowsHandoffCancelled extends Error {
 export class TransferEvents {
   private queue: Event[] = []
   private failure: Error | null = null
+  cleanupUnconfirmed = false
+  cleanupConfirmed = false
   private pending: { resolve: (event: Event) => void; reject: (error: Error) => void } | null = null
 
   constructor(private readonly onProgress?: (progress: ComponentProgress) => void) {}
@@ -118,13 +130,32 @@ export class TransferEvents {
       const event = JSON.parse(line) as Event
       if (
         !event ||
-        !['progress', 'ready', 'authorized', 'started', 'complete', 'cancelled', 'error'].includes(
-          event.event
-        )
+        ![
+          'progress',
+          'ready',
+          'authorized',
+          'started',
+          'complete',
+          'cancelled',
+          'error',
+          'cleanup-complete',
+        ].includes(event.event)
       )
         throw new Error('Invalid Windows handoff event')
       if (event.event === 'cancelled') throw new WindowsHandoffCancelled()
-      if (event.event === 'error') throw new Error(`Windows handoff: ${event.message || 'failed'}`)
+      if (event.event === 'cleanup-complete') {
+        this.cleanupConfirmed = true
+        return
+      }
+      if (event.event === 'error') {
+        if (event.code === 'ERR_UPDATE_HANDOFF_CLEANUP_UNCONFIRMED') {
+          this.cleanupUnconfirmed = true
+          throw new WindowsHandoffExitUnconfirmed({ cause: new Error(event.message) })
+        }
+        throw Object.assign(new Error(`Windows handoff: ${event.message || 'failed'}`), {
+          code: typeof event.code === 'string' ? event.code : undefined,
+        })
+      }
       if (this.failure) return
       if (event.event === 'progress') {
         const progress = componentProgress(event.progress)
@@ -245,6 +276,10 @@ export async function prepareWindowsTransfer(options: TransferOptions): Promise<
   let principalSid: string | undefined
   let runtimeReady: boolean | undefined
   let closed = false
+  let startSent = false
+  const cleanupUnconfirmed = () =>
+    events.cleanupUnconfirmed ||
+    (options.operation === 'apply' && startSent && !committed && !events.cleanupConfirmed)
   const lines = createInterface({ input: child.stdout })
   lines.on('line', (line) => events.push(line))
   child.on('error', (error) => events.fail(error))
@@ -260,9 +295,10 @@ export async function prepareWindowsTransfer(options: TransferOptions): Promise<
       events.fail(new Error(`Windows handoff exited (${code ?? signal})`))
       lines.close()
       resolve()
-      void rm(request, { force: true }).catch((error) =>
-        options.log?.(`[runtime] handoff cleanup failed: ${String(error)}\n`)
-      )
+      if (!cleanupUnconfirmed())
+        void rm(request, { force: true }).catch((error) =>
+          options.log?.(`[runtime] handoff cleanup failed: ${String(error)}\n`)
+        )
     })
   })
   const cancel = () => {
@@ -303,6 +339,7 @@ export async function prepareWindowsTransfer(options: TransferOptions): Promise<
             }, POLICY.closeTimeout)
           }),
         ])
+        if (cleanupUnconfirmed()) throw new WindowsHandoffExitUnconfirmed()
       } finally {
         clearTimeout(timer)
       }
@@ -336,6 +373,7 @@ export async function prepareWindowsTransfer(options: TransferOptions): Promise<
       if (closed || committed) throw new Error('Windows handoff is no longer available')
       options.signal?.throwIfAborted()
       end = timing.start(COMPONENT_TIMING.authorize)
+      startSent = true
       await command(child, 'start')
       await events.expect('authorized')
       end()

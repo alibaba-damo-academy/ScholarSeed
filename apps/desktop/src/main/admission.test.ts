@@ -7,6 +7,58 @@ import { squirrelLaunchSuperseded, settleSquirrelStartup } from './squirrelstart
 import { updateRepairMode, updateRepairTarget } from './repair.ts'
 import { detectPreferenceLanguage } from '../locale.ts'
 
+test('startup refusal logs before entering interactive repair', async () => {
+  const source = readFileSync(new URL('./admission.ts', import.meta.url), 'utf8')
+  const parsed = ts.createSourceFile('admission.ts', source, ts.ScriptTarget.Latest, true)
+  const declaration = parsed.statements.find(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === 'recoverStartupAdmission'
+  )!
+  const events: string[] = []
+  class Refusal extends Error {
+    readonly status = 'unconfirmed'
+  }
+  const exports = {} as {
+    recoverStartupAdmission: (
+      error: Error,
+      headless: boolean,
+      log: () => void,
+      pending: boolean,
+      repair: () => Promise<boolean>
+    ) => Promise<void>
+  }
+  runInNewContext(
+    ts.transpileModule(declaration.getText(parsed), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText,
+    {
+      exports,
+      process: { platform: 'darwin' },
+      MACOS_PLATFORM: 'darwin',
+      REFUSAL_EXIT_CODE: 1,
+      MacStartupAdmissionError: Refusal,
+      logMacRefusal: async () => {
+        events.push('system-log')
+      },
+      notifyMacRefusal: async () => {
+        events.push('notify')
+      },
+      app: { exit: () => events.push('exit') },
+    }
+  )
+  await exports.recoverStartupAdmission(
+    new Refusal(),
+    false,
+    () => {},
+    true,
+    async () => {
+      events.push('repair')
+      return false
+    }
+  )
+  assert.deepEqual(events, ['system-log', 'repair', 'notify', 'exit'])
+})
+
 const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('index.ts', source, ts.ScriptTarget.Latest, true)
 function declaration(name: string): string {
@@ -329,12 +381,15 @@ async function probe(
   let reads = 0
   let inspected = false
   const scope = {
-    process: { platform: 'darwin', execPath: '/fixture.app/Contents/MacOS/App' },
+    process: { platform: 'darwin', execPath: '/fixture.app/Contents/MacOS/App', getuid: () => 501 },
     MACOS_PLATFORM: 'darwin',
     app: { isPackaged: true, getVersion: () => '0.2.0' },
     readSquirrelHandoff: () =>
       ++reads === 1 ? initial : options.changed === undefined ? initial : options.changed,
     squirrelHandoffPath: (home: string) => home,
+    TERMINAL_RECORD_LIMITS: { handoff: 4096 },
+    captureRecord: () => ({ bytes: JSON.stringify(initial) }),
+    decodeSquirrelHandoff: JSON.parse,
     resolveDesktopConfig: () => ({
       buildNumber: options.superseded ? '202610230001' : '202610220001',
       bundleId: 'fixture',
@@ -353,6 +408,7 @@ async function probe(
     },
     systemCacheDir: () => '/cache',
     resolve: () => '/fixture.app',
+    realpathSync: () => '/fixture.app',
     dirname: () => '/',
     JSON,
   }

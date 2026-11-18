@@ -598,6 +598,7 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
             remote = SimpleNamespace(
                 labels=AsyncMock(return_value=[]),
                 list=AsyncMock(return_value={"items": [], "total": 0}),
+                attribution=AsyncMock(return_value={"attributionStatus": "missing"}),
             )
             with (
                 patch(
@@ -613,7 +614,47 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(response.status_code, 200)
                 factory.assert_called_with(locale="en")
-                remote.list.assert_awaited_once_with(query="paper", label="research", cursor="2")
+                remote.list.assert_awaited_once_with(
+                    query="paper", label="research", cursor="2", include_attribution=True
+                )
+                response = client.get(
+                    "/api/capabilities/skills/marketplace?include_attribution=false"
+                )
+                self.assertEqual(response.status_code, 200)
+                remote.list.assert_awaited_with(
+                    query="", label="", cursor="", include_attribution=False
+                )
+                response = client.get(
+                    "/api/capabilities/skills/marketplace/items/research/paper-tools/attribution?version=1.2.3"
+                )
+                self.assertEqual(response.json(), {"attributionStatus": "missing"})
+                remote.attribution.assert_awaited_once_with("research", "paper-tools", "1.2.3")
+
+    async def test_list_reuses_one_client_without_forwarding_registry_cookies(self):
+        requests = []
+
+        def handle(request):
+            requests.append(request)
+            self.assertNotIn("cookie", request.headers)
+            self.assertNotIn("authorization", request.headers)
+            if request.url.path == "/api/web/skills":
+                return httpx.Response(
+                    200,
+                    json=catalogue([item()]),
+                    headers={"Set-Cookie": "registry_session=ignored; Path=/"},
+                )
+            if request.url.path.endswith("/file"):
+                return httpx.Response(404)
+            return httpx.Response(200, json={**item(), "ownerDisplayName": "Author"})
+
+        hub = ClawHub(url=BASE, transport=httpx.MockTransport(handle))
+        client = hub._client()
+        with patch.object(hub, "_client", return_value=client) as create_client:
+            page = await hub.list()
+            create_client.assert_called_once()
+        self.assertTrue(client.is_closed)
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(page["items"][0]["provider"], "Author")
 
     async def test_native_classification_search_keeps_pagination_locale_and_identity(self):
         requests = []
@@ -732,6 +773,122 @@ class ClawHubContract(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(SkillPackageError):
                 preview_skill_upload(document, "SKILL.md")
+
+    async def test_list_uses_expanded_metadata_and_only_fetches_unexpanded_items(self):
+        label = {"slug": "research", "type": "RECOMMENDED", "displayName": "研究"}
+        metadata_paths = []
+
+        def handle(request):
+            if request.url.path == "/api/web/skills":
+                self.assertEqual(request.url.params.get("include"), "labels,attribution")
+                return httpx.Response(
+                    200,
+                    json=catalogue(
+                        [
+                            {**item(), "ownerDisplayName": "Batch author", "labels": [label]},
+                            {
+                                **item(),
+                                "slug": "without-labels",
+                                "ownerDisplayName": "Author",
+                                "labels": [],
+                            },
+                            {**item(), "slug": "legacy"},
+                        ]
+                    ),
+                )
+            if request.url.path.endswith("/file"):
+                return httpx.Response(404)
+            metadata_paths.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={
+                    "slug": "legacy",
+                    "namespace": "global",
+                    "ownerDisplayName": "Legacy author",
+                    "labels": [label],
+                },
+            )
+
+        page = await ClawHub(url=BASE, locale="zh", transport=httpx.MockTransport(handle)).list()
+        self.assertEqual(metadata_paths, ["/api/v1/skills/global/legacy"])
+        self.assertEqual(
+            [row["provider"] for row in page["items"]], ["Batch author", "Author", "Legacy author"]
+        )
+        self.assertEqual([row["labels"] for row in page["items"]], [[label], [], [label]])
+        self.assertTrue(all(row["labelsStatus"] == "ready" for row in page["items"]))
+
+    async def test_list_can_defer_sources_and_fetch_a_single_exact_version(self):
+        paths = []
+
+        def handle(request):
+            paths.append(request.url.path)
+            if request.url.path == "/api/web/skills":
+                return httpx.Response(
+                    200, json=catalogue([{**item(), "ownerDisplayName": "Author", "labels": []}])
+                )
+            self.assertEqual(request.url.params["path"], "registry.json")
+            return httpx.Response(
+                200,
+                json={"slug": SLUG, "source": {"repository_url": "https://github.com/owner/repo"}},
+            )
+
+        hub = ClawHub(url=BASE, transport=httpx.MockTransport(handle))
+        page = await hub.list(include_attribution=False)
+        self.assertEqual(paths, ["/api/web/skills"])
+        self.assertTrue(page["items"][0]["attributionDeferred"])
+        self.assertNotIn("attributionStatus", page["items"][0])
+
+        source = await hub.attribution("research", SLUG, VERSION)
+        self.assertEqual(paths[-1], f"/api/v1/skills/research/{SLUG}/versions/{VERSION}/file")
+        self.assertEqual(source["attribution"]["repository_name"], "owner/repo")
+
+    async def test_catalogue_source_summaries_skip_file_reads_and_remain_version_bound(self):
+        paths = []
+
+        def handle(request):
+            paths.append(request.url.path)
+            self.assertEqual(request.url.params["include"], "labels,attribution")
+            row = {**item(), "ownerDisplayName": "Author", "labels": []}
+            return httpx.Response(
+                200,
+                json=catalogue(
+                    [
+                        {
+                            **row,
+                            "attribution": {
+                                "status": "ready",
+                                "authors": ["Author"],
+                                "source": {"repository_url": "https://github.com/owner/repo"},
+                            },
+                        },
+                        {**row, "slug": "no-source", "attribution": {"status": "missing"}},
+                        {**row, "slug": "invalid-source", "attribution": {"status": "invalid"}},
+                    ]
+                ),
+            )
+
+        page = await ClawHub(url=BASE, transport=httpx.MockTransport(handle)).list()
+        self.assertEqual(paths, ["/api/web/skills"])
+        self.assertEqual(
+            [row["attributionStatus"] for row in page["items"]], ["ready", "missing", "invalid"]
+        )
+        self.assertEqual(page["items"][0]["attribution"]["repository_name"], "owner/repo")
+
+    async def test_catalogue_retries_legacy_labels_expansion_and_defers_unknown_sources(self):
+        expansions = []
+
+        def handle(request):
+            expansions.append(request.url.params["include"])
+            if len(expansions) == 1:
+                return httpx.Response(400)
+            return httpx.Response(
+                200, json=catalogue([{**item(), "ownerDisplayName": "Author", "labels": []}])
+            )
+
+        hub = ClawHub(url=BASE, transport=httpx.MockTransport(handle))
+        page = await hub.list(include_attribution=False)
+        self.assertEqual(expansions, ["labels,attribution", "labels"])
+        self.assertTrue(page["items"][0]["attributionDeferred"])
 
     async def test_list_resolves_provider_from_identity_bound_native_metadata(self):
         def handle(request):

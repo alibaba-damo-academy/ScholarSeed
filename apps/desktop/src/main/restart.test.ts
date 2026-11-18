@@ -7,6 +7,8 @@ import { StartupState, STARTUP_PHASE } from '../startup.ts'
 import { UpdatePreparation } from './preparation.ts'
 import { BackendMaintenanceRejected } from './backend-control.ts'
 import { installationFailure } from './family.ts'
+import { redactDiagnosticError } from './redaction.ts'
+import { retryUpdate } from './retry.ts'
 import { PreferenceQuiescence } from '../quiescence.ts'
 import {
   ActivationCandidateChanged,
@@ -258,6 +260,8 @@ for (const windows of [false, true]) {
         observeBackendControl: () => ({}),
         resolveProductConfig: () => ({ updateBaseUrl: 'https://updates.example' }),
         pushLog: () => {},
+        redactDiagnosticError,
+        retryUpdate,
         updateInstallFailure: () => ({ errorOrigin: 'install' }),
         app: {
           getVersion: () => '0.2.0',
@@ -392,6 +396,8 @@ for (const failure of [
       updateDebugArguments: () => [],
       process: { argv: [], env: {} },
       installationFailure,
+      redactDiagnosticError,
+      retryUpdate,
       AbortController,
       BackendMaintenanceRejected,
       WindowsHandoffCancelled,
@@ -564,7 +570,7 @@ for (const failure of [
       assert.equal(events.includes('prepare-update'), false)
       assert.equal(events.includes('drain'), false)
       assert.equal(context.backend, owned)
-      if (failure === 'preferences') assert.match(result.error, /ERR_PREFERENCES_UNSAVED/)
+      if (failure === 'preferences') assert.equal(result.errorFallback, 'install_failed')
       else assert.equal(result.cancelled, true)
     }
     assert.equal(

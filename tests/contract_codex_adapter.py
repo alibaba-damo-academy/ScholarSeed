@@ -125,6 +125,7 @@ from scholarseed_runtime.contract import (
     ResumeSessionRequest,
     RuntimeBinding,
     RuntimeCallbackRequest,
+    RuntimeCallbackResponse,
     RuntimeCapabilityName,
     RuntimeConfigurationIntent,
     RuntimeControlKind,
@@ -5208,6 +5209,90 @@ def test_unsupported_dynamic_tool_fails_fast() -> None:
     check("undeclared dynamic tool never reaches Serve", queued == 0)
 
 
+def test_tool_correction_defers_only_its_rejected_callback() -> None:
+    async def scenario() -> None:
+        name = "typed_service_tool"
+        session = CodexRuntimeSession(
+            OpenSessionRequest(
+                product_session_id="product",
+                cwd=ROOT,
+                model=GENERATION_TEST_MODEL,
+                service_tools=(RuntimeServiceTool(name, "Typed tool", {}),),
+            )
+        )
+        interrupt = AsyncMock()
+        resolve_tool = AsyncMock(return_value=True)
+        session._native = SimpleNamespace(
+            host=SimpleNamespace(
+                readiness=SimpleNamespace(process_generation=1),
+                attachment=lambda _: SimpleNamespace(turn=SimpleNamespace(interrupt=interrupt)),
+            ),
+            session_id="native",
+            process_events=(),
+            rpc_evidence=(),
+            resolve_tool=resolve_tool,
+        )
+        allow_correction = False
+        response_matches = True
+
+        async def publish(observation: RuntimeEvent | RuntimeCallbackRequest) -> None:
+            if isinstance(observation, RuntimeCallbackRequest):
+                # A consumer may respond before the callback publication yields back to the adapter.
+                request_id = observation.request_id if response_matches else "unrelated-request"
+                await session.respond(
+                    RuntimeCallbackResponse(
+                        request_id=request_id,
+                        decision=CallbackKind.DYNAMIC_TOOL.value,
+                        values={"ok": False, "error": "validation_failed"},
+                        idempotency_key=request_id,
+                        responded_at="",
+                        allow_tool_correction=allow_correction,
+                    )
+                )
+
+        session._publish_observation = publish
+
+        async def call(turn_id: str, index: int) -> None:
+            item_id = f"call-{index}"
+            for kind, payload in (
+                (CodexSessionEventKind.TOOL_STARTED, {"name": name, "input": {}}),
+                (
+                    CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED,
+                    {"tool": name, "request_id": f"request-{turn_id}-{index}"},
+                ),
+                (CodexSessionEventKind.TOOL_COMPLETED, {"ok": False, "output": "invalid"}),
+            ):
+                await session._on_native_event(
+                    CodexSessionEvent("codex", "native", kind, turn_id, item_id, payload=payload)
+                )
+            await asyncio.gather(*session._tasks)
+
+        for turn_id in ("correction", "mismatched", "rejected"):
+            await session._on_native_event(
+                CodexSessionEvent("codex", "native", CodexSessionEventKind.TURN_STARTED, turn_id)
+            )
+            allow_correction = True
+            response_matches = turn_id != "mismatched"
+            resolve_tool.return_value = turn_id != "rejected"
+            for index in range(4):
+                await call(turn_id, index)
+            if turn_id == "correction":
+                interrupt.assert_not_awaited()
+                wire_response = resolve_tool.await_args.args[1]
+                assert wire_response.success is False
+                assert json.loads(wire_response.content_items[0]["text"]) == {
+                    "ok": False,
+                    "error": "validation_failed",
+                }
+                allow_correction = False
+                for index in range(4, 8):
+                    await call(turn_id, index)
+            interrupt.assert_awaited_once()
+            interrupt.reset_mock()
+
+    asyncio.run(scenario())
+
+
 def test_resumed_dynamic_tool_declaration_is_preserved() -> None:
     bridge_tool = RuntimeServiceTool(
         name="scholarseed_bridge",
@@ -7321,6 +7406,7 @@ def main() -> int:
     test_plan_projection()
     test_turn_timeout_projection()
     test_callback_translation()
+    test_tool_correction_defers_only_its_rejected_callback()
     test_subagent_translation()
     test_extension_and_incident_are_lossless()
     test_dependency_direction()

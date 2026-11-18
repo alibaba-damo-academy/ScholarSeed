@@ -1,4 +1,6 @@
 import { sourceBaseline } from './source.ts'
+import { UPDATE_PATH_PREFIX } from './release.ts'
+import { retryUpdate } from './retry.ts'
 import { listenForSetupExit, setupExitPipe } from './overinstall.ts'
 import { ADOPTION_STAGE, reportAdoptionFailure, type AdoptionStage } from './adoption.ts'
 import {
@@ -336,6 +338,7 @@ import type {
 } from '../updates'
 import {
   LOCAL_LANE_UPDATE_REASON,
+  UNSUPPORTED_UPDATE_ARCH,
   UPDATE_HEALTH_CHANNEL,
   UPDATE_REPAIR_CHANNEL,
   updateCandidateKey,
@@ -630,6 +633,7 @@ let updateRestartRequested = false
 // 进行中安装的取消信号与拦截起点（bug 87253073）：遮罩的「取消安装」靠它 abort 准备链，
 // before-quit 的拦截靠它算已拦截时长、到上限放行。
 let updateInstallAbort: AbortController | null = null
+let macInstallPreparation: Promise<StartUpdateResult> | null = null
 let updateInstallBlockingSince: number | null = null
 let updateSnapshot: UpdateSnapshot | null = null
 let macStartupDecision: updater.MacStartupAdmission | undefined
@@ -761,7 +765,7 @@ const preparationPolicy = backgroundPreparationPolicy(process.platform)
 let latestUpdateCandidate: LatestVersionMeta | null = null
 let lastPreparationDeferral: string | null = null
 
-function publishUpdateSnapshot(next: UpdateSnapshot): UpdateSnapshot {
+function publishUpdateSnapshot(next: UpdateSnapshot, archiveLimitedId?: string): UpdateSnapshot {
   const stamped = withAnnouncedKey({
     ...next,
     startupVerification: updateStartupVerification,
@@ -773,6 +777,8 @@ function publishUpdateSnapshot(next: UpdateSnapshot): UpdateSnapshot {
       preparationPolicy &&
       next.candidate &&
       latestUpdateCandidate &&
+      latestUpdateCandidate.id !== archiveLimitedId &&
+      !updatePreparation.isArchiveLimited(latestUpdateCandidate.id) &&
       isNewerRelease(
         { version: next.candidate.version, buildNumber: next.candidate.build_number },
         { version: latestUpdateCandidate.version, buildNumber: latestUpdateCandidate.build_number }
@@ -781,6 +787,10 @@ function publishUpdateSnapshot(next: UpdateSnapshot): UpdateSnapshot {
         : undefined,
     restartPending:
       next.phase !== 'preparing' &&
+      updateInstallAbort !== null &&
+      !updateInstallAbort.signal.aborted,
+    restartPreparing:
+      next.phase === 'preparing' &&
       updateInstallAbort !== null &&
       !updateInstallAbort.signal.aborted,
   })
@@ -818,11 +828,11 @@ function currentUpdateSnapshot(): UpdateSnapshot {
   if (!updateSnapshot) {
     updateAnnouncedKey = updater.readAnnouncedKey()
     updateSnapshot = withAnnouncedKey(
-      updater.updateLaneUnsupported(pushLog)
+      updater.updateLaneUnsupported(pushLog) || !updater.archType()
         ? {
             phase: 'unsupported',
             currentVersion: app.getVersion(),
-            reason: LOCAL_LANE_UPDATE_REASON,
+            reason: updater.archType() ? LOCAL_LANE_UPDATE_REASON : UNSUPPORTED_UPDATE_ARCH,
           }
         : process.platform === WINDOWS_PLATFORM
           ? { phase: 'idle', currentVersion: app.getVersion() }
@@ -869,8 +879,6 @@ const updateChecks = new UpdateChecks(async () => {
   }
   return result
 })
-const PREPARATION_RETRY_DELAY_MS = 60_000
-let nextPreparationRetryAt = 0
 let windowsPrepared: { candidate: LatestVersionMeta; update: PreparedWindowsVelopack } | null = null
 let windowsUpdateMaintenanceActive = false
 
@@ -903,7 +911,6 @@ async function resetPreviewCandidates(): Promise<void> {
   updater.discardPreviewPreparation(pushLog)
   latestUpdateCandidate = null
   lastPreparationDeferral = null
-  nextPreparationRetryAt = 0
   publishUpdateSnapshot({ phase: 'idle', currentVersion: app.getVersion() })
 }
 
@@ -951,14 +958,14 @@ async function recoverUpdateConflict(): Promise<void> {
   windowsPrepared = null
   latestUpdateCandidate = null
   lastPreparationDeferral = null
-  nextPreparationRetryAt = 0
   runBackgroundUpdateCheck()
 }
 
 function retainedUpdateReady(): ReturnType<typeof updater.readReadyState> {
+  if (process.platform !== MACOS_PLATFORM) return null
   const ready = updater.readReadyState()
   return ready &&
-    (process.platform !== MACOS_PLATFORM || updater.macPreparationReady(ready.meta)) &&
+    updater.macPreparationReady(ready.meta) &&
     updater.previewCandidateValidated(ready.meta, pushLog)
     ? ready
     : null
@@ -1030,17 +1037,32 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
           })
         }
       }
+      const archiveLimited =
+        current.phase !== 'ready' &&
+        latestUpdateCandidate &&
+        updatePreparation.isArchiveLimited(latestUpdateCandidate.id)
+          ? latestUpdateCandidate
+          : null
       return publishUpdateSnapshot({
         ...current,
-        ...(current.phase === 'ready' || updatePreparation.running
-          ? {}
-          : {
-              phase:
-                current.phase === 'failed' && current.candidate?.id === latest.id
-                  ? 'failed'
-                  : 'available',
-              candidate: latest,
-            }),
+        ...(archiveLimited
+          ? {
+              phase: 'failed',
+              candidate: archiveLimited,
+              error: undefined,
+              errorOrigin: 'preparation',
+              errorFallback: 'install_archive_limit',
+              resumable: false,
+            }
+          : current.phase === 'ready' || updatePreparation.running
+            ? {}
+            : {
+                phase:
+                  current.phase === 'failed' && current.candidate?.id === latest.id
+                    ? 'failed'
+                    : 'available',
+                candidate: latest,
+              }),
         checkedAt: Date.now(),
         nextBackgroundPreparationAt: decision.at,
       })
@@ -1074,13 +1096,6 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
     if (updatePreparation.candidate?.id === latest.id) {
       updatePreparation.resume()
       if (restoreMacPreparation && !updatePreparation.running) updatePreparation.retry()
-    }
-    if (
-      snapshot.phase === 'failed' &&
-      snapshot.candidate?.id === latest.id &&
-      Date.now() >= nextPreparationRetryAt
-    ) {
-      updatePreparation.retry()
     }
     return currentUpdateSnapshot()
   }
@@ -1160,7 +1175,7 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
       [`--user-data-dir=${desktopStorage().userData}`, ...updateDebugArguments(process.argv)],
       controller.signal
     )
-    await receipt.update.verify()
+    await receipt.update.verify(controller.signal)
     assertWindowsInstallationIdle()
     controller.signal.throwIfAborted()
     // Freeze and persist renderer state while the workbench can still accept writes.
@@ -1199,15 +1214,14 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
     const stopped = await drainManagedBackend()
     drained = true
     requireCleanBackendStop(stopped)
-    await receipt.update.verify()
+    await receipt.update.verify(controller.signal)
     assertWindowsInstallationIdle()
     controller.signal.throwIfAborted()
     await receipt.update.apply(async () => {
       controller.signal.throwIfAborted()
       assertWindowsInstallationIdle()
-      const authorize = await updater.authorizeActivation(
-        receipt.candidate,
-        pushLog,
+      const authorize = await retryUpdate(
+        () => updater.authorizeActivation(receipt.candidate, pushLog, controller.signal),
         controller.signal
       )
       return () => {
@@ -1229,7 +1243,7 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
     app.quit()
     return { ok: true, mode: 'auto' }
   } catch (error) {
-    pushLog(`[update] Windows handoff failed: ${String(error)}\n`)
+    pushLog(`[update] Windows handoff failed: ${JSON.stringify(redactDiagnosticError(error))}\n`)
     // Release the uncommitted helper (including an elevated worker) before recovery.
     try {
       await receipt?.update.close()
@@ -1244,7 +1258,7 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
     candidateChanged = error instanceof updater.ActivationCandidateChanged
     if (candidateChanged && receipt) {
       try {
-        updater.discardRejectedUpdate(receipt.candidate, pushLog)
+        await updater.discardRejectedUpdate(receipt.candidate, pushLog)
       } catch (recovery) {
         recoveryFailed = true
         pushLog(`[update] candidate revocation failed: ${String(recovery)}\n`)
@@ -1276,23 +1290,23 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
       recoveryFailed = true
       pushLog(`[update] runtime recovery failed: ${String(recovery)}\n`)
     }
+    const cancelled = controller.signal.aborted || error instanceof WindowsHandoffCancelled
     const errorFallback = recoveryFailed
       ? 'activation_recovery_required'
       : candidateChanged
         ? 'activation_candidate_changed'
-        : installationFailure(error)
-    const result: StartUpdateResult =
-      controller.signal.aborted || error instanceof WindowsHandoffCancelled
-        ? { ok: false, cancelled: true }
-        : errorFallback
-          ? { ok: false, errorFallback }
-          : { ok: false, error: String(error) }
+        : cancelled
+          ? undefined
+          : (installationFailure(error) ?? 'install_failed')
+    const result: StartUpdateResult = errorFallback
+      ? { ok: false, errorFallback }
+      : { ok: false, cancelled: true }
     publishUpdateSnapshot({
       ...currentUpdateSnapshot(),
       phase: recoveryFailed || candidateChanged ? 'failed' : 'ready',
       ...(candidateChanged ? { candidate: undefined, latestCandidate: undefined } : {}),
-      error: errorFallback ? undefined : String(error),
-      errorOrigin: 'install',
+      error: undefined,
+      errorOrigin: errorFallback ? 'install' : undefined,
       installStage: undefined,
       errorFallback,
     })
@@ -1342,7 +1356,6 @@ const updatePreparation = new UpdatePreparation(
       result: attempt.origin,
       updateId,
     })
-    if (!preparationPolicy) nextPreparationRetryAt = Date.now() + PREPARATION_RETRY_DELAY_MS
     const windows = process.platform === WINDOWS_PLATFORM
     let windowsStage: WindowsPreparationStage | 'preview-candidate' = 'preview-candidate'
     let errorOrigin: 'download' | 'preparation' = windows ? 'preparation' : 'download'
@@ -1354,11 +1367,13 @@ const updatePreparation = new UpdatePreparation(
       await updater.validatePreviewCandidate(candidate, pushLog, signal)
       if (!isCurrent()) return false
       if (windows) {
+        await windowsPrepared?.update.close()
+        if (!isCurrent()) return false
         windowsPrepared = null
         const config = resolveProductConfig(pushLog)
-        publishUpdateSnapshot({ phase: 'downloading', currentVersion: app.getVersion(), candidate })
+        publishUpdateSnapshot({ phase: 'preparing', currentVersion: app.getVersion(), candidate })
         const update = await prepareWindowsVelopack({
-          baseUrl: `${config.updateBaseUrl}/api/v1/updates/packages/${encodeURIComponent(candidate.id)}/velopack`,
+          baseUrl: `${config.updateBaseUrl}${UPDATE_PATH_PREFIX}/packages/${encodeURIComponent(candidate.id)}/velopack`,
           componentBaseUrl: config.updateBaseUrl,
           native: storageNative,
           candidate,
@@ -1370,6 +1385,14 @@ const updatePreparation = new UpdatePreparation(
             windowsStage = stage
             errorOrigin =
               stage === 'delta-download' || stage === 'full-download' ? 'download' : 'preparation'
+            progress({
+              phase:
+                errorOrigin === 'download'
+                  ? 'downloading'
+                  : stage === 'package-verification'
+                    ? 'verifying'
+                    : 'preparing',
+            })
           },
           onFullDownload: ({ result, ...evidence }) => {
             if (result === 'failed' && evidence.stage === 'digest') {
@@ -1412,16 +1435,19 @@ const updatePreparation = new UpdatePreparation(
       if (!staged.ok) {
         record('finish', 'failed')
         const retained = preparationPolicy ? retainedUpdateReady() : null
-        publishUpdateSnapshot({
-          ...currentUpdateSnapshot(),
-          phase: retained ? 'ready' : 'failed',
-          candidate: retained?.meta ?? candidate,
-          error: staged.error,
-          errorFallback: staged.errorFallback,
-          errorOrigin: staged.errorOrigin,
-          resumable: staged.resumable,
-        })
-        return false
+        publishUpdateSnapshot(
+          {
+            ...currentUpdateSnapshot(),
+            phase: retained ? 'ready' : 'failed',
+            candidate: retained?.meta ?? candidate,
+            error: staged.error,
+            errorFallback: staged.errorFallback,
+            errorOrigin: staged.errorOrigin,
+            resumable: staged.resumable,
+          },
+          staged.errorFallback === 'install_archive_limit' ? candidate.id : undefined
+        )
+        return staged.errorFallback === 'install_archive_limit' ? 'archive-limit' : false
       }
       record('finish', 'ready')
       publishUpdateSnapshot({
@@ -1448,9 +1474,16 @@ const updatePreparation = new UpdatePreparation(
           ...currentUpdateSnapshot(),
           phase: retained ? 'ready' : 'failed',
           candidate: retained?.meta ?? candidate,
-          error: String(error),
-          errorFallback: undefined,
+          error: windows ? undefined : String(error),
+          errorFallback: windows
+            ? (error as NodeJS.ErrnoException)?.code === 'ENOSPC'
+              ? 'storage_exhausted'
+              : errorOrigin === 'download'
+                ? 'download_failed'
+                : 'preparation_failed'
+            : undefined,
           errorOrigin,
+          resumable: windows ? false : undefined,
         })
       }
       return false
@@ -1479,9 +1512,10 @@ const updatePreparation = new UpdatePreparation(
         ...currentUpdateSnapshot(),
         phase: retained ? 'ready' : 'failed',
         candidate: retained?.meta ?? currentUpdateSnapshot().candidate,
-        error: String(error),
-        errorFallback: undefined,
+        error: process.platform === WINDOWS_PLATFORM ? undefined : String(error),
+        errorFallback: process.platform === WINDOWS_PLATFORM ? 'preparation_failed' : undefined,
         errorOrigin: 'preparation',
+        resumable: process.platform === WINDOWS_PLATFORM ? false : undefined,
       })
     },
   },
@@ -2965,7 +2999,11 @@ async function finishMacUpdateHandoff(): Promise<StartUpdateResult> {
     setUpdateInstallationInProgress(false)
     preferenceQuiescence.allowInteraction()
     const retryable = updater.macHandoffRetryable(error)
-    const errorFallback = retryable ? 'activation_unavailable' : 'activation_recovery_required'
+    const errorFallback = retryable
+      ? (error as NodeJS.ErrnoException | undefined)?.code === 'ENOSPC'
+        ? 'install_disk_space'
+        : 'activation_unavailable'
+      : 'activation_recovery_required'
     pushLog(`[update] final installation authorization refused: ${String(error)}\n`)
     publishUpdateSnapshot({
       ...currentUpdateSnapshot(),
@@ -3213,8 +3251,6 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         isCurrent,
         async (stillCurrent) => {
           if (!stillCurrent()) throw new Error('Workbench changed during readiness confirmation')
-          const updateId = updater.pendingUpdateId()
-          if (updateId) updater.logUpdateLifecycleEvent('health-confirmed', updateId, pushLog)
           completeUpdateLaunch?.()
           completeUpdateLaunch = undefined
           if (updateStartupVerification === 'starting') {
@@ -4115,11 +4151,11 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       backgroundUpdateCheckDeferred = true
       return currentUpdateSnapshot()
     }
-    if (updater.updateLaneUnsupported(pushLog)) {
+    if (updater.updateLaneUnsupported(pushLog) || !updater.archType()) {
       return publishUpdateSnapshot({
         phase: 'unsupported',
         currentVersion: app.getVersion(),
-        reason: LOCAL_LANE_UPDATE_REASON,
+        reason: updater.archType() ? LOCAL_LANE_UPDATE_REASON : UNSUPPORTED_UPDATE_ARCH,
       })
     }
     if (!currentUpdateSnapshot().candidate)
@@ -4242,8 +4278,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
           controller.signal.throwIfAborted()
           if (desktopHandoff.isBusy()) controller.abort()
           controller.signal.throwIfAborted()
-          controller.signal.throwIfAborted()
-          const guard = await updater.authorizeActivation(candidate, pushLog, controller.signal)
+          const guard = await retryUpdate(
+            () => updater.authorizeActivation(candidate, pushLog, controller.signal),
+            controller.signal
+          )
           return () => {
             controller.signal.throwIfAborted()
             if (desktopHandoff.isBusy()) controller.abort()
@@ -4260,7 +4298,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
             guard()
           }
         }
-        result = await updater.installStagedUpdate(
+        macInstallPreparation = updater.installStagedUpdate(
           publishUpdateProgress,
           pushLog,
           controller.signal,
@@ -4301,13 +4339,16 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
               candidate.build_number,
               candidate.id
             )
-          }
+          },
+          macStartupDecision
         )
+        result = await macInstallPreparation
       } catch (error) {
         result = controller.signal.aborted
           ? { ok: false, cancelled: true }
           : { ok: false, error: String(error) }
       } finally {
+        macInstallPreparation = null
         updateInstallAbort = null
       }
       if (
@@ -5344,7 +5385,7 @@ function runBackgroundUpdateCheck(): void {
     armBackgroundUpdateCheck()
     return
   }
-  if (updater.updateLaneUnsupported(pushLog)) return
+  if (updater.updateLaneUnsupported(pushLog) || !updater.archType()) return
   updateCheckRetryAt = Date.now() + ACTIVE_UPDATE_CHECK_INTERVAL_MS
   void updateChecks
     .run()
@@ -5509,12 +5550,6 @@ async function bootstrap(): Promise<void> {
     () => resolveComponentsReused(false)
   )
   try {
-    // Process startup is distinct from health, which requires the renderer's
-    // restored workspace and backend readiness acknowledgement over the typed IPC.
-    const relaunchedUpdateId = updater.pendingUpdateId()
-    if (relaunchedUpdateId) {
-      updater.logUpdateLifecycleEvent('app-started', relaunchedUpdateId, pushLog)
-    }
     await createWindow(backendReady, componentsReused)
     if (appQuitting) return
     if (!(await backendReady)) {
@@ -5979,6 +6014,11 @@ async function startDesktop(): Promise<void> {
   })
   app.on('before-quit', (event) => {
     runtimePreparation?.abort()
+    const preparing =
+      !updateRestartRequested && macInstallPreparation && !updater.macHandoffCommitted()
+        ? macInstallPreparation
+        : null
+    if (preparing) updateInstallAbort?.abort()
     browserVaultIpc?.lock()
     browserVault?.lock()
     const blockedMs =
@@ -5989,6 +6029,7 @@ async function startDesktop(): Promise<void> {
     if (
       updateInstallationInProgress &&
       !updateRestartRequested &&
+      !preparing &&
       blockedMs < UPDATE_INSTALL_QUIT_BLOCK_CAP_MS
     ) {
       event.preventDefault()
@@ -5996,7 +6037,7 @@ async function startDesktop(): Promise<void> {
       pushLog('[update] close requested during staged installation; continuing in background\n')
       return
     }
-    if (updateInstallationInProgress && !updateRestartRequested) {
+    if (updateInstallationInProgress && !updateRestartRequested && !preparing) {
       pushLog('[update] quit block cap reached; allowing quit despite staged installation\n')
     }
     if (!backendQuitFinished) {
@@ -6005,8 +6046,12 @@ async function startDesktop(): Promise<void> {
       if (!backendQuitPending) {
         backendQuitPending = true
         const updatesWereStopped = backgroundUpdateTimerStopped
-        void preferenceQuiescence
-          .prepare()
+        void Promise.resolve(preparing)
+          .then(
+            () => undefined,
+            (error) => pushLog(`[update] preparation stopped during quit: ${String(error)}\n`)
+          )
+          .then(() => preferenceQuiescence.prepare())
           .then(async () => {
             if (!updateRestartRequested && updatePreparation.running) {
               backgroundUpdateTimerStopped = true

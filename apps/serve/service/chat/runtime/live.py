@@ -9,7 +9,7 @@ import mimetypes
 import secrets
 import uuid
 from collections.abc import Iterable
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -229,6 +229,7 @@ from service.chat.runtime.projection import (
 )
 from service.chat.runtime.tools import (
     SERVICE_TOOL_CAPABILITIES,
+    artifact_tool_missing_parameters,
     execute_service_tool,
 )
 from service.chat.runtime.utils import integer, optional_integer
@@ -302,6 +303,16 @@ SessionActivityObserver = Callable[["LiveSession"], None]
 
 
 PROGRESS_BATCH_BYTE_LIMIT = 1024 * 1024
+ARTIFACT_CORRECTION_CALLBACK_LIMIT = 32
+
+
+@dataclass
+class _ArtifactCorrection:
+    generation: int
+    native_turn_id: str
+    client_turn_id: str
+    pending_calls: set[str]
+    offered: bool = False
 
 
 class LiveSession:
@@ -498,6 +509,7 @@ class LiveSession:
         self._projection_lock = asyncio.Lock()
         self._service_callbacks: set[asyncio.Task[None]] = set()
         self._plan_tool_receipts: dict[tuple[int, str, str], dict] = {}
+        self._artifact_correction: _ArtifactCorrection | None = None
         self._projection_recovery_lock = asyncio.Lock()
         self._local_history: list[dict[str, Any]] = []
         self._message_snapshots = MessageSnapshots()
@@ -1346,6 +1358,35 @@ class LiveSession:
             )
             if plan_receipt:
                 self._plan_tool_receipts[receipt_key] = plan_receipt
+        correction = None
+        if (
+            callback.native_item_id
+            and callback.native_turn_id == self.ledger.active_turn_id
+            and self.active_product_turn_id
+            and self.attachment_model_bridge_id()
+            and artifact_tool_missing_parameters(prompt.get("tool"), result)
+        ):
+            correction = self._artifact_correction
+            if (
+                correction is None
+                or correction.generation != generation
+                or correction.native_turn_id != callback.native_turn_id
+                or correction.client_turn_id != self.active_product_turn_id
+            ):
+                correction = self._artifact_correction = _ArtifactCorrection(
+                    generation, callback.native_turn_id, self.active_product_turn_id, set()
+                )
+            if correction.offered:
+                result["next_action"] = (
+                    "A correction was already offered in this turn. Report the missing required "
+                    "fields if publication could not be completed."
+                )
+                correction = None
+            elif len(correction.pending_calls) >= ARTIFACT_CORRECTION_CALLBACK_LIMIT:
+                correction = None
+            else:
+                correction.pending_calls.add(callback.native_item_id)
+        # Track the call before responding. The next model request can arrive before the RPC returns.
         receipt = await session.respond(
             RuntimeCallbackResponse(
                 request_id=callback.request_id,
@@ -1353,9 +1394,12 @@ class LiveSession:
                 values=result,
                 idempotency_key=callback.request_id,
                 responded_at=datetime.now(UTC).isoformat(),
+                allow_tool_correction=correction is not None,
             )
         )
         if receipt.state is not CommandState.APPLIED:
+            if correction is not None and receipt.state is CommandState.REJECTED:
+                correction.pending_calls.discard(callback.native_item_id)
             self._plan_tool_receipts.pop(receipt_key, None)
             self._logger.warning(
                 "service_tool_response_rejected session_id=%s request_id=%s",
@@ -1905,6 +1949,8 @@ class LiveSession:
             RuntimeEventKind.TURN_INTERRUPTED,
             RuntimeEventKind.TURN_UNKNOWN,
         }:
+            if self._artifact_correction and self._artifact_correction.native_turn_id == turn_id:
+                self._artifact_correction = None
             self._plan_tool_receipts = {
                 key: value for key, value in self._plan_tool_receipts.items() if key[1] != turn_id
             }
@@ -2285,6 +2331,18 @@ class LiveSession:
     @property
     def model_request_id(self) -> str:
         return self.auxiliary_model_request_id or self.active_product_turn_id
+
+    def observe_model_tool_outputs(self, client_turn_id: str, call_ids: set[str]) -> None:
+        correction = self._artifact_correction
+        if (
+            correction is not None
+            and correction.generation == self.attachment_generation
+            and correction.native_turn_id == self.ledger.active_turn_id
+            and correction.client_turn_id == client_turn_id == self.active_product_turn_id
+            and not correction.pending_calls.isdisjoint(call_ids)
+        ):
+            correction.offered = True
+            correction.pending_calls.clear()
 
     def content_source(self, client_turn_id: str) -> ContentSource | None:
         if client_turn_id and client_turn_id == self.auxiliary_model_request_id:

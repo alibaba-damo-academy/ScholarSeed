@@ -25,6 +25,19 @@ CFG={'provider':'qwen','model':'fixture','api_key':'','base_url':'https://unused
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_thinking_enabled_reaches_runtime_as_boolean_wire_parameter(self):
+        calls=[]
+        class Client:
+            @classmethod
+            def from_runtime(cls):return cls()
+            def chat(self,**kwargs):
+                calls.append(kwargs)
+                return types.SimpleNamespace(text='complete',usage={})
+        with self.installed(Client):
+            asyncio.run(invoke(self.ws,'outline',[],{**CFG,'thinking':True,'temperature':0.6},json_output=False))
+        self.assertEqual(calls[0]['extra_body'],{'enable_thinking':True})
+        self.assertEqual(calls[0]['temperature'],0.6)
+
     def setUp(self):
         temp=tempfile.TemporaryDirectory(prefix='slr-runtime-');self.addCleanup(temp.cleanup)
         self.ws=Path(temp.name);(self.ws/'01_input').mkdir()

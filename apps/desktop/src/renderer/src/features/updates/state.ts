@@ -90,7 +90,15 @@ export function updateActionOf(state: UpdateSnapshot | null): UpdateAction {
     case 'ready':
       return 'install'
     case 'available':
+      return state.candidate ? 'download' : 'check'
     case 'failed':
+      if (
+        state.errorOrigin === 'preparation' &&
+        (state.errorFallback === 'install_signature_untrusted' ||
+          state.errorFallback === 'install_verify_unavailable' ||
+          state.errorFallback === 'install_archive_limit')
+      )
+        return 'check'
       return state.candidate ? 'download' : 'check'
     case 'checking':
     case 'downloading':
@@ -331,6 +339,8 @@ export function updateFailureText(
   if (failure.fallback === 'preparation_connection_closed')
     return accountText('update.preparationConnectionClosed')
   if (failure.fallback === 'preparation_failed') return accountText('update.preparationFailed')
+  if (failure.fallback === 'download_failed') return t('update.downloadFailed')
+  if (failure.fallback === 'storage_exhausted') return t('update.insufficientSpace')
   if (failure.fallback === 'activation_recovery_required')
     return accountText('update.activationRecoveryRequired')
   if (failure.fallback === 'activation_candidate_changed')
@@ -342,16 +352,16 @@ export function updateFailureText(
   if (failure.fallback === 'activation_authorization_required')
     return accountText('update.activationAuthorizationRequired')
   if (failure.fallback === 'install_verify_unavailable') return t('update.installVerifyUnavailable')
+  if (failure.fallback === 'install_verification_failed')
+    return t('update.installVerificationFailed')
+  if (failure.fallback === 'install_archive_limit') return t('update.installArchiveLimit')
+  if (failure.fallback === 'install_disk_space') return t('update.insufficientSpace')
   if (failure.fallback === 'install_signature_untrusted')
     return t('update.installSignatureUntrusted')
-  if (failure.fallback === 'install_signature_indeterminate')
-    return t('update.installSignatureIndeterminate')
   if (failure.fallback === 'install_notarization_indeterminate')
     return t('update.installNotarizationIndeterminate')
-  // 上一轮安装器还活着：重试只会被安装器互斥量 Abort，文案说明在等什么而不是报失败。
   if (failure.fallback === 'install_in_use') return t('update.installInUse')
   if (failure.fallback === 'install_occupancy_unknown') return t('update.installOccupancyUnknown')
-  if (failure.fallback === 'install_already_running') return t('update.installAlreadyRunning')
   // 笼统 fallback 或拿不到诊断原文时退回通用说法：安装类走 account 命名空间那句既有文案，其余按检查失败报。
   if (failure.fallback || !failure.message) {
     if (failure.origin === 'preparation') return accountText('update.preparationFailed')

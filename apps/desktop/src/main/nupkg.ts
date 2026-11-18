@@ -21,7 +21,7 @@ export const VELOPACK_POLICY = Object.freeze({
   appPrefix: 'lib/app/',
 })
 const KEY_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
-const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i
+const WINDOWS_DEVICE = /^(?:con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i
 const UNIX_TYPE_MASK = 0xf000
 const UNIX_REGULAR = 0x8000
 const UNIX_DIRECTORY = 0x4000

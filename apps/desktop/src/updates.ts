@@ -131,27 +131,19 @@ export interface UpdateInstallation {
 export type UpdateErrorOrigin = 'check' | 'download' | 'preparation' | 'install'
 
 /**
- * 安装失败的结构化分类。主进程显式标注、随快照下发，展示侧据此选文案——绝不从 error
- * 文本反推（原文可能是 Windows 控制台代码页下的中文 stderr，直接呈现会乱码，见 bug
- * 87042987）。三类的用户出路不同：
- * - `install_failed`：笼统的安装失败，给通用说法 + 重试。
- * - `install_verify_unavailable`：签名校验**没能执行**（PowerShell 缺失/被策略拦截/输出
- *   不可解析），重试大概率仍失败，文案引导用户去官网手动下载安装。
- * - `install_signature_untrusted`：校验执行了但签名不可信或与打包策略发布者不符，属安全
- *   拦截，文案明确「已阻止安装、请从官方渠道重新获取」，不引导无意义重试。
- * - `install_signature_indeterminate`：校验执行了、签名者与打包策略一致，但本机建立不起证书链
- *   信任（离线吊销、缺根证书等）。包字节已被 SHA-512 钉死，重新下载必然复现，文案引导修复
- *   本机环境后重试安装，不引导重新下载。
- * - `install_already_running`：上一轮更新的安装器进程还活着（停在进度窗或等人点向导）。
- *   此刻再拉起一个只会被安装器互斥量直接 Abort，重试无意义；文案说明在等什么、如何收场。
+ * Main-process failure classification for localized update messages. Keep
+ * native diagnostics in logs and pass only the classification to the renderer.
  */
 export type UpdateInstallFallback =
+  | 'download_failed'
+  | 'storage_exhausted'
   | 'install_failed'
+  | 'install_verification_failed'
   | 'install_verify_unavailable'
+  | 'install_archive_limit'
+  | 'install_disk_space'
   | 'install_signature_untrusted'
-  | 'install_signature_indeterminate'
   | 'install_notarization_indeterminate'
-  | 'install_already_running'
   | 'install_in_use'
   | 'install_occupancy_unknown'
   | 'preparation_connection_closed'
@@ -187,6 +179,8 @@ export interface UpdateSnapshot {
   currentVersion: string
   /** User requested restart; the prepared release is pinned until this attempt ends. */
   restartPending?: boolean
+  /** A user-requested restart is preparing without blocking the Workbench. */
+  restartPreparing?: boolean
   checkedAt?: number
   candidate?: LatestVersionMeta
   latestCandidate?: LatestVersionMeta
@@ -216,6 +210,7 @@ export interface UpdateSnapshot {
 
 /** Why a release lane cannot consume updates; surfaced verbatim to the update surface. */
 export const LOCAL_LANE_UPDATE_REASON = 'local-lane'
+export const UNSUPPORTED_UPDATE_ARCH = 'unsupported-architecture'
 
 /**
  * 候选版本的稳定身份，入口未读确认和安装动作按它识别具体构建。
@@ -259,9 +254,8 @@ export interface StartUpdateResult {
   mode?: 'auto' | 'manual'
   error?: string
   /**
-   * 准备或安装失败的结构化分类。带它时**不带** `error` 原文：校验/安装失败的诊断（可能含
-   * 代码页乱码的 PowerShell stderr）只落 `$SCHOLARSEED_HOME/logs/update.log`，界面按分类
-   * 给本地化文案。见 bug 87042987。
+   * Classified failures carry only the code. The renderer uses it to select
+   * localized guidance, while diagnostics remain in the update logs.
    */
   errorFallback?: UpdateInstallFallback
 }

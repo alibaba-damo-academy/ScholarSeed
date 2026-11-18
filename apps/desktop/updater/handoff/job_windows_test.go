@@ -433,6 +433,72 @@ func TestUpdaterJobOwnershipUAC(test *testing.T) {
 	testUpdaterJobOwnership(test, false, false, true, false)
 }
 
+func TestUpdaterLateUAC(t *testing.T) {
+	choice := os.Getenv(jobGateUACEnvironment)
+	if choice != "late-allow" && choice != "late-deny" {
+		t.Skip("interactive late UAC gate not requested")
+	}
+	identity, err := jobGateIdentity()
+	if err != nil || identity.Elevated {
+		t.Fatalf("late UAC gate requires an unelevated interactive coordinator: %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 24)
+	if _, err = rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	id := hex.EncodeToString(nonce)
+	job, err := newUpdateJob(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer job.Close()
+	root := t.TempDir()
+	status, err := os.CreateTemp(root, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer status.Close()
+	const deadlineOffset = 5 * time.Second
+	commands := make(chan string)
+	eof := time.AfterFunc(deadlineOffset, func() { close(commands) })
+	defer eof.Stop()
+	deadline := time.Now().Add(deadlineOffset)
+	t.Logf("awaiting %s after deadline %s", choice, deadline.Format(time.RFC3339Nano))
+	worker, err := startWorker(executable, jobGateArguments("worker", root, id, "elevated"), true)
+	if worker != nil {
+		defer worker.Close()
+		defer func() {
+			// The elevation can return before the new worker admits itself.
+			_ = job.Terminate()
+			_ = worker.Terminate()
+			end := time.Now().Add(WorkerStopWait)
+			_, workerErr := worker.Wait(remainingWait(end))
+			if err := errors.Join(workerErr, job.Wait(remainingWait(end))); err != nil {
+				t.Errorf("late elevated worker cleanup unconfirmed: %v", err)
+			}
+		}()
+	}
+	if !time.Now().After(deadline) {
+		t.Fatal("UAC returned before the test deadline")
+	}
+	if choice == "late-deny" {
+		if !errors.Is(err, ErrCancelled) || worker != nil {
+			t.Fatalf("dismissed UAC returned worker=%v error=%v", worker, err)
+		}
+		return
+	}
+	if err != nil || worker == nil {
+		t.Fatalf("approved UAC did not return a worker: %v", err)
+	}
+	if _, err = waitWorkerStatus(worker, status, id, "authorized", commands, deadline); err == nil {
+		t.Fatal("coordinator accepted authorization after the deadline")
+	}
+}
+
 func TestUpdaterJobRejectsLaunchBeforeAdmission(t *testing.T) {
 	var random [24]byte
 	if _, err := rand.Read(random[:]); err != nil {

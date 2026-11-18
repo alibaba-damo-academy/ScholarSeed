@@ -384,9 +384,17 @@ test(
     })
 )
 
-for (const target of ['project', 'session', 'document']) {
+for (const [target, status] of [
+  ['project', 404],
+  ['session', 404],
+  ['session', 503],
+  ['document', 404],
+  ['document', 403],
+  ['tab', 200],
+  ['tab', 503],
+] as const) {
   test(
-    `missing restored ${target} returns home and saves a clean location`,
+    `unavailable restored ${target} (${status}) returns home and saves a clean location`,
     { timeout: 60_000 },
     async () =>
       fixture(
@@ -432,19 +440,31 @@ for (const target of ['project', 'session', 'document']) {
                           title: 'Missing',
                           source: { kind: 'project', project: null, path: 'missing.md' },
                         }
-                      : null,
+                      : target === 'tab'
+                        ? { kind: 'tab', id: 'literature-search:removed-search' }
+                        : null,
                 },
               })
             )
           }, target)
           await page.route('**/api/serve/sessions/removed-session/navigation', (route) =>
             route.fulfill({
-              status: 404,
-              json: { detail: { code: 'session_not_found', message: 'missing' } },
+              status,
+              json: {
+                detail: { code: status === 404 ? 'session_not_found' : 'unavailable' },
+              },
             })
           )
           await page.route('**/api/workbench/open?**', (route) =>
-            route.fulfill({ status: 404, json: { detail: 'missing' } })
+            route.fulfill({ status, json: { detail: 'unavailable' } })
+          )
+          await page.route('**/api/literature/searches', (route) =>
+            target === 'tab'
+              ? route.fulfill({
+                  status,
+                  json: status === 200 ? { items: [] } : { detail: 'unavailable' },
+                })
+              : route.fallback()
           )
         }
       )
@@ -1245,7 +1265,7 @@ for (const scenario of [
                             source: { kind: 'project', project: null, path: 'missing.md' },
                           }
                         : target === 'tab'
-                          ? { kind: 'tab', id: 'explorer' }
+                          ? { kind: 'tab', id: 'literature-search:removed-search' }
                           : null,
                     aiPanelOpen: true,
                     settingsPage: 'skills',

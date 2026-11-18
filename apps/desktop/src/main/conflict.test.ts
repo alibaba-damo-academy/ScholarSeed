@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
 import { readRecord, writeJson } from './journal.ts'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
@@ -10,11 +11,12 @@ import ts from 'typescript'
 import { ActivationCandidateChanged } from './update-authorization.ts'
 import { retryUpdate } from './retry.ts'
 import { UpdatePreparation } from './preparation.ts'
+import { acquireDirectoryWriter } from './writer.ts'
 import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
 import type * as Updater from './updater.ts'
 
 interface RejectedFixtureExports {
-  read: () => LatestVersionMeta | null
+  read: () => { id: string; revision: string } | null
   discardRejectedUpdate: typeof Updater.discardRejectedUpdate
   checkForUpdate: typeof Updater.checkForUpdate
 }
@@ -57,12 +59,14 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
     let revoked = false
     const context = {
       retryUpdate,
+      assertSquirrelInstallSpace: () => {},
       exports: {},
       process: { platform: 'darwin' },
       MACOS_PLATFORM: 'darwin',
       WINDOWS_PLATFORM: 'win32',
       readReadyState: () => ready,
       macHandoffCommitted: () => false,
+      macHandoffReady: () => false,
       macPrepared: {
         receipt: {
           matches: () => true,
@@ -97,6 +101,7 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
       },
       PreparedArtifactChangedError: class extends Error {},
       UpdateVerifyError: class extends Error {},
+      UpdateArchiveLimitError: class extends Error {},
       ActivationCandidateChanged,
       discardRejectedUpdate: (selected: LatestVersionMeta) => {
         assert.equal(selected, candidate)
@@ -148,16 +153,35 @@ test('restart does not promote a disk candidate to ready before a fresh online c
 function diskHarness(t: test.TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'conflict-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
+  let locked = false
   const context = {
     exports: {} as RejectedFixtureExports,
     join,
+    dirname,
     rmSync,
     writeJson,
     randomUUID,
+    retryUpdate,
     readRecord,
+    updateStateDirectory: () => root,
+    previewUpdatesEnabled: () => false,
     candidateStateDirectory: () => root,
     REJECTED_STATE_FILE: 'rejected.json',
     REJECTED_STATE_LIMIT: 4096,
+    REJECTED_STATE_LOCK: 'rejected.lock',
+    desktopDirectoryWriter: () => ({
+      withRecordLock: (name: string, action: () => void) => {
+        assert.equal(name, 'rejected.lock')
+        assert.equal(locked, false)
+        locked = true
+        try {
+          action()
+        } finally {
+          locked = false
+        }
+      },
+      close() {},
+    }),
     PREPARATION_STATE_FILE: 'preparation.json',
     validatedPreviewCandidates: new Map([[candidate.id, candidate]]),
     readReadyState: () => ({ meta: candidate }),
@@ -166,19 +190,127 @@ function diskHarness(t: test.TestContext) {
     logUpdateEvent: () => {},
   }
   runInNewContext(
-    functions(['discardRejectedUpdate', 'readRejectedUpdate', 'rejectedUpdatePath']) +
-      '\nexports.read = readRejectedUpdate;',
+    functions([
+      'discardRejectedUpdate',
+      'persistRejectedUpdate',
+      'readRejectedUpdate',
+      'rejectedUpdatePath',
+      'withRejectedRecordLock',
+    ]) + '\nexports.read = readRejectedUpdate;',
     context
   )
   writeFileSync(join(root, 'ready.json'), 'staged')
   writeFileSync(join(root, 'preparation.json'), 'checkpoint')
   writeFileSync(join(root, 'user-data'), 'keep')
-  return { root, context }
+  return { root, context, locked: () => locked }
 }
 
-test('revocation persists before cleanup and survives a new process with unrelated files intact', (t) => {
+test('a new rejection saved while a grant is in flight survives the old grant', async (t) => {
+  const { root, context, locked } = diskHarness(t)
+  const path = join(root, 'rejected.json')
+  writeFileSync(path, JSON.stringify({ id: candidate.id, revision: 'old' }))
+  const scope = {
+    ...context,
+    archType: () => 'darwin-arm64',
+    resolveDesktopConfig: () => ({ baseUrl: 'https://update.example' }),
+    app: { getVersion: () => '0.1.0' },
+    previewRevision: 0,
+    URL,
+    buildUpdateCheckUrl: () => 'https://update.example/check',
+    getJson: async () => ({}),
+    parseUpdateCheckResult: () => ({ has_update: true, latest: candidate }),
+    monotonicUpdateResult: (_version: unknown, _config: unknown, result: unknown) => result,
+    AbortController,
+    ActivationCandidateChanged,
+    rmSync: (target: string) => {
+      assert.equal(locked(), true)
+      rmSync(target)
+    },
+    authorizeActivation: async () => {
+      rmSync(join(root, 'preparation.json'), { force: true })
+      await context.exports.discardRejectedUpdate(candidate, () => {})
+      return () => assert.equal(locked(), true)
+    },
+  }
+  const api = runInNewContext(
+    functions([
+      'checkForUpdate',
+      'readRejectedUpdate',
+      'rejectedUpdatePath',
+      'withRejectedRecordLock',
+    ]) + '\nexports.checkForUpdate',
+    scope
+  )
+  await assert.rejects(
+    api(() => {}),
+    /rejection changed/
+  )
+  assert.notEqual(context.exports.read()?.revision, 'old')
+  assert.equal(context.exports.read()?.id, candidate.id)
+  scope.authorizeActivation = async () => () => assert.equal(locked(), true)
+  await api(() => {})
+  assert.equal(existsSync(path), false)
+})
+
+test('a new rejection waits for an in-progress clear before cleaning up', async (t) => {
   const { root, context } = diskHarness(t)
-  context.exports.discardRejectedUpdate(candidate, () => {})
+  const writer = context.desktopDirectoryWriter
+  const path = join(root, 'rejected.json')
+  writeFileSync(path, JSON.stringify({ id: candidate.id, revision: 'old' }))
+  let busy = true
+  let attempts = 0
+  context.desktopDirectoryWriter = () => ({
+    ...writer(),
+    withRecordLock: (name, action) => {
+      attempts++
+      if (busy) throw Object.assign(new Error('record busy'), { code: 'ERR_LEASE_BUSY' })
+      writer().withRecordLock(name, action)
+    },
+  })
+  const pending = context.exports.discardRejectedUpdate(candidate, () => {})
+  assert.equal(attempts, 1)
+  assert.equal(existsSync(join(root, 'ready.json')), true)
+  rmSync(path)
+  busy = false
+  await pending
+  assert.equal(attempts, 2)
+  assert.equal(context.exports.read()?.id, candidate.id)
+  assert.equal(existsSync(join(root, 'ready.json')), false)
+})
+
+const nativeLibrary = process.env.SCHOLARSEED_LEASE_LIBRARY
+test(
+  'rejection persists after a competing native writer clears the old record',
+  { skip: !nativeLibrary },
+  async (t) => {
+    const { root, context } = diskHarness(t)
+    const native = createRequire(import.meta.url)(nativeLibrary!)
+    const coordinator = mkdtempSync(join(tmpdir(), 'rejection-coordinator-'))
+    t.after(() => rmSync(coordinator, { recursive: true, force: true }))
+    context.desktopDirectoryWriter = () => acquireDirectoryWriter(native, coordinator, root)
+    const path = join(root, 'rejected.json')
+    writeFileSync(path, JSON.stringify({ id: candidate.id, revision: 'old' }))
+    const pin = native.pin(root, false)
+    const lock = native.acquireAt(pin, 'rejected.lock', true)
+    let pending: Promise<void>
+    try {
+      pending = context.exports.discardRejectedUpdate(candidate, () => {})
+      assert.equal(context.exports.read()?.revision, 'old')
+      assert.equal(existsSync(join(root, 'ready.json')), true)
+      rmSync(path)
+    } finally {
+      native.release(lock)
+      native.release(pin)
+    }
+    await pending
+    assert.equal(context.exports.read()?.id, candidate.id)
+    assert.equal(existsSync(join(root, 'ready.json')), false)
+  }
+)
+
+test('revocation persists before cleanup and survives a new process with unrelated files intact', async (t) => {
+  const { root, context } = diskHarness(t)
+  await context.exports.discardRejectedUpdate(candidate, () => {})
   assert.equal(existsSync(join(root, 'ready.json')), false)
   assert.equal(existsSync(join(root, 'preparation.json')), false)
   assert.equal(context.validatedPreviewCandidates.has(candidate.id), false)
@@ -192,12 +324,15 @@ test('revocation persists before cleanup and survives a new process with unrelat
   assert.equal(restarted.exports.read().id, candidate.id)
 })
 
-test('cleanup failure retains durable rejection and damaged records fail closed', (t) => {
+test('cleanup failure retains durable rejection and damaged records fail closed', async (t) => {
   const { root, context } = diskHarness(t)
   context.dropStagedUpdate = () => {
     throw new Error('locked')
   }
-  assert.throws(() => context.exports.discardRejectedUpdate(candidate, () => {}), /locked/)
+  await assert.rejects(
+    context.exports.discardRejectedUpdate(candidate, () => {}),
+    /locked/
+  )
   assert.equal(context.exports.read()!.id, candidate.id)
   writeFileSync(join(root, 'rejected.json'), '{broken')
   assert.throws(() => context.exports.read())
@@ -213,7 +348,7 @@ for (const outcome of [
 ] as const)
   test(`fresh check of a rejected candidate: ${outcome}`, async (t) => {
     const { root, context } = diskHarness(t)
-    context.exports.discardRejectedUpdate(candidate, () => {})
+    await context.exports.discardRejectedUpdate(candidate, () => {})
     const next = { ...candidate, id: 'replacement' }
     let authorizations = 0
     const checks = {

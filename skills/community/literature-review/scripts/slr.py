@@ -48,7 +48,6 @@ from usage import accumulate
 from lifecycle import STOPPED_STATUSES, OperationBlocked, operation, read_status
 from recovery import code_revision, dependency_key, reusable, receipt
 from workspace_binding import bind
-from figure_dependencies import wait_contexts
 from tracker import transition, STATES, PROTOCOLS, FLAT
 from preflight import CHECK_SCOPES, FULL_SCOPE
 from manuscript_publication import publication_source, deliverable_path
@@ -399,53 +398,6 @@ def cmd_resume(args) -> int:
     return 0
 
 
-def _publish_phase(args, script: str, extra: list[str]) -> int:
-    """Run one publish-phase script against the workspace, mirroring `run`."""
-    profile = args.profile or slr_paths.resolve_profile()
-    workspace = Path(args.workspace).resolve() if args.workspace else slr_paths.workspace()
-    try:
-        path = slr_paths.script_path("scripts/generation/publish", script, profile)
-    except FileNotFoundError as exc:
-        print(json.dumps({"status": "FAILED", "status_reason": str(exc)}, ensure_ascii=False))
-        return 1
-
-    logs = workspace / "_logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    log_path = logs / "generation.log"
-    command = [sys.executable, str(path), *extra]
-    returncode, stdout = run_command(command, workspace, log_path,
-                                     stage_env(profile, workspace), 3600)
-
-    result: dict = {"phase": script, "profile": profile,
-                    "exit_code": returncode, "log": str(log_path)}
-    status_file = workspace / "05_generation" / "_status" / f"{Path(script).stem}.json"
-    if status_file.is_file():
-        try:
-            data = json.loads(status_file.read_text())
-            result["status"] = data.get("status", "UNKNOWN")
-            # the fix loop keys off this verdict
-            if "diagnosis" in data:
-                result["verdict"] = data["diagnosis"].get("verdict")
-                result["diagnosis"] = _compile_summary(data)
-            if "engine" in data:
-                result["engine"] = data["engine"]
-        except (json.JSONDecodeError, OSError) as exc:
-            result["status"] = "UNKNOWN"
-            result["status_reason"] = f"could not read {status_file.name}: {exc}"
-    else:
-        payload = extract_trailing_json(stdout)
-        result["status"] = (payload or {}).get("status",
-                                              "SUCCESS" if returncode == 0 else "FAILED")
-        if payload and payload.get("status_reason"):
-            result["status_reason"] = payload["status_reason"]
-    if result.get("status") == "FAILED" or returncode != 0:
-        result["log_tail"] = stdout.splitlines()[-args.tail:] if args.tail else []
-    # The fix loop runs these one at a time, so each attempt is its own line.
-    # How many attempts a compile took is a fact about the run, and counting the
-    # lines is the only way to recover it.
-
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0 if returncode == 0 else 1
 
 
 def cmd_compile(args) -> int:
@@ -455,35 +407,6 @@ def cmd_compile(args) -> int:
     return 1 if result['status']=='FAILED' else 0
 
 
-def cmd_finalize(args) -> int:
-    """Re-validate the assets, then re-aggregate the report.
-
-    `phase08_finalize` derives `final_status` by aggregating the status files
-    every earlier phase left behind. That is the right design and it has one
-    trap: a status file is a record of a check, not of the artefact, so a
-    problem fixed by hand after the check ran leaves `final_status` FAILED
-    against a document that is now fine.
-
-    One run hit exactly that. `validate_tables` failed because a table had
-    grown two rows the worklist did not list; the user approved the change, the
-    table was correct, and `generation_report.json` said FAILED to the end. The
-    orchestrator explained the discrepancy in prose and opened with "the survey
-    is complete" — so the human-readable and machine-readable verdicts said
-    opposite things, and only one of them is what a downstream consumer reads.
-
-    So finalize re-runs the cheap validators first. They are offline and take
-    milliseconds; running them again is far cheaper than shipping a report that
-    disagrees with its own document. Their exit codes are deliberately ignored
-    here: this command's job is to make the record accurate, not to gate on it.
-    """
-    workspace = _resolve_workspace(args)
-    for script in (
-        slr_paths.HOME / "scripts" / "generation" / "tables" / "_fast" / "validate_tables.py",
-    ):
-        if script.is_file():
-            subprocess.call([sys.executable, str(script), str(workspace)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return _publish_phase(args, "phase08_finalize.py", [])
 
 
 def _resolve_workspace(args) -> Path:
@@ -794,11 +717,6 @@ def cmd_progress(args) -> int:
 def cmd_figures(args) -> int:
     if args.action != 'statistics' and read_request(_resolve_workspace(args)).get('execution',{}).get('mode') == QUICK:
         raise ValueError('Quick does not generate figures; recommend Standard')
-    if args.action == 'context':
-        if not args.ids:raise ValueError('figures context requires --ids F1 ...')
-        sys.path.insert(0,str(slr_paths.HOME/'scripts'))
-        print(json.dumps(wait_contexts(_resolve_workspace(args),args.ids,args.wait_seconds),ensure_ascii=False,indent=2))
-        return 0
     if args.action == 'statistics':
         return _exec_tool([sys.executable,str(slr_paths.HOME/'scripts/generation/figures/_fast/compute_chart_data.py'),'--list','--workspace',str(_resolve_workspace(args))])
     if args.action == 'plan':
@@ -807,8 +725,7 @@ def cmd_figures(args) -> int:
         if not args.request: raise ValueError('figures plan requires --request FILE or -')
         print(json.dumps(figure_plan(_resolve_workspace(args),json_input(args.request)),ensure_ascii=False))
         return 0
-    # Realise the submitted figure plan. The author binds each figure's actual
-    # prerequisite context before submission; unrelated chapters need not finish.
+    # Realise the submitted figure plan independently of chapter generation.
     started = time.time()
     workspace = _resolve_workspace(args)
     status_dir = workspace / "05_generation" / "_status"
@@ -921,11 +838,9 @@ def cmd_stages(args) -> int:
     profile = args.profile or slr_paths.resolve_profile()
     config = load_profile(profile)
     print(f"profile: {profile} — {config['summary']}\n")
-    visible = [s for s in config['stages'] if getattr(args, 'include_legacy', False) or not s.get('legacy')]
+    visible = config['stages']
     for index, stage in enumerate(visible, 1):
         flag = " (optional)" if stage.get("optional") else ""
-        if stage.get('legacy'):
-            flag += ' (compatibility only)'
         steps = len(stage.get("steps", [])) or 1
         print(f"  {index}. {stage['id']:16s} {stage['title']}{flag}")
         print(f"     {steps} command(s), timeout {stage.get('timeout_sec')}s")
@@ -944,8 +859,7 @@ def cmd_info(args) -> int:
         "workspace": str(slr_paths.workspace()),
         "model_config": str(slr_paths.model_config_path(profile)),
         "endpoints": slr_paths.endpoints(),
-        "stages": [s["id"] for s in load_profile(profile)["stages"]
-                   if getattr(args, 'include_legacy', False) or not s.get('legacy')],
+        "stages": [s["id"] for s in load_profile(profile)["stages"]],
     }, indent=2, ensure_ascii=False))
     return 0
 
@@ -972,7 +886,7 @@ def cmd_manuscript(args) -> int:
         return _exec_main_tool(args, command, 'manuscript_generate')
     command = [sys.executable, str(slr_paths.HOME / "scripts/manuscript.py"),
                args.action, "--workspace", str(_resolve_workspace(args))]
-    for name in ("request", "assets", "part"):
+    for name in ("request",):
         value = getattr(args, name, None)
         if value is not None:
             command += ["--" + name, str(value)]
@@ -1043,18 +957,7 @@ def cmd_writing(args) -> int:
         result=(configure if args.action=='configure' else approve)(_resolve_workspace(args),value)
         emit(result,getattr(args,'full',False))
         return 0
-    command = [sys.executable, str(slr_paths.HOME / "scripts/writing.py"),
-               args.action, "--workspace", str(_resolve_workspace(args))]
-    for name in ("request", "concurrency", "repairs"):
-        value = getattr(args, name, None)
-        if value is not None:
-            command += ["--" + name, str(value)]
-    if args.only:
-        command += ["--only", *args.only]
-    for name in ("overwrite", "dry_run"):
-        if getattr(args, name, False):
-            command.append("--" + name.replace("_", "-"))
-    return _exec_tool(command)
+    raise ValueError('Unsupported writing management action: '+args.action)
 
 
 def cmd_import_search(args) -> int:
@@ -1071,17 +974,15 @@ def cmd_import_search(args) -> int:
 # --------------------------------------------------------------------- main --
 
 def main() -> int:
-    legacy_help = '--legacy-help' in sys.argv[1:]
     ap = argparse.ArgumentParser(prog="slr", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile", choices=slr_paths.PROFILES)
-    ap.add_argument('--legacy-help', action='store_true', help='show compatibility interfaces and exit')
     output = argparse.ArgumentParser(add_help=False)
     output.add_argument('--json', action='store_true',
                         help='request JSON output (already the default for command reports)')
     output.add_argument('--full', action='store_true',
                         help='return complete diagnostic JSON instead of the main view')
-    sub = ap.add_subparsers(dest="command", required=not legacy_help,
+    sub = ap.add_subparsers(dest="command", required=True,
                            parser_class=partial(argparse.ArgumentParser, parents=[output]))
 
     workflow = sub.add_parser('workflow', help='advance existing stages to a main-agent decision boundary')
@@ -1100,11 +1001,9 @@ def main() -> int:
     doctor.set_defaults(func=cmd_doctor)
 
     info = sub.add_parser("info", help="print resolved paths and configuration")
-    info.add_argument('--include-legacy', action='store_true')
     info.set_defaults(func=cmd_info)
 
     stages = sub.add_parser("stages", help="list the stages of a profile")
-    stages.add_argument('--include-legacy', action='store_true')
     stages.set_defaults(func=cmd_stages)
 
     import_search = sub.add_parser("import-search", help="import a completed independent search run")
@@ -1183,27 +1082,20 @@ def main() -> int:
     citations.set_defaults(func=cmd_citations)
 
     figures = sub.add_parser("figures", help="validate and realise a completed figure plan")
-    figures.add_argument("action", choices=("plan", "plan-generate", "statistics", "context"))
+    figures.add_argument("action", choices=("plan", "plan-generate", "statistics"))
     figures.add_argument("--request")
-    figures.add_argument("--ids",nargs="+")
     figures.add_argument("--workspace")
     figures.add_argument("--concurrency", type=int, default=4)
-    figures.add_argument('--wait-seconds',type=float,default=0)
     figures.set_defaults(func=cmd_figures)
 
     manuscript = sub.add_parser("manuscript", help="generate native chapters and refine v1 into editable v2; publish current source")
-    manuscript.add_argument("action", choices=("generate", "prepare", "publish"),
-                            metavar=None if legacy_help else '{generate,prepare,publish}')
+    manuscript.add_argument("action", choices=("generate", "prepare", "publish"))
     manuscript.add_argument("--workspace")
     manuscript.add_argument("--request")
-    manuscript.add_argument("--assets", help="retired: use outline configure" if legacy_help else argparse.SUPPRESS)
-    manuscript.add_argument("--part", type=int, help='legacy card part' if legacy_help else argparse.SUPPRESS)
     manuscript.set_defaults(func=cmd_manuscript)
 
     writing = sub.add_parser("writing", help="configure the task and record actual publication decisions")
-    writing.add_argument("action", choices=("configure", "approve", "plan-packet", "plan-resolve", "review-complete", "review-start","review-status","review-wait","review-response","review-timeout",
-                                          "corpus", "context", "draft", "produce", "review", "apply"),
-                        metavar=None if legacy_help else '{configure,plan-packet,plan-resolve,approve,review-complete}')
+    writing.add_argument("action", choices=("configure", "approve", "plan-packet", "plan-resolve", "review-complete", "review-start","review-status","review-wait","review-response","review-timeout"))
     writing.add_argument("--workspace")
     writing.add_argument("--request")
     writing.add_argument('--receipt', help='product receipt_ref; read the original response without copying JSON')
@@ -1212,18 +1104,7 @@ def main() -> int:
     writing.add_argument('--patch', help='plan-resolve requested amendments JSON; preserve actual user follow-up history')
     writing.add_argument("--packet-id",help="current review packet ID for review-* operations")
     writing.add_argument("--wait-seconds",type=int,help="review-wait polling duration, 0..30 seconds")
-    compatibility_help = 'compatibility authoring option' if legacy_help else argparse.SUPPRESS
-    writing.add_argument("--only", nargs="+", help=compatibility_help)
-    writing.add_argument("--concurrency", type=int, default=3, help=compatibility_help)
-    writing.add_argument("--repairs", type=int, choices=(0, 1), default=1, help=compatibility_help)
-    writing.add_argument("--overwrite", action="store_true", help=compatibility_help)
-    writing.add_argument("--dry-run", action="store_true", help=compatibility_help)
     writing.set_defaults(func=cmd_writing)
-
-    finalize = sub.add_parser("finalize", help="re-run the finalize phase")
-    finalize.add_argument("--workspace")
-    finalize.add_argument("--tail", type=int, default=40)
-    finalize.set_defaults(func=cmd_finalize)
 
     status = sub.add_parser('status',help='show compact computed stage readiness')
     status.add_argument('--workspace')
@@ -1250,16 +1131,10 @@ def main() -> int:
     for parser in (init,writing,outline,evidence,figures,papers,progress):
         parser.add_argument('--describe-input',action='store_true',
                             help='print input fields and valid examples without calling models or changing files')
-    if not legacy_help:
-        hidden = {'resume', 'compile', 'finalize', 'progress'}
-        # Preserve explicit compatibility calls; argparse has no public method
-        # to hide a subcommand from default help while retaining its parser.
-        sub._choices_actions = [a for a in sub._choices_actions if a.dest not in hidden]
-        sub.metavar = '{' + ','.join(k for k in sub.choices if k not in hidden) + '}'
+    hidden = {'resume', 'compile', 'progress'}
+    sub._choices_actions = [action for action in sub._choices_actions if action.dest not in hidden]
+    sub.metavar = '{' + ','.join(key for key in sub.choices if key not in hidden) + '}'
     args = ap.parse_args()
-    if args.legacy_help:
-        ap.print_help()
-        return 0
     try:
         if getattr(args,'describe_input',False):
             if args.command == 'init':

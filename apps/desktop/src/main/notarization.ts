@@ -8,12 +8,12 @@ const NATIVE_UNTRUSTED = 'ERR_NOTARIZATION_UNTRUSTED'
 const NATIVE_UNAVAILABLE = 'ERR_NOTARIZATION_UNAVAILABLE'
 
 export class NotarizationError extends Error {
-  constructor(
-    readonly verdict: 'untrusted' | 'unavailable' | 'indeterminate',
-    message: string
-  ) {
+  readonly verdict: 'untrusted' | 'unavailable' | 'indeterminate' | 'unsupported-code-directory'
+
+  constructor(verdict: NotarizationError['verdict'], message: string) {
     super(message)
     this.name = 'NotarizationError'
+    this.verdict = verdict
   }
 }
 
@@ -29,7 +29,10 @@ export function notarizationHash(metadata: string): Buffer {
   const normalized = metadata.replace(/\r\n/g, '\n')
   const hashes = [...normalized.matchAll(/^CDHash=([0-9a-fA-F]{40})$/gm)]
   if (!/^Hash type=sha256 size=32$/m.test(normalized) || hashes.length !== 1)
-    throw new NotarizationError('untrusted', 'Missing or unsupported target code directory digest')
+    throw new NotarizationError(
+      'unsupported-code-directory',
+      'Missing or unsupported target code directory digest'
+    )
   return Buffer.from(hashes[0][1], 'hex')
 }
 

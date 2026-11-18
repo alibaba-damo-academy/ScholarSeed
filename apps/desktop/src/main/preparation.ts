@@ -10,7 +10,7 @@ export interface PreparationPolicy {
   retryMaxMs: number
   retryJitter: number
 }
-export const MACOS_PREPARATION_POLICY: Readonly<PreparationPolicy> = Object.freeze({
+const DESKTOP_PREPARATION_POLICY: Readonly<PreparationPolicy> = Object.freeze({
   coalesceMs: 3 * MINUTE_MS,
   intervalMs: 30 * MINUTE_MS,
   recoveryBaseMs: 5 * MINUTE_MS,
@@ -19,7 +19,8 @@ export const MACOS_PREPARATION_POLICY: Readonly<PreparationPolicy> = Object.free
   retryJitter: 0.2,
 })
 const PREPARATION_POLICIES: Partial<Record<NodeJS.Platform, Readonly<PreparationPolicy>>> = {
-  darwin: MACOS_PREPARATION_POLICY,
+  darwin: DESKTOP_PREPARATION_POLICY,
+  win32: DESKTOP_PREPARATION_POLICY,
 }
 export function backgroundPreparationPolicy(
   platform: NodeJS.Platform
@@ -47,6 +48,7 @@ export const PREPARATION_REASONS = Object.freeze({
   retry: 'failure-backoff',
   recovery: 'interruption-recovery',
   persistence: 'checkpoint-unavailable',
+  archiveLimit: 'archive-limit',
 })
 export interface PreparationDecision {
   reason: (typeof PREPARATION_REASONS)[keyof typeof PREPARATION_REASONS]
@@ -59,6 +61,7 @@ export interface PreparationAdmission {
   lastSuccess: { candidateId: string; at: number } | null
   retry: { at: number; failures: number }
   recovery: { at: number; interruptions: number }
+  archiveLimitCandidate?: string
 }
 function initialAdmission(): PreparationAdmission {
   return {
@@ -76,6 +79,8 @@ function validTime(value: unknown): value is number {
 function validAdmission(value: PreparationAdmission): boolean {
   return (
     value.version === ADMISSION_VERSION &&
+    (value.archiveLimitCandidate === undefined ||
+      (typeof value.archiveLimitCandidate === 'string' && !!value.archiveLimitCandidate)) &&
     validTime(value.retry?.at) &&
     validTime(value.retry?.failures) &&
     validTime(value.recovery?.at) &&
@@ -98,6 +103,8 @@ export interface PreparationAttempt {
   isCurrent: () => boolean
   origin: PreparationOrigin
 }
+
+type PreparationOutcome = boolean | 'archive-limit'
 
 export interface PreparationCheckpoint {
   generation: number
@@ -135,7 +142,7 @@ export class UpdatePreparation {
   private origin: PreparationOrigin = 'manual'
 
   constructor(
-    private readonly prepare: (attempt: PreparationAttempt) => Promise<boolean>,
+    private readonly prepare: (attempt: PreparationAttempt) => Promise<PreparationOutcome>,
     private readonly persistence?: PreparationPersistence,
     private readonly policy?: Readonly<PreparationPolicy>,
     private readonly now: () => number = Date.now,
@@ -230,6 +237,10 @@ export class UpdatePreparation {
   get latest(): LatestVersionMeta | null {
     return this.observed
   }
+
+  isArchiveLimited(candidateId: string): boolean {
+    return this.admission.archiveLimitCandidate === candidateId
+  }
   get nextBackgroundAt(): number {
     return this.decision(true).at ?? 0
   }
@@ -285,6 +296,7 @@ export class UpdatePreparation {
     if (this.committed) return { reason: PREPARATION_REASONS.committed }
     if (this.worker) return { reason: PREPARATION_REASONS.running }
     if (!this.observed) return { reason: PREPARATION_REASONS.absent }
+    if (this.isArchiveLimited(this.observed.id)) return { reason: PREPARATION_REASONS.archiveLimit }
     if (this.completed === this.observed.id) return { reason: PREPARATION_REASONS.ready }
     let decision: PreparationDecision = { reason: PREPARATION_REASONS.eligible, at: this.now() }
     if (this.policy) {
@@ -338,6 +350,7 @@ export class UpdatePreparation {
 
   private begin(candidate: LatestVersionMeta, generation: number): boolean {
     if (!this.load() || !this.flushTerminal() || !this.flushObservation()) return false
+    if (this.isArchiveLimited(candidate.id)) return false
     const admission = this.policy
       ? {
           ...this.admission,
@@ -349,7 +362,12 @@ export class UpdatePreparation {
     return this.checkpoint(candidate, generation, null, admission)
   }
 
-  private finish(ready: boolean, candidate: LatestVersionMeta, generation: number): void {
+  private finish(
+    outcome: PreparationOutcome,
+    candidate: LatestVersionMeta,
+    generation: number
+  ): void {
+    const ready = outcome === true
     if (!this.policy) {
       if (ready && this.checkpoint(candidate, generation, candidate.id))
         this.completed = candidate.id
@@ -368,7 +386,9 @@ export class UpdatePreparation {
               recovery: { at: 0, interruptions: 0 },
               pending: admission.pending?.candidate.id === candidate.id ? null : admission.pending,
             }
-          : { retry: { failures, at: this.now() + this.delay(failures) } }),
+          : outcome === 'archive-limit'
+            ? { archiveLimitCandidate: candidate.id, retry: { failures: 0, at: 0 } }
+            : { retry: { failures, at: this.now() + this.delay(failures) } }),
       }
     }
     this.terminal = {
@@ -623,9 +643,9 @@ export class UpdatePreparation {
         generation === this.generation &&
         generation !== this.invalidatedGeneration &&
         !controller.signal.aborted
-      let ready = false
+      let outcome: PreparationOutcome = false
       try {
-        ready = await this.prepare({
+        outcome = await this.prepare({
           candidate,
           generation,
           signal: controller.signal,
@@ -634,7 +654,7 @@ export class UpdatePreparation {
         })
       } finally {
         if (this.controller === controller) this.controller = null
-        if (isCurrent()) this.finish(ready, candidate, generation)
+        if (isCurrent()) this.finish(outcome, candidate, generation)
         else this.interrupted(candidate, generation)
       }
       if (!isCurrent()) continue

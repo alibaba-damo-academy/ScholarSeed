@@ -68,7 +68,7 @@ def _validate_stage(stage: Path) -> None:
         "scripts/setup.cmd",
         "scripts/bootstrap.py",
         "scripts/setup.py",
-        "scripts/legacy_stage.py",
+        "scripts/chapter_pipeline.py",
         "lib/platform_runtime.py",
         "lib/platform_io.py",
         "scripts/workflow.py",

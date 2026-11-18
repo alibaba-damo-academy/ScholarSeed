@@ -119,7 +119,7 @@ class RuntimeTextClient:
             optional.setdefault('max_tokens',self.default_max_tokens)
             optional.setdefault('temperature',self.default_temperature)
             optional.setdefault('timeout',self.timeout)
-            optional.setdefault('extra_body',{'thinking':{'type':'enabled'}} if self.thinking else {'enable_thinking':False})
+            optional.setdefault('extra_body',{'enable_thinking':bool(self.thinking)})
             kwargs,omitted=_arguments(client.chat,
                 {'model':self.model,'messages':copy.deepcopy(messages),
                  'review_text':review_text,'output_kind':'file'},optional)

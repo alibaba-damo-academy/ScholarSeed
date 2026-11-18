@@ -3,6 +3,7 @@ package handoff
 import (
 	"archive/zip"
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -16,11 +17,22 @@ import (
 	"time"
 )
 
-const WorkerWait = 30 * time.Minute
-const WorkerStopWait = 15 * time.Second
-
 const operationGroup = "group"
 const operationInspect = "inspect"
+
+var errInstallVerification = errors.New("update file verification failed")
+var errWorkerCleanupUnconfirmed = errors.New("worker cleanup unconfirmed")
+
+func FailureEvent(err error) Event {
+	event := Event{Event: "error", Message: err.Error()}
+	if errors.Is(err, errInstallVerification) {
+		event.Code = "ERR_UPDATE_INSTALL_VERIFICATION"
+	}
+	if errors.Is(err, errWorkerCleanupUnconfirmed) {
+		event.Code = "ERR_UPDATE_HANDOFF_CLEANUP_UNCONFIRMED"
+	}
+	return event
+}
 
 type UpdateRecoveryError struct {
 	ProcessesExited bool
@@ -82,6 +94,7 @@ type Event struct {
 	RuntimeReady  *bool              `json:"runtimeReady,omitempty"`
 	Progress      *ComponentProgress `json:"progress,omitempty"`
 	Event         string             `json:"event"`
+	Code          string             `json:"code,omitempty"`
 	Message       string             `json:"message,omitempty"`
 	PackageSHA256 string             `json:"packageSha256,omitempty"`
 	PackageBytes  int64              `json:"packageBytes,omitempty"`
@@ -241,7 +254,7 @@ func (p Policy) openRequest(filename string) (result *prepared, err error) {
 		}
 		result.locks = append(result.locks, updaterFile)
 		if err = verifyAuthenticode(updater, p.Signing); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", errInstallVerification, err)
 		}
 		if err = checkLineage(r.PackagePath); err != nil {
 			return nil, err
@@ -258,7 +271,7 @@ func (p Policy) openRequest(filename string) (result *prepared, err error) {
 		result.locks = append(result.locks, file)
 		result.packageFile = file
 		if result.zip, result.release, err = p.verifyRelease(r.ReleaseEnvelope, file, r.Root); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", errInstallVerification, err)
 		}
 		if result.packageSHA, err = fileHash(file); err != nil {
 			return nil, err
@@ -383,14 +396,22 @@ func commandReader(input io.Reader) <-chan string {
 	}()
 	return result
 }
-func takeCommand(commands <-chan string, wanted string) error {
+func takeCommand(commands <-chan string, wanted string, deadline time.Time) error {
+	if !time.Now().Before(deadline) {
+		return errors.New("handoff command timeout")
+	}
+	timer := time.NewTimer(remainingWait(deadline))
+	defer timer.Stop()
 	select {
 	case command, ok := <-commands:
 		if !ok || command != wanted {
 			return errors.New("handoff cancelled before commit")
 		}
+		if !time.Now().Before(deadline) {
+			return errors.New("handoff command timeout")
+		}
 		return nil
-	case <-time.After(WorkerWait):
+	case <-timer.C:
 		return errors.New("handoff command timeout")
 	}
 }
@@ -398,6 +419,7 @@ func takeCommand(commands <-chan string, wanted string) error {
 // Coordinate is the original-user process. It must live outside the complete
 // installation root, because the official updater stops all processes there.
 func (p Policy) Coordinate(filename string) (err error) {
+	commandDeadline := time.Now().Add(WorkerWait)
 	timing := p.timer(Component{Kind: "handoff"}, timingCoordinator)
 	defer timing.finish(&err)
 	done := timing.start(timingRequest)
@@ -410,6 +432,7 @@ func (p Policy) Coordinate(filename string) (err error) {
 		r.close()
 		if cleanupConfirmed {
 			cleanupRequest(filename)
+			emit(Event{Event: "cleanup-complete"})
 		}
 	}()
 	done()
@@ -422,7 +445,7 @@ func (p Policy) Coordinate(filename string) (err error) {
 	commands := commandReader(os.Stdin)
 	done = timing.start(timingAuthorize)
 	emit(Event{Event: "ready", PackageSHA256: r.packageSHA, PackageBytes: r.packageSize})
-	if err = takeCommand(commands, "start"); err != nil {
+	if err = takeCommand(commands, "start", commandDeadline); err != nil {
 		return err
 	}
 	done()
@@ -433,7 +456,7 @@ func (p Policy) Coordinate(filename string) (err error) {
 		}
 		emit(Event{Event: "authorized"})
 		done = timing.start(timingCommit)
-		if err = takeCommand(commands, "commit"); err != nil {
+		if err = takeCommand(commands, "commit", commandDeadline); err != nil {
 			return err
 		}
 		event := Event{Event: "complete", RuntimeReady: &ready}
@@ -450,7 +473,7 @@ func (p Policy) Coordinate(filename string) (err error) {
 			done()
 			done = timing.start(timingCommit)
 			emit(Event{Event: "authorized"})
-			if err = takeCommand(commands, "commit"); err != nil {
+			if err = takeCommand(commands, "commit", commandDeadline); err != nil {
 				return err
 			}
 			done()
@@ -491,7 +514,7 @@ func (p Policy) Coordinate(filename string) (err error) {
 		if ready {
 			done = timing.start(timingCommit)
 			emit(Event{Event: "authorized"})
-			if err = takeCommand(commands, "commit"); err != nil {
+			if err = takeCommand(commands, "commit", commandDeadline); err != nil {
 				return err
 			}
 			emit(Event{Event: "complete", Components: r.reused, PrincipalSID: p.toolAdmission.principal})
@@ -567,6 +590,9 @@ func (p Policy) Coordinate(filename string) (err error) {
 		return nil
 	}
 	if err != nil {
+		if errors.Is(err, errWorkerCleanupUnconfirmed) {
+			cleanupConfirmed = false
+		}
 		return err
 	}
 	defer worker.Close()
@@ -578,15 +604,28 @@ func (p Policy) Coordinate(filename string) (err error) {
 	committed := false
 	defer func() {
 		if !committed {
-			worker.Terminate()
-			worker.Wait(WorkerWait)
+			stopDeadline := time.Now().Add(WorkerStopWait)
+			var jobStop, jobWait error
+			if job != nil {
+				jobStop = job.Terminate()
+			}
+			// Authorization can fail before the worker joins the Job.
+			workerStop := worker.Terminate()
+			_, workerWait := worker.Wait(remainingWait(stopDeadline))
+			if job != nil {
+				jobWait = job.Wait(remainingWait(stopDeadline))
+			}
+			cleanupConfirmed = workerWait == nil && jobWait == nil
+			if !cleanupConfirmed {
+				err = errors.Join(err, errWorkerCleanupUnconfirmed, jobStop, jobWait, workerStop, workerWait)
+			}
 		}
 	}()
-	if _, err = waitWorkerStatus(worker, statusFile, nonce, "authorized"); err != nil {
+	if _, err = waitWorkerStatus(worker, statusFile, nonce, "authorized", commands, commandDeadline); err != nil {
 		return err
 	}
 	emit(Event{Event: "authorized"})
-	if err = takeCommand(commands, "commit"); err != nil {
+	if err = takeCommand(commands, "commit", commandDeadline); err != nil {
 		return err
 	}
 	// The caller treats writing commit as irrevocable. From here this process
@@ -683,6 +722,11 @@ func (p Policy) Coordinate(filename string) (err error) {
 	if r.request.Operation == "apply" {
 		return presentUpdate(func(observe func(ComponentProgress)) (func() error, error) {
 			outcome := finish(observe)
+			if outcome != nil {
+				log := openRestartDiagnostics(filename, r.request.DiagnosticFile, p.PackVersion, r.release.PackVersion)
+				defer log.close()
+				log.record("apply.failed", operationDeadline.Add(-WorkerWait), 0, outcome)
+			}
 			return resume, outcome
 		}, func(run func(func(ComponentProgress)) error) error {
 			return updateWindow(p.UpdateMessages, run)
@@ -746,9 +790,19 @@ func writeWorkerStatus(file *os.File, state workerStatus) error {
 	}
 	return file.Sync()
 }
-func waitWorkerStatus(worker workerProcess, file *os.File, nonce, event string) (workerStatus, error) {
-	deadline := time.Now().Add(WorkerWait)
+func waitWorkerStatus(worker workerProcess, file *os.File, nonce, event string, commands <-chan string, deadline time.Time) (workerStatus, error) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(remainingWait(deadline))
+	defer timer.Stop()
 	for time.Now().Before(deadline) {
+		// Elevation can return after Desktop closed stdin. Check cancellation
+		// before accepting an authorization status from the new worker.
+		select {
+		case <-commands:
+			return workerStatus{}, errors.New("handoff cancelled before authorization")
+		default:
+		}
 		if state, err := readWorkerStatus(file, nonce); err == nil {
 			if state.Event == event {
 				return state, nil
@@ -760,7 +814,13 @@ func waitWorkerStatus(worker workerProcess, file *os.File, nonce, event string) 
 		if done, err := worker.Done(); err != nil || done {
 			return workerStatus{}, errors.New("worker exited before authorization")
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-commands:
+			return workerStatus{}, errors.New("handoff cancelled before authorization")
+		case <-timer.C:
+			return workerStatus{}, errors.New("worker authorization timeout")
+		case <-ticker.C:
+		}
 	}
 	return workerStatus{}, errors.New("worker authorization timeout")
 }
@@ -866,6 +926,11 @@ func (p Policy) Worker(filename, status, control, nonce string, parent uint32) (
 		return err
 	}
 	defer unlock()
+	var installed Runtime
+	if raw, readErr := readBounded(joinPath(r.request.Root, "current/"+RuntimeManifest), ManifestLimit); readErr == nil {
+		installed, _ = p.ParseRuntime(raw, true)
+	}
+	sweepUpdateCache(context.Background(), r.request.Root, p.ProductID, installed, r.runtime)
 	var progressErr error
 	if r.request.Operation == "prepare" || r.request.Operation == "apply" {
 		p.observeProgress = func(progress ComponentProgress) {

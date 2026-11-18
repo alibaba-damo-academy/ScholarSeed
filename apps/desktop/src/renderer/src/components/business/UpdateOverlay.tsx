@@ -97,7 +97,7 @@ function UpdateContent({ failed = false }: { failed?: boolean }): React.JSX.Elem
   // 给取消按钮只会制造「点了却没反应」的假控件（bug 87253073：用户必须有可见的恢复路径）。
   const cancellable =
     !starting &&
-    state?.installStage !== 'handoff' &&
+    !saving &&
     (phase === 'installing' || state?.restartPending) &&
     !restarting &&
     !cleaning

@@ -13,13 +13,19 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { tmpdir, userInfo } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { pathToFileURL } from 'node:url'
 import ts from 'typescript'
-import { SquirrelInstallation, readSquirrelHandoff, type SquirrelHandoff } from './squirrel.ts'
+import {
+  SquirrelInstallation,
+  decodeSquirrelHandoff,
+  readSquirrelHandoff,
+  type SquirrelHandoff,
+} from './squirrel.ts'
+import { captureRecord, TERMINAL_RECORD_LIMITS } from './terminal.ts'
 import {
   inspectSquirrelStartup,
   inspectSquirrelIdle,
@@ -185,10 +191,18 @@ function harness(home: string, recordPath: string, channel: string, platform = '
   >
   const updaterScope = {
     exports,
-    process: { platform, execPath: join(home, 'target.app/Contents/MacOS/App') },
+    process: {
+      platform,
+      execPath: join(home, 'target.app/Contents/MacOS/App'),
+      getuid: () => userInfo().uid,
+    },
     MACOS_PLATFORM: 'darwin',
     app,
     readSquirrelHandoff,
+    decodeSquirrelHandoff,
+    captureRecord,
+    TERMINAL_RECORD_LIMITS,
+    realpathSync: (path: string) => path,
     squirrelHandoffPath: () => recordPath,
     desktopHome: () => selectedHome,
     resolveDesktopConfig: () => config,
@@ -201,15 +215,31 @@ function harness(home: string, recordPath: string, channel: string, platform = '
     systemCacheDir: () => home,
     resolve,
     dirname,
+    basename,
     isNewerRelease,
     isPreviewUpdateChannel,
     squirrel: null as { committed: boolean } | null,
     readReadyState: () => null,
     logUpdateEvent: () => undefined,
-    rmSync: (path: string, options: Parameters<typeof rmSync>[1]) => {
-      assert.equal(path, recordPath)
-      actions.push('remove-handoff')
-      rmSync(path, options)
+    desktopDirectoryMaintenance: (directory: string) => {
+      assert.equal(directory, dirname(recordPath))
+      return {
+        consume: (name: string, bytes: Buffer, device: string, inode: string) => {
+          assert.equal(name, basename(recordPath))
+          const current = captureRecord(recordPath, TERMINAL_RECORD_LIMITS.handoff, [
+            userInfo().uid,
+          ])
+          if (
+            !bytes.equals(current.bytes) ||
+            device !== current.snapshot.device ||
+            inode !== current.snapshot.inode
+          )
+            throw new Error('Handoff record identity changed')
+          actions.push('remove-handoff')
+          rmSync(recordPath)
+        },
+        close: () => {},
+      }
     },
   }
   runInNewContext(updaterCode, updaterScope)
@@ -224,10 +254,10 @@ function harness(home: string, recordPath: string, channel: string, platform = '
       ...exports,
       readAnnouncedKey: () => null,
       updateLaneUnsupported: () => false,
+      archType: () => 'darwin-arm64',
       syncMacUpdateDiagnostics: async () => undefined,
       macStartupStatus: async () =>
         inspectSquirrelStartup(readSquirrelHandoff(recordPath)!, home, 'fixture', home),
-      pendingUpdateId: () => undefined,
       startMacDeferredCleanup: () => undefined,
     },
     updateSnapshot: null as UpdateSnapshot | null,
@@ -737,6 +767,21 @@ for (const channel of ['release', 'preview']) {
     })
   }
 }
+
+test('an identical handoff replaced after admission is preserved by final consumption', async (context) => {
+  const fixture = await records(context)
+  const startup = harness(fixture.home, fixture.path, 'release')
+  startup.updaterScope.app.getVersion = () => '0.3.2'
+  startup.config.buildNumber = '202611030002'
+  assert.equal((await startup.admit()).admission, 'allow')
+  const bytes = readFileSync(fixture.path)
+  const replacement = fixture.path + '.replacement'
+  writeFileSync(replacement, bytes, { mode: 0o600 })
+  renameSync(replacement, fixture.path)
+  await assert.rejects(startup.bootstrap(), /Handoff record identity changed/)
+  assert.deepEqual(readFileSync(fixture.path), bytes)
+  assert.equal(startup.actions.includes('backend'), false)
+})
 
 for (const invalid of ['json', 'legacy', 'installing', 'version', 'build', 'binding'] as const) {
   test(`${invalid} evidence cannot reopen the source even with a failure-shaped record`, async (context) => {

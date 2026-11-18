@@ -123,7 +123,11 @@ import { useApp } from '../../store'
 import { PREPARATION_SUPERSEDED_ERROR } from '../../preparation'
 import { UpdateAction } from './UpdateAction'
 import { PreviewUpdates } from '../../features/updates/Preview'
-import { isPreviewUpdateChannel, updateCandidateKey } from '../../../../updates'
+import {
+  isPreviewUpdateChannel,
+  UNSUPPORTED_UPDATE_ARCH,
+  updateCandidateKey,
+} from '../../../../updates'
 import {
   FILE_VERSION_MAX_SIZE_MB,
   FILE_VERSION_MIN_SIZE_MB,
@@ -836,11 +840,15 @@ function AboutPage(): React.JSX.Element {
       {failure.rolledBack && (
         <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>{t('update.rolledBack')}</span>
       )}
-      {candidate && phase === 'failed' && (
-        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-resumable">
-          {update?.resumable === false ? t('update.failedDiscarded') : t('update.failedRetained')}
-        </span>
-      )}
+      {candidate &&
+        phase === 'failed' &&
+        update?.resumable !== undefined &&
+        (failure.origin === 'download' ||
+          (failure.origin === 'preparation' && update.resumable)) && (
+          <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-resumable">
+            {update.resumable ? t('update.failedRetained') : t('update.failedDiscarded')}
+          </span>
+        )}
       {phase === 'ready' && (
         <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>{t('update.installRetryHint')}</span>
       )}
@@ -917,7 +925,9 @@ function AboutPage(): React.JSX.Element {
     case 'unsupported':
       versionSub = (
         <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
-          {t('update.unsupported')}
+          {update?.reason === UNSUPPORTED_UPDATE_ARCH
+            ? t('update.unsupportedArchitecture')
+            : t('update.unsupported')}
         </span>
       )
       break

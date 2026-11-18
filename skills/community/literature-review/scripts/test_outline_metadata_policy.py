@@ -18,7 +18,7 @@ from task_contract import configure
 class CompactPresentationTest(unittest.TestCase):
     def test_exact_hierarchy_nested_captions_and_no_internal_planning_leak(self):
         outline={'survey_title':'个性化综述','review_thesis':'INTERNAL THESIS',
-                 'prerequisites':[{'id':'P1','requirement':'INTERNAL DEFINITION'}],
+                 'analysis_tasks':[{'task_id':'A1','completion':'INTERNAL DEFINITION'}],
                  'outline_tree':[{'section_id':'1','title':'背景','description':'INTERNAL DESCRIPTION',
                     'paper_ids':['p1'],'figures':[{'figure_id':'F1','caption_draft':'总体框架',
                     'purpose':'INTERNAL PURPOSE','visual_guidance':'INTERNAL DRAWING'}],

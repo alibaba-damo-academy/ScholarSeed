@@ -5,22 +5,20 @@ manuscript generation. Read figure_brief.json and its named authoring packets.
 Resolve packet and evidence paths relative to the workspace base in the brief.
 Main owns the host tracker. Return observed progress through the assignment channel.
 
-Each packet contains the confirmed figure purpose, content_plan, qualifications,
-section intent, visual_guidance, task, prompt_guidance and caption_guidance.
+Read the shared task, rendering_contract, prompt_guidance and caption_guidance
+from the brief once. Each packet contains only its confirmed figure purpose,
+content_plan, qualifications, section intent, visual_guidance and local language.
 Read the complete records named by evidence.cite_keys from the evidence file's
 papers dictionary. Citation keys are the model-facing identities. Select relevant
 records from a corpus-scoped pool; keep the confirmed evidence boundary.
 
 ## Context and authoring
 
-Call `figures context --ids F1 --wait-seconds 120` before authoring each plan.
-The command owns bounded waiting and returns READY with the actual prerequisite
-prose, or WAITING with the still-missing chapters. Run it in the foreground and
-wait on the same tool session if the tool yields. Read its returned JSON directly.
-On WAITING, work on independent figures and report the dependency to main; resume
-this same assignment when the producer is ready. Use the prose for shared definitions
-and notation. Essential missing
-evidence or absent required figure slots is an exception to report to main.
+Author independently of chapter generation, using the confirmed section intent,
+figure plan and permitted complete records. Resolve scientific terms and notation
+from those materials, not from an assumed future chapter. Do not wait for generated
+prose or create an execution graph. Missing actual evidence or required figure slots
+is an exception to report to main, not permission to invent facts or drop the figure.
 
 Author a matched visual specification and reader-facing caption:
 - _prompt specifies visible objects, labels, layout, relationships, legend and style.

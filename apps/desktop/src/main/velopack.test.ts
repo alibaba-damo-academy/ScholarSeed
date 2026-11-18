@@ -6,10 +6,15 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { applicationResources } from './resources.ts'
 import type { prepareWindowsVelopack } from './velopack.ts'
+import updateTimeouts from '../../updater/handoff/timeouts.json' with { type: 'json' }
 
 const source = readFileSync(new URL('./velopack.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2022,
+    esModuleInterop: true,
+  },
 }).outputText
 
 function startup(
@@ -64,6 +69,7 @@ function startup(
     '../../runtime/components.cjs': {},
     './nupkg.ts': {},
     './redaction.ts': { redactDiagnosticError: (error: unknown) => error },
+    '../../updater/handoff/timeouts.json': updateTimeouts,
     ...overrides,
   }
   const exports: Record<string, unknown> = {}
@@ -173,7 +179,7 @@ test('Windows preparation reports cleanup separately and preserves the original 
     baseUrl: 'https://example.test/velopack',
     componentBaseUrl: 'https://example.test',
     candidate: {} as Parameters<typeof prepare>[0]['candidate'],
-    native: {} as Parameters<typeof prepare>[0]['native'],
+    native: { pin: () => ({}), release: () => {}, createChild: () => '' },
     keys: {},
     appId: 'test',
     diagnosticFile: 'native-update.log',
@@ -194,6 +200,8 @@ test('Windows preparation reports cleanup separately and preserves the original 
 
 test('Windows preparation retries the release receipt after a transient cache-hit rename failure', async () => {
   const events: string[] = []
+  const signals: (AbortSignal | undefined)[] = []
+  const external = new AbortController()
   const manifest = { assets: [{ Type: 'Full', FileName: 'full.nupkg', Size: 2 }], app_id: 'test' }
   const { prepare } = startup(
     'win32',
@@ -247,12 +255,21 @@ test('Windows preparation retries the release receipt after a transient cache-hi
         assertWindowsPath() {},
         assertNewerPackage() {},
         verifyPackageAsset: async () => events.push('verify-download'),
-        verifyPackageInventory: async () => events.push('verify-cache'),
+        verifyPackageInventory: async (
+          _filename: string,
+          _manifest: unknown,
+          _roots: unknown,
+          signal?: AbortSignal
+        ) => {
+          signals.push(signal)
+          events.push('verify-cache')
+        },
         readPackageMember: async () => Buffer.from('{}'),
       },
       './components.ts': {
         COMPONENT_DELIVERY: { packageManifest: 'runtime.json' },
         verifyRuntimeEnvelope: () => ({}),
+        requireUpdateDiskSpace: async () => undefined,
         downloadRuntimeComponents: async () => events.push('components'),
       },
     },
@@ -267,10 +284,11 @@ test('Windows preparation retries the release receipt after a transient cache-hi
     baseUrl: 'https://example.test/velopack',
     componentBaseUrl: 'https://example.test',
     candidate: {} as Parameters<typeof prepare>[0]['candidate'],
-    native: {} as Parameters<typeof prepare>[0]['native'],
+    native: { pin: () => ({}), release: () => {}, createChild: () => '' },
     keys: {},
     appId: 'test',
     diagnosticFile: 'native-update.log',
+    signal: external.signal,
     onStage: (stage) => {
       if (stage === 'release-receipt') events.push(stage)
     },
@@ -289,4 +307,12 @@ test('Windows preparation retries the release receipt after a transient cache-hi
     'receipt-written',
     'components',
   ])
+  assert.ok(signals[0])
+  assert.notEqual(signals[0], external.signal)
+  assert.equal(signals[0], signals[1])
+  await result.verify()
+  assert.equal(signals[2], external.signal)
+  const install = new AbortController()
+  await result.verify(install.signal)
+  assert.equal(signals[3], install.signal)
 })
