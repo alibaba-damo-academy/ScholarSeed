@@ -48,11 +48,7 @@ from service.chat.service.completions import (
 )
 from service.chat.service.models import SessionModelSpec, _codex_provider
 from service.chat.service.namespaces import NamespaceTools
-from service.chat.service.rejections import (
-    TRANSIENT_PROVIDER_FAILURE_CODE,
-    TRANSIENT_PROVIDER_FAILURE_MESSAGE,
-    terminal_provider_failure,
-)
+from service.chat.service.rejections import terminal_provider_failure
 from service.chat.service.streams import (
     SSE_BUFFER_LIMIT,
     NativeResponseNormalizer,
@@ -1804,6 +1800,12 @@ def _permanent_tls_failure(cause: ssl.SSLError) -> httpx.ConnectError:
     return error
 
 
+def _unavailable_connection(error_number: int) -> httpx.ConnectError:
+    error = httpx.ConnectError("synthetic connection failure")
+    error.__cause__ = OSError(error_number, "synthetic")
+    return error
+
+
 def test_connect_phase_failures_retry_before_request_is_sent() -> None:
     payload = {"model": "alias", "stream": False, "input": "Continue"}
     success = b'{"id":"response-1","output":[]}'
@@ -1819,6 +1821,8 @@ def test_connect_phase_failures_retry_before_request_is_sent() -> None:
         for maker, category in (
             (_tls_sever, "tls"),
             (_transient_dns_failure, "dns"),
+            (lambda: _unavailable_connection(errno_module.ECONNREFUSED), "connection_refused"),
+            (lambda: _unavailable_connection(errno_module.ENETUNREACH), "network_unreachable"),
             (lambda: httpx.ConnectError("secret-connect-detail"), "connect_error"),
         ):
             with _captured_bridge_warnings() as messages:
@@ -1995,90 +1999,86 @@ def test_non_tls_connect_failures_keep_three_attempt_budget() -> None:
     )
 
 
-def test_request_reset_retries_before_response_headers() -> None:
-    payload = {
-        "model": "alias",
-        "stream": True,
-        "input": "Continue",
-        "tools": [{"type": "web_search"}],
-    }
-    success = (
-        b'data: {"type":"response.created","response":{"id":"response-1"}}\n\n'
-        b'data: {"type":"response.completed","response":{"id":"response-1",'
-        b'"status":"completed"}}\n\n'
-    )
-
-    async def no_delay(_seconds: float) -> None:
-        return None
-
-    with patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
-        for error_number in (errno_module.EPIPE, errno_module.ECONNRESET):
-            diagnostics: list[tuple[str, dict]] = []
-            with _captured_bridge_warnings() as messages:
-                response, captured = forward_contract(
-                    payload,
-                    success,
-                    send_exc=(_request_reset(error_number), None),
-                    diagnostics=diagnostics,
-                )
-            retries = [
-                message
-                for message in messages
-                if message.startswith("model_bridge_upstream_request_retry")
-            ]
-            emitted = diagnostics[-1][1] if diagnostics else {}
-            check(
-                f"request-stage reset {error_number} recovers without failing the turn",
-                response.status_code == 200
-                and b"response.completed" in response.content
-                and len(captured) == 2
-                and len(retries) == 1
-                and emitted.get("attempt") == 2
-                and emitted.get("request_retries") == 1
-                and emitted.get("connect_retries") == 0,
-                f"status={response.status_code} calls={len(captured)} diagnostic={emitted}",
-            )
-
+def test_request_reset_before_response_headers_is_not_replayed() -> None:
+    for error_number in (errno_module.EPIPE, errno_module.ECONNRESET):
         diagnostics = []
-        with _captured_bridge_warnings() as messages:
-            exhausted, captured = forward_contract(
-                payload,
-                b"",
-                send_exc=_request_reset(errno_module.EPIPE),
-                diagnostics=diagnostics,
-            )
-    emitted = diagnostics[-1][1] if diagnostics else {}
+        result, captured = forward_contract(
+            {"model": "alias", "stream": True, "input": "Continue"},
+            b"",
+            send_exc=_request_reset(error_number),
+            diagnostics=diagnostics,
+        )
+        emitted = diagnostics[-1][1]
+        check(
+            f"request reset {error_number} does not prove the request was unsent",
+            result.status_code == 502
+            and "code" not in result.json()["error"]
+            and len(captured) == 1
+            and emitted.get("attempt") == 1
+            and emitted.get("request_retries") == 0
+            and emitted.get("transport_category") == "connection_reset",
+        )
+
+
+def test_connect_retry_backoff_can_be_cancelled() -> None:
+    diagnostics = []
+
+    backoff = 123.0
+    sleep = asyncio.sleep
+
+    async def cancel_backoff(delay: float) -> None:
+        if delay == backoff:
+            raise asyncio.CancelledError()
+        await sleep(delay)
+
+    with (
+        patch("service.chat.service.completions._retry_backoff_delay", return_value=backoff),
+        patch("service.chat.service.completions.asyncio.sleep", new=cancel_backoff),
+    ):
+        _, captured = forward_contract(
+            {"model": "alias", "stream": True, "input": "Continue"},
+            b"",
+            send_exc=(_unavailable_connection(errno_module.ENETUNREACH), None),
+            diagnostics=diagnostics,
+            raise_server_exceptions=False,
+        )
+    emitted = diagnostics[-1][1]
     check(
-        "request-stage reset exhausts the bridge budget with a safe transient code",
-        exhausted.status_code == 502
-        and exhausted.json()["error"]
-        == {
-            "code": TRANSIENT_PROVIDER_FAILURE_CODE,
-            "message": TRANSIENT_PROVIDER_FAILURE_MESSAGE,
-        }
-        and len(captured) == 3
-        and emitted.get("attempt") == 3
-        and emitted.get("request_retries") == 2
+        "cancelling during connection backoff prevents the next attempt",
+        len(captured) == 1
+        and emitted.get("attempt") == 1
         and emitted.get("connect_retries") == 0
-        and len(messages) == 3,
-        f"status={exhausted.status_code} calls={len(captured)} diagnostic={emitted}",
+        and emitted.get("first_connect_failure_category") == "network_unreachable"
+        and emitted.get("cancellation_source") == "request_task"
+        and emitted.get("cancelled_during_connect_backoff") is True
+        and emitted.get("end_reason") == "cancelled",
+        str(emitted),
     )
 
+
+def test_request_read_timeout_with_ssl_wait_is_not_replayed() -> None:
+    error = httpx.ReadTimeout("synthetic read timeout")
+    error.__cause__ = TimeoutError()
+    error.__cause__.__cause__ = ssl.SSLWantReadError()
     diagnostics = []
-    unrelated, captured = forward_contract(
-        payload,
+    result, captured = forward_contract(
+        {"model": "selected", "input": "test", "stream": True},
         b"",
-        send_exc=httpx.ReadError("secret-unclassified-read-error"),
+        send_exc=error,
         diagnostics=diagnostics,
     )
-    emitted = diagnostics[-1][1] if diagnostics else {}
+    emitted = diagnostics[-1][1]
     check(
-        "unclassified request read error is not replayed as a reset",
-        unrelated.status_code == 502
+        "SSL waiting during a read timeout keeps the timeout classification without replay",
+        result.status_code == 502
+        and "code" not in result.json()["error"]
         and len(captured) == 1
+        and emitted.get("attempt") == 1
+        and emitted.get("connect_retries") == 0
         and emitted.get("request_retries") == 0
-        and "code" not in unrelated.json()["error"],
-        f"status={unrelated.status_code} calls={len(captured)} diagnostic={emitted}",
+        and emitted.get("transport_category") == "read_timeout"
+        and emitted.get("transport_root_type") == "SSLWantReadError",
+        f"status={result.status_code} calls={len(captured)} diagnostic={emitted}",
     )
 
 
@@ -2214,8 +2214,8 @@ def test_transport_failure_is_attributable() -> None:
     ]
     message = failed[0] if failed else ""
     check(
-        "transport sever returns 502 after the bridge retry budget",
-        response.status_code == 502 and len(captured) == 3,
+        "transport sever returns 502 without replaying an unknown request",
+        response.status_code == 502 and len(captured) == 1,
         str(response.status_code),
     )
     check("transport sever is logged exactly once", len(failed) == 1, str(len(failed)))
@@ -3903,7 +3903,9 @@ def main() -> int:
     test_transient_tls_succeeds_on_seventh_attempt()
     test_tls_handshake_timeout_succeeds_on_seventh_attempt()
     test_non_tls_connect_failures_keep_three_attempt_budget()
-    test_request_reset_retries_before_response_headers()
+    test_request_reset_before_response_headers_is_not_replayed()
+    test_request_read_timeout_with_ssl_wait_is_not_replayed()
+    test_connect_retry_backoff_can_be_cancelled()
     test_response_body_reset_does_not_replay_request()
     test_permanent_tls_failures_do_not_retry()
     test_permanent_dns_failure_does_not_retry()

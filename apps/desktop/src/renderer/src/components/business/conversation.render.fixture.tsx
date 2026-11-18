@@ -570,6 +570,58 @@ export function Fixture(): React.JSX.Element {
       style={compact ? { height: COMPACT_HEIGHT } : undefined}
     >
       <div className={compact ? 'hidden' : 'flex-none'}>
+        {new URLSearchParams(location.search).has('forkAnchor') && (
+          <Button
+            onClick={() =>
+              set({
+                activeSession: SESSION_ID,
+                threads: {
+                  [SESSION_ID]: {
+                    id: SESSION_ID,
+                    sessionId: SESSION_ID,
+                    title: 'Fork anchor',
+                    lastSeq: 1,
+                    status: 'done',
+                    running: false,
+                    turnOutcomes: {
+                      healthy: 'completed',
+                      recovered: 'completed',
+                      failed: 'failed',
+                    },
+                    conversation: [
+                      {
+                        kind: 'agent',
+                        text: 'Healthy response',
+                        turnId: 'healthy',
+                        itemId: 'healthy-item',
+                      },
+                      {
+                        kind: 'agent',
+                        text: 'Interrupted fragment',
+                        turnId: 'recovered',
+                        itemId: 'partial-item',
+                      },
+                      {
+                        kind: 'agent',
+                        text: 'Recovered response',
+                        turnId: 'recovered',
+                        itemId: 'final-item',
+                      },
+                      {
+                        kind: 'agent',
+                        text: 'Failed response',
+                        turnId: 'failed',
+                        itemId: 'failed-item',
+                      },
+                    ],
+                  },
+                },
+              })
+            }
+          >
+            Fork anchor
+          </Button>
+        )}
         {new URLSearchParams(location.search).has('runtimeFailure') && (
           <Button
             onClick={() => {
