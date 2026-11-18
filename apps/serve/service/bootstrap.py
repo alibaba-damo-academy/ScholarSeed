@@ -513,8 +513,13 @@ def _storage_native(
 def maintain_session_storage_offline() -> bool | None:
     """Run one bounded batch under the normal cross-process directory authority."""
     with session_storage_phase("directory_qualification"):
-        native = _storage_native(native_guardian())
-        coordinator = str(coordination_root())
+        coordination_path = coordination_root()
+        coordinator = str(coordination_path)
+        native: (
+            DarwinDirectoryNative | LinuxDirectoryNative | WindowsDirectoryNative | RegistryNative
+        ) = _storage_native(native_guardian())
+        if coordination_path.name == REGISTRY_DIRECTORY:
+            native = RegistryNative(native, coordination_path)
         pin = native.pin(coordinator, True)
         native.release(pin)
         domains = Domains(native, coordinator, (str(SERVICE_DIR.absolute()),), maintenance=True)
