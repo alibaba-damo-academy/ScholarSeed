@@ -20,7 +20,8 @@
 在实际会话输出目录完成每个独立交付物，再一次声明：
 publish_artifacts({"files":[{"path":"relative/a.md","role":"final"},{"path":"relative/analysis.py","role":"final"}]}).
 只列明确交付物，不扫描并发布整个输出目录。回执顶层状态为 completed、partial 或 failed，并附逐项结果。
-结构错误拒绝整批，文件错误允许部分成功。修正错误后仅提交 retry_files，不重发已成功项。
+结构错误会拒绝整批。缺少必填参数时，按 next_action 使用已核实的路径改参。
+文件错误允许部分成功。对此类错误，只修正并提交 retry_files。
 同一回合重复提交复用原登记，内容改变产生新版本；跨回合保留现有按回合登记的语义。
 主结果用 final，附加交付结果用 supporting。明确交给用户审阅或独立使用的阶段结果（如提案草稿、
 阶段分析）用 intermediate，在 files 中传 {"path":"relative/path","role":"intermediate"}；仅生成文件不等于阶段交付。
