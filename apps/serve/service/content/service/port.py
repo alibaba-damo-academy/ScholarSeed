@@ -1216,20 +1216,20 @@ class ContentService:
         target = self._file(project_id, path)
         scope = self._space(project_id)
         try:
-            parent, name = scope.open_parent(path)
-            with closing(parent):
-                symlink = allow_file_symlink and stat.S_ISLNK(parent.stat(name).st_mode)
-                can_write = not symlink and writable(parent, name)
-            symlink_target = scope.relative(target) if symlink else None
-            if symlink_target is not None:
-                # Keep the alias read-only and open its checked target without following links.
-                parent, name = scope.open_parent(symlink_target)
-                with closing(parent), os.fdopen(parent.open_regular(name), "rb") as stream:
+            with ExitStack() as stack:
+                parent, name = scope.open_parent(path)
+                stack.callback(parent.close)
+                symlink_target = None
+                if allow_file_symlink and stat.S_ISLNK(parent.stat(name).st_mode):
+                    can_write = False
+                    symlink_target = scope.relative(target)
+                    parent, name = scope.open_parent(symlink_target)
+                    stack.callback(parent.close)
+                else:
+                    can_write = writable(parent, name)
+                with os.fdopen(parent.open_regular(name), "rb") as stream:
                     size = os.fstat(stream.fileno()).st_size
                     revision = _stream_revision(stream)
-            else:
-                size = target.stat().st_size
-                revision = _revision(target)
         except PermissionError as exc:
             raise ContentReadPermissionError(path) from exc
         except OSError as exc:

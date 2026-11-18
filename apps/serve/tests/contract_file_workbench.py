@@ -532,6 +532,41 @@ def test_pdf_visual_region_manifest_and_crop_use_the_live_revision() -> None:
             and stale.status_code == 409,
             f"manifest={response.text} image={image.status_code} stale={stale.text}",
         )
+
+        link = project / "linked-paper.pdf"
+        link.symlink_to("paper.pdf")
+        linked_params = {**params, "path": link.name}
+        linked_open = client.get("/api/workbench/open", params={"path": link.name})
+        linked_document = linked_open.json()
+        check(
+            "linked PDF keeps selection available without a writable record target",
+            linked_open.status_code == 200
+            and linked_document.get("revision") == opened["revision"]
+            and linked_document["capabilities"]["can_select"]
+            and not linked_document["capabilities"]["can_annotate"]
+            and linked_document.get("asset_id") is None,
+            linked_open.text,
+        )
+        linked_manifest = client.get("/api/workbench/pdf/regions", params=linked_params)
+        linked_image = client.get(
+            f"/api/workbench/pdf/regions/{region['region_id']}/image",
+            params={**crop_params, "path": link.name, "page": 1, "quad": region["quad"]},
+        )
+        linked_stale = client.get(
+            "/api/workbench/pdf/regions",
+            params={**linked_params, "revision": "sha256:stale"},
+        )
+        check(
+            "linked PDF supports the same region manifest and image at the current revision",
+            linked_manifest.status_code == 200
+            and linked_manifest.json() == response.json()
+            and linked_image.status_code == 200
+            and linked_image.headers["content-type"] == "image/png"
+            and linked_image.content == image.content
+            and linked_stale.status_code == 409,
+            f"manifest={linked_manifest.text} image={linked_image.status_code} "
+            f"stale={linked_stale.text}",
+        )
     finally:
         if indexes is not None:
             indexes.close()
@@ -1602,14 +1637,10 @@ def test_html_read_permission_failure_and_retry() -> None:
             },
             response.text,
         )
-        original_open = Path.open
-
-        def denied_open(target: Path, *args: object, **kwargs: object):
-            if target.resolve() == (project / "page.html").resolve():
-                raise PermissionError()
-            return original_open(target, *args, **kwargs)
-
-        with patch.object(Path, "open", denied_open):
+        with patch(
+            "service.content.service.port.DirectoryHandle.open_regular",
+            side_effect=PermissionError(),
+        ):
             opened = client.get("/api/workbench/open", params={"path": "page.html"})
         check(
             "HTML open preserves permission denial while hashing",

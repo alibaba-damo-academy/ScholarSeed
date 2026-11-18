@@ -343,11 +343,11 @@ def register_workbench_routes(app: FastAPI) -> None:
     def project_pdf_document(
         content: ContentService, project: str, path: str, revision: str
     ) -> CitationDocument:
-        snapshot = content.snapshot(project, path)
+        snapshot = content.snapshot(project, path, allow_file_symlink=True)
         if snapshot.revision != revision:
             raise HTTPException(status_code=CONFLICT_STATUS, detail="source_revision_conflict")
         payload, media_type = content.read_bytes(
-            project, path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
+            project, snapshot.symlink_target or path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
         )
         if media_type != "application/pdf":
             raise HTTPException(status_code=415, detail="pdf_source_invalid")
