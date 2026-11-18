@@ -252,7 +252,12 @@ from service.persistence.preview import (
 from service.persistence.project import transaction
 from service.persistence.rows import rows_digest
 from service.platform.activation import WorkbenchAdmission
-from service.platform.activity import Activities, ActivityDomain, MaintenanceIncomplete
+from service.platform.activity import (
+    Activities,
+    ActivityDomain,
+    ActivityPhase,
+    MaintenanceIncomplete,
+)
 from service.platform.bridge import (
     ArtifactPublisher,
     DisplayCardPublisher,
@@ -284,7 +289,12 @@ from service.platform.local import local_listener
 from service.platform.notifications import ChangeHub
 from service.platform.reclamation import reclaim_coordination
 from service.platform.records import RecordOwner
-from service.platform.registry import REGISTRY_DIRECTORY, RegistryNative, remove_legacy_coordination
+from service.platform.registry import (
+    REGISTRY_DIRECTORY,
+    RegistryBusyError,
+    RegistryNative,
+    remove_legacy_coordination,
+)
 from service.platform.search import register_search_routes
 from service.platform.shutdown import ShutdownStage
 from service.platform.startup import (
@@ -535,6 +545,8 @@ def resolve_workspace_root(
 DIRECTORY_DRAIN_TIMEOUT_SECONDS = 60.0
 DIRECTORY_DRAIN_POLL_SECONDS = 0.05
 SCHEDULED_DRAIN_TIMEOUT_SECONDS = 0.25
+SCHEDULED_STORAGE_RESTORE_ATTEMPTS = 3
+SCHEDULED_STORAGE_RESTORE_RETRY_SECONDS = 0.1
 # Electron may still be synchronously appending the provider exit log.
 DIRECTORY_LEASE_WAIT_SECONDS = 2.0
 DIRECTORY_PREPARATION_ATTEMPTS = 8
@@ -3482,6 +3494,37 @@ def create_app(
                 if scan_project is not None:
                     app.state.resource_version_supervisor.schedule_scan(scan_project)
 
+    def restore_scheduled_storage(generation: str) -> None:
+        for attempt in range(1, SCHEDULED_STORAGE_RESTORE_ATTEMPTS + 1):
+            try:
+                current, occupied = prepare_startup_domains(
+                    native,
+                    coordinator,
+                    discovery_roots,
+                    read_current,
+                    startup_storage_needs_write,
+                    lambda state: initialize_startup_storage(
+                        state,
+                        project_failed=seed.project_failures.__setitem__,
+                    ),
+                    qualification_failure=qualification_failure,
+                    removed_roots=removed_project_roots,
+                    busy_timeout=DIRECTORY_LEASE_WAIT_SECONDS,
+                )
+            except RegistryBusyError:
+                if attempt == SCHEDULED_STORAGE_RESTORE_ATTEMPTS:
+                    raise
+                _log.warning("session_storage_restore_registry_busy attempt=%s", attempt)
+                time.sleep(SCHEDULED_STORAGE_RESTORE_RETRY_SECONDS * attempt)
+                continue
+            owner.install(occupied)
+            app.state.startup_sources = current
+            for project in current.unavailable_projects:
+                if project.project_id:
+                    app.state.content.block_project(project.project_id, project.reason)
+            activities.resume(generation, expected_phase=ActivityPhase.SEALED)
+            return
+
     def maintain_storage_exclusively(generation: str) -> bool:
         # The worker owns the whole transition, including restoring qualification.
         # Its future is awaited by SessionMaintenanceService even during shutdown.
@@ -3495,7 +3538,7 @@ def create_app(
                 discovery_roots,
                 read_current,
                 maintenance=True,
-                busy_timeout=0.0,
+                busy_timeout=DIRECTORY_LEASE_WAIT_SECONDS,
             )
             try:
                 with exclusive.mutation():
@@ -3515,26 +3558,7 @@ def create_app(
         finally:
             # A failed release/reacquisition must leave admission sealed.
             if released:
-                current, occupied = prepare_startup_domains(
-                    native,
-                    coordinator,
-                    discovery_roots,
-                    read_current,
-                    startup_storage_needs_write,
-                    lambda state: initialize_startup_storage(
-                        state,
-                        project_failed=seed.project_failures.__setitem__,
-                    ),
-                    qualification_failure=qualification_failure,
-                    removed_roots=removed_project_roots,
-                    busy_timeout=DIRECTORY_LEASE_WAIT_SECONDS,
-                )
-                owner.install(occupied)
-                app.state.startup_sources = current
-                for project in current.unavailable_projects:
-                    if project.project_id:
-                        app.state.content.block_project(project.project_id, project.reason)
-                activities.resume(generation)
+                restore_scheduled_storage(generation)
 
     async def maintain_storage() -> bool | None:
         generation = activities.begin_if_idle()

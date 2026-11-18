@@ -35,6 +35,10 @@ _DOMAIN_SLOT = re.compile(r"^(posix-[0-9a-f]{16}-[0-9a-f]{16}|windows-[0-9a-f]{1
 _SLOT_FILE = re.compile(r"slot-([1-9][0-9]{0,9})")
 
 
+class RegistryBusyError(sqlite3.OperationalError):
+    """Transient SQLite contention after this registry transaction settled."""
+
+
 def remove_legacy_coordination(coordinator: Path) -> None:
     legacy = filesystem_path(coordinator.with_name(LEGACY_DIRECTORY))
     try:
@@ -61,13 +65,21 @@ def _ignore_removed_entry(_function: Callable[..., Any], _path: str, error: Base
 def _write_transaction(database: sqlite3.Connection) -> Iterator[None]:
     if database.in_transaction:
         raise ValueError("Registry operation requires its own transaction")
-    database.execute("BEGIN IMMEDIATE")
     try:
+        database.execute("BEGIN IMMEDIATE")
         yield
         database.execute("COMMIT")
-    except BaseException:
+    except BaseException as error:
         if database.in_transaction:
-            database.execute("ROLLBACK")
+            try:
+                database.execute("ROLLBACK")
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("registry transaction rollback failed", [error, cleanup])
+        if (
+            isinstance(error, sqlite3.OperationalError)
+            and getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+        ):
+            raise RegistryBusyError(*error.args) from error
         raise
 
 
