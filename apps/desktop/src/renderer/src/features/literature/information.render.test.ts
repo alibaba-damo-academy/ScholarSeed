@@ -413,6 +413,29 @@ test('information shares grouped fields, retains failed edits, and isolates docu
       ),
       ['A', 'A']
     )
+    const longAbstract = 'Long abstract with English words and 中文内容. '.repeat(40) + 'END'
+    await abstractEditor.click()
+    await abstractInput.fill(longAbstract)
+    await abstractInput.press('Tab')
+    await expect(abstractEditor).toHaveText(longAbstract)
+    for (const width of [320, 560]) {
+      await page.setViewportSize({ width, height: 840 })
+      const geometry = await abstractEditor.locator('strong').evaluate((text) => {
+        const bounds = text.getBoundingClientRect()
+        const section = text.closest('.vds-collapsible__content')!
+        const container = section.getBoundingClientRect()
+        return {
+          right: bounds.right,
+          containerRight: container.right,
+          height: bounds.height,
+          lineHeight: Number.parseFloat(getComputedStyle(text).lineHeight),
+          overflowing: section.scrollWidth > section.clientWidth,
+        }
+      })
+      assert.ok(geometry.right <= geometry.containerRight + 1)
+      assert.ok(geometry.height > geometry.lineHeight * 2)
+      assert.equal(geometry.overflowing, false)
+    }
   } finally {
     await browser.close()
   }
