@@ -16,6 +16,12 @@ static inline NSURL *SSSuccessionStateURL(void) {
   NSArray *arguments = NSProcessInfo.processInfo.arguments;
   return arguments.count > SSSuccessionStateArgument ? [NSURL fileURLWithPath:arguments[SSSuccessionStateArgument]] : nil;
 }
+static inline BOOL SSSuccessionRollbackAbsent(NSString *label, NSString *rollbackKey, NSError **error) {
+  CFPropertyListRef rollback = CFPreferencesCopyValue((__bridge CFStringRef)rollbackKey, (__bridge CFStringRef)label, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+  if (!rollback) return YES;
+  CFRelease(rollback);
+  return SSObservationFail(error, EBUSY);
+}
 static inline NSDictionary *SSSuccessionRequest(NSDictionary *request) {
   NSMutableDictionary *serialized = [request mutableCopy];
   for (NSString *key in @[@"updateBundleURL", @"targetBundleURL"]) {
@@ -45,8 +51,7 @@ static inline BOOL SSVerifySuccessionTrust(NSDictionary *request, NSString *labe
       !SSObservationBoolean(request[@"launchAfterInstallation"]) || [request[@"launchAfterInstallation"] boolValue] ||
       !SSObservationBoolean(request[@"useUpdateBundleName"]) || !serialized || !rollbackKey.length)
     return SSObservationFail(error, EINVAL);
-  CFPropertyListRef rollback = CFPreferencesCopyValue((__bridge CFStringRef)rollbackKey, (__bridge CFStringRef)label, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
-  if (rollback) { CFRelease(rollback); return SSObservationFail(error, EBUSY); }
+  if (!SSSuccessionRollbackAbsent(label, rollbackKey, error)) return NO;
   SecCodeRef running = NULL;
   CFDictionaryRef information = NULL;
   OSStatus status = SecCodeCopySelf(kSecCSDefaultFlags, &running);
@@ -84,8 +89,7 @@ static inline BOOL SSVerifyRetirementTrust(NSDictionary *request, NSString *labe
   NSString *bundle = request[@"bundleIdentifier"];
   if (![bundle isKindOfClass:NSString.class] || [bundle rangeOfString:SSSuccessionBundlePattern options:NSRegularExpressionSearch].location != 0 ||
       ![label isEqual:[bundle stringByAppendingString:SSSuccessionHelperSuffix]]) return SSObservationFail(error, EINVAL);
-  CFPropertyListRef rollback = CFPreferencesCopyValue((__bridge CFStringRef)SSSuccessionRollbackKey, (__bridge CFStringRef)label, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
-  if (rollback) { CFRelease(rollback); return SSObservationFail(error, EBUSY); }
+  if (!SSSuccessionRollbackAbsent(label, SSSuccessionRollbackKey, error)) return NO;
   SecCodeRef running = NULL; CFDictionaryRef information = NULL; SecRequirementRef requirement = NULL;
   OSStatus status = SecCodeCopySelf(kSecCSDefaultFlags, &running);
   if (status == errSecSuccess) status = SecCodeCopySigningInformation(running, kSecCSSigningInformation, &information);

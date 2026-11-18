@@ -73,12 +73,14 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }): P
 }
 class Updater extends EventEmitter {
   url = ''
+  headers?: Record<string, string>
   checks = 0
   quits = 0
   initializeError = false
   check = (): void => {}
-  setFeedURL({ url }: { url: string }): void {
+  setFeedURL({ url, headers }: { url: string; headers?: Record<string, string> }): void {
     this.url = url
+    this.headers = headers
     if (this.initializeError) this.emit('error', new Error('unsigned application'))
   }
   checkForUpdates(): void {
@@ -245,6 +247,46 @@ test('a second installation cannot replace an active handoff, even with replacem
   assert.deepEqual(readSquirrelHandoff(f.record), live)
 })
 
+test(
+  'a downloaded handoff requires a dead publisher and independent replacement proof',
+  { skip: process.platform !== 'darwin' },
+  async (t) => {
+    const f = await fixture(t)
+    const child = spawn(process.execPath, ['-e', 'process.stdin.resume()'])
+    t.after(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill()
+    })
+    await once(child, 'spawn')
+    const prior = { ...identity, state: 'downloaded', sourcePid: child.pid }
+    await writeFile(f.record, JSON.stringify(prior))
+    const updater = new Updater()
+    let approved = true
+    const installation = new SquirrelInstallation(
+      updater,
+      f.record,
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      () => approved
+    )
+    const authorize = async () => () => {}
+    await assert.rejects(installation.prepare(f.archive, identity, authorize), /already exists/)
+    assert.equal(updater.checks, 0)
+    const exited = once(child, 'exit')
+    child.kill()
+    await exited
+    approved = false
+    await assert.rejects(installation.prepare(f.archive, identity, authorize), /already exists/)
+    assert.deepEqual(readSquirrelHandoff(f.record), prior)
+    approved = true
+    updater.check = () => updater.emit('error', new Error('fixture stopped after publication'))
+    await assert.rejects(installation.prepare(f.archive, identity, authorize), /installation error/)
+    assert.equal(updater.checks, 1)
+    assert.equal(readSquirrelHandoff(f.record)?.sourcePid, process.pid)
+  }
+)
+
 for (const approved of [false, true]) {
   test(`first publication respects failed handoff replacement approval: ${approved}`, async (t) => {
     const f = await fixture(t)
@@ -394,6 +436,7 @@ test('oversized cached ZIP fails before authorization or native handoff', async 
   assert.equal(updater.url, '')
   assert.equal(updater.checks, 0)
   assert.equal(updater.quits, 0)
+  assert.equal(updater.headers, undefined)
   await assert.rejects(access(record))
 })
 
@@ -430,6 +473,7 @@ test('durable identity precedes official check; download completion alone never 
   let transfer: Promise<void> | undefined
   updater.check = () => {
     assert.equal(readSquirrelHandoff(record)?.candidate, identity.candidate)
+    assert.equal(readSquirrelHandoff(record)?.sourcePid, process.pid)
     assert.equal(owner.committed, true)
     transfer = (async () => {
       const feed = (await (await fetch(updater.url)).json()) as { url: string }
@@ -448,6 +492,7 @@ test('durable identity precedes official check; download completion alone never 
   assert.equal(updater.quits, 0)
   assert.equal(owner.ready, true)
   assert.equal(readSquirrelHandoff(record)?.state, 'downloaded')
+  assert.equal(readSquirrelHandoff(record)?.sourcePid, process.pid)
   await assert.rejects(
     owner.prepare(archive, { ...identity, candidate: 'newer' }, async () => () => {}),
     /consumed/
@@ -468,9 +513,10 @@ test('a ready native request can resume the same candidate without repeating nat
   const updater = new Updater()
   const owner = new InstallationFixture(updater, record, () => {})
   updater.check = () => updater.emit('update-downloaded')
-  await owner.prepare(archive, identity, async () => () => {})
+  await owner.prepare(archive, identity, async () => () => {}, true)
   await owner.prepare(archive, identity, async () => () => {})
   assert.equal(updater.checks, 1)
+  assert.deepEqual(updater.headers, { 'X-ScholarSeed-Update-Interaction': '1' })
   assert.equal(owner.ready, true)
   await assert.rejects(
     owner.prepare(archive, { ...identity, candidate: 'another' }, async () => () => {})

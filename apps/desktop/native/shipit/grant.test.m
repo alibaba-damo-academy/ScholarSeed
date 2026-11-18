@@ -2,13 +2,16 @@
 #import "readiness.h"
 #import "SQRLUpdater.h"
 #import "SQRLShipItRequest.h"
+#import "SQRLShipItLauncher.h"
 #import <AppKit/AppKit.h>
 #import <ReactiveObjC/ReactiveObjC.h>
 #include <assert.h>
 #include <dlfcn.h>
+#include <objc/runtime.h>
 
 @interface SQRLUpdater (GrantContract)
 - (RACSignal *)relaunchToInstallUpdate;
+- (RACSignal *)launchShipItWithRequiredPrivilege:(BOOL)privileged;
 @end
 @interface GrantUpdater : SQRLUpdater
 @property (nonatomic, strong) NSURL *fixtureState;
@@ -16,6 +19,39 @@
 @implementation GrantUpdater
 - (RACSignal *)shipItStateURL { return [RACSignal return:self.fixtureState]; }
 @end
+
+static NSUInteger Submissions;
+static BOOL LastSubmissionPrivileged;
+
+static RACSignal *RecordSubmission(id receiver, SEL selector, BOOL privileged) {
+  (void)receiver; (void)selector;
+  Submissions++;
+  LastSubmissionPrivileged = privileged;
+  return [RACSignal empty];
+}
+
+static void CheckInteraction(void) {
+  GrantUpdater *updater = [GrantUpdater alloc];
+  assert([updater respondsToSelector:@selector(launchShipItWithRequiredPrivilege:)]);
+  Method method = class_getClassMethod(SQRLShipItLauncher.class, @selector(launchPrivileged:));
+  IMP original = method_setImplementation(method, (IMP)RecordSubmission);
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://127.0.0.1/feed"]];
+  [updater setValue:[request copy] forKey:@"updateRequest"];
+  NSError *error = nil;
+  assert(![[updater launchShipItWithRequiredPrivilege:YES] waitUntilCompleted:&error]);
+  assert(error.code == EACCES && Submissions == 0);
+  assert([[updater launchShipItWithRequiredPrivilege:NO] waitUntilCompleted:NULL]);
+  assert(Submissions == 1 && !LastSubmissionPrivileged);
+  [request setValue:@"true" forHTTPHeaderField:@"X-ScholarSeed-Update-Interaction"];
+  [updater setValue:[request copy] forKey:@"updateRequest"];
+  assert(![[updater launchShipItWithRequiredPrivilege:YES] waitUntilCompleted:&error]);
+  assert(error.code == EACCES && Submissions == 1);
+  [request setValue:@"1" forHTTPHeaderField:@"X-ScholarSeed-Update-Interaction"];
+  [updater setValue:[request copy] forKey:@"updateRequest"];
+  assert([[updater launchShipItWithRequiredPrivilege:YES] waitUntilCompleted:NULL]);
+  assert(Submissions == 2 && LastSubmissionPrivileged);
+  method_setImplementation(method, original);
+}
 
 static void CheckGrant(NSURL *state, SQRLShipItRequest *prepared, SQRLShipItRequest *current, BOOL expected) {
   assert(!NSApp);
@@ -41,6 +77,7 @@ int main(int argc, const char **argv) {
     NSString *root = @(argv[1]);
     Dl_info loaded; assert(dladdr((__bridge const void *)SQRLUpdater.class, &loaded));
     assert([@(loaded.dli_fname) hasPrefix:root.stringByDeletingLastPathComponent]);
+    CheckInteraction();
     NSURL *source = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"request/New.app"]];
     NSURL *target = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"live/Old.app"]];
     for (NSURL *url in @[source, target]) assert([NSFileManager.defaultManager createDirectoryAtURL:url withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL]);
@@ -60,7 +97,7 @@ int main(int argc, const char **argv) {
     CheckGrant(state, request, request, NO);
     assert(SSReadinessPublishBound(source, target, binding, NO, ECANCELED, NULL));
     CheckGrant(state, request, request, NO);
-    NSLog(@"[squirrel-grant-test] real request write, exact ready requirement and terminal priority PASS");
+    NSLog(@"[squirrel-grant-test] privilege interaction, real request write, exact ready requirement and terminal priority PASS");
   }
   return 0;
 }

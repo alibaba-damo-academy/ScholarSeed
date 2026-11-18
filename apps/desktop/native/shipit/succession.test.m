@@ -69,9 +69,14 @@ static void TrustRefusals(void) {
   Check(!SSVerifySuccessionTrust(request, @"other.ShipIt", SSSuccessionRollbackKey, &error) && error.code == EINVAL, @"succession requires exact bundle and helper label binding");
   FixtureRollback = kCFBooleanTrue;
   error = nil;
+  Check(!SSSuccessionRollbackAbsent(label, SSSuccessionRollbackKey, &error) && error.code == EBUSY,
+    @"ordinary unauthorized preparation and cancellation cannot qualify with rollback present");
+  error = nil;
   Check(!SSVerifySuccessionTrust(request, label, SSSuccessionRollbackKey, &error) && error.code == EBUSY, @"succession refuses an existing rollback before trust admission");
   FixtureRollback = NULL;
   error = nil;
+  Check(SSSuccessionRollbackAbsent(label, SSSuccessionRollbackKey, &error) && !error,
+    @"rollback absence can be observed through the exact ShipIt preference domain");
   Check(!SSVerifySuccessionTrust(request, label, SSSuccessionRollbackKey, &error) && error.code == EPERM, @"ad-hoc test host cannot authorize Developer ID succession");
   error = nil;
   Check(!SSSuccessionSigned(request[@"updateBundleURL"], NULL, &error) && error, @"missing signed candidate is not trusted");

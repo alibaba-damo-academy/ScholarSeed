@@ -235,7 +235,10 @@ export function UpdatePanel({
   let primaryLabel: string = t('update.check')
   if (downloading) primaryLabel = t('update.updating')
   else if (action === 'repair') primaryLabel = accountUpdateText('update.repair')
-  else if (action === 'install') primaryLabel = t('update.restartClient')
+  else if (action === 'install')
+    primaryLabel = t(
+      window.scholarseed?.platform === 'darwin' ? 'update.restartUpdate' : 'update.restartClient'
+    )
   else if (action === 'download')
     primaryLabel = failed
       ? failure?.origin === 'preparation'

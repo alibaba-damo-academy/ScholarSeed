@@ -2837,6 +2837,7 @@ declare module 'i18next' {
             "retryPreparation": "重试准备",
             "retryDownload": "重试下载",
             "restartInstall": "重启完成更新",
+            "restartUpdate": "重启更新",
             "later": "稍后",
             "diagnose": "诊断更新链路",
             "notesEmpty": "优化用户使用体验",

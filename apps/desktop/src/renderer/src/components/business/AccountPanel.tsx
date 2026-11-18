@@ -1008,7 +1008,11 @@ function AboutPage(): React.JSX.Element {
           state={update}
         >
           {action === 'install'
-            ? t('update.restartInstall')
+            ? t(
+                window.scholarseed?.platform === 'darwin'
+                  ? 'update.restartUpdate'
+                  : 'update.restartInstall'
+              )
             : action === 'download'
               ? failure
                 ? t('update.retryDownload')

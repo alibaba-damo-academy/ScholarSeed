@@ -14,25 +14,40 @@ import { dirname, resolve } from 'node:path'
 
 const source = readFileSync(new URL('./updater.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('updater.ts', source, ts.ScriptTarget.Latest, true)
-const declaration = parsed.statements.find(
-  (statement) =>
-    ts.isFunctionDeclaration(statement) && statement.name?.text === 'installStagedUpdate'
-)!
+function updaterFunctions(names: string[]): string {
+  return ts.transpileModule(
+    parsed.statements
+      .filter(
+        (statement) =>
+          ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text ?? '')
+      )
+      .map((statement) => statement.getText(parsed))
+      .join('\n'),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }
+  ).outputText
+}
 
-function fixture(failHelper = false, failFinalGrant = false) {
+function fixture(failHelper = false, failFinalGrant = false, writable = true) {
   const events: string[] = []
   const nativeSpaceChecks: boolean[] = []
   let ready = false
   let committed = false
+  const controller = new AbortController()
   const exports: Record<string, Function> = {}
   const prepared = {
     receipt: {
       matches: () => true,
       revalidate: async () => {
         events.push('revalidate')
-        return {}
+        return staged.archive
       },
     },
+  }
+  let grants = 0
+  const authorize = async () => {
+    events.push('grant')
+    if (++grants === 2 && failFinalGrant) throw new Error('offline')
+    return () => events.push('grant-guard')
   }
   const owner = {
     preparedCandidate: () => undefined,
@@ -70,6 +85,7 @@ function fixture(failHelper = false, failFinalGrant = false) {
     exports,
     process: { platform: 'darwin' },
     MACOS_PLATFORM: 'darwin',
+    NO_STAGED_UPDATE: 'No staged update',
     InstallationProgress,
     commitWithActivation,
     retryUpdate,
@@ -78,54 +94,68 @@ function fixture(failHelper = false, failFinalGrant = false) {
       if (failFinalGrant && ready && !nativePrepared) throw new Error('ENOSPC')
     },
     readReadyState: () => staged,
+    preparedIdentity: (meta: { id: string }) => meta.id,
+    authorizeActivation: authorize,
+    canPrepareMacUpdateWithoutInteraction: () => writable,
     app: { getVersion: () => '0.3.1' },
     Date,
     macPrepared: prepared,
     squirrel: owner,
+    macLaunchCleanup: undefined,
     macHandoffCommitted: () => committed,
     macHandoffReady: () => ready,
     logTiming: () => {},
+    logUpdateLine: () => {},
     logUpdateEvent: () => {},
     persistUpdateLog: () => {},
     updateLog: undefined,
     discardOnTerminalSquirrelFailure: () => {},
-    ActivationCandidateChanged: class extends Error {},
+    ActivationCandidateChanged,
     PreparedArtifactChangedError: class extends Error {},
     UpdateVerifyError: class extends Error {},
     UpdateArchiveLimitError: class extends Error {},
   }
   runInNewContext(
-    ts.transpileModule(declaration.getText(parsed), {
-      compilerOptions: {
-        module: ts.ModuleKind.CommonJS,
-        target: ts.ScriptTarget.ES2022,
-      },
-    }).outputText,
+    updaterFunctions([
+      'prepareMacUpdate',
+      'installStagedUpdate',
+      'macArchiveReady',
+      'macPreparationReady',
+      'macNativePreparationMatches',
+    ]),
     environment
   )
-  let grants = 0
-  const run = () =>
+  const prepare = (allowInteraction = false) =>
+    exports.prepareMacUpdate(
+      staged.meta.id,
+      (value: (typeof progress)[number]) => progress.push(value),
+      () => {},
+      controller.signal,
+      undefined,
+      allowInteraction
+    )
+  const install = () =>
     exports.installStagedUpdate(
       (value: (typeof progress)[number]) => progress.push(value),
       () => {},
       undefined,
-      async () => {
-        events.push('grant')
-        if (++grants === 2 && failFinalGrant) throw new Error('offline')
-        return () => events.push('grant-guard')
-      },
+      authorize,
       async () => {
         assert.equal(ready, true)
         events.push('quiesce-and-context')
         return () => events.push('discard-context')
       }
     )
-  return { run, events, progress, nativeSpaceChecks }
+  return { prepare, install, events, progress, nativeSpaceChecks }
 }
 
-test('actual macOS install orchestration keeps helper preparation before quiescence and refreshes final authorization', async () => {
+test('background preparation proves native readiness before activation can quiesce writers', async () => {
   const current = fixture()
-  assert.equal((await current.run()).ok, true)
+  assert.equal((await current.install()).ok, false)
+  assert.deepEqual(current.events, [])
+  assert.equal((await current.prepare()).ok, true)
+  assert.deepEqual(current.events, ['revalidate', 'helper', 'grant', 'grant-guard', 'ready'])
+  assert.equal((await current.install()).ok, true)
   assert.deepEqual(current.events, [
     'revalidate',
     'helper',
@@ -149,7 +179,7 @@ test('actual macOS install orchestration keeps helper preparation before quiesce
 
 test('native preparation refusal never quiesces product writers or persists a launch context', async () => {
   const current = fixture(true)
-  const result = await current.run()
+  const result = await current.prepare()
   assert.equal(result.ok, false)
   if (!result.ok) assert.equal(result.errorFallback, 'activation_recovery_required')
   assert.equal(current.events.includes('quiesce-and-context'), false)
@@ -157,17 +187,58 @@ test('native preparation refusal never quiesces product writers or persists a la
   assert.ok(current.progress.every((value) => value.phase === 'preparing'))
 })
 
+test('an unwritable installation needs explicit preparation before native side effects', async () => {
+  const current = fixture(false, false, false)
+  assert.equal((await current.prepare()).errorFallback, 'preparation_failed')
+  assert.equal(current.events.length, 0)
+  assert.equal((await current.prepare(true)).ok, true)
+  assert.ok(current.events.includes('helper'))
+  assert.equal(current.events.includes('quiesce-and-context'), false)
+})
+
+test('silent preparation checks the canonical application and its containing directory', () => {
+  const writes: string[] = []
+  let denied: string | undefined
+  const writable = runInNewContext(
+    updaterFunctions(['canPrepareMacUpdateWithoutInteraction']) +
+      '\ncanPrepareMacUpdateWithoutInteraction',
+    {
+      process: { execPath: '/Alias.app/Contents/MacOS/ScholarSeed' },
+      fsConstants: { W_OK: 2 },
+      dirname,
+      resolve,
+      realpathSync: (path: string) => {
+        assert.equal(path, '/Alias.app')
+        return '/Applications/ScholarSeed.app'
+      },
+      accessSync: (path: string, mode: number) => {
+        assert.equal(mode, 2)
+        writes.push(path)
+        if (path === denied) throw new Error('Permission denied')
+      },
+    }
+  )
+  assert.equal(writable(), true)
+  assert.deepEqual(writes, ['/Applications/ScholarSeed.app', '/Applications'])
+  for (const path of writes.slice()) {
+    denied = path
+    assert.equal(writable(), false)
+  }
+})
+
 test('failed final authorization consumes no launch context and cannot report handoff success', async () => {
   const current = fixture(false, true)
-  assert.equal((await current.run()).ok, false)
+  assert.equal((await current.prepare()).ok, true)
+  assert.equal((await current.install()).ok, false)
   assert.equal(current.events.at(-1), 'discard-context')
 })
 
 test('retry after authorization failure budgets only remaining space for a matching native preparation', async () => {
   const current = fixture(false, true)
-  assert.equal((await current.run()).ok, false)
-  assert.equal((await current.run()).ok, true)
-  assert.deepEqual(current.nativeSpaceChecks, [false, true])
+  assert.equal((await current.prepare()).ok, true)
+  assert.equal((await current.install()).ok, false)
+  assert.equal((await current.install()).ok, true)
+  assert.deepEqual(current.nativeSpaceChecks, [false, true, true])
   assert.equal(current.events.filter((event) => event === 'helper').length, 1)
 
   const entry = parsed.statements.find(
@@ -233,7 +304,7 @@ test('normal quit cancels pre-handoff preparation and waits for its cleanup', as
     }).outputText,
     {
       runtimePreparation: undefined,
-      macInstallPreparation: preparation,
+      macInstallCommit: preparation,
       updateInstallAbort: abort,
       updater: { macHandoffCommitted: () => false },
       updateRestartRequested: false,
