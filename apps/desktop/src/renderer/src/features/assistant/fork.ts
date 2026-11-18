@@ -20,6 +20,7 @@ export interface ForkOrigin {
   source_product_seq: number
   source_turn_id: string | null
   inherited_messages: ForkMessageAnchor[]
+  inherited_failed_turn_ids?: string[]
   anchor: ForkMessageAnchor | null
   title: string | null
   title_fallback: 'new_session' | null
@@ -53,6 +54,9 @@ export function parseForkOrigin(value: unknown): ForkOrigin | null {
     (value.source_turn_id !== null && typeof value.source_turn_id !== 'string') ||
     !Array.isArray(value.inherited_messages) ||
     !value.inherited_messages.every(messageAnchor) ||
+    (value.inherited_failed_turn_ids !== undefined &&
+      (!Array.isArray(value.inherited_failed_turn_ids) ||
+        !value.inherited_failed_turn_ids.every((id) => typeof id === 'string' && Boolean(id)))) ||
     (value.anchor !== null && !messageAnchor(value.anchor)) ||
     (value.title !== null && typeof value.title !== 'string') ||
     (value.title_fallback !== null && value.title_fallback !== 'new_session') ||
