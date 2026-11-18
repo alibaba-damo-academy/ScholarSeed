@@ -163,6 +163,8 @@ class ContentSnapshot:
     size: int
     revision: str
     writable: bool
+    # Project-relative target used to keep preview metadata and bytes on the same path.
+    symlink_target: str | None = None
 
 
 @dataclass(frozen=True)

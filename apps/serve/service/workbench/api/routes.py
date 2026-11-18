@@ -207,9 +207,10 @@ def register_workbench_routes(app: FastAPI) -> None:
         content = _content(request)
         try:
             # 越界、存在性与 exact revision 先由 content 域裁决，再谈能力。
-            snapshot = content.snapshot(project or "", path)
+            snapshot = content.snapshot(project or "", path, allow_file_symlink=True)
         except ContentError as exc:
             raise _fail(exc) from exc
+        is_symlink = snapshot.symlink_target is not None
         versioning = None
         if snapshot.size > WORKBENCH_PREVIEW_MAX_BYTES:
             source_bytes = None
@@ -232,7 +233,9 @@ def register_workbench_routes(app: FastAPI) -> None:
             else:
                 try:
                     source_bytes, _media_type = content.read_bytes(
-                        project or "", path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
+                        project or "",
+                        snapshot.symlink_target or path,
+                        max_bytes=WORKBENCH_PREVIEW_MAX_BYTES,
                     )
                 except ContentError as exc:
                     raise _fail(exc) from exc
@@ -242,15 +245,22 @@ def register_workbench_routes(app: FastAPI) -> None:
             admission: ResourceAdmissionPolicy | None = getattr(
                 request.app.state, "resource_version_supervisor", None
             )
-            versioning = admission.capability(snapshot.project_id, path) if admission else None
+            if admission and not is_symlink:
+                versioning = admission.capability(snapshot.project_id, path)
             capabilities = replace(
                 capabilities,
                 can_version=bool(versioning and versioning.can_version),
                 can_edit=capabilities.can_edit and snapshot.writable,
                 can_save=capabilities.can_save and snapshot.writable,
+                can_diff=capabilities.can_diff and not is_symlink,
+                can_annotate=capabilities.can_annotate and not is_symlink,
             )
         try:
-            binding = content.identify(project or "", path) if viewer.value == "pdf" else None
+            binding = (
+                content.identify(project or "", path)
+                if viewer is ViewerKind.PDF and not is_symlink
+                else None
+            )
         except ContentError as exc:
             raise _fail(exc) from exc
         return {
@@ -280,9 +290,10 @@ def register_workbench_routes(app: FastAPI) -> None:
     ) -> Response:
         content = _content(request)
         try:
-            snapshot = content.snapshot(project or "", path)
+            snapshot = content.snapshot(project or "", path, allow_file_symlink=True)
         except ContentError as exc:
             raise _fail(exc) from exc
+        read_path = snapshot.symlink_target or path
         headers = {
             "Accept-Ranges": "bytes",
             "ETag": _etag(snapshot.revision),
@@ -300,7 +311,7 @@ def register_workbench_routes(app: FastAPI) -> None:
                 )
             start, end = selected
             try:
-                payload = content.read_range(project or "", path, start, end)
+                payload = content.read_range(project or "", read_path, start, end)
             except ContentError as exc:
                 raise _fail(exc) from exc
             headers.update(
@@ -317,7 +328,7 @@ def register_workbench_routes(app: FastAPI) -> None:
             )
         try:
             payload, media_type = content.read_bytes(
-                project or "", path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
+                project or "", read_path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
             )
         except ContentError as exc:
             raise _fail(exc) from exc
