@@ -163,6 +163,8 @@ class ContentSnapshot:
     size: int
     revision: str
     writable: bool
+    # Project-relative target used to keep preview metadata and bytes on the same path.
+    symlink_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -695,8 +697,14 @@ class ContentPort(Protocol):
         """计算与 CAS 写接口一致的完整内容 revision。"""
         ...
 
-    def snapshot(self, project_id: str, path: str) -> ContentSnapshot:
-        """读取文件元数据与 exact-bytes revision。"""
+    def snapshot(
+        self, project_id: str, path: str, *, allow_file_symlink: bool = False
+    ) -> ContentSnapshot:
+        """Read file metadata and its exact-bytes revision.
+
+        Opted-in file symlinks are read-only. The snapshot's symlink_target is
+        the resolved project-relative path of the authorized target.
+        """
         ...
 
     def stable_snapshot(self, project_id: str, path: str, max_bytes: int) -> StableContentSnapshot:

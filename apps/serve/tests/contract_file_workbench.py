@@ -244,6 +244,94 @@ def test_readonly_file_capabilities_and_save() -> None:
         shutil.rmtree(project, ignore_errors=True)
 
 
+def test_project_file_symlinks_are_previewable_without_write_access() -> None:
+    with tempfile.TemporaryDirectory(prefix="file-workbench-symlink-") as directory:
+        root = Path(directory)
+        project = root / "project"
+        docs = project / "docs"
+        docs.mkdir(parents=True)
+        target = docs / "notes.md"
+        original = b"# Linked notes\n"
+        target.write_bytes(original)
+        outside = root / "outside.md"
+        outside.write_bytes(b"# Outside project\n")
+        link = project / "linked.md"
+        link.symlink_to(Path("docs") / target.name)
+        (project / "outside.md").symlink_to(outside)
+        (project / "missing.md").symlink_to("absent.md")
+        client = _client(project)
+
+        params = {"path": link.name}
+        opened = client.get("/api/workbench/open", params=params)
+        document = opened.json()
+        capabilities = document.get("capabilities", {})
+        direct = client.get("/api/workbench/open", params={"path": "docs/notes.md"}).json()
+        check(
+            "direct Markdown remains editable",
+            direct.get("capabilities", {}).get("can_edit", False),
+        )
+        check(
+            "in-project symlink opens as a read-only Markdown preview",
+            opened.status_code == 200
+            and document.get("path") == link.name
+            and document.get("viewer") == "markdown"
+            and document.get("revision") == direct.get("revision")
+            and capabilities.get("can_preview") is True
+            and not any(
+                capabilities.get(key) for key in ("can_edit", "can_save", "can_version", "can_diff")
+            ),
+            opened.text,
+        )
+        body = client.get("/api/workbench/content", params=params)
+        head = client.head("/api/workbench/content", params=params)
+        part = client.get("/api/workbench/content", params=params, headers={"Range": "bytes=2-7"})
+        check("symlink serves full content", body.status_code == 200 and body.content == original)
+        check(
+            "symlink serves matching metadata and ranges",
+            head.status_code == 200
+            and head.headers.get("content-length") == str(len(original))
+            and head.headers.get("etag") == body.headers.get("etag")
+            and part.status_code == 206
+            and part.content == original[2:8],
+        )
+        saved = client.put(
+            "/api/workbench/content",
+            params=params,
+            content=b"changed",
+            headers={"Content-Type": "application/octet-stream", "If-Match": direct["revision"]},
+        )
+        check(
+            "saving through a symlink changes neither the link nor the target",
+            saved.is_error and link.is_symlink() and target.read_bytes() == original,
+            saved.text,
+        )
+        for route in ("open", "content"):
+            denied = client.get(f"/api/workbench/{route}", params={"path": "outside.md"})
+            missing = client.get(f"/api/workbench/{route}", params={"path": "missing.md"})
+            check(f"{route} refuses outside symlink", denied.status_code == 400)
+            check(f"{route} refuses dangling symlink", missing.status_code == 404)
+
+        replacement = project / "replacement.md"
+        replacement.write_bytes(b"# Replacement\n")
+        content = client.app.state.content
+        snapshot = content.snapshot
+
+        def retarget_after_snapshot(*args, **kwargs):
+            observed = snapshot(*args, **kwargs)
+            link.unlink()
+            link.symlink_to(replacement.name)
+            return observed
+
+        with patch.object(content, "snapshot", side_effect=retarget_after_snapshot):
+            retargeted = client.get("/api/workbench/content", params=params)
+        check(
+            "retargeting during a response keeps the original ETag and content together",
+            retargeted.status_code == 200
+            and retargeted.headers.get("etag") == body.headers.get("etag")
+            and retargeted.content == original,
+        )
+
+
 def test_open_binds_existing_snapshot() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-open-"))
     try:
@@ -443,6 +531,41 @@ def test_pdf_visual_region_manifest_and_crop_use_the_live_revision() -> None:
             and image.content.startswith(b"\x89PNG")
             and stale.status_code == 409,
             f"manifest={response.text} image={image.status_code} stale={stale.text}",
+        )
+
+        link = project / "linked-paper.pdf"
+        link.symlink_to("paper.pdf")
+        linked_params = {**params, "path": link.name}
+        linked_open = client.get("/api/workbench/open", params={"path": link.name})
+        linked_document = linked_open.json()
+        check(
+            "linked PDF keeps selection available without a writable record target",
+            linked_open.status_code == 200
+            and linked_document.get("revision") == opened["revision"]
+            and linked_document["capabilities"]["can_select"]
+            and not linked_document["capabilities"]["can_annotate"]
+            and linked_document.get("asset_id") is None,
+            linked_open.text,
+        )
+        linked_manifest = client.get("/api/workbench/pdf/regions", params=linked_params)
+        linked_image = client.get(
+            f"/api/workbench/pdf/regions/{region['region_id']}/image",
+            params={**crop_params, "path": link.name, "page": 1, "quad": region["quad"]},
+        )
+        linked_stale = client.get(
+            "/api/workbench/pdf/regions",
+            params={**linked_params, "revision": "sha256:stale"},
+        )
+        check(
+            "linked PDF supports the same region manifest and image at the current revision",
+            linked_manifest.status_code == 200
+            and linked_manifest.json() == response.json()
+            and linked_image.status_code == 200
+            and linked_image.headers["content-type"] == "image/png"
+            and linked_image.content == image.content
+            and linked_stale.status_code == 409,
+            f"manifest={linked_manifest.text} image={linked_image.status_code} "
+            f"stale={linked_stale.text}",
         )
     finally:
         if indexes is not None:
@@ -1514,14 +1637,10 @@ def test_html_read_permission_failure_and_retry() -> None:
             },
             response.text,
         )
-        original_open = Path.open
-
-        def denied_open(target: Path, *args: object, **kwargs: object):
-            if target.resolve() == (project / "page.html").resolve():
-                raise PermissionError()
-            return original_open(target, *args, **kwargs)
-
-        with patch.object(Path, "open", denied_open):
+        with patch(
+            "service.content.service.port.DirectoryHandle.open_regular",
+            side_effect=PermissionError(),
+        ):
             opened = client.get("/api/workbench/open", params={"path": "page.html"})
         check(
             "HTML open preserves permission denial while hashing",
@@ -1556,6 +1675,7 @@ if __name__ == "__main__":
     test_editor_formats_open_save_and_reopen()
     test_open_binds_existing_snapshot()
     test_readonly_file_capabilities_and_save()
+    test_project_file_symlinks_are_previewable_without_write_access()
     test_open_projects_versioning_without_a_resource_tree_scan()
     test_recreated_pdf_opens_with_an_isolated_identity()
     test_pdf_identity_conflict_is_a_structured_response()
