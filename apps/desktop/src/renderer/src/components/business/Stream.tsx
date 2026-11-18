@@ -1457,6 +1457,7 @@ export function Stream({
                         skillNames={skillNames}
                         awaitingConfirmation={pendingTurnIds.has(row.item.turnId)}
                         latestAgent={index === latestAgentRow}
+                        forkAnchor={finalAgentRows.has(index)}
                         sourcesContent={
                           finalAgentRows.has(index) && row.item.turnId
                             ? renderTurnSources(row.item.turnId)
@@ -1881,6 +1882,7 @@ function Item({
   skillNames,
   awaitingConfirmation,
   latestAgent,
+  forkAnchor,
   sourcesContent,
   trailingContent,
   running,
@@ -1894,6 +1896,7 @@ function Item({
   skillNames: SkillNames
   awaitingConfirmation: boolean
   latestAgent: boolean
+  forkAnchor: boolean
   sourcesContent?: React.ReactNode
   trailingContent?: React.ReactNode
   running: boolean
@@ -1940,6 +1943,7 @@ function Item({
           citationEnabled={interactions.citationEnabled}
           copyEnabled={!awaitingConfirmation && turnOutcome !== 'running'}
           forkEnabled={
+            forkAnchor &&
             !awaitingConfirmation &&
             interactions.forkEnabled &&
             !readOnly &&
