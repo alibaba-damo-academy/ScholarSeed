@@ -265,7 +265,7 @@ description: Compare selected project papers using the lab's reading criteria.
 5. Draft a summary for review; ask before changing library records.
 ```
 
-This file supplies instructions. Installing a plugin or adding a dedicated card also requires the descriptor, packaging, validation, and installation steps in the [plugin creation guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/create.md). A `SKILL.md` file alone does not create a custom UI.
+This file supplies instructions. Installing a plugin or adding a dedicated card also requires the descriptor, packaging, validation, and installation steps in the [plugin creation guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/developer-docs/plugins/create.md). A `SKILL.md` file alone does not create a custom UI.
 
 ### Add cards and application actions
 
@@ -278,7 +278,7 @@ Skills use **`scholarseed-bridge`** to read authorized materials, manage literat
 
 For example, a lab workflow could compare 30 papers, present a selection card, then produce a report and save reading notes or organize papers within the granted permissions. The method, card implementation, and application actions must each be connected and tested.
 
-See the [plugin overview](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins.md), [API guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/api.md), [public cards](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/cards.md), and [testing guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/doc/plugins/testing.md). Interfaces are in developer preview and may introduce breaking changes. Inspect the contract for your matching backend with:
+See the [plugin overview](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/developer-docs/plugins.md), [API guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/developer-docs/plugins/api.md), [public cards](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/developer-docs/plugins/cards.md), and [testing guide](https://github.com/alibaba-damo-academy/ScholarSeed/blob/main/developer-docs/plugins/testing.md). Interfaces are in developer preview and may introduce breaking changes. Inspect the contract for your matching backend with:
 
 ```bash
 python -m service.cli.plugins describe
