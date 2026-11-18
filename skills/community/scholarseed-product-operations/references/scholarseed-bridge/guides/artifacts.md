@@ -29,8 +29,9 @@ directory, then declare them together with
 `publish_artifacts({"files":[{"path":"relative/a.md","role":"final"},{"path":"relative/analysis.py","role":"final"}]})`.
 Declare only intended deliverables; never scan and publish the whole output directory.
 The response has `completed`, `partial`, or `failed` status and per-item receipts.
-Invalid structure rejects the whole request; file errors allow partial success.
-After correcting errors, submit only `retry_files`; do not republish successful items.
+Invalid structure rejects the whole request. When required fields are missing, follow
+`next_action` and use verified paths in the corrected arguments.
+File errors allow partial success. For these errors, correct and submit only `retry_files`.
 Repeated submissions in the same turn reuse the existing publication, while changed
 bytes produce a new revision. A later turn retains the existing turn-specific publication semantics.
 Use `final` for the main result and `supporting` for additional result deliverables.

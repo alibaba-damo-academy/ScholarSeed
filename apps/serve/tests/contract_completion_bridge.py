@@ -110,6 +110,7 @@ def forward_contract(
     request_headers: dict[str, str] | None = None,
     diagnostics: list[tuple[str, dict]] | None = None,
     sources: list[tuple[str, str, dict]] | None = None,
+    tool_outputs: list[tuple[str, str, set[str]]] | None = None,
     credential_resolver: Callable[[str, str], Awaitable[ModelCredential]] | None = None,
     credential_revocation_handler: Callable[[str, str, int, str], str] | None = None,
 ):
@@ -148,6 +149,11 @@ def forward_contract(
         source_endpoints=source_endpoints,
         content_source=lambda _session, _turn: ContentSource(source_text, source_references),
         on_sources=observe_sources if sources is not None else None,
+        on_tool_outputs=(
+            (lambda session, turn, ids: tool_outputs.append((session, turn, ids)))
+            if tool_outputs is not None
+            else None
+        ),
         on_diagnostic=(
             (lambda session, fields: diagnostics.append((session, dict(fields))))
             if diagnostics is not None
@@ -192,6 +198,47 @@ def forward_contract(
             )
             client.portal.call(bridge.close)
     return response, captured
+
+
+def test_tool_output_observation_preserves_call_ids_on_both_wire_protocols() -> None:
+    for protocol, body in (
+        (ModelWireProtocol.RESPONSES, b'{"id":"resp_contract","output":[]}'),
+        (
+            ModelWireProtocol.CHAT_COMPLETIONS,
+            b'{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}',
+        ),
+    ):
+        observed: list[tuple[str, str, set[str]]] = []
+        response, _requests = forward_contract(
+            {
+                "model": "alias",
+                "input": [
+                    {
+                        "type": "function_call",
+                        "name": "publish_artifacts",
+                        "call_id": "call-missing-path",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-missing-path",
+                        "output": "Missing required field",
+                    },
+                    {
+                        "type": "function_call",
+                        "name": "publish_artifacts",
+                        "call_id": "call-without-output",
+                        "arguments": "{}",
+                    },
+                ],
+            },
+            body,
+            wire_protocol=protocol,
+            turn_id_provider=lambda _session: "publish-turn",
+            tool_outputs=observed,
+        )
+        assert response.status_code == 200, response.content
+        assert observed == [("search-contract", "publish-turn", {"call-missing-path"})]
 
 
 def test_native_routing_headers_roundtrip() -> None:
@@ -3669,6 +3716,7 @@ def test_stream_diagnostics_preserve_usage_without_content() -> None:
 
 
 def main() -> int:
+    test_tool_output_observation_preserves_call_ids_on_both_wire_protocols()
     test_native_routing_headers_roundtrip()
     test_native_turn_state_is_not_retained_by_bridge()
     test_stream_diagnostics_preserve_usage_without_content()
