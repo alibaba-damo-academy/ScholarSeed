@@ -21,6 +21,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_MESSAGE_QUEUED,
     PRODUCT_EVENT_TURN_COMPLETED,
+    PRODUCT_EVENT_TURN_FAILED,
     PRODUCT_EVENT_USER_MESSAGE,
 )
 from service.chat.persistence.artifacts import (
@@ -38,6 +39,7 @@ from service.chat.persistence.catalog import (
 )
 from service.chat.persistence.events import (
     SESSION_FORK_EVENT,
+    SESSION_FORK_FAILED_TURNS_FIELD,
     SESSION_FORK_IMPORTED_KEY,
     SESSION_FORK_KEY,
     ProductEventStore,
@@ -958,6 +960,46 @@ class ForkTests(unittest.TestCase):
         self.assertIsNone(deleted["title"])
         self.assertEqual(deleted["inherited_messages"], initial["inherited_messages"])
         self.assertEqual(self.events.portable_history("branch"), history)
+
+    def test_origin_preserves_inherited_failure_as_passive_history(self) -> None:
+        self.append("failed", PRODUCT_EVENT_USER_MESSAGE, {"text": "unfinished question"})
+        self.append("failed", PRODUCT_EVENT_TURN_FAILED, {"message": "private diagnostic"})
+        self.append("completed", PRODUCT_EVENT_USER_MESSAGE, {"text": "next question"})
+        self.append("completed", PRODUCT_EVENT_MESSAGE_DELTA, {"delta": "answer"})
+        self.append("completed", PRODUCT_EVENT_TURN_COMPLETED, {"status": "completed"})
+        origin = self.create_origin(turn_id="completed")[0]["origin"]
+        self.assertEqual(origin["inherited_failed_turn_ids"], ["failed"])
+        self.assertNotIn("private diagnostic", str(origin))
+        self.assertFalse(
+            any(event.kind == PRODUCT_EVENT_TURN_FAILED for event in self.events.replay("branch"))
+        )
+        self.append("later", PRODUCT_EVENT_TURN_FAILED, {"message": "later failure"})
+        self.catalog.release("source", self.owner)
+        refreshed = self.service.fork_origin("branch", self.owner)[0]["origin"]
+        self.assertEqual(refreshed["inherited_failed_turn_ids"], ["failed"])
+
+    def test_legacy_origin_projects_only_accessible_failures_before_the_cutoff(self) -> None:
+        self.append("failed", PRODUCT_EVENT_USER_MESSAGE, {"text": "unfinished question"})
+        self.append("failed", PRODUCT_EVENT_TURN_FAILED, {})
+        self.append("later", PRODUCT_EVENT_USER_MESSAGE, {"text": "pending at the cutoff"})
+        self.create_origin()
+        self.append("later", PRODUCT_EVENT_TURN_FAILED, {})
+        by_key = self.events.by_key
+
+        def legacy_import(session_id, key, **kwargs):
+            event = by_key(session_id, key, **kwargs)
+            if session_id == "branch" and key == SESSION_FORK_IMPORTED_KEY:
+                payload = dict(event.payload)
+                del payload[SESSION_FORK_FAILED_TURNS_FIELD]
+                return replace(event, payload=payload)
+            return event
+
+        with patch.object(self.events, "by_key", side_effect=legacy_import):
+            origin = self.service.fork_origin("branch", self.owner)[0]["origin"]
+            self.assertEqual(origin["inherited_failed_turn_ids"], ["failed"])
+            self.catalog.release("source", self.owner)
+            origin = self.service.fork_origin("branch", self.owner)[0]["origin"]
+            self.assertEqual(origin["inherited_failed_turn_ids"], [])
 
     def test_origin_permissions_do_not_disclose_source_metadata(self) -> None:
         self.append("one", PRODUCT_EVENT_MESSAGE_DELTA, {"delta": "inherited"})

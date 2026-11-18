@@ -52,6 +52,15 @@ test('only the final answer of a completed turn offers copy and branch actions',
     await expect(copies('partial-item')).toHaveCount(0)
     await expect(copies('final-item')).toHaveCount(1)
     await expect(copies('failed-item')).toHaveCount(1)
+    const answerSpacing = (id: string) =>
+      item(id)
+        .getByText(/response|fragment/i)
+        .evaluate((text) => {
+          const block = text.closest('.group\\/message')
+          return block ? getComputedStyle(block).marginBottom : null
+        })
+    assert.equal(await answerSpacing('partial-item'), '8px')
+    assert.equal(await answerSpacing('final-item'), '28px')
   }
   await checkRows()
   await page.getByRole('button', { name: '重建消息流', exact: true }).click()

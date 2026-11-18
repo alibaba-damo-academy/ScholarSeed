@@ -93,6 +93,7 @@ SESSION_FORK_IMPORTED_EVENT = "session.fork.imported"
 SESSION_FORK_SOURCE_CHANGED = "session_fork_source_changed"
 SESSION_FORK_NATIVE_FIELD = "native_fork"
 SESSION_FORK_WORKSPACE_FIELD = "inherited_workspace"
+SESSION_FORK_FAILED_TURNS_FIELD = "inherited_failed_turn_ids"
 SUBMITTED_REFERENCES_CONTEXT_PREFIX = "\nSubmitted references: "
 FORK_HISTORY_KINDS = frozenset(
     {
@@ -1931,10 +1932,50 @@ class ProductEventStore:
                 vendor_turn_id=None,
                 vendor_item_id=None,
                 kind=SESSION_FORK_IMPORTED_EVENT,
-                payload={"source_session_id": source_session_id, "source_product_seq": through_seq},
+                payload={
+                    "source_session_id": source_session_id,
+                    "source_product_seq": through_seq,
+                    SESSION_FORK_FAILED_TURNS_FIELD: sorted(
+                        self.fork_failed_turns(source_session_id, through_seq, connection=current)
+                    ),
+                },
                 idempotency_key=SESSION_FORK_IMPORTED_KEY,
                 connection=current,
             )
+
+    def fork_failed_turns(
+        self, session_id: str, through_seq: int, *, connection: sqlite3.Connection | None = None
+    ) -> set[str]:
+        """Read terminal identity only, leaving error details in the source."""
+        with self._snapshot(connection) as current:
+            inherited = self.by_key(session_id, SESSION_FORK_IMPORTED_KEY, connection=current)
+            failed = (
+                set(inherited.payload.get(SESSION_FORK_FAILED_TURNS_FIELD, ()))
+                if inherited is not None and inherited.product_seq <= through_seq
+                else set()
+            )
+            # generate by onesec-code-guardian skill
+            with closing(
+                current.execute(
+                    f"SELECT vendor_turn_id, kind FROM {PRODUCT_EVENT_TABLE}"
+                    " WHERE session_id = ? AND product_seq <= ? AND vendor_turn_id IS NOT NULL"
+                    " AND kind IN (?, ?, ?, ?) ORDER BY product_seq",
+                    (
+                        session_id,
+                        through_seq,
+                        PRODUCT_EVENT_TURN_FAILED,
+                        PRODUCT_EVENT_TURN_COMPLETED,
+                        PRODUCT_EVENT_TURN_INTERRUPTED,
+                        PRODUCT_EVENT_TURN_UNKNOWN,
+                    ),
+                )
+            ) as rows:
+                for row in rows:
+                    if row["kind"] == PRODUCT_EVENT_TURN_FAILED:
+                        failed.add(row["vendor_turn_id"])
+                    else:
+                        failed.discard(row["vendor_turn_id"])
+            return failed
 
     def _continuation_budget(
         self,
