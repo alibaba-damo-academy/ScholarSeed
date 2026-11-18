@@ -90,10 +90,10 @@ from service.chat.service.coverage import CitationCoverage
 from service.chat.service.deletion import SessionDeletion
 from service.chat.service.history import HistoryService
 from service.chat.service.maintenance import (
-    SessionMaintenanceService,
-    await_storage_maintenance,
+    SessionStorageCheck,
     inspect_session_storage,
     maintain_session_storage,
+    session_storage_phase,
 )
 from service.chat.service.publication import PublicationService, SessionArtifactStorage
 from service.chat.service.search import SearchService
@@ -252,12 +252,7 @@ from service.persistence.preview import (
 from service.persistence.project import transaction
 from service.persistence.rows import rows_digest
 from service.platform.activation import WorkbenchAdmission
-from service.platform.activity import (
-    Activities,
-    ActivityDomain,
-    ActivityPhase,
-    MaintenanceIncomplete,
-)
+from service.platform.activity import Activities, ActivityDomain, MaintenanceIncomplete
 from service.platform.bridge import (
     ArtifactPublisher,
     DisplayCardPublisher,
@@ -289,12 +284,7 @@ from service.platform.local import local_listener
 from service.platform.notifications import ChangeHub
 from service.platform.reclamation import reclaim_coordination
 from service.platform.records import RecordOwner
-from service.platform.registry import (
-    REGISTRY_DIRECTORY,
-    RegistryBusyError,
-    RegistryNative,
-    remove_legacy_coordination,
-)
+from service.platform.registry import REGISTRY_DIRECTORY, RegistryNative, remove_legacy_coordination
 from service.platform.search import register_search_routes
 from service.platform.shutdown import ShutdownStage
 from service.platform.startup import (
@@ -508,6 +498,45 @@ def _windows_directory_native(guardian: object | None) -> WindowsDirectoryNative
     return WindowsDirectoryNative(installation=installation)
 
 
+def _storage_native(
+    guardian: object | None,
+) -> DarwinDirectoryNative | LinuxDirectoryNative | WindowsDirectoryNative:
+    if sys.platform == "darwin":
+        return DarwinDirectoryNative()
+    if sys.platform == "win32":
+        return _windows_directory_native(guardian)
+    if sys.platform == "linux":
+        return LinuxDirectoryNative()
+    raise LeaseError("ERR_LEASE_UNSUPPORTED")
+
+
+def maintain_session_storage_offline() -> bool | None:
+    """Run one bounded batch under the normal cross-process directory authority."""
+    with session_storage_phase("directory_qualification"):
+        coordination_path = coordination_root()
+        coordinator = str(coordination_path)
+        native: (
+            DarwinDirectoryNative | LinuxDirectoryNative | WindowsDirectoryNative | RegistryNative
+        ) = _storage_native(native_guardian())
+        if coordination_path.name == REGISTRY_DIRECTORY:
+            native = RegistryNative(native, coordination_path)
+        pin = native.pin(coordinator, True)
+        native.release(pin)
+        domains = Domains(native, coordinator, (str(SERVICE_DIR.absolute()),), maintenance=True)
+    try:
+        with session_storage_phase("directory_occupancy"):
+            domains.occupy()
+        with domains.mutation():
+            with session_storage_phase("offline_probe"):
+                required = inspect_session_storage(SESSION_CATALOG_DB)
+            if required is not True:
+                return required
+            return maintain_session_storage(SESSION_CATALOG_DB)
+    finally:
+        with session_storage_phase("directory_release"):
+            domains.close()
+
+
 def _product_enabled(product: str, domain: str) -> bool:
     return domain in PRODUCT_DOMAIN_COMPOSITION.get(product, DEFAULT_PRODUCT_DOMAINS)
 
@@ -544,9 +573,6 @@ def resolve_workspace_root(
 
 DIRECTORY_DRAIN_TIMEOUT_SECONDS = 60.0
 DIRECTORY_DRAIN_POLL_SECONDS = 0.05
-SCHEDULED_DRAIN_TIMEOUT_SECONDS = 0.25
-SCHEDULED_STORAGE_RESTORE_ATTEMPTS = 3
-SCHEDULED_STORAGE_RESTORE_RETRY_SECONDS = 0.1
 # Electron may still be synchronously appending the provider exit log.
 DIRECTORY_LEASE_WAIT_SECONDS = 2.0
 DIRECTORY_PREPARATION_ATTEMPTS = 8
@@ -2531,15 +2557,7 @@ def create_app(
     with startup_phase("storage.native"):
         native: (
             DarwinDirectoryNative | LinuxDirectoryNative | WindowsDirectoryNative | RegistryNative
-        )
-        if sys.platform == "darwin":
-            native = DarwinDirectoryNative()
-        elif sys.platform == "win32":
-            native = _windows_directory_native(guardian)
-        elif sys.platform == "linux":
-            native = LinuxDirectoryNative()
-        else:
-            raise LeaseError("ERR_LEASE_UNSUPPORTED")
+        ) = _storage_native(guardian)
     with startup_phase("storage.coordinator"):
         coordination_path = coordination_root()
         coordinator = str(coordination_path)
@@ -3494,125 +3512,6 @@ def create_app(
                 if scan_project is not None:
                     app.state.resource_version_supervisor.schedule_scan(scan_project)
 
-    def restore_scheduled_storage(generation: str) -> None:
-        for attempt in range(1, SCHEDULED_STORAGE_RESTORE_ATTEMPTS + 1):
-            try:
-                current, occupied = prepare_startup_domains(
-                    native,
-                    coordinator,
-                    discovery_roots,
-                    read_current,
-                    startup_storage_needs_write,
-                    lambda state: initialize_startup_storage(
-                        state,
-                        project_failed=seed.project_failures.__setitem__,
-                    ),
-                    qualification_failure=qualification_failure,
-                    removed_roots=removed_project_roots,
-                    busy_timeout=DIRECTORY_LEASE_WAIT_SECONDS,
-                )
-            except RegistryBusyError:
-                if attempt == SCHEDULED_STORAGE_RESTORE_ATTEMPTS:
-                    raise
-                _log.warning("session_storage_restore_registry_busy attempt=%s", attempt)
-                time.sleep(SCHEDULED_STORAGE_RESTORE_RETRY_SECONDS * attempt)
-                continue
-            owner.install(occupied)
-            app.state.startup_sources = current
-            for project in current.unavailable_projects:
-                if project.project_id:
-                    app.state.content.block_project(project.project_id, project.reason)
-            activities.resume(generation, expected_phase=ActivityPhase.SEALED)
-            return
-
-    def maintain_storage_exclusively(generation: str) -> bool:
-        # The worker owns the whole transition, including restoring qualification.
-        # Its future is awaited by SessionMaintenanceService even during shutdown.
-        released = False
-        try:
-            owner.close()
-            released = True
-            _, exclusive = acquire_startup_domains(
-                native,
-                coordinator,
-                discovery_roots,
-                read_current,
-                maintenance=True,
-                busy_timeout=DIRECTORY_LEASE_WAIT_SECONDS,
-            )
-            try:
-                with exclusive.mutation():
-                    return activities.run_maintenance(
-                        generation, lambda: maintain_session_storage(SESSION_CATALOG_DB)
-                    )
-            except MaintenanceIncomplete:
-                owner.install(exclusive)
-                released = False
-                raise
-            finally:
-                if released:
-                    exclusive.close()
-        except (DomainReleaseError, BaseExceptionGroup):
-            released = False
-            raise
-        finally:
-            # A failed release/reacquisition must leave admission sealed.
-            if released:
-                restore_scheduled_storage(generation)
-
-    async def maintain_storage() -> bool | None:
-        generation = activities.begin_if_idle()
-        if generation is None:
-            return None
-        started = time.monotonic()
-        sealed_at: float | None = None
-        transitioned = False
-        try:
-            deadline = asyncio.get_running_loop().time() + SCHEDULED_DRAIN_TIMEOUT_SECONDS
-            while True:
-                attachments = await app.state.runtime_service.activation.drain_attachments(
-                    generation
-                )
-                resources = await app.state.runtime_service.drain_resources(generation)
-                connectors = (
-                    await app.state.connector_broker.drain_resources(generation)
-                    if not attachments and not resources
-                    else ()
-                )
-                if (
-                    not attachments
-                    and not resources
-                    and not connectors
-                    and activities.seal(generation)
-                ):
-                    break
-                if asyncio.get_running_loop().time() >= deadline:
-                    _log.info("session_storage_maintenance_deferred reason=busy")
-                    return None
-                await asyncio.sleep(DIRECTORY_DRAIN_POLL_SECONDS)
-            transitioned = True
-            sealed_at = time.monotonic()
-            # This is not an untracked detached writer: the scheduler shields and
-            # joins its callback before any application owner is shut down.
-            return await await_storage_maintenance(lambda: maintain_storage_exclusively(generation))
-        finally:
-            if not transitioned:
-                activities.resume(generation)
-            finished = time.monotonic()
-            _log.info(
-                "session_storage_maintenance_admission elapsed_seconds=%s drain_seconds=%s "
-                "sealed_seconds=%s phase=%s",
-                finished - started,
-                (sealed_at or finished) - started,
-                finished - sealed_at if sealed_at is not None else None,
-                activities.snapshot().phase.value,
-            )
-
-    session_maintenance = SessionMaintenanceService(
-        activities, maintain_storage, probe=lambda: inspect_session_storage(SESSION_CATALOG_DB)
-    )
-    app.state.session_maintenance = session_maintenance
-
     def recovery_admission(command: ContentCommand) -> RecoveryAdmission:
         catalog = app.state.content_catalog
         if isinstance(command, (ReconcileProjectCreation, ReconcileProjectRemoval)):
@@ -3700,11 +3599,6 @@ def create_app(
             if isinstance(result[0], Exception):
                 failures.append(result[0])
         try:
-            with app.state.shutdown.stage(SessionMaintenanceService.aclose.__qualname__):
-                await session_maintenance.aclose()
-        except BaseException as error:
-            failures.append(error)
-        try:
             with app.state.shutdown.stage(ShutdownStage.OPERATIONS):
                 await operations.aclose()
         except BaseException as error:
@@ -3712,9 +3606,11 @@ def create_app(
         if len(failures) == 1:
             raise failures[0]
         if failures:
-            raise BaseExceptionGroup("session storage and operations shutdown failed", failures)
+            raise BaseExceptionGroup("operations shutdown failed", failures)
 
     previous_lifespan = app.router.lifespan_context
+    storage_check = SessionStorageCheck(activities, SESSION_CATALOG_DB)
+    app.state.session_service.bind_storage_check(storage_check.request)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -3722,10 +3618,13 @@ def create_app(
         try:
             admission.start(activities.workbench_changed)
             async with previous_lifespan(application):
-                await session_maintenance.start()
+                probe = asyncio.create_task(storage_check.run())
+                storage_check.request()
                 try:
                     yield
                 finally:
+                    storage_check.stop()
+                    await probe
                     await close_storage_and_operations()
         finally:
             try:

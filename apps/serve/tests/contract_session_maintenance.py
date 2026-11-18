@@ -8,18 +8,18 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from service.chat.constants import PRODUCT_EVENT_MESSAGE_DELTA, PRODUCT_EVENT_VERSION
 from service.chat.persistence import blocks, journal
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
 from service.chat.persistence.events import ProductEventStore
 from service.chat.service.maintenance import (
-    SessionMaintenanceService,
-    await_storage_maintenance,
+    SessionStorageCheck,
     inspect_session_storage,
     maintain_session_storage,
 )
@@ -29,10 +29,7 @@ from service.platform.activity import (
     ActivityDomain,
     ActivityPhase,
     MaintenanceActive,
-    MaintenanceIncomplete,
 )
-
-INTERVAL = 0.02
 
 
 class SessionStorageMaintenanceContracts(unittest.TestCase):
@@ -98,6 +95,70 @@ class SessionStorageMaintenanceContracts(unittest.TestCase):
         self.assertFalse(maintain_session_storage(self.database))
         self.assertIs(inspect_session_storage(self.database), False)
         self.assertEqual(self._logical_history(), expected)
+
+    def test_failure_receipt_distinguishes_migration_from_cleanup(self) -> None:
+        for owner, method, phase in (
+            (SessionCatalogStore, "migrate_bodies", "migration"),
+            (blocks, "cleanup", "event_block_cleanup"),
+            (journal, "compact", "body_log_compaction"),
+            (ProductEventStore, "reclaim", "sqlite_reclamation"),
+        ):
+            with (
+                self.subTest(phase=phase),
+                patch.object(owner, method, side_effect=OSError(5, "fixture detail")),
+                self.assertLogs("service.chat.service.maintenance", level="ERROR") as receipt,
+                self.assertRaises(OSError),
+            ):
+                maintain_session_storage(self.database)
+            self.assertIn(f"phase={phase} event=failed error_type=OSError", receipt.output[0])
+            self.assertIn("errno=5", receipt.output[0])
+            self.assertNotIn("fixture detail", receipt.output[0])
+
+    def test_existing_migration_holds_writer_across_durable_file_write(self) -> None:
+        self._legacy_history(1)
+        self.catalog.register(
+            "unrelated",
+            SessionPrincipal("owner"),
+            runtime_id="codex",
+            vendor_thread_id="unrelated-thread",
+            vendor_session_id="unrelated-process",
+            runtime_workdir=self.directory.name,
+            project_path=None,
+            output_root=self.directory.name,
+            codex_version="test",
+            model_id="model",
+            policy_id="workspace-write",
+            status=SessionStatus.READY,
+            title="before",
+            created_at=2.0,
+        )
+        writing = threading.Event()
+        finished = threading.Event()
+        put_many = journal.Journal.put_many
+
+        def delayed_put(journal_writer, texts):
+            writing.set()
+            if not finished.wait(5):
+                raise TimeoutError("fixture did not release journal writer")
+            return put_many(journal_writer, texts)
+
+        with (
+            patch.object(journal.Journal, "put_many", autospec=True, side_effect=delayed_put),
+            ThreadPoolExecutor(max_workers=1) as workers,
+        ):
+            maintenance = workers.submit(maintain_session_storage, self.database)
+            try:
+                self.assertTrue(writing.wait(5))
+                self.assertEqual(self.catalog.get("unrelated").title, "before")
+                with closing(sqlite3.connect(self.database, timeout=0)) as connection:
+                    with self.assertRaises(sqlite3.OperationalError) as failure:
+                        connection.execute("BEGIN IMMEDIATE")
+                    self.assertEqual(failure.exception.sqlite_errorcode, sqlite3.SQLITE_BUSY)
+            finally:
+                finished.set()
+            maintenance.result(timeout=5)
+        self.catalog.rename("unrelated", SessionPrincipal("owner"), "after")
+        self.assertEqual(self.catalog.get("unrelated").title, "after")
 
     def test_probe_distinguishes_live_journal_from_reclaimable_bodies(self) -> None:
         self._legacy_history(1)
@@ -220,31 +281,33 @@ class SessionStorageMaintenanceContracts(unittest.TestCase):
 
 
 class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
-    async def test_no_work_and_uncertain_probe_keep_resident_resource(self) -> None:
+    async def test_online_check_coalesces_requests_and_leaves_service_open(self) -> None:
         activities = Activities()
-        outcomes = iter((False, None, True))
-        admitted = asyncio.Event()
-        probed = []
+        entered = asyncio.Event()
+        finish = asyncio.Event()
 
-        def probe() -> bool | None:
-            probed.append(next(outcomes, True))
-            return probed[-1]
+        async def probe(*args):
+            entered.set()
+            await finish.wait()
+            return True
 
-        async def maintain() -> None:
-            self.assertEqual(probed[:3], [False, None, True])
-            self.assertEqual(activities.snapshot().phase, ActivityPhase.OPEN)
-            self.assertEqual(activities.snapshot().counts, {ActivityDomain.RESOURCE.value: 1})
-            admitted.set()
-
-        with activities.enter(ActivityDomain.RESOURCE):
-            service = SessionMaintenanceService(
-                activities, maintain, probe=probe, interval=INTERVAL
-            )
-            await service.start()
+        check = SessionStorageCheck(activities, Path("unused"))
+        with patch.object(activities, "finish_thread", new=AsyncMock(side_effect=probe)) as run:
+            task = asyncio.create_task(check.run())
             try:
-                await asyncio.wait_for(admitted.wait(), 1)
+                await asyncio.sleep(0)
+                run.assert_not_awaited()
+                check.request()
+                check.request()
+                await asyncio.wait_for(entered.wait(), 1)
+                with activities.enter(ActivityDomain.TURN, root=True):
+                    with activities.observe_request():
+                        self.assertIs(activities.snapshot().phase, ActivityPhase.OPEN)
+                run.assert_awaited_once()
             finally:
-                await service.aclose()
+                check.stop()
+                finish.set()
+                await asyncio.wait_for(task, 1)
 
     async def test_idle_admission_refuses_business_and_unready_workbench(self) -> None:
         activities = Activities()
@@ -315,169 +378,6 @@ class SessionMaintenanceContracts(unittest.IsolatedAsyncioTestCase):
                     activities.resume(generation)
 
         await asyncio.to_thread(race)
-
-    async def test_cancelled_storage_callback_joins_physical_worker(self) -> None:
-        started = threading.Event()
-        release = threading.Event()
-        finished = threading.Event()
-
-        def physical() -> None:
-            started.set()
-            release.wait()
-            finished.set()
-
-        task = asyncio.create_task(await_storage_maintenance(physical))
-        try:
-            await asyncio.wait_for(asyncio.to_thread(started.wait), 1)
-            task.cancel()
-            await asyncio.sleep(INTERVAL)
-            task.cancel()
-            await asyncio.sleep(INTERVAL)
-            self.assertFalse(task.done())
-            self.assertFalse(finished.is_set())
-        finally:
-            release.set()
-        with self.assertRaises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 1)
-        self.assertTrue(finished.is_set())
-
-    async def test_start_defers_first_callback_and_close_cancels_timer(self) -> None:
-        called = asyncio.Event()
-
-        async def maintain() -> None:
-            called.set()
-
-        service = SessionMaintenanceService(Activities(), maintain, probe=lambda: True, interval=60)
-        await service.start()
-        await asyncio.sleep(INTERVAL)
-        self.assertFalse(called.is_set())
-        await asyncio.wait_for(service.aclose(), 1)
-        self.assertFalse(called.is_set())
-
-    async def test_maintenance_gate_pauses_and_busy_retries(self) -> None:
-        activities = Activities()
-        generation = activities.begin()
-        attempts = 0
-        completed = asyncio.Event()
-
-        async def maintain() -> None:
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise MaintenanceActive("busy")
-            completed.set()
-
-        service = SessionMaintenanceService(
-            activities, maintain, probe=lambda: True, interval=INTERVAL
-        )
-        await service.start()
-        try:
-            await asyncio.sleep(3 * INTERVAL)
-            self.assertEqual(attempts, 0)
-            activities.resume(generation)
-            await asyncio.wait_for(completed.wait(), 1)
-            self.assertGreaterEqual(attempts, 2)
-        finally:
-            await service.aclose()
-
-    async def test_close_waits_for_disk_worker_even_if_close_is_cancelled(self) -> None:
-        entered = asyncio.Event()
-        release = threading.Event()
-        finished = threading.Event()
-
-        def disk() -> None:
-            release.wait(3)
-            finished.set()
-
-        async def maintain() -> None:
-            entered.set()
-            await asyncio.to_thread(disk)
-
-        service = SessionMaintenanceService(
-            Activities(), maintain, probe=lambda: True, interval=INTERVAL
-        )
-        await service.start()
-        await asyncio.wait_for(entered.wait(), 1)
-        closing = asyncio.create_task(service.aclose())
-        try:
-            await asyncio.sleep(INTERVAL)
-            closing.cancel()
-            await asyncio.sleep(INTERVAL)
-            self.assertFalse(closing.done())
-            self.assertFalse(finished.is_set())
-        finally:
-            release.set()
-            with self.assertRaises(asyncio.CancelledError):
-                await closing
-        self.assertTrue(finished.is_set())
-        await service.aclose()
-
-    async def test_failure_is_logged_and_next_interval_retries(self) -> None:
-        attempts = 0
-        completed = asyncio.Event()
-
-        async def maintain() -> None:
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise OSError("disk unavailable")
-            completed.set()
-
-        service = SessionMaintenanceService(
-            Activities(), maintain, probe=lambda: True, interval=INTERVAL
-        )
-        with self.assertLogs("service.chat.service.maintenance", level="ERROR"):
-            await service.start()
-            try:
-                await asyncio.wait_for(completed.wait(), 1)
-            finally:
-                await service.aclose()
-        self.assertGreaterEqual(attempts, 2)
-
-    async def test_owner_failure_during_close_is_not_swallowed(self) -> None:
-        entered = asyncio.Event()
-        release = asyncio.Event()
-
-        async def maintain() -> None:
-            entered.set()
-            await release.wait()
-            raise OSError("disk flush failed")
-
-        service = SessionMaintenanceService(
-            Activities(), maintain, probe=lambda: True, interval=INTERVAL
-        )
-        await service.start()
-        await asyncio.wait_for(entered.wait(), 1)
-        closing = asyncio.create_task(service.aclose())
-        await asyncio.sleep(0)
-        with self.assertLogs("service.chat.service.maintenance", level="ERROR"):
-            release.set()
-            with self.assertRaisesRegex(OSError, "disk flush failed"):
-                await closing
-
-    async def test_unresolved_maintenance_failure_before_shutdown_remains_fatal(self) -> None:
-        activities = Activities()
-        failed = asyncio.Event()
-
-        async def maintain() -> None:
-            generation = activities.begin_if_idle()
-            assert generation is not None
-            self.assertTrue(activities.seal(generation))
-            failed.set()
-            raise MaintenanceIncomplete("directory qualification unresolved")
-
-        service = SessionMaintenanceService(
-            activities, maintain, probe=lambda: True, interval=INTERVAL
-        )
-        with self.assertLogs("service.chat.service.maintenance", level="ERROR"):
-            await service.start()
-            await asyncio.wait_for(failed.wait(), 1)
-            # The owner failed before shutdown; cancelling the next idle wait
-            # must not erase the failure and report a successful drain.
-            await asyncio.sleep(INTERVAL * 2)
-            with self.assertRaisesRegex(MaintenanceIncomplete, "qualification unresolved"):
-                await service.aclose()
-        self.assertEqual(activities.snapshot().phase, ActivityPhase.SEALED)
 
 
 if __name__ == "__main__":

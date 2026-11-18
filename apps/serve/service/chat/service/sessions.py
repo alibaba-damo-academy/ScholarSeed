@@ -560,6 +560,7 @@ class SessionService:
         self._queue_cancellation: Callable[[str], Awaitable[None]] | None = None
         self._settlement_resume: Callable[[LiveSession], None] | None = None
         self._deletion: Callable[[SessionCatalogRecord], None] | None = None
+        self._storage_check: Callable[[], None] | None = None
         self._task_documents: Callable[[str, str], tuple[dict, ...]] = lambda _session, _project: ()
 
     def bind_task_documents(self, provider: Callable[[str, str], tuple[dict, ...]]) -> None:
@@ -575,6 +576,9 @@ class SessionService:
 
     def bind_deletion(self, callback: Callable[[SessionCatalogRecord], None]) -> None:
         self._deletion = callback
+
+    def bind_storage_check(self, callback: Callable[[], None]) -> None:
+        self._storage_check = callback
 
     def bind_turn_confirmation(self, callback: Callable[[str, str], Awaitable[None]]) -> None:
         self._turn_confirmation = callback
@@ -2748,6 +2752,8 @@ class SessionService:
             self._logger.exception("session_deletion_failed session_id=%s", session_id)
             return {"ok": False, "error": SESSION_DELETION_FAILED}, HTTP_INTERNAL_ERROR
         self._access.release(session_id, principal)
+        if self._storage_check is not None:
+            self._storage_check()
         return {"ok": True, "session_id": session_id}, HTTP_OK
 
     async def rename(
