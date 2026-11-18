@@ -116,46 +116,32 @@ persistedTest('a missing browser directory cannot bypass or retry a durable home
   })
 )
 
-persistedTest('action authorization reuses occupancy but reads once at every fence', (t) =>
+persistedTest('action authorization reads policy once at every fence', (t) =>
   withHome((home) => {
     const origin = 'https://example.com'
     const writer = openPolicy(home)
     writer.set(origin, 'interact', 'allow')
     const reads = t.mock.fn(NATIVE.readAt)
-    const scans = t.mock.fn(NATIVE.listAt)
-    const pins = t.mock.fn(NATIVE.pin)
-    const locks = t.mock.fn(NATIVE.acquireAt)
-    const counters = { readAt: reads, listAt: scans, pin: pins, acquireAt: locks }
     const policy = openPolicy(
       home,
       new Proxy({} as DomainNative, {
         get(_target, key) {
-          return Object.hasOwn(counters, key)
-            ? Reflect.get(counters, key)
-            : Reflect.get(NATIVE, key)
+          return key === 'readAt' ? reads : Reflect.get(NATIVE, key)
         },
       })
     )
     const revision = policy.revision()
-    const initialScans = scans.mock.callCount()
     reads.mock.resetCalls()
-    pins.mock.resetCalls()
-    locks.mock.resetCalls()
     const durations = Array.from({ length: 20 }, () => {
       const started = performance.now()
       assert.equal(policy.fence(origin, 'interact', revision), true)
       return performance.now() - started
     })
     assert.equal(reads.mock.callCount(), durations.length)
-    assert.equal(scans.mock.callCount(), initialScans)
-    assert.equal(locks.mock.callCount(), durations.length)
-    assert.ok(locks.mock.calls.every(({ arguments: args }) => args[1].endsWith('-policy')))
-    assert.ok(pins.mock.callCount() >= durations.length * 2)
     t.diagnostic(
       JSON.stringify({
         platform: process.platform,
         reads: reads.mock.callCount(),
-        barrierRescans: scans.mock.callCount() - initialScans,
         meanSyncMs: durations.reduce((sum, value) => sum + value, 0) / durations.length,
         maxSyncMs: Math.max(...durations),
       })
@@ -163,6 +149,29 @@ persistedTest('action authorization reuses occupancy but reads once at every fen
     writer.set(origin, 'interact', 'block')
     assert.equal(policy.fence(origin, 'interact', revision), false)
     assert.equal(reads.mock.callCount(), durations.length + 1)
+  })
+)
+
+persistedTest('an open browser policy leaves Home available for exclusive maintenance', () =>
+  withHome((home) => {
+    mkdirSync(join(home, 'browser'))
+    const coordinator = join(dirname(home), REGISTRY_DIRECTORY)
+    mkdirSync(coordinator, { mode: 0o700 })
+    const policy = createBrowserPolicy(home, NATIVE, coordinator)
+    const origin = 'https://www.bing.com'
+    try {
+      assert.equal(policy.effectiveDecision(origin, 'read'), 'allow')
+      const maintenance = beginDomains(NATIVE, coordinator, [home], true)
+      try {
+        maintenance.occupy()
+        assert.equal(policy.effectiveDecision(origin, 'read'), 'block')
+      } finally {
+        maintenance.close()
+      }
+      assert.equal(policy.effectiveDecision(origin, 'read'), 'allow')
+    } finally {
+      policy.close()
+    }
   })
 )
 
