@@ -11,7 +11,7 @@
 ### 1. 选择开发路径
 
 - **通过书深创建：**在已安装书深、且已启用 `plugin-create` 的应用中，通过会话说明科研场景、输入、预期产出和所需工具。安装前先审阅生成的源码与安装包。这条路径不要求克隆或构建整个应用。
-- **手动开发：**按[创建教程](doc/plugins/create.zh.md)完成论文阅读笔记插件示例。如需从源码开发书深应用本身，再按[环境准备](#环境准备)和[安装与启动](#安装与启动)操作。
+- **手动开发：**按[创建教程](developer-docs/plugins/create.zh.md)完成论文阅读笔记插件示例。如需从源码开发书深应用本身，再按[环境准备](#环境准备)和[安装与启动](#安装与启动)操作。
 
 插件源码放在独立目录中，通常包含 `SKILL.md`、`.scholarseed-plugin.json` 及所需脚本与资源。会话卡片及其预览场景是可选项；一个 Skill 不会自动拥有自定义卡片。
 
@@ -21,18 +21,18 @@
 
 | 指南 | 用途 |
 | --- | --- |
-| [插件总览](doc/plugins.zh.md) | 插件概念、支持范围与安装方式 |
-| [创建插件](doc/plugins/create.zh.md) | 源码结构、完整示例与打包 |
-| [会话卡片](doc/plugins/cards.zh.md) | 可选自定义卡片、状态与交互 |
-| [运行机制](doc/plugins/runtime.zh.md) | 执行、权限与生命周期 |
-| [API 参考](doc/plugins/api.zh.md) | 宿主契约与支持的能力 |
-| [测试指南](doc/plugins/testing.zh.md) | 校验、预览、安装与真实任务验证 |
+| [插件总览](developer-docs/plugins.zh.md) | 插件概念、支持范围与安装方式 |
+| [创建插件](developer-docs/plugins/create.zh.md) | 源码结构、完整示例与打包 |
+| [会话卡片](developer-docs/plugins/cards.zh.md) | 可选自定义卡片、状态与交互 |
+| [运行机制](developer-docs/plugins/runtime.zh.md) | 执行、权限与生命周期 |
+| [API 参考](developer-docs/plugins/api.zh.md) | 宿主契约与支持的能力 |
+| [测试指南](developer-docs/plugins/testing.zh.md) | 校验、预览、安装与真实任务验证 |
 
 按指南声明插件标识、版本、兼容性和依赖，使用支持的宿主 API；声明某项能力不等于已经实现对应处理逻辑。卡片的 iframe 隔离不等于 Skill 脚本拥有通用安全沙箱。
 
 ### 3. 校验与打包
 
-手动开发时，在包含**与目标书深版本匹配的后端**的 Python 环境中运行以下命令；仅安装系统 Python 并不足够。[创建教程](doc/plugins/create.zh.md)说明了这里使用的插件描述文件和 `request.json`。
+手动开发时，在包含**与目标书深版本匹配的后端**的 Python 环境中运行以下命令；仅安装系统 Python 并不足够。[创建教程](developer-docs/plugins/create.zh.md)说明了这里使用的插件描述文件和 `request.json`。
 
 ```bash
 python -m service.cli.plugins describe
