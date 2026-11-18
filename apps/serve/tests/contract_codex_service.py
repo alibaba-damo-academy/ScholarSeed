@@ -4677,6 +4677,65 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             provider.reservations["fixture-reservation-1"].state, ResourceState.CANCELLED
         )
 
+    async def test_artifact_correction_waits_for_model_input_and_is_offered_once(self) -> None:
+        await self.emit(RuntimeEventKind.TURN_STARTED, sequence=1, payload={})
+        self.live.active_product_turn_id = "publication-turn"
+        self.live.held_model_bridge_id = "publication-bridge"
+        session = self.live.runtime_session
+        self.assertIsNotNone(session)
+
+        async def submit(item: str, arguments: dict, tool: str = "publish_artifacts") -> None:
+            await self.live._respond_service_callback(
+                RuntimeCallbackRequest(
+                    schema_version=1,
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=PRODUCT_SESSION_ID,
+                    native_session_id=VENDOR_THREAD_ID,
+                    native_turn_id="turn-1",
+                    native_item_id=item,
+                    request_id=item,
+                    audience=CallbackAudience.SERVICE,
+                    kind=CallbackKind.DYNAMIC_TOOL,
+                    blocking=True,
+                    prompt={"tool": tool, "arguments": arguments},
+                    response_contract={},
+                    observed_at="",
+                )
+            )
+
+        with patch.object(
+            session,
+            "respond",
+            new=AsyncMock(return_value=CommandReceipt("publication-test", CommandState.APPLIED)),
+        ) as respond:
+            await submit("first-batch-0", {"files": [{}]})
+            self.live.observe_model_tool_outputs("wrong-product-turn", {"first-batch-0"})
+            self.live.observe_model_tool_outputs("publication-turn", {"unrelated-call"})
+            for index in range(1, 5):
+                await submit(f"first-batch-{index}", {"files": [{}]})
+            for call in respond.await_args_list:
+                self.assertTrue(call.args[0].allow_tool_correction)
+                self.assertEqual(
+                    call.args[0].values["validation_errors"][0]["path"], ["files", 0, "path"]
+                )
+
+            self.live.observe_model_tool_outputs("publication-turn", {"first-batch-4"})
+            await submit("correction-failed", {})
+            response = respond.await_args.args[0]
+            self.assertFalse(response.allow_tool_correction)
+            self.assertIn("already offered", response.values["next_action"])
+            self.assertEqual(response.values["validation_errors"][0]["path"], ["files"])
+
+            self.live.active_product_turn_id = "next-product-turn"
+            await submit("next-turn", {})
+            self.assertTrue(respond.await_args.args[0].allow_tool_correction)
+
+            for index in range(1, live_module.ARTIFACT_CORRECTION_CALLBACK_LIMIT):
+                await submit(f"unobserved-{index}", {})
+            self.assertTrue(respond.await_args.args[0].allow_tool_correction)
+            await submit("beyond-defer-limit", {})
+            self.assertFalse(respond.await_args.args[0].allow_tool_correction)
+
     async def test_plan_callback_recovery_is_bound_to_the_exact_tool_and_persisted(self) -> None:
         await self.emit(RuntimeEventKind.TURN_STARTED, sequence=1, payload={})
         arguments = {"operation": "finish", "plan_id": "plan", "step_ids": ["deliver"]}

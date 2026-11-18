@@ -106,6 +106,10 @@ COMPLETION_STATUS_INCOMPLETE = "incomplete"
 COMPLETION_STATUS_COMPLETED = "completed"
 COMPLETION_STATUS_FAILED = "failed"
 CHAT_COMPLETIONS_TOOL_TYPE = "function"
+TOOL_OUTPUT_ITEM_FIELDS = (
+    ("input", "type", "function_call_output", "call_id"),
+    ("messages", "role", "tool", "tool_call_id"),
+)
 NAMED_TOOL_TYPES = frozenset((CHAT_COMPLETIONS_TOOL_TYPE, "custom", NAMESPACE_TOOL_TYPE))
 REASONING_ITEM_TYPE = "reasoning"
 REASONING_TEXT_TYPE = "reasoning_text"
@@ -653,6 +657,7 @@ class CompletionBridge:
         on_model: Callable[[str, str, str], None] | None = None,
         on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
         on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
+        on_tool_outputs: Callable[[str, str, set[str]], None] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         content_source: Callable[[str, str], ContentSource | None] | None = None,
         source_endpoints: Sequence[str] = (),
@@ -663,6 +668,7 @@ class CompletionBridge:
         self._on_model = on_model
         self._on_diagnostic = on_diagnostic
         self._on_sources = on_sources
+        self._on_tool_outputs = on_tool_outputs
         self._turn_ids = turn_ids
         self._content_source = content_source
         self._source_endpoints = tuple(source_endpoints)
@@ -1375,7 +1381,7 @@ class CompletionBridge:
         try:
             if call.before_output is not None:
                 await call.before_output(upstream.session_id, diagnostic.turn_id, b"")
-            result = await self._forward(upstream, payload, call, request_headers)
+            result = await self._forward(bridge_id, upstream, payload, call, request_headers)
             if not call.streaming and result.status_code < 400 and call.before_output is not None:
                 await call.before_output(
                     upstream.session_id, diagnostic.turn_id, bytes(result.body)
@@ -1400,6 +1406,7 @@ class CompletionBridge:
 
     async def _forward(
         self,
+        bridge_id: str,
         upstream: CompletionUpstream,
         payload: Mapping[str, Any],
         call: CompletionCall,
@@ -1675,13 +1682,26 @@ class CompletionBridge:
                 captured_turn_id,
                 len(source.text),
             )
-        if self._before_request is not None:
-            await self._before_request(
-                upstream.session_id,
-                captured_turn_id,
-                chat_request,
-                self._request_authority(upstream, endpoint, protocol),
-            )
+        if self._before_request is not None or self._on_tool_outputs is not None:
+            authority = self._request_authority(upstream, endpoint, protocol)
+            if self._before_request is not None:
+                await self._before_request(
+                    upstream.session_id, captured_turn_id, chat_request, authority
+                )
+            if (
+                self._on_tool_outputs is not None
+                and upstream.allow_tools
+                and upstream.session_id
+                and captured_turn_id
+                and not call.revoked
+                and authority.current()
+                and (
+                    self._held_registration is None
+                    or self._held_registration(upstream.session_id) == bridge_id
+                )
+                and (call_ids := _tool_output_ids(chat_request))
+            ):
+                self._on_tool_outputs(upstream.session_id, captured_turn_id, call_ids)
         client, call.diagnostic.client_pool_hit = self._client(upstream.trust_env)
         call.diagnostic.max_attempts = UPSTREAM_RETRY_MAX_ATTEMPTS
         send_started_at = time.perf_counter()
@@ -2711,6 +2731,23 @@ def _response_message_to_chat(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     if all(part["type"] == "text" for part in parts):
         return {"role": role, "content": "".join(str(part["text"]) for part in parts)}
     return {"role": role, "content": parts}
+
+
+def _tool_output_ids(payload: Mapping[str, Any]) -> set[str]:
+    call_ids = set()
+    for container, kind_field, kind, id_field in TOOL_OUTPUT_ITEM_FIELDS:
+        items = payload.get(container)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if (
+                isinstance(item, Mapping)
+                and item.get(kind_field) == kind
+                and isinstance(call_id := item.get(id_field), str)
+                and call_id
+            ):
+                call_ids.add(call_id)
+    return call_ids
 
 
 def _function_call_output_to_chat(call_id: str, output: Any) -> list[dict[str, Any]]:
