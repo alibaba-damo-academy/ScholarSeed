@@ -3,6 +3,7 @@
 package handoff
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 var errWindows = errors.New("handoff execution requires Windows")
 
 const componentFlushWorkers = 0
+
+func sweepUpdateCache(context.Context, string, string, Runtime, Runtime) {}
 
 func pinDirectory(filename string) (*os.File, error) {
 	if err := checkLineage(filename); err != nil {

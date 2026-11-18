@@ -67,6 +67,8 @@ export function installationFailure(error: unknown): UpdateInstallFallback | und
     case 'ERR_UPDATE_INSTALLATION_QUERY':
     case 'ERR_UPDATE_INSTALLATION_SESSION':
       return 'install_occupancy_unknown'
+    case 'ERR_UPDATE_INSTALL_VERIFICATION':
+      return 'install_verification_failed'
     default:
       return undefined
   }

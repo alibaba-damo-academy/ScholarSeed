@@ -10,7 +10,7 @@ export interface PreparationPolicy {
   retryMaxMs: number
   retryJitter: number
 }
-export const MACOS_PREPARATION_POLICY: Readonly<PreparationPolicy> = Object.freeze({
+const DESKTOP_PREPARATION_POLICY: Readonly<PreparationPolicy> = Object.freeze({
   coalesceMs: 3 * MINUTE_MS,
   intervalMs: 30 * MINUTE_MS,
   recoveryBaseMs: 5 * MINUTE_MS,
@@ -19,7 +19,8 @@ export const MACOS_PREPARATION_POLICY: Readonly<PreparationPolicy> = Object.free
   retryJitter: 0.2,
 })
 const PREPARATION_POLICIES: Partial<Record<NodeJS.Platform, Readonly<PreparationPolicy>>> = {
-  darwin: MACOS_PREPARATION_POLICY,
+  darwin: DESKTOP_PREPARATION_POLICY,
+  win32: DESKTOP_PREPARATION_POLICY,
 }
 export function backgroundPreparationPolicy(
   platform: NodeJS.Platform

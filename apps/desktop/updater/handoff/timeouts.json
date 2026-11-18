@@ -1,0 +1,5 @@
+{
+  "operationMs": 1800000,
+  "workerStopMs": 15000,
+  "coordinatorExitGraceMs": 5000
+}

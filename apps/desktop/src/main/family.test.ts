@@ -274,6 +274,10 @@ test('installation failures use native codes, never message text', () => {
   )
   assert.equal(installationFailure(new Error('ERR_UPDATE_INSTALLATION_IN_USE')), undefined)
   assert.equal(installationFailure(null), undefined)
+  assert.equal(
+    installationFailure({ code: 'ERR_UPDATE_INSTALL_VERIFICATION' }),
+    'install_verification_failed'
+  )
 })
 
 test('family retry preserves a forced drain when termination acknowledgement fails', async (context) => {

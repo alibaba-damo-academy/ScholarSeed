@@ -119,6 +119,7 @@ test('installer staging preserves module layout and exact embedded input', conte
   assert.deepEqual(fs.readFileSync(path.join(source, 'cmd/setup/legacy-files.json')), fs.readFileSync(path.join(sourceDirectory, 'legacy-files.json')))
   assert.equal(fs.readFileSync(path.join(source, 'cmd/setup/license.txt'), 'utf8'), 'test license')
   assert.ok(fs.existsSync(path.join(source, 'go.mod')))
+  assert.ok(fs.existsSync(path.join(source, 'handoff', 'timeouts.json')))
 })
 
 test('isolated Windows installer compiles and verifies its embedded payload', {

@@ -15,6 +15,7 @@ import { copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile, rename } from 
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { redactDiagnosticError } from './redaction.ts'
+import updateTimeouts from '../../updater/handoff/timeouts.json' with { type: 'json' }
 import {
   prepareWindowsToolGroup,
   prepareWindowsTransfer,
@@ -23,10 +24,11 @@ import {
 import {
   COMPONENT_DELIVERY,
   downloadRuntimeComponents,
+  requireUpdateDiskSpace,
   verifyRuntimeEnvelope,
+  type ComponentDeliveryOptions,
 } from './components.ts'
 import { RUNTIME_MANIFEST_LIMIT } from '../../runtime/components.cjs'
-import type { DomainNative } from '../../native/domains.cjs'
 import type { LatestVersionMeta } from '../updates.ts'
 import type { HandoffAuthorization } from './update-authorization.ts'
 import {
@@ -55,7 +57,7 @@ const POLICY = Object.freeze({
   source: 'verified-',
   staging: 'VelopackTemp',
   stagingLeaf: 'tmp_0000000000000000',
-  timeout: 30 * 60_000,
+  timeout: updateTimeouts.operationMs,
   maximumDeltas: 1,
 })
 let initialized = false
@@ -84,7 +86,7 @@ export interface PrepareWindowsVelopackOptions {
   /** Pinned published release directory, ending in /velopack (not a moving latest feed). */
   baseUrl: string
   componentBaseUrl: string
-  native: DomainNative
+  native: ComponentDeliveryOptions['native']
   candidate: LatestVersionMeta
   keys: PackageKeys
   appId: string
@@ -100,7 +102,7 @@ export interface PreparedWindowsVelopack {
   packagePath: string
   manifest: PackageManifest
   lock(restartArgs: string[], signal?: AbortSignal): Promise<void>
-  verify(): Promise<void>
+  verify(signal?: AbortSignal): Promise<void>
   /** Acquire authorization after UAC; after commit the caller must quit. */
   apply(authorize: HandoffAuthorization): Promise<void>
   close(): Promise<void>
@@ -288,7 +290,9 @@ export async function prepareWindowsVelopack(
   const full = manifest.assets.find((asset) => asset.Type === 'Full')!
   const packagePath = join(paths.PackagesDir, full.FileName)
   let failed = false
+  let sourcePin: unknown
   try {
+    sourcePin = options.native.pin(temporary, false, 'installation')
     const manager = new UpdateManager(
       new FileSource(temporary),
       {
@@ -310,8 +314,8 @@ export async function prepareWindowsVelopack(
     let verified = false
     let handedOff = false
     let transfer: WindowsTransfer | null = null
-    const verifyPrepared = async () => {
-      await verifyPackageInventory(packagePath, manifest, [], options.signal)
+    const verifyPrepared = async (verificationSignal?: AbortSignal) => {
+      await verifyPackageInventory(packagePath, manifest, [], verificationSignal)
       verified = true
     }
     options.onStage?.('package-cache')
@@ -343,7 +347,8 @@ export async function prepareWindowsVelopack(
     }
     // Never let the SDK's "already exists" shortcut accept unchecked bytes.
     try {
-      await verifyPrepared()
+      options.onStage?.('package-verification')
+      await verifyPrepared(signal)
       options.onStage?.('release-receipt')
       await writeReceipt(receipt, envelope)
     } catch (error) {
@@ -358,8 +363,8 @@ export async function prepareWindowsVelopack(
           options.onStage?.('package-verification')
           const deltaPath = join(temporary, delta!.FileName)
           await verifyDeltaPackagePaths(deltaPath, patchRoots, signal)
-          await manager.downloadUpdateAsync(target, options.onProgress)
-          await verifyPrepared()
+          await manager.downloadUpdateAsync(target)
+          await verifyPrepared(signal)
         } catch {
           signal.throwIfAborted()
           options.onStage?.('package-cache')
@@ -369,6 +374,8 @@ export async function prepareWindowsVelopack(
         }
       }
       if (!verified) {
+        // The verified source and SDK destination coexist during the copy.
+        await requireUpdateDiskSpace(paths.PackagesDir, BigInt(full.Size) * 2n)
         options.onStage?.('full-download')
         await downloadVelopackAsset(
           base,
@@ -379,11 +386,8 @@ export async function prepareWindowsVelopack(
           options.onFullDownload
         )
         options.onStage?.('package-verification')
-        await manager.downloadUpdateAsync(
-          { ...target, BaseRelease: undefined, DeltasToTarget: [] },
-          options.onProgress
-        )
-        await verifyPrepared()
+        await manager.downloadUpdateAsync({ ...target, BaseRelease: undefined, DeltasToTarget: [] })
+        await verifyPrepared(signal)
       }
       options.onStage?.('release-receipt')
       await writeReceipt(receipt, envelope)
@@ -411,7 +415,8 @@ export async function prepareWindowsVelopack(
       manifest: runtime,
       signal,
       log: options.log,
-      onProgress: (state) => options.onProgress?.(Math.floor((state.received / state.total) * 100)),
+      onArchiveProgress: (received, total) =>
+        options.onProgress?.(Math.floor((received / total) * 100)),
     })
     return {
       packagePath,
@@ -434,9 +439,9 @@ export async function prepareWindowsVelopack(
           log: (message) => console.error(message.trimEnd()),
         })
       },
-      async verify() {
+      async verify(signal = options.signal) {
         verified = false
-        await verifyPrepared()
+        await verifyPrepared(signal)
       },
       async apply(authorize) {
         if (!verified || handedOff || !transfer)
@@ -457,6 +462,7 @@ export async function prepareWindowsVelopack(
     throw error
   } finally {
     try {
+      if (sourcePin !== undefined) options.native.release(sourcePin)
       await rm(temporary, { recursive: true, force: true })
     } catch (error) {
       if (!failed) {

@@ -54,7 +54,7 @@ function fixture(failHelper = false, failFinalGrant = false) {
   const environment = {
     exports,
     process: { platform: 'darwin' },
-    WINDOWS_PLATFORM: 'win32',
+    MACOS_PLATFORM: 'darwin',
     InstallationProgress,
     commitWithActivation,
     retryUpdate,
