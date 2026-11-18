@@ -386,6 +386,28 @@ export function Skills({ navigation }: { navigation?: React.ReactNode } = {}): R
     skills,
     onInstalled: load,
   })
+  const { catalogue, loadAttribution } = market
+  React.useEffect(() => {
+    const viewport = listRef.current
+    if (tab !== TAB_MARKETPLACE || !viewport || !catalogue) return
+    const cards = viewport.querySelectorAll<HTMLElement>('[data-marketplace-attribution]')
+    if (!cards.length) return
+    const items = new Map(catalogue.items.map((skill) => [skill.slug, skill]))
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue
+          observer.unobserve(entry.target)
+          const slug = entry.target.getAttribute('data-marketplace-attribution')
+          const skill = slug ? items.get(slug) : undefined
+          if (skill?.attributionDeferred) void loadAttribution(skill)
+        }
+      },
+      { root: viewport }
+    )
+    cards.forEach((card) => observer.observe(card))
+    return () => observer.disconnect()
+  }, [tab, catalogue, loadAttribution])
   React.useEffect(() => {
     if (tab !== TAB_MARKETPLACE || market.loading || market.failed || !market.catalogue?.nextCursor)
       return
@@ -801,6 +823,9 @@ export function Skills({ navigation }: { navigation?: React.ReactNode } = {}): R
                       padding="none"
                       className={CARD_CLASS}
                       data-testid={`marketplace-card-${skill.slug}`}
+                      data-marketplace-attribution={
+                        skill.attributionDeferred ? skill.slug : undefined
+                      }
                     >
                       <Tooltip
                         content={skill.description || t('description')}

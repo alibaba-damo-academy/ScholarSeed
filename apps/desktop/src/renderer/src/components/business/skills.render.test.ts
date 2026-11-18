@@ -17,6 +17,7 @@ type SkillTestWindow = Window & {
   skillRequests: DeviceSkillRequest[]
   releaseSkillInstall: () => void
   releaseNextPage: () => void
+  releaseFirstAttribution: () => void
   releaseConnectorInstall: () => void
   connectorRequests: { action: { operation: string } }[]
   removeResearchCategory: boolean
@@ -422,6 +423,10 @@ window.scholarseed = { openExternal: async url => { window.skillActions.push(url
     if (location.search.includes('delayInitialMarket')) await new Promise(() => {})
     if (window.failSkillLoad) return { status: 503, body: '{}' }
     if (request.label === 'analysis') return marketPage([])
+    if (location.search.includes('deferredAttribution')) return marketPage(Array.from({ length: 30 }, (_, index) => ({
+      ...marketItem, slug: 'market-' + index, nativeSlug: 'market-' + index, namespace: 'global',
+      attributionDeferred: true,
+    })))
     if (location.search.includes('paginate')) {
       if (request.query === 'missing') return marketPage([])
       if (request.cursor) {
@@ -436,6 +441,10 @@ window.scholarseed = { openExternal: async url => { window.skillActions.push(url
     if (!location.search.includes('marketData')) return marketPage([])
     if (request.query === 'old') return new Promise(resolve => { window.releaseOldMarket = () => resolve(marketPage([{ ...marketItem, name: 'Stale result' }])) })
     return marketPage(request.query === 'missing' ? [] : location.search.includes('scrollMarket') ? Array.from({ length: 40 }, (_, index) => ({ ...marketItem, slug: 'market-' + index, name: 'Paper tools ' + index })) : [marketItem])
+  }
+  if (request.operation === 'marketplace-attribution') {
+    if (request.slug === 'market-0') await new Promise(resolve => { window.releaseFirstAttribution = resolve })
+    return { status: 200, body: JSON.stringify({ attribution, attributionStatus: 'ready' }) }
   }
   if (request.operation === 'marketplace-detail') {
     if (location.search.includes('delayDocument')) await new Promise(() => {})
@@ -2258,6 +2267,41 @@ test(
       await openCenterSection(page, '技能')
       await expect(card).toBeVisible()
       assert.deepEqual(await requests(), initial)
+    } finally {
+      await browser.close()
+    }
+  }
+)
+
+test(
+  'marketplace renders before sources arrive and requests only cards entering the viewport',
+  { timeout: 60_000 },
+  async () => {
+    const baseUrl = await fixtureUrl()
+    const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+    try {
+      const page = await browser.newPage({ viewport: VIEWPORT })
+      await page.goto(new URL('/__skills?marketData=1&deferredAttribution=1', baseUrl).href)
+      const first = page.getByTestId('marketplace-card-market-0')
+      const last = page.getByTestId('marketplace-card-market-29')
+      const sourceRequests = () =>
+        page.evaluate(() =>
+          (window as unknown as SkillTestWindow).skillRequests
+            .filter((request) => request.operation === 'marketplace-attribution')
+            .map((request) => request.slug)
+        )
+
+      await expect(first).toBeInViewport()
+      await expect.poll(sourceRequests).toContain('market-0')
+      await expect(first.getByText('GitHub', { exact: true })).toHaveCount(0)
+      assert.ok(!(await sourceRequests()).includes('market-29'))
+
+      await page.evaluate(() => (window as unknown as SkillTestWindow).releaseFirstAttribution())
+      await expect(first.getByText('GitHub', { exact: true })).toBeVisible()
+      await last.scrollIntoViewIfNeeded()
+      await expect(last.getByText('GitHub', { exact: true })).toBeVisible()
+      assert.equal((await sourceRequests()).filter((slug) => slug === 'market-0').length, 1)
+      assert.equal((await sourceRequests()).filter((slug) => slug === 'market-29').length, 1)
     } finally {
       await browser.close()
     }
