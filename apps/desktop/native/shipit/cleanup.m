@@ -205,7 +205,7 @@ BOOL SSCleanupOpenExistingDirectory(NSString *directory, NSError **error) {
 BOOL SSCleanupOpenMaintenanceDirectory(NSString *directory, NSError **error) {
     return SSCleanupOpenDirectoryMode(directory, SSCleanupOpenMaintenance, error);
 }
-static NSDictionary *SSCleanupSnapshot(NSError **error) {
+static NSDictionary *SSCleanupSnapshot(BOOL requireIdle, NSError **error) {
     if (SSCloseUncertain || SSDirectoryFD < 0 || SSLockFD < 0) { SSFail(error, EBADF); return nil; }
     NSDictionary *qualified = SSObservationDirectorySnapshot(SSDirectoryFD, SSLockFD, SSLock, SSObservedDirectory, error);
     if (!qualified) return nil;
@@ -217,15 +217,36 @@ static NSDictionary *SSCleanupSnapshot(NSError **error) {
         current = @{@"state":@"absent"};
     }
     if (SSReadOnly && ![current isEqual:SSReadOnlyJournal]) { SSFail(error, ESTALE); return nil; }
+    if (requireIdle) {
+        NSArray *records = @[];
+        if (observation) {
+            id journal = [NSPropertyListSerialization propertyListWithData:observation[@"data"] options:0 format:NULL error:NULL];
+            if (![journal isKindOfClass:NSDictionary.class] || ![journal[@"schema"] isEqual:SSCleanupSchema] ||
+                ![journal[@"records"] isKindOfClass:NSArray.class]) { SSFail(error, ESTALE); return nil; }
+            records = journal[@"records"];
+        }
+        // Qualify the observed bytes against the loaded journal while retaining the full snapshot for rechecks.
+        if (![records isEqual:SSRecords]) { SSFail(error, ESTALE); return nil; }
+        for (NSDictionary *record in records) {
+            id launched = record[@"launched"];
+            if (!SSObservationBoolean(launched) || ![launched boolValue] || [record[@"items"] count]) {
+                SSFail(error, EBUSY); return nil;
+            }
+        }
+    }
     return @{@"qualification":qualified, @"journal":current, @"recordCount":@(SSRecords.count)};
 }
 NSDictionary *SSCleanupReadOnlySnapshot(NSError **error) {
     if (!SSReadOnly || SSMaintenance) { SSFail(error, EBADF); return nil; }
-    return SSCleanupSnapshot(error);
+    return SSCleanupSnapshot(NO, error);
 }
 NSDictionary *SSCleanupMaintenanceSnapshot(NSError **error) {
     if (SSReadOnly && !SSMaintenance) { SSFail(error, EBADF); return nil; }
-    return SSCleanupSnapshot(error);
+    return SSCleanupSnapshot(NO, error);
+}
+NSDictionary *SSCleanupIdleMaintenanceSnapshot(NSError **error) {
+    if (SSReadOnly && !SSMaintenance) { SSFail(error, EBADF); return nil; }
+    return SSCleanupSnapshot(YES, error);
 }
 BOOL SSCleanupClearRollback(NSString *label, NSString *key) {
     if (SSReadOnly) { errno = EROFS; return NO; }
