@@ -29,8 +29,7 @@ const SETTLE_MS = 700
 /** 等某个选择器出现的轮询上限。 */
 const WAIT_TIMEOUT_MS = 8_000
 const FILE_VERSION_INPUT_TIMEOUT_MS = 30_000
-const OFFICE_REVEAL_TIMEOUT_MS = 30_000
-const OFFICE_FONT_PERMISSION_STATUS = '正在申请系统字体权限…'
+const PREVIEW_READY_TIMEOUT_MS = 30_000
 const WAIT_POLL_MS = 100
 
 /** 新建文档/文件夹时填入的名称，带前缀便于事后识别与清理。 */
@@ -1384,12 +1383,16 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         officeHit &&
         (await waitFor(
           win,
-          `iframe[data-testid="office-editor"][title="${OFFICE_FIXTURE_NAME}"][data-document-ready="true"]`,
-          OFFICE_REVEAL_TIMEOUT_MS
+          `[data-testid="office-preview"][data-office-title="${OFFICE_FIXTURE_NAME}"] [data-testid="office-preview-content"]`,
+          PREVIEW_READY_TIMEOUT_MS
         ))
-      const selectionReady =
-        officeReady && (await waitFor(win, '[data-testid="selection-action-host"]'))
-      record('DOCX 正文命中点击后由 Writer 定位并选中', Boolean(officeReady && selectionReady))
+      const contentReady =
+        officeReady &&
+        (await textOf(win, '[data-testid="office-preview-content"]')).includes(officeSearchQuery)
+      record(
+        'DOCX search opens a local read-only preview containing the matched text',
+        Boolean(contentReady)
+      )
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
       mkdirSync(snapshotDir, { recursive: true })
       writeFileSync(
@@ -2217,68 +2220,38 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     )
   }
 
-  // ---- Office：真实 DOCX 覆盖层级、纵向拆分和 iframe/Qt resize 协议 ----
+  // ---- DOCX: local read-only preview, ordinary layout actions and overlays ----
   const officeFixture = process.env[OFFICE_FIXTURE_ENV]
   const officePath = findNode(await treePaths(win), OFFICE_FIXTURE_NAME)
   if (officeFixture && officePath) {
     await click(win, `[data-testid="tree-${officePath}"]`)
-    const officeFrame = await waitFor(win, 'iframe[data-testid="office-editor"]')
-    const shellModeSwitcher = await win.webContents.executeJavaScript(`
-      Boolean(document.querySelector('[data-testid="document-preview"], [data-testid="document-edit"]'))
+    const officeReady = await waitFor(
+      win,
+      '[data-testid="office-preview-content"]',
+      PREVIEW_READY_TIMEOUT_MS
+    )
+    const retiredHostAbsent = await win.webContents.executeJavaScript(`
+      !document.querySelector('iframe[data-testid="office-editor"], .vds-office-runtime-layer')
+      && !('listOfficeFonts' in window.scholarseed)
     `)
-    record('真实 Office 文档不显示工作台模式切换', officeFrame && !shellModeSwitcher)
-    const officeStatus =
-      officeFrame &&
-      ((await win.webContents.executeJavaScript(`
-      (() => Array.from(document.querySelectorAll('iframe[data-testid="office-editor"]')).map((frame) => ({
-        slot: frame.dataset.runtimeSlot,
-        runtimeReady: frame.dataset.runtimeReady,
-        documentReady: frame.dataset.documentReady,
-        visibility: getComputedStyle(frame).visibility,
-        status: frame.contentDocument?.querySelector('#status')?.textContent || ''
-      })))()
-    `)) as { documentReady: string; visibility: string; status: string }[] | false)
-    const officeEnteredRuntime = Boolean(
-      officeStatus &&
-      officeStatus.some(
-        (item) =>
-          item.documentReady === 'true' ||
-          (item.visibility === 'visible' && item.status === OFFICE_FONT_PERMISSION_STATUS)
-      )
-    )
     record(
-      '真实 Office 文件进入运行时（无授权环境停在原生字体授权）',
-      officeEnteredRuntime,
-      `${officePath} ${JSON.stringify(officeStatus)}`
+      'DOCX renders locally without an Office frame or font-permission bridge',
+      Boolean(officeReady && retiredHostAbsent)
     )
-    if (officeEnteredRuntime) {
-      const officeBoundary = (await win.webContents.executeJavaScript(`
+    if (officeReady) {
+      const previewContained = await win.webContents.executeJavaScript(`
         (() => {
-          const frame = Array.from(document.querySelectorAll('iframe[data-testid="office-editor"]'))
-            .find((node) => node instanceof HTMLElement && getComputedStyle(node).visibility === 'visible')
-          const anchor = Array.from(document.querySelectorAll('.vds-office-anchor'))
-            .find((node) => node instanceof HTMLElement && node.offsetParent !== null)
-          const pane = anchor?.closest('.vds-workbench-pane')
-          if (!(frame instanceof HTMLElement) || !(anchor instanceof HTMLElement) || !(pane instanceof HTMLElement)) return null
-          const frameRect = frame.getBoundingClientRect()
-          const anchorRect = anchor.getBoundingClientRect()
-          const paneRect = pane.getBoundingClientRect()
-          const contained = (outer, inner) => inner.left >= outer.left - 1 && inner.top >= outer.top - 1
-            && inner.right <= outer.right + 1 && inner.bottom <= outer.bottom + 1
-          return {
-            frame: { left: frameRect.left, top: frameRect.top, right: frameRect.right, bottom: frameRect.bottom },
-            anchor: { left: anchorRect.left, top: anchorRect.top, right: anchorRect.right, bottom: anchorRect.bottom },
-            pane: { left: paneRect.left, top: paneRect.top, right: paneRect.right, bottom: paneRect.bottom },
-            inAnchor: contained(anchorRect, frameRect),
-            inPane: contained(paneRect, frameRect)
-          }
+          const preview = document.querySelector('[data-testid="office-preview"]')
+          const pane = preview?.closest('.vds-workbench-pane')
+          if (!(preview instanceof HTMLElement) || !(pane instanceof HTMLElement)) return false
+          const inner = preview.getBoundingClientRect()
+          const outer = pane.getBoundingClientRect()
+          return inner.width > 0 && inner.height > 0 && inner.left >= outer.left - 1
+            && inner.top >= outer.top - 1 && inner.right <= outer.right + 1
+            && inner.bottom <= outer.bottom + 1
         })()
-      `)) as { inAnchor: boolean; inPane: boolean } | null
-      record(
-        'Office iframe 只占所属工作栏内容区域',
-        Boolean(officeBoundary?.inAnchor && officeBoundary.inPane),
-        JSON.stringify(officeBoundary)
-      )
+      `)
+      record('The local preview stays within its owning pane', Boolean(previewContained))
 
       const chromeTopmost = await win.webContents.executeJavaScript(`
         (() => ['.vds-activity-rail', '.vds-module-panel', '.vds-document-tabs'].every((selector) => {
@@ -2289,7 +2262,10 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           return hit === element || Boolean(hit?.closest(selector) === element)
         }))()
       `)
-      record('Office 打开时活动栏、左侧栏和 Tab 栏保持在 iframe 上方', Boolean(chromeTopmost))
+      record(
+        'Workspace chrome remains reachable while the local preview is open',
+        Boolean(chromeTopmost)
+      )
 
       const officeTreeMenuPath = findNode(await treePaths(win), NEW_FOLDER_NAME)
       const treeMenuOpened =
@@ -2307,7 +2283,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           return document.elementFromPoint(rect.left + 12, rect.top + 12)?.closest('[data-testid="resource-node-menu"]') === menu
         })()
       `))
-      record('Office 打开时资料树菜单显示在 iframe 上方', Boolean(treeMenuTopmost))
+      record('The resource menu remains above the local preview', Boolean(treeMenuTopmost))
       if (treeMenuVisible) await click(win, '.vds-menu-veil')
 
       await click(win, '[data-testid="resource-import"]')
@@ -2322,7 +2298,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest('.vds-modal') === modal
         })()
       `))
-      record('Office 上方的弹窗不被 iframe 遮挡', Boolean(modalOverlay))
+      record('The import dialog remains above the local preview', Boolean(modalOverlay))
       if (modalVisible) await click(win, '[data-testid="resource-import-dialog"] .vds-modal-close')
 
       const contextOpened = await openTabContextMenu(win, OFFICE_FIXTURE_NAME)
@@ -2337,7 +2313,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
           return document.elementFromPoint(rect.left + 12, rect.top + 12)?.closest('[data-testid="document-tab-menu"]') === menu
         })()
       `))
-      record('Office 上方的 Tab 菜单不被 iframe 遮挡', Boolean(overlay))
+      record('The tab menu remains above the local preview', Boolean(overlay))
       const officeLayoutActions =
         menuVisible &&
         ((await win.webContents.executeJavaScript(`
@@ -2346,41 +2322,20 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         )).map((node) => node.getAttribute('data-testid'))
       `)) as string[] | false)
       record(
-        'Office Tab 菜单不提供拆分或移动操作',
-        Array.isArray(officeLayoutActions) && officeLayoutActions.length === 0,
+        'Read-only Office tabs expose ordinary split and move actions',
+        Array.isArray(officeLayoutActions) && officeLayoutActions.length > 0,
         JSON.stringify(officeLayoutActions)
       )
       if (menuVisible) await click(win, '.vds-menu-veil')
       await settle(SETTLE_MS)
-      const geometry = (await win.webContents.executeJavaScript(`
-        (() => {
-          const anchors = Array.from(document.querySelectorAll('.vds-office-anchor'))
-            .filter((node) => node instanceof HTMLElement && node.offsetParent !== null)
-          const frames = Array.from(document.querySelectorAll('iframe[data-testid="office-editor"]'))
-            .filter((node) => node instanceof HTMLElement && getComputedStyle(node).visibility === 'visible')
-          const sizes = anchors.map((anchor) => {
-            const rect = anchor.getBoundingClientRect()
-            const frame = frames.find((candidate) => {
-              const box = candidate.getBoundingClientRect()
-              return Math.abs(box.left - rect.left) <= 1 && Math.abs(box.top - rect.top) <= 1
-            })
-            const box = frame?.getBoundingClientRect()
-            return { height: rect.height, match: Boolean(box && Math.abs(box.height - rect.height) <= 1) }
-          })
-          return { anchors: anchors.length, frames: frames.length, sizes }
-        })()
-      `)) as { anchors: number; frames: number; sizes: { height: number; match: boolean }[] }
-      record(
-        'Office 始终只占用一个工作栏和一个 Runtime iframe',
-        geometry.anchors === 1 &&
-          geometry.frames === 1 &&
-          geometry.sizes.every((size) => size.height >= 160 && size.match),
-        JSON.stringify(geometry)
-      )
+      const retiredFrames = await win.webContents.executeJavaScript(`
+        document.querySelectorAll('iframe[data-testid="office-editor"], .vds-office-runtime-layer').length
+      `)
+      record('No retired Office host is created by preview interactions', retiredFrames === 0)
       const snapshotDir = resolve(process.cwd(), '..', '..', 'tmp', 'test_snapshot', 'desktop')
       mkdirSync(snapshotDir, { recursive: true })
       writeFileSync(
-        join(snapshotDir, 'office-single-runtime.png'),
+        join(snapshotDir, 'office-local-preview.png'),
         (await win.webContents.capturePage()).toPNG()
       )
 
@@ -2390,20 +2345,19 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         ? ((await win.webContents.executeJavaScript(`
         (() => {
           const preview = document.querySelector('.vds-dock-drop-preview')
-          const runtime = document.querySelector('.vds-office-runtime-layer')
-          if (!(preview instanceof HTMLElement) || !(runtime instanceof HTMLElement)) return null
+          if (!(preview instanceof HTMLElement)) return null
           const rect = preview.getBoundingClientRect()
+          const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
           return {
             visible: rect.width > 0 && rect.height > 0,
-            previewZ: Number(getComputedStyle(preview).zIndex),
-            runtimeZ: Number(getComputedStyle(runtime).zIndex)
+            topmost: hit === preview || preview.contains(hit)
           }
         })()
-      `)) as { visible: boolean; previewZ: number; runtimeZ: number } | null)
+      `)) as { visible: boolean; topmost: boolean } | null)
         : null
       record(
-        'Office 打开时拖拽预览显示在 iframe 上方',
-        Boolean(dragLayer?.visible && dragLayer.previewZ > dragLayer.runtimeZ),
+        'The drag preview remains above document content',
+        Boolean(dragLayer?.visible && dragLayer.topmost),
         JSON.stringify(dragLayer)
       )
       await finishTabDrag(win, SPLIT_DOC_NAME)

@@ -1,4 +1,4 @@
-/** Shared by document admission, preview rendering and Office host demand. */
+/** Shared by document admission and local read-only preview rendering. */
 const PREVIEW_FORMATS = ['docx', 'pptx', 'xlsx'] as const
 export type OfficePreviewFormat = (typeof PREVIEW_FORMATS)[number]
 

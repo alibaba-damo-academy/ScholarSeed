@@ -102,7 +102,7 @@ const MOCK_LIMITATION = '仅验证模拟响应的 UI 消费，不证明真实服
 const PENDING_LIMITATION = '目录登记不代表场景已接入；须由消费测试及真实预览证据确认。'
 const VIEWER_LIMITATIONS: Readonly<Record<string, readonly string[]>> = {
   office: [
-    'Office WASM 仅使用受审预置 Noto 字体，不访问系统字体；此为预览排版近似，不证明系统字体或 Electron 排版一致。默认字体可能重复安装，仍须核实际可见内容与启动开销。',
+    'DOCX/PPTX/XLSX 使用本地只读预览，不加载 Office WASM 或请求系统字体权限；CSV 保留原生编辑。预览排版近似不证明与原生 Office 一致，仍须核实际可见内容。',
   ],
 }
 const REQUIREMENT_SOURCE =

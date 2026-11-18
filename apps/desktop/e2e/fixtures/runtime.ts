@@ -26,7 +26,7 @@ const RUNTIME_OWNERSHIP_ERROR = 'isolated runtime source ownership cannot be ver
  * 界面语言偏好的落盘文件名，与 `src/main/preferences.ts` 里的同名常量保持一致。
  * 刻意不 import 那个模块：它 import electron，会把主进程依赖拉进 Playwright fixture。
  */
-const RENDERER_PREFERENCES_FILE = 'renderer-preferences.json'
+export const RENDERER_PREFERENCES_FILE = 'renderer-preferences.json'
 
 /**
  * e2e 固定跑的界面语言。隔离出来的 userData 是全新空目录，偏好文件必然缺失，产品的
