@@ -203,6 +203,20 @@ test('the download action is offered exactly where the main process accepts it',
   // 主进程只在 available / failed 且候选包仍是当前那一个时放行下载。
   assert.equal(updateActionOf(snapshot('available', { candidate: CANDIDATE })), 'download')
   assert.equal(updateActionOf(snapshot('failed', { candidate: CANDIDATE })), 'download')
+  for (const errorFallback of [
+    'install_signature_untrusted',
+    'install_verify_unavailable',
+  ] as const)
+    assert.equal(
+      updateActionOf(
+        snapshot('failed', {
+          candidate: CANDIDATE,
+          errorOrigin: 'preparation',
+          errorFallback,
+        })
+      ),
+      'check'
+    )
   // 检查失败时没有候选包，重试的只能是检查本身。
   assert.equal(updateActionOf(snapshot('failed')), 'check')
   assert.equal(updateActionOf(snapshot('available')), 'check')

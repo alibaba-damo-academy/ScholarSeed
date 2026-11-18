@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { PreparedArchive, PreparedArtifactChangedError } from './prepared.ts'
 import { squirrelFeed } from './squirrel.ts'
+import { UpdateArchiveSourceMismatch } from './archive.ts'
 import type { LatestVersionMeta } from '../updates.ts'
 
 const macOnly = { skip: process.platform !== 'darwin' }
@@ -95,6 +96,44 @@ test('wrong source fails before conversion and before current trust', macOnly, a
   )
   assert.equal(inspected, false)
 })
+
+test(
+  'cold reattachment requires the cached ZIP to match the freshly inspected source tree',
+  macOnly,
+  async (t) => {
+    const f = fixture(t)
+    const generate = async () => {
+      execFileSync('/usr/bin/ditto', [
+        '-c',
+        '-k',
+        '--norsrc',
+        '--keepParent',
+        f.application,
+        f.archive,
+      ])
+    }
+    const receipt = await f.create(generate)
+    const prove = (archive = receipt.archive) =>
+      PreparedArchive.reattach(f.meta, f.source, archive, (inspect) => inspect(f.application))
+    const restored = await prove()
+    assert.equal(restored.matches(f.meta, receipt.archive), true)
+    assert.equal(restored.expandedBytes, receipt.expandedBytes)
+
+    const member = join(f.application, 'content')
+    writeFileSync(member, 'malicious')
+    await generate()
+    const edited = readFileSync(f.archive)
+    writeFileSync(member, 'original')
+    await assert.rejects(
+      prove({
+        path: f.archive,
+        size: edited.length,
+        sha512: createHash('sha512').update(edited).digest('hex'),
+      }),
+      UpdateArchiveSourceMismatch
+    )
+  }
+)
 
 test(
   'source changes during conversion or live trust never acquire a receipt or authorization input',

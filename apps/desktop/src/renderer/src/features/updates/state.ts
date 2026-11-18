@@ -90,7 +90,15 @@ export function updateActionOf(state: UpdateSnapshot | null): UpdateAction {
     case 'ready':
       return 'install'
     case 'available':
+      return state.candidate ? 'download' : 'check'
     case 'failed':
+      if (
+        state.errorOrigin === 'preparation' &&
+        (state.errorFallback === 'install_signature_untrusted' ||
+          state.errorFallback === 'install_verify_unavailable' ||
+          state.errorFallback === 'install_archive_limit')
+      )
+        return 'check'
       return state.candidate ? 'download' : 'check'
     case 'checking':
     case 'downloading':
@@ -346,6 +354,8 @@ export function updateFailureText(
   if (failure.fallback === 'install_verify_unavailable') return t('update.installVerifyUnavailable')
   if (failure.fallback === 'install_verification_failed')
     return t('update.installVerificationFailed')
+  if (failure.fallback === 'install_archive_limit') return t('update.installArchiveLimit')
+  if (failure.fallback === 'install_disk_space') return t('update.insufficientSpace')
   if (failure.fallback === 'install_signature_untrusted')
     return t('update.installSignatureUntrusted')
   if (failure.fallback === 'install_notarization_indeterminate')

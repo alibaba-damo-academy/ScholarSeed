@@ -3,11 +3,14 @@ const path = require('node:path')
 const { spawn } = require('node:child_process')
 const { AsyncLocalStorage } = require('node:async_hooks')
 const { timedAsync } = require('../../../../scripts/shared/timing.cjs')
+const { assertMeasuredUpdateArchive } = require('../../src/main/archive.ts')
 function finalResult(base, app, installer, velopack, runtime) {
   if (base.stage === 'dmg' && (installer?.installed_check?.status !== 'passed' ||
       installer.installed_check.source !== 'mounted-dmg' || !installer.installed_check.detached ||
       installer.installed_check.sha256 !== installer.sha256 || !installer.signature_valid ||
       !installer.installed_check.package_check?.ok)) throw new Error('Final DMG acceptance is incomplete')
+  if (base.stage === 'dmg' && base.publishable)
+    assertMeasuredUpdateArchive(installer.installed_check.update_archive)
   if (base.stage === 'velopack' && (!velopack || !installer?.installed_check?.ok || !installer.installed_check.retirement?.complete || !app?.package_check?.ok)) throw new Error('Velopack installed acceptance is incomplete')
   if (base.stage === 'velopack' && base.publishable && (!velopack.signed || !installer.signature_valid || !app.signature_valid)) throw new Error('Velopack distribution requires signed artifacts')
   if (base.stage === 'velopack' && (!runtime?.manifest_path || !runtime.components?.length)) throw new Error('Velopack runtime delivery artifacts are incomplete')

@@ -22,11 +22,12 @@ test('Velopack finalization requires installed acceptance and signed distributio
 })
 
 test('macOS finalization preserves DMG and application evidence', () => {
-  const base = {stage: 'dmg', trust: {level: 'signed-macos'}}
+  const base = {stage: 'dmg', publishable: true, trust: {level: 'signed-macos'}}
   const app = {trust: {team: 'fixture'}, package_check: {ok: true}}
-  const installer = {path: 'ScholarSeed.dmg', sha256: 'digest', signature_valid: true, trust: {team: 'mounted'}, installed_check: {status: 'passed', source: 'mounted-dmg', detached: true, sha256: 'digest', package_check: {ok: true}}}
+  const installer = {path: 'ScholarSeed.dmg', sha256: 'digest', signature_valid: true, trust: {team: 'mounted'}, installed_check: {status: 'passed', source: 'mounted-dmg', detached: true, sha256: 'digest', package_check: {ok: true}, update_archive: {size: 200, entries: 3, metadata: 100, expanded: 400}}}
   assert.throws(() => acceptance.finalResult(base, app, {...installer, installed_check: null}), /DMG acceptance/)
   assert.throws(() => acceptance.finalResult(base, app, {...installer, sha256: 'changed'}), /DMG acceptance/)
+  assert.throws(() => acceptance.finalResult(base, app, {...installer, installed_check: {...installer.installed_check, update_archive: undefined}}), /measured update ZIP/)
   assert.deepEqual(acceptance.finalResult(base, app, installer), {
     ...base, status: 'passed', artifacts: {app, dmg: installer}, trust: {...base.trust, ...installer.trust},
   })

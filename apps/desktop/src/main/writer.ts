@@ -11,10 +11,12 @@ export interface DirectoryWriter {
 export interface DirectoryMaintenance extends DirectoryWriter {
   clearCache(aliases?: readonly (readonly [string, string])[]): void
   publishCache(staged: string, name: string): void
+  consume(name: string, bytes: Buffer, device: string, inode: string): void
 }
 
 export interface RecordWriter extends DirectoryMaintenance, QualifiedRecordWriter {
   replace(name: string, bytes: Buffer): void
+  withRecordLock(name: string, operation: () => void): void
 }
 
 // An uncertain release must not become a fresh writer capability. Keep the
@@ -90,6 +92,65 @@ export function acquireDirectoryWriter(
     publishCache: (staged, name) => domains.publishCache(root, staged, name),
     create: (name, bytes) => domains.create(root, name, bytes),
     replace: (name, bytes) => domains.replace(root, name, bytes),
+    withRecordLock(name, operation) {
+      if (closed || maintenance) throw new Error('Record lock requires an admitted writer')
+      const pin = native.pin(root, false)
+      let lock: unknown
+      try {
+        lock = native.acquireAt(pin, name, true)
+        operation()
+      } catch (error) {
+        if (
+          ['ERR_LEASE_SYNC', 'ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'].includes(
+            (error as NodeJS.ErrnoException).code ?? ''
+          )
+        ) {
+          closed = true
+          retainUncertainDirectoryOwnership(lock, pin, domains)
+        }
+        throw error
+      } finally {
+        if (!closed) {
+          try {
+            if (lock !== undefined) native.release(lock)
+            native.release(pin)
+          } catch (error) {
+            closed = true
+            retainUncertainDirectoryOwnership(lock, pin, domains)
+            throw error
+          }
+        }
+      }
+    },
+    consume(name, bytes, device, inode) {
+      if (closed || !maintenance || !native.consumeAt)
+        throw new Error('Record consumption requires directory maintenance')
+      domains.checkWritable()
+      const pin = native.pin(root, false)
+      try {
+        native.consumeAt(pin, name, bytes, device, inode)
+      } catch (error) {
+        if (
+          ['ERR_LEASE_SYNC', 'ERR_LEASE_RELEASE'].includes(
+            (error as NodeJS.ErrnoException).code ?? ''
+          )
+        ) {
+          closed = true
+          retainUncertainDirectoryOwnership(pin, domains)
+        }
+        throw error
+      } finally {
+        if (!closed) {
+          try {
+            native.release(pin)
+          } catch (error) {
+            closed = true
+            retainUncertainDirectoryOwnership(pin, domains)
+            throw error
+          }
+        }
+      }
+    },
   }
 }
 
@@ -110,7 +171,7 @@ export function desktopDirectoryWriter(root: string): RecordWriter {
 }
 
 /** Exclusive maintenance refuses active ancestors, descendants and family owners. */
-export function desktopDirectoryMaintenance(root: string): DirectoryMaintenance {
+export function desktopDirectoryMaintenance(root: string): RecordWriter {
   const native = require('./lease.node') as DomainNative
   return acquireDirectoryWriter(native, join(userInfo().homedir, REGISTRY_DIRECTORY), root, true)
 }

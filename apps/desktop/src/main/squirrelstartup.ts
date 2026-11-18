@@ -1,5 +1,5 @@
 // Read-only startup classification. None of these results authorize backend admission.
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
@@ -32,6 +32,49 @@ const PROBE_MAX_BYTES = 1024 * 1024
 const SHIPIT_NAME = 'ShipIt'
 const SHIPIT_EXECUTABLE = ['Contents', 'Frameworks', 'Squirrel.framework', 'Resources', SHIPIT_NAME]
 const SHIPIT_STATE = 'ShipItState.plist'
+const PREPARATION_DIRECTORY = 'CandidatePreparation'
+
+export function squirrelNativeRequestAbsent(cache: string, bundle: string): boolean {
+  if (!/^[A-Za-z0-9.-]+$/.test(bundle)) return false
+  try {
+    lstatSync(join(cache, `${bundle}.ShipIt`, SHIPIT_STATE))
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+  }
+}
+
+export function legacySquirrelPublisherAbsent(
+  processes: string,
+  pid: number,
+  executable: string
+): boolean {
+  let current = false
+  for (const line of processes.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line)
+    if (!match) return false
+    const name = basename(match[2])
+    if (name === SHIPIT_NAME) return false
+    if (name !== basename(executable)) continue
+    if (Number(match[1]) !== pid) return false
+    current = true
+  }
+  return current
+}
+
+export function inspectLegacySquirrelPublisher(): boolean {
+  try {
+    const inventory = execFileSync('/bin/ps', ['-ww', '-axo', 'pid=,comm='], {
+      timeout: PROBE_TIMEOUT_MS,
+      maxBuffer: PROBE_MAX_BYTES,
+      encoding: 'utf8',
+    })
+    return legacySquirrelPublisherAbsent(inventory, process.pid, process.execPath)
+  } catch {
+    return false
+  }
+}
 const SHIPIT_REQUEST_FLAGS = [
   'installationAuthorized',
   'launchAfterInstallation',
@@ -126,6 +169,21 @@ export async function squirrelHelpersAbsent(
   return true
 }
 
+async function squirrelHelperPaths(executable: string, source?: string): Promise<string[]> {
+  const executables = [executable]
+  if (source) {
+    // The bound candidate can own the helper during relaunch.
+    const candidateHelper = join(source, ...SHIPIT_EXECUTABLE)
+    executables.push(candidateHelper)
+    try {
+      executables.push(await realpath(candidateHelper))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+  return executables
+}
+
 export async function inspectSquirrelIdle(
   cache: string,
   bundle: string,
@@ -176,25 +234,19 @@ export async function inspectSquirrelIdle(
     if ((await realpath(cache)) !== cache) return false
     const target = await realpath(application)
     if (target !== application) return false
-    const executables = [await realpath(join(target, ...SHIPIT_EXECUTABLE))]
     const native = handoff?.nativeRequest
-    if (native) {
-      if (
-        native.target.path !== target ||
+    if (
+      native &&
+      (native.target.path !== target ||
         !validSquirrelBinding(native.binding) ||
         !sameSquirrelBinding(handoff?.binding, native.binding) ||
-        native.binding.candidate !== handoff?.candidate
-      )
-        return false
-      // Include the bound candidate: it can own the helper during relaunch.
-      const candidateHelper = join(native.source.path, ...SHIPIT_EXECUTABLE)
-      executables.push(candidateHelper)
-      try {
-        executables.push(await realpath(candidateHelper))
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      }
-    }
+        native.binding.candidate !== handoff?.candidate)
+    )
+      return false
+    const executables = await squirrelHelperPaths(
+      await realpath(join(target, ...SHIPIT_EXECUTABLE)),
+      native?.source.path
+    )
     const before = snapshot()
     const options = {
       timeout: PROBE_TIMEOUT_MS,
@@ -206,6 +258,12 @@ export async function inspectSquirrelIdle(
       return squirrelHelpersAbsent(processes.stdout, uid, executables)
     }
     if (!(await helpersAbsent())) return false
+    const replacement = captureDirectory(target)
+    const contents = captureDirectory(join(target, 'Contents'))
+    if (verifyReplacement) await verifyReplacement(target)
+    const replacementStable = () =>
+      JSON.stringify(replacement) === JSON.stringify(captureDirectory(target)) &&
+      JSON.stringify(contents) === JSON.stringify(captureDirectory(join(target, 'Contents')))
     let failed: (() => Promise<boolean>) | undefined
     if (before.bytes) {
       if (!native) return false
@@ -223,12 +281,6 @@ export async function inspectSquirrelIdle(
         return false
       // A superseding installation has its own identity. Keep the historical
       // failure bound to the old target; never rebase that failure onto this app.
-      const replacement = captureDirectory(target)
-      const contents = captureDirectory(join(target, 'Contents'))
-      if (verifyReplacement) await verifyReplacement(target)
-      const replacementStable = () =>
-        JSON.stringify(replacement) === JSON.stringify(captureDirectory(target)) &&
-        JSON.stringify(contents) === JSON.stringify(captureDirectory(join(target, 'Contents')))
       failed = async () =>
         replacementStable() &&
         (await readFailure(
@@ -246,6 +298,7 @@ export async function inspectSquirrelIdle(
     const after = snapshot()
     return (
       before.identity === after.identity &&
+      replacementStable() &&
       (before.bytes === null ? after.bytes === null : !!after.bytes?.equals(before.bytes))
     )
   } catch {
@@ -310,7 +363,8 @@ export async function bindSquirrelRequest(
   cache: string,
   bundle: string,
   application: string,
-  handoff: SquirrelHandoff
+  handoff: SquirrelHandoff,
+  applicationSupport?: string
 ): Promise<SquirrelNativeRequest> {
   if (!/^[A-Za-z0-9.-]+$/.test(bundle)) throw new Error('Invalid Squirrel request bundle')
   const statePath = join(cache, `${bundle}.ShipIt`, SHIPIT_STATE)
@@ -369,7 +423,74 @@ export async function bindSquirrelRequest(
       JSON.stringify({ source: capture(source), target: capture(target), binding: handoff.binding })
   )
     throw new Error('Squirrel request candidate changed or differs')
-  return nativeRequest
+  const prepared = applicationSupport
+    ? await readPreparedCandidate(applicationSupport, bundle, nativeRequest)
+    : undefined
+  return prepared ? { ...nativeRequest, prepared } : nativeRequest
+}
+
+function squirrelCaptureMatches(
+  expected: SquirrelNativeCapture,
+  actual: SquirrelNativeCapture
+): boolean {
+  return (
+    expected.path === actual.path &&
+    (['parent', 'item'] as const).every((part) =>
+      (['dev', 'ino', 'uid'] as const).every(
+        (field) => expected[part]?.[field] === actual[part][field]
+      )
+    )
+  )
+}
+
+async function readPreparedCandidate(
+  support: string,
+  bundle: string,
+  request: SquirrelNativeRequest
+): Promise<SquirrelNativeCapture | undefined> {
+  try {
+    const owner = join(realpathSync(support), `${bundle}.ShipIt`)
+    const directory = join(owner, PREPARATION_DIRECTORY)
+    for (const path of [owner, directory]) {
+      const info = lstatSync(path)
+      if (!info.isDirectory() || info.uid !== process.getuid!() || info.mode & UNSAFE_WRITE_MODE)
+        return undefined
+    }
+    const bytes = readNativeRecord(join(directory, 'journal.plist'), PROBE_MAX_BYTES)
+    const conversion = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], {
+      timeout: PROBE_TIMEOUT_MS,
+      maxBuffer: PROBE_MAX_BYTES,
+      encoding: 'utf8',
+    })
+    conversion.child.stdin?.end(bytes)
+    const { schema, record } = JSON.parse((await conversion).stdout)
+    if (
+      schema !== '1' ||
+      record?.state !== 'ready' ||
+      record.failure ||
+      record.ownership ||
+      !sameSquirrelBinding(record.binding, request.binding) ||
+      !squirrelCaptureMatches(record.source, request.source) ||
+      !squirrelCaptureMatches(record.target, request.target)
+    )
+      return undefined
+    const candidate = captureDirectory(realpathSync(record.candidate.path))
+    return squirrelCaptureMatches(record.candidate, candidate) ? candidate : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function squirrelPreparedDevice(
+  prepared: SquirrelNativeCapture | undefined
+): number | undefined {
+  try {
+    if (prepared && squirrelCaptureMatches(prepared, captureDirectory(realpathSync(prepared.path))))
+      return prepared.item.dev
+  } catch {
+    // The native copy has changed. Keep the conservative space check.
+  }
+  return undefined
 }
 
 function captureDirectory(path: string): SquirrelNativeCapture {
@@ -591,30 +712,6 @@ export async function inspectSquirrelStartup(
     ])
     const executable = await realpath(join(application, ...SHIPIT_EXECUTABLE))
     const uid = process.getuid()
-    const candidates = processes.stdout.split(/\r?\n/).flatMap((line) => {
-      const match = /^\s*(\d+)\s+(.+)$/.exec(line)
-      return match && [0, uid].includes(Number(match[1])) && match[2].endsWith('/ShipIt')
-        ? [{ uid: Number(match[1]), path: match[2] }]
-        : []
-    })
-    const canonical = await Promise.allSettled(
-      candidates.map(async (candidate) => `${candidate.uid} ${await realpath(candidate.path)}`)
-    )
-    const observed = canonical.flatMap((entry) =>
-      entry.status === 'fulfilled' ? [entry.value] : []
-    )
-    const status = classifySquirrelStartup(
-      handoff,
-      {
-        application,
-        executable,
-        uid,
-        target: target.stdout,
-        processes: observed.join('\n'),
-      },
-      Date.now()
-    )
-    const active = observed.some((entry) => entry.endsWith(` ${executable}`))
     const source = await run(
       '/usr/bin/plutil',
       [
@@ -627,12 +724,40 @@ export async function inspectSquirrelStartup(
       ],
       options
     )
+    const native = handoff.nativeRequest
     if (
-      sameSquirrelBinding(handoff.binding, handoff.nativeRequest?.binding) &&
-      (await readSquirrelFailure(source.stdout.trim(), application, handoff.nativeRequest))
+      native &&
+      sameSquirrelBinding(handoff.binding, native.binding) &&
+      (await readSquirrelFailure(source.stdout.trim(), application, native))
+    ) {
+      const executables = await squirrelHelperPaths(executable, native.source.path)
+      return (await squirrelHelpersAbsent(processes.stdout, uid, executables))
+        ? 'failed'
+        : 'restoring'
+    }
+    const candidates = processes.stdout.split(/\r?\n/).flatMap((line) => {
+      const match = /^\s*(\d+)\s+(.+)$/.exec(line)
+      return match && [0, uid].includes(Number(match[1])) && match[2].endsWith('/ShipIt')
+        ? [{ uid: Number(match[1]), path: match[2] }]
+        : []
+    })
+    const canonical = await Promise.allSettled(
+      candidates.map(async (candidate) => `${candidate.uid} ${await realpath(candidate.path)}`)
     )
-      return active ? 'restoring' : 'failed'
-    return status
+    const observed = canonical.flatMap((entry) =>
+      entry.status === 'fulfilled' ? [entry.value] : []
+    )
+    return classifySquirrelStartup(
+      handoff,
+      {
+        application,
+        executable,
+        uid,
+        target: target.stdout,
+        processes: observed.join('\n'),
+      },
+      Date.now()
+    )
   } catch {
     // Missing/stale native state, command failure and timeout never release the handoff.
     return 'unconfirmed'
