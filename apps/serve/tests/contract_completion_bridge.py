@@ -2001,6 +2001,9 @@ def test_connect_retry_backoff_can_be_cancelled() -> None:
         len(captured) == 1
         and emitted.get("attempt") == 1
         and emitted.get("connect_retries") == 0
+        and emitted.get("first_connect_failure_category") == "network_unreachable"
+        and emitted.get("cancellation_source") == "request_task"
+        and emitted.get("cancelled_during_connect_backoff") is True
         and emitted.get("end_reason") == "cancelled",
         str(emitted),
     )

@@ -148,6 +148,13 @@ class TransportStage(str, Enum):
     RESPONSE_BODY = "response_body"
 
 
+class CancellationSource(str, Enum):
+    TURN_QUIESCE = "turn_quiesce"
+    BRIDGE_REVOKE = "bridge_revoke"
+    REQUEST_TASK = "request_task"
+    STREAM_CONSUMER = "stream_consumer"
+
+
 class ToolInputFailure(str, Enum):
     MULTIPLE = f"{MODEL_BRIDGE_INVALID_TOOL_INPUT}:multiple_declarations"
     SHAPE = f"{MODEL_BRIDGE_INVALID_TOOL_INPUT}:invalid_declaration"
@@ -247,7 +254,9 @@ class CompletionCall:
     closing: asyncio.Task | None = None
     before_output: Callable[[str, str, bytes], Awaitable[None]] | None = None
 
-    def revoke(self) -> None:
+    def revoke(self, source: CancellationSource = CancellationSource.BRIDGE_REVOKE) -> None:
+        if not self.revoked:
+            self.diagnostic.cancellation_source = source.value
         self.revoked = True
         self.loop.call_soon_threadsafe(self._cancel)
 
@@ -342,6 +351,8 @@ class CompletionStream(StreamingResponse):
                 and self.call.diagnostic.upstream_end == StreamEnd.CANCELLED.value
             ):
                 reason = StreamEnd.CONSUMER_CLOSED.value
+            if reason in (StreamEnd.CANCELLED.value, StreamEnd.CONSUMER_CLOSED.value):
+                self.call.diagnostic.cancellation_source = CancellationSource.STREAM_CONSUMER.value
             try:
                 await self.call.close()
             finally:
@@ -714,7 +725,7 @@ class CompletionBridge:
         )
         tasks = tuple(call.task for call in calls if call.task is not None)
         for call in calls:
-            call.revoke()
+            call.revoke(CancellationSource.TURN_QUIESCE)
         await asyncio.gather(*(call.close() for call in calls))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -1385,6 +1396,8 @@ class CompletionBridge:
             return result
         except asyncio.CancelledError:
             reason = StreamEnd.REVOKED.value if call.revoked else StreamEnd.CANCELLED.value
+            if not call.revoked:
+                diagnostic.cancellation_source = CancellationSource.REQUEST_TASK.value
             raise
         except Exception as error:
             reason = StreamEnd.BRIDGE_ERROR.value
@@ -1711,6 +1724,8 @@ class CompletionBridge:
                 except httpx.TransportError as error:
                     diagnostics = transport_diagnostics(error)
                     retryable = retryable_pre_response_failure(error, diagnostics["category"])
+                    if retryable and not call.diagnostic.first_connect_failure_category:
+                        call.diagnostic.first_connect_failure_category = diagnostics["category"]
                     max_attempts = (
                         UPSTREAM_TLS_RETRY_MAX_ATTEMPTS
                         if retryable
@@ -1732,9 +1747,11 @@ class CompletionBridge:
                         max_attempts,
                         backoff_delay,
                     )
+                    call.diagnostic.waiting_for_connect_retry = True
                     await asyncio.sleep(backoff_delay)
                     if call.revoked or not upstream.active:
                         raise asyncio.CancelledError() from error
+                    call.diagnostic.waiting_for_connect_retry = False
                     call.diagnostic.connect_retries += 1
                     if diagnostics["category"] == TransportFailureCategory.TLS.value:
                         call.diagnostic.tls_retries += 1
