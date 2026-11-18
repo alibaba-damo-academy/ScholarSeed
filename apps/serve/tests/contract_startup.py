@@ -42,6 +42,203 @@ from service.settings.credentials import ModelCredentialStore
 
 
 class StartupContracts(unittest.TestCase):
+    def test_session_maintenance_joins_descendant_writer_before_orphan_cleanup(self) -> None:
+        with directory("ss-cleanup-wait-") as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            program = r"""
+import asyncio
+import os
+import subprocess
+import sys
+import time
+from contextlib import closing
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from httpx import ASGITransport, AsyncClient
+from service import bootstrap
+from service.chat.persistence import blocks
+from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
+from service.chat.service.maintenance import inspect_session_storage
+from service.paths import COORDINATION_DIRNAME, LOGS_DIR, SESSION_BLOCKS_DIR, SESSION_CATALOG_DB
+from service.persistence.project import connect
+from service.platform.activity import ActivityPhase
+
+root = Path(os.environ['SCHOLARSEED_HOME']).parent
+coordinator = root / COORDINATION_DIRNAME
+with patch.object(bootstrap, 'coordination_root', return_value=coordinator):
+    app = bootstrap.create_app(auth=False, auth_mode='off', ownership_axis='machine')
+
+session = 'orphan'
+SessionCatalogStore(SESSION_CATALOG_DB).register(
+    session, SessionPrincipal('local'), runtime_id='codex', vendor_thread_id='thread',
+    vendor_session_id='session', runtime_workdir=os.environ['SCHOLARSEED_DEFAULT_WORKSPACE'],
+    project_path=None, output_root=os.environ['SCHOLARSEED_DEFAULT_WORKSPACE'],
+    codex_version='test', model_id='model', policy_id='workspace-write',
+    status=SessionStatus.READY, title='', created_at=1,
+)
+with closing(connect(SESSION_CATALOG_DB)) as connection:
+    connection.execute('BEGIN IMMEDIATE')
+    with blocks.BlockStore(connection, SESSION_CATALOG_DB) as store:
+        store.append(dict(event_id=1, session_id=session, runtime_id='codex',
+            vendor_thread_id='thread', vendor_turn_id='turn', vendor_item_id='item',
+            kind='message_delta', payload='{"delta":"orphan"}', client_turn_id=None,
+            schema_version=1, product_seq=1, idempotency_key='orphan', created_at=1.0))
+    connection.rollback()
+orphan = SESSION_BLOCKS_DIR / blocks._name(session)
+assert orphan.is_file()
+assert inspect_session_storage(SESSION_CATALOG_DB) is True
+LOGS_DIR.mkdir(exist_ok=True)
+
+writer_program = r'''
+import sys
+from pathlib import Path
+from service.platform.domains import Domains
+from service.platform.storage import DarwinDirectoryNative, LinuxDirectoryNative, WindowsDirectoryNative
+
+native = {'darwin': DarwinDirectoryNative, 'linux': LinuxDirectoryNative,
+          'win32': WindowsDirectoryNative}[sys.platform]()
+coordinator, logs = sys.argv[1:]
+owner = Domains(native, coordinator, (logs,))
+try:
+    owner.occupy()
+    owner.admit()
+    print('ready', flush=True)
+    assert sys.stdin.readline() == 'release\n'
+    (Path(logs) / 'completed.log').write_text('writer completed', encoding='utf-8')
+finally:
+    owner.close()
+'''
+
+async def verify():
+    released = False
+    with subprocess.Popen(
+        [sys.executable, '-c', writer_program, str(coordinator), str(LOGS_DIR)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) as writer:
+        def release():
+            nonlocal released
+            released = True
+            _, stderr = writer.communicate('release\n', timeout=10)
+            assert writer.returncode == 0, stderr
+
+        def wait_for_writer(seconds):
+            if not released:
+                assert app.state.activities.snapshot().phase is ActivityPhase.SEALED
+                assert orphan.is_file()
+                release()
+            time.sleep(seconds)
+
+        try:
+            assert writer.stdout.readline().strip() == 'ready'
+            clock = SimpleNamespace(monotonic=time.monotonic, sleep=wait_for_writer)
+            with patch('service.platform.domains.time', clock):
+                await app.state.session_maintenance._maintain()
+            assert released, 'maintenance did not wait for the live writer'
+            assert (LOGS_DIR / 'completed.log').is_file()
+            assert not orphan.exists(), 'orphan should be removed after the writer closes'
+            assert app.state.activities.snapshot().phase is ActivityPhase.OPEN
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://contract') as client:
+                assert (await client.get('/api/auth/status')).status_code == 200
+        finally:
+            if not released:
+                release()
+            app.state.storage_domains.close()
+
+asyncio.run(verify())
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", program],
+                env={
+                    **os.environ,
+                    "SCHOLARSEED_HOME": str(root / "home"),
+                    "DAMOATRACE_HOME": str(root / "home"),
+                    "DAMOATRACE_LEDGER_ROOT": str(root / "home" / "projects"),
+                    "SCHOLARSEED_CODEX_HOME": str(root / "home" / "codex"),
+                    DEFAULT_WORKSPACE_ENV: str(workspace),
+                },
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_session_maintenance_restores_admission_after_registry_commit_busy(self) -> None:
+        with directory("ss-restore-") as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            program = r"""
+import asyncio
+import os
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+from unittest.mock import patch
+
+from httpx import ASGITransport, AsyncClient
+from service import bootstrap
+from service.paths import COORDINATION_DIRNAME
+from service.platform.activity import ActivityPhase
+from service.platform.registry import acquire_slot
+
+root = Path(os.environ['SCHOLARSEED_HOME']).parent
+with patch.object(bootstrap, 'coordination_root', return_value=root / COORDINATION_DIRNAME):
+    app = bootstrap.create_app(auth=False, auth_mode='off', ownership_axis='machine')
+
+restore = bootstrap.prepare_startup_domains
+attempts = 0
+released = []
+
+def restore_while_contended(*args, **kwargs):
+    global attempts
+    attempts += 1
+    assert app.state.activities.snapshot().phase is ActivityPhase.SEALED
+    if attempts == 1:
+        fallback_registry = root / 'contended.sqlite3'
+        with (
+            closing(sqlite3.connect(fallback_registry, timeout=0.01)) as writer,
+            closing(sqlite3.connect(fallback_registry)) as reader,
+        ):
+            writer.execute('CREATE TABLE slots (name TEXT PRIMARY KEY, slot INTEGER UNIQUE)')
+            reader.execute('BEGIN')
+            reader.execute('SELECT * FROM slots').fetchall()
+            acquire_slot(writer, 'restore-slot', lambda slot: slot, released.append)
+            raise AssertionError('the read transaction did not block commit')
+    return restore(*args, **kwargs)
+
+async def verify():
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://contract') as client:
+            assert (await client.get('/api/auth/status')).status_code == 200
+            with patch.object(bootstrap, 'prepare_startup_domains', restore_while_contended):
+                await app.state.session_maintenance._maintain()
+            assert attempts == 2, attempts
+            assert released == [1], released
+            assert app.state.activities.snapshot().phase is ActivityPhase.OPEN
+            assert (await client.get('/api/auth/status')).status_code == 200
+    finally:
+        app.state.storage_domains.close()
+
+asyncio.run(verify())
+"""
+            result = subprocess.run(
+                [sys.executable, "-c", program],
+                env={
+                    **os.environ,
+                    "SCHOLARSEED_HOME": str(root / "home"),
+                    "DAMOATRACE_HOME": str(root / "home"),
+                    "DAMOATRACE_LEDGER_ROOT": str(root / "home" / "projects"),
+                    "SCHOLARSEED_CODEX_HOME": str(root / "home" / "codex"),
+                    DEFAULT_WORKSPACE_ENV: str(workspace),
+                },
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_future_assistant_columns_do_not_block_startup_or_session_listing(self) -> None:
         root = make_directory("forward-schema-")
         self.addCleanup(shutil.rmtree, root)
