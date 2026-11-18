@@ -75,6 +75,7 @@ from service.paths import (
     storage_instance_id,
 )
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
+from service.platform.context import SearchScope
 from service.platform.http_activity import ServeApplication, execution_admission
 from service.platform.lifecycle import ServiceLifecycle
 from service.platform.notifications import ChangeHub
@@ -328,6 +329,23 @@ def create_chat_app(
     account_tokens = AccountTokenHolder()
     app.state.account_tokens = account_tokens
     profiles = ModelProfileStore(shared_ownership=shared_ownership)
+
+    def subscription_web_search(session_id: str) -> bool:
+        live = sessions.get(session_id)
+        if (
+            live is None
+            or not live.active_product_turn_id
+            or live.auxiliary_model_request_id
+            or live.active_task_type
+            or live.interrupting
+            or live.terminating
+        ):
+            return False
+        snapshot = app.state.assistant_store.snapshot_for_turn(
+            session_id, live.active_product_turn_id
+        )
+        return snapshot is not None and snapshot.search_scope is SearchScope.WEB
+
     subscriptions = SubscriptionService(
         profiles,
         ModelCredentialStore(shared_ownership=shared_ownership),
@@ -335,6 +353,7 @@ def create_chat_app(
         shared_ownership=shared_ownership,
         activities=activities,
         turn_activities=session_turn_activity,
+        web_search_allowed=subscription_web_search,
     )
     app.state.subscriptions = subscriptions
 
