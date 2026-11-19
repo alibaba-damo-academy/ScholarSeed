@@ -29,6 +29,7 @@ class Change:
     topic: ChangeTopic
     owner: str = GLOBAL_OWNER
     subject: str = ""
+    file_event: bool = False
 
 
 @dataclass(eq=False)
@@ -80,8 +81,14 @@ class ChangeHub:
         payload = {
             "instance_id": self.instance_id,
             "changes": [
-                {"topic": change.topic.value, "subject": change.subject}
-                for change in sorted(changes, key=lambda change: (change.topic, change.subject))
+                {
+                    "topic": change.topic.value,
+                    "subject": change.subject,
+                    **({"file_event": True} if change.file_event else {}),
+                }
+                for change in sorted(
+                    changes, key=lambda change: (change.topic, change.subject, change.file_event)
+                )
             ],
         }
         return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"

@@ -25,7 +25,7 @@ import contextlib
 import os
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import AsyncIterator, Callable, Iterable
@@ -33,6 +33,7 @@ from typing import AsyncIterator, Callable, Iterable
 from service.content.domain.model import OWNED_ROOT_KINDS, ContentError, resolve_root, visible
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.enumeration import GITIGNORE_FILENAME
+from service.content.service.repository import GIT_MARKER
 from service.content.service.space import ProjectSpace, normalize
 from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
 from service.platform.content import (
@@ -57,6 +58,7 @@ except ImportError:  # pragma: no cover - 依赖缺失时的降级路径
 
 Change = _watchfiles.Change if _watchfiles is not None else None
 awatch = _watchfiles.awatch if _watchfiles is not None else None
+_DEFAULT_WATCH_FILTER = _watchfiles.DefaultFilter() if _watchfiles is not None else None
 
 #: 去抖窗口 (秒)。一次保存的多次底层写在这个窗口内归并成一条。
 DEBOUNCE_SECONDS = 0.35
@@ -343,6 +345,7 @@ class FileEventHub:
                 if roots:
                     watcher = awatch(
                         *roots,
+                        watch_filter=_watch_filter,
                         debounce=int(DEBOUNCE_SECONDS * 1000),
                         stop_event=self._stopping,
                         rust_timeout=ROOT_REFRESH_MILLISECONDS,
@@ -438,9 +441,25 @@ class FileEventHub:
 
         space = self._space_of(project_id)
         merged: dict[str, FileEventKind] = {}
+        rescan_roots: set[RootKind] = set()
         for change, raw in changes:
+            path = Path(raw)
+            kind = _KIND_BY_CHANGE.get(change, FileEventKind.MODIFIED)
             try:
-                relative = space.relative(Path(raw))
+                # Resolving a symlink loses the event's logical name. A Git marker
+                # can change ownership for an entire subtree.
+                if path.name.casefold() == GIT_MARKER:
+                    if kind is not FileEventKind.MODIFIED or not path.is_dir():
+                        parent = space.relative(path.parent)
+                        if not parent or all(visible(part) for part in parent.split("/")):
+                            rescan_roots.add(_root_of(space, parent))
+                    continue
+                if visible(path.name) and path.is_symlink():
+                    parent = space.relative(path.parent)
+                    if not parent or all(visible(part) for part in parent.split("/")):
+                        rescan_roots.add(_root_of(space, parent))
+                    continue
+                relative = space.relative(path)
             except ContentError:
                 # 已撤销授权的根、或已被移出项目的路径: 丢弃而不是猜一个位置。
                 continue
@@ -451,15 +470,17 @@ class FileEventHub:
                 or (parts[-1] != GITIGNORE_FILENAME and not visible(parts[-1]))
             ):
                 continue
-            merged[relative] = _KIND_BY_CHANGE.get(change, FileEventKind.MODIFIED)
-        if not merged:
-            return
+            merged[relative] = kind
         if len(merged) > MAX_BATCH_EVENTS:
             # 事件风暴: 给一条 RESCAN 而不是几百条增量。
             await self._emit(project_id, self._rescan(space.project))
             return
+        for root in RootKind:
+            if root in rescan_roots:
+                await self._emit(project_id, self._rescan(space.project, root))
         for relative, kind in merged.items():
-            if self._is_suppressed(project_id, relative):
+            root = _root_of(space, relative)
+            if root in rescan_roots or self._is_suppressed(project_id, relative):
                 continue
             seq = self._catalog.bump_cursor(space.project.id, self._epoch)
             await self._emit(
@@ -468,7 +489,7 @@ class FileEventHub:
                     epoch=self._epoch,
                     seq=seq,
                     project_id=space.project.id,
-                    root=_root_of(space, relative),
+                    root=root,
                     kind=kind,
                     path=relative,
                     source=EventSource.EXTERNAL,
@@ -476,14 +497,25 @@ class FileEventHub:
             )
 
     async def _emit(self, project_id: str, event: FileEvent) -> None:
+        if event.kind is FileEventKind.RESCAN:
+            # A disconnected consumer must also observe a rescan on replay.
+            event = replace(event, seq=self._catalog.bump_cursor(project_id, self._epoch))
+        subscribers = self._subscribers.get(project_id, ())
         if self.changes is not None:
-            self.changes.publish((ProductChange(ChangeTopic.RESOURCES, subject=project_id),))
-        if event.kind is not FileEventKind.RESCAN:
-            backlog = self._backlog.setdefault(project_id, [])
-            backlog.append(event)
-            if len(backlog) > BACKLOG_LIMIT:
-                del backlog[: len(backlog) - BACKLOG_LIMIT]
-        for queue in list(self._subscribers.get(project_id, [])):
+            self.changes.publish(
+                (
+                    ProductChange(
+                        ChangeTopic.RESOURCES,
+                        subject=project_id,
+                        file_event=bool(subscribers) and event.root is RootKind.RESOURCES,
+                    ),
+                )
+            )
+        backlog = self._backlog.setdefault(project_id, [])
+        backlog.append(event)
+        if len(backlog) > BACKLOG_LIMIT:
+            del backlog[: len(backlog) - BACKLOG_LIMIT]
+        for queue in subscribers:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
@@ -506,6 +538,14 @@ def _root_of(space: ProjectSpace, relative: str) -> RootKind:
         if path and (relative == path or relative.startswith(f"{path}/")):
             return kind
     return RootKind.RESOURCES
+
+
+def _watch_filter(change: object, path: str) -> bool:
+    assert _DEFAULT_WATCH_FILTER is not None
+    if os.path.basename(path).casefold() == GIT_MARKER:
+        # Keep filtering descendants of .git, but surface the marker itself.
+        path = os.path.join(os.path.dirname(path), GITIGNORE_FILENAME)
+    return _DEFAULT_WATCH_FILTER(change, path)
 
 
 def _kind_map() -> dict[object, FileEventKind]:

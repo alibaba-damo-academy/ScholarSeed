@@ -638,6 +638,8 @@ export interface AppState {
   turnLaunch: TurnLaunch | null
   collapsedSessionIds: Record<string, boolean>
   resourceRevision: number
+  /** Full listing invalidations. File event details arrive through the Content stream. */
+  resourceListingRevision: number
   sessionCatalogRevision: number
   backendReady: boolean
   runtimeQuiescing: boolean
@@ -945,6 +947,7 @@ const INITIAL: AppState = {
   turnLaunch: null,
   collapsedSessionIds: {},
   resourceRevision: 0,
+  resourceListingRevision: 0,
   sessionCatalogRevision: 0,
   backendReady: false,
   runtimeQuiescing: false,
@@ -1362,7 +1365,7 @@ export interface Actions extends AssistantIngress {
   returnHome: () => void
   openProjectCenter: (options?: { overview?: boolean }) => void
   toggleSessionChildren: (id: string) => void
-  invalidateResources: () => void
+  invalidateResources: (options?: { fileEventOnly?: boolean }) => void
   /**
    * 文献库的粗失效: 面板、列表、详情与首页计数一起重取。
    *
@@ -1453,7 +1456,8 @@ export interface Actions extends AssistantIngress {
   /** 重拉资料树。写操作后统一走它刷新，保证 UI 与磁盘一致。 */
   reloadResourceTree: (
     expandedOverride?: Record<string, boolean>,
-    projectId?: string | null
+    projectId?: string | null,
+    options?: { treeOnly?: boolean }
   ) => Promise<boolean>
   /**
    * 树上点一个目录：翻转展开态，展开时按需把它的子节点取回来。
@@ -3445,10 +3449,12 @@ export function StoreProvider({
             [id]: !current.collapsedSessionIds[id],
           },
         })),
-      invalidateResources: () =>
+      invalidateResources: (options) =>
         setState((current) => ({
           ...current,
           resourceRevision: current.resourceRevision + 1,
+          resourceListingRevision:
+            current.resourceListingRevision + (options?.fileEventOnly ? 0 : 1),
         })),
       invalidateLiterature: () => {
         // 文献数据有两份缓存: 面板/列表/详情共用的 catalogue store, 以及首页「最近
@@ -3915,7 +3921,8 @@ export function StoreProvider({
       // 重拉而不本地拼接: 磁盘是真源，本地推演会与重名避让、外部改动走歧。
       reloadResourceTree: async (
         expandedOverride,
-        projectId = stateRef.current.homeSelectedProjectId
+        projectId = stateRef.current.homeSelectedProjectId,
+        options
       ) => {
         const project = projectId
         if (!project || project !== stateRef.current.homeSelectedProjectId) return false
@@ -3925,6 +3932,7 @@ export function StoreProvider({
         setState((current) => ({
           ...current,
           resource: beginResourceTreeReload(current.resource),
+          resourceListingRevision: current.resourceListingRevision + (options?.treeOnly ? 0 : 1),
         }))
         let [result, roots] = await Promise.all([
           fetchResourceTree(project),

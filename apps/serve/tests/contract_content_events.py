@@ -23,6 +23,7 @@ from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.events import MAX_BATCH_EVENTS, WATCHFILES_AVAILABLE
 from service.content.service.port import ContentService, ProjectRegistry
+from service.content.service.repository import GIT_MARKER
 from service.platform.activity import Activities
 from service.platform.content import EventSource, FileEventKind, RootKind
 from service.platform.notifications import Change, ChangeHub, ChangeTopic
@@ -146,6 +147,10 @@ async def run() -> None:
         all(item.seq >= 1 for item in events if item.kind is not FileEventKind.RESCAN),
         str([item.seq for item in events]),
     )
+    check(
+        "资料根事件通知标记为可由文件流处理",
+        any(change.topic is ChangeTopic.RESOURCES and change.file_event for change in changes),
+    )
 
     epoch, seq = content.event_cursor(project.id)
 
@@ -228,6 +233,31 @@ async def run() -> None:
         "旧 epoch 续传时第一条是 RESCAN, 不是错位续读",
         bool(events) and events[0].kind is FileEventKind.RESCAN,
         str([item.kind.value for item in events]),
+    )
+
+    epoch, before_git = content.event_cursor(project.id)
+
+    async def new_git_root() -> None:
+        (library / GIT_MARKER).mkdir()
+
+    git_events = await collect(
+        content, project.id, epoch, before_git, COLLECT_SECONDS, new_git_root
+    )
+    check(
+        "Git 标记变更触发带新游标的资料根重扫",
+        any(
+            item.kind is FileEventKind.RESCAN
+            and item.root is RootKind.RESOURCES
+            and item.seq > before_git
+            for item in git_events
+        ),
+    )
+    git_replayed = await collect(
+        content, project.id, epoch, before_git, 0.5, lambda: asyncio.sleep(0)
+    )
+    check(
+        "重连可以重放 Git 标记触发的重扫",
+        any(item.kind is FileEventKind.RESCAN and item.seq > before_git for item in git_replayed),
     )
 
     # 断线重连: 带断连前的 seq 回来, 缺的那几条要补齐而不是静默丢掉。

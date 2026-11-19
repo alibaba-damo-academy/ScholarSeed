@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test, { type TestContext } from 'node:test'
 
-import { subscribeFileEvents } from './events.ts'
+import { hasOpenFileEventStream, subscribeFileEvents, whenFileEventCursorLoaded } from './events.ts'
 
 class FileStream {
   static opened: FileStream[] = []
@@ -149,6 +149,26 @@ test('reconnection uses the shared latest cursor and closes its retry timer', as
   } finally {
     stop()
   }
+})
+
+test('the initial cursor is available before the stream opens, and a new epoch resets its sequence', async (context) => {
+  const { timers } = browser(context)
+  const stop = subscribeFileEvents('project', () => {})
+  context.after(stop)
+  await whenFileEventCursorLoaded('project')
+  assert.equal(hasOpenFileEventStream('project'), false)
+  const first = FileStream.opened[0]
+  first.onopen?.()
+  assert.equal(hasOpenFileEventStream('project'), true)
+  first.emit(1, 'new-epoch')
+  first.onerror?.()
+  assert.equal(hasOpenFileEventStream('project'), false)
+  const [timerId, retry] = [...timers][0]
+  timers.delete(timerId)
+  retry.callback()
+  const resumed = new URL(FileStream.opened[1].url).searchParams
+  assert.equal(resumed.get('epoch'), 'new-epoch')
+  assert.equal(resumed.get('from_seq'), '1')
 })
 
 test('last unsubscribe during cursor loading cannot open an orphan stream', async (context) => {

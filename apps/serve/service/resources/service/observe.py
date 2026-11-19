@@ -23,6 +23,7 @@ from service.platform.content import (
     ResourceEntry,
     RootKind,
 )
+from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.resources import (
     VERSION_FILE_SIZE_KILOBYTE,
     VERSION_MAX_BYTES,
@@ -102,8 +103,10 @@ class ResourceVersionSupervisor:
         settings: ResourceVersionSettings,
         *,
         activities: Activities,
+        changes: ChangeHub | None = None,
     ) -> None:
         self._activities = activities
+        self._changes = changes
         self._resume_tasks: dict[str, asyncio.Task[None]] = {}
         self._content = content
         self._versions = versions
@@ -490,7 +493,7 @@ class ResourceVersionSupervisor:
             ):
                 inventory = self._inventory(project_id)
             previous = self._eligible_cache.get(project_id)
-            _, eligible = self._scan_project(project_id, inventory)
+            outcome, eligible = self._scan_project(project_id, inventory)
             missing = set(self._versions.managed_paths(project_id)) - inventory.repositories.keys()
             missing_eligible, _, _, _ = self._eligible(
                 project_id, tuple(ResourceEntry(path=path, size=0) for path in missing)
@@ -503,6 +506,9 @@ class ResourceVersionSupervisor:
             }
             for path in selected:
                 self._versions.observe(project_id, path)
+        if outcome.created and self._changes is not None:
+            # Discovery may change version metadata for paths outside this file-event batch.
+            self._changes.publish((Change(ChangeTopic.RESOURCES, subject=project_id),))
 
     def observe_path(self, project_id: str, path: str) -> bool:
         """Apply ignore/format policy before an explicit-open observation."""

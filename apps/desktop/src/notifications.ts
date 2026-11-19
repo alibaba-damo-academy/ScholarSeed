@@ -28,7 +28,7 @@ export type NotificationTopic = (typeof NOTIFICATION_TOPICS)[number]
 export interface NotificationFrame {
   instanceId: string
   reset: boolean
-  changes: Array<{ topic: NotificationTopic; subject: string }>
+  changes: Array<{ topic: NotificationTopic; subject: string; fileEvent?: true }>
 }
 export interface NotificationBridge {
   onChange(callback: (frame: NotificationFrame) => void): () => void
@@ -47,14 +47,18 @@ export function notificationFrame(event: string, value: unknown): NotificationFr
   )
     throw new Error('Invalid notification frame')
   const changes = data.changes.map((entry: unknown) => {
-    const item = entry as { topic?: NotificationTopic; subject?: unknown }
+    const item = entry as { topic?: NotificationTopic; subject?: unknown; file_event?: unknown }
     if (
       !item ||
       !NOTIFICATION_TOPICS.includes(item.topic as NotificationTopic) ||
       typeof item.subject !== 'string'
     )
       throw new Error('Invalid notification change')
-    return { topic: item.topic as NotificationTopic, subject: item.subject }
+    return {
+      topic: item.topic as NotificationTopic,
+      subject: item.subject,
+      ...(item.file_event === true ? { fileEvent: true as const } : {}),
+    }
   })
   return { instanceId: data.instance_id, reset: event === 'ready', changes }
 }

@@ -35,11 +35,13 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections import deque
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
-from service.content.domain.model import ContentError, visible
+from service.content.domain.model import ContentError, root_relative, visible
 from service.content.service.repository import RepositoryLookup
 from service.content.service.space import SEPARATOR, Mount, ProjectSpace
 from service.platform.content import (
@@ -49,6 +51,9 @@ from service.platform.content import (
     AssetTree,
     FileAssetRef,
     FlatResourceTree,
+    ResourceTreeChanges,
+    ResourceTreeGroup,
+    RootKind,
 )
 from service.platform.storage import WINDOWS_PLATFORM
 
@@ -83,7 +88,7 @@ def _join(parent: str, name: str) -> str:
     return f"{parent}{SEPARATOR}{name}" if parent else name
 
 
-def _entries(directory: Path) -> list[os.DirEntry[str]]:
+def _entries(directory: Path | int) -> list[os.DirEntry[str]]:
     """一层目录的全部可见条目, 目录在前、同类按名称排序。
 
     用 `os.scandir` 而不是 `Path.iterdir`: 排序要按「是不是目录」分组, 而
@@ -98,6 +103,8 @@ def _entries(directory: Path) -> list[os.DirEntry[str]]:
         with os.scandir(directory) as scan:
             rows = [row for row in scan if visible(row.name)]
     except (OSError, PermissionError):
+        if isinstance(directory, int):
+            raise
         # 读不动的目录不应让整棵树失败, 呈现为空目录即可。
         return []
     # 这里调 is_dir() 同时把判定结果留在 DirEntry 的缓存里, 后面建节点不再问磁盘。
@@ -121,7 +128,7 @@ def _visible_count(directory: Path) -> int:
 
 
 def _listing(
-    space: ProjectSpace, directory: Path, relative: str, origin: AssetOrigin
+    space: ProjectSpace, directory: Path | int, relative: str, origin: AssetOrigin
 ) -> tuple[list[os.DirEntry[str] | Mount], set[str]]:
     """这一层的完整条目序列, 加上磁盘上真实存在的名字。
 
@@ -145,6 +152,20 @@ def _listing(
     listing: list[os.DirEntry[str] | Mount] = [row for row in rows if row.name not in shadowed]
     listing.extend(mounts)
     return listing, existing
+
+
+def _supports_incremental(scope: ProjectSpace) -> bool:
+    # Authorized mounts can map multiple logical paths to the same file. Windows
+    # keeps the full projection for junctions, reparse points, and path aliases.
+    return not scope.mounts and os.name != WINDOWS_PLATFORM
+
+
+def _ordinary_file(row: os.DirEntry[str]) -> bool:
+    try:
+        observed = row.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISREG(observed.st_mode) and observed.st_nlink == 1
 
 
 def _child_total(space: ProjectSpace, directory: Path, relative: str, origin: AssetOrigin) -> int:
@@ -303,6 +324,7 @@ def flat_tree(
     check_mount: Callable[[str], None],
     *,
     include_repositories: bool = False,
+    track_parents: bool = False,
 ) -> FlatResourceTree:
     """Return complete breadth-first metadata without paging or pre-counting children."""
 
@@ -310,6 +332,7 @@ def flat_tree(
     visited: set[Path] = set()
     nodes: dict[str, AssetTree] = {}
     repositories: dict[str, str | None] = {}
+    parents: list[str] | None = [] if track_parents and _supports_incremental(space) else None
     lookup = RepositoryLookup(space) if include_repositories else None
     # Mounted paths and Windows reparse points keep their separate resolution.
     reuse_directory_resolution = (
@@ -340,6 +363,11 @@ def flat_tree(
             continue
         if space.excluded(relative):
             continue
+        if parents is not None:
+            if path == relative:
+                parents.append(relative)
+            else:
+                parents = None
         origin = space.origin(relative)
         listing, existing = _listing(space, directory, relative, origin)
         for item in listing:
@@ -353,6 +381,12 @@ def flat_tree(
             entry_path = node.asset.path
             nodes[entry_path] = node
             descend = node.asset.kind is AssetKind.DIR and node.available
+            if parents is not None and (
+                isinstance(item, Mount)
+                or "\\" in item.name
+                or (not _is_plain_directory(item) if descend else not _ordinary_file(item))
+            ):
+                parents = None
             defer_repository = (
                 reuse_directory_resolution
                 and descend
@@ -368,7 +402,62 @@ def flat_tree(
                 )
             if descend:
                 pending.append((entry_path, defer_repository))
-    return FlatResourceTree(tuple(nodes.values()), repositories)
+    return FlatResourceTree(
+        tuple(nodes.values()), repositories, tuple(parents) if parents is not None else None
+    )
 
 
-__all__ = ["DEFAULT_MAX_DEPTH", "PAGE_SIZE", "build_tree", "flat_tree"]
+def resource_tree_changes(
+    space: ProjectSpace, paths: tuple[str, ...]
+) -> ResourceTreeChanges | None:
+    """Read the changed leaves and original sibling order without descending."""
+
+    if not _supports_incremental(space):
+        return None
+    root = root_relative(space.project.layout, RootKind.RESOURCES)
+    dirty: dict[str, set[str]] = {}
+    for path in paths:
+        if (
+            (root and not path.startswith(f"{root}{SEPARATOR}"))
+            or "\\" in path
+            or "\0" in path
+            or any(not part or not visible(part) for part in path.split(SEPARATOR))
+            or space.excluded(path)
+        ):
+            return None
+        parent, _, name = path.rpartition(SEPARATOR)
+        dirty.setdefault(parent, set()).add(name)
+    lookup = RepositoryLookup(space)
+    nodes: list[AssetTree] = []
+    repositories: dict[str, str | None] = {}
+    groups: list[ResourceTreeGroup] = []
+    for parent, names in dirty.items():
+        ordered_paths: list[str] = []
+        try:
+            # Pin the authorized POSIX directory, then enumerate and stat via
+            # its descriptor so a replaced ancestor cannot redirect the read.
+            with closing(space.open_directory(parent)) as directory:
+                listing, _ = _listing(space, directory.fileno(), parent, AssetOrigin.LOCAL)
+                for row in listing:
+                    if isinstance(row, Mount) or row.is_symlink():
+                        return None
+                    path = _join(parent, row.name)
+                    ordered_paths.append(path)
+                    if row.name in names:
+                        if not _ordinary_file(row):
+                            return None
+                        nodes.append(
+                            _child_node(
+                                space, row, path, 1, AssetOrigin.LOCAL, count_children=False
+                            )
+                        )
+                        repositories[path] = lookup.for_entry(
+                            path, directory.path, row, AssetOrigin.LOCAL
+                        )
+        except OSError:
+            return None
+        groups.append(ResourceTreeGroup(parent, tuple(ordered_paths)))
+    return ResourceTreeChanges(tuple(nodes), repositories, tuple(groups), root)
+
+
+__all__ = ["DEFAULT_MAX_DEPTH", "PAGE_SIZE", "build_tree", "flat_tree", "resource_tree_changes"]

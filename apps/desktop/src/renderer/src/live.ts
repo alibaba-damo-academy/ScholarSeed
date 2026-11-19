@@ -4,6 +4,7 @@ import { ExclusiveSubscription } from './subscriptions'
 import { subscribeChanges } from './app/notifications'
 import { expireJoinedPapers } from './features/literature/joinState'
 import { libraryStatusCache } from './features/literature/status'
+import { hasOpenFileEventStream } from './features/project/events'
 import { DirtyRefresh } from '../../notifications'
 import { STARTUP_PHASE } from '../../startup'
 import {
@@ -2067,7 +2068,16 @@ export function useLiveSession(): void {
         pollMetadata()
       refresh.invalidate(reset)
     })
-    const resources = subscribeChanges(['resources'], act.invalidateResources)
+    const resources = subscribeChanges(['resources'], (reset, changes) => {
+      const resourceChanges = changes.filter((change) => change.topic === 'resources')
+      const fileEventOnly =
+        !reset &&
+        resourceChanges.length > 0 &&
+        resourceChanges.every(
+          (change) => change.fileEvent && hasOpenFileEventStream(change.subject)
+        )
+      act.invalidateResources({ fileEventOnly })
+    })
     const literature = subscribeChanges(['literature'], (reset, changes) => {
       expireJoinedPapers(libraryStatusCache.invalidate(reset, changes))
       act.invalidateLiterature()

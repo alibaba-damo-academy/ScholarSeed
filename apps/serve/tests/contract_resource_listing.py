@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from service.chat.service.settings import SettingsService
 from service.content.domain.model import ROOT_BUSY_ERROR
 from service.content.persistence.catalog import ContentCatalog
+from service.content.service import tree
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.space import ProjectSpace
 from service.content.service.tree import PAGE_SIZE
@@ -62,13 +63,119 @@ class ResourceListingTests(unittest.TestCase):
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
 
-    def listing_payload(self) -> dict:
-        response = self.client.get("/api/resource/list", params={"project": self.project.id})
+    def listing_payload(self, *, incremental: bool = False) -> dict:
+        params = {"project": self.project.id}
+        if incremental:
+            params["incremental"] = "true"
+        response = self.client.get("/api/resource/list", params=params)
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
     def entries(self) -> dict[str, dict]:
         return {entry["path"]: entry for entry in self.listing_payload()["items"]}
+
+    def listing_changes(self, *paths: str) -> dict | None:
+        response = self.client.post(
+            "/api/resource/list/changes", json={"project": self.project.id, "paths": paths}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    @unittest.skipUnless(os.name == "posix", "Incremental listings require POSIX directories")
+    def test_listing_changes_read_only_affected_parents(self) -> None:
+        empty = self.resources / "empty"
+        empty.mkdir()
+        repository = self.resources / "git"
+        repository.mkdir()
+        (repository / ".git").mkdir()
+        (repository / "modified.md").touch()
+        (repository / "moved.md").touch()
+        (repository / "deleted.md").touch()
+        other = self.resources / "other"
+        other.mkdir()
+        (other / "unrelated.md").touch()
+        initial = self.listing_payload(incremental=True)
+        self.assertEqual(
+            initial.pop("incremental"),
+            {
+                "supported": True,
+                "parents": ["resources", "resources/empty", "resources/git", "resources/other"],
+            },
+        )
+        self.assertEqual(initial, self.listing_payload())
+
+        (repository / "modified.md").write_text("updated", encoding="utf-8")
+        (repository / "moved.md").rename(empty / "renamed.md")
+        (repository / "deleted.md").unlink()
+        (empty / "added.md").touch()
+        changed = (
+            "resources/git/modified.md",
+            "resources/git/deleted.md",
+            "resources/git/moved.md",
+            "resources/empty/renamed.md",
+            "resources/empty/added.md",
+        )
+        with patch.object(tree, "_listing", wraps=tree._listing) as visits:
+            delta = self.listing_changes(*changed, changed[0])
+        assert delta is not None
+        self.assertEqual(
+            [call.args[2] for call in visits.call_args_list], ["resources/git", "resources/empty"]
+        )
+        final = self.listing_payload()
+        final_by_path = {item["path"]: item for item in final["items"]}
+        self.assertEqual(
+            {item["path"]: item for item in delta["items"]},
+            {path: final_by_path[path] for path in changed if path in final_by_path},
+        )
+        self.assertEqual(
+            delta["groups"],
+            [
+                {
+                    "parent": parent,
+                    "paths": [path for path in final_by_path if path.rpartition("/")[0] == parent],
+                }
+                for parent in ("resources/git", "resources/empty")
+            ],
+        )
+
+    @unittest.skipUnless(os.name == "posix", "Incremental listings require POSIX directories")
+    def test_listing_changes_fall_back_for_directory_alias_and_scope(self) -> None:
+        removed = self.resources / "removed"
+        removed.mkdir()
+        named = self.resources / "MixedCase"
+        named.mkdir()
+        (named / "file.md").touch()
+        (self.resources / "plain.md").touch()
+        self.assertTrue(self.listing_payload(incremental=True)["incremental"]["supported"])
+        removed.rmdir()
+        self.assertIsNone(self.listing_changes("resources/removed"))
+        (self.resources / "directory").mkdir()
+        (self.resources / "directory" / "unlisted.md").touch()
+        self.assertIsNone(self.listing_changes("resources/directory"))
+        self.assertIsNone(self.listing_changes("resources/directory/unlisted.md"))
+        self.assertIsNone(self.listing_changes("resources/mixedcase/file.md"))
+        self.assertIsNone(self.listing_changes("resources/.gitignore"))
+        self.assertIsNone(self.listing_changes("resources/./plain.md"))
+        self.assertIsNone(self.listing_changes("resources/../external.md"))
+        self.assertIsNone(self.listing_changes("outside.md"))
+        alias = self.resources / "alias.md"
+        alias.symlink_to("plain.md")
+        self.assertIsNone(self.listing_changes("resources/alias.md"))
+        self.assertFalse(self.listing_payload(incremental=True)["incremental"]["supported"])
+        alias.unlink()
+        os.link(self.resources / "plain.md", alias)
+        self.assertIsNone(self.listing_changes("resources/alias.md"))
+        self.assertFalse(self.listing_payload(incremental=True)["incremental"]["supported"])
+
+    def test_listing_changes_fall_back_for_external_mounts(self) -> None:
+        source = self.root / "outside"
+        source.mkdir()
+        (source / "file.md").touch()
+        self.content.authorize_root_at(self.project.id, str(source), "resources", source.name)
+        listing = self.listing_payload(incremental=True)
+        self.assertEqual(listing.pop("incremental"), {"parents": [], "supported": False})
+        self.assertEqual(listing, self.listing_payload())
+        self.assertIsNone(self.listing_changes("resources/outside/file.md"))
 
     def test_flat_complete_pagination_depth_and_project_scope(self) -> None:
         registered = self.content.projects()
@@ -243,10 +350,10 @@ class ResourceListingTests(unittest.TestCase):
         self.client.app.state.resource_version_supervisor = supervisor
         original = self.content.flat_resource_tree
 
-        def classify_after_traversal(project, roots, *, include_repositories):
-            tree = original(project, roots)
-            paths = tuple(node.asset.path for node in tree.nodes)
-            return replace(tree, repositories=self.content.repository_roots(project, paths))
+        def classify_after_traversal(project, roots, *, include_repositories, track_parents=False):
+            result = original(project, roots, track_parents=track_parents)
+            paths = tuple(node.asset.path for node in result.nodes)
+            return replace(result, repositories=self.content.repository_roots(project, paths))
 
         with patch.object(supervisor, "activate_project"):
             with patch.object(

@@ -3700,6 +3700,7 @@ def _compose_app(
         format_policy,
         settings,
         activities=activities,
+        changes=changes,
     )
     resource_versions.bind_admission_policy(version_supervisor)
     resource_deliveries = ResourceDeliveryService(

@@ -120,6 +120,7 @@ from service.platform.content import (
     ResourcePage,
     ResourceScanObserver,
     ResourceSearchResult,
+    ResourceTreeChanges,
     RootKind,
     StableContentCapture,
     StableContentSnapshot,
@@ -1894,7 +1895,12 @@ class ContentService:
         return repository.repository_roots(self._resource_space(project_id), paths)
 
     def flat_resource_tree(
-        self, project_id: str, roots: tuple[str, ...], *, include_repositories: bool = False
+        self,
+        project_id: str,
+        roots: tuple[str, ...],
+        *,
+        include_repositories: bool = False,
+        track_parents: bool = False,
     ) -> FlatResourceTree:
         """Use one local path space and revalidate mount authority within the read."""
 
@@ -1908,17 +1914,33 @@ class ContentService:
                 raise ContentError(ROOT_BUSY_ERROR)
 
         result = tree.flat_tree(
-            scope, roots, check_mount, include_repositories=include_repositories
+            scope,
+            roots,
+            check_mount,
+            include_repositories=include_repositories,
+            track_parents=track_parents,
         )
-        current = self._resource_space(project_id)
-        if (
-            current.root != scope.root
-            or current.project.layout != scope.project.layout
-            or current.mounts != scope.mounts
-            or current.owned_roots != scope.owned_roots
-        ):
+        if not self._resource_scope_current(project_id, scope):
             raise ContentError(ROOT_BUSY_ERROR)
         return result
+
+    def resource_tree_changes(
+        self, project_id: str, paths: tuple[str, ...]
+    ) -> ResourceTreeChanges | None:
+        scope = self._resource_space(project_id)
+        result = tree.resource_tree_changes(scope, paths)
+        if result is None or not self._resource_scope_current(project_id, scope):
+            return None
+        return result
+
+    def _resource_scope_current(self, project_id: str, scope: space.ProjectSpace) -> bool:
+        current = self._resource_space(project_id)
+        return (
+            current.root == scope.root
+            and current.project.layout == scope.project.layout
+            and current.mounts == scope.mounts
+            and current.owned_roots == scope.owned_roots
+        )
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:
         """Complete background enumeration, separate from the paginated UI tree."""

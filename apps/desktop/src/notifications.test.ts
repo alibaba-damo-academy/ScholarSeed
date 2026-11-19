@@ -60,6 +60,20 @@ test('frames reject unknown topics and malformed payloads', () => {
   assert.equal(notificationFrame('ready', { instance_id: 'one', changes: [] }).reset, true)
 })
 
+test('only explicitly tagged changes defer to the file event stream', () => {
+  const frame = notificationFrame('changed', {
+    instance_id: 'one',
+    changes: [
+      { topic: 'resources', subject: 'project', file_event: true },
+      { topic: 'resources', subject: 'project' },
+    ],
+  })
+  assert.deepEqual(frame.changes, [
+    { topic: 'resources', subject: 'project', fileEvent: true },
+    { topic: 'resources', subject: 'project' },
+  ])
+})
+
 test('backend reset discards the previous snapshot even if abort is ignored', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const resolve: Array<(value: number) => void> = []
