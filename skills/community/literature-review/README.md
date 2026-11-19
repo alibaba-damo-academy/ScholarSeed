@@ -213,6 +213,15 @@ citation keys. Internal bibliography mappings retain the original citation keys.
 The figure brief supplies shared requirements and mode contracts once; per-figure
 packets contain local plans and evidence references without choosing an image mode
 or size unless already specified. No saved cards or user requirements are rewritten.
+Each figure plan identifies a reader question and the relationship the drawing
+must show. Image prompts use direct labels and a paper-white, deep-green editorial
+palette by default. Figure-specific user style and language choices take precedence.
+Conceptual illustrations show the relevant objects and their interactions. Their
+captions introduce the subject and explain one useful comparison or takeaway.
+The paragraph citing each figure develops the mechanism, evidence and limits.
+In single-column PDFs, study comparisons with sentence-length cells default to a
+multipage table near the first reference. Compact tables and two-column venues
+use layouts appropriate to their available space.
 Outline plans contain no chapter dependency graph. Necessary definitions and their
 sources belong in local descriptions, analytical tasks and paper assignments.
 Chapter roles determine evidence scope, not execution order. Abstracts remain
@@ -273,7 +282,7 @@ retain the full empty-anchor attribute so metadata remains available on reopenin
 
 ## Time and Models
 
-Outline generation uses temperature 0.6 and enables thinking through the boolean `enable_thinking` request field. Other stages retain their existing settings.
+Outline generation uses temperature 0.6 with thinking enabled. In `config/model_config.fast.json`, `stages.outline_generation.reasoning_effort` defaults to `low`. Set it to `medium` or `xhigh` for more reasoning, or remove the field to use the provider default. Setting `thinking` to `false` disables thinking and omits the effort field.
 
 Processing times are soft estimates, not cutoffs. Continue agreed work when it
 takes longer, explaining completed work, the current stage, and an
