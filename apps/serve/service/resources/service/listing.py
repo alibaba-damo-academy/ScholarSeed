@@ -21,10 +21,6 @@ class ResourceListing:
         self._content = content
         self._catalog = ResourceListingCatalog(content)
 
-    def list(self, project: str) -> tuple[tuple[ResourceListEntry, ...], dict[str, str | None]]:
-        entries, repositories, _ = self.snapshot(project, track_parents=False)
-        return entries, repositories
-
     def snapshot(
         self, project: str, *, track_parents: bool
     ) -> tuple[tuple[ResourceListEntry, ...], dict[str, str | None], tuple[str, ...] | None]:

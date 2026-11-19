@@ -11,8 +11,8 @@ proposal 47 §7 阶段三把这条链定成四段: 监听 → 去抖归并 → �
    RESCAN, 而不是从一个不可比的 seq 往后读。
 3. **自写抑制**: 产品自己的原子写 (tmp + replace) 会产生临时文件的 CREATED 与
    MOVED。不抑制就会「写 → 事件 → 前端刷新 → 可能再写」自己转起来。
-4. **归并上限**: 一次编辑器保存、一次批量导入都可能触发几十条底层事件。超过
-   上限就退化成一条 RESCAN, 而不是把风暴原样转发给前端。
+4. **Batch limit**: A single editor save or bulk import can trigger dozens of events.
+   Above the limit, emit one rescan per affected root.
 
 监听后端是 `watchfiles` (Rust notify + 原生 async)。它装不上时降级为定时轮询 +
 RESCAN: 刷新变慢, 但产品不会因为一个可选依赖而失去这条能力。
@@ -30,7 +30,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import AsyncIterator, Callable, Iterable
 
-from service.content.domain.model import OWNED_ROOT_KINDS, ContentError, resolve_root, visible
+from service.content.domain.model import (
+    OWNED_ROOT_KINDS,
+    ContentError,
+    resolve_root,
+    root_relative,
+    visible,
+)
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.enumeration import GITIGNORE_FILENAME
 from service.content.service.repository import GIT_MARKER
@@ -63,7 +69,7 @@ _DEFAULT_WATCH_FILTER = _watchfiles.DefaultFilter() if _watchfiles is not None e
 #: 去抖窗口 (秒)。一次保存的多次底层写在这个窗口内归并成一条。
 DEBOUNCE_SECONDS = 0.35
 
-#: 单个去抖批次的事件上限, 超过即退化为一条 RESCAN。
+#: Maximum incremental events in a debounce batch before rescanning affected roots.
 MAX_BATCH_EVENTS = 40
 
 #: 自写抑制窗口 (秒)。产品写完到 watcher 报上来之间的时间差。
@@ -440,6 +446,15 @@ class FileEventHub:
         """把一批底层变更归并成产品事件。"""
 
         space = self._space_of(project_id)
+        root_paths = sorted(
+            (
+                (kind, root_relative(space.project.layout, kind))
+                for kind in RootKind
+                if kind not in OWNED_ROOT_KINDS or kind in space.owned_roots
+            ),
+            key=lambda entry: len(entry[1]),
+            reverse=True,
+        )
         merged: dict[str, FileEventKind] = {}
         rescan_roots: set[RootKind] = set()
         for change, raw in changes:
@@ -452,12 +467,12 @@ class FileEventHub:
                     if kind is not FileEventKind.MODIFIED or not path.is_dir():
                         parent = space.relative(path.parent)
                         if not parent or all(visible(part) for part in parent.split("/")):
-                            rescan_roots.add(_root_of(space, parent))
+                            rescan_roots.add(_root_of(root_paths, parent))
                     continue
                 if visible(path.name) and path.is_symlink():
                     parent = space.relative(path.parent)
                     if not parent or all(visible(part) for part in parent.split("/")):
-                        rescan_roots.add(_root_of(space, parent))
+                        rescan_roots.add(_root_of(root_paths, parent))
                     continue
                 relative = space.relative(path)
             except ContentError:
@@ -471,15 +486,16 @@ class FileEventHub:
             ):
                 continue
             merged[relative] = kind
-        if len(merged) > MAX_BATCH_EVENTS:
-            # 事件风暴: 给一条 RESCAN 而不是几百条增量。
-            await self._emit(project_id, self._rescan(space.project))
-            return
+        overflow = len(merged) > MAX_BATCH_EVENTS
+        if overflow:
+            rescan_roots.update(_root_of(root_paths, relative) for relative in merged)
         for root in RootKind:
             if root in rescan_roots:
                 await self._emit(project_id, self._rescan(space.project, root))
+        if overflow:
+            return
         for relative, kind in merged.items():
-            root = _root_of(space, relative)
+            root = _root_of(root_paths, relative)
             if root in rescan_roots or self._is_suppressed(project_id, relative):
                 continue
             seq = self._catalog.bump_cursor(space.project.id, self._epoch)
@@ -526,15 +542,10 @@ class FileEventHub:
                 queue.put_nowait(self._rescan(self._space_of(project_id).project))
 
 
-def _root_of(space: ProjectSpace, relative: str) -> RootKind:
-    """相对路径归属哪个根。挂载点挂在资料库根下, 因此关联资产算资料库。"""
+def _root_of(root_paths: list[tuple[RootKind, str]], relative: str) -> RootKind:
+    """Match the most specific root, with linked assets classified as resources."""
 
-    candidates = {
-        kind: resolve_root(space.project, kind).relative
-        for kind in RootKind
-        if kind not in OWNED_ROOT_KINDS or kind in space.owned_roots
-    }
-    for kind, path in sorted(candidates.items(), key=lambda entry: len(entry[1]), reverse=True):
+    for kind, path in root_paths:
         if path and (relative == path or relative.startswith(f"{path}/")):
             return kind
     return RootKind.RESOURCES

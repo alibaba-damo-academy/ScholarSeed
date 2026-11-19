@@ -1365,6 +1365,10 @@ export interface Actions extends AssistantIngress {
   returnHome: () => void
   openProjectCenter: (options?: { overview?: boolean }) => void
   toggleSessionChildren: (id: string) => void
+  /**
+   * Refreshes the resource tree and listing. Set `fileEventOnly` when the active file-event
+   * stream will deliver the listing updates so that only the tree needs invalidation.
+   */
   invalidateResources: (options?: { fileEventOnly?: boolean }) => void
   /**
    * 文献库的粗失效: 面板、列表、详情与首页计数一起重取。

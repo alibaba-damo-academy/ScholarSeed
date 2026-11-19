@@ -183,6 +183,19 @@ class ResourceListingTests(unittest.TestCase):
         self.assertEqual(listing, self.listing_payload())
         self.assertIsNone(self.listing_changes("resources/outside/file.md"))
 
+    @unittest.skipUnless(os.name == "posix", "Incremental listings require POSIX directories")
+    def test_listing_changes_fall_back_for_unsupported_directory_names(self) -> None:
+        for name in ("CON", "trailing."):
+            (self.resources / name).mkdir()
+        self.assertTrue(self.listing_payload(incremental=True)["incremental"]["supported"])
+
+        for name in ("CON", "trailing."):
+            with self.subTest(name=name):
+                (self.resources / name / "created.md").touch()
+                path = f"resources/{name}/created.md"
+                self.assertIsNone(self.listing_changes(path))
+                self.assertEqual(self.entries()[path]["kind"], AssetKind.FILE.value)
+
     def test_flat_complete_pagination_depth_and_project_scope(self) -> None:
         registered = self.content.projects()
         for parameters, expected, detail in (
@@ -309,13 +322,13 @@ class ResourceListingTests(unittest.TestCase):
             return original(scope, path, **options)
 
         with patch.object(ProjectSpace, "absolute", record_resolution):
-            tree = self.content.flat_resource_tree(
+            flat = self.content.flat_resource_tree(
                 self.project.id, ("resources",), include_repositories=True
             )
 
-        paths = tuple(node.asset.path for node in tree.nodes)
-        self.assertEqual(tree.repositories, self.content.repository_roots(self.project.id, paths))
-        self.assertEqual(tree.repositories["resources/alias"], "resources/repository/nested")
+        paths = tuple(node.asset.path for node in flat.nodes)
+        self.assertEqual(flat.repositories, self.content.repository_roots(self.project.id, paths))
+        self.assertEqual(flat.repositories["resources/alias"], "resources/repository/nested")
         self.assertEqual(paths.count("resources/repository/nested/note.md"), 1)
         self.assertEqual(resolved.count("resources/alias"), 2)
         self.assertEqual(resolved.count("resources/repository"), 1)
@@ -579,7 +592,9 @@ class ResourceListingTests(unittest.TestCase):
                 for key in ("name", "kind", "file_type", "source", "updated_at", "origin")
             ),
         )
-        reopened, _ = ResourceListing(self.content).list(self.project.id)
+        reopened, _, _ = ResourceListing(self.content).snapshot(
+            self.project.id, track_parents=False
+        )
         self.assertEqual(
             next(entry for entry in reopened if entry.path == renamed_path).source, "imported"
         )

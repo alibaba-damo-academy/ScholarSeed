@@ -171,6 +171,46 @@ test('the initial cursor is available before the stream opens, and a new epoch r
   assert.equal(resumed.get('from_seq'), '1')
 })
 
+test('the cursor settles and connection retries back off when the stream constructor throws', async (context) => {
+  const { timers } = browser(context)
+  let failures = 2
+  globalThis.EventSource = class extends FileStream {
+    constructor(url: string, options: EventSourceInit) {
+      if (failures > 0) {
+        failures -= 1
+        throw new DOMException('Cannot open stream', 'SyntaxError')
+      }
+      super(url, options)
+    }
+  } as unknown as typeof EventSource
+  const received: number[] = []
+  const stop = subscribeFileEvents('project', (event) => received.push(event.seq))
+  try {
+    await whenFileEventCursorLoaded('project')
+    assert.equal(hasOpenFileEventStream('project'), false)
+    assert.equal(FileStream.opened.length, 0)
+    for (const milliseconds of [500, 1000]) {
+      assert.equal(timers.size, 1)
+      const [timerId, retry] = [...timers][0]
+      assert.equal(retry.delay, milliseconds)
+      timers.delete(timerId)
+      retry.callback()
+    }
+    assert.equal(timers.size, 0)
+    assert.equal(FileStream.opened.length, 1)
+    const connection = FileStream.opened[0]
+    const cursor = new URL(connection.url).searchParams
+    assert.equal(cursor.get('epoch'), 'initial')
+    assert.equal(cursor.get('from_seq'), '4')
+    connection.onopen?.()
+    connection.emit(5, 'initial')
+    assert.equal(hasOpenFileEventStream('project'), true)
+    assert.deepEqual(received, [5])
+  } finally {
+    stop()
+  }
+})
+
 test('last unsubscribe during cursor loading cannot open an orphan stream', async (context) => {
   let resolveCursor: (response: Response) => void = () => {}
   browser(

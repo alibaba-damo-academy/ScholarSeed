@@ -44,6 +44,7 @@ from pathlib import Path
 from service.content.domain.model import OUTSIDE_GRANT_ERRORS, ContentError, root_relative, visible
 from service.content.service.repository import RepositoryLookup
 from service.content.service.space import SEPARATOR, Mount, ProjectSpace
+from service.content.service.utils import DIRECTORY_PATH_INVALID
 from service.platform.content import (
     AssetKind,
     AssetOrigin,
@@ -466,6 +467,10 @@ def resource_tree_changes(
                             path, directory.path, row, AssetOrigin.LOCAL
                         )
         except OSError:
+            return None
+        except ContentError as error:
+            if error.code != DIRECTORY_PATH_INVALID:
+                raise
             return None
         groups.append(ResourceTreeGroup(parent, tuple(ordered_paths)))
     return ResourceTreeChanges(tuple(nodes), repositories, tuple(groups), root)

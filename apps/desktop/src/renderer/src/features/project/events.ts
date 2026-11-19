@@ -105,13 +105,29 @@ function connectFileEvents(
   let retryTimer: number | null = null
   let attempt = 0
 
-  const open = (): void => {
+  function scheduleReconnect(): void {
+    if (closed || retryTimer !== null) return
+    attempt += 1
+    const delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_INITIAL_DELAY_MS * 2 ** (attempt - 1))
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null
+      open()
+    }, delay)
+  }
+
+  function open(): void {
     if (closed) return
-    const query = new URLSearchParams({ project: projectId, epoch, from_seq: String(lastSeq) })
-    const connection = new EventSource(`${base()}/api/content/events?${query.toString()}`, {
-      // SSE 不能带 Authorization 头，只能靠 cookie；跨源开发期必须显式开凭据。
-      withCredentials: true,
-    })
+    let connection: EventSource
+    try {
+      const query = new URLSearchParams({ project: projectId, epoch, from_seq: String(lastSeq) })
+      connection = new EventSource(`${base()}/api/content/events?${query.toString()}`, {
+        // EventSource uses cookies for authentication, including in cross-origin development.
+        withCredentials: true,
+      })
+    } catch {
+      scheduleReconnect()
+      return
+    }
     stream = connection
     connection.onopen = () => {
       if (connection !== stream) return
@@ -137,16 +153,7 @@ function connectFileEvents(
       connection.close()
       stream = null
       connected = false
-      if (closed || retryTimer !== null) return
-      attempt += 1
-      const delay = Math.min(
-        RECONNECT_MAX_DELAY_MS,
-        RECONNECT_INITIAL_DELAY_MS * 2 ** (attempt - 1)
-      )
-      retryTimer = window.setTimeout(() => {
-        retryTimer = null
-        open()
-      }, delay)
+      scheduleReconnect()
     }
   }
 
