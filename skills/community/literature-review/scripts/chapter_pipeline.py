@@ -111,9 +111,7 @@ Each response must satisfy its contract regardless of that later stage.
 CHAPTER_SYSTEM = TASK_GUIDANCE + "\n" + MANUSCRIPT_WRITING_GUIDANCE + "\n" + CHAPTER_GUIDANCE
 
 TABLE_AUTHORING_GUIDANCE_LATEX = r"""TABLE AUTHORING CONTRACT
-The template provides booktabs, array, tabularx and longtable. In two-column
-layouts use column-bounded tables or table* for full-width tables; longtable
-requires a single-column portion followed by restoration of the original layout.
+The publication preamble supplies booktabs, array, tabularx and longtable.
 This chapter owns planned tables. Write each one exactly once at its scientifically
 appropriate point within its assigned owner and discuss it in surrounding prose.
 Use only asset_contract.tables; preserve each table_id, tab: label, comparison
@@ -121,30 +119,33 @@ dimensions, allowed citation keys and scientific caption meaning. Render the
 caption content in one \caption{...} followed by its \label{tab:T1}; LaTeX supplies
 the display number. A legacy numbered caption is rewritten as descriptive content.
 
-Short tables use a table environment with centering and are width-bounded by
-\linewidth. Prefer \begin{tabularx}{\linewidth}{...}. A bare tabular containing
-only l/c/r columns is forbidden when it has more than three columns or any cell
-contains explanations, assumptions, limitations, mechanisms, citations or other
-free text. Use >{\raggedright\arraybackslash}X for free-text columns; use a
-ragged-right p{Wcm} only for a justified fixed width. If multiple columns contain
-free text, make all of them wrapping columns instead of giving only one column
-the remaining width. Reserve l/c/r for genuinely short atomic values such as a
-year, one number, one symbol, Y/N or a short abbreviation. A yes/no column must
-not contain long parenthetical explanations; put qualifications in a wrapping
-column or a concise table note instead.
+Choose the environment from the column layout and the expected wrapped cell
+height. In the single-column NeurIPS preprint, standard Chinese and ICLR
+templates, use a standalone longtable by default for study-by-study comparisons
+with sentences in multiple columns (mechanism, question, finding or limitation).
+Even a handful of such rows can fill a page. Put the table immediately after
+the paragraph that first cites it, before the discussion moves on. Let it
+break between rows. Write the caption and label once, end that row with \\,
+and repeat just the column headings with \endfirsthead and \endhead.
+Size each longtable column as a share of the actual text width, including its
+padding. Use p{\dimexpr <share>\linewidth-2\tabcolsep\relax} with shares
+summing to at most 1. For example, a four-column comparison might allocate
+.18, .16, .32 and .34; the first specification would be
+>{\raggedright\arraybackslash}p{\dimexpr.18\linewidth-2\tabcolsep\relax}.
+Choose shares for the actual columns and give longer prose more space. Use
+this expression for every column instead of estimating widths in centimeters.
+Plain longtable has no stretching X column.
+Keep it outside table, table*, resizebox and minipage so page breaks work.
 
-Height matters independently of width: table and tabularx cannot break across
-pages. If descriptions make a table too tall for one page, shorten redundant
-wording while preserving evidence, or, in a single-column portion, use a standalone longtable with bounded
-p{...} columns. In IEEE/ICML/AAAI two-column layouts use table* for full-width
-nonbreaking tables; longtable requires switching to a single-column portion and restoring the layout. The template loads longtable. Never nest longtable in table,
-resizebox or another unbreakable box; X columns require tabularx and do not work
-in plain longtable. Use endfirsthead/endhead to repeat column headers and place
-the planned caption and label once. Preserve every planned row and comparison
-dimension. Do not shrink a tall table into unreadable text.
+For compact tables of short labels or numbers, use table with a width-bounded
+tabularx and wrapping X columns as needed. In a two-column body (IEEE, ICML,
+AAAI), keep the venue layout: use a column-width table or a compact full-width
+table*. Split a tall comparison into coherent labeled parts if needed, retaining
+the planned identity, evidence and dimensions. Use longtable only in a permitted
+single-column section. Use only the packages already supplied by the template.
+Reserve l/c/r columns for short atomic values.
 
-Keep the sum of explicit p{Wcm} widths well below \linewidth because padding also
-uses width. Keep cells concise; move shared qualifications to the caption or
+Keep cells concise; move shared qualifications to the caption or
 surrounding prose without losing meaning. Render citation keys only through
 \citet{...} or \citep{...}; never expose raw cite keys or long unbreakable ASCII
 strings as cell text. Use \toprule, \midrule and \bottomrule, without vertical
@@ -176,8 +177,10 @@ Make each affected table width-bounded by \linewidth and fit its height to a pag
 or use a standalone multipage longtable with repeated headers. Preserve the
 planned caption/label and rows; do not nest longtable inside a float or scaling
 box. Move long qualifications out of l/c/r columns into wrapping columns or
-table notes. Prefer tabularx with
-ragged-right wrapping X columns for free text. Replace inappropriate l/c/r columns,
+table notes. For single-column prose comparisons, preserve or restore a standalone
+longtable near the first callout. Allocate its p columns as shares of \linewidth
+with 2\tabcolsep subtracted from each share. Use wrapping X columns only in a compact
+tabularx. Respect the venue's two-column layout. Replace inappropriate l/c/r columns,
 keep fixed widths conservative, and shorten only redundant wording without losing
 meaning. Use resizebox{\linewidth}{!} only when a readable tabularx design is not
 feasible. Compilation alone is insufficient: resolve the reported structural
@@ -191,7 +194,7 @@ def chapter_asset_contract(packet):
     }
 
 
-def chapter_system(packet):
+def chapter_system(packet, table_template=None):
     if packet.get("chapter_kind") == "abstract":
         sections = [TASK_GUIDANCE, ABSTRACT_GUIDANCE, ABSTRACT_CHAPTER_GUIDANCE]
     else:
@@ -208,6 +211,8 @@ def chapter_system(packet):
             "colors, line styles and panel positions are decided separately by the figure author."
         )
     if packet.get("shared_tables") and packet.get("chapter_kind") != "abstract":
+        if table_template and packet.get("output_format") == "latex_pdf":
+            sections.append(f"Active LaTeX publication template: {table_template}.")
         sections.append(CAPTION_CONTENT_GUIDANCE)
         sections.append(
             TABLE_AUTHORING_GUIDANCE_LATEX
@@ -220,7 +225,7 @@ def chapter_system(packet):
     return "\n".join(sections)
 
 
-def chapter_messages(packet, cite_keys=None):
+def chapter_messages(packet, cite_keys=None, *, table_template=None):
     original = packet
     packet = copy.deepcopy(packet)
     packet["asset_contract"] = chapter_asset_contract(packet)
@@ -264,7 +269,7 @@ def chapter_messages(packet, cite_keys=None):
     ):
         packet.pop(field, None)
     messages = [
-        {"role": "system", "content": chapter_system(original)},
+        {"role": "system", "content": chapter_system(original, table_template)},
         {"role": "user", "content": context_message(packet, evidence)},
     ]
     packet = original
@@ -547,7 +552,7 @@ async def _generate(ws, chapter_cfg, refine_cfg, client):
             return
         status["jobs"][sid] = {"state": "running"}
         update()
-        messages = chapter_messages(packet, cite_key_map)
+        messages = chapter_messages(packet, cite_key_map, table_template=spec.get("template"))
         try:
             async with semaphore:
                 text, metrics = await invoke(

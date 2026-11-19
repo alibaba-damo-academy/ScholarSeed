@@ -219,6 +219,9 @@ palette by default. Figure-specific user style and language choices take precede
 Conceptual illustrations show the relevant objects and their interactions. Their
 captions introduce the subject and explain one useful comparison or takeaway.
 The paragraph citing each figure develops the mechanism, evidence and limits.
+In single-column PDFs, study comparisons with sentence-length cells default to a
+multipage table near the first reference. Compact tables and two-column venues
+use layouts appropriate to their available space.
 Outline plans contain no chapter dependency graph. Necessary definitions and their
 sources belong in local descriptions, analytical tasks and paper assignments.
 Chapter roles determine evidence scope, not execution order. Abstracts remain
