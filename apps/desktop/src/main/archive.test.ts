@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, writeFile, rm, truncate } from 'node:fs/promises'
+import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8, type Zippable } from 'fflate'
@@ -28,10 +29,11 @@ test('a mounted source beyond the ZIP expansion limit fails before archiving', a
   const directory = await mkdtemp(join(tmpdir(), 'archive-budget-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const large = join(directory, 'large')
+  const source = { path: directory, fs }
   await writeFile(large, 'small')
-  await preflightApplicationArchive(directory)
+  await preflightApplicationArchive(source)
   await truncate(large, 4 * 1024 ** 3 + 1)
-  await assert.rejects(preflightApplicationArchive(directory), UpdateArchiveLimitError)
+  await assert.rejects(preflightApplicationArchive(source), UpdateArchiveLimitError)
 })
 async function fixture(
   t: { after: (f: () => Promise<void>) => void },

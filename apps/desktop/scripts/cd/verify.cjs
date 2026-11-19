@@ -24,7 +24,8 @@ const { runInstaller, engineEvidence, recordInstallerFailure } = require('./inst
 const { inspectBrowser, verifyBrowser } = require('./browser.cjs')
 const { verifyMacOSTree } = require('../shared/macos.cjs')
 const { verifyExecution } = require('./execution.cjs')
-const { verifyAsarClosure } = require('./closure.cjs')
+const { verifyAsarClosure, verifyDirectoryClosure } = require('./closure.cjs')
+const { APPLICATION_LAYOUT, applicationLayout, assertBridgeApplication } = require('./layout.cjs')
 const { verifyNotices } = require('./notices.cjs')
 const { readNative } = require('./seal.cjs')
 const shipit = require('../../native/shipit/artifact.cjs')
@@ -341,12 +342,19 @@ function verifySignedRuntime(filename, teamId) {
 async function verifyContent(application, frozen, signed = false, execute = true) {
   await shipit.verify(application, frozen, signed)
   const current = layout(application, frozen)
+  const directoryLayout = frozen.applicationLayout === APPLICATION_LAYOUT.directory
+  if (directoryLayout) {
+    if (frozen.platform !== 'darwin') throw new Error('update bridge application layout requires macOS')
+    assertBridgeApplication(application)
+  }
   if (fs.existsSync(path.join(current.resources, 'renderer', 'office')) ||
       fs.existsSync(path.join(current.resources, 'backend', 'office'))) {
     throw new Error('retired Office runtime must not be packaged')
   }
   verifyNotices(current.resources, frozen.notices)
-  const closure = verifyAsarClosure(current.resources, frozen.native)
+  const closure = directoryLayout
+    ? verifyDirectoryClosure(current.resources, frozen.native)
+    : verifyAsarClosure(current.resources, frozen.native)
   const { asar_bytes, ...compiledClosure } = closure
   if (JSON.stringify(compiledClosure) !== JSON.stringify(frozen.closure)) {
     throw new Error('artifact JavaScript differs from frozen compiled entries')
@@ -355,7 +363,7 @@ async function verifyContent(application, frozen, signed = false, execute = true
   readNative(
     path.join(current.resources, 'native'),
     frozen.native,
-    path.join(current.resources, 'app.asar.unpacked', 'out', 'main')
+    applicationLayout(current.resources, frozen.applicationLayout).nativeDirectory
   )
   if (frozen.components) {
     readHandoff(path.join(current.resources, 'handoff'), frozen.handoff)
@@ -1028,7 +1036,7 @@ async function verify(builderContext) {
     ? await verifyImage(installer, application.path, frozen, async (mounted, context, runtimeCheck) => {
         const validated = await verifyApplication(mounted, context, runtimeCheck)
         if (context.signingRequired) {
-          await preflightApplicationArchive(mounted)
+          await preflightApplicationArchive({ path: mounted, fs: fs.promises })
           const directory = fs.mkdtempSync(path.join(context.runDirectory, 'update-archive-'))
           const archive = path.join(directory, 'application.zip')
           try {

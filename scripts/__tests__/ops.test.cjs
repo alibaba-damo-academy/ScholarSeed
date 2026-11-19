@@ -335,6 +335,22 @@ test('preview candidates and distribution select the existing channel-aware Owne
   assert.throws(() => resolveCommand(['cd', 'build', 'release', '--channel', 'preview', '--stage', 'dir', '--candidate', '--workflow', 'distribution']), /direct/)
 })
 
+test('the macOS update bridge option reaches only native Desktop packaging recipes', () => {
+  const flag = '--macos-update-bridge'
+  if (process.platform === 'darwin') {
+    assert.deepEqual(resolveCommand(['cd', 'build', 'local', '--stage', 'dir', flag]).steps, [
+      { kind: 'desktop', script: 'package:dir', args: [flag] },
+    ])
+    assert.deepEqual(resolveCommand(['cd', 'build', 'release', '--workflow', 'distribution', flag]).steps, [
+      { kind: 'node', file: 'scripts/cd/distribution.cjs', args: [flag] },
+    ])
+  } else {
+    assert.throws(() => resolveCommand(['cd', 'build', 'release', flag]), /requires a native macOS/)
+  }
+  assert.throws(() => resolveCommand(['cd', 'build', 'local', '--stage', 'app', flag]), /requires a native macOS/)
+  assert.throws(() => resolveCommand(['cd', 'build', 'local', '--workflow', 'package-acceptance', flag]), /requires a native macOS/)
+})
+
 test('context selection is source-backed, not a global preparation bypass', () => {
   assert.ok(resolveCommand(['ci', 'check', 'types', 'desktop']).contexts.includes('ci'))
   assert.ok(!resolveCommand(['dev']).contexts.includes('ci'))

@@ -7,6 +7,7 @@ const { spawnSync } = require('node:child_process')
 const { compileNative } = require('../shared/native.cjs')
 const { timedAsync } = require('../../../../scripts/shared/timing.cjs')
 const windows = require('./windows-sign.cjs')
+const { applicationLayout } = require('./layout.cjs')
 const { LIBRARIES, BUNDLED_LIBRARIES } = require('../../native/libraries.cjs')
 
 const BUILD = 'build.json'
@@ -252,9 +253,9 @@ function productSigning(args) {
 }
 
 /** Preserve exactly this app's verified library during the outer signing pass. */
-function nativeSignatureGuard(app, frozen) {
+function nativeSignatureGuard(app, frozen, format) {
   const resources = path.join(path.resolve(app), 'Contents', 'Resources')
-  const directory = path.join(resources, 'app.asar.unpacked', 'out', 'main')
+  const directory = applicationLayout(resources, format).nativeDirectory
   const libraries = LIBRARIES.map(name => path.join(directory, name))
   const verify = () => readNative(path.join(resources, 'native'), frozen, directory)
   verify()

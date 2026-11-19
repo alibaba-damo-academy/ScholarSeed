@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterator
 
-from service.content.domain.model import ContentError
+from service.content.domain.model import (
+    PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR,
+    PATH_OUTSIDE_PROJECT_ERROR,
+    ContentError,
+)
 from service.content.service.utils import open_directory
 from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
 from service.platform.content import AssetKind, AssetOrigin, ProjectRef, RootKind
@@ -44,7 +48,7 @@ def project_database(root: Path) -> Iterator[Path | None]:
     opening SQLite, and finish all IO while this parent handle remains open.
     """
     with closing(open_directory(root, ())):
-        _within(root, PROJECT_DB_RELATIVE, "path_outside_project")
+        _within(root, PROJECT_DB_RELATIVE, PATH_OUTSIDE_PROJECT_ERROR)
         relative = PurePosixPath(PROJECT_DB_RELATIVE)
         try:
             parent = open_directory(root, tuple(relative.parent.parts))
@@ -62,7 +66,7 @@ def prepare_project_storage(root: Path) -> None:
     complete directory set before opening project storage.
     """
     with closing(open_directory(root, ())):
-        _within(root, PROJECT_DB_RELATIVE, "path_outside_project")
+        _within(root, PROJECT_DB_RELATIVE, PATH_OUTSIDE_PROJECT_ERROR)
         relative = PurePosixPath(PROJECT_DB_RELATIVE)
         prepare_private_directory(root, tuple(relative.parent.parts), role=DirectoryRole.PROJECT)
 
@@ -75,7 +79,7 @@ def project_version_storage(root: Path) -> Iterator[Path | None]:
     private directory or CAS lock is created by this read-only lookup.
     """
     with closing(open_directory(root, ())):
-        _within(root, PROJECT_VERSIONS_RELATIVE, "path_outside_project")
+        _within(root, PROJECT_VERSIONS_RELATIVE, PATH_OUTSIDE_PROJECT_ERROR)
         try:
             directory = open_directory(root, PurePosixPath(PROJECT_VERSIONS_RELATIVE).parts)
         except FileNotFoundError:
@@ -158,21 +162,29 @@ class ProjectSpace:
                 return mount
         return None
 
-    def absolute(self, relative: str) -> Path:
+    def absolute(self, relative: str, *, reuse_project_root: bool = False) -> Path:
         """相对路径 → 绝对路径, 越界即拒绝。
 
         命中挂载前缀时落到外部真实路径; 否则落在项目根内。两条分支都在
         `resolve()` 之后复核归属, 只做字符串前缀比较会被 symlink 绕过。
+
+        A qualified traversal can reuse its resolved project root for nonempty
+        local paths. The target and its ancestors are still resolved live.
         """
 
         cleaned = normalize(relative)
-        mount = self.mount_for(cleaned)
+        mount = self.mount_for(cleaned) if self.mounts else None
         if mount is None:
-            return _within(self.root, cleaned, "path_outside_project")
+            return _within(
+                self.root,
+                cleaned,
+                PATH_OUTSIDE_PROJECT_ERROR,
+                reuse_base=reuse_project_root and bool(cleaned),
+            )
         remainder = cleaned[len(mount.mount_path) :].strip(SEPARATOR)
         if remainder and mount.kind is AssetKind.FILE:
-            raise ContentError("path_outside_authorized_root")
-        return _within(mount.source, remainder, "path_outside_authorized_root")
+            raise ContentError(PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR)
+        return _within(mount.source, remainder, PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR)
 
     def open_directory(self, relative: str) -> DirectoryHandle:
         """Pin the authorized logical directory without resolving symlink ancestors."""
@@ -181,7 +193,7 @@ class ProjectSpace:
         root = self.root if mount is None else mount.source
         remainder = cleaned if mount is None else cleaned[len(mount.mount_path) :].strip(SEPARATOR)
         if mount is not None and mount.kind is not AssetKind.DIR:
-            raise ContentError("path_outside_authorized_root")
+            raise ContentError(PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR)
         return open_directory(root, tuple(PurePosixPath(remainder).parts))
 
     # ---- 反向: 绝对 → 相对 ----
@@ -203,7 +215,11 @@ class ProjectSpace:
     def relative(self, absolute: Path) -> str:
         """绝对路径 → 相对项目根的路径 (挂载内的落回挂载前缀)。"""
 
-        target = absolute.expanduser().resolve()
+        return self.relative_resolved(absolute.expanduser().resolve())
+
+    def relative_resolved(self, target: Path) -> str:
+        """Map an already resolved target without resolving it a second time."""
+
         for mount in self.mounts:
             tail = _relative_to(target, mount.source)
             if tail == Path("."):
@@ -213,7 +229,7 @@ class ProjectSpace:
         tail = _relative_to(target, self.root)
         if tail is not None:
             return "" if tail == Path(".") else tail.as_posix()
-        raise ContentError("path_outside_project")
+        raise ContentError(PATH_OUTSIDE_PROJECT_ERROR)
 
     # ---- 归属判定 ----
 
@@ -252,10 +268,10 @@ def _relative_to(target: Path, base: Path) -> Path | None:
         return None
 
 
-def _within(base: Path, relative: str, error: str) -> Path:
+def _within(base: Path, relative: str, error: str, *, reuse_base: bool = False) -> Path:
     """把相对路径解析到 base 内, 越界即拒绝。"""
 
-    resolved_base = base.expanduser().resolve()
+    resolved_base = base if reuse_base else base.expanduser().resolve()
     if not relative:
         return resolved_base
     target = (resolved_base / relative).resolve()

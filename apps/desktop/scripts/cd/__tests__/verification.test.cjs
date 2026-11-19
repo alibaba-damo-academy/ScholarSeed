@@ -13,9 +13,11 @@ const hook = source.slice(source.indexOf('async function verify(builderContext)'
 
 function fixture(platform = 'darwin', signingRequired = true, allowExecution = false) {
   const events = []
+  const files = { bridgeChecks: [], closures: [], nativeDirectories: [] }
   let changed = false
   let incompatible = false
   let retiredOffice = false
+  let residualAsar = false
   const frozen = { platform, signingRequired, productName: 'ScholarSeed', runDirectory: '/build',
     native: {}, closure: {}, notices: {}, browser: {}, config: { sha256: 'digest' },
     product: { sha256: 'digest', config: {} },
@@ -32,7 +34,18 @@ function fixture(platform = 'darwin', signingRequired = true, allowExecution = f
     unsignedPackageCheck: () => false,
     verifyExecution: async () => probe('first-execution'),
     shipit: { verify: async () => events.push('shipit') },
-    verifyNotices() {}, verifyAsarClosure: () => ({ asar_bytes: 1 }), readNative() {},
+    verifyNotices() {},
+    APPLICATION_LAYOUT: { asar: 'asar', directory: 'directory' },
+    applicationLayout: (resources, format) => ({
+      nativeDirectory: path.join(resources, format === 'directory' ? 'app' : 'app.asar.unpacked', 'out', 'main'),
+    }),
+    assertBridgeApplication(application) {
+      files.bridgeChecks.push(application)
+      if (residualAsar) throw new Error('bridge contains an ASAR')
+    },
+    verifyAsarClosure() { files.closures.push('asar'); return { asar_bytes: 1 } },
+    verifyDirectoryClosure() { files.closures.push('directory'); return {} },
+    readNative(_directory, _frozen, libraries) { files.nativeDirectories.push(libraries) },
     verifyMacOSTree: () => {
       events.push('macos')
       if (incompatible) throw new Error('payload requires macOS 14.0')
@@ -50,7 +63,12 @@ function fixture(platform = 'darwin', signingRequired = true, allowExecution = f
     verifyComponentArchives: async () => { events.push('components'); return {current, imports: null, browser: null, closure: {}} },
   }
   const functions = runInNewContext(`${content}\n${hook}\n({verifyContent, verify})`, sandbox)
-  return { ...functions, frozen, events, change: () => { changed = true }, rejectMinimum: () => { incompatible = true }, includeRetiredOffice: () => { retiredOffice = true } }
+  return { ...functions, frozen, events, files,
+    change: () => { changed = true },
+    rejectMinimum: () => { incompatible = true },
+    includeRetiredOffice: () => { retiredOffice = true },
+    includeResidualAsar: () => { residualAsar = true },
+  }
 }
 
 for (const platform of ['darwin', 'win32']) {
@@ -90,12 +108,33 @@ test('final content verification still requires browser execution', async () => 
   await assert.rejects(f.verifyContent('/app', f.frozen, true), /premature runtime: browser/)
 })
 
+test('macOS bridge verifies the directory closure and native paths before and after packing', async () => {
+  const f = fixture('darwin', true, true)
+  f.frozen.applicationLayout = 'directory'
+  await f.verify({ appOutDir: '/out' })
+  await f.verifyContent('/mounted/ScholarSeed.app', f.frozen, true)
+  assert.deepEqual(f.files.bridgeChecks, ['/out/ScholarSeed.app', '/mounted/ScholarSeed.app'])
+  assert.deepEqual(f.files.closures, ['directory', 'directory'])
+  assert.deepEqual(f.files.nativeDirectories, Array(2).fill(path.join('/app/resources', 'app', 'out', 'main')))
+})
+
+test('macOS bridge content verification stops before reading the closure if an ASAR remains', async () => {
+  const f = fixture()
+  f.frozen.applicationLayout = 'directory'
+  f.includeResidualAsar()
+  await assert.rejects(f.verify({ appOutDir: '/out' }), /bridge contains an ASAR/)
+  assert.deepEqual(f.files.closures, [])
+  assert.deepEqual(f.files.nativeDirectories, [])
+})
+
 test('Windows afterPack retains component inventory verification', async () => {
   const f = fixture('win32')
   f.frozen.components = {}
   await f.verify({ appOutDir: '/out' })
   assert.ok(f.events.includes('components'))
   assert.ok(!f.events.some(e => typeof e === 'string' && e.startsWith('inventory:')))
+  assert.deepEqual(f.files.closures, ['asar'])
+  assert.deepEqual(f.files.nativeDirectories, [path.join('/app/resources', 'app.asar.unpacked', 'out', 'main')])
 })
 
 for (const signed of [true, false]) {

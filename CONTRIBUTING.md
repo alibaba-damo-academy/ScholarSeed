@@ -83,8 +83,9 @@ If Git checks out symlinks as placeholder files (for example with `core.symlinks
 `pnpm ops pre repair links` and `pnpm ops pre doctor --scope links` before the standards and Skill checks.
 The repair verifies tracked targets and stops on conflicts; it does not change global Git settings.
 
-Project rules use `AGENTS.md`. Development workflow Skills and their discovery configuration live
-in private supplements, not this checkout; keep personal host configuration outside the repository.
+Read the applicable `AGENTS.md`. A coding host launched from this checkout can discover the
+[project development Skills](docs/architecture/skills.md#development-workflow-boundary).
+Keep personal host configuration outside the repository.
 
 | Tool | Requirement |
 | --- | --- |

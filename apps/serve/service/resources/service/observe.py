@@ -23,6 +23,7 @@ from service.platform.content import (
     ResourceEntry,
     RootKind,
 )
+from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.platform.resources import (
     VERSION_FILE_SIZE_KILOBYTE,
     VERSION_MAX_BYTES,
@@ -64,6 +65,12 @@ class ScanOutcome:
     failed: int
 
 
+@dataclass(frozen=True)
+class _ResourceInventory:
+    entries: tuple[ResourceEntry, ...]
+    repositories: dict[str, str | None]
+
+
 class ScanStatus(str, Enum):
     """Transient aggregate scan state exposed by the settings projection."""
 
@@ -96,8 +103,10 @@ class ResourceVersionSupervisor:
         settings: ResourceVersionSettings,
         *,
         activities: Activities,
+        changes: ChangeHub | None = None,
     ) -> None:
         self._activities = activities
+        self._changes = changes
         self._resume_tasks: dict[str, asyncio.Task[None]] = {}
         self._content = content
         self._versions = versions
@@ -473,24 +482,33 @@ class ResourceVersionSupervisor:
 
     def _process(self, project_id: str, paths: set[str], reconcile: bool) -> None:
         self._activities.require_workbench()
+        cursor = self._content.event_cursor(project_id)
+        roots = self._content.external_roots(project_id)
+        inventory = self._inventory(project_id)
         with self._versions.writer(project_id):
+            # Rediscover if a recorded file change or a changed grant invalidated the preflight.
+            if (
+                self._content.event_cursor(project_id) != cursor
+                or self._content.external_roots(project_id) != roots
+            ):
+                inventory = self._inventory(project_id)
             previous = self._eligible_cache.get(project_id)
-            self.scan_project(project_id)
-            entries = self._entries(project_id)
-            present = {entry.path for entry in entries}
-            missing = set(self._versions.managed_paths(project_id)) - present
-            candidates, _, _, _ = self._eligible(
-                project_id,
-                (*entries, *(ResourceEntry(path=path, size=0) for path in missing)),
+            outcome, eligible = self._scan_project(project_id, inventory)
+            missing = set(self._versions.managed_paths(project_id)) - inventory.repositories.keys()
+            missing_eligible, _, _, _ = self._eligible(
+                project_id, tuple(ResourceEntry(path=path, size=0) for path in missing)
             )
             selected = {
                 path
-                for path in candidates
+                for path in (*eligible, *missing_eligible)
                 if (reconcile and (previous is None or path in previous))
                 or any(path == dirty or path.startswith(f"{dirty}/") for dirty in paths)
             }
             for path in selected:
                 self._versions.observe(project_id, path)
+        if outcome.created and self._changes is not None:
+            # Discovery may change version metadata for paths outside this file-event batch.
+            self._changes.publish((Change(ChangeTopic.RESOURCES, subject=project_id),))
 
     def observe_path(self, project_id: str, path: str) -> bool:
         """Apply ignore/format policy before an explicit-open observation."""
@@ -534,10 +552,11 @@ class ResourceVersionSupervisor:
         selected = tuple(dict.fromkeys(paths))
         if not selected:
             return {}
-        entries = self._content.resource_entries(project_id, selected)
+        repository_states = repositories or self._content.repository_roots(project_id, selected)
+        non_git_paths = tuple(path for path in selected if repository_states[path] is None)
+        entries = self._content.resource_entries(project_id, non_git_paths) if non_git_paths else ()
         by_path = {entry.path: entry for entry in entries}
         resource_root = self._content.root_path(project_id, RootKind.RESOURCES)
-        repository_states = repositories or self._content.repository_roots(project_id, selected)
         persisted = self._versions.capability_states(project_id, selected)
         manual_states = self._versions.manual_admitted_states(project_id, selected)
         policy = self._policy()
@@ -556,8 +575,10 @@ class ResourceVersionSupervisor:
                 ),
             )
             entry = by_path.get(path)
-            state = (
-                self._classify(
+            if repository_states[path] is not None:
+                state = ManagementState.GIT
+            elif entry is not None:
+                state = self._classify(
                     project_id,
                     entry,
                     resource_root,
@@ -565,11 +586,8 @@ class ResourceVersionSupervisor:
                     manual_admitted=manual_states.get(path, False),
                     policy=policy,
                 )
-                if entry is not None
-                else ManagementState.MANAGED if base.managed else ManagementState.UNAVAILABLE
-            )
-            if repository_states[path] is not None:
-                state = ManagementState.GIT
+            else:
+                state = ManagementState.MANAGED if base.managed else ManagementState.UNAVAILABLE
             projected[path] = replace(
                 base,
                 can_version=state is ManagementState.MANAGED,
@@ -584,20 +602,44 @@ class ResourceVersionSupervisor:
     def scan_project(self, project_id: str) -> ScanOutcome:
         """Seal only never-managed eligible files; existing history is observation-only."""
 
+        outcome, _ = self._scan_project(project_id)
+        return outcome
+
+    def scan_turn_inventory(self, project_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Use one inventory while the turn holds the writer through baseline capture."""
+
+        inventory = self._inventory(project_id)
+        _, eligible = self._scan_project(project_id, inventory)
+        initial_paths = tuple(
+            path for path, repository in inventory.repositories.items() if repository is None
+        )
+        return eligible, initial_paths
+
+    def _inventory(self, project_id: str) -> _ResourceInventory:
+        entries = self._entries(project_id)
+        paths = tuple(entry.path for entry in entries)
+        return _ResourceInventory(entries, self._content.repository_roots(project_id, paths))
+
+    def _scan_project(
+        self, project_id: str, inventory: _ResourceInventory | None = None
+    ) -> tuple[ScanOutcome, tuple[str, ...]]:
         self._activities.require_workbench()
         with self._activities.enter(ActivityDomain.RESOURCE):
             started = perf_counter()
             self._scanning.add(project_id)
             emit(_log, ResourceVersionEvent.SCAN_STARTED, project_id=project_id)
             try:
-                entries = self._entries(project_id)
+                inventory = inventory if inventory is not None else self._inventory(project_id)
+                entries = inventory.entries
                 emit(
                     _log,
                     ResourceVersionEvent.SCAN_PROGRESS,
                     project_id=project_id,
                     visited=len(entries),
                 )
-                eligible, ignored, oversized, unsupported = self._eligible(project_id, entries)
+                eligible, ignored, oversized, unsupported = self._eligible(
+                    project_id, entries, repositories=inventory.repositories
+                )
                 versioned = self._versions.versioned_paths(project_id)
                 created = failed = 0
                 for path in eligible:
@@ -634,7 +676,7 @@ class ResourceVersionSupervisor:
                     unsupported_files=outcome.unsupported,
                     failed_files=outcome.failed,
                 )
-                return outcome
+                return outcome, eligible
             finally:
                 self._scanning.discard(project_id)
 
@@ -709,11 +751,6 @@ class ResourceVersionSupervisor:
             unsupported=sum(item.unsupported for item in outcomes),
             failed=sum(item.failed for item in outcomes),
         )
-
-    def present_paths(self, project_id: str) -> tuple[str, ...]:
-        """Record pre-turn existence without reading excluded file contents."""
-
-        return tuple(entry.path for entry in self._entries(project_id))
 
     def eligible_paths(
         self, project_id: str, *, include_missing: tuple[str, ...] = ()
@@ -887,14 +924,21 @@ class ResourceVersionSupervisor:
         return any(not root or path == root or path.startswith(f"{root}/") for root in roots)
 
     def _eligible(
-        self, project_id: str, entries: tuple[ResourceEntry, ...]
+        self,
+        project_id: str,
+        entries: tuple[ResourceEntry, ...],
+        *,
+        repositories: dict[str, str | None] | None = None,
     ) -> tuple[tuple[str, ...], int, int, int]:
+        if not entries:
+            return (), 0, 0, 0
         resource_root = self._content.root_path(project_id, RootKind.RESOURCES)
         eligible: list[str] = []
         ignored = oversized = unsupported = 0
-        repositories = self._content.repository_roots(
-            project_id, tuple(entry.path for entry in entries)
-        )
+        if repositories is None:
+            repositories = self._content.repository_roots(
+                project_id, tuple(entry.path for entry in entries)
+            )
         manual = self._versions.manual_admitted_states(
             project_id, tuple(entry.path for entry in entries)
         )

@@ -189,8 +189,7 @@ class ResourceDeliveryService:
     def finalizations(
         self, project_id: str, session_id: str, *, cursor: str | None, limit: int
     ) -> tuple[tuple[ResourceFinalization, ...], str | None]:
-        with self._versions.writer(project_id):
-            rows = self._store(project_id).finalizations(session_id, cursor=cursor, limit=limit + 1)
+        rows = self._store(project_id).finalizations(session_id, cursor=cursor, limit=limit + 1)
         entries = rows[:limit]
         return entries, entries[-1].turn_id if len(rows) > limit else None
 
@@ -379,11 +378,7 @@ class ResourceDeliveryService:
             store = self._store(project_id)
             if store.turn_state(session_id, turn_id) is not None:
                 return ResourceTurnContext(store.turn_model_context(session_id, turn_id))
-            self._supervisor.scan_project(project_id)
-            eligible_paths = self._supervisor.eligible_paths(project_id)
-            present_paths = self._supervisor.present_paths(project_id)
-            repositories = self._content.repository_roots(project_id, present_paths)
-            initial_paths = tuple(path for path in present_paths if repositories[path] is None)
+            eligible_paths, initial_paths = self._supervisor.scan_turn_inventory(project_id)
             self._versions.capture_turn_baselines(
                 project_id,
                 session_id,

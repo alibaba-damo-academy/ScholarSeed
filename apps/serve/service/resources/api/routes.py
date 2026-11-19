@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 
-from service.content.domain.model import ContentError
+from service.content.domain.model import ROOT_BUSY_ERROR, ContentError
 from service.content.service.port import DEFAULT_MEDIA_TYPE, ContentService
 from service.content.service.tree import DEFAULT_MAX_DEPTH
 from service.platform.activity import ActivityDomain
@@ -32,7 +32,11 @@ from service.platform.content import (
 )
 from service.platform.excerpts import ExcerptSourceError
 from service.platform.resources import ResourceCapability
-from service.resources.api.schema import ResourceExcerptsRequest, ResourceImportRequest
+from service.resources.api.schema import (
+    ResourceExcerptsRequest,
+    ResourceImportRequest,
+    ResourceListingChangesRequest,
+)
 from service.resources.api.web import WEB_CANDIDATE_URL_LIMIT, WebImportRequest
 from service.resources.domain.model import (
     PdfExcerptSelection,
@@ -43,7 +47,11 @@ from service.resources.persistence.catalog import (
     ResourceAgentImportCatalog,
     ResourceWebSourceCatalog,
 )
-from service.resources.persistence.listing import ResourceListingCatalog, ResourceSource
+from service.resources.persistence.listing import (
+    ResourceListEntry,
+    ResourceListingCatalog,
+    ResourceSource,
+)
 from service.resources.service.excerpts import (
     EXCERPT_TOO_LARGE,
     ResourceExcerptError,
@@ -99,6 +107,7 @@ ERROR_STATUS = {
     "invalid_excerpt_resource": 409,
     "ambiguous_excerpt_resource": 409,
     "revision_conflict": 409,
+    ROOT_BUSY_ERROR: 409,
     "import_plan_stale": 409,
     "import_decisions_invalid": 400,
     "import_background_required": 409,
@@ -386,42 +395,56 @@ def _scan_resource_tree(
     return page, root, resource_root, linked_roots, repositories
 
 
-def _resource_listing(
-    content: ContentService, project: str, supervisor: ResourceVersionSupervisor | None
-) -> dict:
-    """Materialize the whole disk-backed list away from the HTTP event loop."""
-
-    entries = ResourceListing(content).list(project)
-    linked_roots = content.external_roots(project)
+def _resource_list_items(
+    project: str,
+    supervisor: ResourceVersionSupervisor | None,
+    entries: tuple[ResourceListEntry, ...],
+    repositories: dict[str, str | None],
+    linked_roots: tuple[ExternalRootRef, ...],
+) -> list[dict]:
     paths = tuple(entry.path for entry in entries)
-    repositories = content.repository_roots(project, paths)
     capabilities = (
         supervisor.capability_states(project, paths, repositories=repositories)
         if supervisor is not None
         else {}
     )
+    return [
+        {
+            **asdict(entry),
+            "git_repository": repositories.get(entry.path) == entry.path,
+            **(
+                {"version": _capability_payload(capabilities[entry.path])}
+                if entry.path in capabilities
+                else {}
+            ),
+            "link_root_id": next(
+                (
+                    root.root_id
+                    for root in linked_roots
+                    if entry.path == root.mount_path or entry.path.startswith(f"{root.mount_path}/")
+                ),
+                None,
+            ),
+        }
+        for entry in entries
+    ]
+
+
+def _resource_listing(
+    content: ContentService,
+    project: str,
+    supervisor: ResourceVersionSupervisor | None,
+    *,
+    incremental: bool = False,
+) -> dict:
+    """Materialize the whole disk-backed list away from the HTTP event loop."""
+
+    entries, repositories, parents = ResourceListing(content).snapshot(
+        project, track_parents=incremental
+    )
+    linked_roots = content.external_roots(project)
     return {
-        "items": [
-            {
-                **asdict(entry),
-                "git_repository": repositories.get(entry.path) == entry.path,
-                **(
-                    {"version": _capability_payload(capabilities[entry.path])}
-                    if entry.path in capabilities
-                    else {}
-                ),
-                "link_root_id": next(
-                    (
-                        root.root_id
-                        for root in linked_roots
-                        if entry.path == root.mount_path
-                        or entry.path.startswith(f"{root.mount_path}/")
-                    ),
-                    None,
-                ),
-            }
-            for entry in entries
-        ],
+        "items": _resource_list_items(project, supervisor, entries, repositories, linked_roots),
         "linked_roots": {
             root.root_id: {
                 "root_id": root.root_id,
@@ -430,6 +453,27 @@ def _resource_listing(
             }
             for root in linked_roots
         },
+        **(
+            {"incremental": {"parents": parents or (), "supported": parents is not None}}
+            if incremental
+            else {}
+        ),
+    }
+
+
+def _resource_listing_changes(
+    content: ContentService,
+    project: str,
+    supervisor: ResourceVersionSupervisor | None,
+    paths: tuple[str, ...],
+) -> dict | None:
+    result = ResourceListing(content).changes(project, paths)
+    if result is None:
+        return None
+    entries, repositories, groups = result
+    return {
+        "items": _resource_list_items(project, supervisor, entries, repositories, ()),
+        "groups": [asdict(group) for group in groups],
     }
 
 
@@ -437,14 +481,43 @@ def register_resource_routes(app: FastAPI) -> None:
     """把资料库路由挂到应用上。"""
 
     @app.get(f"{RESOURCE_ROUTE_PREFIX}/list")
-    async def resource_list(request: Request, project: str = Query(min_length=1)) -> dict:
+    async def resource_list(
+        request: Request, project: str = Query(min_length=1), incremental: bool = False
+    ) -> dict:
         try:
             content = _content(request)
             supervisor = getattr(request.app.state, "resource_version_supervisor", None)
             if supervisor is not None:
                 await supervisor.activate_project(project)
             return await request.app.state.activities.to_thread(
-                ActivityDomain.RESOURCE, _resource_listing, content, project, supervisor
+                ActivityDomain.RESOURCE,
+                _resource_listing,
+                content,
+                project,
+                supervisor,
+                incremental=incremental,
+            )
+        except ContentError as exc:
+            raise _fail(exc) from exc
+
+    @app.post(f"{RESOURCE_ROUTE_PREFIX}/list/changes")
+    async def resource_list_changes(
+        request: Request, payload: ResourceListingChangesRequest
+    ) -> dict | None:
+        try:
+            content = _content(request)
+            supervisor = getattr(request.app.state, "resource_version_supervisor", None)
+            if supervisor is not None:
+                # The initial listing activates the observer. A file event
+                # already schedules observation, so avoid starting another scan.
+                await supervisor.prepare_project(payload.project)
+            return await request.app.state.activities.to_thread(
+                ActivityDomain.RESOURCE,
+                _resource_listing_changes,
+                content,
+                payload.project,
+                supervisor,
+                tuple(dict.fromkeys(payload.paths)),
             )
         except ContentError as exc:
             raise _fail(exc) from exc

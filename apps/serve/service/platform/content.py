@@ -521,6 +521,33 @@ class AssetTree:
 
 
 @dataclass(frozen=True)
+class FlatResourceTree:
+    """Complete resource nodes and optional Git ownership from the same read."""
+
+    nodes: tuple[AssetTree, ...]
+    repositories: dict[str, str | None]
+    incremental_parents: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ResourceTreeGroup:
+    """Ordered direct children observed under an affected directory."""
+
+    parent: str
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResourceTreeChanges:
+    """Changed files and the complete order of their immediate sibling groups."""
+
+    nodes: tuple[AssetTree, ...]
+    repositories: dict[str, str | None]
+    groups: tuple[ResourceTreeGroup, ...]
+    root: str
+
+
+@dataclass(frozen=True)
 class AssetPage:
     """一层目录的一页子节点投影。
 
@@ -852,6 +879,23 @@ class ContentPort(Protocol):
         """Enumerate every file in resource and linked roots with a stable cursor."""
         ...
 
+    def flat_resource_tree(
+        self,
+        project_id: str,
+        roots: tuple[str, ...],
+        *,
+        include_repositories: bool = False,
+        track_parents: bool = False,
+    ) -> FlatResourceTree:
+        """List all visible descendants under the requested authorized resource directories."""
+        ...
+
+    def resource_tree_changes(
+        self, project_id: str, paths: tuple[str, ...]
+    ) -> ResourceTreeChanges | None:
+        """Read changed ordinary files and sibling order, or require a full listing."""
+        ...
+
     def scan_resources(
         self,
         project_id: str,
@@ -1101,6 +1145,7 @@ __all__ = [
     "FileAssetRef",
     "FileEvent",
     "FileEventKind",
+    "FlatResourceTree",
     "ImportMode",
     "ImportFailurePolicy",
     "DISK_FULL_ERROR",
@@ -1115,5 +1160,7 @@ __all__ = [
     "ResourceRevealKind",
     "ResourceSearchResult",
     "ResourceScanObserver",
+    "ResourceTreeChanges",
+    "ResourceTreeGroup",
     "RootKind",
 ]

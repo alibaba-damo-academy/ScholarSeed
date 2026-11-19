@@ -14,7 +14,13 @@ import {
   PDF_EXCERPT_LOCATOR_KIND,
   type LiteratureExcerptSelection,
 } from '../../contracts/resources.ts'
+import type { FileEvent } from '../../contracts/content'
 import type { FindTextReveal } from '../../contracts/workbench.ts'
+import {
+  applyResourceListingChanges,
+  type ResourceListingChanges,
+  type ResourceListingSnapshot,
+} from './refresh.ts'
 import type { AssetOrigin, ResourceLinkRoot, ResourceManagementState, ResourceNode } from './state'
 
 /** 后端返回的树节点（字段与 service/resources 的资产契约 对齐）。 */
@@ -729,6 +735,25 @@ export async function fetchVersionCapability(
   }
 }
 
+const fileEventObservations = new WeakMap<FileEvent, Promise<ResourceCapability | null>>()
+
+export function observeResourceFileEvent(
+  project: string,
+  event: FileEvent
+): Promise<ResourceCapability | null> {
+  const existing = fileEventObservations.get(event)
+  if (existing) return existing
+  const observation = fetchVersionCapability(project, event.path)
+  fileEventObservations.set(event, observation)
+  return observation
+}
+
+export function resourceFileEventObservation(
+  event: FileEvent
+): Promise<ResourceCapability | null> | undefined {
+  return fileEventObservations.get(event)
+}
+
 export interface ResourceVersionPage {
   versions: ResourceVersion[]
   next_cursor: number | null
@@ -1158,6 +1183,80 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<Re
   }
 }
 
+interface ResourceListingPayload extends ResourceListingSnapshot<ResourceNodePayload> {
+  linked_roots?: ResourceTreePayload['linked_roots']
+}
+
+interface ResourceListingProjection extends ResourceListingSnapshot<ResourceNode> {
+  linkedRoots: Record<string, ResourceLinkRoot>
+}
+
+async function loadResourceListing(
+  project: string,
+  incremental: boolean
+): Promise<ResourceListingProjection | null> {
+  try {
+    const params = new URLSearchParams({ project })
+    if (incremental) params.set('incremental', 'true')
+    const response = await fetch(`${base()}/api/resource/list?${params}`, {
+      credentials: 'include',
+      cache: 'no-store',
+    })
+    if (!response.ok) return null
+    const payload = (await response.json()) as ResourceListingPayload
+    const linkedRoots = toLinkRoots(payload.linked_roots)
+    return {
+      linkedRoots,
+      incremental: payload.incremental,
+      items: payload.items.map((item) => toNode(item, linkedRoots)),
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function fetchResourceListing(project: string): Promise<ResourceNode[] | null> {
+  const result = await loadResourceListing(project, false)
+  return result && result.items
+}
+
+export function fetchResourceListingSnapshot(
+  project: string
+): Promise<ResourceListingProjection | null> {
+  return loadResourceListing(project, true)
+}
+
+export async function fetchResourceListingChanges(
+  project: string,
+  snapshot: ResourceListingProjection,
+  paths: readonly string[]
+): Promise<ResourceListingProjection | null> {
+  if (!snapshot.incremental?.supported) return null
+  try {
+    const response = await fetch(`${base()}/api/resource/list/changes`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project, paths }),
+    })
+    if (!response.ok) return null
+    const changes = (await response.json()) as ResourceListingChanges<ResourceNodePayload> | null
+    return (
+      changes &&
+      applyResourceListingChanges(
+        snapshot,
+        {
+          groups: changes.groups,
+          items: changes.items.map((item) => toNode(item, snapshot.linkedRoots)),
+        },
+        paths
+      )
+    )
+  } catch {
+    return null
+  }
+}
+
 /**
  * 拉取资料树的一页。
  *
@@ -1168,27 +1267,6 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<Re
  * 失败返回 null（而不是空数组）——空数组会被 UI 当作「项目里确实没有资料」，
  * 与「请求失败」是两种不同状态，必须区分，否则用户看不出是网络问题。
  */
-export async function fetchResourceListing(project: string): Promise<ResourceNode[] | null> {
-  try {
-    const response = await fetch(
-      `${base()}/api/resource/list?${new URLSearchParams({ project })}`,
-      {
-        credentials: 'include',
-        cache: 'no-store',
-      }
-    )
-    if (!response.ok) return null
-    const payload = (await response.json()) as {
-      items: ResourceNodePayload[]
-      linked_roots?: ResourceTreePayload['linked_roots']
-    }
-    const roots = toLinkRoots(payload.linked_roots)
-    return payload.items.map((item) => toNode(item, roots))
-  } catch {
-    return null
-  }
-}
-
 export async function fetchResourceTree(
   project?: string | null,
   path?: string,

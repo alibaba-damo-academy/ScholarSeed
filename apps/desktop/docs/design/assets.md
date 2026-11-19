@@ -93,5 +93,5 @@ Start page development once you have found a suitable component, confirmed its p
 ## AI Development Entry Point
 
 The component reuse contract is defined by [components](components.md) and the actual registry. The public search tool is `apps/desktop/scripts/ci/find.mjs`; it does not depend on an internal development Skill.
-Development Skills, MasterGo integration, and host discovery are maintained in the documentation source repository and are not distributed with source code.
+Project development Skills follow the [repository discovery boundary](../../../../docs/architecture/skills.md#development-workflow-boundary).
 Desktop documentation and reuse gates continue to check actual source and derived assets. Business pages are improved incrementally only within the scope of each development task.
