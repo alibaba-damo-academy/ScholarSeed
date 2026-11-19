@@ -335,16 +335,21 @@ require `--windows-publisher`.
 ### macOS Update Bridge Package
 
 For legacy macOS clients that cannot scan an ASAR file in a mounted update, use
-`pnpm ops cd build release --workflow distribution --macos-update-bridge` on the
-native signing runner. The bridge uses a physical `Contents/Resources/app`
-directory. Its App and mounted DMG must contain no ASAR paths. The packaging
-checks still verify the frozen JavaScript, protected entrypoints, native
-libraries, Developer ID signature, notarization, and mounted installer.
+`pnpm ops cd build release --channel release --workflow distribution` on the
+native signing runner. Signed macOS `0.3.2` installers in the `release` channel temporarily use
+the bridge layout by default, including when the distribution job calls the
+same recipe through `libutil` with the distribution default `release` channel.
+`--macos-update-bridge` remains available for explicit builds. The bridge uses
+a physical `Contents/Resources/app` directory. Its App and mounted DMG must
+contain no ASAR paths. The packaging checks still verify the frozen JavaScript,
+protected entrypoints, native libraries, Developer ID signature, notarization,
+and mounted installer.
 The release result identifies the bridge as `application_layout: directory` and
-its build output has the `-update-bridge` suffix. Ordinary macOS and Windows
-packages keep the ASAR layout.
+its internal build output has the `-update-bridge` suffix. Distribution can
+continue passing its usual explicit result path. Other builds use ASAR by
+default. Remove the temporary default for the next ordinary release build.
 
-For the `202611181656` preview client, assign the bridge a build newer than
+For the `202611181656` release client, assign the bridge a build newer than
 `202611191815`, since the legacy client retains the newest candidate it has
 seen. Assign the subsequent ordinary release a newer build than the bridge.
 Before making that release available, verify that the release service still
@@ -353,13 +358,20 @@ grants its online installation authorization. The bridge build itself must
 receive the ordinary release. Test both signed upgrades on each affected macOS
 architecture, including a client with the previous failed attempt and existing
 user data. The build option selects the package layout. The release service
-controls candidate selection and release availability.
+controls candidate selection and release availability. The distribution upload
+verifies the build number against the source commit time, so use a later commit
+in a different Beijing minute for the ordinary build.
 
-macOS 过渡包使用 `--macos-update-bridge` 构建，应用代码放在
-`Contents/Resources/app`。构建和挂载后都检查整棵 App 树没有 ASAR 路径，并继续核验
-冻结的 JavaScript、受保护的入口、原生库、正式签名与公证。`202611181656` 预览客户端
-会保留已看到的最新候选，因此过渡包构建号必须高于 `202611191815`，后续普通版还要高于
-过渡包。开放普通新版前，应验证发布服务仍会向受影响的来源构建提供过渡包，支持下载和在线
+macOS `0.3.2` 的 `release` 渠道正式签名安装包临时默认使用过渡布局。分发任务通过 `libutil`
+以默认的 `release` 渠道调用同一构建配方。也可显式传入 `--macos-update-bridge`。
+过渡包的应用代码放在 `Contents/Resources/app`，内部构建目录以 `-update-bridge` 结尾，
+构建结果以 `application_layout: directory` 标识。分发侧继续传原来的结果文件路径。
+过渡包构建和挂载后都检查整棵 App 树没有 ASAR 路径，并继续核验冻结的 JavaScript、
+受保护的入口、原生库、正式签名与公证。其他构建默认使用 ASAR，下一次打普通正式包前
+移除临时默认规则。`release` 渠道的 `202611181656` 客户端会保留已看到的最新候选，因此过渡包构建号
+必须高于 `202611191815`，后续普通版还要高于过渡包。分发上传会按提交时间核对构建号，
+普通新版应使用提交时刻落在更晚分钟的源码提交（北京时间）。
+开放普通新版前，应验证发布服务仍会向受影响的来源构建提供过渡包，支持下载和在线
 安装授权，并向过渡版提供普通新版。在各受影响的 macOS 架构上保留旧失败现场和现有用户
 数据，用签名包实测两次升级和数据保留。该构建参数只选择应用布局，发布服务负责候选选取
 和版本的发布状态。

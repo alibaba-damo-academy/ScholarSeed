@@ -52,6 +52,7 @@ const STAGES = new Set(['backend', 'dir', 'installer'])
 const PUBLIC_TYPES = new Set(['preview', 'release'])
 const CANDIDATE_FLAG = '--candidate'
 const UPDATE_BRIDGE_FLAG = '--macos-update-bridge'
+const MACOS_RELEASE_BRIDGE_VERSION = '0.3.2'
 const BUILD_OPTION_KEYS = new Set([
   'stage', 'type', 'version', 'build-number', 'platform', 'arch', 'result',
   'update-base-url', 'team-id', 'windows-publisher', 'activation-public-keys',
@@ -217,6 +218,19 @@ function buildType(argv, parsed = buildArguments(argv)) {
   return type
 }
 
+function buildApplicationLayout(args) {
+  if (args[UPDATE_BRIDGE_FLAG.slice(2)]) {
+    if (args.platform !== 'darwin' || args.stage === 'backend') {
+      throw new Error(`${UPDATE_BRIDGE_FLAG} requires a macOS application or installer stage`)
+    }
+    return APPLICATION_LAYOUT.directory
+  }
+
+  const releaseBridge = args.platform === 'darwin' && args.type === 'release' &&
+    args.stage === 'installer' && !args.candidate && args.version === MACOS_RELEASE_BRIDGE_VERSION
+  return releaseBridge ? APPLICATION_LAYOUT.directory : APPLICATION_LAYOUT.asar
+}
+
 function logDmgCopy(context) {
   const logfile = path.join(context.runDirectory, DMG_COPY_LOG)
   if (!fs.existsSync(logfile)) return
@@ -262,10 +276,7 @@ function options(argv) {
   if (result.candidate && !PUBLIC_TYPES.has(result.type)) {
     throw new Error('--candidate is only valid with preview or release')
   }
-  const bridge = result[UPDATE_BRIDGE_FLAG.slice(2)]
-  if (bridge && (result.platform !== 'darwin' || result.stage === 'backend'))
-    throw new Error(`${UPDATE_BRIDGE_FLAG} requires a macOS application or installer stage`)
-  result.applicationLayout = bridge ? APPLICATION_LAYOUT.directory : APPLICATION_LAYOUT.asar
+  result.applicationLayout = buildApplicationLayout(result)
   Object.assign(result, policy, { target: selected })
   if (result.candidate) result.signed = false
   if (result.stage === 'installer') result.stage = selected.installer
@@ -1185,6 +1196,7 @@ module.exports = {
   assertSource,
   buildNumberOf,
   buildRunDirectory,
+  buildApplicationLayout,
   credentialFreeEnv,
   requireInstallerSmoke,
   freezeFile,
