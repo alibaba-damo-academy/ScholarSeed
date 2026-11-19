@@ -52,7 +52,7 @@ const STAGES = new Set(['backend', 'dir', 'installer'])
 const PUBLIC_TYPES = new Set(['preview', 'release'])
 const CANDIDATE_FLAG = '--candidate'
 const UPDATE_BRIDGE_FLAG = '--macos-update-bridge'
-const MACOS_PREVIEW_BRIDGE_VERSION = '0.3.2'
+const MACOS_RELEASE_BRIDGE_VERSION = '0.3.2'
 const BUILD_OPTION_KEYS = new Set([
   'stage', 'type', 'version', 'build-number', 'platform', 'arch', 'result',
   'update-base-url', 'team-id', 'windows-publisher', 'activation-public-keys',
@@ -226,9 +226,9 @@ function buildApplicationLayout(args) {
     return APPLICATION_LAYOUT.directory
   }
 
-  const previewBridge = args.platform === 'darwin' && args.type === 'preview' &&
-    args.stage === 'installer' && !args.candidate && args.version === MACOS_PREVIEW_BRIDGE_VERSION
-  return previewBridge ? APPLICATION_LAYOUT.directory : APPLICATION_LAYOUT.asar
+  const releaseBridge = args.platform === 'darwin' && args.type === 'release' &&
+    args.stage === 'installer' && !args.candidate && args.version === MACOS_RELEASE_BRIDGE_VERSION
+  return releaseBridge ? APPLICATION_LAYOUT.directory : APPLICATION_LAYOUT.asar
 }
 
 function logDmgCopy(context) {
