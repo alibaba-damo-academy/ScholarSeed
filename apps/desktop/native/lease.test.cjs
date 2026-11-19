@@ -1092,7 +1092,7 @@ test('actual Electron loads both exact unpacked ASAR libraries and holds its own
   const manifestSha = crypto.createHash('sha256').update(manifest).digest('hex')
   fs.writeFileSync(
     path.join(source, 'out/main/index.js'),
-    `require("./fonts.node"); module.exports = require("./lease.node"); const binding = "scholarseed-protected-v1:${generation}:${manifestSha}";`
+    `module.exports = require("./lease.node"); const binding = "scholarseed-protected-v1:${generation}:${manifestSha}";`
   )
   fs.writeFileSync(path.join(source, 'out/preload/index.js'), 'require("electron")')
   fs.writeFileSync(path.join(source, 'out/main/data-inspection.js'), 'module.exports = {}')

@@ -5,7 +5,7 @@
 1. 外部改动 (访达/其他程序) 要变成事件, 且标 `source=external`;
 2. 产品自身的写入不得回灌成事件 —— 否则「写 → 事件 → 刷新 → 再写」会自激,
    原子写的 `.tmp` 临时文件也不能漏到界面上;
-3. 一次批量改动的事件条数有上界, 超过就退化成一条 RESCAN;
+3. Large batches emit at most one rescan per affected root;
 4. 游标世代 (`epoch`) 不匹配时第一条必须是 RESCAN, 且 `seq` 落库而不是进程内
    自增 —— 桌面端每次重启 serve 都会归零, 客户端拿旧 seq 续传就是静默错位。
 
@@ -19,10 +19,13 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE
+from watchfiles import Change as WatchChange
+
+from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE, resolve_root
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.events import MAX_BATCH_EVENTS, WATCHFILES_AVAILABLE
 from service.content.service.port import ContentService, ProjectRegistry
+from service.content.service.repository import GIT_MARKER
 from service.platform.activity import Activities
 from service.platform.content import EventSource, FileEventKind, RootKind
 from service.platform.notifications import Change, ChangeHub, ChangeTopic
@@ -69,6 +72,43 @@ async def collect(
     except asyncio.CancelledError:
         pass
     return received
+
+
+async def check_mixed_root_storm(content: ContentService) -> None:
+    project = content.create_project("Mixed root event storm")
+    resources = Path(content.resolve(project.id, content.root(project.id, RootKind.RESOURCES).path))
+    literature = resolve_root(project, RootKind.LITERATURE).absolute
+    literature.mkdir(exist_ok=True)
+    artifacts = Path(content.resolve(project.id, content.root(project.id, RootKind.ARTIFACTS).path))
+    epoch, before = content.event_cursor(project.id)
+    paths = [resources / f"storm-{index}.md" for index in range(MAX_BATCH_EVENTS + 1)]
+    paths.append(literature / "paper.md")
+    for path in paths:
+        path.touch()
+    marker = artifacts / GIT_MARKER
+    marker.mkdir()
+
+    # Supply one batch so watcher scheduling cannot split the regression case.
+    await content._events._publish_batch(  # noqa: SLF001 - content batch contract
+        project.id, [(WatchChange.added, str(path)) for path in (*paths, marker)]
+    )
+    _, after = content.event_cursor(project.id)
+    stream = content.subscribe(project.id, epoch, before)
+    try:
+        replayed = [
+            await asyncio.wait_for(anext(stream), timeout=COLLECT_SECONDS)
+            for _ in range(after - before)
+        ]
+    finally:
+        await stream.aclose()
+
+    expected = [RootKind.RESOURCES, RootKind.LITERATURE, RootKind.ARTIFACTS]
+    check(
+        "Mixed-root event storm replays one rescan per affected root",
+        [(item.root, item.kind, item.seq) for item in replayed]
+        == [(kind, FileEventKind.RESCAN, seq) for seq, kind in enumerate(expected, before + 1)],
+        str(replayed),
+    )
 
 
 async def run() -> None:
@@ -145,6 +185,10 @@ async def run() -> None:
         "事件带单调 seq (断线续传的唯一依据)",
         all(item.seq >= 1 for item in events if item.kind is not FileEventKind.RESCAN),
         str([item.seq for item in events]),
+    )
+    check(
+        "资料根事件通知标记为可由文件流处理",
+        any(change.topic is ChangeTopic.RESOURCES and change.file_event for change in changes),
     )
 
     epoch, seq = content.event_cursor(project.id)
@@ -230,6 +274,31 @@ async def run() -> None:
         str([item.kind.value for item in events]),
     )
 
+    epoch, before_git = content.event_cursor(project.id)
+
+    async def new_git_root() -> None:
+        (library / GIT_MARKER).mkdir()
+
+    git_events = await collect(
+        content, project.id, epoch, before_git, COLLECT_SECONDS, new_git_root
+    )
+    check(
+        "Git 标记变更触发带新游标的资料根重扫",
+        any(
+            item.kind is FileEventKind.RESCAN
+            and item.root is RootKind.RESOURCES
+            and item.seq > before_git
+            for item in git_events
+        ),
+    )
+    git_replayed = await collect(
+        content, project.id, epoch, before_git, 0.5, lambda: asyncio.sleep(0)
+    )
+    check(
+        "重连可以重放 Git 标记触发的重扫",
+        any(item.kind is FileEventKind.RESCAN and item.seq > before_git for item in git_replayed),
+    )
+
     # 断线重连: 带断连前的 seq 回来, 缺的那几条要补齐而不是静默丢掉。
     epoch, before_seq = content.event_cursor(project.id)
 
@@ -271,6 +340,7 @@ async def run() -> None:
         "真实文件事件同时失效共享资源快照",
         any(change.topic is ChangeTopic.RESOURCES for change in changes),
     )
+    await check_mixed_root_storm(content)
     await content.close_events()
 
 

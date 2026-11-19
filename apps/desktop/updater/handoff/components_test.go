@@ -21,7 +21,7 @@ func fixture(t *testing.T) (Policy, Runtime, map[string][]byte) {
 	p := testPolicy()
 	r := Runtime{Schema: 1, Domain: "scholarseed.runtime-components", ProductID: p.ProductID, BundleID: p.BundleID, AppID: p.AppID, Target: p.Target}
 	archives := map[string][]byte{}
-	for _, kind := range []string{"python", "texlive", "powershell", "codex", "office"} {
+	for _, kind := range []string{"python", "texlive", "powershell", "codex"} {
 		data := []byte("verified " + kind)
 		entry := kind + "/entry.exe"
 		var buffer bytes.Buffer
@@ -87,7 +87,7 @@ func TestPrepareReusesFilesAndRejectsCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opens != 5 {
+	if opens != len(r.Components) {
 		t.Fatal(opens)
 	}
 	stat, err := os.Stat(filepath.Join(first[0].Directory, filepath.FromSlash(r.Components[0].Entry)))
@@ -98,7 +98,7 @@ func TestPrepareReusesFilesAndRejectsCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opens != 5 {
+	if opens != len(r.Components) {
 		t.Fatal("reuse reopened component archives")
 	}
 	for _, item := range second {
@@ -209,12 +209,12 @@ func TestSignedAdditionalComponentPreparesAndReuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 6 || len(second) != 6 || opens != 6 || !second[5].Reused {
+	if len(first) != len(parsed.Components) || len(second) != len(parsed.Components) || opens != len(parsed.Components) || !second[len(second)-1].Reused {
 		t.Fatal("additional signed component was not prepared once and reused")
 	}
 }
 
-func TestOldPolicyAddsSignedSixthComponentWithoutReopeningExistingArchives(t *testing.T) {
+func TestOldPolicyAddsSignedComponentWithoutReopeningExistingArchives(t *testing.T) {
 	p, initial, archives := fixture(t)
 	private := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 	p.Keys["ci"] = base64.StdEncoding.EncodeToString(private.Public().(ed25519.PublicKey))
@@ -244,7 +244,7 @@ func TestOldPolicyAddsSignedSixthComponentWithoutReopeningExistingArchives(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(installed) != 5 || initialOpens != 5 {
+	if len(installed) != len(baseline.Components) || initialOpens != len(baseline.Components) {
 		t.Fatalf("initial preparation: results=%d archive opens=%d", len(installed), initialOpens)
 	}
 	before := map[string]os.FileInfo{}
@@ -303,11 +303,11 @@ func TestOldPolicyAddsSignedSixthComponentWithoutReopeningExistingArchives(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(updated) != 6 || updateOpens != 1 {
+	if len(updated) != len(parsed.Components) || updateOpens != 1 {
 		t.Fatalf("incremental preparation: results=%d archive opens=%d", len(updated), updateOpens)
 	}
 	for i, item := range updated {
-		if item.Kind != parsed.Components[i].Kind || item.Reused != (i < 5) {
+		if item.Kind != parsed.Components[i].Kind || item.Reused != (i < len(baseline.Components)) {
 			t.Fatalf("unexpected component reuse: %+v", item)
 		}
 	}

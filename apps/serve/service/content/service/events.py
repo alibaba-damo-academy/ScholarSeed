@@ -11,8 +11,8 @@ proposal 47 §7 阶段三把这条链定成四段: 监听 → 去抖归并 → �
    RESCAN, 而不是从一个不可比的 seq 往后读。
 3. **自写抑制**: 产品自己的原子写 (tmp + replace) 会产生临时文件的 CREATED 与
    MOVED。不抑制就会「写 → 事件 → 前端刷新 → 可能再写」自己转起来。
-4. **归并上限**: 一次编辑器保存、一次批量导入都可能触发几十条底层事件。超过
-   上限就退化成一条 RESCAN, 而不是把风暴原样转发给前端。
+4. **Batch limit**: A single editor save or bulk import can trigger dozens of events.
+   Above the limit, emit one rescan per affected root.
 
 监听后端是 `watchfiles` (Rust notify + 原生 async)。它装不上时降级为定时轮询 +
 RESCAN: 刷新变慢, 但产品不会因为一个可选依赖而失去这条能力。
@@ -25,14 +25,21 @@ import contextlib
 import os
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import AsyncIterator, Callable, Iterable
 
-from service.content.domain.model import OWNED_ROOT_KINDS, ContentError, resolve_root, visible
+from service.content.domain.model import (
+    OWNED_ROOT_KINDS,
+    ContentError,
+    resolve_root,
+    root_relative,
+    visible,
+)
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.enumeration import GITIGNORE_FILENAME
+from service.content.service.repository import GIT_MARKER
 from service.content.service.space import ProjectSpace, normalize
 from service.platform.activity import Activities, ActivityDomain, ActivityPhase, MaintenanceActive
 from service.platform.content import (
@@ -57,11 +64,12 @@ except ImportError:  # pragma: no cover - 依赖缺失时的降级路径
 
 Change = _watchfiles.Change if _watchfiles is not None else None
 awatch = _watchfiles.awatch if _watchfiles is not None else None
+_DEFAULT_WATCH_FILTER = _watchfiles.DefaultFilter() if _watchfiles is not None else None
 
 #: 去抖窗口 (秒)。一次保存的多次底层写在这个窗口内归并成一条。
 DEBOUNCE_SECONDS = 0.35
 
-#: 单个去抖批次的事件上限, 超过即退化为一条 RESCAN。
+#: Maximum incremental events in a debounce batch before rescanning affected roots.
 MAX_BATCH_EVENTS = 40
 
 #: 自写抑制窗口 (秒)。产品写完到 watcher 报上来之间的时间差。
@@ -343,6 +351,7 @@ class FileEventHub:
                 if roots:
                     watcher = awatch(
                         *roots,
+                        watch_filter=_watch_filter,
                         debounce=int(DEBOUNCE_SECONDS * 1000),
                         stop_event=self._stopping,
                         rust_timeout=ROOT_REFRESH_MILLISECONDS,
@@ -437,10 +446,35 @@ class FileEventHub:
         """把一批底层变更归并成产品事件。"""
 
         space = self._space_of(project_id)
+        root_paths = sorted(
+            (
+                (kind, root_relative(space.project.layout, kind))
+                for kind in RootKind
+                if kind not in OWNED_ROOT_KINDS or kind in space.owned_roots
+            ),
+            key=lambda entry: len(entry[1]),
+            reverse=True,
+        )
         merged: dict[str, FileEventKind] = {}
+        rescan_roots: set[RootKind] = set()
         for change, raw in changes:
+            path = Path(raw)
+            kind = _KIND_BY_CHANGE.get(change, FileEventKind.MODIFIED)
             try:
-                relative = space.relative(Path(raw))
+                # Resolving a symlink loses the event's logical name. A Git marker
+                # can change ownership for an entire subtree.
+                if path.name.casefold() == GIT_MARKER:
+                    if kind is not FileEventKind.MODIFIED or not path.is_dir():
+                        parent = space.relative(path.parent)
+                        if not parent or all(visible(part) for part in parent.split("/")):
+                            rescan_roots.add(_root_of(root_paths, parent))
+                    continue
+                if visible(path.name) and path.is_symlink():
+                    parent = space.relative(path.parent)
+                    if not parent or all(visible(part) for part in parent.split("/")):
+                        rescan_roots.add(_root_of(root_paths, parent))
+                    continue
+                relative = space.relative(path)
             except ContentError:
                 # 已撤销授权的根、或已被移出项目的路径: 丢弃而不是猜一个位置。
                 continue
@@ -451,15 +485,18 @@ class FileEventHub:
                 or (parts[-1] != GITIGNORE_FILENAME and not visible(parts[-1]))
             ):
                 continue
-            merged[relative] = _KIND_BY_CHANGE.get(change, FileEventKind.MODIFIED)
-        if not merged:
-            return
-        if len(merged) > MAX_BATCH_EVENTS:
-            # 事件风暴: 给一条 RESCAN 而不是几百条增量。
-            await self._emit(project_id, self._rescan(space.project))
+            merged[relative] = kind
+        overflow = len(merged) > MAX_BATCH_EVENTS
+        if overflow:
+            rescan_roots.update(_root_of(root_paths, relative) for relative in merged)
+        for root in RootKind:
+            if root in rescan_roots:
+                await self._emit(project_id, self._rescan(space.project, root))
+        if overflow:
             return
         for relative, kind in merged.items():
-            if self._is_suppressed(project_id, relative):
+            root = _root_of(root_paths, relative)
+            if root in rescan_roots or self._is_suppressed(project_id, relative):
                 continue
             seq = self._catalog.bump_cursor(space.project.id, self._epoch)
             await self._emit(
@@ -468,7 +505,7 @@ class FileEventHub:
                     epoch=self._epoch,
                     seq=seq,
                     project_id=space.project.id,
-                    root=_root_of(space, relative),
+                    root=root,
                     kind=kind,
                     path=relative,
                     source=EventSource.EXTERNAL,
@@ -476,14 +513,25 @@ class FileEventHub:
             )
 
     async def _emit(self, project_id: str, event: FileEvent) -> None:
+        if event.kind is FileEventKind.RESCAN:
+            # A disconnected consumer must also observe a rescan on replay.
+            event = replace(event, seq=self._catalog.bump_cursor(project_id, self._epoch))
+        subscribers = self._subscribers.get(project_id, ())
         if self.changes is not None:
-            self.changes.publish((ProductChange(ChangeTopic.RESOURCES, subject=project_id),))
-        if event.kind is not FileEventKind.RESCAN:
-            backlog = self._backlog.setdefault(project_id, [])
-            backlog.append(event)
-            if len(backlog) > BACKLOG_LIMIT:
-                del backlog[: len(backlog) - BACKLOG_LIMIT]
-        for queue in list(self._subscribers.get(project_id, [])):
+            self.changes.publish(
+                (
+                    ProductChange(
+                        ChangeTopic.RESOURCES,
+                        subject=project_id,
+                        file_event=bool(subscribers) and event.root is RootKind.RESOURCES,
+                    ),
+                )
+            )
+        backlog = self._backlog.setdefault(project_id, [])
+        backlog.append(event)
+        if len(backlog) > BACKLOG_LIMIT:
+            del backlog[: len(backlog) - BACKLOG_LIMIT]
+        for queue in subscribers:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
@@ -494,18 +542,21 @@ class FileEventHub:
                 queue.put_nowait(self._rescan(self._space_of(project_id).project))
 
 
-def _root_of(space: ProjectSpace, relative: str) -> RootKind:
-    """相对路径归属哪个根。挂载点挂在资料库根下, 因此关联资产算资料库。"""
+def _root_of(root_paths: list[tuple[RootKind, str]], relative: str) -> RootKind:
+    """Match the most specific root, with linked assets classified as resources."""
 
-    candidates = {
-        kind: resolve_root(space.project, kind).relative
-        for kind in RootKind
-        if kind not in OWNED_ROOT_KINDS or kind in space.owned_roots
-    }
-    for kind, path in sorted(candidates.items(), key=lambda entry: len(entry[1]), reverse=True):
+    for kind, path in root_paths:
         if path and (relative == path or relative.startswith(f"{path}/")):
             return kind
     return RootKind.RESOURCES
+
+
+def _watch_filter(change: object, path: str) -> bool:
+    assert _DEFAULT_WATCH_FILTER is not None
+    if os.path.basename(path).casefold() == GIT_MARKER:
+        # Keep filtering descendants of .git, but surface the marker itself.
+        path = os.path.join(os.path.dirname(path), GITIGNORE_FILENAME)
+    return _DEFAULT_WATCH_FILTER(change, path)
 
 
 def _kind_map() -> dict[object, FileEventKind]:

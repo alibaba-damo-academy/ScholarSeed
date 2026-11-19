@@ -15,6 +15,7 @@ function fixture(platform = 'darwin', signingRequired = true, allowExecution = f
   const events = []
   let changed = false
   let incompatible = false
+  let retiredOffice = false
   const frozen = { platform, signingRequired, productName: 'ScholarSeed', runDirectory: '/build',
     native: {}, closure: {}, notices: {}, browser: {}, config: { sha256: 'digest' },
     product: { sha256: 'digest', config: {} },
@@ -26,7 +27,7 @@ function fixture(platform = 'darwin', signingRequired = true, allowExecution = f
     codex: '/app/codex', rg: '/app/rg', skillPython: '/app/skill-python' }
   const probe = name => { events.push(name); if (!allowExecution) throw new Error(`premature runtime: ${name}`) }
   const sandbox = {
-    path, process, fs: { constants: fs.constants, accessSync() {} },
+    path, process, fs: { constants: fs.constants, accessSync() {}, existsSync: () => retiredOffice },
     context: () => frozen, layout: () => current, verifyIdentity() {},
     unsignedPackageCheck: () => false,
     verifyExecution: async () => probe('first-execution'),
@@ -49,7 +50,16 @@ function fixture(platform = 'darwin', signingRequired = true, allowExecution = f
     verifyComponentArchives: async () => { events.push('components'); return {current, imports: null, browser: null, closure: {}} },
   }
   const functions = runInNewContext(`${content}\n${hook}\n({verifyContent, verify})`, sandbox)
-  return { ...functions, frozen, events, change: () => { changed = true }, rejectMinimum: () => { incompatible = true } }
+  return { ...functions, frozen, events, change: () => { changed = true }, rejectMinimum: () => { incompatible = true }, includeRetiredOffice: () => { retiredOffice = true } }
+}
+
+for (const platform of ['darwin', 'win32']) {
+  test(`${platform} packaging rejects stale Office resources before runtime execution`, async () => {
+    const f = fixture(platform)
+    f.includeRetiredOffice()
+    await assert.rejects(f.verifyContent('/app', f.frozen), /retired Office runtime/)
+    assert.ok(!f.events.includes('first-execution'))
+  })
 }
 
 test('afterPack rejects an incompatible native payload before any runtime execution', async () => {

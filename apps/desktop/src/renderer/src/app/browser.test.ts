@@ -104,6 +104,5 @@ test('browser bridge consumes only injected browser environment', async () => {
     ok: false,
     error: 'clipboard_image_write_unavailable',
   })
-  assert.deepEqual(await bridge.readOfficeClipboard(), { ok: false, error: 'clipboard_failed' })
   assert.deepEqual(await bridge.getUpdateState(), { phase: 'up-to-date', currentVersion: 'test' })
 })

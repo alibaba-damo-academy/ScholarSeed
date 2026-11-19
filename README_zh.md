@@ -253,7 +253,6 @@ Codex 桌面端同样支持 Skills、插件和 MCP（连接外部工具的协议
 第三方软件、资源和捆绑的运行环境仍适用各自的许可证，不因本项目采用 Apache-2.0 而改变。相关声明包括：
 
 - [桌面端依赖及对应源码声明](apps/desktop/resources/notices/README.md)
-- [Office 查看器第三方声明](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md)
 - [`paper-fulltext-dl` 第三方声明](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)
 
 ---

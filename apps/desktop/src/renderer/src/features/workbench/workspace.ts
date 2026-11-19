@@ -51,7 +51,7 @@ import {
   type TabInsertion,
 } from './layout.ts'
 import { usesLightweightTextState } from './limits.ts'
-import { viewerExclusiveGroup, viewerPolicy } from './policy.ts'
+import { viewerPolicy } from './policy.ts'
 import { reclaimDocumentResources, type DocumentResourceReclaimer } from './reclaim.ts'
 import {
   DEFAULT_EDITOR_LIMIT,
@@ -62,7 +62,7 @@ import {
   type TextHistoryState,
 } from './residency.ts'
 import { viewerForPath } from './tabs.ts'
-import { previewFormat } from './preview/routing.ts'
+import { previewFormat, usesCsvDocument } from './preview/routing.ts'
 
 const SPLIT_PROJECTION_SUFFIX = ':split'
 
@@ -216,7 +216,6 @@ export interface DocumentWorkspaceState {
   tabs: Record<string, DocumentTab>
   layout: DockLayout
   pendingClose: PendingClose | null
-  pendingExclusiveOpen: { requestId: number; ownerTabId: string } | null
   focusedTabId: string | null
   focusedLeaf: FocusedLeaf | null
   selectionPresentations: Record<string, SelectionPresentation>
@@ -265,12 +264,6 @@ export interface RestoreReconciliationResult {
 }
 
 type DocumentSaveDelegateInput = DocumentSaveDelegate | DocumentSaveDelegate['serialize']
-type ExclusiveViewerClaim = (
-  workspace: DocumentWorkspace,
-  candidateTabId: string,
-  group: string
-) => boolean
-
 const UTF8 = new TextDecoder()
 const UTF8_ENCODER = new TextEncoder()
 const TEXT_VIEWERS = new Set<ViewerKind>(['markdown', 'code'])
@@ -394,8 +387,9 @@ function canonicalViewKind(
   path: string
 ): DocumentViewKind {
   if (viewer === 'markdown' && requested === 'source') return 'source'
+  if (viewer === 'office' || (viewer === 'spreadsheet' && !usesCsvDocument(path))) return 'preview'
   if (!canEdit) return 'preview'
-  return viewer === 'code' || (viewer === 'spreadsheet' && previewFormat(path) !== 'xlsx')
+  return viewer === 'code' || viewer === 'spreadsheet'
     ? 'edit'
     : requested === 'source'
       ? 'preview'
@@ -437,7 +431,6 @@ export class DocumentWorkspace {
     tabs: {},
     layout: initialLayout(),
     pendingClose: null,
-    pendingExclusiveOpen: null,
     focusedTabId: null,
     focusedLeaf: null,
     selectionPresentations: {},
@@ -453,16 +446,13 @@ export class DocumentWorkspace {
   private nextHistorySequence = 0
   private readonly versioningRefreshes = new Map<string, number>()
   private nextVersioningRefresh = 0
-  private nextExclusiveOpen = 0
   private closeQueue: string[] = []
   private closing = false
   private autoSave = false
-  private exclusiveReplacement: { ownerTabId: string; candidateTabId: string } | null = null
   private documentNavigation: Promise<unknown> = Promise.resolve()
 
   constructor(
     private readonly loader: DocumentLoader,
-    private readonly claimExclusiveViewer?: ExclusiveViewerClaim,
     private readonly editorDelegate?: DocumentWorkspaceEditorDelegate,
     private readonly idNamespace = ''
   ) {}
@@ -912,7 +902,8 @@ export class DocumentWorkspace {
 
   async open(
     source: DocumentSource,
-    viewKind: DocumentViewKind = viewerPolicy(viewerForPath(source.path)).defaultViewKind,
+    viewKind: DocumentViewKind = viewerPolicy(viewerForPath(source.path), source.path)
+      .defaultViewKind,
     title = titleFor(source.path),
     area?: DockArea,
     titleFallback?: DocumentTab['titleFallback'],
@@ -974,14 +965,12 @@ export class DocumentWorkspace {
   ): Promise<string> {
     const documentId = documentIdFor(source)
     const existingSession = this.sessionFor(source)
-    const requestedViewKind = existingSession
-      ? canonicalViewKind(
-          existingSession.viewer,
-          viewKind,
-          existingSession.capabilities.can_edit,
-          existingSession.source.path
-        )
-      : viewKind
+    const requestedViewKind = canonicalViewKind(
+      existingSession?.viewer ?? viewerForPath(source.path),
+      viewKind,
+      existingSession?.capabilities.can_edit ?? true,
+      source.path
+    )
     const sessionId = existingSession?.id ?? this.id('document')
     let target = this.openTarget(area)
     if (!canPlaceTab(this.state.layout, sessionId, target.area, target.leafId, 'center')) {
@@ -989,12 +978,18 @@ export class DocumentWorkspace {
       target = { area: occupiedArea, leafId: firstLeaf(this.state.layout.areas[occupiedArea]).id }
     }
     const targetLeaf = findLeaf(this.state.layout.areas[target.area], target.leafId)
+    const canDuplicate = viewerPolicy(
+      existingSession?.viewer ?? viewerForPath(source.path),
+      source.path
+    ).canDuplicate
     const existingTab = Object.values(this.state.tabs).find(
       (tab) =>
         tab.sessionId === sessionId &&
         (!options.hostTabId || (tab.embedded && tab.hostTabId === options.hostTabId)) &&
-        (tab.viewKind === requestedViewKind || existingSession?.viewer === 'markdown') &&
-        targetLeaf?.tabIds.includes(tab.id)
+        (!canDuplicate ||
+          tab.viewKind === requestedViewKind ||
+          existingSession?.viewer === 'markdown') &&
+        (!canDuplicate || targetLeaf?.tabIds.includes(tab.id))
     )
     if (existingTab) {
       const leaf = this.leafForTab(existingTab.id)
@@ -1017,92 +1012,7 @@ export class DocumentWorkspace {
       return existingTab.id
     }
 
-    let tabs = this.state.tabs
-    if (existingSession?.viewer === 'office' && requestedViewKind === 'edit') {
-      const editOwner = Object.values(this.state.tabs).find(
-        (tab) => tab.sessionId === sessionId && tab.viewKind === 'edit'
-      )
-      if (editOwner) {
-        if (!(await this.refreshBeforeRelocation(editOwner))) return editOwner.id
-        const refreshedTarget = findLeaf(this.state.layout.areas[target.area], target.leafId)
-        const targetPreview = Object.values(this.state.tabs).find(
-          (tab) =>
-            tab.sessionId === sessionId &&
-            tab.viewKind === 'preview' &&
-            refreshedTarget?.tabIds.includes(tab.id)
-        )
-        tabs = {
-          ...this.state.tabs,
-          [editOwner.id]: { ...this.state.tabs[editOwner.id], viewKind: 'preview' },
-        }
-        if (targetPreview) {
-          tabs[targetPreview.id] = { ...targetPreview, viewKind: 'edit' }
-          this.publish({
-            ...this.state,
-            tabs,
-            layout: activateTab(this.state.layout, target.leafId, targetPreview.id),
-            focusedTabId: targetPreview.id,
-            focusedLeaf: target,
-          })
-          return targetPreview.id
-        }
-      }
-    }
-
-    const expectedExclusiveGroup = viewerExclusiveGroup(
-      viewerForPath(source.path),
-      source.path,
-      requestedViewKind
-    )
-    const expectedOwner = expectedExclusiveGroup
-      ? Object.values(this.state.tabs).find((candidate) => {
-          const candidateSession = this.state.sessions[candidate.sessionId]
-          return (
-            candidateSession &&
-            viewerExclusiveGroup(
-              candidateSession.viewer,
-              candidateSession.source.path,
-              candidate.viewKind
-            ) === expectedExclusiveGroup
-          )
-        })
-      : undefined
-    const exclusiveOpen = expectedExclusiveGroup ? ++this.nextExclusiveOpen : 0
-    if (
-      !existingSession &&
-      expectedExclusiveGroup &&
-      !this.state.sessions[expectedOwner?.sessionId ?? '']?.dirty
-    ) {
-      const tabId = this.id(requestedViewKind)
-      if (expectedOwner) {
-        this.publish({
-          ...this.state,
-          pendingExclusiveOpen: { requestId: exclusiveOpen, ownerTabId: expectedOwner.id },
-        })
-      }
-      let loaded: DocumentLoadResult
-      try {
-        loaded = await this.loader.load(source)
-      } catch (error) {
-        this.clearPendingExclusiveOpen(exclusiveOpen)
-        throw error
-      }
-      if (exclusiveOpen !== this.nextExclusiveOpen) return this.state.focusedTabId ?? tabId
-      const openedTabId = this.openPreparedExclusive(
-        tabId,
-        sessionId,
-        source,
-        requestedViewKind,
-        title,
-        titleFallback,
-        target,
-        loaded,
-        options
-      )
-      this.clearPendingExclusiveOpen(exclusiveOpen)
-      return openedTabId
-    }
-
+    const tabs = this.state.tabs
     const tabId = this.id(requestedViewKind)
     const tab: DocumentTab = {
       id: tabId,
@@ -1211,222 +1121,7 @@ export class DocumentWorkspace {
         },
       })
     }
-    this.enforceExclusiveViewer(tabId)
     return tabId
-  }
-
-  private openPreparedExclusive(
-    tabId: string,
-    sessionId: string,
-    source: DocumentSource,
-    requestedViewKind: DocumentViewKind,
-    title: string,
-    titleFallback: DocumentTab['titleFallback'] | undefined,
-    target: { area: DockArea; leafId: string },
-    loaded: DocumentLoadResult,
-    options: Pick<DocumentTab, 'embedded' | 'hostTabId'>
-  ): string {
-    if (isDocumentLoadFailure(loaded)) {
-      const tab: DocumentTab = {
-        id: tabId,
-        sessionId,
-        viewKind: requestedViewKind,
-        title,
-        ...options,
-        ...(titleFallback ? { titleFallback } : {}),
-      }
-      const session: DocumentSession = {
-        id: sessionId,
-        documentId: documentIdFor(source),
-        source,
-        title,
-        viewer: 'unsupported',
-        processor: null,
-        capabilities: emptyCapabilities(),
-        versioning: null,
-        revision: '',
-        mediaType: 'application/octet-stream',
-        contentKind: 'unknown',
-        bytes: new Uint8Array(),
-        savedBytes: new Uint8Array(),
-        text: null,
-        savedText: null,
-        lightweightText: false,
-        loadState: 'error',
-        loadFailure: loaded,
-        saveState: 'clean',
-        dirty: false,
-        changeVersion: 0,
-        selection: null,
-        externalChange: false,
-        deleted: false,
-      }
-      this.publishPreparedTab(tab, session, target)
-      return tabId
-    }
-
-    const text = TEXT_VIEWERS.has(loaded.viewer) ? UTF8.decode(loaded.bytes) : null
-    const tab: DocumentTab = {
-      id: tabId,
-      sessionId,
-      viewKind: canonicalViewKind(
-        loaded.viewer,
-        requestedViewKind,
-        loaded.capabilities.can_edit,
-        loaded.source.path
-      ),
-      title,
-      ...options,
-      ...(titleFallback ? { titleFallback } : {}),
-    }
-    const session: DocumentSession = {
-      id: sessionId,
-      documentId: loaded.documentId,
-      source: loaded.source,
-      title,
-      viewer: loaded.viewer,
-      processor: loaded.processor,
-      capabilities: loaded.capabilities,
-      versioning: loaded.versioning ?? null,
-      revision: loaded.revision,
-      mediaType: loaded.mediaType,
-      contentKind: loaded.contentKind ?? 'unknown',
-      ...cleanByteState(loaded.bytes),
-      text,
-      savedText: text,
-      lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
-      loadState: 'ready',
-      loadFailure: null,
-      saveState: 'clean',
-      dirty: false,
-      changeVersion: 0,
-      selection: null,
-      externalChange: Boolean(loaded.externalChange),
-      deleted: false,
-    }
-    const group = viewerExclusiveGroup(loaded.viewer, loaded.source.path, tab.viewKind)
-    if (!group) {
-      this.publishPreparedTab(tab, session, target)
-      return tabId
-    }
-    if (this.claimExclusiveViewer && !this.claimExclusiveViewer(this, tabId, group)) return tabId
-
-    const ownerTab = Object.values(this.state.tabs).find((candidate) => {
-      const candidateSession = this.state.sessions[candidate.sessionId]
-      return (
-        candidateSession &&
-        viewerExclusiveGroup(
-          candidateSession.viewer,
-          candidateSession.source.path,
-          candidate.viewKind
-        ) === group
-      )
-    })
-    const owner = ownerTab ? this.state.sessions[ownerTab.sessionId] : null
-    if (!ownerTab || owner?.dirty) {
-      this.publishPreparedTab(tab, session, target)
-      this.enforceExclusiveViewer(tabId)
-      return tabId
-    }
-    this.replacePreparedExclusiveTab(ownerTab.id, tab, session)
-    return tabId
-  }
-
-  private publishPreparedTab(
-    tab: DocumentTab,
-    session: DocumentSession,
-    target: { area: DockArea; leafId: string }
-  ): void {
-    this.publish({
-      ...this.state,
-      sessions: { ...this.state.sessions, [session.id]: session },
-      tabs: { ...this.state.tabs, [tab.id]: tab },
-      layout: placeTab(this.state.layout, tab.id, target.area, target.leafId, 'center', () =>
-        this.id('pane')
-      ),
-      focusedTabId: tab.id,
-      focusedLeaf: target,
-    })
-  }
-
-  private clearPendingExclusiveOpen(requestId: number): void {
-    if (this.state.pendingExclusiveOpen?.requestId !== requestId) return
-    this.publish({ ...this.state, pendingExclusiveOpen: null })
-  }
-
-  private replacePreparedExclusiveTab(
-    ownerTabId: string,
-    tab: DocumentTab,
-    session: DocumentSession
-  ): void {
-    const ownerTab = this.state.tabs[ownerTabId]
-    const location = this.locationForTab(ownerTabId)
-    if (!ownerTab || !location) return
-    const tabs = { ...this.state.tabs }
-    delete tabs[ownerTabId]
-    tabs[tab.id] = tab
-    const sessions = { ...this.state.sessions, [session.id]: session }
-    if (!Object.values(tabs).some((candidate) => candidate.sessionId === ownerTab.sessionId)) {
-      delete sessions[ownerTab.sessionId]
-      this.saveDelegates.delete(ownerTab.sessionId)
-      this.saves.delete(ownerTab.sessionId)
-      this.textHistories.delete(ownerTab.sessionId)
-      this.versioningRefreshes.delete(ownerTab.sessionId)
-    }
-    const selectionPresentations = { ...this.state.selectionPresentations }
-    delete selectionPresentations[ownerTabId]
-    const withoutOwner = removeTabFromLayout(this.state.layout, ownerTabId)
-    const layout = placeTab(withoutOwner, tab.id, location.area, location.leafId, 'center', () =>
-      this.id('pane')
-    )
-    this.publish({
-      ...this.state,
-      tabs,
-      sessions,
-      selectionPresentations,
-      layout,
-      pendingClose: null,
-      focusedTabId: tab.id,
-      focusedLeaf: location,
-    })
-  }
-
-  private enforceExclusiveViewer(candidateTabId: string): void {
-    const candidateTab = this.state.tabs[candidateTabId]
-    const candidate = candidateTab ? this.state.sessions[candidateTab.sessionId] : null
-    const group =
-      candidate && candidateTab
-        ? viewerExclusiveGroup(candidate.viewer, candidate.source.path, candidateTab.viewKind)
-        : null
-    if (!candidateTab || !candidate || !group) return
-    if (this.claimExclusiveViewer && !this.claimExclusiveViewer(this, candidateTabId, group)) {
-      this.closeNow(candidateTabId)
-      return
-    }
-    const ownerTab = Object.values(this.state.tabs).find((tab) => {
-      if (tab.id === candidateTabId) return false
-      const session = this.state.sessions[tab.sessionId]
-      return (
-        session && viewerExclusiveGroup(session.viewer, session.source.path, tab.viewKind) === group
-      )
-    })
-    if (!ownerTab) return
-    const owner = this.state.sessions[ownerTab.sessionId]
-    if (owner?.dirty) {
-      this.exclusiveReplacement = { ownerTabId: ownerTab.id, candidateTabId }
-      const location = this.locationForTab(ownerTab.id)
-      this.publish({
-        ...this.state,
-        layout: location
-          ? activateTab(this.state.layout, location.leafId, ownerTab.id)
-          : this.state.layout,
-        pendingClose: { tabId: ownerTab.id, sessionId: ownerTab.sessionId },
-        focusedTabId: ownerTab.id,
-        focusedLeaf: location ?? this.state.focusedLeaf,
-      })
-      return
-    }
-    this.closeNow(ownerTab.id)
   }
 
   updateText(sessionId: string, text: string): void {
@@ -2049,12 +1744,7 @@ export class DocumentWorkspace {
     }
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
-    if (
-      !tab ||
-      !session ||
-      !viewerPolicy(session.viewer).canMove ||
-      !(await this.refreshBeforeRelocation(tab))
-    )
+    if (!tab || !session || !viewerPolicy(session.viewer, session.source.path).canRelocate)
       return false
     const layout = placeTab(this.state.layout, tabId, area, leafId, edge, () => this.id('pane'))
     if (layout === this.state.layout) return false
@@ -2074,7 +1764,7 @@ export class DocumentWorkspace {
     if (this.pageTabIds.has(tabId)) return true
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
-    return Boolean(session && viewerPolicy(session.viewer).canMove)
+    return Boolean(session && viewerPolicy(session.viewer, session.source.path).canRelocate)
   }
 
   async moveTabToAdjacent(tabId: string, direction: AdjacentDirection): Promise<boolean> {
@@ -2104,9 +1794,7 @@ export class DocumentWorkspace {
     if (source.area === initialTarget.area && source.leafId === initialTarget.leafId) {
       return this.reorderTab(tabId, targetTabId, insertion)
     }
-    const tab = this.state.tabs[tabId]
-    if (!this.canRelocateTab(tabId) || (tab && !(await this.refreshBeforeRelocation(tab))))
-      return false
+    if (!this.canRelocateTab(tabId)) return false
     const target = this.locationForTab(targetTabId)
     if (!target) return false
     const placed = placeTab(this.state.layout, tabId, target.area, target.leafId, 'center', () =>
@@ -2198,7 +1886,10 @@ export class DocumentWorkspace {
     if (!location) return false
     const tab = this.state.tabs[tabId]
     const session = tab ? this.state.sessions[tab.sessionId] : null
-    if (!this.pageTabIds.has(tabId) && (!session || !viewerPolicy(session.viewer).canSplit))
+    if (
+      !this.pageTabIds.has(tabId) &&
+      (!session || !viewerPolicy(session.viewer, session.source.path).canDuplicate)
+    )
       return false
     const leaf = findLeaf(this.state.layout.areas[location.area], location.leafId)
     if (!leaf || (move && leaf.tabIds.length < 2)) return false
@@ -2214,14 +1905,11 @@ export class DocumentWorkspace {
   ): Promise<string | null> {
     const tab = this.state.tabs[tabId]
     if (!tab || !this.canSplitTab(tabId, direction, move)) return null
-    const session = this.state.sessions[tab.sessionId]
     const location = this.locationForTab(tabId)
     if (!location) return null
     const leaf = findLeaf(this.state.layout.areas[location.area], location.leafId)
     if (!leaf || (move && leaf.tabIds.length < 2)) return null
-    if (!(await this.refreshBeforeRelocation(tab))) return null
-    const placedViewKind =
-      !move && session?.viewer === 'office' && tab.viewKind === 'edit' ? 'preview' : tab.viewKind
+    const placedViewKind = tab.viewKind
     const placedTabId = move ? tabId : this.id(placedViewKind)
     const tabs = move
       ? this.state.tabs
@@ -2582,15 +2270,8 @@ export class DocumentWorkspace {
     const pending = this.state.pendingClose
     if (!pending) return
     if (choice === 'cancel') {
-      const replacement = this.exclusiveReplacement
-      this.exclusiveReplacement = null
       this.closeQueue = []
-      if (replacement?.ownerTabId === pending.tabId) {
-        this.closeNow(replacement.candidateTabId)
-        this.focusTab(replacement.ownerTabId)
-      } else {
-        this.publish({ ...this.state, pendingClose: null })
-      }
+      this.publish({ ...this.state, pendingClose: null })
       return
     }
     if (choice === 'save' || choice === 'overwrite') {
@@ -2617,7 +2298,6 @@ export class DocumentWorkspace {
     }
     this.closeQueue = this.closeQueue.filter((tabId) => tabId !== pending.tabId)
     this.closeNow(pending.tabId)
-    if (this.exclusiveReplacement?.ownerTabId === pending.tabId) this.exclusiveReplacement = null
     void this.continueCloseQueue()
   }
 
@@ -2647,7 +2327,7 @@ export class DocumentWorkspace {
 
   async reviewDraftBytes(sessionId: string): Promise<Uint8Array | null> {
     let session = this.state.sessions[sessionId]
-    if (!session || !session.dirty) return null
+    if (!session || !session.dirty || !session.capabilities.can_save) return null
     const delegate = Array.from(this.saveDelegates.get(sessionId)?.values() ?? []).at(-1)
     delegate?.prepare?.()
     if (delegate?.beforeSave) {
@@ -2835,30 +2515,6 @@ export class DocumentWorkspace {
     return { area: 'primary', leafId: firstLeaf(this.state.layout.areas.primary).id }
   }
 
-  private async refreshBeforeRelocation(tab: DocumentTab): Promise<boolean> {
-    const session = this.state.sessions[tab.sessionId]
-    if (!session || session.viewer !== 'office' || !session.dirty) return true
-    const delegate = Array.from(this.saveDelegates.get(session.id)?.values() ?? []).at(-1)
-    if (!delegate) return false
-    delegate.prepare?.()
-    let bytes: Uint8Array | null
-    try {
-      bytes = await delegate.serialize()
-    } catch {
-      return false
-    }
-    const current = this.state.sessions[session.id]
-    if (!bytes || !current) return false
-    this.publish({
-      ...this.state,
-      sessions: {
-        ...this.state.sessions,
-        [session.id]: { ...current, bytes: copyBytes(bytes), dirty: true, saveState: 'dirty' },
-      },
-    })
-    return true
-  }
-
   private leafForTabInNode(
     node: DocumentWorkspaceState['layout']['areas']['primary'],
     tabId: string
@@ -3016,7 +2672,6 @@ export class DocumentWorkspaceRegistry {
       this.nextWorkspaceId += 1
       workspace = new DocumentWorkspace(
         this.loader,
-        this.claimExclusiveViewer,
         { selected: this.recordSelection, changed: this.rebalance },
         `workspace-${this.nextWorkspaceId}:`
       )
@@ -3108,32 +2763,6 @@ export class DocumentWorkspaceRegistry {
     } finally {
       this.rebalancing = false
     }
-  }
-
-  private readonly claimExclusiveViewer: ExclusiveViewerClaim = (owner, _candidateTabId, group) => {
-    const conflicting = [...this.workspaces.values()]
-      .filter((workspace) => workspace !== owner)
-      .map((workspace) => ({
-        workspace,
-        tabs: Object.values(workspace.getSnapshot().tabs).filter((tab) => {
-          const session = workspace.getSnapshot().sessions[tab.sessionId]
-          return (
-            session &&
-            viewerExclusiveGroup(session.viewer, session.source.path, tab.viewKind) === group
-          )
-        }),
-      }))
-      .filter(({ tabs }) => tabs.length > 0)
-    if (
-      conflicting.some(({ workspace, tabs }) =>
-        tabs.some((tab) => workspace.getSnapshot().sessions[tab.sessionId]?.dirty)
-      )
-    )
-      return false
-    for (const conflict of conflicting) {
-      conflict.workspace.requestCloseTabs(conflict.tabs.map((tab) => tab.id))
-    }
-    return true
   }
 
   /**

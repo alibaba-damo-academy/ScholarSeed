@@ -1,4 +1,3 @@
-import type { OfficeFontCache, OfficeFontCatalog } from './fonts.ts'
 import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from './window.ts'
 
 export const PDFE_CHANNEL = {
@@ -55,11 +54,6 @@ export interface PdfeNativeBridge {
   resizeControls: (width: number) => Promise<void>
   onDockChange: (callback: (mode: PdfeDock) => void) => () => void
   onFullscreenChange: (callback: (value: boolean) => void) => () => void
-  requestOfficeFontAccess: () => Promise<boolean>
-  listOfficeFonts: () => Promise<OfficeFontCatalog>
-  readOfficeFont: (id: string) => Promise<Uint8Array>
-  readOfficeFontCache: (fingerprint: string) => Promise<OfficeFontCache | null>
-  writeOfficeFontCache: (fingerprint: string, cache: OfficeFontCache) => Promise<void>
 }
 
 export function pdfeWindowWidth(available: number): number {

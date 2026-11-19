@@ -19,6 +19,7 @@ from service.chat.service.completions import (
     CompletionRegistration,
     CompletionRequestError,
 )
+from service.chat.service.recovery import READ_ONLY_WEB_SEARCH
 from service.chat.service.rejections import SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE
 from service.chat.service.transport import retryable_connect_failure, transport_diagnostics
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
@@ -102,8 +103,9 @@ UNSUPPORTED_RESPONSE_FIELDS = frozenset(
         "previous_response_id",
     }
 )
-SUPPORTED_RESPONSE_TOOLS = frozenset(
-    {"function", "custom", "namespace", "web_search", "web_search_preview"}
+SUBSCRIPTION_WEB_SEARCH_TOOLS = frozenset({READ_ONLY_WEB_SEARCH, "web_search_preview"})
+SUPPORTED_RESPONSE_TOOLS = (
+    frozenset({"function", "custom", "namespace"}) | SUBSCRIPTION_WEB_SEARCH_TOOLS
 )
 
 
@@ -130,11 +132,13 @@ class SubscriptionService:
         *,
         activities: Activities,
         turn_activities: Callable[[str], ActivityLease | None] | None = None,
+        web_search_allowed: Callable[[str], bool] | None = None,
         client: httpx.AsyncClient | None = None,
         shared_ownership: bool = False,
     ) -> None:
         self._activities = activities
         self._turn_activities = turn_activities
+        self._web_search_allowed = web_search_allowed
         self.profiles = profiles
         self.credentials = credentials
         self.bridge = bridge
@@ -753,7 +757,16 @@ class SubscriptionService:
                     requested,
                 )
                 raise OAuthFailure("oauth_model_unavailable")
-            return self.request_policy(payload)
+            result = self.request_policy(payload)
+            tools = result.get("tools", [])
+            if (
+                allow_tools
+                and self._web_search_allowed is not None
+                and self._web_search_allowed(session_id)
+                and not any(tool["type"] in SUBSCRIPTION_WEB_SEARCH_TOOLS for tool in tools)
+            ):
+                result["tools"] = [*tools, {"type": READ_ONLY_WEB_SEARCH}]
+            return result
 
         async def catalog(owner: str, connection: str) -> dict[str, Any]:
             if owner != owner_id or connection != connection_id:

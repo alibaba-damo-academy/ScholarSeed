@@ -12,10 +12,12 @@ import {
   realpathSync,
 } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { constants as osConstants } from 'node:os'
 import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
   sameSquirrelBinding,
+  squirrelPublisherExited,
   validSquirrelBinding,
   type SquirrelHandoff,
   type SquirrelNativeRequest,
@@ -23,6 +25,7 @@ import {
 } from './squirrel.ts'
 import { BUILD_NUMBER_PATTERN, isNewerRelease } from './version.ts'
 import { classifyMacosTrust, parseCodesignIdentity } from './codesign.ts'
+import { captureRecord, sameRecord } from './terminal.ts'
 
 export const SQUIRREL_INSTALLATION_WINDOW_MS = 10 * 60_000
 const NATIVE_SETTLE_TIMEOUT_MS = 5000
@@ -189,7 +192,8 @@ export async function inspectSquirrelIdle(
   bundle: string,
   application: string,
   handoff: SquirrelHandoff | null,
-  verifyReplacement?: (application: string) => Promise<void>
+  verifyReplacement?: (application: string) => Promise<void>,
+  cancelledPreparation = false
 ): Promise<boolean> {
   if (process.platform !== 'darwin' || !process.getuid || !/^[A-Za-z0-9.-]+$/.test(bundle))
     return false
@@ -248,6 +252,7 @@ export async function inspectSquirrelIdle(
       native?.source.path
     )
     const before = snapshot()
+    if (cancelledPreparation && !before.bytes) return false
     const options = {
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: PROBE_MAX_BYTES,
@@ -274,6 +279,8 @@ export async function inspectSquirrelIdle(
         request.bundleIdentifier !== bundle ||
         !sameSquirrelBinding(request.binding, native.binding) ||
         !SHIPIT_REQUEST_FLAGS.every((key) => typeof request[key] === 'boolean') ||
+        (cancelledPreparation &&
+          (request.installationAuthorized || request.launchAfterInstallation)) ||
         (request.installationAuthorized && !request.launchAfterInstallation) ||
         resolve(fileURLToPath(request.targetBundleURL)) !== target ||
         resolve(fileURLToPath(request.updateBundleURL)) !== native.source.path
@@ -287,7 +294,8 @@ export async function inspectSquirrelIdle(
           request.updateBundleURL,
           target,
           native,
-          verifyReplacement ? replacement : undefined
+          verifyReplacement ? replacement : undefined,
+          cancelledPreparation ? osConstants.errno.ECANCELED : undefined
         )) &&
         replacementStable()
       if (!(await failed())) return false
@@ -303,6 +311,62 @@ export async function inspectSquirrelIdle(
     )
   } catch {
     return false
+  }
+}
+
+/** An exited source can be replaced only after its unauthorized request reached native cancellation. */
+export async function inspectCancelledSquirrelPreparation(
+  cache: string,
+  bundle: string,
+  application: string,
+  handoff: SquirrelHandoff
+): Promise<(() => boolean) | null> {
+  const { sourcePid } = handoff
+  const owner = join(cache, `${bundle}.ShipIt`)
+  if (
+    process.platform !== 'darwin' ||
+    !process.getuid ||
+    !/^[A-Za-z0-9.-]+$/.test(bundle) ||
+    !['requested', 'downloaded'].includes(handoff.state) ||
+    !sourcePid ||
+    !squirrelPublisherExited(sourcePid)
+  )
+    return null
+  try {
+    // A process can exit after ShipIt received the request but before the
+    // downloaded event let Desktop persist its capture.
+    const nativeRequest =
+      handoff.state === 'requested' && !handoff.nativeRequest
+        ? await bindSquirrelRequest(cache, bundle, application, handoff)
+        : handoff.nativeRequest
+    if (!nativeRequest || dirname(dirname(nativeRequest.source.path)) !== owner) return null
+    const owners = [0, process.getuid()]
+    const statePath = join(owner, SHIPIT_STATE)
+    const ackPath = join(dirname(nativeRequest.source.path), TERMINAL_ACK)
+    const state = captureRecord(statePath, PROBE_MAX_BYTES, owners)
+    const ack = captureRecord(ackPath, TERMINAL_ACK_LIMIT, owners)
+    const bound = { ...handoff, nativeRequest }
+    if (!(await inspectSquirrelIdle(cache, bundle, application, bound, undefined, true)))
+      return null
+    const current = (): boolean => {
+      try {
+        return (
+          squirrelPublisherExited(sourcePid) &&
+          sameRecord(statePath, state, PROBE_MAX_BYTES, owners) &&
+          sameRecord(ackPath, ack, TERMINAL_ACK_LIMIT, owners) &&
+          squirrelCaptureMatches(
+            nativeRequest.source,
+            captureDirectory(nativeRequest.source.path)
+          ) &&
+          squirrelCaptureMatches(nativeRequest.target, captureDirectory(application))
+        )
+      } catch {
+        return false
+      }
+    }
+    return current() ? current : null
+  } catch {
+    return null
   }
 }
 
@@ -517,7 +581,8 @@ async function readFailure(
   source: string,
   application: string,
   expected?: SquirrelNativeRequest,
-  replacement?: SquirrelNativeCapture
+  replacement?: SquirrelNativeCapture,
+  failureCode?: number
 ): Promise<boolean> {
   let descriptor: number | undefined
   try {
@@ -597,6 +662,7 @@ async function readFailure(
       record.ready === false &&
       Number.isSafeInteger(record.code) &&
       record.code !== 0 &&
+      (failureCode === undefined || record.code === failureCode) &&
       sameSquirrelBinding(record.binding, expected.binding) &&
       matches(record.source, expectedSource) &&
       (replacement

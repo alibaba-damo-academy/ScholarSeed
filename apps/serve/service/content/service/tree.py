@@ -35,17 +35,28 @@
 from __future__ import annotations
 
 import os
+import stat
+from collections import deque
+from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
-from service.content.domain.model import ContentError, visible
+from service.content.domain.model import OUTSIDE_GRANT_ERRORS, ContentError, root_relative, visible
+from service.content.service.repository import RepositoryLookup
 from service.content.service.space import SEPARATOR, Mount, ProjectSpace
+from service.content.service.utils import DIRECTORY_PATH_INVALID
 from service.platform.content import (
     AssetKind,
     AssetOrigin,
     AssetPage,
     AssetTree,
     FileAssetRef,
+    FlatResourceTree,
+    ResourceTreeChanges,
+    ResourceTreeGroup,
+    RootKind,
 )
+from service.platform.storage import WINDOWS_PLATFORM
 
 #: 单层单页返回的条目数上限, 防止超大目录拖垮渲染。
 #:
@@ -65,13 +76,20 @@ def _modified_at(entry: Path | os.DirEntry[str]) -> float | None:
         return None
 
 
+def _is_plain_directory(entry: os.DirEntry[str]) -> bool:
+    try:
+        return entry.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
+
+
 def _join(parent: str, name: str) -> str:
     """拼相对项目根的子路径。parent 为空表示项目根。"""
 
     return f"{parent}{SEPARATOR}{name}" if parent else name
 
 
-def _entries(directory: Path) -> list[os.DirEntry[str]]:
+def _entries(directory: Path | int) -> list[os.DirEntry[str]]:
     """一层目录的全部可见条目, 目录在前、同类按名称排序。
 
     用 `os.scandir` 而不是 `Path.iterdir`: 排序要按「是不是目录」分组, 而
@@ -86,6 +104,8 @@ def _entries(directory: Path) -> list[os.DirEntry[str]]:
         with os.scandir(directory) as scan:
             rows = [row for row in scan if visible(row.name)]
     except (OSError, PermissionError):
+        if isinstance(directory, int):
+            raise
         # 读不动的目录不应让整棵树失败, 呈现为空目录即可。
         return []
     # 这里调 is_dir() 同时把判定结果留在 DirEntry 的缓存里, 后面建节点不再问磁盘。
@@ -109,7 +129,7 @@ def _visible_count(directory: Path) -> int:
 
 
 def _listing(
-    space: ProjectSpace, directory: Path, relative: str, origin: AssetOrigin
+    space: ProjectSpace, directory: Path | int, relative: str, origin: AssetOrigin
 ) -> tuple[list[os.DirEntry[str] | Mount], set[str]]:
     """这一层的完整条目序列, 加上磁盘上真实存在的名字。
 
@@ -135,6 +155,20 @@ def _listing(
     return listing, existing
 
 
+def _supports_incremental(scope: ProjectSpace) -> bool:
+    # Authorized mounts can map multiple logical paths to the same file. Windows
+    # keeps the full projection for junctions, reparse points, and path aliases.
+    return not scope.mounts and os.name != WINDOWS_PLATFORM
+
+
+def _ordinary_file(row: os.DirEntry[str]) -> bool:
+    try:
+        observed = row.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISREG(observed.st_mode) and observed.st_nlink == 1
+
+
 def _child_total(space: ProjectSpace, directory: Path, relative: str, origin: AssetOrigin) -> int:
     """某个目录下的可见条目总数。
 
@@ -152,7 +186,9 @@ def _child_total(space: ProjectSpace, directory: Path, relative: str, origin: As
     return len(_listing(space, directory, relative, origin)[0])
 
 
-def _mount_node(space: ProjectSpace, mount: Mount, depth: int, conflict: bool) -> AssetTree:
+def _mount_node(
+    space: ProjectSpace, mount: Mount, depth: int, conflict: bool, *, count_children: bool = True
+) -> AssetTree:
     """挂载点节点。目录扫描子树；文件直接成为叶子，二者一律标 LINK。"""
 
     available = mount.source.is_dir() if mount.kind is AssetKind.DIR else mount.source.is_file()
@@ -181,7 +217,7 @@ def _mount_node(space: ProjectSpace, mount: Mount, depth: int, conflict: bool) -
             if page
             else (
                 _child_total(space, mount.source, mount.mount_path, AssetOrigin.LINK)
-                if mount.kind is AssetKind.DIR
+                if count_children and mount.kind is AssetKind.DIR
                 else None
             )
         ),
@@ -194,6 +230,8 @@ def _child_node(
     relative: str,
     depth: int,
     origin: AssetOrigin,
+    *,
+    count_children: bool = True,
 ) -> AssetTree:
     """一个目录条目的节点。目录到了深度上限就不再下扫, 但要报出它有多少条目。
 
@@ -217,7 +255,10 @@ def _child_node(
         return AssetTree(asset=asset, children=page.children, child_total=page.total)
     # 深度用尽: 不往下扫, 但「空目录」与「还没扫」必须分得开, 否则 UI 只能
     # 把没扫到的当成没有。
-    return AssetTree(asset=asset, child_total=_child_total(space, target, relative, origin))
+    return AssetTree(
+        asset=asset,
+        child_total=_child_total(space, target, relative, origin) if count_children else None,
+    )
 
 
 def _scan(
@@ -278,4 +319,161 @@ def build_tree(
     return _scan(space, resolved, relative, max_depth, space.origin(relative), offset)
 
 
-__all__ = ["DEFAULT_MAX_DEPTH", "PAGE_SIZE", "build_tree"]
+def flat_tree(
+    space: ProjectSpace,
+    roots: tuple[str, ...],
+    check_mount: Callable[[str], None],
+    *,
+    include_repositories: bool = False,
+    track_parents: bool = False,
+) -> FlatResourceTree:
+    """Return complete breadth-first metadata without paging or pre-counting children."""
+
+    pending = deque((root, False) for root in roots)
+    visited: set[Path] = set()
+    nodes: dict[str, AssetTree] = {}
+    repositories: dict[str, str | None] = {}
+    parents: list[str] | None = [] if track_parents and _supports_incremental(space) else None
+    lookup = RepositoryLookup(space) if include_repositories else None
+    # Mounted paths and Windows reparse points keep their separate resolution.
+    reuse_directory_resolution = (
+        lookup is not None and not space.mounts and os.name != WINDOWS_PLATFORM
+    )
+    while pending:
+        path, classify_directory = pending.popleft()
+        check_mount(path)
+        # POSIX local children share the request's resolved project boundary.
+        # Resolve the target again in case a queued directory became a link.
+        try:
+            directory = space.absolute(path, reuse_project_root=classify_directory)
+        except ContentError as exc:
+            if path in roots or exc.code not in OUTSIDE_GRANT_ERRORS:
+                raise
+            # Keep the discovered row, but do not descend beyond its grant.
+            parents = None
+            if lookup is not None:
+                repositories[path] = None
+            continue
+        already_visited = directory in visited
+        if already_visited and not classify_directory:
+            continue
+        is_directory = directory.is_dir()
+        if lookup is not None and classify_directory:
+            repositories[path] = lookup.for_resolved_local_path(
+                directory, is_directory=is_directory
+            )
+        if already_visited or not is_directory:
+            continue
+        visited.add(directory)
+        try:
+            relative = (
+                space.relative_resolved(directory)
+                if classify_directory
+                else space.relative(directory)
+            )
+        except ContentError:
+            continue
+        if space.excluded(relative):
+            continue
+        if parents is not None:
+            if path == relative:
+                parents.append(relative)
+            else:
+                parents = None
+        origin = space.origin(relative)
+        listing, existing = _listing(space, directory, relative, origin)
+        for item in listing:
+            if isinstance(item, Mount):
+                check_mount(item.mount_path)
+                node = _mount_node(space, item, 1, item.name in existing, count_children=False)
+            else:
+                node = _child_node(
+                    space, item, _join(relative, item.name), 1, origin, count_children=False
+                )
+            entry_path = node.asset.path
+            nodes[entry_path] = node
+            descend = node.asset.kind is AssetKind.DIR and node.available
+            if parents is not None and (
+                isinstance(item, Mount)
+                or "\\" in item.name
+                or (not _is_plain_directory(item) if descend else not _ordinary_file(item))
+            ):
+                parents = None
+            defer_repository = (
+                reuse_directory_resolution
+                and descend
+                and not isinstance(item, Mount)
+                and "\\" not in entry_path
+                and _is_plain_directory(item)
+            )
+            if lookup is not None:
+                repositories[entry_path] = (
+                    None
+                    if defer_repository
+                    else lookup.for_entry(entry_path, directory, item, origin)
+                )
+            if descend:
+                pending.append((entry_path, defer_repository))
+    return FlatResourceTree(
+        tuple(nodes.values()), repositories, tuple(parents) if parents is not None else None
+    )
+
+
+def resource_tree_changes(
+    space: ProjectSpace, paths: tuple[str, ...]
+) -> ResourceTreeChanges | None:
+    """Read the changed leaves and original sibling order without descending."""
+
+    if not _supports_incremental(space):
+        return None
+    root = root_relative(space.project.layout, RootKind.RESOURCES)
+    dirty: dict[str, set[str]] = {}
+    for path in paths:
+        if (
+            (root and not path.startswith(f"{root}{SEPARATOR}"))
+            or "\\" in path
+            or "\0" in path
+            or any(not part or not visible(part) for part in path.split(SEPARATOR))
+            or space.excluded(path)
+        ):
+            return None
+        parent, _, name = path.rpartition(SEPARATOR)
+        dirty.setdefault(parent, set()).add(name)
+    lookup = RepositoryLookup(space)
+    nodes: list[AssetTree] = []
+    repositories: dict[str, str | None] = {}
+    groups: list[ResourceTreeGroup] = []
+    for parent, names in dirty.items():
+        ordered_paths: list[str] = []
+        try:
+            # Pin the authorized POSIX directory, then enumerate and stat via
+            # its descriptor so a replaced ancestor cannot redirect the read.
+            with closing(space.open_directory(parent)) as directory:
+                listing, _ = _listing(space, directory.fileno(), parent, AssetOrigin.LOCAL)
+                for row in listing:
+                    if isinstance(row, Mount) or row.is_symlink():
+                        return None
+                    path = _join(parent, row.name)
+                    ordered_paths.append(path)
+                    if row.name in names:
+                        if not _ordinary_file(row):
+                            return None
+                        nodes.append(
+                            _child_node(
+                                space, row, path, 1, AssetOrigin.LOCAL, count_children=False
+                            )
+                        )
+                        repositories[path] = lookup.for_entry(
+                            path, directory.path, row, AssetOrigin.LOCAL
+                        )
+        except OSError:
+            return None
+        except ContentError as error:
+            if error.code != DIRECTORY_PATH_INVALID:
+                raise
+            return None
+        groups.append(ResourceTreeGroup(parent, tuple(ordered_paths)))
+    return ResourceTreeChanges(tuple(nodes), repositories, tuple(groups), root)
+
+
+__all__ = ["DEFAULT_MAX_DEPTH", "PAGE_SIZE", "build_tree", "flat_tree", "resource_tree_changes"]

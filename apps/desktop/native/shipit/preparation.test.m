@@ -57,6 +57,21 @@ static void Rewrite(NSString *store, NSDictionary *journal) {
 int main(int argc, const char **argv) {
     @autoreleasepool {
         assert(argc == 2 && geteuid() != 0); Manager = NSFileManager.defaultManager;
+        CFFileSecurityRef security = CFFileSecurityCreate(NULL);
+        assert(security != NULL);
+        Check(!SSPreparationFileSecurityMatches(security), @"missing ownership fields require normalization");
+        assert(CFFileSecuritySetOwner(security, getuid()) && CFFileSecuritySetGroup(security, getgid()));
+        assert(CFFileSecuritySetMode(security, 0755));
+        Check(SSPreparationFileSecurityMatches(security), @"freshly checked owner, group and mode need no metadata write");
+        assert(CFFileSecuritySetMode(security, 0775));
+        Check(!SSPreparationFileSecurityMatches(security), @"group write permission requires normalization");
+        assert(CFFileSecuritySetMode(security, 0757));
+        Check(!SSPreparationFileSecurityMatches(security), @"other write permission requires normalization");
+        assert(CFFileSecuritySetMode(security, 0755) && CFFileSecuritySetGroup(security, getgid() ^ 1));
+        Check(!SSPreparationFileSecurityMatches(security), @"changed group requires normalization");
+        assert(CFFileSecuritySetGroup(security, getgid()) && CFFileSecuritySetOwner(security, getuid() ^ 1));
+        Check(!SSPreparationFileSecurityMatches(security), @"changed owner requires normalization");
+        CFRelease(security);
         Root = @(argv[1]); Directory(Root); OwnedParents = [NSMutableSet set];
         NSString *root = Case(@"success"), *store = Store(root);
         NSURL *source = Bundle([root stringByAppendingPathComponent:@"source.app"]);

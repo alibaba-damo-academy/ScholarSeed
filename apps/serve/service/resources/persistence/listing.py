@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from sqlite3 import Connection
 
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import ProjectDatabasePath, transaction
@@ -102,21 +103,66 @@ class ResourceListingCatalog:
     def synchronize(
         self, project: str, nodes: tuple[AssetTree, ...]
     ) -> tuple[ResourceListEntry, ...]:
-        with transaction(self._database(project)) as connection:
+        with transaction(self._database(project), immediate=True) as connection:
             connection.execute(CREATE_LISTING)
             existing = {
                 row["path"]: ResourceListEntry(**dict(row))
                 for row in connection.execute(f"SELECT * FROM {LISTING_TABLE}")
             }
-            entries = []
-            present = {node.asset.path for node in nodes}
-            for path in existing.keys() - present:
-                connection.execute(f"DELETE FROM {LISTING_TABLE} WHERE path=?", (path,))
-            for node in nodes:
-                entry = _entry(node.asset, node.updated_at)
-                previous = existing.get(entry.path)
-                source = previous.source if previous else None
-                entry = replace(entry, source=source or entry.source)
-                connection.execute(UPSERT_LISTING, asdict(entry))
-                entries.append(entry)
-            return tuple(entries)
+            return self._synchronize(connection, nodes, existing)
+
+    def synchronize_changes(
+        self,
+        project: str,
+        paths: tuple[str, ...],
+        nodes: tuple[AssetTree, ...],
+        *,
+        parents: tuple[str, ...],
+    ) -> tuple[ResourceListEntry, ...] | None:
+        """Update files under known directories, preserving the catalog's path spelling."""
+
+        selected = (*paths, *parents)
+        placeholders = ",".join("?" for _ in selected)
+        with transaction(self._database(project), immediate=True) as connection:
+            connection.execute(CREATE_LISTING)
+            existing = {
+                row["path"]: ResourceListEntry(**dict(row))
+                for row in connection.execute(
+                    f"SELECT * FROM {LISTING_TABLE} WHERE path IN ({placeholders})", selected
+                )
+            }
+            if any(
+                parent not in existing or existing[parent].kind != AssetKind.DIR.value
+                for parent in parents
+            ):
+                return None
+            dirty = {path: existing[path] for path in paths if path in existing}
+            if any(entry.kind != AssetKind.FILE.value for entry in dirty.values()):
+                return None
+            return self._synchronize(connection, nodes, dirty)
+
+    @staticmethod
+    def _synchronize(
+        connection: Connection,
+        nodes: tuple[AssetTree, ...],
+        existing: dict[str, ResourceListEntry],
+    ) -> tuple[ResourceListEntry, ...]:
+        result = []
+        updates = []
+        for node in nodes:
+            entry = _entry(node.asset, node.updated_at)
+            previous = existing.get(entry.path)
+            if previous is not None and previous.source and previous.source != entry.source:
+                entry = replace(entry, source=previous.source)
+            if entry != previous:
+                updates.append(vars(entry))
+            result.append(entry)
+        present = {node.asset.path for node in nodes}
+        removed = existing.keys() - present
+        if removed:
+            connection.executemany(
+                f"DELETE FROM {LISTING_TABLE} WHERE path=?", ((path,) for path in removed)
+            )
+        if updates:
+            connection.executemany(UPSERT_LISTING, updates)
+        return tuple(result)

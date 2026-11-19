@@ -3,13 +3,11 @@ import { sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { createPreviewService } from './service.ts'
-import { PREVIEW_OFFICE_FRAME_PATH, previewOfficeFrameParameters } from './frames.ts'
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
 const APP_ENTRY = '/src/main.tsx'
 const APP_HTML = fileURLToPath(new URL('../src/renderer/index.html', import.meta.url))
 const PREVIEW_ENTRY = `/@fs/${fileURLToPath(new URL('./entry.tsx', import.meta.url)).split(sep).join('/')}`
-const PREVIEW_OFFICE_BOOTSTRAP = `/@fs/${fileURLToPath(new URL('./office.ts', import.meta.url)).split(sep).join('/')}`
 const FORBIDDEN_STATUS = 403
 const HTTP_SCHEME = 'http:'
 const WEBSOCKET_SCHEME = 'ws:'
@@ -60,25 +58,6 @@ export function previewHeaders(host: string): Record<string, string> {
   }
 }
 
-export function previewOfficeHeaders(host: string): Record<string, string> {
-  const headers = previewHeaders(host)
-  return { ...headers, 'Content-Security-Policy': headers['Content-Security-Policy'].replace("'wasm-unsafe-eval'", "'wasm-unsafe-eval' 'unsafe-eval'") }
-}
-
-export function servePreviewOfficeFrame(request: IncomingMessage, response: ServerResponse): boolean {
-  if (!previewRequestAllowed(request)) { response.writeHead(FORBIDDEN_STATUS).end(); return true }
-  const origin = new URL(`${HTTP_SCHEME}//${request.headers.host}`).origin
-  let url: URL
-  try { url = new URL(request.url ?? '/', origin) } catch { response.writeHead(400).end(); return true }
-  if (url.origin !== origin || url.username || url.password) { response.writeHead(FORBIDDEN_STATUS).end(); return true }
-  if (url.pathname !== PREVIEW_OFFICE_FRAME_PATH) return false
-  if (request.method !== 'GET') { response.writeHead(405, { Allow: 'GET' }).end(); return true }
-  try { previewOfficeFrameParameters(url) } catch { response.writeHead(400).end('Invalid preview Office frame request.'); return true }
-  response.writeHead(200, { ...previewOfficeHeaders(request.headers.host ?? ''), 'Content-Type': 'text/html; charset=utf-8' })
-  response.end(`<!doctype html><html><head><meta charset="utf-8"></head><body><script type="module" src="${PREVIEW_OFFICE_BOOTSTRAP}"></script></body></html>`)
-  return true
-}
-
 export function previewWorkbench(): Plugin {
   return {
     name: 'scholarseed-preview-workbench',
@@ -94,7 +73,6 @@ export function previewWorkbench(): Plugin {
           return
         }
         for (const [name, value] of Object.entries(previewHeaders(request.headers.host ?? ''))) response.setHeader(name, value)
-        if (servePreviewOfficeFrame(request, response)) return
         service.middleware(request, response, next)
       })
     },

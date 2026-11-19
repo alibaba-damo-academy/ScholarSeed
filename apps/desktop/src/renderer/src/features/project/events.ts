@@ -14,6 +14,7 @@ import type { FileEvent } from '../../contracts/content'
 /** 重连退避：与会话事件流同一量级，避免后端重启时的连接风暴。 */
 const RECONNECT_INITIAL_DELAY_MS = 500
 const RECONNECT_MAX_DELAY_MS = 8000
+const FILE_EVENT_CURSOR_TIMEOUT_MS = 500
 
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
 
@@ -28,6 +29,7 @@ export async function loadEventCursor(projectId: string): Promise<FileEventCurso
     const query = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
     const response = await fetch(`${base()}/api/content/cursor${query}`, {
       credentials: 'include',
+      signal: AbortSignal.timeout(FILE_EVENT_CURSOR_TIMEOUT_MS),
     })
     if (!response.ok) return null
     return (await response.json()) as FileEventCursor
@@ -38,8 +40,22 @@ export async function loadEventCursor(projectId: string): Promise<FileEventCurso
 
 const subscriptions = new Map<
   string,
-  { listeners: Set<{ onEvent: (event: FileEvent) => void }>; dispose: () => void }
+  FileEventConnection & { listeners: Set<{ onEvent: (event: FileEvent) => void }> }
 >()
+
+interface FileEventConnection {
+  cursorLoaded: Promise<void>
+  isOpen: () => boolean
+  dispose: () => void
+}
+
+export function whenFileEventCursorLoaded(projectId: string): Promise<void> {
+  return subscriptions.get(projectId)?.cursorLoaded ?? Promise.resolve()
+}
+
+export function hasOpenFileEventStream(projectId: string): boolean {
+  return subscriptions.get(projectId)?.isOpen() ?? false
+}
 
 /**
  * 订阅某个项目的文件事件。返回取消订阅函数。
@@ -55,7 +71,7 @@ export function subscribeFileEvents(
     const listeners = new Set<{ onEvent: (event: FileEvent) => void }>()
     shared = {
       listeners,
-      dispose: connectFileEvents(projectId, (event) => {
+      ...connectFileEvents(projectId, (event) => {
         for (const listener of [...listeners]) {
           if (!listeners.has(listener)) continue
           try {
@@ -77,29 +93,55 @@ export function subscribeFileEvents(
   }
 }
 
-function connectFileEvents(projectId: string, onEvent: (event: FileEvent) => void): () => void {
+function connectFileEvents(
+  projectId: string,
+  onEvent: (event: FileEvent) => void
+): FileEventConnection {
   let closed = false
+  let connected = false
   let epoch = ''
   let lastSeq = 0
   let stream: EventSource | null = null
   let retryTimer: number | null = null
   let attempt = 0
 
-  const open = (): void => {
+  function scheduleReconnect(): void {
+    if (closed || retryTimer !== null) return
+    attempt += 1
+    const delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_INITIAL_DELAY_MS * 2 ** (attempt - 1))
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null
+      open()
+    }, delay)
+  }
+
+  function open(): void {
     if (closed) return
-    const query = new URLSearchParams({ project: projectId, epoch, from_seq: String(lastSeq) })
-    const connection = new EventSource(`${base()}/api/content/events?${query.toString()}`, {
-      // SSE 不能带 Authorization 头，只能靠 cookie；跨源开发期必须显式开凭据。
-      withCredentials: true,
-    })
+    let connection: EventSource
+    try {
+      const query = new URLSearchParams({ project: projectId, epoch, from_seq: String(lastSeq) })
+      connection = new EventSource(`${base()}/api/content/events?${query.toString()}`, {
+        // EventSource uses cookies for authentication, including in cross-origin development.
+        withCredentials: true,
+      })
+    } catch {
+      scheduleReconnect()
+      return
+    }
     stream = connection
     connection.onopen = () => {
-      if (connection === stream) attempt = 0
+      if (connection !== stream) return
+      connected = true
+      attempt = 0
     }
     connection.onmessage = (message) => {
+      if (connection !== stream) return
       try {
         const event = JSON.parse(message.data) as FileEvent
-        if (event.epoch) epoch = event.epoch
+        if (event.epoch && event.epoch !== epoch) {
+          epoch = event.epoch
+          lastSeq = 0
+        }
         if (event.seq > lastSeq) lastSeq = event.seq
         onEvent(event)
       } catch {
@@ -110,20 +152,12 @@ function connectFileEvents(projectId: string, onEvent: (event: FileEvent) => voi
       if (connection !== stream) return
       connection.close()
       stream = null
-      if (closed || retryTimer !== null) return
-      attempt += 1
-      const delay = Math.min(
-        RECONNECT_MAX_DELAY_MS,
-        RECONNECT_INITIAL_DELAY_MS * 2 ** (attempt - 1)
-      )
-      retryTimer = window.setTimeout(() => {
-        retryTimer = null
-        open()
-      }, delay)
+      connected = false
+      scheduleReconnect()
     }
   }
 
-  void loadEventCursor(projectId).then((cursor) => {
+  const cursorLoaded = loadEventCursor(projectId).then((cursor) => {
     if (cursor) {
       epoch = cursor.epoch
       lastSeq = cursor.last_seq
@@ -131,10 +165,15 @@ function connectFileEvents(projectId: string, onEvent: (event: FileEvent) => voi
     open()
   })
 
-  return () => {
-    closed = true
-    if (retryTimer !== null) window.clearTimeout(retryTimer)
-    stream?.close()
-    stream = null
+  return {
+    cursorLoaded,
+    isOpen: () => connected,
+    dispose: () => {
+      closed = true
+      connected = false
+      if (retryTimer !== null) window.clearTimeout(retryTimer)
+      stream?.close()
+      stream = null
+    },
   }
 }

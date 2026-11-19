@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useSyncExternalStore } from 'react'
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronRight, EllipsisVertical, Plus } from 'lucide-react'
 
@@ -31,10 +31,16 @@ import { fileIconForName } from '../../components/primitive'
 import { useApp } from '../../store'
 import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
+import type { FileEvent } from '../../contracts/content'
 import type { ResourceNode } from './state'
-import { fetchResourceListing } from './api'
+import {
+  fetchResourceListingChanges,
+  fetchResourceListingSnapshot,
+  resourceFileEventObservation,
+} from './api'
+import { createResourceListingRefresh, resourceListingEventPaths } from './refresh'
 import { resourceProjectRevision, subscribeResourceRevisions } from './revision'
-import { subscribeFileEvents } from '../project/events'
+import { subscribeFileEvents, whenFileEventCursorLoaded } from '../project/events'
 import { refreshesResourceTree } from './lifecycle'
 import { NameEditor } from './ResourcePanel'
 import { resourceListingRows } from './utils'
@@ -50,47 +56,76 @@ export function ResourceListing(): React.JSX.Element {
   const [ascending, setAscending] = useState<boolean | undefined>(undefined)
   const [createDirectory, setCreateDirectory] = useState<string | null>(null)
   const [emptyCreateOpen, setEmptyCreateOpen] = useState(false)
-  const [nodes, setNodes] = useState<ResourceNode[]>([])
-  const [loading, setLoading] = useState(true)
+  const [snapshot, setSnapshot] = useState<{ project: string; nodes: ResourceNode[] } | null>(null)
+  const [refreshing, setRefreshing] = useState(true)
   const [failed, setFailed] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const listingRefresh = useRef<(() => void) | null>(null)
   const resource = state.resource
   const project = state.homeSelectedProjectId
+  const visibleSnapshot = snapshot?.project === project ? snapshot : null
+  const nodes = visibleSnapshot?.nodes ?? []
+  const loading = refreshing && visibleSnapshot === null
   useEffect(() => {
     setQuery('')
     setType('')
     setSource('')
     setAscending(undefined)
-    setNodes([])
+    setSnapshot(null)
   }, [project])
   const revision = useSyncExternalStore(subscribeResourceRevisions, () =>
     resourceProjectRevision(project)
   )
   useEffect(() => {
-    let active = true
-    setLoading(true)
-    setFailed(false)
-    if (!project) {
-      setNodes([])
-      setLoading(false)
-      return
-    }
-    void fetchResourceListing(project).then((result) => {
-      if (!active) return
-      setLoading(false)
-      setFailed(result === null)
-      if (result) setNodes(result)
-    })
-    return () => {
-      active = false
-    }
-  }, [project, resource.tree, revision, state.resourceRevision, refresh])
-  useEffect(() => {
     if (!project) return
-    return subscribeFileEvents(project, (event) => {
-      if (refreshesResourceTree(event)) setRefresh((value) => value + 1)
+    const events = new Set<FileEvent>()
+    const waitForObservations = async (): Promise<void> => {
+      // Listeners share the frame; the panel may start its version observation after this listener.
+      const observations = Array.from(events, resourceFileEventObservation)
+      events.clear()
+      await Promise.all(observations)
+    }
+    const reader = createResourceListingRefresh(
+      async () => {
+        await waitForObservations()
+        return fetchResourceListingSnapshot(project)
+      },
+      (result, pending) => {
+        setRefreshing(pending)
+        setFailed(result === null)
+        if (result !== null) setSnapshot({ project, nodes: result.items })
+      },
+      async (current, paths) => {
+        await waitForObservations()
+        return fetchResourceListingChanges(project, current, paths)
+      }
+    )
+    let epoch = ''
+    const unsubscribe = subscribeFileEvents(project, (event) => {
+      if (event.project_id !== project) return
+      const continuous =
+        typeof event.epoch === 'string' && !!event.epoch && (!epoch || epoch === event.epoch)
+      epoch = event.epoch
+      const resourceEvent = refreshesResourceTree(event)
+      if (continuous && !resourceEvent && event.kind !== 'moved') return
+      events.add(event)
+      setRefreshing(true)
+      setFailed(false)
+      reader.request(continuous && resourceEvent ? resourceListingEventPaths(event) : undefined)
     })
+    const cursorLoaded = whenFileEventCursorLoaded(project)
+    listingRefresh.current = () => void cursorLoaded.then(() => reader.request())
+    return () => {
+      unsubscribe()
+      reader.dispose()
+      listingRefresh.current = null
+    }
   }, [project])
+  useEffect(() => {
+    setRefreshing(Boolean(project))
+    setFailed(false)
+    listingRefresh.current?.()
+  }, [project, revision, state.resourceListingRevision, refresh])
   const sourceLabel = (node: ResourceNode): string =>
     node.kind === 'dir'
       ? '—'
@@ -203,7 +238,7 @@ export function ResourceListing(): React.JSX.Element {
         query={query}
         onQuery={setQuery}
         placeholder={t('searchFiles')}
-        refreshing={loading}
+        refreshing={refreshing}
         onRefresh={() => setRefresh((value) => value + 1)}
       >
         {createMenu('')}

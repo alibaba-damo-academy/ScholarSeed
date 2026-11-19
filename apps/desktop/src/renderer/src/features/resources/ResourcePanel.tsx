@@ -35,7 +35,7 @@ import emptyImage from '../../assets/empty_img.webp'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import { subscribeFileEvents } from '../project/events'
-import { fetchVersionCapability, searchResources, type ResourceSearchHit } from './api'
+import { observeResourceFileEvent, searchResources, type ResourceSearchHit } from './api'
 import {
   refreshesResourceTree,
   RESOURCE_DRAG_MIME,
@@ -538,13 +538,13 @@ export function ResourcePanel(): React.JSX.Element {
   // 留下一棵空树且永不重拉，表现为「项目明明有文件却显示还没有资料」。
   useEffect(() => {
     if (project && resource.loadState === 'idle') {
-      void act.reloadResourceTree(undefined, project)
+      void act.reloadResourceTree(undefined, project, { treeOnly: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resource.loadState])
 
   useEffect(() => {
-    if (project) void act.reloadResourceTree(undefined, project)
+    if (project) void act.reloadResourceTree(undefined, project, { treeOnly: true })
     // 只关心项目切换；把 resource 整体入依赖会自激发。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, projectRevision])
@@ -553,7 +553,8 @@ export function ResourcePanel(): React.JSX.Element {
   // 宣告资源账本已经变化。只监听 Content 文件事件会停在终态前的 drift 快照，
   // 直到用户手动刷新；revision 必须真正消费，不能只在 store 里空转。
   useEffect(() => {
-    if (project && state.resourceRevision > 0) void act.reloadResourceTree(undefined, project)
+    if (project && state.resourceRevision > 0)
+      void act.reloadResourceTree(undefined, project, { treeOnly: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.resourceRevision])
 
@@ -567,9 +568,9 @@ export function ResourcePanel(): React.JSX.Element {
       if (!refreshesResourceTree(event)) return
       void (async () => {
         if (event.source === 'external' && event.kind !== 'rescan' && event.path) {
-          await fetchVersionCapability(project, event.path)
+          await observeResourceFileEvent(project, event)
         }
-        await act.reloadResourceTree(undefined, project)
+        await act.reloadResourceTree(undefined, project, { treeOnly: true })
       })()
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps

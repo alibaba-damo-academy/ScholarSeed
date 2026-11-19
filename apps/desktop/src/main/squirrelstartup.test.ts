@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { spawn, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, chmod, copyFile, symlink, writeFile, rm, rename } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { constants as osConstants, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
@@ -16,6 +16,7 @@ import {
   readSquirrelFailure,
   bindSquirrelRequest,
   inspectSquirrelIdle,
+  inspectCancelledSquirrelPreparation,
   verifySquirrelReplacement,
   squirrelHelpersAbsent,
   squirrelLaunchSuperseded,
@@ -542,6 +543,84 @@ test(
 )
 
 // OS contract fixture only: this is not a signed Squirrel update acceptance test.
+test(
+  'ordinary exit allows a fresh request only with bound native cancellation and stable evidence',
+  { skip: process.platform !== 'darwin' },
+  async (t) => {
+    const cache = realpathSync(await mkdtemp(join(tmpdir(), 'squirrel-cancelled-')))
+    t.after(() => rm(cache, { recursive: true, force: true }))
+    const bundle = 'org.scholarseed.cancelled'
+    const application = join(cache, 'Installed.app')
+    const owner = join(cache, `${bundle}.ShipIt`)
+    const source = join(owner, 'update.fixture', 'Candidate.app')
+    const statePath = join(owner, 'ShipItState.plist')
+    const ackPath = join(dirname(source), '.scholarseed-prepare.plist')
+    const helper = join(application, 'Contents/Frameworks/Squirrel.framework/Resources/ShipIt')
+    await mkdir(dirname(helper), { recursive: true })
+    await writeFile(helper, 'fixture: never executed')
+    await mkdir(source, { recursive: true, mode: 0o700 })
+    await mkdir(join(source, 'Contents', 'Resources'), { recursive: true })
+    await writeFile(
+      join(source, 'Contents', 'Resources', 'product.json'),
+      JSON.stringify({ build_number: handoff.buildNumber })
+    )
+    await writeFile(
+      join(source, 'Contents', 'Info.plist'),
+      JSON.stringify({ CFBundleShortVersionString: handoff.version })
+    )
+
+    const exited = spawn('/usr/bin/true')
+    await once(exited, 'exit')
+    assert.ok(exited.pid)
+    const native = terminalRecord(source, application)
+    const current: SquirrelHandoff = {
+      ...handoff,
+      sourcePid: exited.pid,
+      state: 'downloaded',
+      nativeRequest: native,
+    }
+    const request = {
+      bundleIdentifier: bundle,
+      binding: native.binding,
+      targetBundleURL: pathToFileURL(application).href,
+      updateBundleURL: pathToFileURL(source).href,
+      installationAuthorized: false,
+      launchAfterInstallation: false,
+      useUpdateBundleName: true,
+    }
+    const ack = { ...native, code: osConstants.errno.ECANCELED }
+    const inspect = (entry = current) =>
+      inspectCancelledSquirrelPreparation(cache, bundle, application, entry)
+    const requested = { ...current, state: 'requested' as const, nativeRequest: undefined }
+
+    await writeFile(statePath, JSON.stringify(request), { mode: 0o600 })
+    assert.equal(await inspect(), null)
+    assert.equal(await inspect(requested), null)
+    await writeFile(ackPath, JSON.stringify(ack), { mode: 0o600 })
+    assert.equal(await inspect({ ...current, sourcePid: process.pid }), null)
+    assert.equal(await inspect({ ...current, state: 'installing' }), null)
+    const proof = await inspect()
+    assert.equal(proof?.(), true)
+    assert.equal((await inspect(requested))?.(), true)
+    assert.equal(await inspect({ ...requested, binding: undefined }), null)
+
+    await writeFile(statePath + '.replacement', JSON.stringify(request), { mode: 0o600 })
+    await rename(statePath + '.replacement', statePath)
+    assert.equal(proof?.(), false)
+    for (const authorization of [
+      { installationAuthorized: true, launchAfterInstallation: true },
+      { installationAuthorized: false, launchAfterInstallation: true },
+    ]) {
+      await writeFile(statePath, JSON.stringify({ ...request, ...authorization }))
+      assert.equal(await inspect(), null)
+      assert.equal(await inspect(requested), null)
+    }
+    await writeFile(statePath, JSON.stringify(request))
+    await writeFile(ackPath, JSON.stringify({ ...ack, code: osConstants.errno.EIO }))
+    assert.equal(await inspect(), null)
+  }
+)
+
 test(
   'superseded inspection accepts only a stable bound native failure and preserves records',
   { skip: process.platform !== 'darwin' },

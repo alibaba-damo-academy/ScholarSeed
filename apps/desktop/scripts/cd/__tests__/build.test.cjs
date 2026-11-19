@@ -91,7 +91,6 @@ const {
   bestEffortRemoveTemporary,
 } = require('../verify.cjs')
 const { sha256, sha512, executableDigest } = require('../../shared/digest.cjs')
-const { OFFICE_BUILD_DIRECTORY, verifyOfficeAssets } = require('../../pre/office-assets.cjs')
 const { ownedExecutable } = require('../windows-sign.cjs')
 const desktopPackage = require('../package.cjs')
 const {
@@ -1731,7 +1730,7 @@ test('electron-builder receives one frozen resource set instead of merging packa
     const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
     assert.deepEqual(config.extraResources.find(entry => entry.to === 'desktop'), { from: path.join(directory, 'resources', 'desktop'), to: 'desktop' })
     const backend = config.extraResources.filter((entry) => entry.to === 'backend')
-    assert.deepEqual(config.asarUnpack, ['out/main/lease.node', 'out/main/fonts.node', 'out/main/notarization.node', 'out/main/repair.node'])
+    assert.deepEqual(config.asarUnpack, ['out/main/lease.node', 'out/main/notarization.node', 'out/main/repair.node'])
     assert.equal(config.files.includes('out/**/*'), false)
     assert.equal(config.files.includes(`out/protected/${'a'.repeat(64)}/**/*`), true)
     assert.equal(
@@ -1833,52 +1832,6 @@ test('Intel macOS uses the x64 Electron Builder architecture and the Intel runti
   assert.equal(selected.builderArch, require('electron-builder').Arch.x64)
   assert.equal(selected.triple, 'x86_64-apple-darwin')
   assert.equal(selected.installer, 'dmg')
-})
-test('the frozen Office runtime asset set is complete and digest-verified', async () => {
-  const manifest = await verifyOfficeAssets(path.join(sourceDirectory, '../..'))
-  assert.equal(manifest.build_id, 'zeta-24-2-20250513')
-  assert.equal(OFFICE_BUILD_DIRECTORY, 'zeta-20250513')
-  assert.deepEqual(Object.keys(manifest.files).sort(), [
-    'fontcache.js',
-    'fontcache.wasm',
-    'locales-residuals.json',
-    'locales.data',
-    'locales.json',
-    'soffice.data',
-    'soffice.data.js.metadata',
-    'soffice.js',
-    'soffice.wasm',
-  ])
-})
-test('Office bilingual overlay contains contiguous verified native resources for every editor', () => {
-  const root = path.join(sourceDirectory, '../../src/renderer/public/office',
-    OFFICE_BUILD_DIRECTORY
-  )
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'locales.json'), 'utf8'))
-  const data = fs.readFileSync(path.join(root, manifest.data.file))
-  assert.deepEqual(manifest.locales, ['en-US', 'zh-CN'])
-  assert.equal(manifest.default_locale, 'zh-CN')
-  assert.equal(data.length, manifest.data.bytes)
-  assert.equal(crypto.createHash('sha256').update(data).digest('hex'), manifest.data.sha256)
-  let end = 0
-  for (const file of manifest.files) {
-    assert.equal(file.start, end)
-    assert.ok(file.end > file.start && file.end <= data.length)
-    assert.equal(
-      crypto.createHash('sha256').update(data.subarray(file.start, file.end)).digest('hex'),
-      file.sha256
-    )
-    end = file.end
-  }
-  assert.equal(end, data.length)
-  for (const domain of ['sc', 'sw', 'sd', 'sfx', 'svx']) {
-    assert.ok(
-      manifest.files.some(
-        (file) => file.path === `/instdir/program/resource/zh_CN/LC_MESSAGES/${domain}.mo`
-      )
-    )
-  }
-  assert.ok(fs.statSync(path.join(root, manifest.residuals)).size > 0)
 })
 test('local signing preserves only reviewed upstream signed runtimes', () => {
   const app = '/Applications/fixture.app'

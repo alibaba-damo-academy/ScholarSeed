@@ -176,29 +176,6 @@ test('preference jobs preserve authoritative opt-out, correlate diagnostics and 
   }
 })
 
-test('invalid font cache never becomes a successful save acknowledgement', async (context) => {
-  const fx = await fixture(context)
-  await assert.rejects(
-    fx.client.request('cache', {
-      directory: fx.directory,
-      namespace: 'engine',
-      fingerprint: 'fonts',
-      mode: 'save',
-      value: undefined,
-    }),
-    /Incomplete Office font cache/
-  )
-  assert.equal(
-    await fx.client.request('cache', {
-      directory: fx.directory,
-      namespace: 'engine',
-      fingerprint: 'fonts',
-      mode: 'load',
-    }),
-    null
-  )
-})
-
 test('worker death and uncertain release fail closed without restarting or acknowledging pending work', async () => {
   for (const death of [true, false, 'late']) {
     const port = new EventEmitter() as EventEmitter & {

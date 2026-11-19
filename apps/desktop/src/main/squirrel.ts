@@ -14,6 +14,7 @@ import { assertSquirrelArchiveSize, MAX_SQUIRREL_ARCHIVE_BYTES } from './archive
 
 const LOOPBACK = '127.0.0.1'
 const HANDOFF_TIMEOUT_MS = 10 * 60_000
+const INTERACTION_HEADER = 'X-ScholarSeed-Update-Interaction'
 const RECORD_MAX_BYTES = 4096
 export const UPDATE_STATE_DIRECTORY = 'updates'
 const HANDOFF_FILE = 'squirrel.json'
@@ -122,7 +123,7 @@ export function validSquirrelNativeRequest(value: unknown): value is SquirrelNat
   })
 }
 export interface SquirrelUpdater extends Pick<EventEmitter, 'on' | 'once' | 'removeListener'> {
-  setFeedURL(options: { url: string }): void
+  setFeedURL(options: { url: string; headers?: Record<string, string> }): void
   checkForUpdates(): void
   quitAndInstall(): void
 }
@@ -194,8 +195,12 @@ export function abandonedSquirrelRequest(
 ): boolean {
   if (!unstartedSquirrelRequest(handoff)) return false
   if (!handoff.sourcePid) return legacyPublisherAbsent?.() === true
+  return squirrelPublisherExited(handoff.sourcePid)
+}
+
+export function squirrelPublisherExited(pid: number): boolean {
   try {
-    process.kill(handoff.sourcePid, 0)
+    process.kill(pid, 0)
     return false
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ESRCH'
@@ -405,14 +410,15 @@ export class SquirrelInstallation {
   prepare(
     archive: SquirrelArchive,
     identity: SquirrelHandoff,
-    authorize: HandoffAuthorization
+    authorize: HandoffAuthorization,
+    allowInteraction = false
   ): Promise<void> {
     if (this.running) return this.running
     if (this.handedOff)
       return this.matches(archive, identity)
         ? Promise.resolve()
         : Promise.reject(new Error('Squirrel handoff already consumed'))
-    this.running = this.start(archive, identity, authorize)
+    this.running = this.start(archive, identity, authorize, allowInteraction)
       .catch((error) => {
         if (this.handedOff) this.nativeFailed = true
         throw error
@@ -425,7 +431,8 @@ export class SquirrelInstallation {
   private async start(
     archive: SquirrelArchive,
     identity: SquirrelHandoff,
-    authorize: HandoffAuthorization
+    authorize: HandoffAuthorization,
+    allowInteraction: boolean
   ): Promise<void> {
     this.nativeFailed = false
     identity = {
@@ -447,7 +454,11 @@ export class SquirrelInstallation {
       }
       this.updater.on('error', failedInitialization)
       try {
-        this.updater.setFeedURL({ url: feed.url })
+        this.updater.setFeedURL(
+          allowInteraction
+            ? { url: feed.url, headers: { [INTERACTION_HEADER]: '1' } }
+            : { url: feed.url }
+        )
       } finally {
         this.updater.removeListener('error', failedInitialization)
       }
@@ -461,6 +472,9 @@ export class SquirrelInstallation {
             prior &&
             !(
               (prior.state === 'failed' ||
+                (prior.state === 'downloaded' &&
+                  !!prior.sourcePid &&
+                  squirrelPublisherExited(prior.sourcePid)) ||
                 (unstartedSquirrelRequest(prior) &&
                   (!prior.sourcePid || abandonedSquirrelRequest(prior)))) &&
               this.mayReplaceHandoff?.(prior)
@@ -508,10 +522,16 @@ export class SquirrelInstallation {
                 const pending = readSquirrelHandoff(this.recordPath)
                 if (
                   pending?.state !== 'requested' ||
+                  pending.sourcePid !== process.pid ||
                   !sameSquirrelBinding(pending.binding, identity.binding)
                 )
                   throw new Error('Squirrel handoff changed during request binding')
-                write({ ...identity, nativeRequest, state: 'downloaded' })
+                write({
+                  ...identity,
+                  sourcePid: pending.sourcePid,
+                  nativeRequest,
+                  state: 'downloaded',
+                })
               })
               this.downloaded = true
               this.diagnostic('handoff-downloaded')

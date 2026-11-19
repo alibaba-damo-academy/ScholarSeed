@@ -1,0 +1,19 @@
+diff --git a/Squirrel/SQRLUpdater.m b/Squirrel/SQRLUpdater.m
+--- a/Squirrel/SQRLUpdater.m
++++ b/Squirrel/SQRLUpdater.m
+@@ -28,0 +29,2 @@
++static NSString * const SSUpdateInteractionHeader = @"X-ScholarSeed-Update-Interaction";
++static NSString * const SSUpdateInteractionAllowed = @"1";
+@@ -60,0 +63 @@
++- (RACSignal *)launchShipItWithRequiredPrivilege:(BOOL)privileged;
+@@ -359 +362 @@
+-			return [[SQRLShipItLauncher launchPrivileged:launchPrivileged]
++			return [[self launchShipItWithRequiredPrivilege:launchPrivileged]
+@@ -366,0 +370,7 @@
++}
++
++- (RACSignal *)launchShipItWithRequiredPrivilege:(BOOL)privileged {
++	if (privileged && ![[self.updateRequest valueForHTTPHeaderField:SSUpdateInteractionHeader] isEqualToString:SSUpdateInteractionAllowed]) {
++		return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EACCES userInfo:nil]];
++	}
++	return [SQRLShipItLauncher launchPrivileged:privileged];

@@ -27,6 +27,8 @@ import {
 } from './update-authorization.ts'
 export { ActivationCandidateChanged } from './update-authorization.ts'
 import {
+  accessSync,
+  constants as fsConstants,
   createReadStream,
   existsSync,
   mkdirSync,
@@ -63,6 +65,7 @@ import {
   inspectSquirrelStartup,
   settleSquirrelStartup,
   inspectSquirrelIdle,
+  inspectCancelledSquirrelPreparation,
   inspectLegacySquirrelPublisher,
   squirrelPreparedDevice,
   squirrelNativeRequestAbsent,
@@ -1267,14 +1270,36 @@ async function verifyMountedNotarization(
 
 let squirrel: SquirrelInstallation | null = null
 let macPrepared: { receipt: PreparedArchive; workspace: string } | null = null
+let macLaunchCleanup: SquirrelLaunchCleanup | undefined
 let macPreparationEpoch = 0
-export function macPreparationReady(meta: LatestVersionMeta): boolean {
-  const ready = readReadyState()
+
+function macArchiveReady(ready: ReadyState, meta: LatestVersionMeta): boolean {
   return (
-    !!ready?.archive &&
+    !!ready.archive &&
     preparedIdentity(ready.meta) === preparedIdentity(meta) &&
     !!macPrepared?.receipt.matches(meta, ready.archive)
   )
+}
+
+function macNativePreparationMatches(staged: ReadyState): boolean {
+  return (
+    !!staged.archive &&
+    squirrel?.matches(staged.archive, {
+      candidate: staged.meta.id,
+      version: staged.meta.version,
+      buildNumber: staged.meta.build_number,
+    }) === true
+  )
+}
+
+export function macPreparationReady(meta: LatestVersionMeta): boolean {
+  const ready = readReadyState()
+  try {
+    return !!ready && macArchiveReady(ready, meta) && macNativePreparationMatches(ready)
+  } catch {
+    // A changed or unreadable handoff cannot release the native readiness gate.
+    return false
+  }
 }
 
 function assertSquirrelInstallSpace(
@@ -1342,6 +1367,7 @@ function squirrelHandoffPath(home = desktopHome()): string {
 export interface MacStartupAdmission {
   readonly admission: SquirrelAdmission
   readonly status?: SquirrelStartupStatus
+  readonly preparationCancelled?: boolean
   readonly cause?: unknown
   readonly evidence?: {
     readonly home: string
@@ -1428,13 +1454,24 @@ export async function macStartupAdmission(
         resolve(dirname(process.execPath), '..', '..')
       )
     )
+    const admission = squirrelAdmission(current, handoff, status)
+    const preparationCancelled =
+      admission === 'failed' &&
+      !expected &&
+      !!handoff &&
+      (handoff.state === 'requested' || handoff.state === 'downloaded') &&
+      !!(await inspectCancelledSquirrelPreparation(
+        systemCacheDir(),
+        config.bundleId,
+        realpathSync(resolve(dirname(process.execPath), '..', '..')),
+        handoff
+      ))
     if (JSON.stringify(readSquirrelHandoff(squirrelHandoffPath(home))) !== JSON.stringify(handoff))
       throw new Error('Mac handoff changed during startup admission')
-    const admission = squirrelAdmission(current, handoff, status)
     log(
       `[update] startup admission=${admission} status=${status} candidate=${handoff!.candidate}\n`
     )
-    return { ...admitted(admission), status }
+    return { ...admitted(admission), status, preparationCancelled }
   } catch (error) {
     log(`[update] startup admission=exit evidence unavailable: ${String(error)}\n`)
     return { admission: 'exit', status: 'unconfirmed', cause: error }
@@ -1912,7 +1949,7 @@ export async function stageUpdate(
 ): Promise<StageUpdateResult> {
   const previousPreparation = macPrepared
   const previousReady = process.platform === MACOS_PLATFORM ? readReadyState() : null
-  if (previousReady?.meta.id === id && macPreparationReady(previousReady.meta))
+  if (previousReady?.meta.id === id && macArchiveReady(previousReady, previousReady.meta))
     return { ok: true, ready: previousReady }
   try {
     // Only the preparation owner calls this after its previous worker has drained.
@@ -2074,32 +2111,42 @@ export async function stageUpdate(
   return { ok: true, ready }
 }
 
-/**
- * 安装已暂存的更新包。
- *
- * A live macOS receipt reuses only the final ZIP; source identity and current
- * trust are refreshed from the digest-bound read-only DMG before handoff. Restored state still
- * recheck the installer. The native feed always verifies the actual ZIP bytes.
- */
-export async function installStagedUpdate(
+function canPrepareMacUpdateWithoutInteraction(): boolean {
+  try {
+    const application = realpathSync(resolve(dirname(process.execPath), '..', '..'))
+    accessSync(application, fsConstants.W_OK)
+    accessSync(dirname(application), fsConstants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Verify the staged candidate and obtain the bound, unauthorized native receipt. */
+export async function prepareMacUpdate(
+  expectedId: string,
   onProgress: (progress: UpdateProgress) => void,
   log: LogSink,
-  signal?: AbortSignal,
-  authorize?: (candidate: LatestVersionMeta) => Promise<() => void>,
-  prepareLaunch?: (candidate: LatestVersionMeta) => Promise<SquirrelLaunchCleanup>,
-  startup?: MacStartupAdmission
+  signal: AbortSignal,
+  startup?: MacStartupAdmission,
+  allowInteraction = false
 ): Promise<StartUpdateResult> {
   if (process.platform !== MACOS_PLATFORM) return { ok: false, error: NO_STAGED_UPDATE }
-  if (!authorize) {
-    log('[update] activation authorization is required\n')
-    return { ok: false, errorFallback: 'activation_authorization_required' }
-  }
   const staged = readReadyState()
-  if (!staged) return { ok: false, error: NO_STAGED_UPDATE }
-  let nativeReady = false
-  let handoffReady = false
+  if (!staged?.archive || staged.meta.id !== expectedId)
+    return { ok: false, error: NO_STAGED_UPDATE }
+  if (signal.aborted) return { ok: false, cancelled: true }
+  if (macPreparationReady(staged.meta)) return { ok: true, mode: 'auto' }
+  if (macHandoffCommitted()) return { ok: false, errorFallback: 'activation_recovery_required' }
+  if (!allowInteraction && !canPrepareMacUpdateWithoutInteraction()) {
+    logUpdateLine(log, '[update] macOS native preparation needs an explicit user action\n')
+    return { ok: false, errorFallback: 'preparation_failed' }
+  }
+  const prepared = macPrepared
+  if (!prepared?.receipt.matches(staged.meta, staged.archive))
+    return { ok: false, error: NO_STAGED_UPDATE }
   const installation = new InstallationProgress(
-    (progress) => onProgress({ ...progress, phase: nativeReady ? 'installing' : 'preparing' }),
+    (progress) => onProgress({ ...progress, phase: 'preparing' }),
     signal,
     (event) =>
       logUpdateEvent(log, {
@@ -2108,41 +2155,12 @@ export async function installStagedUpdate(
         toVersion: `${staged.meta.version}-${staged.meta.build_number}`,
       })
   )
-  let discardLaunch: SquirrelLaunchCleanup | undefined
   try {
     installation.step('package')
-    // A live receipt binds the previously checked DMG to the verified final ZIP.
-    // Restored or mismatched macOS state still requires an installer recheck.
-    if (!staged.archive || !macPrepared?.receipt.matches(staged.meta, staged.archive)) {
-      const startedAt = Date.now()
-      const actual = await retryUpdate(() => sha512OfFile(staged.path, signal), signal)
-      logTiming(
-        log,
-        `staged installer SHA-512 re-verify (${staged.meta.file_size} bytes)`,
-        startedAt
-      )
-      if (actual.toLowerCase() !== staged.meta.sha512.toLowerCase()) {
-        rmSync(staged.path, { force: true })
-        clearReadyState()
-        throw new Error('staged installer no longer matches its release metadata')
-      }
-    }
-    if (macHandoffCommitted() && !macHandoffReady())
-      throw new Error('Squirrel handoff requires recovery')
-    if (!staged.archive) throw new Error('Squirrel archive is not prepared')
-    let prepared = macPrepared
-    if (!prepared?.receipt.matches(staged.meta, staged.archive)) {
-      if (prepared) await removeUpdateArtifact(prepared.workspace)
-      macPrepared = null
-      prepared = await prepareDmg(staged.path, staged.meta, installation, log, staged.archive)
-      macPrepared = prepared
-      // Replace stale disk hints only with this process's verified conversion.
-      writeReadyState({ ...staged, archive: prepared.receipt.archive })
-    }
     const startedAt = Date.now()
     const frozen = await retryUpdate(
       () =>
-        prepared!.receipt.revalidate(
+        prepared.receipt.revalidate(
           () =>
             withMountedDmg(staged.path, installation, log, (source) =>
               verifyMountedNotarization(source, log, installation, 'source')
@@ -2156,12 +2174,7 @@ export async function installStagedUpdate(
       buildNumber: staged.meta.build_number,
       candidate: staged.meta.id,
     }
-    assertSquirrelInstallSpace(
-      frozen,
-      prepared.receipt.expandedBytes,
-      macHandoffReady() && squirrel?.matches(frozen, handoffIdentity) === true,
-      squirrel?.preparedCandidate()
-    )
+    assertSquirrelInstallSpace(frozen, prepared.receipt.expandedBytes, false)
     logTiming(log, 'final ZIP and current source trust recheck', startedAt)
     logUpdateEvent(log, {
       phase: 'macos-install',
@@ -2189,6 +2202,15 @@ export async function installStagedUpdate(
             prior
           )
         : false
+    const cancelled =
+      prior && (prior.state === 'requested' || prior.state === 'downloaded')
+        ? await inspectCancelledSquirrelPreparation(
+            systemCacheDir(),
+            resolveDesktopConfig(log).bundleId,
+            realpathSync(resolve(dirname(process.execPath), '..', '..')),
+            prior
+          )
+        : null
     signal?.throwIfAborted()
     squirrel ??= new SquirrelInstallation(
       autoUpdater,
@@ -2204,7 +2226,7 @@ export async function installStagedUpdate(
         // A committed handoff whose native installer terminally fails will never relaunch
         // the target; drop the launch context so this live session recovers storage and
         // future updates instead of carrying a dead transaction.
-        discardLaunch = discardOnTerminalSquirrelFailure(event, discardLaunch)
+        macLaunchCleanup = discardOnTerminalSquirrelFailure(event, macLaunchCleanup)
       },
       undefined,
       (identity) =>
@@ -2233,6 +2255,8 @@ export async function installStagedUpdate(
         return (
           startup?.admission === 'failed' &&
           (current.state === 'failed' ||
+            ((current.state === 'requested' || current.state === 'downloaded') &&
+              cancelled?.() === true) ||
             (unstarted &&
               !!recoveryCache &&
               !!recoveryBundle &&
@@ -2254,39 +2278,31 @@ export async function installStagedUpdate(
         at: Date.now(),
         state: 'requested',
       },
-      () => authorize(staged.meta)
+      async () => {
+        const guard = await retryUpdate(() => authorizeActivation(staged.meta, log, signal), signal)
+        return () => {
+          signal.throwIfAborted()
+          const current = readReadyState()
+          if (!current || !macArchiveReady(current, staged.meta))
+            throw new Error('Staged artifact changed before native preparation')
+          if (!allowInteraction && !canPrepareMacUpdateWithoutInteraction())
+            throw new Error('Mac native preparation requires user interaction')
+          guard()
+        }
+      },
+      allowInteraction
     )
-    signal?.throwIfAborted()
-    if (!squirrel.ready || !prepareLaunch)
+    if (!macPreparationReady(staged.meta))
       throw new Error('Mac update native readiness is required')
-    nativeReady = true
-    installation.step('saving')
-    discardLaunch = await prepareLaunch(staged.meta)
-    await commitWithActivation(
-      () => authorize(staged.meta),
-      (guard) => {
-        signal?.throwIfAborted()
-        guard()
-        if (!squirrel?.ready) throw new Error('Mac update native readiness was revoked')
-      }
-    )
-    handoffReady = true
     installation.finish('handoff')
     return { ok: true, mode: 'auto' }
   } catch (error) {
     installation.finish(
       signal?.aborted && (!macHandoffCommitted() || macHandoffReady()) ? 'cancelled' : 'failed'
     )
-    persistUpdateLog(`[update] installation failed: ${String(error)}\n`)
-    if (error instanceof ActivationCandidateChanged) {
-      try {
-        await discardRejectedUpdate(staged.meta, log)
-        return { ok: false, errorFallback: 'activation_candidate_changed' }
-      } catch (recovery) {
-        log(`[update] candidate revocation failed: ${String(recovery)}\n`)
-        return { ok: false, errorFallback: 'activation_recovery_required' }
-      }
-    }
+    persistUpdateLog(`[update] native preparation failed: ${String(error)}\n`)
+    if (error instanceof ActivationCandidateChanged)
+      return await revokeMacCandidate(staged.meta, log)
     if (error instanceof PreparedArtifactChangedError) macPrepared = null
     if (signal?.aborted && (!macHandoffCommitted() || macHandoffReady()))
       return { ok: false, cancelled: true }
@@ -2299,10 +2315,86 @@ export async function installStagedUpdate(
     return { ok: false, error: String(error) }
   } finally {
     installation.dispose()
-    if (!handoffReady) discardLaunch?.()
     if (squirrel && !squirrel.committed) {
       squirrel.dispose()
       squirrel = null
+    }
+    await updateLog?.flush()
+  }
+}
+
+async function revokeMacCandidate(
+  candidate: LatestVersionMeta,
+  log: LogSink
+): Promise<StartUpdateResult> {
+  try {
+    await discardRejectedUpdate(candidate, log)
+    return { ok: false, errorFallback: 'activation_candidate_changed' }
+  } catch (error) {
+    log(`[update] candidate revocation failed: ${String(error)}\n`)
+    return { ok: false, errorFallback: 'activation_recovery_required' }
+  }
+}
+
+/** Prepare the current workbench for exit after the user confirms an already verified update. */
+export async function installStagedUpdate(
+  onProgress: (progress: UpdateProgress) => void,
+  log: LogSink,
+  signal?: AbortSignal,
+  authorize?: (candidate: LatestVersionMeta) => Promise<() => void>,
+  prepareLaunch?: (candidate: LatestVersionMeta) => Promise<SquirrelLaunchCleanup>
+): Promise<StartUpdateResult> {
+  if (process.platform !== MACOS_PLATFORM) return { ok: false, error: NO_STAGED_UPDATE }
+  if (!authorize || !prepareLaunch) {
+    log('[update] activation authorization and launch preparation are required\n')
+    return { ok: false, errorFallback: 'activation_authorization_required' }
+  }
+  const staged = readReadyState()
+  const receipt = macPrepared?.receipt
+  if (!staged?.archive || !receipt || !macPreparationReady(staged.meta))
+    return { ok: false, error: NO_STAGED_UPDATE }
+  const installation = new InstallationProgress(onProgress, signal, (event) =>
+    logUpdateEvent(log, {
+      ...event,
+      fromVersion: app.getVersion(),
+      toVersion: `${staged.meta.version}-${staged.meta.build_number}`,
+    })
+  )
+  let handoffReady = false
+  try {
+    assertSquirrelInstallSpace(
+      staged.archive,
+      receipt.expandedBytes,
+      true,
+      squirrel?.preparedCandidate()
+    )
+    installation.step('saving')
+    macLaunchCleanup = await prepareLaunch(staged.meta)
+    await commitWithActivation(
+      () => authorize(staged.meta),
+      (guard) => {
+        signal?.throwIfAborted()
+        guard()
+        if (!macPreparationReady(staged.meta))
+          throw new Error('Mac update native readiness was revoked')
+      }
+    )
+    handoffReady = true
+    installation.finish('handoff')
+    return { ok: true, mode: 'auto' }
+  } catch (error) {
+    installation.finish(signal?.aborted && macHandoffReady() ? 'cancelled' : 'failed')
+    persistUpdateLog(`[update] installation failed: ${String(error)}\n`)
+    if (error instanceof ActivationCandidateChanged)
+      return await revokeMacCandidate(staged.meta, log)
+    if (!macHandoffReady()) return { ok: false, errorFallback: 'activation_recovery_required' }
+    if (signal?.aborted) return { ok: false, cancelled: true }
+    return { ok: false, error: String(error) }
+  } finally {
+    installation.dispose()
+    if (!handoffReady) {
+      macLaunchCleanup?.()
+      macLaunchCleanup = undefined
     }
     await updateLog?.flush()
   }
@@ -2312,7 +2404,7 @@ export function initialUpdateSnapshot(log: LogSink, startup?: MacStartupAdmissio
   if (process.platform === MACOS_PLATFORM && app.isPackaged) {
     try {
       readAdmittedMacHandoff(log, startup)
-      if (startup?.admission === 'failed')
+      if (startup?.admission === 'failed' && !startup.preparationCancelled)
         return {
           phase: 'failed',
           currentVersion: app.getVersion(),

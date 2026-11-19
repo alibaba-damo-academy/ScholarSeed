@@ -44,7 +44,7 @@ class FormatRegistration:
     viewer: ViewerKind
     versionable: bool = False
     readonly: bool = False
-    artifact_editable: bool = False
+    previewable: bool = True
     reviewable: bool = True
 
 
@@ -103,16 +103,17 @@ FORMAT_BY_SUFFIX: dict[str, FormatRegistration] = {
     ".gif": FormatRegistration(ViewerKind.IMAGE),
     ".svg": FormatRegistration(ViewerKind.IMAGE),
     ".bmp": FormatRegistration(ViewerKind.IMAGE),
-    ".doc": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
-    ".docx": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
-    ".xls": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
-    ".xlsx": FormatRegistration(
-        ViewerKind.SPREADSHEET,
-        versionable=True,
-        readonly=True,
-        artifact_editable=True,
+    ".doc": FormatRegistration(
+        ViewerKind.OFFICE, versionable=True, readonly=True, previewable=False
     ),
-    ".ppt": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
+    ".docx": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
+    ".xls": FormatRegistration(
+        ViewerKind.OFFICE, versionable=True, readonly=True, previewable=False
+    ),
+    ".xlsx": FormatRegistration(ViewerKind.SPREADSHEET, versionable=True, readonly=True),
+    ".ppt": FormatRegistration(
+        ViewerKind.OFFICE, versionable=True, readonly=True, previewable=False
+    ),
     ".pptx": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
 }
 
@@ -234,13 +235,14 @@ def capabilities_for(path: str, payload: bytes | None = None) -> DocumentCapabil
             can_annotate=True,
         )
     if kind is ViewerKind.OFFICE:
-        editable = not bool(registration and registration.readonly)
+        previewable = bool(registration and registration.previewable)
         return DocumentCapabilities(
-            can_edit=editable,
-            can_version=True,
+            can_edit=False,
+            can_version=bool(registration and registration.versionable),
             can_diff=False,
-            can_select=True,
-            can_save=editable,
+            can_preview=previewable,
+            can_select=previewable,
+            can_save=False,
         )
     if kind is ViewerKind.SPREADSHEET:
         processor = processor_for(path)
@@ -293,17 +295,9 @@ class WorkbenchFormatPolicy(ResourceFormatPolicy):
     def project(self, path: str, payload: bytes) -> DocumentFormatProjection:
         """Project any source bytes through the one Workbench format registry."""
 
-        registration = format_for(path)
         viewer = viewer_for(path, payload)
         capabilities = capabilities_for(path, payload)
         processor = processor_for(path)
-        artifact_editable = bool(
-            registration
-            and registration.artifact_editable
-            and processor is not None
-            and processor.inspect is not None
-            and processor.inspect(payload).editable
-        )
         return DocumentFormatProjection(
             viewer=viewer.value,
             processor=processor.kind.value if processor is not None else None,
@@ -313,13 +307,14 @@ class WorkbenchFormatPolicy(ResourceFormatPolicy):
             can_select=capabilities.can_select,
             can_annotate=capabilities.can_annotate,
             can_save=capabilities.can_save,
-            can_edit_artifact=artifact_editable,
             pending=capabilities.pending,
         )
 
     def preview(self, path: str, payload: bytes) -> bytes:
-        """Prepare compatibility bytes only for a readonly spreadsheet preview."""
+        """Prepare compatibility bytes only for a readonly, previewable spreadsheet."""
 
+        if not capabilities_for(path, payload).can_preview:
+            return payload
         processor = processor_for(path)
         if (
             processor is not None

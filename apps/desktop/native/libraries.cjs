@@ -2,7 +2,6 @@
 function libraries(platform = process.platform) {
   return Object.freeze([
     'lease.node',
-    'fonts.node',
     ...(platform === 'win32' ? ['notification.node', 'velopack.node'] : []),
     ...(platform === 'darwin' ? ['notarization.node', 'repair.node'] : []),
   ])

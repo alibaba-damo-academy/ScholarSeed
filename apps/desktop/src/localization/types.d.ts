@@ -2837,6 +2837,7 @@ declare module 'i18next' {
             "retryPreparation": "重试准备",
             "retryDownload": "重试下载",
             "restartInstall": "重启完成更新",
+            "restartUpdate": "重启更新",
             "later": "稍后",
             "diagnose": "诊断更新链路",
             "notesEmpty": "优化用户使用体验",
@@ -9203,46 +9204,8 @@ declare module 'i18next' {
             "preferencesFailed": "语言偏好未能保存。请检查后重试。"
         },
         "officeDocument": {
-            "searching": "查找中…",
-            "searchFailed": "查找失败",
-            "notFound": "未找到",
-            "search": "Office 查找",
-            "searchContent": "查找文档内容",
-            "fullSearch": "全文搜索",
-            "previous": "上一处",
-            "next": "下一处",
-            "slideNavigation": "幻灯片翻页",
-            "previousSlide": "上一页",
-            "nextSlide": "下一页",
-            "closeSearch": "关闭查找",
-            "allocating": "正在分配 Office 编辑器…",
-            "spare": "Office 备用运行时",
-            "close": "关闭",
-            "languagePending": "保存文档后将自动应用 Office 语言。",
-            "undoPolish": "AI 润色",
-            "undoInsertImage": "插入图片"
-        },
-        "officeWarmup": {
-            "title": "正在准备 Office",
-            "permission": "正在申请系统字体访问权限…",
-            "catalog": "正在索引系统字体…",
-            "reading": "已读取 {{done}}/{{total}} 个字体（{{size}} MiB）",
-            "runtime": "字体已就绪，正在初始化 Office…",
-            "slow": "当前设备初始化时间较长，Office 仍在后台继续准备。",
-            "recoveringTitle": "正在恢复 Office 预热",
-            "recovering": "运行资源加载中断，正在进行第 {{attempt}} 次自动重试。",
-            "retryCountdown": "{{seconds}} 秒后进行第 {{attempt}} 次自动重试。",
-            "errorTitle": "Office 预热未完成",
-            "failures": {
-                "fontPermission": "无法获得系统字体访问权限，请检查系统设置后重试。",
-                "fontCatalog": "无法读取系统字体目录，请检查字体访问设置后重试。",
-                "fontRead": "系统字体读取未完成，请重试。",
-                "runtimeAssets": "Office 运行资源未能完整加载，请重试。",
-                "runtimeInitialization": "Office 引擎初始化失败，请重试。",
-                "runtimeExecution": "Office 运行时发生错误，请重试。",
-                "warmupTimeout": "Office 后台预热超过 10 分钟仍未完成，请重试。"
-            },
-            "retry": "立即重试"
+            "unavailableTitle": "请使用其他应用打开",
+            "unavailableDetail": "此格式暂不支持应用内预览，可保存副本或使用系统应用打开。"
         },
         "markdown": {
             "saved": "已保存",
@@ -9326,26 +9289,6 @@ declare module 'i18next' {
             "pasteLink": "粘贴链接…",
             "returnToSource": "返回引用位置"
         },
-        "officeFrame": {
-            "starting": "正在启动 ZetaOffice…",
-            "reload": "重新加载",
-            "runtimeError": "ZetaOffice 运行错误",
-            "startFailed": "ZetaOffice 启动失败",
-            "prepareFonts": "正在准备系统字体…",
-            "fontsUnsupported": "当前环境不支持读取系统字体",
-            "fontsEmpty": "未读取到可用的系统字体",
-            "loading": "正在加载本地 Office 运行组件…",
-            "assetsFailed": "ZetaOffice 运行资产加载失败",
-            "initializing": "正在初始化 ZetaOffice 运行时…",
-            "editable": "Office 文档可编辑",
-            "readonly": "Office 文档只读预览",
-            "pasteFailed": "粘贴失败，未能保留剪贴板内容。",
-            "permission": "需要系统字体权限才能打开 Office 文件",
-            "isolation": "Office 编辑需要跨源隔离",
-            "readingFonts": "正在读取系统字体：{{done}}/{{total}}…",
-            "loadingFonts": "正在载入 ZetaOffice（系统字体 {{fontTotal}} 个，{{size}} MiB）…",
-            "imageFailed": "图片传输失败："
-        },
         "selection": {
             "changed": "文件或选区已变化，请重新生成。",
             "timeout": "编辑器尚未确认结果，请检查原文，不要重复替换。",
@@ -9367,27 +9310,7 @@ declare module 'i18next' {
             "unknown": "图片操作失败：{{detail}}"
         },
         "officeError": {
-            "cells_protected": "此工作表具有不同的单元格保护设置，无法启用轻量编辑。",
-            "workbook_protected": "此工作簿包含受保护内容或公式，无法启用轻量编辑。",
-            "formula_rejected": "当前仅支持普通单元格值编辑，已撤销公式输入。",
-            "structure_rejected": "当前仅支持修改已有对象内容，已撤销幻灯片或对象结构变更。",
-            "finish_editing": "请先结束当前编辑，再保存文件。",
-            "undo_failed": "无法撤销不支持的操作，请先撤销此次修改。",
-            "protection_failed": "内容保护校验失败，未写入原文件。请重新打开文件。",
-            "image_invalid": "图片尺寸无效",
-            "image_failed": "图片插入失败，请重试。",
-            "editing_unavailable": "此文件无法启用安全的内容编辑，请使用外部应用打开。",
-            "document_unavailable": "无法加载此 Office 文件，请确认文件内容完整后重试。",
-            "policy_failed": "无法应用 Office 原生命令限制，请使用外部应用打开。",
-            "formula_policy_failed": "公式编辑权限配置失败，请关闭文档后重试。",
-            "image_pending": "请先完成图片插入再保存",
-            "image_permission": "图片导入需要桌面端的本地图片权限",
-            "reveal_changed": "文件已更新，原命中已不存在。",
-            "reveal_missing": "当前文档中未找到该搜索内容。",
-            "reveal_timeout": "文档定位超时，请重试。",
-            "paste_failed": "粘贴失败，请重试。",
-            "unknown": "Office 操作失败：{{detail}}",
-            "operationFailed": "Office 操作失败。"
+            "reveal_missing": "当前文档中未找到该搜索内容。"
         },
         "imageAcquisition": {
             "pixelLimit": "图片尺寸超过 {{maxPixels}} 像素限制。",

@@ -163,6 +163,8 @@ class ContentSnapshot:
     size: int
     revision: str
     writable: bool
+    # Project-relative target used to keep preview metadata and bytes on the same path.
+    symlink_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -519,6 +521,33 @@ class AssetTree:
 
 
 @dataclass(frozen=True)
+class FlatResourceTree:
+    """Complete resource nodes and optional Git ownership from the same read."""
+
+    nodes: tuple[AssetTree, ...]
+    repositories: dict[str, str | None]
+    incremental_parents: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class ResourceTreeGroup:
+    """Ordered direct children observed under an affected directory."""
+
+    parent: str
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResourceTreeChanges:
+    """Changed files and the complete order of their immediate sibling groups."""
+
+    nodes: tuple[AssetTree, ...]
+    repositories: dict[str, str | None]
+    groups: tuple[ResourceTreeGroup, ...]
+    root: str
+
+
+@dataclass(frozen=True)
 class AssetPage:
     """一层目录的一页子节点投影。
 
@@ -695,8 +724,14 @@ class ContentPort(Protocol):
         """计算与 CAS 写接口一致的完整内容 revision。"""
         ...
 
-    def snapshot(self, project_id: str, path: str) -> ContentSnapshot:
-        """读取文件元数据与 exact-bytes revision。"""
+    def snapshot(
+        self, project_id: str, path: str, *, allow_file_symlink: bool = False
+    ) -> ContentSnapshot:
+        """Read file metadata and its exact-bytes revision.
+
+        Opted-in file symlinks are read-only. The snapshot's symlink_target is
+        the resolved project-relative path of the authorized target.
+        """
         ...
 
     def stable_snapshot(self, project_id: str, path: str, max_bytes: int) -> StableContentSnapshot:
@@ -842,6 +877,23 @@ class ContentPort(Protocol):
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:
         """Enumerate every file in resource and linked roots with a stable cursor."""
+        ...
+
+    def flat_resource_tree(
+        self,
+        project_id: str,
+        roots: tuple[str, ...],
+        *,
+        include_repositories: bool = False,
+        track_parents: bool = False,
+    ) -> FlatResourceTree:
+        """List all visible descendants under the requested authorized resource directories."""
+        ...
+
+    def resource_tree_changes(
+        self, project_id: str, paths: tuple[str, ...]
+    ) -> ResourceTreeChanges | None:
+        """Read changed ordinary files and sibling order, or require a full listing."""
         ...
 
     def scan_resources(
@@ -1093,6 +1145,7 @@ __all__ = [
     "FileAssetRef",
     "FileEvent",
     "FileEventKind",
+    "FlatResourceTree",
     "ImportMode",
     "ImportFailurePolicy",
     "DISK_FULL_ERROR",
@@ -1107,5 +1160,7 @@ __all__ = [
     "ResourceRevealKind",
     "ResourceSearchResult",
     "ResourceScanObserver",
+    "ResourceTreeChanges",
+    "ResourceTreeGroup",
     "RootKind",
 ]

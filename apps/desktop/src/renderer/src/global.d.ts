@@ -18,9 +18,7 @@ import type { PreferenceSubmission } from '../../preference-diagnostics'
 import type { PreferenceShutdownRequest, PreferenceShutdownReply } from '../../quiescence'
 import type { SystemPermissionTarget, SystemPermissionsSnapshot } from '../../permissions'
 import type { CommitDataHomeResult, StorageConfig } from '../../storage'
-import type { OfficeImageResult, OfficeImageSource, RemoteImageResult } from '../../images'
-import type { OfficeClipboardResult } from '../../main/clipboard'
-import type { OfficeFontCatalog, OfficeFontCache } from '../../fonts'
+import type { RemoteImageResult } from '../../images'
 import type { ClipboardContentPayload, ClipboardContentResult } from '../../clipboard'
 import type { ImportPickerTarget, ImportPreview } from '../../picker'
 import type { DeviceSkillRequest, DeviceSkillResponse } from '../../skills'
@@ -160,13 +158,11 @@ declare global {
     ) => Promise<{ ok: boolean; error?: string }>
     pickDir: () => Promise<string | null>
     /** 写系统剪贴板。不走 navigator.clipboard（要求文档聚焦，桌面端易失焦被拒）。 */
-    acquireOfficeImage: (source: OfficeImageSource) => Promise<OfficeImageResult>
     readRemoteImage: (url: string) => Promise<RemoteImageResult>
     writeClipboard: (text: string) => Promise<{ ok: boolean; error?: string }>
     writeClipboardContent: (payload: ClipboardContentPayload) => Promise<ClipboardContentResult>
     pasteClipboard: () => Promise<boolean>
     writeClipboardImage: (bytes: Uint8Array) => Promise<FeedbackClipboardImageResult>
-    readOfficeClipboard: () => Promise<OfficeClipboardResult>
     /** 资料导入：按指定范围多选本地资料，取消返回空数组。 */
     pickImport: (target: ImportPickerTarget) => Promise<string[]>
     pickImportPreview: (target: ImportPickerTarget) => Promise<ImportPreview[]>
@@ -182,11 +178,6 @@ declare global {
             sourcePath: string
           }
     ) => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>
-    requestOfficeFontAccess: () => Promise<boolean>
-    listOfficeFonts: () => Promise<OfficeFontCatalog>
-    readOfficeFont: (id: string) => Promise<Uint8Array>
-    readOfficeFontCache: (fingerprint: string) => Promise<OfficeFontCache | null>
-    writeOfficeFontCache: (fingerprint: string, cache: OfficeFontCache) => Promise<void>
     syncUpdateDiagnostics: () => Promise<void>
     submitFeedback: (request: FeedbackSubmissionRequest) => Promise<FeedbackSubmissionResult>
     captureFeedbackScreenshot: () => Promise<FeedbackScreenshotResult>

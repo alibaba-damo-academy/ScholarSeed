@@ -152,7 +152,7 @@ function EditableValue({
       className={
         presentation === 'field'
           ? `${DETAIL_VALUE_ROW_CLASS}${editing ? ' !items-center' : ''}`
-          : `flex min-w-0 items-start${presentation === 'titleClassName' ? ' mb-[var(--vds-space-4)]' : ''}`
+          : `flex min-w-0 items-start${presentation === 'titleClassName' ? ' mb-[var(--vds-space-4)]' : ' col-span-2'}`
       }
     >
       <span className={presentation === 'field' ? DETAIL_VALUE_LABEL_CLASS : 'sr-only'}>

@@ -13,7 +13,6 @@
     "src/attention.ts",
     "src/preload/**/*",
     "src/images.ts",
-    "src/fonts.ts",
     "src/pdfe.ts",
     "src/browser.ts",
     "src/browserdiagnostics.ts",
