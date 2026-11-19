@@ -7,6 +7,53 @@
     "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
     "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
   ],
+  "connections": {
+    "scholarseed-gateway:deepseek-v4.1-flash": {
+      "limits": {
+        "max_input": 1000000,
+        "max_output": 393216,
+        "max_reasoning": 393216,
+        "max_input_thinking": 1000000
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": ["none", "low", "high", "max"],
+            "default": "low",
+            "wire": {"responses": "reasoning.effort"}
+          }
+        ]
+      },
+      "provenance": {"limits": "gateway-config", "reasoning": "gateway-config"},
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/deepseek-v4-1-flash",
+        "retrieved": "2026-11-17"
+      },
+      "notes": ["The gateway strategy routes to the 1017 snapshot."]
+    },
+    "scholarseed-gateway:deepseek-v4-pro": {
+      "limits": {"max_input_thinking": 1000000},
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": ["none", "low", "high", "max"],
+            "default": "high",
+            "wire": {"responses": "reasoning.effort"}
+          }
+        ]
+      },
+      "provenance": {"limits": "gateway-config", "reasoning": "gateway-config"},
+      "source": {
+        "url": "https://help.aliyun.com/en/model-studio/qwen-api-via-openai-responses",
+        "retrieved": "2026-11-19"
+      },
+      "notes": ["The gateway strategy routes to the 0813 snapshot."]
+    }
+  },
   "models": {
     "bailian/deepseek-v4.1-flash-1017": {
       "limits": {
