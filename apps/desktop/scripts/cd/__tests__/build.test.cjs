@@ -54,6 +54,7 @@ const {
   builderEvidence,
   buildNumberOf,
   buildRunDirectory,
+  buildApplicationLayout,
   credentialFreeEnv,
   freezeFile,
   frozenProductConfiguration,
@@ -116,6 +117,28 @@ test('the macOS update bridge is an explicit directory layout and has separate b
     () => options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'backend', '--macos-update-bridge']),
     /requires a macOS application or installer stage/
   )
+})
+
+test('only the signed macOS 0.3.2 preview installer defaults to the update bridge', () => {
+  const previewInstaller = {
+    platform: 'darwin',
+    type: 'preview',
+    stage: 'installer',
+    version: '0.3.2',
+    candidate: false,
+  }
+  assert.equal(buildApplicationLayout(previewInstaller), 'directory')
+  for (const otherBuild of [
+    { platform: 'win32' },
+    { type: 'release' },
+    { type: 'dev' },
+    { stage: 'dir' },
+    { stage: 'backend' },
+    { version: '0.4.0' },
+    { candidate: true },
+  ]) {
+    assert.equal(buildApplicationLayout({ ...previewInstaller, ...otherBuild }), 'asar')
+  }
 })
 
 test('macOS update bridge packaging removes only the fallback archive and refuses nested ASAR paths', (t) => {
