@@ -1,7 +1,6 @@
 // Container policy for the exact ZIP bytes inspected and handed to Squirrel.
-import { constants } from 'node:fs'
+import { constants, promises as nodeFs } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { lstat, open, opendir, readlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { join, posix } from 'node:path'
 import { createInflateRaw, inflateRawSync } from 'node:zlib'
@@ -123,6 +122,12 @@ interface SourceEntry {
   link: string | undefined
 }
 
+/** Filesystem operations on the mounted bundle must bypass Electron's ASAR view. */
+export interface MountedArchiveSource {
+  path: string
+  fs: Pick<typeof nodeFs, 'lstat' | 'open' | 'opendir' | 'readlink'>
+}
+
 function sourceMismatch(): never {
   throw new UpdateArchiveSourceMismatch('Cached ZIP differs from the mounted App')
 }
@@ -141,25 +146,25 @@ async function hashContents(chunks: AsyncIterable<Buffer>, size: number): Promis
 
 async function compareSourceTree(
   file: FileHandle,
-  application: string,
+  { path: application, fs }: MountedArchiveSource,
   entries: Map<string, SourceEntry>,
   signal?: AbortSignal
 ): Promise<void> {
   const compare = async (path: string, name: string): Promise<void> => {
     signal?.throwIfAborted()
     const entry = entries.get(name)
-    const info = await lstat(path)
+    const info = await fs.lstat(path)
     if (!entry || entry.host !== ZIP.unix || (entry.mode & 0xffff) !== (info.mode & 0xffff))
       sourceMismatch()
     entries.delete(name)
     if (info.isDirectory() && entry.directory) {
       if (entry.compressed !== 0 || entry.method !== ZIP.stored) sourceMismatch()
-      for await (const child of await opendir(path))
+      for await (const child of await fs.opendir(path))
         await compare(join(path, child.name), `${name}/${child.name}`)
       return
     }
     if (info.isSymbolicLink() && entry.link !== undefined) {
-      if ((await readlink(path)) !== entry.link) sourceMismatch()
+      if ((await fs.readlink(path)) !== entry.link) sourceMismatch()
       return
     }
     if (
@@ -169,7 +174,7 @@ async function compareSourceTree(
       entry.link !== undefined
     )
       sourceMismatch()
-    const sourceFile = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const sourceFile = await fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
     let expected
     try {
       expected = await hashContents(
@@ -237,20 +242,20 @@ export function assertMeasuredUpdateArchive(budget: UpdateArchiveBudget & { size
  * and compression overhead are accounted for by inspecting the generated ZIP.
  */
 export async function preflightApplicationArchive(
-  application: string,
+  { path: application, fs }: MountedArchiveSource,
   signal?: AbortSignal
 ): Promise<UpdateArchiveBudget> {
   const budget = { entries: 0, metadata: 0, expanded: 0 }
   const visit = async (path: string, name: string): Promise<void> => {
     signal?.throwIfAborted()
-    const info = await lstat(path)
+    const info = await fs.lstat(path)
     budget.entries++
     budget.metadata += ZIP.centralBytes + Buffer.byteLength(name) + Number(info.isDirectory())
     if (info.isFile()) budget.expanded += info.size
-    else if (info.isSymbolicLink()) budget.expanded += Buffer.byteLength(await readlink(path))
+    else if (info.isSymbolicLink()) budget.expanded += Buffer.byteLength(await fs.readlink(path))
     assertBudget(budget)
     if (info.isDirectory())
-      for await (const entry of await opendir(path))
+      for await (const entry of await fs.opendir(path))
         await visit(join(path, entry.name), `${name}/${entry.name}`)
   }
   await visit(application, APP)
@@ -315,9 +320,9 @@ function entryPath(raw: Buffer): string {
 export async function verifyApplicationArchive(
   path: string,
   signal?: AbortSignal,
-  source?: string
+  source?: MountedArchiveSource
 ): Promise<UpdateArchiveBudget> {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  const file = await nodeFs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     return await verifyApplicationArchiveFile(file, signal, source)
   } finally {
@@ -329,7 +334,7 @@ export async function verifyApplicationArchive(
 export async function verifyApplicationArchiveFile(
   file: FileHandle,
   signal?: AbortSignal,
-  source?: string
+  source?: MountedArchiveSource
 ): Promise<UpdateArchiveBudget> {
   const info = await file.stat()
   if (!info.isFile() || info.size >= ZIP.zip64 || info.size < ZIP.endBytes) invalid()
