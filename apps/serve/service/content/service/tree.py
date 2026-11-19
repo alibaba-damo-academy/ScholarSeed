@@ -41,7 +41,7 @@ from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
-from service.content.domain.model import ContentError, root_relative, visible
+from service.content.domain.model import OUTSIDE_GRANT_ERRORS, ContentError, root_relative, visible
 from service.content.service.repository import RepositoryLookup
 from service.content.service.space import SEPARATOR, Mount, ProjectSpace
 from service.platform.content import (
@@ -343,7 +343,16 @@ def flat_tree(
         check_mount(path)
         # POSIX local children share the request's resolved project boundary.
         # Resolve the target again in case a queued directory became a link.
-        directory = space.absolute(path, reuse_project_root=classify_directory)
+        try:
+            directory = space.absolute(path, reuse_project_root=classify_directory)
+        except ContentError as exc:
+            if path in roots or exc.code not in OUTSIDE_GRANT_ERRORS:
+                raise
+            # Keep the discovered row, but do not descend beyond its grant.
+            parents = None
+            if lookup is not None:
+                repositories[path] = None
+            continue
         already_visited = directory in visited
         if already_visited and not classify_directory:
             continue

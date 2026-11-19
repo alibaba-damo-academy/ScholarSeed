@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterator
 
-from service.content.domain.model import ContentError
+from service.content.domain.model import (
+    PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR,
+    PATH_OUTSIDE_PROJECT_ERROR,
+    ContentError,
+)
 from service.content.service.utils import open_directory
 from service.paths import PROJECT_DB_RELATIVE, PROJECT_VERSIONS_RELATIVE
 from service.platform.content import AssetKind, AssetOrigin, ProjectRef, RootKind
@@ -44,7 +48,7 @@ def project_database(root: Path) -> Iterator[Path | None]:
     opening SQLite, and finish all IO while this parent handle remains open.
     """
     with closing(open_directory(root, ())):
-        _within(root, PROJECT_DB_RELATIVE, "path_outside_project")
+        _within(root, PROJECT_DB_RELATIVE, PATH_OUTSIDE_PROJECT_ERROR)
         relative = PurePosixPath(PROJECT_DB_RELATIVE)
         try:
             parent = open_directory(root, tuple(relative.parent.parts))
@@ -62,7 +66,7 @@ def prepare_project_storage(root: Path) -> None:
     complete directory set before opening project storage.
     """
     with closing(open_directory(root, ())):
-        _within(root, PROJECT_DB_RELATIVE, "path_outside_project")
+        _within(root, PROJECT_DB_RELATIVE, PATH_OUTSIDE_PROJECT_ERROR)
         relative = PurePosixPath(PROJECT_DB_RELATIVE)
         prepare_private_directory(root, tuple(relative.parent.parts), role=DirectoryRole.PROJECT)
 
@@ -75,7 +79,7 @@ def project_version_storage(root: Path) -> Iterator[Path | None]:
     private directory or CAS lock is created by this read-only lookup.
     """
     with closing(open_directory(root, ())):
-        _within(root, PROJECT_VERSIONS_RELATIVE, "path_outside_project")
+        _within(root, PROJECT_VERSIONS_RELATIVE, PATH_OUTSIDE_PROJECT_ERROR)
         try:
             directory = open_directory(root, PurePosixPath(PROJECT_VERSIONS_RELATIVE).parts)
         except FileNotFoundError:
@@ -174,13 +178,13 @@ class ProjectSpace:
             return _within(
                 self.root,
                 cleaned,
-                "path_outside_project",
+                PATH_OUTSIDE_PROJECT_ERROR,
                 reuse_base=reuse_project_root and bool(cleaned),
             )
         remainder = cleaned[len(mount.mount_path) :].strip(SEPARATOR)
         if remainder and mount.kind is AssetKind.FILE:
-            raise ContentError("path_outside_authorized_root")
-        return _within(mount.source, remainder, "path_outside_authorized_root")
+            raise ContentError(PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR)
+        return _within(mount.source, remainder, PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR)
 
     def open_directory(self, relative: str) -> DirectoryHandle:
         """Pin the authorized logical directory without resolving symlink ancestors."""
@@ -189,7 +193,7 @@ class ProjectSpace:
         root = self.root if mount is None else mount.source
         remainder = cleaned if mount is None else cleaned[len(mount.mount_path) :].strip(SEPARATOR)
         if mount is not None and mount.kind is not AssetKind.DIR:
-            raise ContentError("path_outside_authorized_root")
+            raise ContentError(PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR)
         return open_directory(root, tuple(PurePosixPath(remainder).parts))
 
     # ---- 反向: 绝对 → 相对 ----
@@ -225,7 +229,7 @@ class ProjectSpace:
         tail = _relative_to(target, self.root)
         if tail is not None:
             return "" if tail == Path(".") else tail.as_posix()
-        raise ContentError("path_outside_project")
+        raise ContentError(PATH_OUTSIDE_PROJECT_ERROR)
 
     # ---- 归属判定 ----
 

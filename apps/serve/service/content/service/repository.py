@@ -6,14 +6,13 @@ import os
 import stat
 from pathlib import Path
 
-from service.content.domain.model import ContentError, resolve_root
+from service.content.domain.model import OUTSIDE_GRANT_ERRORS, ContentError, resolve_root
 from service.content.service.space import Mount, ProjectSpace
 from service.platform.content import AssetKind, AssetOrigin, RootKind
 from service.platform.storage import WINDOWS_PLATFORM
 
 GIT_MARKER = ".git"
 REPOSITORY_UNAVAILABLE_ERROR = "repository_unavailable"
-OUTSIDE_GRANT_ERRORS = frozenset({"path_outside_project", "path_outside_root"})
 
 
 class RepositoryLookup:

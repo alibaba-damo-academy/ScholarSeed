@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -15,7 +16,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from service.chat.service.settings import SettingsService
-from service.content.domain.model import ROOT_BUSY_ERROR
+from service.content.domain.model import (
+    PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR,
+    PATH_OUTSIDE_PROJECT_ERROR,
+    ROOT_BUSY_ERROR,
+    ContentError,
+)
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service import tree
 from service.content.service.port import ContentService, ProjectRegistry
@@ -438,6 +444,64 @@ class ResourceListingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json(), {"detail": ROOT_BUSY_ERROR})
         self.assertEqual(self.entries(), {})
+
+    def test_flat_listing_skips_descendants_of_directory_aliases_outside_their_grant(self) -> None:
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        (outside / ".git").mkdir()
+        (outside / "outside.md").touch()
+        granted = self.root.resolve() / "granted"
+        granted.mkdir()
+
+        for parent, denied in (
+            (self.resources, PATH_OUTSIDE_PROJECT_ERROR),
+            (granted, PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR),
+        ):
+            with self.subTest(denied=denied):
+                mount = (
+                    None
+                    if parent == self.resources
+                    else self.content.authorize_root_at(self.project.id, str(parent), "", "linked")
+                )
+                prefix = mount.mount_path if mount is not None else "resources"
+                alias = parent / "alias"
+                if os.name == "nt":
+                    subprocess.run(
+                        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(outside)],
+                        check=True,
+                        capture_output=True,
+                    )
+                else:
+                    alias.symlink_to(outside, target_is_directory=True)
+                try:
+                    (parent / "sibling.md").touch()
+                    with patch("service.content.service.tree.os.scandir", wraps=os.scandir) as scan:
+                        snapshot = self.listing_payload(incremental=True)
+                    self.assertNotIn(outside, [call.args[0] for call in scan.call_args_list])
+                    logical = f"{prefix}/alias"
+                    children = [
+                        row for row in snapshot["items"] if row["path"].rpartition("/")[0] == prefix
+                    ]
+                    self.assertEqual([row["name"] for row in children], ["alias", "sibling.md"])
+                    self.assertEqual(children[0]["kind"], "dir")
+                    self.assertFalse(children[0]["git_repository"])
+                    self.assertEqual(children[0]["link_root_id"], mount.root_id if mount else None)
+                    self.assertFalse(
+                        any(row["path"].startswith(f"{logical}/") for row in snapshot["items"])
+                    )
+                    self.assertEqual(snapshot["incremental"], {"parents": [], "supported": False})
+                    self.assertIsNone(self.listing_changes(f"{prefix}/sibling.md"))
+                    with self.assertRaises(ContentError) as root_error:
+                        self.content.flat_resource_tree(self.project.id, (logical,))
+                    self.assertEqual(root_error.exception.code, denied)
+                    with self.assertRaises(ContentError) as read_error:
+                        self.content.read_text(self.project.id, f"{logical}/outside.md")
+                    self.assertEqual(read_error.exception.code, denied)
+                finally:
+                    if os.name == "nt":
+                        alias.rmdir()
+                    else:
+                        alias.unlink()
 
     def test_capability_batch_does_not_read_settings_per_file(self) -> None:
         settings = SettingsService()
