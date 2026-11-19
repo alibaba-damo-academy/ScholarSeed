@@ -15,7 +15,7 @@
  */
 
 import type { TFunction } from 'i18next'
-import { useState, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 
 import { primaryLanguageSubtag } from '../../../../locale.ts'
 import {
@@ -189,15 +189,26 @@ export function isUpdateEntryVisible(state: UpdateSnapshot | null): boolean {
 
 export function useUpdateEntryPopup(state: UpdateSnapshot | null) {
   const [manuallyOpened, setManuallyOpened] = useState(false)
+  const [openedForCompletion, setOpenedForCompletion] = useState(false)
   const completionVisible = isUpdateCompletionVisible(state)
+  const hasCandidate = Boolean(state?.candidate)
+
+  useEffect(() => {
+    if (completionVisible) setOpenedForCompletion(true)
+    else if (!hasCandidate) setOpenedForCompletion(false)
+  }, [completionVisible, hasCandidate])
 
   return {
-    open: manuallyOpened || completionVisible,
+    open: manuallyOpened || completionVisible || (openedForCompletion && hasCandidate),
+    autoFocus: manuallyOpened,
     setManuallyOpened,
     setOpen(open: boolean): void {
       setManuallyOpened(open)
-      if (!open && completionVisible) {
-        void window.scholarseed.acknowledgeUpdateAnnouncement('completion')
+      if (!open) {
+        setOpenedForCompletion(false)
+        if (completionVisible) {
+          void window.scholarseed.acknowledgeUpdateAnnouncement('completion')
+        }
       }
     },
   }

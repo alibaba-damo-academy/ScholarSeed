@@ -747,6 +747,18 @@ let latestUpdateCandidate: LatestVersionMeta | null = null
 let lastPreparationDeferral: string | null = null
 
 function publishUpdateSnapshot(next: UpdateSnapshot, archiveLimitedId?: string): UpdateSnapshot {
+  // Once superseded, the previous success must not come back when the new result clears.
+  if (
+    updateStartupVerification === 'verified' &&
+    (next.candidate ||
+      next.phase === 'failed' ||
+      next.phase === 'rolled-back' ||
+      next.error ||
+      next.errorFallback ||
+      next.rollbackVersion !== undefined)
+  ) {
+    updateStartupVerification = undefined
+  }
   const stamped = withAnnouncedKey({
     ...next,
     startupVerification: updateStartupVerification,

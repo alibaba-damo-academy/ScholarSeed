@@ -927,6 +927,60 @@ test('a verified update opens its receipt and removes the rocket when dismissed'
   }
 })
 
+test('an automatic update receipt preserves focus and gives way to a new version', async () => {
+  await withFixture(async (page) => {
+    const entry = page.getByTestId('activity-update')
+    const panel = page.getByTestId('update-panel')
+    const title = panel.getByTestId('update-panel-title')
+    await expect(entry).toBeVisible()
+    const settings = page.getByRole('button', { name: 'Settings', exact: true })
+    await settings.focus()
+
+    const candidate = await page.evaluate(async () => {
+      const { candidate } = await window.scholarseed.getUpdateState()
+      ;(
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture.publish({
+        phase: 'up-to-date',
+        candidate: undefined,
+        startupVerification: 'verified',
+      })
+      return candidate
+    })
+    await expect(title).toHaveText('更新已完成并验证')
+    await expect(panel.getByTestId('update-panel-dismiss')).toBeVisible()
+    await expect(settings).toBeFocused()
+
+    await page.evaluate((candidate) => {
+      ;(
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture.publish({ phase: 'available', candidate, startupVerification: undefined })
+    }, candidate)
+    await expect(title).toHaveText('发现新版本')
+    await expect(settings).toBeFocused()
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+
+    await page.evaluate(() => {
+      ;(
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture.publish({ phase: 'up-to-date', candidate: undefined })
+    })
+    await expect(panel).toHaveCount(0)
+    await expect(entry).toHaveCount(0)
+
+    await page.evaluate((candidate) => {
+      ;(
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture.publish({ phase: 'available', candidate })
+    }, candidate)
+    await expect(entry).toBeVisible()
+    await expect(panel).toHaveCount(0)
+    await entry.click()
+    await expect(title).toHaveText('发现新版本')
+    await expect(panel.getByTestId('update-panel-close')).toBeFocused()
+  }, '/components/update.render.fixture.html')
+})
+
 test('update readiness never interrupts the focused settings control', async () => {
   await withFixture(async (page) => {
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
