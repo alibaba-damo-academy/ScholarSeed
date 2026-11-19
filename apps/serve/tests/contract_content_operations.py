@@ -31,6 +31,7 @@ from service.content.service.operations import (
     PROJECT_RECOVERY_PENDING,
     AdoptProject,
     ContentOperations,
+    CreateProject,
     ReconcileAuthorization,
     ReconcileProjectCreation,
     ReconcileProjectRemoval,
@@ -1500,13 +1501,69 @@ class ContentOperationContracts(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             self.catalog, "finish_operation", side_effect=AssertionError("closed write")
         ):
-            await operations.aclose()
+            await asyncio.sleep(0)
+            await asyncio.wait_for(operations.aclose(), timeout=2)
         with self.assertRaises(MaintenanceActive):
             operations.result("owner", identity)
         gate.resume(generation)
         self.assertEqual(operations.result("owner", identity)["state"], "queued")
         self.catalog.recover_operations()
         self.assertEqual(operations.result("owner", identity)["error"], OPERATION_INTERRUPTED)
+
+    async def test_accepted_creation_waits_for_maintenance_then_executes_once(self):
+        gate = Activities()
+        calls = []
+
+        async def execute(identity, _command):
+            calls.append(identity)
+            return {"id": "project"}
+
+        operations = ContentOperations(gate, execute, self.catalog)
+        await operations.start()
+        identity = operations.submit("owner", CreateProject("Project"))
+        generation = gate.begin()
+        try:
+            await asyncio.sleep(0)
+            self.assertEqual(self.catalog.operation_result("owner", identity)["state"], "queued")
+            self.assertEqual(calls, [])
+        finally:
+            gate.resume(generation)
+        await asyncio.wait_for(operations._operations[identity].finished.wait(), timeout=2)
+        try:
+            self.assertEqual(operations.result("owner", identity)["state"], "succeeded")
+            self.assertEqual(calls, [identity])
+        finally:
+            await operations.aclose()
+
+    async def test_terminal_write_waits_for_maintenance_without_reexecuting(self):
+        gate = Activities()
+        written = asyncio.Event()
+        finish = asyncio.Event()
+        calls = []
+
+        async def execute(identity, _command):
+            calls.append(identity)
+            written.set()
+            await finish.wait()
+            return {"id": "project"}
+
+        operations = ContentOperations(gate, execute, self.catalog)
+        await operations.start()
+        identity = operations.submit("owner", CreateProject("Project"))
+        await asyncio.wait_for(written.wait(), timeout=2)
+        generation = gate.begin()
+        try:
+            finish.set()
+            await asyncio.sleep(0)
+            self.assertEqual(self.catalog.operation_result("owner", identity)["state"], "running")
+        finally:
+            gate.resume(generation)
+        await asyncio.wait_for(operations._operations[identity].finished.wait(), timeout=2)
+        try:
+            self.assertEqual(operations.result("owner", identity)["state"], "succeeded")
+            self.assertEqual(calls, [identity])
+        finally:
+            await operations.aclose()
 
     async def test_result_is_owner_scoped_and_waits_for_mutation(self):
         entered, finish = asyncio.Event(), asyncio.Event()
