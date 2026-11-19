@@ -8819,44 +8819,92 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upstream.route_model("codex-auto-review"), "codex-auto-review")
         self.assertEqual(intent.capabilities.tool_protocol.value, "json_schema")
 
-    async def test_auto_is_a_fixed_deepseek_gateway_model(self) -> None:
+    async def test_builtin_deepseek_choices_bind_their_gateway_strategies(self) -> None:
         config = {"model_name": "qwen3.8-flash", "base_url": DEEPRD_GATEWAY_BASE_URL}
-        choice = model_module.resolve_model_choice("auto", config)
-        self.assertEqual(choice["label"], "Auto")
-        self.assertEqual(choice["model_name"], "bailian/deepseek-v4.1-flash-1017")
-        self.assertEqual(choice["route_kind"], "direct model")
-        self.assertEqual(choice["context_window"], 1_000_000)
-        self.assertEqual(choice["max_output_tokens"], 393_216)
-        self.assertTrue(choice["image_input"])
-        self.assertFalse(choice["pdf_input"])
-        self.assertEqual(choice["reasoning_efforts"], ["none", "low", "high", "max"])
-        effort = next(
-            option for option in choice["reasoning_options"] if option["kind"] == "effort"
-        )
-        self.assertEqual(effort["default"], "low")
-        selected = model_module.apply_model_to_config(config, choice)
-        self.assertEqual(converge_gateway_model_config(selected)["selected_model_key"], "auto")
-        self.assertEqual(model_module.current_model_key(selected), "auto")
-        self.assertIn("auto", {row["key"] for row in model_module.available_models(config)})
-        settings = SimpleNamespace(runtime_executable=lambda: "codex")
-        bridge = CompletionBridge("http://127.0.0.1:9999")
-        tokens = SimpleNamespace(current=lambda _user_id: "account-token")
-        service = ModelService(settings, bridge, account_tokens=tokens, activities=Activities())  # type: ignore[arg-type]
-        with patch.object(model_module, "load_builtin_work_config", return_value=selected):
-            spec = service.session_spec("auto", user_id="u-1")
-        intent, _ = spec.runtime_model()
-        self.assertEqual(intent.model_ref, "bailian/deepseek-v4.1-flash-1017")
-        self.assertEqual(intent.context_window, 1_000_000)
-        self.assertEqual(intent.capabilities.input_modalities, ("text", "image"))
-        self.assertEqual(intent.capabilities.reasoning_efforts, ("none", "low", "high", "max"))
-        self.assertEqual(intent.approval_model_ref, "")
-        self.assertEqual(spec.config["call_url"], f"{DEEPRD_GATEWAY_BASE_URL}/responses")
+        flash_id = "deepseek-v4.1-flash"
+        pro_id = "deepseek-v4-pro"
+        labels = {row["key"]: row["label"] for row in model_module.available_models(config)}
+        for key, label, wire_id, modalities, default_effort in (
+            ("auto", "Auto", flash_id, ("text", "image"), "low"),
+            (flash_id, "DeepSeek V4.1 Flash", flash_id, ("text", "image"), "low"),
+            (pro_id, "DeepSeek V4 Pro", pro_id, ("text",), "high"),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(labels.get(key), label)
+                choice = model_module.resolve_model_choice(key, config)
+                self.assertEqual(choice["model_name"], wire_id)
+                self.assertEqual(choice["route_kind"], "strategy")
+                self.assertEqual(choice["context_window"], 1_000_000)
+                self.assertEqual(choice["max_output_tokens"], 393_216)
+                self.assertEqual(choice["image_input"], "image" in modalities)
+                self.assertFalse(choice["pdf_input"])
+                self.assertEqual(choice["reasoning_efforts"], ["none", "low", "high", "max"])
+                effort = next(
+                    option for option in choice["reasoning_options"] if option["kind"] == "effort"
+                )
+                self.assertEqual(effort["default"], default_effort)
+                selected = model_module.apply_model_to_config(config, choice)
+                self.assertEqual(converge_gateway_model_config(selected)["selected_model_key"], key)
+                self.assertEqual(model_module.current_model_key(selected), key)
+                settings = SimpleNamespace(runtime_executable=lambda: "codex")
+                bridge = CompletionBridge("http://127.0.0.1:9999")
+                tokens = SimpleNamespace(current=lambda _user_id: "account-token")
+                service = ModelService(settings, bridge, account_tokens=tokens, activities=Activities())  # type: ignore[arg-type]
+                with patch.object(model_module, "load_builtin_work_config", return_value=selected):
+                    spec = service.session_spec(key, user_id="u-1")
+                intent, _ = spec.runtime_model()
+                self.assertEqual(intent.model_ref, wire_id)
+                self.assertEqual(intent.context_window, 1_000_000)
+                self.assertEqual(intent.capabilities.input_modalities, modalities)
+                self.assertEqual(
+                    intent.capabilities.reasoning_efforts, ("none", "low", "high", "max")
+                )
+                self.assertEqual(intent.approval_model_ref, "")
+                self.assertEqual(spec.config["call_url"], f"{DEEPRD_GATEWAY_BASE_URL}/responses")
+
+    def test_builtin_deepseek_snapshot_config_converges_to_the_strategy(self) -> None:
+        flash_snapshot = "bailian/deepseek-v4.1-flash-1017"
+        pro_snapshot = "bailian/deepseek-v4-pro-0813"
+        for old_key, snapshot, key, strategy in (
+            ("auto", flash_snapshot, "auto", "deepseek-v4.1-flash"),
+            ("", flash_snapshot, "auto", "deepseek-v4.1-flash"),
+            (flash_snapshot, flash_snapshot, "deepseek-v4.1-flash", "deepseek-v4.1-flash"),
+            (pro_snapshot, pro_snapshot, "deepseek-v4-pro", "deepseek-v4-pro"),
+        ):
+            with self.subTest(old_key=old_key):
+                config = {
+                    "provider": "openai",
+                    "base_url": DEEPRD_GATEWAY_BASE_URL,
+                    "selected_model_key": old_key,
+                    "model_name": snapshot,
+                    "small_model_name": snapshot,
+                    "reasoning_effort": "max",
+                }
+                migrated = converge_gateway_model_config(config)
+                self.assertEqual(migrated["selected_model_key"], key)
+                self.assertEqual(migrated["model_name"], strategy)
+                self.assertEqual(migrated["small_model_name"], strategy)
+                self.assertEqual(migrated["reasoning_effort"], "max")
+                self.assertEqual(model_module.current_model_key(migrated), key)
+                self.assertEqual(converge_gateway_model_config(migrated), migrated)
+                self.assertEqual(config["model_name"], snapshot)
+
+        external = {**config, "base_url": "https://personal.example/v1"}
+        self.assertEqual(converge_gateway_model_config(external), external)
 
     async def test_builtin_qwen_uses_independent_auto_review_model(self) -> None:
         config = {"model_name": "qwen3.8-max", "base_url": DEEPRD_GATEWAY_BASE_URL}
         self.assertEqual(
             {row["key"] for row in GATEWAY_MODEL_CATALOG},
-            {"auto", "qwen4-max", "qwen3.8-max", "qwen3.8-flash", "qwen3-next-80b-a3b-thinking"},
+            {
+                "auto",
+                "deepseek-v4.1-flash",
+                "deepseek-v4-pro",
+                "qwen4-max",
+                "qwen3.8-max",
+                "qwen3.8-flash",
+                "qwen3-next-80b-a3b-thinking",
+            },
         )
         settings = SimpleNamespace(runtime_executable=lambda: "codex")
         bridge = CompletionBridge("http://127.0.0.1:9999")
@@ -8884,7 +8932,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             )
         reviewer = model_module.resolve_model_choice(intent.approval_model_ref, config)
         self.assertEqual(reviewer["route_kind"], "strategy")
-        for old_model in ("qwen", "qwen3.7-plus", "deepseek-v4-pro", "gpt-5.5"):
+        for old_model in ("qwen", "qwen3.7-plus", "gpt-5.5"):
             with self.assertRaises(ValueError):
                 model_module.resolve_model_choice(old_model, config)
             converged = converge_gateway_model_config(

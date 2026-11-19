@@ -23,17 +23,20 @@ is an exception to report to main, not permission to invent facts or drop the fi
 Author a matched visual specification and reader-facing caption:
 - _prompt specifies visible objects, labels, layout, relationships, legend and style.
   Include relevant user decisions. The raster API receives only this field.
-- _caption explains the supported visual in concise prose. Preserve qualifications.
+- _caption introduces the subject and explains one scientific relationship
+  that helps the reader interpret it. Keep detailed discussion in the chapter.
   Caption language is independent of an explicit in-image language exception.
 - Use plain Unicode caption text. The publisher owns escaping, numbering, wrappers
   and watermarking. Keep caption prose separate from image instructions.
 
-Preserve preparation_id, figure IDs, ownership, purpose and scientific content.
-Choose the visual realization within that plan and the deliverable's available
-page width. Preserve legible labels at the final embedded size: wrap labels and
-reflow broad hierarchies rather than shrinking the complete diagram to fit.
-Keep every required node, relationship and qualification during layout changes.
-A changed scientific scope goes back to main for an outline decision.
+Before submitting, read the proposed drawing at the deliverable's intended width:
+can readers scan the groups in order and find each label near its object?
+Balance dense and sparse areas. Keep peer alternatives visually distinct
+and allow simple connections wherever useful. Check the actual _prompt for
+the user's figure-specific style and label language. Reflow crowded panels and
+leave incidental examples for the chapter. Preserve
+the preparation_id, figure IDs, ownership and every explicitly required element
+and scientific qualification. Refer changes of scientific scope to main.
 
 ## Rendering request
 

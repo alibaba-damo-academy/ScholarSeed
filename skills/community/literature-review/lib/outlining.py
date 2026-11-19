@@ -136,6 +136,24 @@ table_id, row_unit, comparison_dimensions. Final columns are
 [row_unit, *comparison_dimensions]. Keep drawing guidance separate from content.
 purpose explains why this asset serves the argument; content_plan specifies what
 it compares or shows, retaining scientific conditions. Row/column fields do not replace them.
+For each figure, use purpose to state the question a reader should be able to
+answer by looking. Choose a visual task that fits it (e.g. follow a mechanism,
+compare alternatives on a shared axis, or trace a family tree). In content_plan
+identify the essential visible relationship and the evidence that justifies it.
+For a conceptual overview, plan a drawable scene. Start content_plan with
+what the reader sees an object do, what changes between the compared cases,
+and where a combined case shares a component. Treat method families as peers.
+For comparisons, suggest a shared alignment or neighboring panels and leave
+connector routing to the illustrator. Give each group room for its labels.
+Use directional flow for relationships that have an order. Keep study names and
+variants in the chapter's analysis_task and paper_ids unless the user wants
+a taxonomy, timeline or named examples in the picture. A broad overview can
+cover several families through one representative operation per family.
+Draft a caption that introduces the subject and gives the reader a useful
+scientific distinction. Leave extended interpretation, examples and limitations
+to the owning paragraph. Preserve everything explicitly requested in the
+figure. Carry any requested style, palette and in-image language into the relevant
+figure's visual_guidance, respecting whether it applies locally or across figures.
 Empty asset paper_ids leaves the corpus eligible, not permission to invent evidence.
 Omit unused optional fields, or use their typed empty values: "qualifications": []
 and "visual_guidance": "". With a supported qualification, use an array such as
@@ -211,10 +229,10 @@ def _example(scope, include_table=True, include_figure=True):
         section["figures"] = [
             {
                 "figure_id": "F1",
-                "purpose": "Help readers distinguish the mechanisms being compared.",
-                "content_plan": "Show the evidence-supported components of [[paper:P01]] and [[paper:P02]] in separate panels, preserving their stated inputs and outputs.",
+                "purpose": "Where do the two approaches transform their inputs differently?",
+                "content_plan": "Follow the same input through the two documented transformations. Enlarge the point where their actions diverge and show each resulting output. The surrounding paragraph locates the representative studies.",
                 "caption_draft": "Mechanisms and input-output boundaries of the compared approaches",
-                "visual_guidance": "Place [[paper:P01]] in the left panel and [[paper:P02]] in the right panel. Use a consistent visual style without implying an unsupported inheritance relationship.",
+                "visual_guidance": "Give the two alternatives equal panel space and align corresponding features. Put a short label beside each depicted change.",
                 "paper_ids": ["P01", "P02"],
                 "qualifications": [],
             }

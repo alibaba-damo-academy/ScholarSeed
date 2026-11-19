@@ -41,6 +41,7 @@ class ModelEnvironmentContractTest(unittest.TestCase):
             stages = json.loads((ROOT / "config" / filename).read_text())["stages"]
             self.assertEqual(stages["outline_generation"]["temperature"], 0.6)
             self.assertIs(stages["outline_generation"]["thinking"], True)
+            self.assertEqual(stages["outline_generation"]["reasoning_effort"], "low")
             for stage in ("chapter_generation", "refinement_delta"):
                 self.assertEqual(stages[stage]["temperature"], 0.2)
                 self.assertIs(stages[stage]["thinking"], False)

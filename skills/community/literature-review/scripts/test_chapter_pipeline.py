@@ -32,7 +32,9 @@ class PacketTest(unittest.TestCase):
                 self.assertNotIn('tabularx', prompt)
                 self.assertNotIn('CAPTION CONTENT', prompt)
                 table_prompt = chapter_system({'chapter_kind': 'section', 'output_format': 'latex_pdf',
-                                               'shared_tables': [{'table_id': 'T1'}]})
+                                               'shared_tables': [{'table_id': 'T1'}]}, table_template='neurips')
+                self.assertIn('Active LaTeX publication template: neurips', table_prompt)
+                self.assertIn('standalone longtable by default', table_prompt)
                 self.assertIn('tabularx', table_prompt)
                 self.assertIn('CAPTION CONTENT', table_prompt)
 

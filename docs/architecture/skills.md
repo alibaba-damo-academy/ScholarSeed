@@ -1,13 +1,11 @@
 # Skill ownership, product packaging and discovery
 
-Development workflow Skills are maintained only in the private documentation repository.
-They are not shipped in this checkout and are not prerequisites for public development, review,
-CI or packaging. Read the applicable `AGENTS.md`, public Owner contracts and executable tool help.
-Do not recreate a host-Skill link or require a private parent to run public engineering commands.
+An independent ScholarSeed checkout is the workspace for public development. Read the
+applicable `AGENTS.md`, project contracts, and executable tool help.
 
 | Surface | Maintained owner | Verification |
 | --- | --- | --- |
-| Developer workflow Skills | Private supplements and their coding host | Private link checks and actual host invocation |
+| Developer workflow Skills | Source repository under `.agents/skills/` | Standalone coding-host discovery and invocation |
 | Bundled product Skills | `skills/community/`, registry and Serve capabilities | Source and installed artifact contracts and the real product flow |
 | User-installed Skills | Serve paths and capabilities | Isolated user lifecycle; never bundle user assets |
 | Runtime discovery | Serve explicit roots and Codex adapter isolation | Runtime contracts; not coding-host discovery |
@@ -23,12 +21,19 @@ node --experimental-transform-types apps/desktop/scripts/ci/find.mjs --list
 <a id="中文边界"></a>
 ## Development workflow boundary
 
-Development workflow Skills have moved to the private documentation repository. Their bodies,
-discovery links, and host gates are not retained in the source repository. The source repository
-continues to maintain its `AGENTS.md` files, public engineering tools, and product Skills
-independently; internal helper workflows are not prerequisites for public development. Product
-Skill source, user-installed Skills, and coding-host Skills must remain isolated. Moving development
-Skills does not change product packaging or discovery rules.
+1. **Standalone development.** A coding host launched from the repository root must be able to
+   discover and run project development Skills in an independent checkout without a separate plugin
+   or a parent workspace.
+2. **Separate discovery and packaging.** The coding host discovers development Skills under
+   `.agents/skills/`. The product bundles its own Skills from `skills/community/` and manages
+   user-installed Skills through its runtime.
+3. **One maintained source.** Keep each project development Skill and its resources in one
+   authoritative directory. Other entry points link to the maintained source.
+   Project documentation and Skill instructions use repository-relative links for project rules,
+   procedures, and resources. These references must resolve within the distributed source tree.
+4. **Verify discovery and distribution.** Check that the distributed source includes the reviewed
+   development Skills and the resources they reference. Verify actual load paths and invocation
+   from an independent checkout of that source.
 
 <a id="产品源码与-pack"></a>
 ## Product source and pack
