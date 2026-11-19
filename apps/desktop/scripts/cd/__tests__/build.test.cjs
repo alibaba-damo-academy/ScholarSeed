@@ -691,7 +691,10 @@ test('the updater never blocks the main process with a synchronous spawn', () =>
   assert.match(SUBPROCESS_SOURCE, /child\.kill\('SIGKILL'\)/)
   assert.match(UPDATER_SOURCE, /MACOS_MOUNT_COMMAND_TIMEOUT_MS/)
   assert.match(UPDATER_SOURCE, /MACOS_SIGNATURE_COMMAND_TIMEOUT_MS/)
-  assert.match(UPDATER_SOURCE, /MACOS_STAGE_COPY_TIMEOUT_MS/)
+  assert.match(
+    UPDATER_SOURCE,
+    /await runLoggedCommand\(\s*log,\s*'archive mounted application',\s*MACOS_DITTO,\s*archiveApplicationArguments\(source, archive\),\s*\{\s*timeoutMs:\s*MACOS_ARCHIVE_TIMEOUT_MS\b/
+  )
 })
 test('runtime store 收敛为 <home>/runtime，独立覆盖轴已删除（proposal 112）', () => {
   // 旧组件 store 根解析口在 components.cjs；backend 经
@@ -862,7 +865,7 @@ test('every snapshot the shell publishes carries the announcement acknowledgemen
   // 部分发布点是新构造的对象而不是展开当前快照；漏盖一次就等于把用户的确认丢掉。
   assert.match(
     SHELL_SOURCE,
-    /function publishUpdateSnapshot\(next: UpdateSnapshot\): UpdateSnapshot \{\s*const stamped = withAnnouncedKey\(\{\s*\.\.\.next,[\s\S]*?restartPending:/
+    /function publishUpdateSnapshot\([^\n)]*\): UpdateSnapshot \{\s*const stamped = withAnnouncedKey\(\{\s*\.\.\.next,[\s\S]*?\brestartPending:[\s\S]*?\}\)\s*updateSnapshot = stamped\s*sendToMainWindow\('scholarseed:update-state', stamped\)/
   )
   assert.match(SHELL_SOURCE, /updateSnapshot = withAnnouncedKey\(/)
   assert.match(SHELL_SOURCE, /scholarseed:update-announce-ack/)
