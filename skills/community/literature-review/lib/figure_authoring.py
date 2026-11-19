@@ -23,15 +23,29 @@ PROMPT_GUIDANCE = '''For image mode, write _prompt for the image model, not for 
 Design the visual and its caption together from one supported figure concept.
 Implement the confirmed purpose, content_plan and qualifications without changing
 the scientific meaning. Apply visual_guidance to its presentation.
-State the central object, concrete visible elements and their short labels, their
-positions/grouping, and the direction and meaning of arrows or other connections.
-Describe the legend when colors or symbols encode roles. Use meaningful icons
-selectively and a balanced, information-dense layout without clutter or large
-empty regions. Do not copy a domain example or invent a mechanism/number to fill
-space. Preserve the conditions needed to interpret the visible relations.
-Default to a clean academic conceptual diagram: flat vector, white background,
-simple geometric shapes, thin outlines, sans-serif labels, one color per role,
-no gradients, 3D or drop shadows. Explicit user style choices take precedence.
+For an overview, design the page before detailing individual objects. Give the
+reader clear groups to compare: aligned headings, balanced panel widths, similar
+scale for peer mechanisms and even gutters. A pale tint can hold a family of
+methods together; a shared band can introduce context or give a synthesis.
+Choose the arrangement that suits the question and the user's preferred layout.
+Draw a recognizable operation inside each group. Put a few short labels beside
+their objects. Give a crowded group more room or move secondary detail into
+prose. Use natural reading order. A short connector can clarify a meaningful
+flow; panel membership and alignment already communicate many relationships.
+Leave line routing to the illustrator. Use a key only if readers need one.
+
+Default editorial style: paper white, charcoal lettering, fine ink contours
+and a clear sans-serif hierarchy. Use deep green (#2C5545) and slate blue
+(#64848A) on peer groups, with terracotta (#AC7058) or ochre (#C58B2B) as
+a selective accent. Use light panel washes, restrained outlines and small
+concrete illustrations within the shared grid. Let labels or distinct
+silhouettes carry the distinction in grayscale. At print width each panel
+should have one clear point of entry and enough room around its text.
+
+Explicit user style choices take precedence. Write the requested style into
+the applicable image prompt, including concrete drawing cues (for a cartoon,
+for example, expressive silhouettes and clear ink contours). Adapt the default
+palette and treatment to the request while preserving scientific relationships.
 The prompt and in-image labels follow the requested language and local exceptions;
 keep method/model/dataset proper names recognizable. If bilingual labels help,
 use Chinese (English) consistently within a level rather than English (Chinese).
@@ -48,12 +62,15 @@ one supported concept. Use purpose/content_plan for meaning and caption_draft
 as a starting point, refining it to match the planned visual. visual_guidance
 belongs to the drawing, not caption prose.
 
-For a simple conceptual diagram, normally describe the central object and its
-organizing relationship in one concise sentence. Add panel/legend explanations
-or supported qualifications when needed. Describe the specific visible elements
-in _prompt/_latex_body; do not retell the section or survey or assert a finding
-the image does not establish. Aesthetic choices, image-model behavior,
-crop/watermark steps and pipeline metadata are not publication content.
+For a conceptual figure, give the reader a compact standalone explanation.
+Use one or two sentences: introduce the subject, then explain the most useful
+contrast, connection or condition in the picture. Around 25–45 English words
+is a practical budget; in Chinese use one or two comparably informative sentences.
+Adjust to the complexity and language instead of padding to a quota.
+Put necessary symbol keys on the artwork. Keep the panel inventory and
+line-by-line walkthrough out of the caption. The surrounding prose develops
+the mechanism and evidence. Retain essential units, uncertainty definitions
+and explicit venue or user rules.
 Follow the requested caption language independently of in-image label exceptions.
 Use third-person present tense in English and direct descriptive prose in Chinese.
 ''' + '\n' + CAPTION_CONTENT_GUIDANCE + '''

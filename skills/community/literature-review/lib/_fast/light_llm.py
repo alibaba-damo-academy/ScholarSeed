@@ -349,6 +349,8 @@ class _OpenAICompatLLM(LightLLM):
         # response_format={"type": "json_object"}); harmless when absent.
         if kwargs.get("response_format"):
             create_kwargs["response_format"] = kwargs["response_format"]
+        if kwargs.get("reasoning_effort") is not None:
+            create_kwargs["reasoning_effort"] = kwargs["reasoning_effort"]
         from request_capacity import configured_check
         configured_check(create_kwargs["model"],create_kwargs["messages"],create_kwargs["max_tokens"])
         return create_kwargs
