@@ -344,7 +344,7 @@ The release result identifies the bridge as `application_layout: directory` and
 its build output has the `-update-bridge` suffix. Ordinary macOS and Windows
 packages keep the ASAR layout.
 
-For the `202611181656` preview client, assign the bridge a build newer than
+For the `202611181656` release client, assign the bridge a build newer than
 `202611191815`, since the legacy client retains the newest candidate it has
 seen. Assign the subsequent ordinary release a newer build than the bridge.
 Before making that release available, verify that the release service still
@@ -357,8 +357,8 @@ controls candidate selection and release availability.
 
 macOS 过渡包使用 `--macos-update-bridge` 构建，应用代码放在
 `Contents/Resources/app`。构建和挂载后都检查整棵 App 树没有 ASAR 路径，并继续核验
-冻结的 JavaScript、受保护的入口、原生库、正式签名与公证。`202611181656` 预览客户端
-会保留已看到的最新候选，因此过渡包构建号必须高于 `202611191815`，后续普通版还要高于
+冻结的 JavaScript、受保护的入口、原生库、正式签名与公证。`release` 渠道的 `202611181656`
+客户端会保留已看到的最新候选，因此过渡包构建号必须高于 `202611191815`，后续普通版还要高于
 过渡包。开放普通新版前，应验证发布服务仍会向受影响的来源构建提供过渡包，支持下载和在线
 安装授权，并向过渡版提供普通新版。在各受影响的 macOS 架构上保留旧失败现场和现有用户
 数据，用签名包实测两次升级和数据保留。该构建参数只选择应用布局，发布服务负责候选选取
