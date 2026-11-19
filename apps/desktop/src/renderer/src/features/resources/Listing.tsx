@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useSyncExternalStore } from 'react'
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronRight, EllipsisVertical, Plus } from 'lucide-react'
 
@@ -33,6 +33,7 @@ import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
 import type { ResourceNode } from './state'
 import { fetchResourceListing } from './api'
+import { createResourceListingRefresh, type ResourceListingRefresh } from './refresh'
 import { resourceProjectRevision, subscribeResourceRevisions } from './revision'
 import { subscribeFileEvents } from '../project/events'
 import { refreshesResourceTree } from './lifecycle'
@@ -54,6 +55,7 @@ export function ResourceListing(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const listingRefresh = useRef<ResourceListingRefresh | null>(null)
   const resource = state.resource
   const project = state.homeSelectedProjectId
   useEffect(() => {
@@ -67,23 +69,25 @@ export function ResourceListing(): React.JSX.Element {
     resourceProjectRevision(project)
   )
   useEffect(() => {
-    let active = true
-    setLoading(true)
-    setFailed(false)
-    if (!project) {
-      setNodes([])
-      setLoading(false)
-      return
-    }
-    void fetchResourceListing(project).then((result) => {
-      if (!active) return
-      setLoading(false)
-      setFailed(result === null)
-      if (result) setNodes(result)
-    })
+    if (!project) return
+    const reader = createResourceListingRefresh(
+      () => fetchResourceListing(project),
+      (result) => {
+        setLoading(false)
+        setFailed(result === null)
+        if (result) setNodes(result)
+      }
+    )
+    listingRefresh.current = reader
     return () => {
-      active = false
+      reader.dispose()
+      listingRefresh.current = null
     }
+  }, [project])
+  useEffect(() => {
+    setLoading(Boolean(project))
+    setFailed(false)
+    listingRefresh.current?.request()
   }, [project, resource.tree, revision, state.resourceRevision, refresh])
   useEffect(() => {
     if (!project) return
