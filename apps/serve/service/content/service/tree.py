@@ -341,7 +341,9 @@ def flat_tree(
     while pending:
         path, classify_directory = pending.popleft()
         check_mount(path)
-        directory = space.absolute(path)
+        # POSIX local children share the request's resolved project boundary.
+        # Resolve the target again in case a queued directory became a link.
+        directory = space.absolute(path, reuse_project_root=classify_directory)
         already_visited = directory in visited
         if already_visited and not classify_directory:
             continue

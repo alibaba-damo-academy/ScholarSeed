@@ -158,17 +158,25 @@ class ProjectSpace:
                 return mount
         return None
 
-    def absolute(self, relative: str) -> Path:
+    def absolute(self, relative: str, *, reuse_project_root: bool = False) -> Path:
         """相对路径 → 绝对路径, 越界即拒绝。
 
         命中挂载前缀时落到外部真实路径; 否则落在项目根内。两条分支都在
         `resolve()` 之后复核归属, 只做字符串前缀比较会被 symlink 绕过。
+
+        A qualified traversal can reuse its resolved project root for nonempty
+        local paths. The target and its ancestors are still resolved live.
         """
 
         cleaned = normalize(relative)
-        mount = self.mount_for(cleaned)
+        mount = self.mount_for(cleaned) if self.mounts else None
         if mount is None:
-            return _within(self.root, cleaned, "path_outside_project")
+            return _within(
+                self.root,
+                cleaned,
+                "path_outside_project",
+                reuse_base=reuse_project_root and bool(cleaned),
+            )
         remainder = cleaned[len(mount.mount_path) :].strip(SEPARATOR)
         if remainder and mount.kind is AssetKind.FILE:
             raise ContentError("path_outside_authorized_root")
@@ -256,10 +264,10 @@ def _relative_to(target: Path, base: Path) -> Path | None:
         return None
 
 
-def _within(base: Path, relative: str, error: str) -> Path:
+def _within(base: Path, relative: str, error: str, *, reuse_base: bool = False) -> Path:
     """把相对路径解析到 base 内, 越界即拒绝。"""
 
-    resolved_base = base.expanduser().resolve()
+    resolved_base = base if reuse_base else base.expanduser().resolve()
     if not relative:
         return resolved_base
     target = (resolved_base / relative).resolve()

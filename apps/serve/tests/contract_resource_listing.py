@@ -272,9 +272,9 @@ class ResourceListingTests(unittest.TestCase):
         original = ProjectSpace.absolute
         resolved = []
 
-        def record_resolution(scope, path):
+        def record_resolution(scope, path, **options):
             resolved.append(path)
-            return original(scope, path)
+            return original(scope, path, **options)
 
         with patch.object(ProjectSpace, "absolute", record_resolution):
             rows = self.entries()
@@ -294,10 +294,13 @@ class ResourceListingTests(unittest.TestCase):
         (self.resources / "alias").symlink_to("repository/nested", target_is_directory=True)
         original = ProjectSpace.absolute
         resolved = []
+        reused_roots = []
 
-        def record_resolution(scope, path):
+        def record_resolution(scope, path, **options):
             resolved.append(path)
-            return original(scope, path)
+            if options.get("reuse_project_root"):
+                reused_roots.append(path)
+            return original(scope, path, **options)
 
         with patch.object(ProjectSpace, "absolute", record_resolution):
             tree = self.content.flat_resource_tree(
@@ -311,6 +314,7 @@ class ResourceListingTests(unittest.TestCase):
         self.assertEqual(resolved.count("resources/alias"), 2)
         self.assertEqual(resolved.count("resources/repository"), 1)
         self.assertEqual(resolved.count("resources/repository/nested"), 1)
+        self.assertEqual(reused_roots, ["resources/repository", "resources/repository/nested"])
 
     def test_git_classification_preserves_flat_payload_and_grant_boundaries(self) -> None:
         repository = self.resources / "repository"

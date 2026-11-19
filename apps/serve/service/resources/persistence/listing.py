@@ -147,16 +147,22 @@ class ResourceListingCatalog:
         nodes: tuple[AssetTree, ...],
         existing: dict[str, ResourceListEntry],
     ) -> tuple[ResourceListEntry, ...]:
-        entries = []
-        present = {node.asset.path for node in nodes}
-        for path in existing.keys() - present:
-            connection.execute(f"DELETE FROM {LISTING_TABLE} WHERE path=?", (path,))
+        result = []
+        updates = []
         for node in nodes:
             entry = _entry(node.asset, node.updated_at)
             previous = existing.get(entry.path)
-            source = previous.source if previous else None
-            entry = replace(entry, source=source or entry.source)
+            if previous is not None and previous.source and previous.source != entry.source:
+                entry = replace(entry, source=previous.source)
             if entry != previous:
-                connection.execute(UPSERT_LISTING, asdict(entry))
-            entries.append(entry)
-        return tuple(entries)
+                updates.append(vars(entry))
+            result.append(entry)
+        present = {node.asset.path for node in nodes}
+        removed = existing.keys() - present
+        if removed:
+            connection.executemany(
+                f"DELETE FROM {LISTING_TABLE} WHERE path=?", ((path,) for path in removed)
+            )
+        if updates:
+            connection.executemany(UPSERT_LISTING, updates)
+        return tuple(result)
