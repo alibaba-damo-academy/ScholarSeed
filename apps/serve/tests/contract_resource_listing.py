@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from service.chat.service.settings import SettingsService
+from service.content.domain.model import ROOT_BUSY_ERROR
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.tree import PAGE_SIZE
@@ -126,6 +128,45 @@ class ResourceListingTests(unittest.TestCase):
             rows = self.entries()
         self.assertTrue(called)
         self.assertIn("resources/worker.md", rows)
+
+    def test_wide_flat_listing_reads_each_directory_once(self) -> None:
+        nested = self.resources / "nested"
+        nested.mkdir()
+        for index in range(PAGE_SIZE + 1):
+            (nested / f"file-{index:03}.md").touch()
+        scans = []
+        original = os.scandir
+
+        def count_scans(path):
+            if path in (self.resources, nested):
+                scans.append(path)
+            return original(path)
+
+        with patch("service.content.service.tree.os.scandir", side_effect=count_scans):
+            rows = self.entries()
+
+        self.assertEqual(len(rows), PAGE_SIZE + 2)
+        self.assertEqual(scans, [self.resources, nested])
+
+    def test_flat_listing_discards_metadata_if_mount_is_revoked_during_scan(self) -> None:
+        external = self.root.resolve() / "external"
+        external.mkdir()
+        (external / "private.md").touch()
+        mount = self.content.authorize_root_at(self.project.id, str(external), "", "linked")
+        original = os.scandir
+
+        def revoke_after_open(path):
+            opened = original(path)
+            if path == external:
+                self.content.revoke_root(mount.root_id, self.project.id)
+            return opened
+
+        with patch("service.content.service.tree.os.scandir", side_effect=revoke_after_open):
+            response = self.client.get("/api/resource/list", params={"project": self.project.id})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {"detail": ROOT_BUSY_ERROR})
+        self.assertEqual(self.entries(), {})
 
     def test_capability_batch_does_not_read_settings_per_file(self) -> None:
         settings = SettingsService()

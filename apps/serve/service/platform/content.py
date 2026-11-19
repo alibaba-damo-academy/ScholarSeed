@@ -852,6 +852,10 @@ class ContentPort(Protocol):
         """Enumerate every file in resource and linked roots with a stable cursor."""
         ...
 
+    def flat_resource_tree(self, project_id: str, roots: tuple[str, ...]) -> tuple[AssetTree, ...]:
+        """List all visible descendants under the requested authorized resource directories."""
+        ...
+
     def scan_resources(
         self,
         project_id: str,

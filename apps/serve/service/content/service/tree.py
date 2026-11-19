@@ -35,6 +35,8 @@
 from __future__ import annotations
 
 import os
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 
 from service.content.domain.model import ContentError, visible
@@ -152,7 +154,9 @@ def _child_total(space: ProjectSpace, directory: Path, relative: str, origin: As
     return len(_listing(space, directory, relative, origin)[0])
 
 
-def _mount_node(space: ProjectSpace, mount: Mount, depth: int, conflict: bool) -> AssetTree:
+def _mount_node(
+    space: ProjectSpace, mount: Mount, depth: int, conflict: bool, *, count_children: bool = True
+) -> AssetTree:
     """挂载点节点。目录扫描子树；文件直接成为叶子，二者一律标 LINK。"""
 
     available = mount.source.is_dir() if mount.kind is AssetKind.DIR else mount.source.is_file()
@@ -181,7 +185,7 @@ def _mount_node(space: ProjectSpace, mount: Mount, depth: int, conflict: bool) -
             if page
             else (
                 _child_total(space, mount.source, mount.mount_path, AssetOrigin.LINK)
-                if mount.kind is AssetKind.DIR
+                if count_children and mount.kind is AssetKind.DIR
                 else None
             )
         ),
@@ -194,6 +198,8 @@ def _child_node(
     relative: str,
     depth: int,
     origin: AssetOrigin,
+    *,
+    count_children: bool = True,
 ) -> AssetTree:
     """一个目录条目的节点。目录到了深度上限就不再下扫, 但要报出它有多少条目。
 
@@ -217,7 +223,10 @@ def _child_node(
         return AssetTree(asset=asset, children=page.children, child_total=page.total)
     # 深度用尽: 不往下扫, 但「空目录」与「还没扫」必须分得开, 否则 UI 只能
     # 把没扫到的当成没有。
-    return AssetTree(asset=asset, child_total=_child_total(space, target, relative, origin))
+    return AssetTree(
+        asset=asset,
+        child_total=_child_total(space, target, relative, origin) if count_children else None,
+    )
 
 
 def _scan(
@@ -278,4 +287,43 @@ def build_tree(
     return _scan(space, resolved, relative, max_depth, space.origin(relative), offset)
 
 
-__all__ = ["DEFAULT_MAX_DEPTH", "PAGE_SIZE", "build_tree"]
+def flat_tree(
+    space: ProjectSpace,
+    roots: tuple[str, ...],
+    check_mount: Callable[[str], None],
+) -> tuple[AssetTree, ...]:
+    """Return complete breadth-first metadata without paging or pre-counting children."""
+
+    pending = deque(roots)
+    visited: set[Path] = set()
+    nodes: dict[str, AssetTree] = {}
+    while pending:
+        path = pending.popleft()
+        check_mount(path)
+        directory = space.absolute(path)
+        if directory in visited or not directory.is_dir():
+            continue
+        visited.add(directory)
+        try:
+            relative = space.relative(directory)
+        except ContentError:
+            continue
+        if space.excluded(relative):
+            continue
+        origin = space.origin(relative)
+        listing, existing = _listing(space, directory, relative, origin)
+        for item in listing:
+            if isinstance(item, Mount):
+                check_mount(item.mount_path)
+                node = _mount_node(space, item, 1, item.name in existing, count_children=False)
+            else:
+                node = _child_node(
+                    space, item, _join(relative, item.name), 1, origin, count_children=False
+                )
+            nodes[node.asset.path] = node
+            if node.asset.kind is AssetKind.DIR and node.available:
+                pending.append(node.asset.path)
+    return tuple(nodes.values())
+
+
+__all__ = ["DEFAULT_MAX_DEPTH", "PAGE_SIZE", "build_tree", "flat_tree"]

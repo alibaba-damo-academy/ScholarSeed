@@ -17,6 +17,7 @@ from service.persistence.project import (
     ProjectDatabasePath,
     connect,
     inspect_database,
+    reader,
     rebuild_table,
     reject_schema_residue,
     schema_transaction,
@@ -2670,13 +2671,13 @@ class VersionStore:
     def finalizations(
         self, session_id: str, *, cursor: str | None, limit: int
     ) -> tuple[ResourceFinalization, ...]:
-        """Read bounded pending archives; cursor remains valid after an entry is resolved."""
+        """Read one committed page, including cursor, path hints and retry eligibility."""
 
         if not self._database.exists():
             return ()
         self.ensure()
-        connection = connect(self._database)
-        try:
+        with reader(self._database) as connection:
+            connection.execute("BEGIN")
             boundary = None
             if cursor is not None:
                 boundary = connection.execute(
@@ -2704,8 +2705,6 @@ class VersionStore:
                 ),
             ).fetchall()
             return tuple(self._finalization(connection, row) for row in rows)
-        finally:
-            connection.close()
 
     def finalization(self, session_id: str, turn_id: str) -> ResourceFinalization | None:
         if not self._database.exists():

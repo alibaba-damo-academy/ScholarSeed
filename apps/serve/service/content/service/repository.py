@@ -24,6 +24,7 @@ def repository_roots(scope: ProjectSpace, paths: tuple[str, ...]) -> dict[str, s
 
     resource_root = resolve_root(scope.project, RootKind.RESOURCES).absolute.resolve()
     cache: dict[tuple[Path, Path], Path | None] = {}
+    logical_roots: dict[Path, str] = {}
     found: dict[str, str | None] = {}
     for path in dict.fromkeys(paths):
         mount = scope.mount_for(path)
@@ -66,5 +67,7 @@ def repository_roots(scope: ProjectSpace, paths: tuple[str, ...]) -> dict[str, s
             current = current.parent
         for key in visited:
             cache[key] = root
-        found[path] = scope.relative(root) if root is not None else None
+        if root is not None and root not in logical_roots:
+            logical_roots[root] = scope.relative(root)
+        found[path] = logical_roots[root] if root is not None else None
     return found

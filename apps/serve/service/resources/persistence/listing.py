@@ -102,7 +102,7 @@ class ResourceListingCatalog:
     def synchronize(
         self, project: str, nodes: tuple[AssetTree, ...]
     ) -> tuple[ResourceListEntry, ...]:
-        with transaction(self._database(project)) as connection:
+        with transaction(self._database(project), immediate=True) as connection:
             connection.execute(CREATE_LISTING)
             existing = {
                 row["path"]: ResourceListEntry(**dict(row))
@@ -117,6 +117,7 @@ class ResourceListingCatalog:
                 previous = existing.get(entry.path)
                 source = previous.source if previous else None
                 entry = replace(entry, source=source or entry.source)
-                connection.execute(UPSERT_LISTING, asdict(entry))
+                if entry != previous:
+                    connection.execute(UPSERT_LISTING, asdict(entry))
                 entries.append(entry)
             return tuple(entries)

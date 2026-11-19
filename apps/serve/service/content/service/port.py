@@ -39,6 +39,7 @@ from service.content.domain.model import (
     PROJECT_RECOVERY_PENDING,
     PROJECT_STATE_DIRNAME,
     READ_PERMISSION_DENIED,
+    ROOT_BUSY_ERROR,
     ROOT_UNAVAILABLE_ERROR,
     ContentError,
     ContentReadPermissionError,
@@ -94,6 +95,7 @@ from service.platform.content import (
     AssetBinding,
     AssetKind,
     AssetPage,
+    AssetTree,
     ContentImportCancellation,
     ContentImportObserver,
     ContentImportProgress,
@@ -1890,6 +1892,29 @@ class ContentService:
 
     def repository_roots(self, project_id: str, paths: tuple[str, ...]) -> dict[str, str | None]:
         return repository.repository_roots(self._resource_space(project_id), paths)
+
+    def flat_resource_tree(self, project_id: str, roots: tuple[str, ...]) -> tuple[AssetTree, ...]:
+        """Use one local path space and revalidate mount authority within the read."""
+
+        if not roots:
+            return ()
+        scope = self._resource_space(project_id)
+
+        def check_mount(path: str) -> None:
+            mount = scope.mount_for(path)
+            if mount is not None and self._space(project_id).mount_for(path) != mount:
+                raise ContentError(ROOT_BUSY_ERROR)
+
+        result = tree.flat_tree(scope, roots, check_mount)
+        current = self._resource_space(project_id)
+        if (
+            current.root != scope.root
+            or current.project.layout != scope.project.layout
+            or current.mounts != scope.mounts
+            or current.owned_roots != scope.owned_roots
+        ):
+            raise ContentError(ROOT_BUSY_ERROR)
+        return result
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:
         """Complete background enumeration, separate from the paginated UI tree."""

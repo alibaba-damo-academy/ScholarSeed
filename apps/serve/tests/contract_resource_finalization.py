@@ -112,6 +112,28 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             "session", turn, str(self.target), "update", generation="generation"
         )
 
+    async def test_turn_scans_once_and_records_prior_presence_outside_version_policy(self) -> None:
+        self.target.with_name("opaque.bin").write_bytes(b"unmanaged input")
+        repository = self.target.parent / "repository"
+        repository.mkdir()
+        (repository / ".git").mkdir()
+        (repository / "notes.md").write_bytes(b"git-managed input")
+
+        with patch.object(
+            self.content, "scan_resources", wraps=self.content.scan_resources
+        ) as scan:
+            await self.deliveries.begin_turn("session", "turn", self.project.root)
+
+        scan.assert_called_once()
+        store = VersionStore(
+            self.content.resolve(self.project.id, PROJECT_DB_RELATIVE), self.project.root
+        )
+        self.assertEqual(
+            store.turn_inventory("session", "turn"), {"resources/notes.md", "resources/opaque.bin"}
+        )
+        baselines = store.turn_baselines("session", "turn")
+        self.assertEqual([baseline.path for baseline in baselines], ["resources/notes.md"])
+
     async def test_cancelled_finalization_remains_busy_until_snapshot_is_committed(self) -> None:
         await self.begin()
         gate = self.supervisor._activities
@@ -188,13 +210,53 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(retry.status_code, 404)
 
-    async def test_finalization_read_uses_the_terminal_writer_boundary(self) -> None:
-        await self.begin()
-        await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
-        with patch.object(self.versions, "writer", wraps=self.versions.writer) as writer:
-            response = await self.client.get(self.url, params=self.params)
-        self.assertEqual(response.json()["entries"], [])
-        writer.assert_called_once_with(self.project.id)
+    async def test_finalization_read_does_not_wait_for_project_writer(self) -> None:
+        for turn in ("first", "second"):
+            await self.fail_capture(turn)
+        entered, release = threading.Event(), threading.Event()
+
+        def hold_writer() -> None:
+            with self.versions.writer(self.project.id):
+                entered.set()
+                if not release.wait(10):
+                    raise TimeoutError("project writer was not released")
+
+        async def read_pages() -> list[dict]:
+            params = {**self.params, "limit": 1}
+            response = await self.client.get(self.url, params=params)
+            self.assertEqual(response.status_code, 200)
+            first = response.json()
+            self.assertEqual(first["next_cursor"], "second")
+            response = await self.client.get(
+                self.url, params={**params, "cursor": first["next_cursor"]}
+            )
+            self.assertEqual(response.status_code, 200)
+            second = response.json()
+            self.assertIsNone(second["next_cursor"])
+            return first["entries"] + second["entries"]
+
+        holder = asyncio.create_task(asyncio.to_thread(hold_writer))
+        request = None
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+            request = asyncio.create_task(read_pages())
+            done, _ = await asyncio.wait({request}, timeout=2)
+            self.assertIn(request, done, "finalization GET waited for the project writer")
+            entries = request.result()
+            self.assertFalse(holder.done())
+        finally:
+            release.set()
+            await holder
+            if request is not None:
+                await request
+
+        self.assertEqual([entry["turn_id"] for entry in entries], ["second", "first"])
+        for entry in entries:
+            self.assertEqual(entry["error"], "read_failed")
+            self.assertEqual(entry["terminal_outcome"], "completed")
+            self.assertEqual(entry["paths"], ["resources/notes.md"])
+            self.assertFalse(entry["retryable"])
+            self.assertFalse(entry["snapshot_available"])
 
     async def test_retry_only_publishes_frozen_objects_and_is_idempotent(self) -> None:
         await self.begin()
@@ -266,6 +328,48 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry.status_code, 409)
         self.assertEqual(retry.json()["error"]["code"], "terminal_not_retryable")
         self.assertEqual(len(self.versions.history(self.project.id, "resources/notes.md")), 2)
+
+    async def test_finalization_page_keeps_one_snapshot_across_a_head_change(self) -> None:
+        await self.begin()
+        with patch.object(
+            VersionStore, "finalize_review", side_effect=RuntimeError("publish failed")
+        ):
+            with self.assertRaises(RuntimeError):
+                await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        selected, resume = threading.Event(), threading.Event()
+        project_row = VersionStore._finalization
+
+        def pause_projection(connection, row):
+            selected.set()
+            if not resume.wait(10):
+                raise TimeoutError("finalization projection was not resumed")
+            return project_row(connection, row)
+
+        def change_head() -> None:
+            self.target.write_bytes(b"new user version\n")
+            self.versions.seal(self.project.id, "resources/notes.md", VersionOrigin.USER)
+
+        with patch.object(VersionStore, "_finalization", side_effect=pause_projection):
+            request = asyncio.create_task(self.client.get(self.url, params=self.params))
+            writer = None
+            try:
+                self.assertTrue(await asyncio.to_thread(selected.wait, 5))
+                writer = asyncio.create_task(asyncio.to_thread(change_head))
+                done, _ = await asyncio.wait({writer}, timeout=2)
+                self.assertIn(writer, done, "project writer waited for the finalization projection")
+                writer.result()
+            finally:
+                resume.set()
+                previous = await request
+                if writer is not None:
+                    await writer
+
+        self.assertEqual(previous.status_code, 200)
+        self.assertTrue(previous.json()["entries"][0]["retryable"])
+        current = await self.client.get(self.url, params=self.params)
+        self.assertEqual(current.status_code, 200)
+        self.assertFalse(current.json()["entries"][0]["retryable"])
 
 
 if __name__ == "__main__":

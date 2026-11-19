@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 
-from service.content.domain.model import ContentError
+from service.content.domain.model import ROOT_BUSY_ERROR, ContentError
 from service.content.service.port import DEFAULT_MEDIA_TYPE, ContentService
 from service.content.service.tree import DEFAULT_MAX_DEPTH
 from service.platform.activity import ActivityDomain
@@ -99,6 +99,7 @@ ERROR_STATUS = {
     "invalid_excerpt_resource": 409,
     "ambiguous_excerpt_resource": 409,
     "revision_conflict": 409,
+    ROOT_BUSY_ERROR: 409,
     "import_plan_stale": 409,
     "import_decisions_invalid": 400,
     "import_background_required": 409,
