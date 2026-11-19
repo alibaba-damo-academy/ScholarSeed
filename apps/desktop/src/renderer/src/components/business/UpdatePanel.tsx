@@ -6,6 +6,7 @@ import rocketGlyph from '../../assets/update-rocket.png'
 import { updateCandidateKey, type UpdateSnapshot } from '../../../../updates'
 import {
   hasMoreReleaseNotes,
+  isUpdateCompletionVisible,
   releaseNoteLines,
   releaseNotesOf,
   updateActionOf,
@@ -211,6 +212,7 @@ export function UpdatePanel({
   // 版式必须由结果驱动，否则用户点完「重启客户端」看到的还是一切正常（bug 86968393）。
   const failure = updateFailureOf(state)
   const failed = failure !== null
+  const completed = isUpdateCompletionVisible(state)
   const notes = releaseNoteLines(releaseNotesOf(candidate, i18n.resolvedLanguage || i18n.language))
   const showAllNotes = presentation === 'dialog' || expanded
   const showMore = hasMoreReleaseNotes(notes) && !showAllNotes
@@ -219,16 +221,18 @@ export function UpdatePanel({
 
   let title: string = t('update.titleAvailable')
   if (view === 'notes') title = t('update.notesTitle')
-  else if (state?.startupVerification === 'verified' && !failure && !state.candidate)
-    title = accountUpdateText('update.verified')
+  else if (completed) title = accountUpdateText('update.verified')
   else if (failure) title = updateFailureTitle(failure, t)
   else if (phase === 'preparing') title = t('update.preparingApp')
   else if (downloading) title = t('update.titleDownloading')
   else if (stage === 'ready') title = t('update.titleReady')
 
   // 「稍后更新」只在 summary 版式且还没开始下载时说全；其余场合动作就只是收起浮窗。
-  const secondaryLabel =
-    view === 'summary' && stage === 'available' ? t('update.laterUpdate') : t('update.later')
+  const secondaryLabel = completed
+    ? uiText('close')
+    : view === 'summary' && stage === 'available'
+      ? t('update.laterUpdate')
+      : t('update.later')
 
   // 主按钮文案一律由**实际会执行的那个动作**决定，不由相位/版式推：rolled-back 归在失败
   // 态里，但 updateActionOf 给的是 check 而不是 download，按 failed 取文案就会摆一个写着

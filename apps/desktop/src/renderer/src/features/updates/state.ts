@@ -177,11 +177,30 @@ export const UPDATE_ENTRY_PHASES: ReadonlySet<UpdateSnapshot['phase']> = new Set
   'rolled-back',
 ])
 
+export function isUpdateCompletionVisible(state: UpdateSnapshot | null): boolean {
+  return state?.startupVerification === 'verified' && !state.candidate && !updateFailureOf(state)
+}
+
 export function isUpdateEntryVisible(state: UpdateSnapshot | null): boolean {
   return (
-    state !== null &&
-    (state.startupVerification === 'verified' || UPDATE_ENTRY_PHASES.has(state.phase))
+    state !== null && (isUpdateCompletionVisible(state) || UPDATE_ENTRY_PHASES.has(state.phase))
   )
+}
+
+export function useUpdateEntryPopup(state: UpdateSnapshot | null) {
+  const [manuallyOpened, setManuallyOpened] = useState(false)
+  const completionVisible = isUpdateCompletionVisible(state)
+
+  return {
+    open: manuallyOpened || completionVisible,
+    setManuallyOpened,
+    setOpen(open: boolean): void {
+      setManuallyOpened(open)
+      if (!open && completionVisible) {
+        void window.scholarseed.acknowledgeUpdateAnnouncement('completion')
+      }
+    },
+  }
 }
 
 export type UpdateEntryBadge = 'none' | 'unread' | 'warning' | 'ready'

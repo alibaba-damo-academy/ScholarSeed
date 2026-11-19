@@ -897,6 +897,36 @@ test('update application shell has no automatic announcement mount', async () =>
   assert.doesNotMatch(source, /<UpdateAnnouncement\b/)
 })
 
+test('a verified update opens its receipt and removes the rocket when dismissed', async () => {
+  for (const dismiss of ['update-panel-close', 'update-panel-dismiss']) {
+    await withFixture(async (page) => {
+      await page.evaluate(() => {
+        ;(
+          window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+        ).updateFixture.publish({
+          phase: 'up-to-date',
+          candidate: undefined,
+          startupVerification: 'verified',
+        })
+      })
+
+      const panel = page.getByTestId('update-panel')
+      await expect(panel.getByTestId('update-panel-title')).toHaveText('更新已完成并验证')
+      await expect(panel.getByTestId('update-panel-dismiss')).toHaveText('关闭')
+      await panel.getByTestId(dismiss).click()
+      await expect(panel).toHaveCount(0)
+      await expect(page.getByTestId('activity-update')).toHaveCount(0)
+      await page.evaluate(() => {
+        ;(
+          window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+        ).updateFixture.publish({ phase: 'idle' })
+      })
+      await expect(panel).toHaveCount(0)
+      await expect(page.getByTestId('activity-update')).toHaveCount(0)
+    }, '/components/update.render.fixture.html')
+  }
+})
+
 test('update readiness never interrupts the focused settings control', async () => {
   await withFixture(async (page) => {
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
