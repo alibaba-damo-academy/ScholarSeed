@@ -86,9 +86,7 @@ The four-layer verification governance is organized by **when verification occur
   Reassessment condition: if gitlab MR discrete jobs switch to the orchestrator, remeasure parallel gains and the core budget.
 - **CPU-aware concurrency wiring**: `ciStageQuota(budget, fallback)` parameterizes desktop `--test-concurrency`
   and run_all `--jobs`; defaults are desktop 4 / run-all 8 (historical values), and parallel scheduling expands them explicitly through quotas without changing defaults.
-- **Internal host checks**: Links, recording tools, and host cases for development Skills are maintained separately in the documentation source repository; public quality plans do not depend on the internal host.
-  The internal host still requires evidence of actual invocation; passing links does not replace semantic acceptance. This does not waive public source documentation,
-  component reuse, product Skills, or real product gates. Adding CI configuration does not prove a remote run has executed.
+- **Development Skill checks**: Verify package paths and real invocation in an independent checkout as described in the [Skill architecture](../architecture/skills.md#development-workflow-boundary). Product, documentation, and component reuse gates retain their own scope.
 - **Product contract collection**: Offline PDF/source contracts for highlights are collected from the complete source directory through the existing pytest runner and continue after Python preparation in the existing contract gate; they do not depend on the default runtime pack, call a real model, or enter packaging smoke.
   The seven Trace modules retain their original Owner commands, while pytest in the same directory discovers real contracts; the default quality chain does not run the CLI twice.
   Real Trace source comparisons run only with explicit `--integration`; missing data fails, and user sources are not read automatically in the deterministic set.

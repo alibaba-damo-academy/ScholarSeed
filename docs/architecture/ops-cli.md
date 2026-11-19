@@ -338,7 +338,7 @@ pnpm ops cd build release --channel release    # 正式渠道发布包构建，�
 
 `ci format` defaults to the same behavior as `--check`: it does not write source or automatically install tools. `--write` and `--check` are mutually exclusive. Follow the original formatter's isort/black/import rules; if a tool is missing, retain the original write-mode `prepare-dev` prerequisite and disclose it in help. ESLint `--fix`, Desktop docs `--write`, and i18n `--generate` are explicit write modes for their respective check targets; do not disguise them as formatting or provide a general `fix-all`. Register only the existing write scopes. Reject unsupported combinations, such as Python `lint --fix`, workspace docs `--write`, and mixing report/gaps with write modes, before side effects.
 
-`pre doctor links` checks symbolic links actually registered in Git and their ordinary filesystem targets; it is not hard-coded to a particular host directory. Host checks for development Skills have moved to the internal source repository and are not part of the public CLI.
+`pre doctor links` checks symbolic links actually registered in Git and their ordinary filesystem targets; it is not hard-coded to a particular host directory. Development Skill discovery and invocation are checked in the [coding host](skills.md#development-workflow-boundary).
 
 `docs workspace` defaults to `full`; it also supports `structure`, and structure mode must be given an explicit path. `desktop` defaults to `full` and supports `report`. Workspace structure checking calls `structure-core.mjs` through the repository's `scripts/ci/docs/structure-check.mjs` and does not depend on an internal Skill path. `skills product` defaults to `source`. A report does not mean quality has passed.
 

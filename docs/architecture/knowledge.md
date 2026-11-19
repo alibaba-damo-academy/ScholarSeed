@@ -119,7 +119,7 @@ Writing design decisions back during feature development is part of delivery, no
 
 Maintain only one body-text source of truth for each knowledge item; navigation and indexes hold only summaries and links. Route entry points to actual existing Owner documents; do not infer that migration is complete from a target directory. Locate Desktop standards through its [local documentation entry point](../../apps/desktop/docs/README.md), Runtime contracts through the [package README](../../packages/runtime/README.md), and Trace constraints through its [package guide](../../packages/damoatrace/AGENTS.md).
 
-Maintain project rules directly in the `AGENTS.md` files at each level. Maintain development Skills and host discovery links in the internal documentation source repository; do not copy them into the source repository or create forwarding entry points there. Public engineering commands do not depend on these internal assets.
+Maintain project rules directly in the `AGENTS.md` files at each level. Maintain project development Skills with the source under `.agents/skills/`. Follow the [Skill ownership and discovery boundary](skills.md#development-workflow-boundary).
 
 <a id="3-知识发现与渐进加载"></a>
 ## 3. Knowledge Discovery and Progressive Loading
@@ -266,8 +266,7 @@ Checks and generation commands for the old Wiki site have been removed, and it n
 This gate does not scan the old root Wiki, work records, local plan cache, product Prompts/Skills, licenses, fixtures,
 or third-party assets; these are validated separately by their actual Owners. Desktop's local `docs:check/docs:write`
 continues to own independent contracts such as generated inventories. The root gate does not replace those checks, nor does it prove that body text is semantically correct or that a real host passed.
-Links and host invocations for development Skills are verified separately in the internal source repository. Public source gates do not check out these internal assets,
-and the absence of an internal host is not a reason to skip product, architecture, or engineering checks.
+Verify development Skill references and actual coding-host invocation in an independent source checkout. Product, architecture, and engineering checks retain their own acceptance scope.
 
 To verify this proposal's records, use `pnpm ops ci check docs workspace --record <work-records内的明确md路径>`;
 repeat the named option for multiple records. The command checks the complete current knowledge set and those records together; it does not recursively scan history. Each specified record

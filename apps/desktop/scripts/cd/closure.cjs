@@ -5,7 +5,9 @@ const crypto = require('node:crypto')
 const { isBuiltin } = require('node:module')
 const ts = require('typescript')
 const asar = require('@electron/asar')
+const { main: APPLICATION_MAIN } = require('../../package.json')
 const { BUNDLED_LIBRARIES } = require('../../native/libraries.cjs')
+const { APPLICATION_LAYOUT, applicationLayout } = require('./layout.cjs')
 
 const ENTRY_DIRECTORIES = ['out/main/', 'out/preload/']
 const JAVASCRIPT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs'])
@@ -14,6 +16,10 @@ const HOST_MODULES = new Set(['electron', 'original-fs'])
 const DYNAMIC_HOST_MODULES = new Set(['module', 'node:module', 'vm', 'node:vm'])
 const FORBIDDEN_DIRECTORIES = ['node_modules', 'out/renderer']
 const ASAR_NAME = 'app.asar'
+const APP_MANIFEST = 'package.json'
+const APP_LICENSE = 'LICENSE'
+const RUNTIME_DEPENDENCY_MAPS = ['dependencies', 'optionalDependencies', 'peerDependencies']
+const BUNDLED_DEPENDENCY_ARRAYS = ['bundledDependencies', 'bundleDependencies']
 const DYNAMIC_LOADERS = new Set(['createRequire', 'eval', 'Function'])
 const MODULE_NAME = 'module'
 const CJS_MODULE_MEMBERS = new Set(['exports', 'require'])
@@ -229,9 +235,13 @@ function isModuleShadowed(id) {
   return false
 }
 
-function verifyClosure(files, native, protectedPreload = null) {
+function isInEntryDirectory(name) {
+  return ENTRY_DIRECTORIES.some(prefix => name.startsWith(prefix))
+}
+
+function verifyClosure(files, native, protectedPreload = null, freezeEntryAssets = false) {
   nativeInventory(files, native)
-  const entries = [...files.keys()].filter(name => (ENTRY_DIRECTORIES.some(prefix => name.startsWith(prefix)) || name === protectedPreload)
+  const entries = [...files.keys()].filter(name => (isInEntryDirectory(name) || name === protectedPreload)
     && JAVASCRIPT_EXTENSIONS.has(path.posix.extname(name)))
   for (const directory of ENTRY_DIRECTORIES) {
     if (!entries.some((name) => name.startsWith(directory)))
@@ -273,7 +283,7 @@ function verifyClosure(files, native, protectedPreload = null) {
         (RELATIVE_EXTENSIONS.has(path.posix.extname(base)) || (native && BUNDLED_LIBRARIES.includes(base)))
           ? base
           : null
-      if (!target || !ENTRY_DIRECTORIES.some((prefix) => target.startsWith(prefix))) {
+      if (!target || !isInEntryDirectory(target)) {
         throw new Error(`missing or escaped compiled module: ${filename}: ${name}`)
       }
       inventory.add(target)
@@ -364,6 +374,11 @@ function verifyClosure(files, native, protectedPreload = null) {
       pending.push(...(dependencies.get(name) || []))
     }
   }
+  if (freezeEntryAssets) {
+    for (const name of files.keys()) {
+      if (isInEntryDirectory(name)) inventory.add(name)
+    }
+  }
   return {
     entries: entries.sort(),
     host_modules: [...hostModules].sort(),
@@ -375,19 +390,28 @@ function verifyClosure(files, native, protectedPreload = null) {
   }
 }
 
-function readTree(root, relative = '') {
+function readTree(root, relative = '', inspect) {
   const files = new Map()
   for (const item of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
     const name = path.posix.join(relative, item.name)
+    inspect?.(name, item)
     if (item.isDirectory()) {
-      for (const entry of readTree(root, name)) files.set(...entry)
+      for (const entry of readTree(root, name, inspect)) files.set(...entry)
     } else if (item.isFile()) files.set(name, fs.readFileSync(path.join(root, name)))
     else throw new Error(`unexpected link in compiled entry: ${name}`)
   }
   return files
 }
 
-function verifyBuiltClosure(desktop, native) {
+function verifyCompiledClosure(files, native, freezeEntryAssets) {
+  const protectedBundle = verifyProtectedClosure(files)
+  return {
+    ...verifyClosure(files, native, protectedBundle.prefix + 'preload/vault.js', freezeEntryAssets),
+    protected: protectedBundle,
+  }
+}
+
+function verifyBuiltClosure(desktop, native, format = APPLICATION_LAYOUT.asar) {
   const files = new Map()
   for (const directory of ENTRY_DIRECTORIES) {
     for (const [name, content] of readTree(path.join(desktop, directory)))
@@ -396,8 +420,67 @@ function verifyBuiltClosure(desktop, native) {
   const binding = protectedBinding(files)
   const prefix = `${PROTECTED_PREFIX}${binding.generation}/`
   for (const [name, bytes] of readTree(path.join(desktop, prefix))) files.set(prefix + name, bytes)
-  const protectedBundle = verifyProtectedClosure(files)
-  return { ...verifyClosure(files, native, prefix + 'preload/vault.js'), protected: protectedBundle }
+  return verifyCompiledClosure(files, native, format === APPLICATION_LAYOUT.directory)
+}
+
+function applicationManifest(files) {
+  let manifest
+  try {
+    manifest = JSON.parse(files.get(APP_MANIFEST))
+  } catch (error) {
+    throw new Error('invalid Electron application manifest', { cause: error })
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
+    throw new Error('invalid Electron application manifest')
+  return manifest
+}
+
+function directoryManifestHasDependencies(manifest) {
+  return RUNTIME_DEPENDENCY_MAPS.some(key => {
+    if (!Object.hasOwn(manifest, key)) return false
+    const dependencies = manifest[key]
+    return !dependencies || typeof dependencies !== 'object' ||
+      Array.isArray(dependencies) || Object.keys(dependencies).length > 0
+  }) || BUNDLED_DEPENDENCY_ARRAYS.some(key => {
+    if (!Object.hasOwn(manifest, key)) return false
+    const dependencies = manifest[key]
+    return dependencies !== false && (!Array.isArray(dependencies) || dependencies.length > 0)
+  })
+}
+
+function verifyPackagedClosure(files, native, format) {
+  const manifest = applicationManifest(files)
+  const directory = format === APPLICATION_LAYOUT.directory
+  const hasDependencies = directory
+    ? directoryManifestHasDependencies(manifest)
+    : Object.keys(manifest.dependencies || {}).length > 0
+  if (hasDependencies) throw new Error('self-contained Electron entrypoints declare runtime npm dependencies')
+  const closure = verifyCompiledClosure(files, native, directory)
+  if (!closure.entries.includes(manifest.main) || (directory && manifest.main !== APPLICATION_MAIN))
+    throw new Error(`${format} main is outside the verified entry closure`)
+  return closure
+}
+
+function verifyDirectoryClosure(resources, native) {
+  const format = APPLICATION_LAYOUT.directory
+  const { applicationRoot } = applicationLayout(resources, format)
+  if (![resources, applicationRoot].every(root => fs.lstatSync(root, { throwIfNoEntry: false })?.isDirectory()))
+    throw new Error('unexpected Electron application root')
+  const files = readTree(applicationRoot, '', (name, item) => {
+    if (name.split('/').includes('node_modules') || name === 'out/renderer')
+      throw new Error(`duplicate build dependency in directory: ${name}`)
+    if (!item.isFile()) return
+    if (name !== APP_MANIFEST && name !== APP_LICENSE && !isInEntryDirectory(name) && !name.startsWith(PROTECTED_PREFIX))
+      throw new Error(`unexpected Electron application file: ${name}`)
+    if (BUNDLED_LIBRARIES.includes(name)) {
+      const identity = fs.lstatSync(path.join(applicationRoot, name))
+      if (!identity.isFile() || identity.nlink !== 1) throw new Error('unexpected native library file identity')
+    }
+  })
+  const license = files.get(APP_LICENSE)
+  if (license && !license.equals(fs.readFileSync(path.resolve(__dirname, '../../', APP_LICENSE))))
+    throw new Error('Electron application license differs from build source')
+  return verifyPackagedClosure(files, native, format)
 }
 
 function verifyAsarClosure(resources, native) {
@@ -442,12 +525,8 @@ function verifyAsarClosure(resources, native) {
       .filter(({ actual }) => !asar.statFile(archive, actual, false).files)
       .map(({ actual, normalized }) => [normalized, asar.extractFile(archive, actual)])
   )
-  const manifest = JSON.parse(files.get('package.json'))
-  if (Object.keys(manifest.dependencies || {}).length) throw new Error('self-contained Electron entrypoints declare runtime npm dependencies')
-  const protectedBundle = verifyProtectedClosure(files)
-  const closure = { ...verifyClosure(files, native, protectedBundle.prefix + 'preload/vault.js'), protected: protectedBundle }
-  if (!closure.entries.includes(manifest.main)) throw new Error('asar main is outside the verified entry closure')
+  const closure = verifyPackagedClosure(files, native, APPLICATION_LAYOUT.asar)
   return { ...closure, asar_bytes: fs.statSync(archive).size }
 }
 
-module.exports = { verifyClosure, verifyBuiltClosure, verifyAsarClosure, verifyProtectedClosure }
+module.exports = { verifyClosure, verifyBuiltClosure, verifyAsarClosure, verifyDirectoryClosure, verifyProtectedClosure }

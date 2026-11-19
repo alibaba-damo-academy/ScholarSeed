@@ -90,3 +90,31 @@ test('macOS keeps per-library codesign and does not invoke the Windows batch sig
   assert.equal(frozen.platform, 'darwin')
   f.readNative(f.directory, frozen)
 })
+
+test('macOS signing guard seals native modules in the frozen application layout', async t => {
+  const f = fixture(t, 'darwin')
+  const frozen = await f.prepareNative({ signing: f.signing })
+  const app = path.join(f.directory, 'ScholarSeed.app')
+  const resources = path.join(app, 'Contents', 'Resources')
+  const manifest = path.join(resources, 'native')
+  fs.mkdirSync(manifest, { recursive: true })
+  for (const name of ['build.json', 'native.json']) {
+    fs.copyFileSync(path.join(f.directory, name), path.join(manifest, name))
+  }
+  const cases = [
+    { format: undefined, directory: path.join(resources, 'app.asar.unpacked', 'out', 'main') },
+    { format: 'directory', directory: path.join(resources, 'app', 'out', 'main') },
+  ]
+  for (const { format, directory } of cases) {
+    fs.mkdirSync(directory, { recursive: true })
+    for (const name of f.names) {
+      fs.copyFileSync(path.join(f.directory, name), path.join(directory, name))
+    }
+    const guard = f.nativeSignatureGuard(app, frozen, format)
+    const library = path.join(directory, f.names[0])
+    assert.equal(guard.ignore(library), true)
+    assert.equal(guard.ignore(path.join(resources, f.names[0])), false)
+    fs.appendFileSync(library, 'changed')
+    assert.throws(() => guard.verify(), /native artifact differs from frozen digest/)
+  }
+})

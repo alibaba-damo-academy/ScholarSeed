@@ -42,6 +42,7 @@ const { runInNewContext } = require('node:vm')
 const { createRequire } = require('node:module')
 const ts = require('typescript')
 const { TARGETS } = require('../../shared/target.cjs')
+const { applicationLayout, assertBridgeApplication, prepareBridgeApplication } = require('../layout.cjs')
 const { verifyInputs, verifyNotices, stageNotices } = require('../notices.cjs')
 const PACKAGE = require('../../../package.json')
 
@@ -100,6 +101,64 @@ const {
   updateMacBundleName,
 } = require('../../pre/identity.cjs')
 const REPO_ROOT = path.join(sourceDirectory, '../../../..')
+
+test('the macOS update bridge is an explicit directory layout and has separate build output', () => {
+  const ordinary = options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'dir'])
+  const bridge = options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'dir', '--macos-update-bridge'])
+  assert.equal(ordinary.applicationLayout, 'asar')
+  assert.equal(bridge.applicationLayout, 'directory')
+  assert.notEqual(buildRunDirectory('release', ordinary), buildRunDirectory('release', bridge))
+  assert.throws(
+    () => options(['--platform', 'win32', '--arch', 'x86_64', '--macos-update-bridge']),
+    /requires a macOS application or installer stage/
+  )
+  assert.throws(
+    () => options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'backend', '--macos-update-bridge']),
+    /requires a macOS application or installer stage/
+  )
+})
+
+test('macOS update bridge packaging removes only the fallback archive and refuses nested ASAR paths', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-update-bridge-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const application = path.join(root, 'ScholarSeed.app')
+  const resources = path.join(application, 'Contents', 'Resources')
+  const layout = applicationLayout(resources, 'directory')
+  fs.mkdirSync(layout.nativeDirectory, { recursive: true })
+  const fallback = path.join(resources, 'default_app.asar')
+  fs.writeFileSync(fallback, 'Electron fallback')
+  const module = path.join(layout.nativeDirectory, 'lease.node')
+  fs.writeFileSync(module, 'frozen native module')
+
+  prepareBridgeApplication(application)
+  assert.equal(fs.existsSync(fallback), false)
+  assert.equal(fs.readFileSync(module, 'utf8'), 'frozen native module')
+  assert.doesNotThrow(() => assertBridgeApplication(application))
+  fs.writeFileSync(path.join(layout.nativeDirectory, 'nested.ASAR'), 'unexpected archive')
+  assert.throws(() => assertBridgeApplication(application), /nested\.ASAR/)
+})
+
+test('macOS update bridge keeps the normal frozen inputs and signing hook with a directory app', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-bridge-config-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const args = options(['--stage', 'dir', '--platform', 'darwin', '--arch', 'arm64', '--macos-update-bridge'])
+  const filename = writeBuilderConfiguration({
+    runDirectory: directory,
+    resourceRoot: path.join(directory, 'resources'),
+    output: path.join(directory, 'artifacts'),
+    productName: 'ScholarSeed',
+    applicationLayout: args.applicationLayout,
+    closure: { protected: { generation: 'a'.repeat(64) } },
+  }, args)
+  const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
+  assert.equal(config.asar, false)
+  assert.equal(config.asarUnpack, undefined)
+  assert.equal(config.appId, PACKAGE.build.appId)
+  assert.equal(config.mac.hardenedRuntime, true)
+  assert.match(config.afterPack, /[/\\]sign\.cjs$/)
+  assert.match(config.afterAllArtifactBuild, /[/\\]verify\.cjs$/)
+  assert.match(config.afterSign, /[/\\]notarize\.cjs$/)
+})
 
 test('installer smoke uses the same fixed command once on both platforms and ignores other build stages', () => {
   const invocations = []

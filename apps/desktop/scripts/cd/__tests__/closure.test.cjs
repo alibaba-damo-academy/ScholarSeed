@@ -8,7 +8,7 @@ const crypto = require('node:crypto')
 const { finished } = require('node:stream/promises')
 const { spawnSync } = require('node:child_process')
 const asar = require('@electron/asar')
-const { verifyClosure, verifyAsarClosure } = require('../closure.cjs')
+const { verifyClosure, verifyAsarClosure, verifyBuiltClosure, verifyDirectoryClosure } = require('../closure.cjs')
 const closureOwner = require('../closure.cjs')
 const { BUNDLED_LIBRARIES } = require('../../../native/libraries.cjs')
 const { createProductAppRoot } = require('../../../e2e/fixtures/application.cjs')
@@ -124,6 +124,94 @@ function protectedEntries(files) {
   )
   return files
 }
+
+function directoryFixture(context) {
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'directory-closure-'))
+  context.after(() => fs.rmSync(resources, { recursive: true, force: true }))
+  const application = path.join(resources, 'app')
+  const write = (name, bytes) => {
+    const filename = path.join(application, name)
+    fs.mkdirSync(path.dirname(filename), { recursive: true })
+    fs.writeFileSync(filename, bytes)
+  }
+  const { files, native } = nativeEntries()
+  protectedEntries(files)
+  for (const [name, bytes] of files) write(name, bytes)
+  write('package.json', '{"main":"out/main/index.js"}')
+  write('LICENSE', fs.readFileSync(path.join(path.dirname(DESKTOP_MANIFEST_PATH), 'LICENSE')))
+  return { resources, application, native, write }
+}
+
+test('directory closure preserves its frozen native, protected, and emitted asset digests', context => {
+  const { resources, application, native, write } = directoryFixture(context)
+  const asset = 'out/main/chunks/startup-logo.svg'
+  write(asset, '<svg/>')
+  const frozen = verifyBuiltClosure(application, native, 'directory')
+  assert.deepEqual(verifyDirectoryClosure(resources, native), frozen)
+  assert.equal(Object.hasOwn(frozen, 'asar_bytes'), false)
+  assert.ok(frozen.files.some(file => file.path === asset))
+  assert.equal(verifyBuiltClosure(application, native).files.some(file => file.path === asset), false)
+
+  write(asset, '<svg>changed</svg>')
+  assert.notDeepEqual(verifyDirectoryClosure(resources, native), frozen)
+  write(asset, '<svg/>')
+  write('out/main/chunks/extra.svg', '<svg/>')
+  assert.notDeepEqual(verifyDirectoryClosure(resources, native), frozen)
+  write(native.libraries[0].path, 'changed library')
+  assert.throws(() => verifyDirectoryClosure(resources, native), /frozen build digest/)
+})
+
+test('directory closure rejects extra, duplicate, linked, or invalid application contents', async context => {
+  for (const [name, message] of [
+    ['package-lock.json', /unexpected Electron application file/],
+    ['LICENSE', /license differs/],
+    ['node_modules/pkg/index.js', /duplicate build dependency/],
+    ['out/main/node_modules/pkg/index.js', /duplicate build dependency/],
+    ['out/renderer/index.html', /duplicate build dependency/],
+    ['out/protected/stale/manifest.json', /stale generation/],
+  ]) {
+    const { resources, native, write } = directoryFixture(context)
+    write(name, 'unexpected')
+    assert.throws(() => verifyDirectoryClosure(resources, native), message)
+  }
+  const { resources, application, native, write } = directoryFixture(context)
+  for (const metadata of [
+    '[]',
+    'null',
+    '{',
+    '{}',
+    '{"main":"out/preload/index.js"}',
+    '{"main":"out/main/data-inspection.js"}',
+    '{"main":"out/main/index.js","dependencies":[]}',
+    '{"main":"out/main/index.js","optionalDependencies":{"pkg":"1"}}',
+    '{"main":"out/main/index.js","bundledDependencies":["pkg"]}',
+  ]) {
+    write('package.json', metadata)
+    assert.throws(() => verifyDirectoryClosure(resources, native), /manifest|entry closure|npm dependencies/)
+  }
+  write('package.json', '{"main":"out/main/index.js"}')
+  const nativeAlias = path.join(resources, 'native-alias')
+  fs.linkSync(path.join(application, native.libraries[0].path), nativeAlias)
+  assert.throws(() => verifyDirectoryClosure(resources, native), /native library file identity/)
+  fs.unlinkSync(nativeAlias)
+  await context.test('application roots and descendants cannot be symbolic links', child => {
+    const link = path.join(application, 'out/main/alias.js')
+    try {
+      fs.symlinkSync('index.js', link, 'file')
+    } catch (error) {
+      if (process.platform === 'win32' && error.code === 'EPERM')
+        return child.skip('host denies symbolic-link creation')
+      throw error
+    }
+    assert.throws(() => verifyDirectoryClosure(resources, native), /link/)
+    fs.unlinkSync(link)
+    const moved = application + '-original'
+    fs.renameSync(application, moved)
+    fs.symlinkSync(moved, application, process.platform === 'win32' ? 'junction' : 'dir')
+    assert.throws(() => verifyDirectoryClosure(resources, native), /application root/)
+  })
+})
+
 test('protected release closure rejects old generation, changed asset and missing preload', () => {
   const files = protectedEntries(entries('require("electron")'))
   const verified = closureOwner.verifyProtectedClosure(files)
