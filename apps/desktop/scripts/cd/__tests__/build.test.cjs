@@ -119,7 +119,7 @@ test('the macOS update bridge is an explicit directory layout and has separate b
   )
 })
 
-test('only the signed macOS 0.3.2 release installer defaults to the update bridge', () => {
+test('the signed macOS 0.3.2 release installer uses ASAR unless the bridge is requested', () => {
   const releaseInstaller = {
     platform: 'darwin',
     type: 'release',
@@ -127,7 +127,8 @@ test('only the signed macOS 0.3.2 release installer defaults to the update bridg
     version: '0.3.2',
     candidate: false,
   }
-  assert.equal(buildApplicationLayout(releaseInstaller), 'directory')
+  assert.equal(buildApplicationLayout(releaseInstaller), 'asar')
+  assert.equal(buildApplicationLayout({ ...releaseInstaller, 'macos-update-bridge': true }), 'directory')
   for (const otherBuild of [
     { platform: 'win32' },
     { type: 'preview' },

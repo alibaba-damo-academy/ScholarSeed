@@ -52,7 +52,6 @@ const STAGES = new Set(['backend', 'dir', 'installer'])
 const PUBLIC_TYPES = new Set(['preview', 'release'])
 const CANDIDATE_FLAG = '--candidate'
 const UPDATE_BRIDGE_FLAG = '--macos-update-bridge'
-const MACOS_RELEASE_BRIDGE_VERSION = '0.3.2'
 const BUILD_OPTION_KEYS = new Set([
   'stage', 'type', 'version', 'build-number', 'platform', 'arch', 'result',
   'update-base-url', 'team-id', 'windows-publisher', 'activation-public-keys',
@@ -219,16 +218,11 @@ function buildType(argv, parsed = buildArguments(argv)) {
 }
 
 function buildApplicationLayout(args) {
-  if (args[UPDATE_BRIDGE_FLAG.slice(2)]) {
-    if (args.platform !== 'darwin' || args.stage === 'backend') {
-      throw new Error(`${UPDATE_BRIDGE_FLAG} requires a macOS application or installer stage`)
-    }
-    return APPLICATION_LAYOUT.directory
+  if (!args[UPDATE_BRIDGE_FLAG.slice(2)]) return APPLICATION_LAYOUT.asar
+  if (args.platform !== 'darwin' || args.stage === 'backend') {
+    throw new Error(`${UPDATE_BRIDGE_FLAG} requires a macOS application or installer stage`)
   }
-
-  const releaseBridge = args.platform === 'darwin' && args.type === 'release' &&
-    args.stage === 'installer' && !args.candidate && args.version === MACOS_RELEASE_BRIDGE_VERSION
-  return releaseBridge ? APPLICATION_LAYOUT.directory : APPLICATION_LAYOUT.asar
+  return APPLICATION_LAYOUT.directory
 }
 
 function logDmgCopy(context) {
