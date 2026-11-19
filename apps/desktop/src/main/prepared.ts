@@ -2,7 +2,11 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, open, type FileHandle } from 'node:fs/promises'
-import { assertSquirrelArchiveSize, verifyApplicationArchiveFile } from './archive.ts'
+import {
+  assertSquirrelArchiveSize,
+  verifyApplicationArchiveFile,
+  type MountedArchiveSource,
+} from './archive.ts'
 import type { SquirrelArchive } from './squirrel.ts'
 import type { LatestVersionMeta } from '../updates.ts'
 
@@ -133,7 +137,7 @@ export class PreparedArchive {
     source: string,
     archive: SquirrelArchive,
     withSource: (
-      verify: (application: string) => Promise<SquirrelArchive>
+      verify: (application: MountedArchiveSource) => Promise<SquirrelArchive>
     ) => Promise<SquirrelArchive>,
     signal?: AbortSignal
   ): Promise<PreparedArchive> {

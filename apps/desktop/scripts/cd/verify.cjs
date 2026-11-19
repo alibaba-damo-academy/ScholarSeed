@@ -1028,7 +1028,7 @@ async function verify(builderContext) {
     ? await verifyImage(installer, application.path, frozen, async (mounted, context, runtimeCheck) => {
         const validated = await verifyApplication(mounted, context, runtimeCheck)
         if (context.signingRequired) {
-          await preflightApplicationArchive(mounted)
+          await preflightApplicationArchive({ path: mounted, fs: fs.promises })
           const directory = fs.mkdtempSync(path.join(context.runDirectory, 'update-archive-'))
           const archive = path.join(directory, 'application.zip')
           try {
