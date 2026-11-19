@@ -45,6 +45,9 @@ async def invoke(ws, stage, messages, cfg, identity=None, client=None, json_outp
 
 async def _invoke(ws, stage, messages, cfg, identity=None, client=None, json_output=True, adapter=None):
     counts = capacity(messages, cfg)
+    request_options = {'response_format': {'type': 'json_object'}} if json_output else {}
+    if cfg.get('thinking') and cfg.get('reasoning_effort') is not None:
+        request_options['reasoning_effort'] = cfg['reasoning_effort']
     owns_client = client is None
     request_id = uuid.uuid4().hex
     folder = ws/'_logs/llm'/request_id
@@ -79,7 +82,7 @@ async def _invoke(ws, stage, messages, cfg, identity=None, client=None, json_out
                 async with StreamProgress(ws,stage,folder,number) as progress:
                     async with asyncio.timeout(cfg.get('request_deadline_sec',1800)):
                         text = await client.chat_stream(messages, _capture=capture, _capture_raw=True,
-                            _on_chunk=progress.chunk, **({'response_format':{'type':'json_object'}} if json_output else {}),
+                            _on_chunk=progress.chunk, **request_options,
                             max_tokens=cfg['max_tokens'],temperature=cfg.get('temperature',.2))
                 if capture.get('finish_reason') == 'length':
                     raise GenerationError('OUTPUT_TRUNCATED', 'generation reached output capacity; main must decide the next action')

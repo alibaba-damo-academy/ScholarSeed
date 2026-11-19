@@ -273,7 +273,7 @@ retain the full empty-anchor attribute so metadata remains available on reopenin
 
 ## Time and Models
 
-Outline generation uses temperature 0.6 and enables thinking through the boolean `enable_thinking` request field. Other stages retain their existing settings.
+Outline generation uses temperature 0.6 with thinking enabled. In `config/model_config.fast.json`, `stages.outline_generation.reasoning_effort` defaults to `low`. Set it to `medium` or `xhigh` for more reasoning, or remove the field to use the provider default. Setting `thinking` to `false` disables thinking and omits the effort field.
 
 Processing times are soft estimates, not cutoffs. Continue agreed work when it
 takes longer, explaining completed work, the current stage, and an

@@ -19,6 +19,12 @@ class StreamCaptureTest(unittest.TestCase):
             request = model._create_kwargs([], {"temperature": 0.6})
             self.assertEqual(request["extra_body"], {"enable_thinking": enabled})
             self.assertEqual(request["temperature"], 0.6)
+            self.assertNotIn("reasoning_effort", request)
+
+        model.thinking = True
+        request = model._create_kwargs([], {"reasoning_effort": "medium"})
+        self.assertEqual(request["reasoning_effort"], "medium")
+        self.assertEqual(request["extra_body"], {"enable_thinking": True})
 
     def test_usage_only_chunk_and_actual_model_are_preserved(self):
         class Usage(SimpleNamespace):

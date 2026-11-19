@@ -186,7 +186,7 @@ ID 转义不授予 HTML 执行能力。标题原址仅允许 HTTP/HTTPS，缺少
 
 ## 时间与模型
 
-大纲生成的 temperature 为0.6，并通过请求中的布尔字段 `enable_thinking` 开启思考。其他阶段保持原有设置。
+大纲生成的 temperature 为 0.6，默认开启思考。`config/model_config.fast.json` 中的 `stages.outline_generation.reasoning_effort` 默认为 `low`。可设为 `medium` 或 `xhigh` 提高思考强度，也可删除此字段以使用服务商默认值。将 `thinking` 设为 `false` 会关闭思考，并省略强度字段。
 
 
 处理时间只是预估，超出预估仍继续完成约定工作，说明已完成内容、当前阶段及有依据的
