@@ -19,7 +19,7 @@ import {
   useToast,
 } from '../../components/ui'
 import { Onboarding, PROJECT_GUIDE_ANCHORS } from '../../contracts/onboarding'
-import { listProjects, type Project } from '../../api'
+import { listProjects, reportProjectCreation, type Project } from '../../api'
 import { focusComposer } from '../../reference'
 import { Welcome } from './Welcome'
 import { documentSelectionInteractionProps } from '../workbench/focus'
@@ -355,17 +355,48 @@ export function OnboardingHost({ blocked }: { blocked: boolean }): React.JSX.Ele
       }
     }
   }
-  const completeWelcome = async (project: Project): Promise<void> => {
+  const completeWelcome = async (project: Project, attemptId: string): Promise<void> => {
     const flight = new AbortController()
     navigateFlight.current?.abort()
     navigateFlight.current = flight
     navigatingRef.current = true
+    const diagnostic = { attemptId, stage: 'list_confirmation', projectId: project.id } as const
+    let status: number | undefined
+    reportProjectCreation({ ...diagnostic, result: 'started' })
     try {
-      const catalogue = await listProjects()
+      const catalogue = await listProjects(false, {
+        attemptId,
+        onStatus: (value) => {
+          status = value
+        },
+      }).catch(() => null)
       flight.signal.throwIfAborted()
-      if (!catalogue || !catalogue.projects.some((item) => item.id === project.id))
-        throw new Error('onboarding_project_not_ready')
-      store.set({ projects: catalogue.projects, defaultWorkspacePath: catalogue.default })
+      const listed = catalogue?.projects.some((item) => item.id === project.id)
+      const projects = catalogue?.projects ?? latest.current.store.state.projects
+      const workspaceRoot = catalogue?.default ?? latest.current.store.state.defaultWorkspacePath
+      if (!listed) {
+        reportProjectCreation({
+          ...diagnostic,
+          result: 'failed',
+          status,
+          code: catalogue ? 'project_missing_from_catalogue' : 'catalogue_unavailable',
+        })
+        // The successful operation already contains the authoritative project.
+        const merged = [project, ...projects.filter((item) => item.id !== project.id)]
+        store.set({ projects: merged, defaultWorkspacePath: workspaceRoot })
+        void window.scholarseed
+          .syncAuthorizedRoots(
+            'workspace',
+            [workspaceRoot ?? '', ...merged.map((item) => item.path)].filter(Boolean)
+          )
+          .catch(() => {
+            reportProjectCreation({ ...diagnostic, result: 'root_sync_failed' })
+          })
+        reportProjectCreation({ ...diagnostic, result: 'used_project_receipt', status })
+      } else {
+        store.set({ projects, defaultWorkspacePath: workspaceRoot })
+        reportProjectCreation({ ...diagnostic, result: 'confirmed', status })
+      }
       await settle(flight.signal)
       store.act.markOnboardingSeen('home')
       engine.finish()
@@ -375,6 +406,7 @@ export function OnboardingHost({ blocked }: { blocked: boolean }): React.JSX.Ele
       target(PROJECT_GUIDE_ANCHORS.closeWorkspace)?.click()
       await settle(flight.signal)
       engine.replay({ group: 'project', projectId: project.id })
+      reportProjectCreation({ ...diagnostic, result: 'opened' })
     } finally {
       if (navigateFlight.current === flight) {
         navigatingRef.current = false

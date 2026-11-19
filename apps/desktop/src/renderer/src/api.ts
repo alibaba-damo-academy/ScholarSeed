@@ -1,10 +1,16 @@
 import type { PluginReference, PluginReport } from '../../plugins'
-import { resolveContentResponse } from './app/api/content.ts'
+import {
+  queryContentOperation,
+  readContentReceipt,
+  resolveContentResponse,
+} from './app/api/content.ts'
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
 import { flushApiDiagnostics, reportApiFailure } from './app/api/diagnostics.ts'
 import { readApiJson, reportCatalogReady, reportCatalogFailure } from './app/api/timing.ts'
 import {
+  API_DIAGNOSTIC_HEADER,
+  PROJECT_CREATION_DIAGNOSTIC_PREFIX,
   MODEL_PROFILES_PATH,
   MODEL_PROVIDERS_PATH,
   SESSION_CATALOG_PATH,
@@ -3208,7 +3214,10 @@ async function deleteJson<T>(path: string, timeoutMs?: number): Promise<T | null
  *
  * 顺序由服务端给出（创建时间倒序），这里保持不动。
  */
-export async function listProjects(includeArchived = false): Promise<ProjectsResp | null> {
+export async function listProjects(
+  includeArchived = false,
+  confirmation?: { attemptId: string; onStatus: (status: number) => void }
+): Promise<ProjectsResp | null> {
   const query = includeArchived ? '?includeArchived=true' : ''
   const payload = await getJson<{
     projects: {
@@ -3225,7 +3234,14 @@ export async function listProjects(includeArchived = false): Promise<ProjectsRes
     }[]
     current: string
     workspaceRoot: string
-  }>(`/api/content/projects${query}`, undefined, LIVE_CATALOG_REQUEST)
+  }>(
+    `/api/content/projects${query}`,
+    undefined,
+    confirmation
+      ? { ...LIVE_CATALOG_REQUEST, headers: { [API_DIAGNOSTIC_HEADER]: confirmation.attemptId } }
+      : LIVE_CATALOG_REQUEST,
+    confirmation?.onStatus
+  )
   if (!payload) return null
   const result: ProjectsResp = {
     default: payload.workspaceRoot,
@@ -3254,44 +3270,198 @@ export async function listProjects(includeArchived = false): Promise<ProjectsRes
  * 后端在工作区容器根下生成 `<日期-短id-slug>/{资料库,文献库,.scholarseed}` 的 MANAGED
  * 目录，身份键与目录名都由后端生成——前端不提交任何本机路径。
  */
-export async function createManagedProject(name: string): Promise<Project | null> {
-  return submitProject('/api/content/projects', { name })
+export type ProjectCreationResult =
+  | { kind: 'created'; project: Project }
+  | { kind: 'rejected'; maintenance: boolean }
+  | { kind: 'unknown'; operation?: string }
+
+export function reportProjectCreation(event: {
+  attemptId: string
+  stage: 'preflight' | 'submit' | 'operation' | 'metadata' | 'list_confirmation'
+  result: string
+  operation?: string
+  projectId?: string
+  status?: number
+  code?: string
+}): void {
+  const { projectId, ...diagnostic } = event
+  console.info(
+    PROJECT_CREATION_DIAGNOSTIC_PREFIX,
+    JSON.stringify({
+      ...diagnostic,
+      ...(projectId && /^[0-9a-hjkmnp-tv-z]{26}$/.test(projectId) ? { projectId } : {}),
+    })
+  )
 }
 
-export async function adoptProject(path: string, name: string): Promise<Project | null> {
-  return submitProject('/api/content/projects/adopt', { path, name })
+const PROJECT_CREATION_ERROR_CODES = new Set([
+  'update_maintenance',
+  'content_operation_unknown',
+  'content_operation_interrupted',
+  'content_operations_closed',
+  'project_creation_recovery_required',
+  'project_directory_not_found',
+  'project_directory_exists',
+  'project_create_failed',
+  'name_required',
+  'name_too_long',
+  'ERR_LEASE_BUSY',
+])
+const PROJECT_MAINTENANCE_RETRY_DELAY_MS = 1000
+const PROJECT_MAINTENANCE_RETRIES = 3
+
+async function projectCreationCode(response: Response): Promise<string | undefined> {
+  const detail: unknown = (await response.json().catch(() => null))?.detail
+  return typeof detail === 'string' && PROJECT_CREATION_ERROR_CODES.has(detail) ? detail : undefined
 }
 
-async function submitProject(
-  endpoint: string,
-  payload: { name: string; path?: string }
-): Promise<Project | null> {
+export async function submitProjectCreation(
+  payload: { name: string; path?: string },
+  attemptId: string,
+  operation?: string
+): Promise<ProjectCreationResult> {
+  let stage: 'submit' | 'operation' = operation ? 'operation' : 'submit'
+  let status: number | undefined
   try {
-    const response = await resolveContentResponse(
-      await apiFetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+    let response: Response | undefined
+    if (!operation) {
+      reportProjectCreation({
+        attemptId,
+        stage,
+        result: payload.path ? 'adopt_started' : 'create_started',
       })
-    )
-    if (response.status === 401) window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
-    if (!response.ok) return null
+      let maintenance = false
+      let code: string | undefined
+      for (let retry = 0; ; retry += 1) {
+        response = await apiFetch(
+          payload.path ? '/api/content/projects/adopt' : '/api/content/projects',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', [API_DIAGNOSTIC_HEADER]: attemptId },
+            body: JSON.stringify(payload),
+          }
+        )
+        status = response.status
+        code = response.ok ? undefined : await projectCreationCode(response)
+        maintenance = status === 503 && code === 'update_maintenance'
+        if (!maintenance || retry === PROJECT_MAINTENANCE_RETRIES) break
+        reportProjectCreation({ attemptId, stage, result: 'not_submitted_retrying', status, code })
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, PROJECT_MAINTENANCE_RETRY_DELAY_MS)
+        )
+      }
+      if (status === 202) {
+        operation = (await readContentReceipt(response)) ?? undefined
+        if (!operation) {
+          reportProjectCreation({
+            attemptId,
+            stage,
+            result: 'unknown',
+            status,
+            code: 'invalid_receipt',
+          })
+          return { kind: 'unknown' }
+        }
+        reportProjectCreation({ attemptId, stage, result: 'accepted', status, operation })
+      } else if (!response.ok) {
+        if (status === 401) window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
+        const rejected = maintenance || (status >= 400 && status < 500 && status !== 408)
+        reportProjectCreation({
+          attemptId,
+          stage,
+          result: rejected ? 'not_submitted' : 'unknown',
+          status,
+          code,
+        })
+        return rejected ? { kind: 'rejected', maintenance } : { kind: 'unknown' }
+      }
+    } else {
+      reportProjectCreation({ attemptId, stage, result: 'reuse_operation', operation })
+    }
+    if (operation) {
+      stage = 'operation'
+      status = undefined
+      const result = await queryContentOperation(operation, attemptId)
+      status = result.status
+      response = result.response
+      if (!response.ok) {
+        const code = await projectCreationCode(response)
+        const canRetry =
+          result.terminal === 'failed' &&
+          code !== undefined &&
+          [
+            'project_directory_not_found',
+            'project_directory_exists',
+            'name_required',
+            'name_too_long',
+            'ERR_LEASE_BUSY',
+          ].includes(code)
+        reportProjectCreation({
+          attemptId,
+          stage,
+          result: result.terminal === 'failed' ? 'failed' : 'unknown',
+          operation,
+          status,
+          code,
+        })
+        return canRetry ? { kind: 'rejected', maintenance: false } : { kind: 'unknown', operation }
+      }
+    }
+    if (!response) return { kind: 'unknown' }
     const created = (await response.json()) as {
       id: string
       name: string
       root: string
+      available?: boolean
       created_at?: number | null
       directory_created_at?: number | null
     }
+    if (
+      !created ||
+      typeof created.id !== 'string' ||
+      !created.id ||
+      typeof created.root !== 'string' ||
+      typeof created.name !== 'string'
+    ) {
+      reportProjectCreation({
+        attemptId,
+        stage,
+        result: 'unknown',
+        operation,
+        status,
+        code: 'invalid_project',
+      })
+      return { kind: 'unknown', operation }
+    }
+    reportProjectCreation({
+      attemptId,
+      stage,
+      result: 'created',
+      operation,
+      status,
+      projectId: created.id,
+    })
     return {
-      id: created.id,
-      name: created.name,
-      path: created.root,
-      added_at: created.created_at ?? Math.floor(Date.now() / 1000),
-      directory_created_at: created.directory_created_at ?? null,
+      kind: 'created',
+      project: {
+        id: created.id,
+        name: created.name,
+        path: created.root,
+        available: created.available,
+        added_at: created.created_at ?? Math.floor(Date.now() / 1000),
+        directory_created_at: created.directory_created_at ?? null,
+      },
     }
   } catch {
-    return null
+    reportProjectCreation({
+      attemptId,
+      stage,
+      result: 'unknown',
+      operation,
+      status,
+      code: 'request_or_decode_failed',
+    })
+    return { kind: 'unknown', operation }
   }
 }
 

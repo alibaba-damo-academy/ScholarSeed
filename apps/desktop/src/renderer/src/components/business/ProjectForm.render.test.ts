@@ -167,5 +167,22 @@ test('project form preserves folder previews and cancels trust without creating 
       description ? [{ id: created.id, name: created.name, description }] : []
     )
   }
+  let lostPosts = 0
+  await page.route(`${ORIGIN}/api/content/projects`, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback()
+    lostPosts += 1
+    await route.abort('failed')
+  })
+  requests.clear()
+  await page.reload()
+  await respond('', '/workspace/untitled')
+  await name.fill('处理中')
+  await respond('处理中', '/workspace/处理中')
+  const create = page.getByTestId('project-create')
+  await create.click()
+  await expect(page.getByRole('status')).toHaveText('可返回项目列表确认创建结果')
+  await expect(create).toBeDisabled()
+  await expect(page.getByText('无法创建项目，请重试。')).toHaveCount(0)
+  assert.equal(lostPosts, 1)
   assert.deepEqual(errors, [])
 })
