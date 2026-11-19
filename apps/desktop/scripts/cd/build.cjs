@@ -217,14 +217,6 @@ function buildType(argv, parsed = buildArguments(argv)) {
   return type
 }
 
-function buildApplicationLayout(args) {
-  if (!args[UPDATE_BRIDGE_FLAG.slice(2)]) return APPLICATION_LAYOUT.asar
-  if (args.platform !== 'darwin' || args.stage === 'backend') {
-    throw new Error(`${UPDATE_BRIDGE_FLAG} requires a macOS application or installer stage`)
-  }
-  return APPLICATION_LAYOUT.directory
-}
-
 function logDmgCopy(context) {
   const logfile = path.join(context.runDirectory, DMG_COPY_LOG)
   if (!fs.existsSync(logfile)) return
@@ -270,7 +262,10 @@ function options(argv) {
   if (result.candidate && !PUBLIC_TYPES.has(result.type)) {
     throw new Error('--candidate is only valid with preview or release')
   }
-  result.applicationLayout = buildApplicationLayout(result)
+  const bridge = result[UPDATE_BRIDGE_FLAG.slice(2)]
+  if (bridge && (result.platform !== 'darwin' || result.stage === 'backend'))
+    throw new Error(`${UPDATE_BRIDGE_FLAG} requires a macOS application or installer stage`)
+  result.applicationLayout = bridge ? APPLICATION_LAYOUT.directory : APPLICATION_LAYOUT.asar
   Object.assign(result, policy, { target: selected })
   if (result.candidate) result.signed = false
   if (result.stage === 'installer') result.stage = selected.installer
@@ -1190,7 +1185,6 @@ module.exports = {
   assertSource,
   buildNumberOf,
   buildRunDirectory,
-  buildApplicationLayout,
   credentialFreeEnv,
   requireInstallerSmoke,
   freezeFile,
