@@ -145,6 +145,7 @@ import {
   updateActionOf,
   updateFailureOf,
   updateFailureText,
+  updateRestartLabelKey,
   useUpdateState,
 } from '../../features/updates/state'
 import {
@@ -987,6 +988,15 @@ function AboutPage(): React.JSX.Element {
   } else if (phase === 'verifying' || phase === 'installing' || phase === 'restarting') {
     versionControl = <Spinner size="sm" />
   } else if (action !== 'none') {
+    let actionLabel: string = t('update.check')
+    let actionTestId = 'version-check'
+    if (action === 'install') {
+      actionLabel = t(updateRestartLabelKey(window.scholarseed?.platform, 'update.restartInstall'))
+      actionTestId = 'version-install'
+    } else if (action === 'download') {
+      actionLabel = failure ? t('update.retryDownload') : t('update.now')
+      actionTestId = 'version-download'
+    }
     versionControl = (
       <>
         {phase === 'up-to-date' && (
@@ -998,26 +1008,10 @@ function AboutPage(): React.JSX.Element {
           type="button"
           size="sm"
           variant={action === 'check' ? 'outline' : 'primary'}
-          data-testid={
-            action === 'install'
-              ? 'version-install'
-              : action === 'download'
-                ? 'version-download'
-                : 'version-check'
-          }
+          data-testid={actionTestId}
           state={update}
         >
-          {action === 'install'
-            ? t(
-                window.scholarseed?.platform === 'darwin'
-                  ? 'update.restartUpdate'
-                  : 'update.restartInstall'
-              )
-            : action === 'download'
-              ? failure
-                ? t('update.retryDownload')
-                : t('update.now')
-              : t('update.check')}
+          {actionLabel}
         </UpdateAction>
       </>
     )

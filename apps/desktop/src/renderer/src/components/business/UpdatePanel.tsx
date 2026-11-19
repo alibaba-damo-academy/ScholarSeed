@@ -13,6 +13,7 @@ import {
   updateFailureText,
   updateFailureTitle,
   updatePanelStageOf,
+  updateRestartLabelKey,
   useUpdateState,
   visibleReleaseNotes,
 } from '../../features/updates/state'
@@ -236,9 +237,7 @@ export function UpdatePanel({
   if (downloading) primaryLabel = t('update.updating')
   else if (action === 'repair') primaryLabel = accountUpdateText('update.repair')
   else if (action === 'install')
-    primaryLabel = t(
-      window.scholarseed?.platform === 'darwin' ? 'update.restartUpdate' : 'update.restartClient'
-    )
+    primaryLabel = t(updateRestartLabelKey(window.scholarseed?.platform, 'update.restartClient'))
   else if (action === 'download')
     primaryLabel = failed
       ? failure?.origin === 'preparation'

@@ -34,6 +34,7 @@ static void CheckInteraction(void) {
   GrantUpdater *updater = [GrantUpdater alloc];
   assert([updater respondsToSelector:@selector(launchShipItWithRequiredPrivilege:)]);
   Method method = class_getClassMethod(SQRLShipItLauncher.class, @selector(launchPrivileged:));
+  assert(method != NULL);
   IMP original = method_setImplementation(method, (IMP)RecordSubmission);
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://127.0.0.1/feed"]];
   [updater setValue:[request copy] forKey:@"updateRequest"];

@@ -17,6 +17,8 @@ static inline NSURL *SSSuccessionStateURL(void) {
   return arguments.count > SSSuccessionStateArgument ? [NSURL fileURLWithPath:arguments[SSSuccessionStateArgument]] : nil;
 }
 static inline BOOL SSSuccessionRollbackAbsent(NSString *label, NSString *rollbackKey, NSError **error) {
+  if (![label isKindOfClass:NSString.class] || !label.length ||
+      ![rollbackKey isKindOfClass:NSString.class] || !rollbackKey.length) return SSObservationFail(error, EINVAL);
   CFPropertyListRef rollback = CFPreferencesCopyValue((__bridge CFStringRef)rollbackKey, (__bridge CFStringRef)label, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
   if (!rollback) return YES;
   CFRelease(rollback);
@@ -49,7 +51,7 @@ static inline BOOL SSVerifySuccessionTrust(NSDictionary *request, NSString *labe
       ![label isEqual:[bundle stringByAppendingString:SSSuccessionHelperSuffix]] ||
       !SSObservationBoolean(request[@"installationAuthorized"]) || [request[@"installationAuthorized"] boolValue] ||
       !SSObservationBoolean(request[@"launchAfterInstallation"]) || [request[@"launchAfterInstallation"] boolValue] ||
-      !SSObservationBoolean(request[@"useUpdateBundleName"]) || !serialized || !rollbackKey.length)
+      !SSObservationBoolean(request[@"useUpdateBundleName"]) || !serialized)
     return SSObservationFail(error, EINVAL);
   if (!SSSuccessionRollbackAbsent(label, rollbackKey, error)) return NO;
   SecCodeRef running = NULL;

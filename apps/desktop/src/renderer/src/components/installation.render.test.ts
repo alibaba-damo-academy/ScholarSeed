@@ -191,9 +191,9 @@ async function withFixture(run: (page: Page) => Promise<void>, query = ''): Prom
 }
 
 test('macOS offers Restart and update only after preparation in both update entry points', async () => {
-  for (const [query, actionId, windowsLabel] of [
-    ['', 'update-panel-action', '重启客户端'],
-    ['?about', 'version-install', '重启完成更新'],
+  for (const [query, actionId, windowsZhLabel, windowsEnLabel] of [
+    ['', 'update-panel-action', '重启客户端', 'Restart client'],
+    ['?about', 'version-install', '重启完成更新', 'Restart to update'],
   ]) {
     await withFixture(async (page) => {
       await page.evaluate(() => {
@@ -208,11 +208,13 @@ test('macOS offers Restart and update only after preparation in both update entr
       await expect(action).toBeEnabled()
       await page.evaluate(() => Reflect.get(window, 'updateFixture').language('en'))
       await expect(action).toHaveText('Restart and update')
-      await page.evaluate(async () => {
+      await page.evaluate(() => {
         Reflect.set(window.scholarseed, 'platform', 'win32')
-        await Reflect.get(window, 'updateFixture').language('zh')
+        Reflect.get(window, 'updateFixture').publish({ phase: 'ready' })
       })
-      await expect(action).toHaveText(windowsLabel)
+      await expect(action).toHaveText(windowsEnLabel)
+      await page.evaluate(() => Reflect.get(window, 'updateFixture').language('zh'))
+      await expect(action).toHaveText(windowsZhLabel)
     }, query)
   }
 })

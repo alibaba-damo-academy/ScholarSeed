@@ -9,8 +9,10 @@
 
 
 static CFPropertyListRef FixtureRollback;
+static NSUInteger FixturePreferenceReads;
 static CFPropertyListRef FixtureCopyPreference(CFStringRef key, CFStringRef application, CFStringRef user, CFStringRef host) {
   (void)key; (void)application; (void)user; (void)host;
+  FixturePreferenceReads++;
   return FixtureRollback ? CFRetain(FixtureRollback) : NULL;
 }
 #define CFPreferencesCopyValue FixtureCopyPreference
@@ -67,6 +69,20 @@ static void TrustRefusals(void) {
   Check(!SSVerifySuccessionTrust(invalid, label, SSSuccessionRollbackKey, &error) && error.code == EINVAL, @"succession rejects invalid bundle syntax before signature construction");
   error = nil;
   Check(!SSVerifySuccessionTrust(request, @"other.ShipIt", SSSuccessionRollbackKey, &error) && error.code == EINVAL, @"succession requires exact bundle and helper label binding");
+  NSUInteger readsBeforeInvalid = FixturePreferenceReads;
+  id invalidArguments[] = { nil, @"", @42, NSNull.null };
+  for (NSUInteger i = 0; i < sizeof(invalidArguments) / sizeof(invalidArguments[0]); i++) {
+    error = nil;
+    Check(!SSSuccessionRollbackAbsent(invalidArguments[i], SSSuccessionRollbackKey, &error) &&
+      [error.domain isEqual:NSPOSIXErrorDomain] && error.code == EINVAL, @"rollback observation rejects an invalid label");
+    error = nil;
+    Check(!SSSuccessionRollbackAbsent(label, invalidArguments[i], &error) &&
+      [error.domain isEqual:NSPOSIXErrorDomain] && error.code == EINVAL, @"rollback observation rejects an invalid preference key");
+  }
+  error = nil;
+  Check(!SSVerifySuccessionTrust(request, label, (id)@42, &error) && error.code == EINVAL,
+    @"succession trust delegates preference key validation to rollback observation");
+  Check(FixturePreferenceReads == readsBeforeInvalid, @"invalid rollback domains never read preferences");
   FixtureRollback = kCFBooleanTrue;
   error = nil;
   Check(!SSSuccessionRollbackAbsent(label, SSSuccessionRollbackKey, &error) && error.code == EBUSY,
