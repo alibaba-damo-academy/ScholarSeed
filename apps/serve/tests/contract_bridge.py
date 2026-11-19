@@ -24,7 +24,7 @@ from service.platform.bridge import (
     PlanStructure,
 )
 
-TOOL_BYTES_LIMIT = 8000
+TOOL_BYTES_LIMIT = 5000
 
 
 class BridgeToolContracts(unittest.TestCase):
@@ -102,9 +102,11 @@ class BridgeToolContracts(unittest.TestCase):
     def test_bridge_request_sources_are_exclusive_and_preserve_inline_contracts(self):
         schema = SERVICE_BRIDGE_TOOL.input_schema
         self.assertNotIn("allOf", schema)
-        for branch in schema["oneOf"]:
-            self.assertEqual(set(branch), {"properties", "required"})
-            self.assertIn(branch["required"], (["request"], ["request_file"]))
+        self.assertEqual(
+            set(schema["properties"]), {"capability", "operation", "request", "request_file"}
+        )
+        self.assertEqual(schema["minProperties"], len(schema["required"]) + 1)
+        self.assertEqual(schema["maxProperties"], schema["minProperties"])
         validator = Draft202012Validator(schema)
         for capability, operation in sorted(set(BRIDGE_REQUESTS) | {("contract", "describe")}):
             with self.subTest(capability=capability, operation=operation):

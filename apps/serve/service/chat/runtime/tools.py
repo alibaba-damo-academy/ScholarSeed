@@ -51,6 +51,7 @@ from service.platform.vocabulary import (
 )
 
 SERVICE_BRIDGE_TOOL_NAME = "scholarseed_bridge"
+BRIDGE_ARGUMENT_COUNT = 3
 PLAN_MODEL_OPERATIONS = ("get", "create", "update", "revise", "release", *PLAN_ACTION_STATUSES)
 BRIDGE_INVALID_PARAMETERS = "bridge_invalid_parameters"
 MISSING_PARAMETER_ERROR = "missing"
@@ -69,23 +70,6 @@ def service_tool_schema() -> dict[str, Any]:
     for capability, operation in BRIDGE_REQUESTS:
         if (capability, operation) != (CONTRACT_CAPABILITY, CONTRACT_DESCRIBE_OPERATION):
             operations_by_capability[capability].append(operation)
-    branches = [
-        {
-            "properties": {
-                "capability": {"const": CONTRACT_CAPABILITY},
-                "operation": {"const": CONTRACT_DESCRIBE_OPERATION},
-                "request": ContractDescribe.model_json_schema(),
-            },
-        },
-    ] + [
-        {
-            "properties": {
-                "capability": {"const": capability},
-                "operation": {"enum": operations},
-            },
-        }
-        for capability, operations in operations_by_capability.items()
-    ]
     return {
         "type": "object",
         "properties": {
@@ -105,11 +89,26 @@ def service_tool_schema() -> dict[str, Any]:
         },
         "required": ["capability", "operation"],
         "additionalProperties": False,
-        # Keep oneOf flat for Qwen Responses schema compatibility.
+        # Two required routing fields leave exactly one key for the request source.
+        "minProperties": BRIDGE_ARGUMENT_COUNT,
+        "maxProperties": BRIDGE_ARGUMENT_COUNT,
         "oneOf": [
-            {**branch, "required": [source]}
-            for branch in branches
-            for source in ("request", "request_file")
+            {
+                "properties": {
+                    "capability": {"const": CONTRACT_CAPABILITY},
+                    "operation": {"const": CONTRACT_DESCRIBE_OPERATION},
+                    "request": ContractDescribe.model_json_schema(),
+                },
+            },
+        ]
+        + [
+            {
+                "properties": {
+                    "capability": {"const": capability},
+                    "operation": {"enum": operations},
+                },
+            }
+            for capability, operations in operations_by_capability.items()
         ],
     }
 
