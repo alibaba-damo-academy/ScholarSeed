@@ -116,10 +116,6 @@
   "project": {
     "required": "Enter a project name",
     "createFailed": "Unable to create the project. Please retry.",
-    "waitingForService": "Waiting for the local service",
-    "checkCreation": "Check creation status",
-    "checkExistingProject": "Check the project list for the result",
-    "openCreatedProject": "Continue opening project",
     "saveFailed": "Save failed",
     "removeFailed": "Removal failed",
     "created": "Created project {{name}}",

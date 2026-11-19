@@ -116,10 +116,6 @@
   "project": {
     "required": "请填写项目名",
     "createFailed": "无法创建项目，请重试。",
-    "waitingForService": "等待本地服务恢复",
-    "checkCreation": "查询创建结果",
-    "checkExistingProject": "可返回项目列表确认创建结果",
-    "openCreatedProject": "继续打开项目",
     "saveFailed": "保存失败",
     "removeFailed": "移除失败",
     "created": "已创建项目 {{name}}",

@@ -3277,7 +3277,7 @@ export type ProjectCreationResult =
 
 export function reportProjectCreation(event: {
   attemptId: string
-  stage: 'preflight' | 'submit' | 'operation' | 'metadata' | 'list_confirmation'
+  stage: 'preflight' | 'submit' | 'operation' | 'metadata' | 'list_confirmation' | 'completion'
   result: string
   operation?: string
   projectId?: string

@@ -25,7 +25,6 @@ import {
   DialogHeader,
   DialogTitle,
   FormControl,
-  FormDescription,
   FormField,
   FormLabel,
   FormMessage,
@@ -87,13 +86,6 @@ export function ProjectForm({
   const createdProject = React.useRef<Project | null>(null)
   const attempt = React.useRef<{ id: string; operation?: string; blocked?: boolean } | null>(null)
   const [saving, setBusy] = React.useState(false)
-  const [notice, setNotice] = React.useState<
-    | 'project.waitingForService'
-    | 'project.checkCreation'
-    | 'project.checkExistingProject'
-    | 'project.openCreatedProject'
-    | null
-  >(null)
   const busy = saving || pending
   const creationLocked = Boolean(
     createdProject.current || attempt.current?.operation || attempt.current?.blocked
@@ -135,7 +127,6 @@ export function ProjectForm({
     const current = (attempt.current ??= { id: crypto.randomUUID().replaceAll('-', '') })
     setBusy(true)
     setError(null)
-    setNotice(null)
     try {
       let created = createdProject.current
       if (!created) {
@@ -146,14 +137,12 @@ export function ProjectForm({
         )
         if (result.kind === 'rejected') {
           attempt.current = null
-          if (result.maintenance) setNotice('project.waitingForService')
-          else setError({ messageKey: 'project.createFailed' })
+          if (!result.maintenance) setError({ messageKey: 'project.createFailed' })
           return
         }
         if (result.kind === 'unknown') {
           current.operation = result.operation
           current.blocked = !result.operation
-          setNotice(result.operation ? 'project.checkCreation' : 'project.checkExistingProject')
           return
         }
         created = createdProject.current = result.project
@@ -190,7 +179,13 @@ export function ProjectForm({
       }
       await onDone(t('project.created', { name: createdName }), created, current.id)
     } catch {
-      setNotice('project.openCreatedProject')
+      reportProjectCreation({
+        attemptId: current.id,
+        stage: 'completion',
+        result: 'failed',
+        projectId: createdProject.current?.id,
+        code: 'project_completion_failed',
+      })
     } finally {
       setBusy(false)
     }
@@ -263,7 +258,6 @@ export function ProjectForm({
             {error && (
               <FormMessage>{'messageKey' in error ? t(error.messageKey) : error.text}</FormMessage>
             )}
-            {notice && <FormDescription role="status">{t(notice)}</FormDescription>}
           </FormField>
 
           <FormField id="project-description" className="!gap-[var(--vds-space-2)]">
@@ -398,17 +392,7 @@ export function ProjectForm({
               else void (editing ? save() : create())
             }}
           >
-            {t(
-              busy
-                ? 'project.busy'
-                : editing
-                  ? 'project.save'
-                  : notice === 'project.openCreatedProject'
-                    ? 'project.openCreatedProject'
-                    : attempt.current?.operation
-                      ? 'project.checkCreation'
-                      : 'project.create'
-            )}
+            {t(busy ? 'project.busy' : editing ? 'project.save' : 'project.create')}
           </Button>
         </DialogFooter>
       </DialogContent>
