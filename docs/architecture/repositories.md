@@ -5,7 +5,7 @@ architecture/interface contracts, durable design decisions, contribution guidanc
 An independent clone or native Git worktree must support public development, testing, build and review
 without accessing a private parent, internal service or private document revision.
 
-Private supplements own development workflow Skills, internal-system integrations, organization/personal information,
+Private supplements own internal-system integrations, organization/personal information,
 private approval/delivery processes, work logs and raw evidence. Mixed material must be split by meaning and
 consumers, not by a blanket rule for every `docs/`, `AGENTS.md` or Skill. General knowledge has one
 maintained source; optional private supplements reference it rather than duplicating its rules.
@@ -23,8 +23,8 @@ content, dependency and historical review independently of a successful internal
 <a id="中文摘要"></a>
 ## Summary
 
-The source repository includes public engineering knowledge and product gates. Development Skills,
-internal supplements, work logs, and raw evidence are maintained in the internal source repository.
+The source repository includes public engineering knowledge, [development Skills](skills.md#development-workflow-boundary),
+and product gates. Private supplements hold internal workflows. Task records and raw evidence stay local.
 Split mixed materials by content and consumers rather than applying a blanket directory rule. Daily
 development supports independent clones and native worktrees without requiring a parent repository
 or documentation SHA. Only release, acceptance, and reproduction records pin exact versions.

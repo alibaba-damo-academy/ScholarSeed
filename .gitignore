@@ -181,8 +181,9 @@ version_release.json
 
 # ── 本地资产: 只留本地, 不随开源仓库发布 ──
 # `.ai/`、`.superpowers/`、`wiki/` 为本地协作与历史材料；`.qoder/` 为 IDE 本地 MCP 配置（可能带凭据）。
-# Development workflow definitions and host aliases are private supplements.
-/.agents/
+# Keep repository development Skills and ignore other local agent files.
+/.agents/*
+!/.agents/skills/
 /.claude/
 /.codex/skills
 CLAUDE.md

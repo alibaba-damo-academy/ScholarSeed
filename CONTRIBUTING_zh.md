@@ -82,7 +82,8 @@ Git 将软链接检出为占位文件时（例如 `core.symlinks=false`），先
 和 `pnpm ops pre doctor --scope links`，再运行组件规范与 Skill 检查。修复核对 Git 中的目标，
 遇到冲突即停止，不改全局 Git 配置。
 
-项目规则使用 `AGENTS.md`。开发 Skill 与发现配置由文档内源仓维护，不随源码分发；
+项目规则使用 `AGENTS.md`。从源码仓根目录启动编码宿主即可发现
+[项目开发 Skill](docs/architecture/skills.md#development-workflow-boundary)；
 个人宿主配置放在仓库外。
 
 | 工具 | 要求 |

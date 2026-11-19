@@ -10,7 +10,7 @@ When the issue is clear and a direct topic-specific entry is useful, consult the
 For knowledge governance, write-back, and ownership decisions, read the [single authoritative specification](docs/architecture/knowledge.md). For new or modified Markdown image references, follow the [image path rules](docs/architecture/knowledge.md#markdown-图片引用).
 Historical commands and authorization do not carry over as authorization for the current task. Do not state unverified conclusions as capabilities, and do not treat conflicts between specifications and source code as automatically removing safety requirements.
 For script-module imports and path aliases, first read the [scope and implementation constraints](docs/architecture/ops-cli.md#脚本模块导入与别名), then verify the actual declaration in the nearest `package.json`. If there is no declaration, do not use a planned alias or use an alias to bypass Owner boundaries.
-Development-workflow Skills are maintained only in the documentation source repository; they are not distributed with source code and are not a prerequisite for public development.
+Repository development Skills live in `.agents/skills/` and are maintained with the source. See [Skill ownership](docs/architecture/skills.md).
 The product `skills/community/` remains owned by the source repository. Validate documentation, tools, and products through their actual checks and host/product acceptance respectively; passing links or metadata checks does not prove semantics, real invocation, or complete acceptance.
 
 ## What This Repo Is
@@ -233,8 +233,7 @@ acceptance criteria. A read-only review writes no proposal; a local bug may not
 need one, but still needs real verification.
 ## Engineering Entry Points
 
-Development workflow Skills live in private supplements, not this checkout. Public development
-uses the local AGENTS, Owner contracts and tools without a private Skill host or parent repository.
+Use repository development Skills from `.agents/skills/` alongside the applicable AGENTS, Owner contracts and tools. Save authorized local task records only under the Git-ignored `.ai/work-records/`. Check that the destination is ignored and untracked.
 Before product Skill packaging or discovery changes, read [Skill ownership](docs/architecture/skills.md).
 Optional host instructions do not replace design, contracts or real acceptance.
 For renderer page, component, or interaction-visual changes, also read the [UI reuse engineering specification](apps/desktop/docs/design/components.md). For changes limited to state and protocols, locate the relevant Desktop Owner entry; do not require the component workflow for them.
