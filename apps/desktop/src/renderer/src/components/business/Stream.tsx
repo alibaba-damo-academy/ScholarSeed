@@ -553,6 +553,7 @@ export function Stream({
   onOpenDelivery?: (member: DeliveryCardMember) => void
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
+  const { t: conversation } = useTranslation('conversation')
   const { state, set, patchThread, getSnapshot } = useApp()
   const thread = activeThread(state)
   const [recoveryChecking, setRecoveryChecking] = useState(false)
@@ -687,6 +688,12 @@ export function Stream({
   const fork = useForkOrigin(thread.sessionId)
   const forkBoundary = fork.origin ? forkBoundaryIndex(rows, fork.origin.inherited_messages) : -1
   const forkDivider = fork.origin ? <ForkOriginDivider {...fork} origin={fork.origin} /> : null
+  const inheritedFailures = new Set(fork.origin?.inherited_failed_turn_ids)
+  for (const item of presented) {
+    if (item.turnId && (item.kind === 'error' || (item.kind === 'agent' && item.text.trim()))) {
+      inheritedFailures.delete(item.turnId)
+    }
+  }
   const isArtifactReceiptRow = (row: ActivityRow | undefined): boolean => {
     if (row?.kind === 'artifacts')
       return !thread.sessionId || row.items.every((item) => !artifactPreviewKind(item.artifact))
@@ -1385,13 +1392,23 @@ export function Stream({
                 const nextSection = sections[sectionIndex + 1]
                 const nextTurn =
                   nextSection?.kind === 'row' ? rowTurnId(nextSection.row) : nextSection?.turnId
-                const missingAnswer =
-                  sectionTurn &&
+                const inheritedFailure =
+                  sectionTurn && sectionTurn !== nextTurn && inheritedFailures.has(sectionTurn)
+                const missingAnswer = inheritedFailure ? (
+                  <Alert
+                    tone="warning"
+                    layout="inline"
+                    role="status"
+                    className="mb-[var(--vds-space-3)] w-full"
+                    data-testid="fork-history-failure"
+                    description={conversation('failure.interrupted.message')}
+                  />
+                ) : sectionTurn &&
                   sectionTurn !== nextTurn &&
                   isEmptyTurn(thread, sectionTurn) &&
                   !conv.some((item) => item.kind === 'agent' && item.turnId === sectionTurn) ? (
-                    <EmptyTurn key={`empty:${sectionTurn}`} turnId={sectionTurn} />
-                  ) : null
+                  <EmptyTurn key={`empty:${sectionTurn}`} turnId={sectionTurn} />
+                ) : null
                 const renderRow = (row: ActivityRow, index: number): React.ReactNode => {
                   const previous = rows[index - 1]
                   const next = rows[index + 1]
@@ -1940,6 +1957,7 @@ function Item({
       return (
         <AgentMsg
           latest={latestAgent}
+          compact={turnOutcome === 'completed' && !finalAnswer}
           citationEnabled={interactions.citationEnabled}
           copyEnabled={
             !awaitingConfirmation &&
@@ -7390,6 +7408,7 @@ function EmptyTurn({ turnId }: { turnId: string }): React.JSX.Element {
 function AgentMsg({
   citationEnabled,
   latest,
+  compact,
   copyEnabled,
   forkEnabled,
   item,
@@ -7400,6 +7419,7 @@ function AgentMsg({
 }: {
   citationEnabled: boolean
   latest: boolean
+  compact: boolean
   copyEnabled: boolean
   forkEnabled: boolean
   item: Extract<ConvItem, { kind: 'agent' }>
@@ -7449,7 +7469,13 @@ function AgentMsg({
       : turnDurationLabel(timing.startedAt, timing.completedAt)
   const empty = !visibleMarkdownText(item.text).trim()
   return (
-    <div className="group/message" style={{ display: 'flex', gap: 11, marginBottom: 28 }}>
+    <div
+      className={cx(
+        'group/message',
+        compact ? 'mb-[var(--vds-space-2)]' : 'mb-[var(--vds-space-7)]'
+      )}
+      style={{ display: 'flex', gap: 11 }}
+    >
       <div style={{ flex: 1, minWidth: 0 }}>
         {!empty ? (
           <div className="motion-safe:animate-[vds-answer-in_var(--vds-duration-fast)_var(--vds-ease-standard)_backwards]">

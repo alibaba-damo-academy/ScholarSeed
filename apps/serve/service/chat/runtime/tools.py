@@ -51,6 +51,7 @@ from service.platform.vocabulary import (
 )
 
 SERVICE_BRIDGE_TOOL_NAME = "scholarseed_bridge"
+BRIDGE_ARGUMENT_COUNT = 3
 PLAN_MODEL_OPERATIONS = ("get", "create", "update", "revise", "release", *PLAN_ACTION_STATUSES)
 BRIDGE_INVALID_PARAMETERS = "bridge_invalid_parameters"
 MISSING_PARAMETER_ERROR = "missing"
@@ -88,7 +89,9 @@ def service_tool_schema() -> dict[str, Any]:
         },
         "required": ["capability", "operation"],
         "additionalProperties": False,
-        "allOf": [{"oneOf": [{"required": ["request"]}, {"required": ["request_file"]}]}],
+        # Two required routing fields leave exactly one key for the request source.
+        "minProperties": BRIDGE_ARGUMENT_COUNT,
+        "maxProperties": BRIDGE_ARGUMENT_COUNT,
         "oneOf": [
             {
                 "properties": {

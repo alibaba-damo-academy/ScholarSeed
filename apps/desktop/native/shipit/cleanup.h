@@ -8,6 +8,7 @@ BOOL SSCleanupOpenExistingDirectory(NSString *directory, NSError **error);
 BOOL SSCleanupOpenMaintenanceDirectory(NSString *directory, NSError **error);
 NSDictionary *SSCleanupReadOnlySnapshot(NSError **error);
 NSDictionary *SSCleanupMaintenanceSnapshot(NSError **error);
+NSDictionary *SSCleanupIdleMaintenanceSnapshot(NSError **error);
 BOOL SSCleanupCommit(NSURL *source, NSURL *stage, NSURL *previous, NSURL *target, NSURL *originalTarget, NSError **error);
 BOOL SSCleanupKnowsRollback(NSURL *previous, NSURL *target);
 BOOL SSCleanupReconcilesRollback(NSURL *previous, NSURL *target);

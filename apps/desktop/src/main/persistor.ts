@@ -6,7 +6,6 @@ import { RotatingFileLog } from './logfile.ts'
 import { assertDirectoryOwnership, desktopDirectoryWriter } from './writer.ts'
 import { PreferenceDiagnostics } from '../preference-diagnostics.ts'
 import { readPreferences, savePreferences, writePreferences } from './preferencefile.ts'
-import { OfficeFontCacheStore } from './fontcache.ts'
 import type {
   PersistenceOperation,
   PersistenceOperations,
@@ -77,13 +76,6 @@ async function perform<Kind extends PersistenceOperation>(
     await logs.get(input.path)?.end()
     logs.delete(input.path)
     return undefined
-  }
-  if (request.kind === 'cache') {
-    const input = request.input as PersistenceOperations['cache']['input']
-    const cache = new OfficeFontCacheStore(input.directory, input.namespace)
-    if (input.mode === 'load') return cache.load(input.fingerprint)
-    cache.save(input.fingerprint, input.value)
-    return null
   }
   await Promise.all([...logs.values()].map((log) => log.end()))
   assertDirectoryOwnership()

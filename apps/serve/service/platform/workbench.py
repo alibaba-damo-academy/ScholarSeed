@@ -76,7 +76,6 @@ class DocumentFormatProjection:
     can_select: bool
     can_annotate: bool
     can_save: bool
-    can_edit_artifact: bool
     pending: tuple[str, ...]
 
 

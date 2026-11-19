@@ -125,6 +125,7 @@ from service.chat.persistence.catalog import (
 )
 from service.chat.persistence.events import (
     SESSION_FORK_EVENT,
+    SESSION_FORK_FAILED_TURNS_FIELD,
     SESSION_FORK_IMPORTED_KEY,
     SESSION_FORK_KEY,
     SESSION_FORK_NATIVE_FIELD,
@@ -1312,6 +1313,8 @@ class SessionService:
         source_id = str(requested.payload["source_session_id"])
         inherited = self._events.portable_history(session_id, through_seq=imported.product_seq)
         anchors = [{"turn_id": entry.turn_id, "item_id": entry.item_id} for entry in inherited]
+        inherited_turns = {entry.turn_id for entry in inherited if entry.role == "user"}
+        failed_turns = imported.payload.get(SESSION_FORK_FAILED_TURNS_FIELD)
         origin = {
             "source_session_id": source_id,
             "source_product_seq": requested.payload["source_product_seq"],
@@ -1333,6 +1336,10 @@ class SessionService:
                 origin["status"] = ForkOriginStatus.FORBIDDEN
             else:
                 origin.update(self._title_projection(source))
+                if failed_turns is None:
+                    failed_turns = self._events.fork_failed_turns(
+                        source_id, int(requested.payload["source_product_seq"])
+                    )
                 if source.archived:
                     origin["status"] = ForkOriginStatus.ARCHIVED
                 elif not anchors:
@@ -1352,6 +1359,9 @@ class SessionService:
                         if status == HTTP_OK:
                             origin["navigation"] = navigation
                             origin["status"] = ForkOriginStatus.AVAILABLE
+        origin[SESSION_FORK_FAILED_TURNS_FIELD] = sorted(
+            inherited_turns.intersection(failed_turns or ())
+        )
         return {"origin": origin}, HTTP_OK
 
     def navigation(

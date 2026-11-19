@@ -116,6 +116,13 @@ export function updateActionOf(state: UpdateSnapshot | null): UpdateAction {
   }
 }
 
+export function updateRestartLabelKey(
+  platform: string | undefined,
+  nonMacLabelKey: 'update.restartClient' | 'update.restartInstall'
+): 'update.restartUpdate' | 'update.restartClient' | 'update.restartInstall' {
+  return platform === 'darwin' ? 'update.restartUpdate' : nonMacLabelKey
+}
+
 /**
  * 发起当前相位对应的那一个动作。
  *

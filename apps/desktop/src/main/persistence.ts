@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import type { RendererPreferences, PreferenceLanguage } from '../preferences.ts'
 import type { PreferenceDiagnostics } from '../preference-diagnostics.ts'
-import type { OfficeFontCache } from '../fonts.ts'
 import { retainUncertainDirectoryOwnership } from './writer.ts'
 
 export const PERSISTENCE_DIAGNOSTIC_PREFIX = '[persistence]'
@@ -35,16 +34,6 @@ export interface PersistenceOperations {
       diagnostics: ReturnType<PreferenceDiagnostics['context']>
     }
     output: RendererPreferences
-  }
-  cache: {
-    input: {
-      directory: string
-      namespace: string
-      fingerprint: string
-      mode: 'load' | 'save'
-      value?: unknown
-    }
-    output: OfficeFontCache | null
   }
   close: { input: undefined; output: undefined }
 }

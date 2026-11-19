@@ -2531,7 +2531,6 @@ def create_app(
     cases_root: Optional[Path] = None,
     product: str = PRODUCT_ALL,
     renderer_dist: str = "",
-    office_root: str = "",
     cors_origins: Optional[list[str]] = None,
     auth: Optional[bool] = None,
     auth_mode: str | None = None,
@@ -2714,7 +2713,6 @@ def create_app(
             admission=admission,
             product=product,
             renderer_dist=renderer_dist,
-            office_root=office_root,
             cors_origins=cors_origins,
             auth=auth,
             auth_mode=auth_mode,
@@ -3647,7 +3645,6 @@ def _compose_app(
     admission: WorkbenchAdmission | None = None,
     product: str,
     renderer_dist: str,
-    office_root: str,
     cors_origins: list[str] | None,
     auth: bool | None,
     auth_mode: str | None,
@@ -3703,6 +3700,7 @@ def _compose_app(
         format_policy,
         settings,
         activities=activities,
+        changes=changes,
     )
     resource_versions.bind_admission_policy(version_supervisor)
     resource_deliveries = ResourceDeliveryService(
@@ -4450,7 +4448,7 @@ def _compose_app(
         expose_headers=list(CORS_EXPOSE_HEADERS),
     )
 
-    mount_renderer(app, renderer_dist, office_root)
+    mount_renderer(app, renderer_dist)
     return app
 
 

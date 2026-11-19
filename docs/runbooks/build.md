@@ -450,7 +450,6 @@ upstream archive is no longer sufficient.
 | Official Codex Runtime | Agent sessions and tool execution |
 | ripgrep | Search file contents |
 | PowerShell 7 portable | Isolated Windows component payload; do not add it to the Agent `PATH` before real encoding acceptance |
-| Office WASM | Preview and edit Office documents |
 | `skills/community` | Skills delivered with the product |
 
 The Codex version and platform source are defined by `scripts/vendor/codex/manifest.json`;
@@ -509,44 +508,23 @@ LFS. `scripts/shared/artifacts.cjs` downloads them from the manifest into a user
 cache, verifies file size and SHA-256, and then atomically restores them to the worktree.
 The default cache paths are `~/.cache/scholarseed/artifacts` on macOS/Linux and
 `%LOCALAPPDATA%\ScholarSeed\cache\artifacts` on Windows; override them with
-`SCHOLARSEED_ARTIFACT_CACHE`. Python, Codex, ripgrep, PowerShell, TeX Live, Go SDK, and
-Office WASM/data use publicly readable OSS artifacts and require no download credentials:
+`SCHOLARSEED_ARTIFACT_CACHE`. Python, Codex, ripgrep, PowerShell, TeX Live and Go SDK
+archives use publicly readable OSS artifacts and require no download credentials:
 `https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor`。
-The five vendor manifests, Office manifest, and `url` in
-`apps/desktop/updater/toolchain.json` are the sole sources of default download URLs.
-Upload and verify artifacts before updating a manifest. Office artifacts are under
-`vendor/office/zeta-20250513/`; the existing Office resource verification entry point
-downloads and verifies them.
-On Windows, Office is delivered separately with the other runtimes; the complete app
-package carries only the signed component manifest and reuses expanded files for
-unchanged components. Windows Office packaging uses a separate staging tree. Only the
-line endings of `THIRD_PARTY_NOTICES.md` are normalized to the CRLF audited for the
-component; all other vendor files remain byte-for-byte unchanged, and the source
-worktree is not rewritten. Git attributes also pin the checkout line endings for that
-notice file. The staging step handles existing LF worktrees and source exports, so the
-host platform or `core.autocrlf` cannot change the component tree or its bound ZIP digest.
-Office component identity covers the complete file tree, including the notices and
-manifest; even changing a build command in the notices changes component content. For
-such changes, compare the complete member lists of the old and new ZIPs, increment the
-Office revision in `apps/desktop/runtime/versions.json`, and bind the measured tree and
-ZIP digests. Do not overwrite an old revision or skip version-binding checks. The nearby
-Office test checks offline that source notices, the manifest, and the pinned vendor
-digest agree with the tree binding; the real ZIP and native Windows build still require
-separate verification. OSS is only a source for build inputs. After installation,
-Office requests are still served from the local Serve origin, not loaded online from OSS.
+The vendor manifests and `url` in `apps/desktop/updater/toolchain.json` own default download URLs.
+macOS and Windows no longer deliver or download Office WASM. DOCX, PPTX and XLSX use local read-only previews; CSV retains its local editor. Legacy DOC, XLS and PPT use external applications or exported copies. New Windows component manifests exclude Office. Existing signed manifests, archives and caches remain intact for older versions.
 
-Desktop native modules are `lease.node` and `fonts.node`; Windows additionally freezes the
-official `velopack.node`. Their manifest is at `apps/desktop/native/libraries.cjs`. They
+Desktop native modules are declared in `apps/desktop/native/libraries.cjs`. They
 are compiled separately and use the existing toolchain, signing, and frozen evidence;
 the build and signing manifests record each module's SHA256 separately. ASAR may unpack
 only the platform's main modules listed in its manifest. Preload and standalone
-inspection entry points must not load them directly or indirectly. Both Windows
+inspection entry points must not load them directly or indirectly. Windows
 libraries retain the current executable's delay-load hook; font enumeration uses
 DirectWrite and does not infer paths from the registry. Do not overwrite artifacts
 referenced by a manifest. If content changes, use a new object path and re-audit size and
 digest.
 Windows retains its component registry, canonical ZIP, and frozen-inventory controls.
-Signed CI publishes the Python, TeX Live, PowerShell, Codex, Office, and Electron ZIPs
+Signed CI publishes the Python, TeX Live, PowerShell, Codex and Electron ZIPs
 separately; only the signed manifest enters `current/resources/components`. Component
 versions are bound to content digests. On first use or when content changes, components
 are downloaded and expanded to `<安装根>/runtime/<kind>/<component-version>` (the installation root);
@@ -642,6 +620,16 @@ Runtime bytecode writes remain prohibited, and no cache is added to the user's i
 tree. Windows continues to use the existing component freeze, normalization, and RECORD
 ordering; dependency-version checks do not replace bytecode inventory or signature
 verification.
+
+Before writing each cache, the compiler keeps a preparation compilation alive through
+the final pass. This stabilizes CPython's constant interning and marshal reference
+encoding across different import/compilation histories (CPython #129724). Regressions
+compare independent interpreter histories; source hashes alone do not prove identical
+cache bytes. Component version and archive-digest checks remain mandatory.
+
+每个缓存写入前，编译器保留一次准备编译的代码对象直至最终编译完成，稳定不同导入和编译历史下的
+CPython 常量驻留与 marshal 引用编码（CPython #129724）。回归需比较独立解释器历史；源码哈希相同
+不代表缓存字节相同。组件版本绑定和归档摘要校验仍为必需检查。
 
 When changing dependencies, update the relevant pyproject/registry, run `uv lock`, and
 commit the lockfile. A stale lock fails before installation. This constraint pins runtime
@@ -1017,12 +1005,12 @@ the installer, and launch the installed real app to execute package-check.
 ## Windows Component Cache and Acceptance Reruns
 
 `pnpm ops cd build release --channel preview --component-cache <absolute-directory>`
-Explicitly enable the build-side stable Python/TeXLive/PowerShell/Codex/Office ZIP cache
+Explicitly enable the build-side stable Python/TeXLive/PowerShell/Codex ZIP cache
 with this command. The cache root belongs to the current CI user and uses a private ACL,
 exact inputs, and a recipe key; every cache hit still fully scans the archive and runs
 this round's product gates. A corrupt cache fails rather than being treated as a hit;
 without the cache option, the full assembly runs each time.
-Codex/Office cache keys bind the actual input tree, entry point, archive recipe, target,
+Codex cache keys bind the actual input tree, entry point, archive recipe, target,
 and packaging-Python archive digest. A hit skips only compression; it still checks the
 complete ZIP inventory and final runtime-version binding. The Python recipe is owned by
 `assembly.cjs` for dependency sync, normalization, bytecode, and archive steps; it is no

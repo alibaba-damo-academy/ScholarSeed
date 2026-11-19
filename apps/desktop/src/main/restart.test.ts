@@ -143,12 +143,95 @@ function candidate(build: string): LatestVersionMeta {
     sha512: 'a'.repeat(128),
   }
 }
+
+const preparationDeclaration = source.statements
+  .filter(ts.isVariableStatement)
+  .flatMap((statement) => Array.from(statement.declarationList.declarations))
+  .find((declaration) => declaration.name.getText(source) === 'updatePreparation')
+const preparationConstructor = preparationDeclaration?.initializer
+assert.ok(preparationConstructor && ts.isNewExpression(preparationConstructor))
+const preparationWorker = ts.transpileModule(
+  `(${preparationConstructor.arguments?.[0].getText(source)})`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } }
+).outputText
+
+for (const outcome of ['ready', 'manual-ready', 'missing-receipt', 'candidate-replaced'] as const) {
+  test(`macOS waits for a current native receipt before publishing restart readiness: ${outcome}`, async () => {
+    const release = candidate('202610131000')
+    const phases: UpdateSnapshot['phase'][] = []
+    let current = true
+    let ready = false
+    const manual = outcome === 'manual-ready'
+    let request: { id: string; allowInteraction: boolean } | undefined
+    let finishNative!: () => void
+    const nativeGate = new Promise<void>((resolve) => {
+      finishNative = resolve
+    })
+    let nativeStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      nativeStarted = resolve
+    })
+    const worker = runInNewContext(preparationWorker, {
+      app: { getVersion: () => '0.2.0' },
+      currentUpdateSnapshot: () => ({ phase: 'preparing', candidate: release }),
+      macStartupDecision: undefined,
+      preparationPolicy: {},
+      process: { platform: 'darwin' },
+      WINDOWS_PLATFORM: 'win32',
+      publishUpdateProgress: () => {},
+      publishUpdateSnapshot: (next: UpdateSnapshot) => phases.push(next.phase),
+      pushLog: () => {},
+      requireDesktopWorkbench: () => {},
+      retainedUpdateReady: () => null,
+      runBackgroundUpdateCheck: () => {},
+      updater: {
+        logUpdateEvent: () => {},
+        resolveDesktopConfig: () => ({ buildNumber: '202610120900' }),
+        validatePreviewCandidate: async () => {},
+        stageUpdate: async () => ({ ok: true, ready: { meta: release } }),
+        prepareMacUpdate: async (
+          id: string,
+          _progress: unknown,
+          _log: unknown,
+          _signal: AbortSignal,
+          _startup: unknown,
+          allowInteraction: boolean
+        ) => {
+          request = { id, allowInteraction }
+          nativeStarted()
+          await nativeGate
+          return { ok: true }
+        },
+        macPreparationReady: () => ready,
+      },
+    })
+    const pending = worker({
+      candidate: release,
+      generation: 1,
+      origin: manual ? 'manual' : 'background',
+      isCurrent: () => current,
+      signal: new AbortController().signal,
+    })
+    await started
+    assert.deepEqual(request, { id: release.id, allowInteraction: manual })
+    assert.equal(phases.includes('ready'), false)
+    current = outcome !== 'candidate-replaced'
+    ready = outcome !== 'missing-receipt'
+    finishNative()
+    const expectedReady = outcome === 'ready' || manual
+    assert.equal(await pending, expectedReady)
+    assert.equal(phases.includes('ready'), expectedReady)
+    assert.equal(phases.includes('failed'), outcome === 'missing-receipt')
+  })
+}
+
 for (const windows of [false, true]) {
   for (const rejected of [false, true]) {
     test(`${windows ? 'Velopack' : 'Squirrel'} pins restart across publication and ${rejected ? 'rejection' : 'handoff'}`, async () => {
       const first = candidate('202610131000'),
         newer = candidate('202610131001')
       let snapshot: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
+      let nativeReady = windows
       const prepared: string[] = []
       const preparation = new UpdatePreparation(async ({ candidate }) => {
         prepared.push(candidate.id)
@@ -196,6 +279,7 @@ for (const windows of [false, true]) {
         desktopWorkbenchReady: () => true,
         updatePreparation: preparation,
         updateInstallAbort: null,
+        macInstallCommit: null,
         updateRestartRequested: false,
         updateInstallationInProgress: false,
         macMaintenanceUncertain: false,
@@ -232,6 +316,8 @@ for (const windows of [false, true]) {
           isCurrentPreviewResult: () => true,
           NO_STAGED_UPDATE: 'no staged update',
           macHandoffCommitted: () => false,
+          macHandoffReady: () => nativeReady,
+          macPreparationReady: () => nativeReady,
           checkForUpdate: async () => {
             checks++
             return { has_update: true, latest: newer }
@@ -274,6 +360,17 @@ for (const windows of [false, true]) {
         newer,
       }
       runInNewContext(code, context)
+      if (!windows) {
+        const blocked = install(null, first.id)
+        assert.equal(
+          context.updateInstallAbort,
+          null,
+          'archive readiness alone cannot start restart'
+        )
+        assert.equal((await blocked).ok, false)
+        nativeReady = true
+        snapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
+      }
       const pending = install(null, first.id)
       assert.equal(checks, 0, 'restart must not reselect the latest release')
       runInNewContext('publishUpdateCheckResult({ has_update: true, latest: newer })', context)
@@ -484,6 +581,7 @@ for (const failure of [
       clearBackendRestart: () => {},
       updater: {
         ActivationCandidateChanged,
+        macHandoffCommitted: () => false,
         discardRejectedUpdate: (value: LatestVersionMeta) => {
           assert.equal(value, selected)
           events.push('revoke')
@@ -738,6 +836,7 @@ for (const failure of [
       MACOS_PLATFORM: 'darwin',
       previewPolicyChanging: false,
       updateInstallAbort: null as AbortController | null,
+      macInstallCommit: null,
       updateRestartRequested: false,
       updateInstallationInProgress: false,
       macMaintenanceUncertain: false,
@@ -781,6 +880,7 @@ for (const failure of [
       } | null,
       clearBackendRestart: () => {},
       BackendMaintenanceRejected,
+      retryUpdate,
       backendUpdateControl: () => ({
         quiesce: async () => {
           assert.fail('explicit updates must not quiesce runtime attachments')
@@ -809,6 +909,7 @@ for (const failure of [
         NO_STAGED_UPDATE: 'none',
         macHandoffCommitted: () => false,
         macHandoffReady: () => true,
+        macPreparationReady: () => true,
         macHandoffRetryable: () => false,
         readReadyState: () => ({ meta: selected }),
         quitMacUpdate: async (_log: unknown, beforeCommit: () => void) => {

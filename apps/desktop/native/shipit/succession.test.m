@@ -9,8 +9,10 @@
 
 
 static CFPropertyListRef FixtureRollback;
+static NSUInteger FixturePreferenceReads;
 static CFPropertyListRef FixtureCopyPreference(CFStringRef key, CFStringRef application, CFStringRef user, CFStringRef host) {
   (void)key; (void)application; (void)user; (void)host;
+  FixturePreferenceReads++;
   return FixtureRollback ? CFRetain(FixtureRollback) : NULL;
 }
 #define CFPreferencesCopyValue FixtureCopyPreference
@@ -37,10 +39,21 @@ static NSData *Bytes(NSString *store) {
   NSData *data = [NSData dataWithContentsOfFile:[store stringByAppendingPathComponent:@"journal.plist"]];
   assert(data); return data;
 }
-static void Write(NSString *store, NSDictionary *journal) {
+static void WriteBytes(NSString *store, NSData *data) {
   NSString *path = [store stringByAppendingPathComponent:@"journal.plist"];
-  assert([[NSPropertyListSerialization dataWithPropertyList:journal format:NSPropertyListBinaryFormat_v1_0 options:0 error:NULL] writeToFile:path atomically:YES]);
+  assert([data writeToFile:path atomically:YES]);
   assert(chmod(path.fileSystemRepresentation, 0600) == 0);
+}
+static void Write(NSString *store, NSDictionary *journal) {
+  WriteBytes(store, [NSPropertyListSerialization dataWithPropertyList:journal format:NSPropertyListBinaryFormat_v1_0 options:0 error:NULL]);
+}
+static NSURL *UnauthorizedRequest(NSString *fixture, NSURL *source, NSURL *target, NSDictionary *binding) {
+  NSURL *state = [NSURL fileURLWithPath:[fixture stringByAppendingPathComponent:@"ShipItState.plist"]];
+  NSData *bytes = [NSJSONSerialization dataWithJSONObject:@{@"binding":binding, @"bundleIdentifier":@"com.scholarseed.desktop",
+    @"updateBundleURL":source.absoluteString, @"targetBundleURL":target.absoluteString,
+    @"installationAuthorized":@NO, @"launchAfterInstallation":@NO, @"useUpdateBundleName":@YES} options:0 error:NULL];
+  assert([bytes writeToURL:state atomically:YES]); assert(chmod(state.path.fileSystemRepresentation, 0600) == 0);
+  return state;
 }
 static void Check(BOOL value, NSString *label) {
   if (!value) NSLog(@"FAIL %@", label);
@@ -56,11 +69,30 @@ static void TrustRefusals(void) {
   Check(!SSVerifySuccessionTrust(invalid, label, SSSuccessionRollbackKey, &error) && error.code == EINVAL, @"succession rejects invalid bundle syntax before signature construction");
   error = nil;
   Check(!SSVerifySuccessionTrust(request, @"other.ShipIt", SSSuccessionRollbackKey, &error) && error.code == EINVAL, @"succession requires exact bundle and helper label binding");
+  NSUInteger readsBeforeInvalid = FixturePreferenceReads;
+  id invalidArguments[] = { nil, @"", @42, NSNull.null };
+  for (NSUInteger i = 0; i < sizeof(invalidArguments) / sizeof(invalidArguments[0]); i++) {
+    error = nil;
+    Check(!SSSuccessionRollbackAbsent(invalidArguments[i], SSSuccessionRollbackKey, &error) &&
+      [error.domain isEqual:NSPOSIXErrorDomain] && error.code == EINVAL, @"rollback observation rejects an invalid label");
+    error = nil;
+    Check(!SSSuccessionRollbackAbsent(label, invalidArguments[i], &error) &&
+      [error.domain isEqual:NSPOSIXErrorDomain] && error.code == EINVAL, @"rollback observation rejects an invalid preference key");
+  }
+  error = nil;
+  Check(!SSVerifySuccessionTrust(request, label, (id)@42, &error) && error.code == EINVAL,
+    @"succession trust delegates preference key validation to rollback observation");
+  Check(FixturePreferenceReads == readsBeforeInvalid, @"invalid rollback domains never read preferences");
   FixtureRollback = kCFBooleanTrue;
+  error = nil;
+  Check(!SSSuccessionRollbackAbsent(label, SSSuccessionRollbackKey, &error) && error.code == EBUSY,
+    @"ordinary unauthorized preparation and cancellation cannot qualify with rollback present");
   error = nil;
   Check(!SSVerifySuccessionTrust(request, label, SSSuccessionRollbackKey, &error) && error.code == EBUSY, @"succession refuses an existing rollback before trust admission");
   FixtureRollback = NULL;
   error = nil;
+  Check(SSSuccessionRollbackAbsent(label, SSSuccessionRollbackKey, &error) && !error,
+    @"rollback absence can be observed through the exact ShipIt preference domain");
   Check(!SSVerifySuccessionTrust(request, label, SSSuccessionRollbackKey, &error) && error.code == EPERM, @"ad-hoc test host cannot authorize Developer ID succession");
   error = nil;
   Check(!SSSuccessionSigned(request[@"updateBundleURL"], NULL, &error) && error, @"missing signed candidate is not trusted");
@@ -75,7 +107,8 @@ int main(int argc, const char **argv) {
     assert(realpath(Directory(@(argv[1])).fileSystemRepresentation, canonical));
     Root = @(canonical);
     TrustRefusals();
-    for (NSString *name in @[@"machine", @"repair-resume", @"source-live", @"candidate-live", @"source-link", @"candidate-link", @"signature", @"target-race", @"journal-race", @"ownership", @"archive-link", @"archive-corrupt", @"save", @"same-binding", @"different-target", @"new-protocol", @"partial-archive"]) {
+    for (NSString *name in @[@"cleanup-history-auto", @"cleanup-history-repair", @"cleanup-awaiting-launch", @"cleanup-pending", @"cleanup-race",
+        @"machine", @"repair-resume", @"source-live", @"candidate-live", @"source-link", @"candidate-link", @"signature", @"target-race", @"journal-race", @"ownership", @"archive-link", @"archive-corrupt", @"save", @"same-binding", @"different-target", @"new-protocol", @"partial-archive"]) {
       NSString *fixture = Directory([Root stringByAppendingPathComponent:name]);
       NSString *store = Directory([fixture stringByAppendingPathComponent:@"preparation"]);
       NSString *cleanup = Directory([fixture stringByAppendingPathComponent:@"cleanup"]);
@@ -84,6 +117,19 @@ int main(int argc, const char **argv) {
       NSURL *next = Bundle([fixture stringByAppendingPathComponent:@"cache/update.new/ScholarSeed.app"]);
       NSDictionary *binding = Binding(@"a"), *nextBinding = Binding(@"c");
       assert(SSCleanupOpenDirectory(cleanup, NULL));
+      BOOL awaitingLaunch = [name isEqual:@"cleanup-awaiting-launch"];
+      BOOL cleanupPending = [name isEqual:@"cleanup-pending"];
+      NSURL *committedSource = nil;
+      NSData *cleanupBefore = nil;
+      if ([name hasPrefix:@"cleanup-"]) {
+        committedSource = Bundle([fixture stringByAppendingPathComponent:@"cache/update.committed/ScholarSeed.app"]);
+        NSURL *stage = Bundle([fixture stringByAppendingPathComponent:@"cleanup-stage/ScholarSeed.app"]);
+        NSURL *previous = Bundle([fixture stringByAppendingPathComponent:@"cleanup-previous/ScholarSeed.app"]);
+        assert(SSCleanupCommit(committedSource, stage, previous, target, target, NULL));
+        if (!awaitingLaunch) assert(SSCleanupMarkLaunched(committedSource, target));
+        if (!cleanupPending) assert(SSCleanupDrain(target));
+        cleanupBefore = Bytes(cleanup);
+      }
       assert(SSPreparationOpenDirectory(store, NULL));
       NSURL *candidate = SSPreparationCopy(source, target, binding, NULL); assert(candidate);
       assert(SSPreparationRecordFailure(source, target, binding, ETIMEDOUT, NULL));
@@ -107,6 +153,10 @@ int main(int argc, const char **argv) {
       if ([name isEqual:@"save"]) Directory([store stringByAppendingPathComponent:@"journal.next"]);
       if ([name isEqual:@"same-binding"]) nextBinding = binding;
       if ([name isEqual:@"different-target"]) target = Bundle([fixture stringByAppendingPathComponent:@"other/ScholarSeed.app"]);
+      if ([name isEqual:@"cleanup-history-repair"]) {
+        SSCleanupClose();
+        assert(SSCleanupOpenMaintenanceDirectory(cleanup, NULL));
+      }
       assert(SSPreparationOpenDirectory(store, NULL));
       Check(SSPreparationRecoverFailure(next, target, nextBinding, NULL, NULL) == SSPreparationFailureInvalid, @"normal admission does not guess an orphan outcome");
       NSUInteger __block verifications = 0;
@@ -117,16 +167,17 @@ int main(int argc, const char **argv) {
           Bundle(target.path);
         }
         if ([name isEqual:@"journal-race"]) Write(store, journal);
+        if ([name isEqual:@"cleanup-race"]) WriteBytes(cleanup, cleanupBefore);
         return ![name isEqual:@"signature"];
       };
+      if (awaitingLaunch || cleanupPending) {
+        NSURL *state = UnauthorizedRequest(fixture, next, target, nextBinding);
+        Check(!SSPreparationOrphanPlan(next, target, nextBinding, state, NULL), @"repair planning refuses unfinished cleanup transactions");
+      }
       BOOL recovered;
-      BOOL nativeRepair = [@[@"machine", @"repair-resume"] containsObject:name];
+      BOOL nativeRepair = [@[@"machine", @"repair-resume", @"cleanup-history-repair"] containsObject:name];
       if (nativeRepair) {
-        NSURL *state = [NSURL fileURLWithPath:[fixture stringByAppendingPathComponent:@"ShipItState.plist"]];
-        NSData *stateBytes = [NSJSONSerialization dataWithJSONObject:@{@"binding":nextBinding, @"bundleIdentifier":@"com.scholarseed.desktop",
-          @"updateBundleURL":next.absoluteString, @"targetBundleURL":target.absoluteString,
-          @"installationAuthorized":@NO, @"launchAfterInstallation":@NO, @"useUpdateBundleName":@YES} options:0 error:NULL];
-        assert([stateBytes writeToURL:state atomically:YES]); assert(chmod(state.path.fileSystemRepresentation, 0600) == 0);
+        NSURL *state = UnauthorizedRequest(fixture, next, target, nextBinding);
         SSPreparationActivity (^idle)(void) = ^SSPreparationActivity {return SSPreparationActivityAbsent;};
         if ([name isEqual:@"machine"]) {
           for (id malformed in @[@[], @[@"first", @"second"], @"invalid", @42, @{@"schema":@"1", @"record":@[]}, @{@"schema":@"1", @"record":@42}]) {
@@ -141,6 +192,7 @@ int main(int argc, const char **argv) {
             assert([before writeToFile:journalPath atomically:YES]); assert(chmod(journalPath.fileSystemRepresentation, 0600) == 0);
           }
         }
+        Check(SSPreparationOrphanPlan(next, target, nextBinding, state, NULL) != nil, @"repair planning accepts qualified historical records");
         NSDictionary *proof = SSPreparationOrphanSnapshot(next, target, nextBinding, state, nil, idle, NULL); assert(proof);
         if ([name isEqual:@"machine"]) {
           for (id malformed in @[@[], @[@"first", @"second"], @"invalid", @42, @{@"schema":@"1", @"record":@[]}, @{@"schema":@"1", @"record":@42}]) {
@@ -161,13 +213,23 @@ int main(int argc, const char **argv) {
         Check(![Manager fileExistsAtPath:state.path], @"native repair consumes the exact unauthorized pending request");
         Check(SSPreparationOrphanSnapshot(next, target, nextBinding, state, proof, idle, NULL) != nil, @"native proof survives complete retirement for Desktop WAL continuation");
       } else recovered = SSPreparationReconcile(next, target, nextBinding, verify, NULL);
-      BOOL success = [@[@"machine", @"repair-resume", @"partial-archive"] containsObject:name];
+      BOOL success = [@[@"cleanup-history-auto", @"cleanup-history-repair", @"machine", @"repair-resume", @"partial-archive"] containsObject:name];
       Check(recovered == success, [name stringByAppendingString:@" reconciliation result"]);
+      if (cleanupBefore) {
+        Check([Bytes(cleanup) isEqual:cleanupBefore], @"succession preserves the original cleanup journal bytes");
+        Check(SSCleanupKnownRequest(committedSource), @"the original commit still fences replay");
+      }
+      if (awaitingLaunch || cleanupPending) Check(verifications == 0, @"unfinished transactions refuse before fresh signature verification");
+      if ([name isEqual:@"cleanup-race"]) Check(verifications == 1, @"replacing the cleanup journal during verification refuses even with identical bytes");
       if (success) {
         Check(verifications == ([name isEqual:@"repair-resume"] ? 2u : 1u), @"fresh request trust is verified before retirement");
         Check([[NSData dataWithContentsOfFile:archive] isEqual:before], @"retirement retains the exact legacy journal bytes");
         Check(SSPreparationRecoverFailure(next, target, nextBinding, NULL, NULL) == SSPreparationFailureNone, @"retirement does not grant installation or replay the old failure");
         SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+        if (cleanupBefore) {
+          Bundle(source.path);
+          Check(!SSPreparationCopy(source, target, binding, NULL), @"the retired preparation cannot replay after reopening");
+        }
         NSURL *prepared = SSPreparationCopy(next, target, nextBinding, NULL);
         Check(prepared != nil && SSPreparationValidate(next, target, nextBinding, prepared, NULL), @"reopening continues through normal candidate preparation and validation");
         Check(!SSPreparationValidate(next, target, binding, prepared, NULL), @"old request cannot use the new prepared candidate");

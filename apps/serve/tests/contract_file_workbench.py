@@ -244,6 +244,94 @@ def test_readonly_file_capabilities_and_save() -> None:
         shutil.rmtree(project, ignore_errors=True)
 
 
+def test_project_file_symlinks_are_previewable_without_write_access() -> None:
+    with tempfile.TemporaryDirectory(prefix="file-workbench-symlink-") as directory:
+        root = Path(directory)
+        project = root / "project"
+        docs = project / "docs"
+        docs.mkdir(parents=True)
+        target = docs / "notes.md"
+        original = b"# Linked notes\n"
+        target.write_bytes(original)
+        outside = root / "outside.md"
+        outside.write_bytes(b"# Outside project\n")
+        link = project / "linked.md"
+        link.symlink_to(Path("docs") / target.name)
+        (project / "outside.md").symlink_to(outside)
+        (project / "missing.md").symlink_to("absent.md")
+        client = _client(project)
+
+        params = {"path": link.name}
+        opened = client.get("/api/workbench/open", params=params)
+        document = opened.json()
+        capabilities = document.get("capabilities", {})
+        direct = client.get("/api/workbench/open", params={"path": "docs/notes.md"}).json()
+        check(
+            "direct Markdown remains editable",
+            direct.get("capabilities", {}).get("can_edit", False),
+        )
+        check(
+            "in-project symlink opens as a read-only Markdown preview",
+            opened.status_code == 200
+            and document.get("path") == link.name
+            and document.get("viewer") == "markdown"
+            and document.get("revision") == direct.get("revision")
+            and capabilities.get("can_preview") is True
+            and not any(
+                capabilities.get(key) for key in ("can_edit", "can_save", "can_version", "can_diff")
+            ),
+            opened.text,
+        )
+        body = client.get("/api/workbench/content", params=params)
+        head = client.head("/api/workbench/content", params=params)
+        part = client.get("/api/workbench/content", params=params, headers={"Range": "bytes=2-7"})
+        check("symlink serves full content", body.status_code == 200 and body.content == original)
+        check(
+            "symlink serves matching metadata and ranges",
+            head.status_code == 200
+            and head.headers.get("content-length") == str(len(original))
+            and head.headers.get("etag") == body.headers.get("etag")
+            and part.status_code == 206
+            and part.content == original[2:8],
+        )
+        saved = client.put(
+            "/api/workbench/content",
+            params=params,
+            content=b"changed",
+            headers={"Content-Type": "application/octet-stream", "If-Match": direct["revision"]},
+        )
+        check(
+            "saving through a symlink changes neither the link nor the target",
+            saved.is_error and link.is_symlink() and target.read_bytes() == original,
+            saved.text,
+        )
+        for route in ("open", "content"):
+            denied = client.get(f"/api/workbench/{route}", params={"path": "outside.md"})
+            missing = client.get(f"/api/workbench/{route}", params={"path": "missing.md"})
+            check(f"{route} refuses outside symlink", denied.status_code == 400)
+            check(f"{route} refuses dangling symlink", missing.status_code == 404)
+
+        replacement = project / "replacement.md"
+        replacement.write_bytes(b"# Replacement\n")
+        content = client.app.state.content
+        snapshot = content.snapshot
+
+        def retarget_after_snapshot(*args, **kwargs):
+            observed = snapshot(*args, **kwargs)
+            link.unlink()
+            link.symlink_to(replacement.name)
+            return observed
+
+        with patch.object(content, "snapshot", side_effect=retarget_after_snapshot):
+            retargeted = client.get("/api/workbench/content", params=params)
+        check(
+            "retargeting during a response keeps the original ETag and content together",
+            retargeted.status_code == 200
+            and retargeted.headers.get("etag") == body.headers.get("etag")
+            and retargeted.content == original,
+        )
+
+
 def test_open_binds_existing_snapshot() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-open-"))
     try:
@@ -443,6 +531,41 @@ def test_pdf_visual_region_manifest_and_crop_use_the_live_revision() -> None:
             and image.content.startswith(b"\x89PNG")
             and stale.status_code == 409,
             f"manifest={response.text} image={image.status_code} stale={stale.text}",
+        )
+
+        link = project / "linked-paper.pdf"
+        link.symlink_to("paper.pdf")
+        linked_params = {**params, "path": link.name}
+        linked_open = client.get("/api/workbench/open", params={"path": link.name})
+        linked_document = linked_open.json()
+        check(
+            "linked PDF keeps selection available without a writable record target",
+            linked_open.status_code == 200
+            and linked_document.get("revision") == opened["revision"]
+            and linked_document["capabilities"]["can_select"]
+            and not linked_document["capabilities"]["can_annotate"]
+            and linked_document.get("asset_id") is None,
+            linked_open.text,
+        )
+        linked_manifest = client.get("/api/workbench/pdf/regions", params=linked_params)
+        linked_image = client.get(
+            f"/api/workbench/pdf/regions/{region['region_id']}/image",
+            params={**crop_params, "path": link.name, "page": 1, "quad": region["quad"]},
+        )
+        linked_stale = client.get(
+            "/api/workbench/pdf/regions",
+            params={**linked_params, "revision": "sha256:stale"},
+        )
+        check(
+            "linked PDF supports the same region manifest and image at the current revision",
+            linked_manifest.status_code == 200
+            and linked_manifest.json() == response.json()
+            and linked_image.status_code == 200
+            and linked_image.headers["content-type"] == "image/png"
+            and linked_image.content == image.content
+            and linked_stale.status_code == 409,
+            f"manifest={linked_manifest.text} image={linked_image.status_code} "
+            f"stale={linked_stale.text}",
         )
     finally:
         if indexes is not None:
@@ -696,7 +819,7 @@ def _invalid_workbook_bytes() -> bytes:
     return output.getvalue()
 
 
-def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> None:
+def test_spreadsheets_preview_readonly_and_fail_closed_for_complex_xlsx() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-spreadsheet-"))
     try:
         (project / "results.csv").write_text("sample,value\nalpha,7\n", encoding="utf-8")
@@ -741,6 +864,7 @@ def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> No
             and csv_open.get("capabilities", {}).get("can_version") is True
             and simple_open.get("capabilities", {}).get("can_edit") is False
             and simple_open.get("capabilities", {}).get("can_save") is False
+            and simple_open.get("capabilities", {}).get("can_preview") is True
             and simple_open.get("capabilities", {}).get("can_version") is True,
             f"csv={csv_open} single={single_open} simple={simple_open}",
         )
@@ -796,24 +920,41 @@ def test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx() -> No
         shutil.rmtree(project, ignore_errors=True)
 
 
-def test_office_documents_are_preview_only() -> None:
+def test_office_documents_preview_only_modern_formats_and_export_legacy() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-office-readonly-"))
     try:
-        names = ("document.doc", "document.docx", "workbook.xls", "slides.ppt", "slides.pptx")
-        for name in names:
+        modern = ("document.docx", "slides.pptx")
+        legacy = ("document.doc", "workbook.xls", "slides.ppt")
+        for name in (*modern, *legacy):
             (project / name).write_bytes(b"office-content")
         client = _client(project)
-        for name in names:
+        for name in modern:
             opened = client.get("/api/workbench/open", params={"path": name})
             payload = opened.json()
             capabilities = payload.get("capabilities", {})
             check(
-                f"{name} 仅提供可选择的版本化预览",
+                f"{name} 提供可选择的版本化轻量预览",
+                opened.status_code == 200
+                and payload.get("viewer") == "office"
+                and payload.get("processor") is None
+                and capabilities.get("can_preview") is True
+                and capabilities.get("can_select") is True
+                and capabilities.get("can_version") is True
+                and capabilities.get("can_edit") is False
+                and capabilities.get("can_save") is False,
+                opened.text,
+            )
+        for name in legacy:
+            opened = client.get("/api/workbench/open", params={"path": name})
+            payload = opened.json()
+            capabilities = payload.get("capabilities", {})
+            check(
+                f"{name} 明确不可应用内预览但保留版本导出",
                 opened.status_code == 200
                 and payload.get("viewer") == "office"
                 and payload.get("processor") == ("xls" if name.endswith(".xls") else None)
-                and capabilities.get("can_preview") is True
-                and capabilities.get("can_select") is True
+                and capabilities.get("can_preview") is False
+                and capabilities.get("can_select") is False
                 and capabilities.get("can_version") is True
                 and capabilities.get("can_edit") is False
                 and capabilities.get("can_save") is False,
@@ -1479,87 +1620,6 @@ def test_markdown_images_persist() -> None:
         shutil.rmtree(project, ignore_errors=True)
 
 
-def test_office_image_leases() -> None:
-    project = Path(tempfile.mkdtemp(prefix="office-images-"))
-    try:
-        for name in ("document.docx", "other.docx"):
-            (project / name).write_bytes(b"document")
-        client = _client(project)
-        route = "/api/workbench/office-images"
-        image = BytesIO()
-        Image.new("RGB", (2, 2), "blue").save(image, format="PNG")
-        payload = image.getvalue()
-        response = client.post(
-            route,
-            params={"path": "document.docx"},
-            content=payload,
-            headers={"Content-Type": "image/png"},
-        )
-        check("office image staged", response.status_code == 200, response.text)
-        if response.status_code != 200:
-            return
-        lease = response.json()
-        asset = project / lease["path"]
-        check("office image temporary namespace", lease["path"].startswith(".assert/tmp-img/"))
-        check("office image bytes stored", asset.read_bytes() == payload)
-        params = {"path": "document.docx", "lease": lease["lease"]}
-        missing_revision = client.delete(route, params=params)
-        check(
-            "office image cleanup requires revision",
-            missing_revision.status_code == 428 and asset.exists(),
-        )
-        wrong = client.delete(route, params=params, headers={"If-Match": "wrong"})
-        check("office image cleanup checks revision", wrong.status_code == 412 and asset.exists())
-        other = client.delete(
-            route, params={**params, "path": "other.docx"}, headers={"If-Match": lease["revision"]}
-        )
-        check("office image scoped to document", other.status_code == 404 and asset.exists())
-        traversal = client.delete(
-            route,
-            params={**params, "lease": "../document.docx"},
-            headers={"If-Match": lease["revision"]},
-        )
-        check("office image rejects forged path", traversal.status_code == 400 and asset.exists())
-        removed = client.delete(route, params=params, headers={"If-Match": lease["revision"]})
-        check("office image exact cleanup", removed.status_code == 204 and not asset.exists())
-        check("office source preserved", (project / "document.docx").read_bytes() == b"document")
-        for path, media, data in (
-            ("missing.docx", "image/png", payload),
-            ("document.docx", "image/svg+xml", b"<svg/>"),
-            ("document.docx", "image/png", b"not-png"),
-            ("document.docx", "image/png", b"\x89PNG\r\n\x1a\n"),
-        ):
-            rejected = client.post(
-                route, params={"path": path}, content=data, headers={"Content-Type": media}
-            )
-            check(f"office image rejects {path} {media} {len(data)}", rejected.status_code >= 400)
-        (project / "text.md").write_text("text")
-        non_docx = client.post(
-            route,
-            params={"path": "text.md"},
-            content=payload,
-            headers={"Content-Type": "image/png"},
-        )
-        check("office image rejects non-DOCX source", non_docx.status_code == 400)
-        subdir = project / "nested"
-        subdir.mkdir()
-        (subdir / "document.docx").write_bytes(b"document")
-        with tempfile.TemporaryDirectory(prefix="office-image-outside-") as outside:
-            (subdir / ".assert").symlink_to(outside, target_is_directory=True)
-            escaped = client.post(
-                route,
-                params={"path": "nested/document.docx"},
-                content=payload,
-                headers={"Content-Type": "image/png"},
-            )
-            check(
-                "office image rejects symlink escape",
-                escaped.status_code >= 400 and not list(Path(outside).iterdir()),
-            )
-    finally:
-        shutil.rmtree(project, ignore_errors=True)
-
-
 def test_html_read_permission_failure_and_retry() -> None:
     with tempfile.TemporaryDirectory() as directory:
         project = Path(directory)
@@ -1577,14 +1637,10 @@ def test_html_read_permission_failure_and_retry() -> None:
             },
             response.text,
         )
-        original_open = Path.open
-
-        def denied_open(target: Path, *args: object, **kwargs: object):
-            if target.resolve() == (project / "page.html").resolve():
-                raise PermissionError()
-            return original_open(target, *args, **kwargs)
-
-        with patch.object(Path, "open", denied_open):
+        with patch(
+            "service.content.service.port.DirectoryHandle.open_regular",
+            side_effect=PermissionError(),
+        ):
             opened = client.get("/api/workbench/open", params={"path": "page.html"})
         check(
             "HTML open preserves permission denial while hashing",
@@ -1611,15 +1667,15 @@ if __name__ == "__main__":
     test_bmp_images_are_preview_only()
     test_product_mime_registry_precedes_host()
     test_manual_raw_versioning_does_not_invent_preview_capabilities()
-    test_office_image_leases()
     test_markdown_images_persist()
     test_large_editor_commit_crosses_old_64mib_ceiling()
     test_registered_preview_crosses_content_default_and_stops_at_500_mib()
-    test_spreadsheets_share_zeta_viewer_and_fail_closed_for_complex_xlsx()
-    test_office_documents_are_preview_only()
+    test_spreadsheets_preview_readonly_and_fail_closed_for_complex_xlsx()
+    test_office_documents_preview_only_modern_formats_and_export_legacy()
     test_editor_formats_open_save_and_reopen()
     test_open_binds_existing_snapshot()
     test_readonly_file_capabilities_and_save()
+    test_project_file_symlinks_are_previewable_without_write_access()
     test_open_projects_versioning_without_a_resource_tree_scan()
     test_recreated_pdf_opens_with_an_isolated_identity()
     test_pdf_identity_conflict_is_a_structured_response()

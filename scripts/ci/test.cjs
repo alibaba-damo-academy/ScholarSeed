@@ -492,7 +492,6 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       'scripts/ci/__tests__/events.test.cjs', 'scripts/ci/__tests__/transport.test.cjs', 'scripts/ci/__tests__/smoke.test.cjs',
       'scripts/ci/__tests__/skillhub.test.cjs', 'scripts/ci/__tests__/progress.test.cjs', 'scripts/ci/__tests__/diagnostics.test.cjs',
       'apps/desktop/scripts/ci/__tests__/standards.test.mjs',
-      'apps/desktop/src/renderer/src/features/workbench/office/local-fonts.test.cjs',
       ...NATIVE_TEST_FILES.map(filename =>
         path.relative(ROOT, path.resolve(DESKTOP, filename)).split(path.sep).join('/'))],
     timeoutMs: 0,

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
-from service.content.service.enumeration import scan_files
+from service.content.service.enumeration import entries_for_paths, scan_files
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.space import Mount, ProjectSpace
 from service.paths import PROJECT_DB_RELATIVE
@@ -176,6 +176,25 @@ class EligibilityContract(unittest.IsolatedAsyncioTestCase):
             tuple(entry.path for entry in entries), ("resources/virtual/linked/linked.md",)
         )
         self.assertEqual(scan_files(scope, paths=("resources/virtual-neighbor",)), ())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX uses the existing stat result")
+    async def test_resource_enumeration_reuses_the_stat_file_type(self) -> None:
+        (self.resources / "folder").mkdir()
+        scope = ProjectSpace(self.project)
+        target = self.target.resolve()
+        original = Path.is_file
+
+        def reject_duplicate_file_probe(path: Path) -> bool:
+            if path == target:
+                raise AssertionError("A file with metadata must not be inspected twice")
+            return original(path)
+
+        with patch.object(Path, "is_file", reject_duplicate_file_probe):
+            entries = scan_files(scope)
+            selected = entries_for_paths(scope, (self.path, "resources/folder"))
+
+        self.assertEqual(selected, entries)
+        self.assertEqual([(entry.path, entry.size) for entry in entries], [(self.path, 8)])
 
     async def begin(self) -> None:
         await self.deliveries.begin_turn("session", "turn", self.project.root)

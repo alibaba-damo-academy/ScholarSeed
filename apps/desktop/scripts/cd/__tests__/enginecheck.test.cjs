@@ -50,7 +50,7 @@ function fixture(t) {
     version: '0.2.0',
     electron: { version: '44.3.0' },
     native: {
-      libraries: ['lease.node', 'fonts.node', 'velopack.node'].map((name) => ({
+      libraries: ['lease.node', 'notification.node', 'velopack.node'].map((name) => ({
         path: `out/main/${name}`,
       })),
     },

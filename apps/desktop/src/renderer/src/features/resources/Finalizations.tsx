@@ -66,7 +66,7 @@ export function Finalizations({
       )
       setCursor(page.next_cursor)
       setError(null)
-      // Read at the terminal writer boundary before invalidating resource state.
+      // Refresh the resource view after reading the committed archive status.
       act.invalidateResources()
     },
     [act, project, sessionId]

@@ -100,15 +100,33 @@ class BridgeToolContracts(unittest.TestCase):
         )
 
     def test_bridge_request_sources_are_exclusive_and_preserve_inline_contracts(self):
-        validator = Draft202012Validator(SERVICE_BRIDGE_TOOL.input_schema)
-        base = {"capability": "component", "operation": "display"}
-        self.assertTrue(validator.is_valid({**base, "request": {}}))
-        self.assertTrue(validator.is_valid({**base, "request_file": "output/plot.json"}))
-        self.assertFalse(validator.is_valid(base))
-        self.assertFalse(
-            validator.is_valid({**base, "request": {}, "request_file": "output/plot.json"})
+        schema = SERVICE_BRIDGE_TOOL.input_schema
+        self.assertNotIn("allOf", schema)
+        self.assertEqual(
+            set(schema["properties"]), {"capability", "operation", "request", "request_file"}
         )
-        self.assertFalse(validator.is_valid({**base, "request_file": ""}))
+        self.assertEqual(schema["minProperties"], len(schema["required"]) + 1)
+        self.assertEqual(schema["maxProperties"], schema["minProperties"])
+        validator = Draft202012Validator(schema)
+        for capability, operation in sorted(set(BRIDGE_REQUESTS) | {("contract", "describe")}):
+            with self.subTest(capability=capability, operation=operation):
+                base = {"capability": capability, "operation": operation}
+                request = (
+                    {"target_capability": "history", "target_operation": "list"}
+                    if (capability, operation) == ("contract", "describe")
+                    else {}
+                )
+                self.assertTrue(validator.is_valid({**base, "request": request}))
+                self.assertTrue(validator.is_valid({**base, "request_file": "output/plot.json"}))
+                for invalid in (
+                    base,
+                    {**base, "request": request, "request_file": "output/plot.json"},
+                    {**base, "request_file": ""},
+                    {**base, "request_file": None},
+                    {**base, "request": []},
+                    {**base, "request": request, "extra": True},
+                ):
+                    self.assertFalse(validator.is_valid(invalid), invalid)
 
     def test_artifact_contract_distinguishes_explicit_stage_delivery_from_working_files(self):
         contract = describe_contract("artifact", "publish")

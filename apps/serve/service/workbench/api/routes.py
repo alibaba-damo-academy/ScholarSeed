@@ -50,12 +50,7 @@ from service.workbench.domain.model import (
     content_kind_for,
     viewer_for,
 )
-from service.workbench.service.images import (
-    OFFICE_IMAGE_MAX_BYTES,
-    persist_image,
-    release_office_image,
-    stage_office_image,
-)
+from service.workbench.service.images import persist_image
 from service.workbench.service.records import PdfRecordStore
 from service.workbench.service.regions import crop as crop_region
 from service.workbench.service.regions import manifest as region_manifest
@@ -88,7 +83,6 @@ ERROR_STATUS = {
 CONTENT_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/content"
 ANNOTATIONS_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/assets/{{asset_id}}/pdf/records"
 MANAGED_COPY_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/managed-copy"
-OFFICE_IMAGES_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/office-images"
 PDF_REGIONS_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/pdf/regions"
 RANGE_NOT_SATISFIABLE_STATUS = 416
 PARTIAL_CONTENT_STATUS = 206
@@ -213,9 +207,10 @@ def register_workbench_routes(app: FastAPI) -> None:
         content = _content(request)
         try:
             # 越界、存在性与 exact revision 先由 content 域裁决，再谈能力。
-            snapshot = content.snapshot(project or "", path)
+            snapshot = content.snapshot(project or "", path, allow_file_symlink=True)
         except ContentError as exc:
             raise _fail(exc) from exc
+        is_symlink = snapshot.symlink_target is not None
         versioning = None
         if snapshot.size > WORKBENCH_PREVIEW_MAX_BYTES:
             source_bytes = None
@@ -238,7 +233,9 @@ def register_workbench_routes(app: FastAPI) -> None:
             else:
                 try:
                     source_bytes, _media_type = content.read_bytes(
-                        project or "", path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
+                        project or "",
+                        snapshot.symlink_target or path,
+                        max_bytes=WORKBENCH_PREVIEW_MAX_BYTES,
                     )
                 except ContentError as exc:
                     raise _fail(exc) from exc
@@ -248,15 +245,22 @@ def register_workbench_routes(app: FastAPI) -> None:
             admission: ResourceAdmissionPolicy | None = getattr(
                 request.app.state, "resource_version_supervisor", None
             )
-            versioning = admission.capability(snapshot.project_id, path) if admission else None
+            if admission and not is_symlink:
+                versioning = admission.capability(snapshot.project_id, path)
             capabilities = replace(
                 capabilities,
                 can_version=bool(versioning and versioning.can_version),
                 can_edit=capabilities.can_edit and snapshot.writable,
                 can_save=capabilities.can_save and snapshot.writable,
+                can_diff=capabilities.can_diff and not is_symlink,
+                can_annotate=capabilities.can_annotate and not is_symlink,
             )
         try:
-            binding = content.identify(project or "", path) if viewer.value == "pdf" else None
+            binding = (
+                content.identify(project or "", path)
+                if viewer is ViewerKind.PDF and not is_symlink
+                else None
+            )
         except ContentError as exc:
             raise _fail(exc) from exc
         return {
@@ -286,9 +290,10 @@ def register_workbench_routes(app: FastAPI) -> None:
     ) -> Response:
         content = _content(request)
         try:
-            snapshot = content.snapshot(project or "", path)
+            snapshot = content.snapshot(project or "", path, allow_file_symlink=True)
         except ContentError as exc:
             raise _fail(exc) from exc
+        read_path = snapshot.symlink_target or path
         headers = {
             "Accept-Ranges": "bytes",
             "ETag": _etag(snapshot.revision),
@@ -306,7 +311,7 @@ def register_workbench_routes(app: FastAPI) -> None:
                 )
             start, end = selected
             try:
-                payload = content.read_range(project or "", path, start, end)
+                payload = content.read_range(project or "", read_path, start, end)
             except ContentError as exc:
                 raise _fail(exc) from exc
             headers.update(
@@ -323,7 +328,7 @@ def register_workbench_routes(app: FastAPI) -> None:
             )
         try:
             payload, media_type = content.read_bytes(
-                project or "", path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
+                project or "", read_path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
             )
         except ContentError as exc:
             raise _fail(exc) from exc
@@ -338,11 +343,11 @@ def register_workbench_routes(app: FastAPI) -> None:
     def project_pdf_document(
         content: ContentService, project: str, path: str, revision: str
     ) -> CitationDocument:
-        snapshot = content.snapshot(project, path)
+        snapshot = content.snapshot(project, path, allow_file_symlink=True)
         if snapshot.revision != revision:
             raise HTTPException(status_code=CONFLICT_STATUS, detail="source_revision_conflict")
         payload, media_type = content.read_bytes(
-            project, path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
+            project, snapshot.symlink_target or path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
         )
         if media_type != "application/pdf":
             raise HTTPException(status_code=415, detail="pdf_source_invalid")
@@ -492,37 +497,6 @@ def register_workbench_routes(app: FastAPI) -> None:
         except ContentError as exc:
             raise _fail(exc) from exc
         return {"path": relative}
-
-    @app.post(OFFICE_IMAGES_ROUTE)
-    async def workbench_office_image(
-        request: Request, path: str = Query(...), project: str | None = Query(default=None)
-    ) -> dict:
-        payload = bytearray()
-        async for chunk in request.stream():
-            if len(payload) + len(chunk) > OFFICE_IMAGE_MAX_BYTES:
-                raise _fail(ContentError("file_too_large"))
-            payload.extend(chunk)
-        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        try:
-            return stage_office_image(
-                _content(request), project or "", path, bytes(payload), media_type
-            )
-        except ContentError as exc:
-            raise _fail(exc) from exc
-
-    @app.delete(OFFICE_IMAGES_ROUTE, status_code=NO_CONTENT_STATUS)
-    async def workbench_release_office_image(
-        request: Request,
-        path: str = Query(...),
-        lease: str = Query(...),
-        project: str | None = Query(default=None),
-    ) -> Response:
-        revision = _expected_revision(request.headers.get("if-match"))
-        try:
-            release_office_image(_content(request), project or "", path, lease, revision)
-        except ContentError as exc:
-            raise _fail(exc) from exc
-        return Response(status_code=NO_CONTENT_STATUS)
 
     @app.get(ANNOTATIONS_ROUTE)
     async def workbench_pdf_annotations(  # type: ignore[unused-ignore]

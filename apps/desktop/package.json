@@ -18,7 +18,7 @@
     "postinstall": "node scripts/pre/electron.cjs",
     "prepare:python": "node ../../scripts/shared/python.cjs prepare-dev",
     "ui:build": "node ../../packages/ui/build.cjs --archive ../serve/service/capabilities/ui.zip",
-    "predev": "node scripts/pre/office-assets.cjs && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && npm run ui:build && node scripts/pre/identity.cjs",
+    "predev": "node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && npm run ui:build && node scripts/pre/identity.cjs",
     "dev": "node scripts/dev/runner.cjs desktop development",
     "predev:web": "node ../../scripts/pre/toolchain.cjs frontend",
     "dev:web": "node scripts/dev/runner.cjs modules vite --config vite.web.config.ts",
@@ -55,7 +55,7 @@
     "test:e2e:live": "node scripts/ci/e2e.cjs live",
     "test:e2e:update": "node scripts/ci/e2e.cjs update",
     "prebuild": "node scripts/pre/security.cjs --check && node ../../scripts/pre/toolchain.cjs run prepare:python && node ../../scripts/pre/toolchain.cjs check && npm run ui:build",
-    "build": "node scripts/pre/office-assets.cjs && electron-vite build",
+    "build": "electron-vite build",
     "prebuild:web": "node ../../scripts/pre/toolchain.cjs frontend",
     "build:web": "vite build --config vite.web.config.ts",
     "bundle:backend": "node ../../scripts/pre/toolchain.cjs run prepare:python && node scripts/cd/build.cjs --stage backend --type dev",
@@ -149,8 +149,7 @@
     "vite": "8.3.5",
     "ws": "8.21.3",
     "yaml": "2.9.1",
-    "yauzl": "3.4.0",
-    "zetajs": "1.2.0"
+    "yauzl": "3.4.0"
   },
   "overrides": {
     "dompurify": "3.4.15",

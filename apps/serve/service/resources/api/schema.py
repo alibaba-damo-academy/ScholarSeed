@@ -12,6 +12,14 @@ from service.resources.domain.model import LITERATURE_EXCERPT_DIR, ImportDecisio
 
 MAX_SELECTIONS_PER_REQUEST = 200
 MAX_SELECTION_TEXT_CHARS = 100_000
+MAX_LIST_CHANGE_PATHS = 80
+
+
+class ResourceListingChangesRequest(BaseModel):
+    """Changed file paths, including both names of a moved file."""
+
+    project: str = Field(min_length=1)
+    paths: list[str] = Field(min_length=1, max_length=MAX_LIST_CHANGE_PATHS)
 
 
 class ResourceImportDecisionRequest(BaseModel):
@@ -117,4 +125,5 @@ __all__ = [
     "ResourceExcerptsRequest",
     "ResourceImportDecisionRequest",
     "ResourceImportRequest",
+    "ResourceListingChangesRequest",
 ]

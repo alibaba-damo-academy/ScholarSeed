@@ -17,7 +17,7 @@ Total: 15.
 
 ## Style debt
 
-Total: 227.
+Total: 226.
 
 | File | Raw color | Fixed Tailwind color | Visual inline style |
 | --- | ---: | ---: | ---: |
@@ -25,7 +25,7 @@ Total: 227.
 | `src/renderer/src/components/business/Feedback.tsx` | 1 | 1 | 0 |
 | `src/renderer/src/components/business/Sidebar.tsx` | 0 | 0 | 4 |
 | `src/renderer/src/components/business/StatusStrip.tsx` | 0 | 0 | 2 |
-| `src/renderer/src/components/business/Stream.tsx` | 0 | 0 | 73 |
+| `src/renderer/src/components/business/Stream.tsx` | 0 | 0 | 72 |
 | `src/renderer/src/components/primitive/Iconfont/index.tsx` | 1 | 1 | 1 |
 | `src/renderer/src/components/primitive/Markdown.tsx` | 0 | 0 | 18 |
 | `src/renderer/src/components/primitive/Progress.tsx` | 1 | 1 | 0 |
@@ -33,7 +33,6 @@ Total: 227.
 | `src/renderer/src/components/ui/classes.ts` | 3 | 3 | 0 |
 | `src/renderer/src/features/literature/state.ts` | 7 | 0 | 0 |
 | `src/renderer/src/features/resources/ResourcePanel.tsx` | 0 | 0 | 2 |
-| `src/renderer/src/features/workbench/office/frame.ts` | 1 | 0 | 0 |
 | `src/renderer/src/features/workbench/pdf/Page.tsx` | 1 | 0 | 1 |
 | `src/renderer/src/features/workbench/pdf/pdf.css` | 2 | 0 | 0 |
 | `src/renderer/src/features/workbench/pdf/records.ts` | 8 | 0 | 0 |

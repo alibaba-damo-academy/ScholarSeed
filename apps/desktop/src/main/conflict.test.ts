@@ -46,11 +46,11 @@ const candidate = {
 } as LatestVersionMeta
 
 for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
-  test(`macOS installation handles ${outcome} before handoff`, async () => {
+  test(`macOS installation handles ${outcome} with a prepared native receipt`, async () => {
     const conflict = outcome === 'conflict'
     const controller = new AbortController()
-    let preparations = 0
     let authorizations = 0
+    let discardedContext = false
     let ready: { meta: LatestVersionMeta; path: string; archive: object } | null = {
       meta: candidate,
       path: '/owned/update.dmg',
@@ -65,15 +65,15 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
       MACOS_PLATFORM: 'darwin',
       WINDOWS_PLATFORM: 'win32',
       readReadyState: () => ready,
-      macHandoffCommitted: () => false,
-      macHandoffReady: () => false,
+      macHandoffReady: () => true,
+      commitWithActivation: async (
+        authorize: () => Promise<() => void>,
+        commit: (guard: () => void) => void
+      ) => commit(await authorize()),
+      preparedIdentity: () => 'candidate',
       macPrepared: {
         receipt: {
           matches: () => true,
-          revalidate: async () => {
-            if (outcome === 'cancelled') controller.abort()
-            return {}
-          },
         },
       },
       signal: controller.signal,
@@ -87,21 +87,8 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
       logUpdateEvent: () => {},
       persistUpdateLog: () => {},
       updateLog: null,
-      squirrel: null,
-      autoUpdater: {},
-      squirrelHandoffPath: () => '/owned/handoff.json',
-      SquirrelInstallation: class {
-        committed = false
-        async prepare(_archive: unknown, _identity: unknown, authorize: () => Promise<() => void>) {
-          preparations++
-          const guard = await authorize()
-          guard()
-        }
-        dispose() {}
-      },
-      PreparedArtifactChangedError: class extends Error {},
-      UpdateVerifyError: class extends Error {},
-      UpdateArchiveLimitError: class extends Error {},
+      squirrel: { matches: () => true, preparedCandidate: () => undefined },
+      macLaunchCleanup: undefined,
       ActivationCandidateChanged,
       discardRejectedUpdate: (selected: LatestVersionMeta) => {
         assert.equal(selected, candidate)
@@ -110,20 +97,36 @@ for (const outcome of ['conflict', 'offline', 'cancelled'] as const)
       },
       authorize: async () => {
         authorizations++
+        if (outcome === 'cancelled') {
+          controller.abort()
+          return () => {}
+        }
         throw conflict ? new ActivationCandidateChanged('changed') : new Error('offline')
       },
+      prepareLaunch: async () => () => {
+        discardedContext = true
+      },
     }
-    runInNewContext(functions(['installStagedUpdate']), context)
+    runInNewContext(
+      functions([
+        'installStagedUpdate',
+        'macPreparationReady',
+        'macArchiveReady',
+        'macNativePreparationMatches',
+        'revokeMacCandidate',
+      ]),
+      context
+    )
     const result = await runInNewContext(
-      'exports.installStagedUpdate(() => {}, () => {}, signal, authorize)',
+      'exports.installStagedUpdate(() => {}, () => {}, signal, authorize, prepareLaunch)',
       context
     )
     assert.equal(result.ok, false)
     assert.equal(revoked, conflict)
+    assert.equal(discardedContext, true)
+    assert.equal(authorizations, 1)
     if (outcome === 'cancelled') {
       assert.equal(result.cancelled, true)
-      assert.equal(preparations, 0)
-      assert.equal(authorizations, 0)
       assert.notEqual(ready, null)
     } else if (conflict) {
       assert.equal(result.errorFallback, 'activation_candidate_changed')
@@ -419,6 +422,7 @@ test('conflict recovery clears the claimed preparation before requesting a fresh
   const context = {
     updateChecks: { invalidate: () => {} },
     updatePreparation: preparation,
+    updater: { macHandoffCommitted: () => false },
     publishUpdateSnapshot: (next: UpdateSnapshot) => {
       snapshot = next
     },

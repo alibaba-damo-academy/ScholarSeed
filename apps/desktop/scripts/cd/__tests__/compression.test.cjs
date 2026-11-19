@@ -43,7 +43,7 @@ function fixture(t, kind = 'codex') {
   }
   return {temporary, inputs, commands, pack}
 }
-for (const kind of ['codex', 'office', 'electron']) test(`${kind} ZIP warm reuse preserves exact bytes and full inventory without compression`, t => {
+for (const kind of ['codex', 'electron']) test(`${kind} ZIP warm reuse preserves exact bytes and full inventory without compression`, t => {
   const f = fixture(t, kind), first = f.pack(), second = f.pack()
   assert.equal(f.commands.length, 1)
   assert.deepEqual(fs.readFileSync(first.output), fs.readFileSync(second.output))

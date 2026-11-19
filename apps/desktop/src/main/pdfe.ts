@@ -29,17 +29,7 @@ import {
   type PdfeSurface,
   type PdfeTarget,
 } from '../pdfe'
-import {
-  OFFICE_FONT_CATALOG_CHANNEL,
-  OFFICE_FONT_READ_CHANNEL,
-  OFFICE_FONT_CACHE_READ_CHANNEL,
-  OFFICE_FONT_CACHE_WRITE_CHANNEL,
-  type OfficeFontCache,
-  type NativeFontFace,
-} from '../fonts'
 import { WINDOW_FULLSCREEN_CHANNEL } from '../window'
-import { OfficeFontFiles } from './fontfiles'
-import { validateFontCache } from './fontcache'
 import { createWorkspaceWindowOptions } from './window'
 import { installContentSecurityPolicy, mainWindowContentSecurityPolicy } from './csp'
 import { formatSystemVersion } from './system'
@@ -50,14 +40,8 @@ import en from '../../preview/locales/en.json'
 const MANIFEST_NAME = 'pdfe.json'
 const PRELOAD_NAME = 'preload.cjs'
 const PROFILE_PREFIX = 'scholarseed-pdfe-'
-const FONT_LIBRARY_NAME = './fonts.node'
 const PDFE_NAMESPACE = 'preview'
 const manifest = parsePdfeManifest(JSON.parse(readFileSync(join(__dirname, MANIFEST_NAME), 'utf8')))
-const nativeFonts = require(FONT_LIBRARY_NAME) as {
-  enumerateFonts: () => Promise<NativeFontFace[]>
-}
-const fonts: OfficeFontFiles = new OfficeFontFiles(() => nativeFonts.enumerateFonts())
-const caches = new Map<string, OfficeFontCache>()
 const profile = mkdtempSync(join(tmpdir(), PROFILE_PREFIX))
 const windows = new Map<PdfeSurface, BrowserWindow>()
 const views = new Map<PdfeSurface, WebContentsView>()
@@ -214,26 +198,6 @@ ipcMain.handle(PDFE_CHANNEL.resize, (event, width: unknown) => {
   dockWidth = pdfeDockWidth(windows.get('product')!.getContentSize()[0], width)
   layout()
 })
-ipcMain.handle(OFFICE_FONT_CATALOG_CHANNEL, (event) => {
-  sender(event, 'product')
-  return fonts.catalog()
-})
-ipcMain.handle(OFFICE_FONT_READ_CHANNEL, (event, id: unknown) => {
-  sender(event, 'product')
-  if (typeof id !== 'string') throw new Error('Invalid PDFE font request')
-  return fonts.read(id)
-})
-ipcMain.handle(OFFICE_FONT_CACHE_READ_CHANNEL, (event, fingerprint: unknown) => {
-  sender(event, 'product')
-  fonts.assertFingerprint(fingerprint)
-  return caches.get(fingerprint as string) ?? null
-})
-ipcMain.handle(OFFICE_FONT_CACHE_WRITE_CHANNEL, (event, fingerprint: unknown, value: unknown) => {
-  sender(event, 'product')
-  fonts.assertFingerprint(fingerprint)
-  caches.set(fingerprint as string, validateFontCache(value))
-})
-
 async function start(): Promise<void> {
   await app.whenReady()
   await applyMainLanguage('zh')

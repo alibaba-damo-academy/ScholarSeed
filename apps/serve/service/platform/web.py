@@ -33,7 +33,7 @@ class ProductStaticFiles(StaticFiles):
 
 
 def register_cross_origin_isolation(app: FastAPI) -> None:
-    """Enable SharedArrayBuffer for the same-origin ZetaOffice worker runtime."""
+    """Apply product-wide cross-origin isolation to local renderer responses."""
 
     @app.middleware("http")
     async def cross_origin_isolation(request: Request, call_next) -> Response:
@@ -43,7 +43,7 @@ def register_cross_origin_isolation(app: FastAPI) -> None:
         return response
 
 
-def mount_renderer(app: FastAPI, renderer_dist: str = "", office_root: str = "") -> None:
+def mount_renderer(app: FastAPI, renderer_dist: str = "") -> None:
     """Mount renderer assets after every API route, preserving API precedence."""
     dist = filesystem_path(renderer_dist) if renderer_dist else None
     if dist is None or not (dist / "index.html").exists():
@@ -51,11 +51,6 @@ def mount_renderer(app: FastAPI, renderer_dist: str = "", office_root: str = "")
     assets = dist / "assets"
     if assets.is_dir():
         app.mount("/assets", ProductStaticFiles(directory=str(assets)), name="assets")
-    office = filesystem_path(office_root) if office_root else dist / "office"
-    if office_root and not (office / "zeta-20250513" / "manifest.json").is_file():
-        raise ValueError("shared Office assets are unavailable")
-    if office.is_dir():
-        app.mount("/office", ProductStaticFiles(directory=str(office)), name="office")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):

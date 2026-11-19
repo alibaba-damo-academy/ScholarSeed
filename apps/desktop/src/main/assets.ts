@@ -8,11 +8,17 @@ const LOOPBACK_HOST = '127.0.0.1'
 const AUTOMATIC_PORT = 0
 const ROOT_PATH = '/'
 const INDEX_FILE = 'index.html'
-const OFFICE_PREFIX = '/office/'
-const STATIC_DIRECTORIES = new Set(['assets', 'fonts', 'office'])
+const STATIC_DIRECTORIES = new Set(['assets', 'fonts'])
 const STATIC_ENTRIES = new Set(['index.html', 'monaco.html', 'favicon.ico'])
 const ALLOWED_METHODS = new Set(['GET', 'HEAD'])
-const STATUS = { ok: 200, partial: 206, forbidden: 403, missing: 404, method: 405, range: 416 } as const
+const STATUS = {
+  ok: 200,
+  partial: 206,
+  forbidden: 403,
+  missing: 404,
+  method: 405,
+  range: 416,
+} as const
 const MEDIA_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css',
@@ -42,7 +48,6 @@ const SECURITY_HEADERS = {
 
 export interface AssetServer {
   url: string
-  setOfficeRoot(root: string): Promise<void>
   close(): Promise<void>
 }
 
@@ -73,8 +78,10 @@ async function assetFile(root: string, segments: string[]) {
   const metadata = await lstat(filename)
   if (process.platform === 'win32' && resolved.toLowerCase() !== filename.toLowerCase())
     throw new Error('asset_reparse_rejected')
-  const handle = await open(resolved, constants.O_RDONLY |
-    (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW))
+  const handle = await open(
+    resolved,
+    constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW)
+  )
   try {
     const details = await handle.stat()
     if (!details.isFile() || details.dev !== metadata.dev || details.ino !== metadata.ino)
@@ -86,7 +93,10 @@ async function assetFile(root: string, segments: string[]) {
   }
 }
 
-export function byteRange(value: string | undefined, size: number): { start: number; end: number } | null {
+export function byteRange(
+  value: string | undefined,
+  size: number
+): { start: number; end: number } | null {
   if (!value) return null
   const match = /^bytes=(\d*)-(\d*)$/.exec(value)
   if (!match || (!match[1] && !match[2])) throw new Error('asset_range_invalid')
@@ -106,7 +116,6 @@ export async function serveAssets(directory: string): Promise<AssetServer> {
   const root = await trustedRoot(directory)
   const index = await assetFile(root, [INDEX_FILE])
   await index.handle.close()
-  let officeRoot: string | null = null
   let expectedHost = ''
   const server = createServer((request, response) => {
     void (async () => {
@@ -121,15 +130,21 @@ export async function serveAssets(directory: string): Promise<AssetServer> {
         return finish(response, STATUS.forbidden)
       }
       const segments = pathname === ROOT_PATH ? [INDEX_FILE] : pathname.slice(1).split('/')
-      if (!pathname.startsWith(ROOT_PATH) || segments.some(segment =>
-        !segment || segment === '.' || segment === '..' || /[\\\x00:]/.test(segment)))
+      if (
+        !pathname.startsWith(ROOT_PATH) ||
+        segments.some(
+          (segment) => !segment || segment === '.' || segment === '..' || /[\\\x00:]/.test(segment)
+        )
+      )
         return finish(response, STATUS.forbidden)
-      if (!(segments.length === 1 && STATIC_ENTRIES.has(segments[0])) &&
-          !STATIC_DIRECTORIES.has(segments[0])) return finish(response, STATUS.missing)
-      const office = pathname.startsWith(OFFICE_PREFIX) && officeRoot !== null
+      if (
+        !(segments.length === 1 && STATIC_ENTRIES.has(segments[0])) &&
+        !STATIC_DIRECTORIES.has(segments[0])
+      )
+        return finish(response, STATUS.missing)
       let file
       try {
-        file = await assetFile(office ? officeRoot! : root, office ? segments.slice(1) : segments)
+        file = await assetFile(root, segments)
       } catch {
         return finish(response, STATUS.missing)
       }
@@ -171,12 +186,9 @@ export async function serveAssets(directory: string): Promise<AssetServer> {
   let closing: Promise<void> | null = null
   return {
     url: `http://${expectedHost}`,
-    async setOfficeRoot(directory) {
-      officeRoot = await trustedRoot(directory)
-    },
     close() {
       closing ??= new Promise<void>((resolve, reject) => {
-        server.close(error => error ? reject(error) : resolve())
+        server.close((error) => (error ? reject(error) : resolve()))
         server.closeAllConnections()
       })
       return closing

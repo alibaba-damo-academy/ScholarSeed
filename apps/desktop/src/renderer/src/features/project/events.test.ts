@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test, { type TestContext } from 'node:test'
 
-import { subscribeFileEvents } from './events.ts'
+import { hasOpenFileEventStream, subscribeFileEvents, whenFileEventCursorLoaded } from './events.ts'
 
 class FileStream {
   static opened: FileStream[] = []
@@ -146,6 +146,66 @@ test('reconnection uses the shared latest cursor and closes its retry timer', as
     assert.equal(timers.size, 1)
     stop()
     assert.equal(timers.size, 0)
+  } finally {
+    stop()
+  }
+})
+
+test('the initial cursor is available before the stream opens, and a new epoch resets its sequence', async (context) => {
+  const { timers } = browser(context)
+  const stop = subscribeFileEvents('project', () => {})
+  context.after(stop)
+  await whenFileEventCursorLoaded('project')
+  assert.equal(hasOpenFileEventStream('project'), false)
+  const first = FileStream.opened[0]
+  first.onopen?.()
+  assert.equal(hasOpenFileEventStream('project'), true)
+  first.emit(1, 'new-epoch')
+  first.onerror?.()
+  assert.equal(hasOpenFileEventStream('project'), false)
+  const [timerId, retry] = [...timers][0]
+  timers.delete(timerId)
+  retry.callback()
+  const resumed = new URL(FileStream.opened[1].url).searchParams
+  assert.equal(resumed.get('epoch'), 'new-epoch')
+  assert.equal(resumed.get('from_seq'), '1')
+})
+
+test('the cursor settles and connection retries back off when the stream constructor throws', async (context) => {
+  const { timers } = browser(context)
+  let failures = 2
+  globalThis.EventSource = class extends FileStream {
+    constructor(url: string, options: EventSourceInit) {
+      if (failures > 0) {
+        failures -= 1
+        throw new DOMException('Cannot open stream', 'SyntaxError')
+      }
+      super(url, options)
+    }
+  } as unknown as typeof EventSource
+  const received: number[] = []
+  const stop = subscribeFileEvents('project', (event) => received.push(event.seq))
+  try {
+    await whenFileEventCursorLoaded('project')
+    assert.equal(hasOpenFileEventStream('project'), false)
+    assert.equal(FileStream.opened.length, 0)
+    for (const milliseconds of [500, 1000]) {
+      assert.equal(timers.size, 1)
+      const [timerId, retry] = [...timers][0]
+      assert.equal(retry.delay, milliseconds)
+      timers.delete(timerId)
+      retry.callback()
+    }
+    assert.equal(timers.size, 0)
+    assert.equal(FileStream.opened.length, 1)
+    const connection = FileStream.opened[0]
+    const cursor = new URL(connection.url).searchParams
+    assert.equal(cursor.get('epoch'), 'initial')
+    assert.equal(cursor.get('from_seq'), '4')
+    connection.onopen?.()
+    connection.emit(5, 'initial')
+    assert.equal(hasOpenFileEventStream('project'), true)
+    assert.deepEqual(received, [5])
   } finally {
     stop()
   }

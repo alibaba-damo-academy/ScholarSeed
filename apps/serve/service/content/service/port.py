@@ -23,7 +23,7 @@ import shutil
 import stat
 import threading
 import time
-from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict
 from errno import ENOSPC
@@ -39,6 +39,7 @@ from service.content.domain.model import (
     PROJECT_RECOVERY_PENDING,
     PROJECT_STATE_DIRNAME,
     READ_PERMISSION_DENIED,
+    ROOT_BUSY_ERROR,
     ROOT_UNAVAILABLE_ERROR,
     ContentError,
     ContentReadPermissionError,
@@ -106,6 +107,7 @@ from service.platform.content import (
     ExternalRootRef,
     FileAssetRef,
     FileEvent,
+    FlatResourceTree,
     ImportCollisionPolicy,
     ImportFailurePolicy,
     ImportMode,
@@ -118,6 +120,7 @@ from service.platform.content import (
     ResourcePage,
     ResourceScanObserver,
     ResourceSearchResult,
+    ResourceTreeChanges,
     RootKind,
     StableContentCapture,
     StableContentSnapshot,
@@ -164,17 +167,21 @@ def _file_lock(path: Path) -> threading.Lock:
         return _FILE_LOCKS.setdefault(path, threading.Lock())
 
 
-def _revision(path: Path) -> str:
+def _stream_revision(stream: BinaryIO) -> str:
     digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(DIGEST_CHUNK_BYTES), b""):
+        digest.update(chunk)
+    return f"{REVISION_PREFIX}{digest.hexdigest()}"
+
+
+def _revision(path: Path) -> str:
     try:
         with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(DIGEST_CHUNK_BYTES), b""):
-                digest.update(chunk)
+            return _stream_revision(stream)
     except PermissionError as exc:
         raise ContentError(READ_PERMISSION_DENIED) from exc
     except OSError as exc:
         raise ContentError("read_failed") from exc
-    return f"{REVISION_PREFIX}{digest.hexdigest()}"
 
 
 def _copy_generation(plan: assets.CopyPlan) -> tuple[str, str | None]:
@@ -1206,15 +1213,26 @@ class ContentService:
     def read_external_file(self, snapshot: ExternalFileSnapshot, offset: int, limit: int) -> bytes:
         return external.read(snapshot, offset, limit)
 
-    def snapshot(self, project_id: str, path: str) -> ContentSnapshot:
+    def snapshot(
+        self, project_id: str, path: str, *, allow_file_symlink: bool = False
+    ) -> ContentSnapshot:
         target = self._file(project_id, path)
+        scope = self._space(project_id)
         try:
-            size = target.stat().st_size
-            parent, name = self._space(project_id).open_parent(path)
-            try:
-                can_write = writable(parent, name)
-            finally:
-                parent.close()
+            with ExitStack() as stack:
+                parent, name = scope.open_parent(path)
+                stack.callback(parent.close)
+                symlink_target = None
+                if allow_file_symlink and stat.S_ISLNK(parent.stat(name).st_mode):
+                    can_write = False
+                    symlink_target = scope.relative(target)
+                    parent, name = scope.open_parent(symlink_target)
+                    stack.callback(parent.close)
+                else:
+                    can_write = writable(parent, name)
+                with os.fdopen(parent.open_regular(name), "rb") as stream:
+                    size = os.fstat(stream.fileno()).st_size
+                    revision = _stream_revision(stream)
         except PermissionError as exc:
             raise ContentReadPermissionError(path) from exc
         except OSError as exc:
@@ -1225,8 +1243,9 @@ class ContentService:
             path=path,
             media_type=media or DEFAULT_MEDIA_TYPE,
             size=size,
-            revision=_revision(target),
+            revision=revision,
             writable=can_write,
+            symlink_target=symlink_target,
         )
 
     def stable_snapshot(self, project_id: str, path: str, max_bytes: int) -> StableContentSnapshot:
@@ -1442,8 +1461,10 @@ class ContentService:
         target = self._file(project_id, path)
         if start < 0 or end < start:
             raise ContentError("invalid_range")
+        scope = self._space(project_id)
         try:
-            with target.open("rb") as stream:
+            parent, name = scope.open_parent(scope.relative(target))
+            with closing(parent), os.fdopen(parent.open_regular(name), "rb") as stream:
                 stream.seek(start)
                 return stream.read(end - start + 1)
         except OSError as exc:
@@ -1872,6 +1893,54 @@ class ContentService:
 
     def repository_roots(self, project_id: str, paths: tuple[str, ...]) -> dict[str, str | None]:
         return repository.repository_roots(self._resource_space(project_id), paths)
+
+    def flat_resource_tree(
+        self,
+        project_id: str,
+        roots: tuple[str, ...],
+        *,
+        include_repositories: bool = False,
+        track_parents: bool = False,
+    ) -> FlatResourceTree:
+        """Use one local path space and revalidate mount authority within the read."""
+
+        if not roots:
+            return FlatResourceTree((), {})
+        scope = self._resource_space(project_id)
+
+        def check_mount(path: str) -> None:
+            mount = scope.mount_for(path)
+            if mount is not None and self._space(project_id).mount_for(path) != mount:
+                raise ContentError(ROOT_BUSY_ERROR)
+
+        result = tree.flat_tree(
+            scope,
+            roots,
+            check_mount,
+            include_repositories=include_repositories,
+            track_parents=track_parents,
+        )
+        if not self._resource_scope_current(project_id, scope):
+            raise ContentError(ROOT_BUSY_ERROR)
+        return result
+
+    def resource_tree_changes(
+        self, project_id: str, paths: tuple[str, ...]
+    ) -> ResourceTreeChanges | None:
+        scope = self._resource_space(project_id)
+        result = tree.resource_tree_changes(scope, paths)
+        if result is None or not self._resource_scope_current(project_id, scope):
+            return None
+        return result
+
+    def _resource_scope_current(self, project_id: str, scope: space.ProjectSpace) -> bool:
+        current = self._resource_space(project_id)
+        return (
+            current.root == scope.root
+            and current.project.layout == scope.project.layout
+            and current.mounts == scope.mounts
+            and current.owned_roots == scope.owned_roots
+        )
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:
         """Complete background enumeration, separate from the paginated UI tree."""

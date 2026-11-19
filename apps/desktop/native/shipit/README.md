@@ -38,9 +38,10 @@ App. Windows does not build, stage or execute these components.
 `preparation.patch` lets the original-permission ShipIt copy the candidate before
 waiting for the running application to terminate. `readiness.patch` holds
 Squirrel's update-downloaded completion until that helper publishes readiness.
-The app remains running during copying; this shifts unavailable time rather than
-promising a reduction in total installation time. The Foundation copy API and
-source bundle remain unchanged.
+The app remains running during copying. On the unprivileged path for a running
+target, `metadata.patch` also normalizes the exact private candidate's quarantine
+and ownership and checks its signature before acknowledging an unauthorized
+request. The Foundation copy API and source bundle remain unchanged.
 
 `preparation.m` owns a private `CandidatePreparation` directory next to the native
 cleanup owner's directory under Application Support. Its independent lock and
@@ -60,14 +61,28 @@ after application termination. An interrupted acknowledgement write uses one fix
 next-file name, reclaimed only after ownership, type, size and inode checks plus
 an exclusive lock. Active writers and substituted objects are never swept.
 
-After termination the original quarantine, ownership, code-signature, old-bundle
-acquisition and replacement steps still run. An entered installation with no
+After termination the installer rechecks quarantine, per-member ownership and
+the strict signature of the actual candidate against the current designated
+requirement. Members already meeting the ownership policy do not need a second
+metadata write. The early result cannot authorize replacement or excuse changes
+made to a prepared candidate. Privileged helpers normalize the candidate only
+after their original installation checks. If the old application quits before
+granting installation, the helper publishes a bound cancellation without
+replacing or relaunching it. The helper checks that its rollback preference is
+absent when admitting an unauthorized request and before publishing cancellation.
+Existing rollback state instead blocks preparation and remains available to the
+authorized recovery path. An entered installation with no
 running target takes the original rollback-first recovery path. A reopened target
 receives a preparation result instead of deadlocking with the readiness wait.
 Preparation exhaustion stops the current launchd demand and leaves the source and
 running application intact; a subsequent newly extracted request has its own
 preparation budget. Damaged or replaced journal objects fail closed.
 Committed cleanup recovery does not depend on opening the preparation journal.
+
+`interaction.patch` requires an explicit Desktop interaction marker in the local
+feed request before privileged ShipIt submission. Scheduled preparation uses the
+ordinary user domain. A change in native path writability cannot turn a scheduled
+request into an administrator prompt. The marker never authorizes installation.
 
 Native build contracts cover preparation, interrupted copying, identity changes,
 notification validation and RAC readiness/error/timeout/disposal. These remain
@@ -421,6 +436,14 @@ original/failure-target captures. Its source and complete private candidate dire
 must both be absent under no-follow ancestor traversal; live paths, symlinks, unknown
 fields, permissions errors and uncertain closure refuse. There is no age-based
 expiry, device-number normalization, historical directory deletion or ack fabrication.
+
+Automatic supersession and independent orphan repair allow completed Cleanup
+records whose launch is recorded and whose cleanup list is empty. An unconfirmed
+launch or pending cleanup blocks recovery. The complete Cleanup journal remains
+part of the proof, and its committed records continue to guard against replay.
+
+自动接管和独立修复都允许已确认启动且待清理列表为空的历史记录。尚未确认启动或仍有待清理项时，
+恢复流程会停止。完整的 Cleanup 日志仍参与核验，已提交记录继续防止旧请求被重放。
 
 The successor must use a different request ID and source under the same update cache,
 and the same target path. Its live native request must exactly match the frozen

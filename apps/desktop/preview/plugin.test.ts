@@ -3,48 +3,7 @@ import { once } from 'node:events'
 import { createServer, request } from 'node:http'
 import { test } from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { previewOfficeFrameUrl } from './frames.ts'
-import { previewHeaders, previewOfficeHeaders, previewRequestAllowed, previewEntryHtml, requirePreviewDevelopment, servePreviewOfficeFrame } from './plugin.ts'
-
-test('only the dedicated Office child policy enables reviewed engine dynamic compilation', () => {
-  const main = previewHeaders('localhost:4900')
-  const child = previewOfficeHeaders('localhost:4900')
-  assert.ok(!main['Content-Security-Policy'].includes("'unsafe-eval'"))
-  assert.ok(child['Content-Security-Policy'].includes("'unsafe-eval'"))
-  assert.equal(child['Content-Security-Policy'].replace(" 'unsafe-eval'", ''), main['Content-Security-Policy'])
-  assert.equal(child['Cross-Origin-Embedder-Policy'], 'require-corp')
-  assert.equal(child['Cross-Origin-Opener-Policy'], 'same-origin')
-  assert.equal(child['Cache-Control'], 'no-store')
-})
-
-test('the fixed Office route serves only its reviewed bootstrap and never reflects input HTML', async () => {
-  const server = createServer((request, response) => {
-    if (!servePreviewOfficeFrame(request, response)) response.writeHead(404).end()
-  })
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  try {
-    const address = server.address()
-    assert.ok(address && typeof address !== 'string')
-    const origin = `http://127.0.0.1:${address.port}`
-    const url = previewOfficeFrameUrl(origin, { token: randomUUID(), locale: 'en' })
-    const response = await fetch(url)
-    assert.equal(response.status, 200)
-    assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8')
-    assert.ok(response.headers.get('content-security-policy')?.includes("'unsafe-eval'"))
-    const html = await response.text()
-    assert.ok(html.includes('preview/office.ts'))
-    assert.ok(!html.includes(url.searchParams.get('token')!))
-    assert.ok(!html.includes('src/main.tsx'))
-    assert.equal((await fetch(url, { method: 'POST' })).status, 405)
-    assert.equal((await fetch(url, { headers: { referer: 'https://example.com/' } })).status, 403)
-    url.searchParams.set('html', '<script>external()</script>')
-    const invalid = await fetch(url)
-    assert.equal(invalid.status, 400)
-    assert.ok(!(await invalid.text()).includes('external()'))
-    assert.equal((await fetch(origin + '/__preview/office-frame/other')).status, 404)
-  } finally { server.closeAllConnections(); server.close() }
-})
+import { previewHeaders, previewRequestAllowed, previewEntryHtml, requirePreviewDevelopment } from './plugin.ts'
 
 test('preview entry is explicit and production builds cannot select the mock environment', () => {
   assert.throws(() => requirePreviewDevelopment('build'), /development/)

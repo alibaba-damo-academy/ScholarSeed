@@ -1,0 +1,113 @@
+diff --git a/Squirrel/SQRLInstaller+Private.h b/Squirrel/SQRLInstaller+Private.h
+--- a/Squirrel/SQRLInstaller+Private.h
++++ b/Squirrel/SQRLInstaller+Private.h
+@@ -17,0 +18,6 @@
++
++@class RACSignal, SQRLShipItRequest;
++
++@interface SQRLInstaller (SCHOLARSEEDPreparation)
++- (RACSignal *)prepareCandidateMetadataForRequest:(SQRLShipItRequest *)request candidate:(NSURL *)candidate;
++@end
+diff --git a/Squirrel/SQRLInstaller.m b/Squirrel/SQRLInstaller.m
+--- a/Squirrel/SQRLInstaller.m
++++ b/Squirrel/SQRLInstaller.m
+@@ -261,0 +262,30 @@
++- (RACSignal *)normalizeAndVerifyCandidate:(NSURL *)candidate request:(SQRLShipItRequest *)request signature:(SQRLCodeSignature *)signature {
++	return [RACSignal defer:^{
++		NSError *error = nil;
++		if (!SSPreparationBeginOwnership(request.updateBundleURL, request.targetBundleURL, request.binding, candidate, &error)) return [RACSignal error:error];
++		return [[[self verifyBundleAtURL:candidate usingSignature:signature] ignoreValues] then:^{
++			NSError *acceptanceError = nil;
++			if (!SSPreparationAcceptOwnership(request.updateBundleURL, request.targetBundleURL, request.binding, candidate, &acceptanceError)) return [RACSignal error:acceptanceError];
++			return [RACSignal empty];
++		}];
++	}];
++}
++
++- (RACSignal *)prepareCandidateMetadataForRequest:(SQRLShipItRequest *)request candidate:(NSURL *)candidate {
++	return [RACSignal defer:^{
++		// Privileged metadata changes remain behind the existing installation gate.
++		NSURL *target = request.targetBundleURL;
++		if (geteuid() == 0 || getuid() != geteuid() || request.installationAuthorized || request.launchAfterInstallation ||
++			![target.URLByResolvingSymlinksInPath.URLByStandardizingPath.path isEqual:target.URLByStandardizingPath.path]) {
++			return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:EPERM userInfo:nil]];
++		}
++		NSError *error = nil;
++		if (!SSPreparationValidate(request.updateBundleURL, target, request.binding, candidate, &error)) return [RACSignal error:error];
++		return [[[self clearQuarantineForDirectory:candidate] then:^{
++			return [self codeSignatureForBundleAtURL:target];
++		}] flattenMap:^(SQRLCodeSignature *signature) {
++			return [self normalizeAndVerifyCandidate:candidate request:request signature:signature];
++		}];
++	}];
++}
++
+@@ -286,10 +316,4 @@
+-                NSError *validationError = nil;
+-                if (!SSPreparationBeginOwnership(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &validationError)) return [RACSignal error:validationError];
+-                return [[[self verifyBundleAtURL:updateBundleURL usingSignature:codeSignature] ignoreValues]
+-                    then:^RACSignal *{
+-                        NSError *error = nil;
+-                        if (!SSPreparationAcceptOwnership(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &error)) return [RACSignal error:error];
+-                        if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &error)) return [RACSignal error:error];
+-                        if (occupied()) return [RACSignal error:[NSError errorWithDomain:SQRLInstallerErrorDomain code:SQRLInstallerErrorAppStillRunning userInfo:nil]];
+-                        return [RACSignal empty];
+-                    }];
++                return [[self normalizeAndVerifyCandidate:updateBundleURL request:request signature:codeSignature] then:^RACSignal *{
++                    if (occupied()) return [RACSignal error:[NSError errorWithDomain:SQRLInstallerErrorDomain code:SQRLInstallerErrorAppStillRunning userInfo:nil]];
++                    return [RACSignal empty];
++                }];
+@@ -782,0 +807 @@
++					if (SSPreparationFileSecurityMatches((__bridge CFFileSecurityRef)fileSecurity)) return [RACSignal empty];
+diff --git a/Squirrel/ShipIt-main.m b/Squirrel/ShipIt-main.m
+--- a/Squirrel/ShipIt-main.m
++++ b/Squirrel/ShipIt-main.m
+@@ -150,0 +151,6 @@
++            NSError *rollbackError = nil;
++            if (!request.installationAuthorized && !SSSuccessionRollbackAbsent(applicationIdentifier, SQRLInstallerOwnedBundleKey, &rollbackError)) {
++                preparationFailed = YES;
++                SSReadinessPublishBound(request.updateBundleURL, request.targetBundleURL, request.binding, NO, rollbackError.code, NULL);
++                return [RACSignal error:rollbackError];
++            }
+@@ -197,3 +203,14 @@
+-                if (!SSReadinessPublishBound(request.updateBundleURL, request.targetBundleURL, request.binding, YES, 0, &error)) {
+-                    preparationFailed = YES;
+-                    return [RACSignal error:error];
++                RACSignal *metadata = [RACSignal empty];
++                if (targetRunning && geteuid() != 0 && getuid() == geteuid() && !request.installationAuthorized && !request.launchAfterInstallation) {
++                    SQRLInstaller *installer = [[SQRLInstaller alloc] initWithApplicationIdentifier:applicationIdentifier];
++                    metadata = [[installer prepareCandidateMetadataForRequest:request candidate:candidate] catch:^(NSError *metadataError) {
++                        NSError *recordError = nil;
++                        NSInteger code = metadataError.code ?: ECANCELED;
++                        if (SSPreparationRecordFailure(request.updateBundleURL, request.targetBundleURL, request.binding, code, &recordError)) {
++                            return [RACSignal error:[NSError errorWithDomain:SSAdmissionErrorDomain code:code userInfo:@{NSUnderlyingErrorKey:metadataError}]];
++                        }
++                        preparationFailed = YES;
++                        NSError *failure = recordError ?: metadataError;
++                        SSReadinessPublishBound(request.updateBundleURL, request.targetBundleURL, request.binding, NO, failure.code ?: ECANCELED, NULL);
++                        return [RACSignal error:failure];
++                    }];
+@@ -201,2 +218,10 @@
+-                preparedRequest = request;
+-                NSLog(@"[shipit-preparation] event=ready-before-termination");
++                return [metadata then:^{
++                    NSError *readyError = nil;
++                    if (!SSReadinessPublishBound(request.updateBundleURL, request.targetBundleURL, request.binding, YES, 0, &readyError)) {
++                        preparationFailed = YES;
++                        return [RACSignal error:readyError];
++                    }
++                    preparedRequest = request;
++                    NSLog(@"[shipit-preparation] event=ready-before-termination");
++                    return waitForTerminationIfNecessary(request);
++                }];
+@@ -212 +237,9 @@
+-            if (!request.installationAuthorized) return [RACSignal error:[NSError errorWithDomain:SSAdmissionErrorDomain code:ECANCELED userInfo:nil]];
++            if (!request.installationAuthorized) {
++                NSError *rollbackError = nil;
++                if (!SSSuccessionRollbackAbsent(applicationIdentifier, SQRLInstallerOwnedBundleKey, &rollbackError)) {
++                    preparationFailed = YES;
++                    SSReadinessPublishBound(request.updateBundleURL, request.targetBundleURL, request.binding, NO, rollbackError.code, NULL);
++                    return [RACSignal error:rollbackError];
++                }
++                return [RACSignal error:[NSError errorWithDomain:SSAdmissionErrorDomain code:ECANCELED userInfo:nil]];
++            }

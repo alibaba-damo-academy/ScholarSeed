@@ -35,6 +35,9 @@ test('origin parsing rejects false available targets and malformed boundaries', 
     navigation: null,
   }
   assert.deepEqual(parseForkOrigin(origin), origin)
+  const withFailure = { ...origin, inherited_failed_turn_ids: ['old-turn'] }
+  assert.deepEqual(parseForkOrigin(withFailure), withFailure)
+  assert.throws(() => parseForkOrigin({ ...origin, inherited_failed_turn_ids: [1] }))
   assert.throws(() => parseForkOrigin({ ...origin, status: 'available' }))
   assert.throws(() => parseForkOrigin({ ...origin, inherited_messages: [{ item_id: 1 }] }))
   assert.throws(() => parseForkOrigin({ ...origin, status: 'unknown' }))
