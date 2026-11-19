@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  promises as fs,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -114,7 +122,9 @@ test(
     }
     const receipt = await f.create(generate)
     const prove = (archive = receipt.archive) =>
-      PreparedArchive.reattach(f.meta, f.source, archive, (inspect) => inspect(f.application))
+      PreparedArchive.reattach(f.meta, f.source, archive, (inspect) =>
+        inspect({ path: f.application, fs })
+      )
     const restored = await prove()
     assert.equal(restored.matches(f.meta, receipt.archive), true)
     assert.equal(restored.expandedBytes, receipt.expandedBytes)

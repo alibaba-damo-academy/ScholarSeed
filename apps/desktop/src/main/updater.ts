@@ -42,7 +42,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { basename, dirname, join, resolve } from 'path'
-import { removeUpdateArtifact } from './update-files'
+import { physicalFs, removeUpdateArtifact } from './update-files'
 
 import { InstallationProgress } from './installation.ts'
 import type { ObservedUpdateLaunch, UpdateLaunchContext } from './relaunch.ts'
@@ -1692,7 +1692,7 @@ async function prepareDmg(
             )
             if (attributes.trim())
               throw new PreparedArtifactChangedError('Source extended attributes need a fresh ZIP')
-            return verify(source)
+            return verify({ path: source, fs: physicalFs })
           }),
         signal
       )
@@ -1725,7 +1725,7 @@ async function prepareDmg(
             installation,
             'source'
           )
-          const budget = await preflightApplicationArchive(source, signal)
+          const budget = await preflightApplicationArchive({ path: source, fs: physicalFs }, signal)
           assertUpdateSpace(directory, BigInt(Math.max(budget.expanded, budget.metadata)))
           installation.step('copying', MACOS_ARCHIVE_TIMEOUT_MS)
           await runLoggedCommand(
