@@ -69,6 +69,23 @@ def service_tool_schema() -> dict[str, Any]:
     for capability, operation in BRIDGE_REQUESTS:
         if (capability, operation) != (CONTRACT_CAPABILITY, CONTRACT_DESCRIBE_OPERATION):
             operations_by_capability[capability].append(operation)
+    branches = [
+        {
+            "properties": {
+                "capability": {"const": CONTRACT_CAPABILITY},
+                "operation": {"const": CONTRACT_DESCRIBE_OPERATION},
+                "request": ContractDescribe.model_json_schema(),
+            },
+        },
+    ] + [
+        {
+            "properties": {
+                "capability": {"const": capability},
+                "operation": {"enum": operations},
+            },
+        }
+        for capability, operations in operations_by_capability.items()
+    ]
     return {
         "type": "object",
         "properties": {
@@ -88,24 +105,11 @@ def service_tool_schema() -> dict[str, Any]:
         },
         "required": ["capability", "operation"],
         "additionalProperties": False,
-        "allOf": [{"oneOf": [{"required": ["request"]}, {"required": ["request_file"]}]}],
+        # Keep oneOf flat for Qwen Responses schema compatibility.
         "oneOf": [
-            {
-                "properties": {
-                    "capability": {"const": CONTRACT_CAPABILITY},
-                    "operation": {"const": CONTRACT_DESCRIBE_OPERATION},
-                    "request": ContractDescribe.model_json_schema(),
-                },
-            },
-        ]
-        + [
-            {
-                "properties": {
-                    "capability": {"const": capability},
-                    "operation": {"enum": operations},
-                },
-            }
-            for capability, operations in operations_by_capability.items()
+            {**branch, "required": [source]}
+            for branch in branches
+            for source in ("request", "request_file")
         ],
     }
 
