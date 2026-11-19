@@ -95,7 +95,6 @@ from service.platform.content import (
     AssetBinding,
     AssetKind,
     AssetPage,
-    AssetTree,
     ContentImportCancellation,
     ContentImportObserver,
     ContentImportProgress,
@@ -108,6 +107,7 @@ from service.platform.content import (
     ExternalRootRef,
     FileAssetRef,
     FileEvent,
+    FlatResourceTree,
     ImportCollisionPolicy,
     ImportFailurePolicy,
     ImportMode,
@@ -1893,11 +1893,13 @@ class ContentService:
     def repository_roots(self, project_id: str, paths: tuple[str, ...]) -> dict[str, str | None]:
         return repository.repository_roots(self._resource_space(project_id), paths)
 
-    def flat_resource_tree(self, project_id: str, roots: tuple[str, ...]) -> tuple[AssetTree, ...]:
+    def flat_resource_tree(
+        self, project_id: str, roots: tuple[str, ...], *, include_repositories: bool = False
+    ) -> FlatResourceTree:
         """Use one local path space and revalidate mount authority within the read."""
 
         if not roots:
-            return ()
+            return FlatResourceTree((), {})
         scope = self._resource_space(project_id)
 
         def check_mount(path: str) -> None:
@@ -1905,7 +1907,9 @@ class ContentService:
             if mount is not None and self._space(project_id).mount_for(path) != mount:
                 raise ContentError(ROOT_BUSY_ERROR)
 
-        result = tree.flat_tree(scope, roots, check_mount)
+        result = tree.flat_tree(
+            scope, roots, check_mount, include_repositories=include_repositories
+        )
         current = self._resource_space(project_id)
         if (
             current.root != scope.root

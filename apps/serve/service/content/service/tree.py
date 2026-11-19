@@ -40,6 +40,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from service.content.domain.model import ContentError, visible
+from service.content.service.repository import RepositoryLookup
 from service.content.service.space import SEPARATOR, Mount, ProjectSpace
 from service.platform.content import (
     AssetKind,
@@ -47,6 +48,7 @@ from service.platform.content import (
     AssetPage,
     AssetTree,
     FileAssetRef,
+    FlatResourceTree,
 )
 
 #: 单层单页返回的条目数上限, 防止超大目录拖垮渲染。
@@ -291,12 +293,16 @@ def flat_tree(
     space: ProjectSpace,
     roots: tuple[str, ...],
     check_mount: Callable[[str], None],
-) -> tuple[AssetTree, ...]:
+    *,
+    include_repositories: bool = False,
+) -> FlatResourceTree:
     """Return complete breadth-first metadata without paging or pre-counting children."""
 
     pending = deque(roots)
     visited: set[Path] = set()
     nodes: dict[str, AssetTree] = {}
+    repositories: dict[str, str | None] = {}
+    lookup = RepositoryLookup(space) if include_repositories else None
     while pending:
         path = pending.popleft()
         check_mount(path)
@@ -321,9 +327,13 @@ def flat_tree(
                     space, item, _join(relative, item.name), 1, origin, count_children=False
                 )
             nodes[node.asset.path] = node
+            if lookup is not None:
+                repositories[node.asset.path] = lookup.for_entry(
+                    node.asset.path, directory, item, origin
+                )
             if node.asset.kind is AssetKind.DIR and node.available:
                 pending.append(node.asset.path)
-    return tuple(nodes.values())
+    return FlatResourceTree(tuple(nodes.values()), repositories)
 
 
 __all__ = ["DEFAULT_MAX_DEPTH", "PAGE_SIZE", "build_tree", "flat_tree"]

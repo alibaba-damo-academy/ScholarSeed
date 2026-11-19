@@ -392,10 +392,9 @@ def _resource_listing(
 ) -> dict:
     """Materialize the whole disk-backed list away from the HTTP event loop."""
 
-    entries = ResourceListing(content).list(project)
+    entries, repositories = ResourceListing(content).list(project)
     linked_roots = content.external_roots(project)
     paths = tuple(entry.path for entry in entries)
-    repositories = content.repository_roots(project, paths)
     capabilities = (
         supervisor.capability_states(project, paths, repositories=repositories)
         if supervisor is not None

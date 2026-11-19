@@ -7,6 +7,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from service.chat.service.settings import SettingsService
 from service.content.domain.model import ROOT_BUSY_ERROR
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
+from service.content.service.space import ProjectSpace
 from service.content.service.tree import PAGE_SIZE
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities
@@ -60,10 +62,13 @@ class ResourceListingTests(unittest.TestCase):
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
 
-    def entries(self) -> dict[str, dict]:
+    def listing_payload(self) -> dict:
         response = self.client.get("/api/resource/list", params={"project": self.project.id})
         self.assertEqual(response.status_code, 200, response.text)
-        return {entry["path"]: entry for entry in response.json()["items"]}
+        return response.json()
+
+    def entries(self) -> dict[str, dict]:
+        return {entry["path"]: entry for entry in self.listing_payload()["items"]}
 
     def test_flat_complete_pagination_depth_and_project_scope(self) -> None:
         registered = self.content.projects()
@@ -115,16 +120,16 @@ class ResourceListingTests(unittest.TestCase):
 
     def test_listing_disk_projection_runs_outside_event_loop(self) -> None:
         (self.resources / "worker.md").write_text("# worker", encoding="utf-8")
-        original = self.content.repository_roots
+        original = self.content.flat_resource_tree
         called = []
 
-        def project_repositories(*args, **kwargs):
+        def project_tree(*args, **kwargs):
             with self.assertRaises(RuntimeError):
                 asyncio.get_running_loop()
             called.append(True)
             return original(*args, **kwargs)
 
-        with patch.object(self.content, "repository_roots", side_effect=project_repositories):
+        with patch.object(self.content, "flat_resource_tree", side_effect=project_tree):
             rows = self.entries()
         self.assertTrue(called)
         self.assertIn("resources/worker.md", rows)
@@ -147,6 +152,132 @@ class ResourceListingTests(unittest.TestCase):
 
         self.assertEqual(len(rows), PAGE_SIZE + 2)
         self.assertEqual(scans, [self.resources, nested])
+
+    @unittest.skipUnless(os.name == "posix", "Windows uses reparse-aware path resolution")
+    def test_ordinary_files_skip_individual_path_resolution(self) -> None:
+        nested = self.resources / "repository" / "nested"
+        nested.mkdir(parents=True)
+        (nested.parent / ".git").mkdir()
+        paths = set()
+        for index in range(32):
+            (nested / f"note-{index}.md").touch()
+            paths.add(f"resources/repository/nested/note-{index}.md")
+        original = ProjectSpace.absolute
+        resolved = []
+
+        def record_resolution(scope, path):
+            resolved.append(path)
+            return original(scope, path)
+
+        with patch.object(ProjectSpace, "absolute", record_resolution):
+            rows = self.entries()
+
+        self.assertTrue(paths <= rows.keys())
+        self.assertTrue(rows["resources/repository"]["git_repository"])
+        self.assertFalse(paths.intersection(resolved))
+
+    def test_git_classification_preserves_flat_payload_and_grant_boundaries(self) -> None:
+        repository = self.resources / "repository"
+        nested = repository / "nested"
+        nested.mkdir(parents=True)
+        (repository / ".git").mkdir()
+        (repository / "first.md").touch()
+        (nested / ".git").write_text("gitdir: /unavailable/repository\n", encoding="utf-8")
+        (nested / "second.md").touch()
+        (self.resources / "local.md").touch()
+
+        external = self.root.resolve() / "external"
+        subset = external / "subset"
+        subset.mkdir(parents=True)
+        (external / ".git").mkdir()
+        (subset / "isolated.md").touch()
+        linked_repository = self.root.resolve() / "linked-repository"
+        linked_repository.mkdir()
+        (linked_repository / ".git").mkdir()
+        (linked_repository / "linked.md").touch()
+        linked_file = external / "single.md"
+        linked_file.touch()
+        for source in (subset, linked_repository, linked_file):
+            self.content.authorize_root_at(self.project.id, str(source), "repository", source.name)
+
+        settings = SettingsService()
+        formats = WorkbenchFormatPolicy()
+        versions = ResourceVersionService(
+            self.content,
+            ResourceRetentionService(self.content, settings),
+            formats,
+            PdfRecordStore(self.content),
+        )
+        supervisor = ResourceVersionSupervisor(
+            self.content, versions, formats, settings, activities=Activities()
+        )
+        self.client.app.state.resource_version_supervisor = supervisor
+        original = self.content.flat_resource_tree
+
+        def classify_after_traversal(project, roots, *, include_repositories):
+            tree = original(project, roots)
+            paths = tuple(node.asset.path for node in tree.nodes)
+            return replace(tree, repositories=self.content.repository_roots(project, paths))
+
+        with patch.object(supervisor, "activate_project"):
+            with patch.object(
+                self.content, "flat_resource_tree", side_effect=classify_after_traversal
+            ):
+                expected = self.listing_payload()
+            with patch.object(self.content, "repository_roots") as batch:
+                actual = self.listing_payload()
+                batch.assert_not_called()
+
+        self.assertEqual(actual, expected)
+        rows = {row["path"]: row for row in actual["items"]}
+        self.assertEqual(
+            {path for path, row in rows.items() if row["git_repository"]},
+            {
+                "resources/repository",
+                "resources/repository/nested",
+                "resources/repository/linked-repository",
+            },
+        )
+        self.assertEqual(
+            {path for path, row in rows.items() if row["version"]["management_state"] == "git"},
+            {
+                "resources/repository",
+                "resources/repository/first.md",
+                "resources/repository/nested",
+                "resources/repository/nested/second.md",
+                "resources/repository/linked-repository",
+                "resources/repository/linked-repository/linked.md",
+            },
+        )
+        self.assertFalse(any(path.endswith("/.git") for path in rows))
+
+    @unittest.skipUnless(os.name == "posix", "Requires native POSIX symlink creation")
+    def test_flat_git_classification_uses_resolved_symlink_target(self) -> None:
+        repository = self.resources / "repository"
+        repository.mkdir()
+        (repository / ".git").mkdir()
+        (repository / "tracked.md").touch()
+        (self.resources / "local.md").touch()
+        (repository / "local-alias.md").symlink_to("../local.md")
+        (self.resources / "tracked-alias.md").symlink_to("repository/tracked.md")
+        (self.resources / "directory-alias").symlink_to("repository", target_is_directory=True)
+        outside = Path(self.project.root) / "private.md"
+        outside.touch()
+        (repository / "outside-alias.md").symlink_to(outside)
+
+        result = self.content.flat_resource_tree(
+            self.project.id, ("resources",), include_repositories=True
+        )
+        paths = tuple(node.asset.path for node in result.nodes)
+
+        self.assertEqual(result.repositories, self.content.repository_roots(self.project.id, paths))
+        for path, repository_root in {
+            "resources/repository/local-alias.md": None,
+            "resources/repository/outside-alias.md": None,
+            "resources/tracked-alias.md": "resources/repository",
+            "resources/directory-alias": "resources/repository",
+        }.items():
+            self.assertEqual(result.repositories[path], repository_root)
 
     def test_flat_listing_discards_metadata_if_mount_is_revoked_during_scan(self) -> None:
         external = self.root.resolve() / "external"
@@ -244,7 +375,7 @@ class ResourceListingTests(unittest.TestCase):
                 for key in ("name", "kind", "file_type", "source", "updated_at", "origin")
             ),
         )
-        reopened = ResourceListing(self.content).list(self.project.id)
+        reopened, _ = ResourceListing(self.content).list(self.project.id)
         self.assertEqual(
             next(entry for entry in reopened if entry.path == renamed_path).source, "imported"
         )

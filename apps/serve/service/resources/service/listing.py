@@ -15,14 +15,14 @@ class ResourceListing:
         self._content = content
         self._catalog = ResourceListingCatalog(content)
 
-    def list(self, project: str) -> tuple[ResourceListEntry, ...]:
+    def list(self, project: str) -> tuple[tuple[ResourceListEntry, ...], dict[str, str | None]]:
         root = self._content.root(project, RootKind.RESOURCES)
-        nodes = self._content.flat_resource_tree(project, (root.path,))
-        return self._catalog.synchronize(project, nodes)
+        tree = self._content.flat_resource_tree(project, (root.path,), include_repositories=True)
+        return self._catalog.synchronize(project, tree.nodes), tree.repositories
 
     def record_import(self, project: str, assets: tuple[FileAssetRef, ...]) -> None:
         folders = tuple(asset.path for asset in assets if asset.kind is AssetKind.DIR)
         descendants = tuple(
-            node.asset for node in self._content.flat_resource_tree(project, folders)
+            node.asset for node in self._content.flat_resource_tree(project, folders).nodes
         )
         self._catalog.record(project, (*assets, *descendants), ResourceSource.IMPORTED)

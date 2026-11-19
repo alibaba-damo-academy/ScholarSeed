@@ -521,6 +521,14 @@ class AssetTree:
 
 
 @dataclass(frozen=True)
+class FlatResourceTree:
+    """Complete resource nodes and optional Git ownership from the same read."""
+
+    nodes: tuple[AssetTree, ...]
+    repositories: dict[str, str | None]
+
+
+@dataclass(frozen=True)
 class AssetPage:
     """一层目录的一页子节点投影。
 
@@ -852,7 +860,9 @@ class ContentPort(Protocol):
         """Enumerate every file in resource and linked roots with a stable cursor."""
         ...
 
-    def flat_resource_tree(self, project_id: str, roots: tuple[str, ...]) -> tuple[AssetTree, ...]:
+    def flat_resource_tree(
+        self, project_id: str, roots: tuple[str, ...], *, include_repositories: bool = False
+    ) -> FlatResourceTree:
         """List all visible descendants under the requested authorized resource directories."""
         ...
 
@@ -1105,6 +1115,7 @@ __all__ = [
     "FileAssetRef",
     "FileEvent",
     "FileEventKind",
+    "FlatResourceTree",
     "ImportMode",
     "ImportFailurePolicy",
     "DISK_FULL_ERROR",
