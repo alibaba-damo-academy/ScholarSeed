@@ -653,6 +653,14 @@ BOOL SSPreparationValidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bin
         CandidateOwnershipMatches(expected, current) ? @"yes" : @"no");
     return Fail(error, ESTALE);
 }
+BOOL SSPreparationFileSecurityMatches(CFFileSecurityRef security) {
+    uid_t owner;
+    gid_t group;
+    mode_t mode;
+    return security && CFFileSecurityGetOwner(security, &owner) && owner == getuid() &&
+        CFFileSecurityGetGroup(security, &group) && group == getgid() &&
+        CFFileSecurityGetMode(security, &mode) && !(mode & (S_IWGRP | S_IWOTH));
+}
 BOOL SSPreparationBeginOwnership(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *candidate, NSError **error) {
     if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
     if (SSPreparationReadOnly) return Fail(error, EROFS);

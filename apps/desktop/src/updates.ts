@@ -80,8 +80,8 @@ export type UpdatePhase =
   | 'downloading'
   | 'verifying'
   | 'preparing'
-  // 安装包已下载并通过 SHA-512 校验、暂存在磁盘上，等用户自己挑时间重启。
-  // PRD「更新已就绪」态：下载与安装之间必须能停靠，且要能跨客户端重启保留。
+  // This process holds the matching native preparation receipt and may request restart.
+  // Retained package bytes can be reused after restart, but cannot restore readiness on their own.
   | 'ready'
   | 'installing'
   | 'restarting'

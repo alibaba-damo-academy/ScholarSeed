@@ -244,7 +244,7 @@ async function buildShipIt({ directory, electronDist, arch, sourceCache }) {
   command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, 'cleanup.patch')], directory, dependencies.squirrel)
   command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, 'preparation.patch')], directory, dependencies.squirrel)
   command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, 'admission.patch')], directory, dependencies.squirrel)
-  for (const name of ['binding.patch', 'authorization.patch', 'recovery.patch'])
+  for (const name of ['binding.patch', 'authorization.patch', 'recovery.patch', 'metadata.patch'])
     command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, name)], directory, dependencies.squirrel)
   const executable = path.join(directory, 'ShipIt')
   const args = [

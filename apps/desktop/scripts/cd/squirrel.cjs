@@ -95,7 +95,7 @@ async function buildSquirrel({ directory, electronDist, arch, sourceCache }) {
     overlays[name] = await sha256(filename)
   }
   command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, 'readiness.patch')], directory, dependencies.squirrel)
-  for (const name of ['binding.patch', 'transfer.patch'])
+  for (const name of ['binding.patch', 'transfer.patch', 'interaction.patch'])
     command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, name)], directory, dependencies.squirrel)
   const executable = path.join(directory, 'Squirrel.dylib')
   const common = [

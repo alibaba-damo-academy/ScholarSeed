@@ -24,6 +24,8 @@ NSDictionary *SSPreparationFailureSnapshot(NSURL *source, NSURL *target, NSDicti
 // Prepare before waiting for termination. Reuse does not replace signature validation.
 NSURL *SSPreparationCopy(NSURL *source, NSURL *target, NSDictionary *binding, NSError **error);
 BOOL SSPreparationValidate(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *candidate, NSError **error);
+// A fresh file-security read may avoid rewriting already-normalized metadata.
+BOOL SSPreparationFileSecurityMatches(CFFileSecurityRef security);
 // Persist intent before any ownership mutation; an interrupted intent can only fail.
 BOOL SSPreparationBeginOwnership(NSURL *source, NSURL *target, NSDictionary *binding, NSURL *candidate, NSError **error);
 // Called only after the installer's ownership operation and signature check.

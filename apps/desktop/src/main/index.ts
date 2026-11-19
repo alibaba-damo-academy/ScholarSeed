@@ -614,7 +614,7 @@ let updateRestartRequested = false
 // 进行中安装的取消信号与拦截起点（bug 87253073）：遮罩的「取消安装」靠它 abort 准备链，
 // before-quit 的拦截靠它算已拦截时长、到上限放行。
 let updateInstallAbort: AbortController | null = null
-let macInstallPreparation: Promise<StartUpdateResult> | null = null
+let macInstallCommit: Promise<StartUpdateResult> | null = null
 let updateInstallBlockingSince: number | null = null
 let updateSnapshot: UpdateSnapshot | null = null
 let macStartupDecision: updater.MacStartupAdmission | undefined
@@ -823,8 +823,7 @@ function currentUpdateSnapshot(): UpdateSnapshot {
   return updateSnapshot
 }
 
-// Candidate replacement stays active during download/preparation. Once installation
-// owns the staged application, later publications belong to the next update.
+// Once native preparation owns a candidate, only its exact receipt can activate.
 const updateChecks = new UpdateChecks(async () => {
   const result = await updater.checkForUpdate(pushLog)
   if (
@@ -929,17 +928,18 @@ async function changePreviewPolicy(next: PreviewUpdatePolicy): Promise<PreviewUp
 /** Called only after the installation attempt has released its native/maintenance locks. */
 async function recoverUpdateConflict(): Promise<void> {
   updateChecks.invalidate()
+  const nativePending = updater.macHandoffCommitted()
   publishUpdateSnapshot({
     phase: 'failed',
     currentVersion: app.getVersion(),
-    errorOrigin: 'check',
-    errorFallback: 'activation_candidate_changed',
+    errorOrigin: nativePending ? 'install' : 'check',
+    errorFallback: nativePending ? 'activation_recovery_required' : 'activation_candidate_changed',
   })
   await updatePreparation.reset()
   windowsPrepared = null
   latestUpdateCandidate = null
   lastPreparationDeferral = null
-  runBackgroundUpdateCheck()
+  if (!nativePending) runBackgroundUpdateCheck()
 }
 
 function retainedUpdateReady(): ReturnType<typeof updater.readReadyState> {
@@ -1429,6 +1429,40 @@ const updatePreparation = new UpdatePreparation(
           staged.errorFallback === 'install_archive_limit' ? candidate.id : undefined
         )
         return staged.errorFallback === 'install_archive_limit' ? 'archive-limit' : false
+      }
+      const native = await updater.prepareMacUpdate(
+        candidate.id,
+        progress,
+        pushLog,
+        signal,
+        macStartupDecision,
+        attempt.origin === 'manual'
+      )
+      if (!isCurrent()) {
+        record('finish', 'interrupted')
+        return false
+      }
+      if (!native.ok || !updater.macPreparationReady(staged.ready.meta)) {
+        record('finish', 'failed')
+        if (native.errorFallback === 'activation_candidate_changed') {
+          queueMicrotask(() => {
+            if (isCurrent()) void recoverUpdateConflict()
+          })
+        } else {
+          publishUpdateSnapshot(
+            {
+              ...currentUpdateSnapshot(),
+              phase: 'failed',
+              candidate: staged.ready.meta,
+              error: native.error,
+              errorFallback: native.errorFallback ?? 'preparation_failed',
+              errorOrigin: 'preparation',
+              installation: undefined,
+            },
+            native.errorFallback === 'install_archive_limit' ? candidate.id : undefined
+          )
+        }
+        return native.errorFallback === 'install_archive_limit' ? 'archive-limit' : false
       }
       record('finish', 'ready')
       publishUpdateSnapshot({
@@ -2051,7 +2085,7 @@ async function startManagedBackend(
   preparedGeneration?: number
 ): Promise<boolean> {
   if (appQuitting) return false
-  if (macUpdateMaintenanceActive || windowsUpdateMaintenanceActive || updater.macHandoffCommitted())
+  if (macUpdateMaintenanceActive || windowsUpdateMaintenanceActive || updateRestartRequested)
     return false
   if (backendStart) return backendStart
   lastBackendFailure = null
@@ -2503,8 +2537,7 @@ function revokeAgentBrowserLeases(scope?: BrowserReadScope): void {
 }
 
 function scheduleBackendRestart(previousPort?: number): void {
-  if (macUpdateMaintenanceActive || windowsUpdateMaintenanceActive || updater.macHandoffCommitted())
-    return
+  if (macUpdateMaintenanceActive || windowsUpdateMaintenanceActive || updateRestartRequested) return
   if (!backendManaged || appQuitting || backendRestartTimer != null) return
   const attempt = backendRestartAttempts
   const delay = restartDelayMs(attempt)
@@ -4154,13 +4187,25 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       const candidate = currentUpdateSnapshot().candidate
       if (!candidate || candidate.id !== expectedId)
         return { ok: false, error: updater.NO_STAGED_UPDATE }
+      if (process.platform === MACOS_PLATFORM && !updater.macPreparationReady(candidate)) {
+        publishUpdateSnapshot({
+          ...currentUpdateSnapshot(),
+          phase: 'failed',
+          errorFallback: updater.macHandoffCommitted()
+            ? 'activation_recovery_required'
+            : 'preparation_failed',
+          errorOrigin: 'preparation',
+          installation: undefined,
+        })
+        return { ok: false, error: updater.NO_STAGED_UPDATE }
+      }
       if (process.platform === MACOS_PLATFORM && macShutdownReady && updater.macHandoffReady())
         return finishMacUpdateHandoff()
       if (!updatePreparation.claim(candidate)) return { ok: false, error: updater.NO_STAGED_UPDATE }
       if (process.platform === WINDOWS_PLATFORM) return installWindowsPreparedUpdate()
       const controller = new AbortController()
       updateInstallAbort = controller
-      publishUpdateSnapshot({ ...currentUpdateSnapshot(), phase: 'preparing' })
+      publishUpdateSnapshot({ ...currentUpdateSnapshot(), phase: 'installing' })
       let result: StartUpdateResult
       const maintenanceBackend = backend
       let maintenance: ReturnType<typeof backendUpdateControl> | null = null
@@ -4205,7 +4250,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
             guard()
           }
         }
-        macInstallPreparation = updater.installStagedUpdate(
+        macInstallCommit = updater.installStagedUpdate(
           publishUpdateProgress,
           pushLog,
           controller.signal,
@@ -4246,16 +4291,15 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
               candidate.build_number,
               candidate.id
             )
-          },
-          macStartupDecision
+          }
         )
-        result = await macInstallPreparation
+        result = await macInstallCommit
       } catch (error) {
         result = controller.signal.aborted
           ? { ok: false, cancelled: true }
           : { ok: false, error: String(error) }
       } finally {
-        macInstallPreparation = null
+        macInstallCommit = null
         updateInstallAbort = null
       }
       if (
@@ -4360,7 +4404,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         setUpdateInstallationInProgress(false)
         // 暂存包还在 → 留在「已就绪」并带上错误，用户重试的是安装这一步；暂存包已经没了
         // （校验不过被删掉）→ 退回失败态，下一次重试是重新下载。
-        const stillStaged = updater.readReadyState() !== null
+        const stillStaged = updater.macPreparationReady(candidate)
         if (updatePreparation.running) {
           publishUpdateSnapshot(currentUpdateSnapshot())
           return result
@@ -5915,11 +5959,9 @@ async function startDesktop(): Promise<void> {
   })
   app.on('before-quit', (event) => {
     runtimePreparation?.abort()
-    const preparing =
-      !updateRestartRequested && macInstallPreparation && !updater.macHandoffCommitted()
-        ? macInstallPreparation
-        : null
-    if (preparing) updateInstallAbort?.abort()
+    const committing =
+      !updateRestartRequested && !updater.macHandoffCommitted() ? macInstallCommit : null
+    if (committing) updateInstallAbort?.abort()
     browserVaultIpc?.lock()
     browserVault?.lock()
     const blockedMs =
@@ -5930,7 +5972,7 @@ async function startDesktop(): Promise<void> {
     if (
       updateInstallationInProgress &&
       !updateRestartRequested &&
-      !preparing &&
+      !committing &&
       blockedMs < UPDATE_INSTALL_QUIT_BLOCK_CAP_MS
     ) {
       event.preventDefault()
@@ -5938,7 +5980,7 @@ async function startDesktop(): Promise<void> {
       pushLog('[update] close requested during staged installation; continuing in background\n')
       return
     }
-    if (updateInstallationInProgress && !updateRestartRequested && !preparing) {
+    if (updateInstallationInProgress && !updateRestartRequested && !committing) {
       pushLog('[update] quit block cap reached; allowing quit despite staged installation\n')
     }
     if (!backendQuitFinished) {
@@ -5947,10 +5989,10 @@ async function startDesktop(): Promise<void> {
       if (!backendQuitPending) {
         backendQuitPending = true
         const updatesWereStopped = backgroundUpdateTimerStopped
-        void Promise.resolve(preparing)
+        void Promise.resolve(committing)
           .then(
             () => undefined,
-            (error) => pushLog(`[update] preparation stopped during quit: ${String(error)}\n`)
+            (error) => pushLog(`[update] activation stopped during quit: ${String(error)}\n`)
           )
           .then(() => preferenceQuiescence.prepare())
           .then(async () => {
