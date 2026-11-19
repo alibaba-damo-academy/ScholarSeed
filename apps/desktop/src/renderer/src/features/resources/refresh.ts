@@ -5,7 +5,7 @@ export interface ResourceListingRefresh {
 
 export function createResourceListingRefresh<Result>(
   read: () => Promise<Result | null>,
-  publish: (result: Result | null) => void
+  publish: (result: Result | null, refreshing: boolean) => void
 ): ResourceListingRefresh {
   let active = true
   let running = false
@@ -15,8 +15,8 @@ export function createResourceListingRefresh<Result>(
     while (active && pending) {
       pending = false
       const result = await read().catch(() => null)
-      // A change during the read requires a fresh result before publication.
-      if (active && !pending) publish(result)
+      // Show the available snapshot while newer changes are read in the background.
+      if (active && (result !== null || !pending)) publish(result, pending)
     }
     running = false
   }

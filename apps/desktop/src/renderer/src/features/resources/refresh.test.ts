@@ -7,12 +7,12 @@ async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
 }
 
-test('overlapping resource invalidations keep one read and publish one fresh result', async () => {
+test('overlapping resource invalidations publish the first snapshot before one catch-up', async () => {
   const reads: ((value: string) => void)[] = []
-  const published: (string | null)[] = []
+  const published: { result: string | null; refreshing: boolean }[] = []
   const refresh = createResourceListingRefresh(
     () => new Promise<string>((resolve) => reads.push(resolve)),
-    (result) => published.push(result)
+    (result, refreshing) => published.push({ result, refreshing })
   )
 
   refresh.request()
@@ -27,11 +27,14 @@ test('overlapping resource invalidations keep one read and publish one fresh res
   reads[0]('before change')
   await flush()
   assert.equal(reads.length, 2)
-  assert.deepEqual(published, [])
+  assert.deepEqual(published, [{ result: 'before change', refreshing: true }])
 
   reads[1]('after change')
   await flush()
-  assert.deepEqual(published, ['after change'])
+  assert.deepEqual(published, [
+    { result: 'before change', refreshing: true },
+    { result: 'after change', refreshing: false },
+  ])
   assert.equal(reads.length, 2)
 
   refresh.request()
@@ -39,10 +42,10 @@ test('overlapping resource invalidations keep one read and publish one fresh res
   assert.equal(reads.length, 3)
   reads[2]('later refresh')
   await flush()
-  assert.deepEqual(published, ['after change', 'later refresh'])
+  assert.deepEqual(published.at(-1), { result: 'later refresh', refreshing: false })
 })
 
-test('disposing a resource listing suppresses queued reads and stale publication', async () => {
+test('disposing a resource listing suppresses an in-flight catch-up and further reads', async () => {
   const reads: ((value: string) => void)[] = []
   const published: (string | null)[] = []
   const refresh = createResourceListingRefresh(
@@ -52,13 +55,43 @@ test('disposing a resource listing suppresses queued reads and stale publication
   refresh.request()
   await flush()
   refresh.request()
+  reads[0]('first snapshot')
+  await flush()
+  assert.equal(reads.length, 2)
+  refresh.request()
   refresh.dispose()
-  reads[0]('old project')
+  reads[1]('old project')
   refresh.request()
   await flush()
 
-  assert.equal(reads.length, 1)
+  assert.equal(reads.length, 2)
+  assert.deepEqual(published, ['first snapshot'])
+})
+
+test('a resource read publishes a failure only when its queue has drained', async () => {
+  const reads: ((value: string | null) => void)[] = []
+  const published: (string | null)[] = []
+  const refresh = createResourceListingRefresh(
+    () => new Promise<string | null>((resolve) => reads.push(resolve)),
+    (result) => published.push(result)
+  )
+  refresh.request()
+  await flush()
+  refresh.request()
+  reads[0](null)
+  await flush()
+  assert.equal(reads.length, 2)
   assert.deepEqual(published, [])
+
+  refresh.request()
+  reads[1]('available snapshot')
+  await flush()
+  assert.equal(reads.length, 3)
+  assert.deepEqual(published, ['available snapshot'])
+
+  reads[2](null)
+  await flush()
+  assert.deepEqual(published, ['available snapshot', null])
 })
 
 test('resource refresh exposes a failure and accepts a later retry', async () => {

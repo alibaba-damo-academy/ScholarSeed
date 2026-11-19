@@ -51,19 +51,21 @@ export function ResourceListing(): React.JSX.Element {
   const [ascending, setAscending] = useState<boolean | undefined>(undefined)
   const [createDirectory, setCreateDirectory] = useState<string | null>(null)
   const [emptyCreateOpen, setEmptyCreateOpen] = useState(false)
-  const [nodes, setNodes] = useState<ResourceNode[]>([])
-  const [loading, setLoading] = useState(true)
+  const [snapshot, setSnapshot] = useState<ResourceNode[] | null>(null)
+  const [refreshing, setRefreshing] = useState(true)
   const [failed, setFailed] = useState(false)
   const [refresh, setRefresh] = useState(0)
   const listingRefresh = useRef<ResourceListingRefresh | null>(null)
   const resource = state.resource
   const project = state.homeSelectedProjectId
+  const nodes = snapshot ?? []
+  const loading = refreshing && snapshot === null
   useEffect(() => {
     setQuery('')
     setType('')
     setSource('')
     setAscending(undefined)
-    setNodes([])
+    setSnapshot(null)
   }, [project])
   const revision = useSyncExternalStore(subscribeResourceRevisions, () =>
     resourceProjectRevision(project)
@@ -72,10 +74,10 @@ export function ResourceListing(): React.JSX.Element {
     if (!project) return
     const reader = createResourceListingRefresh(
       () => fetchResourceListing(project),
-      (result) => {
-        setLoading(false)
+      (result, pending) => {
+        setRefreshing(pending)
         setFailed(result === null)
-        if (result) setNodes(result)
+        if (result !== null) setSnapshot(result)
       }
     )
     listingRefresh.current = reader
@@ -85,7 +87,7 @@ export function ResourceListing(): React.JSX.Element {
     }
   }, [project])
   useEffect(() => {
-    setLoading(Boolean(project))
+    setRefreshing(Boolean(project))
     setFailed(false)
     listingRefresh.current?.request()
   }, [project, resource.tree, revision, state.resourceRevision, refresh])
@@ -207,7 +209,7 @@ export function ResourceListing(): React.JSX.Element {
         query={query}
         onQuery={setQuery}
         placeholder={t('searchFiles')}
-        refreshing={loading}
+        refreshing={refreshing}
         onRefresh={() => setRefresh((value) => value + 1)}
       >
         {createMenu('')}
