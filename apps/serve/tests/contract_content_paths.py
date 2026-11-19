@@ -96,9 +96,10 @@ class ContentPathContract(unittest.TestCase):
             outside.mkdir()
             (root / "escape").symlink_to(outside, target_is_directory=True)
             space = ProjectSpace(ProjectRef("project", "Project", str(root)))
-            with self.assertRaises(ContentError) as caught:
-                space.absolute("escape/file.md")
-            self.assertEqual(caught.exception.code, "path_outside_project")
+            for reuse_project_root in (False, True):
+                with self.assertRaises(ContentError) as caught:
+                    space.absolute("escape/file.md", reuse_project_root=reuse_project_root)
+                self.assertEqual(caught.exception.code, "path_outside_project")
             with self.assertRaises(ContentError):
                 space.relative(root / "escape/file.md")
 

@@ -18,6 +18,7 @@ from service.content.service import identity
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities, MaintenanceActive
+from service.platform.notifications import Change, ChangeHub, ChangeTopic
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
 from service.resources.service.history import ResourceVersionService
@@ -88,12 +89,15 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
             WorkbenchFormatPolicy(),
             annotations,
         )
+        activities = Activities()
+        self.changes = ChangeHub(activities.instance_id)
         self.supervisor = ResourceVersionSupervisor(
             self.content,
             self.versions,
             WorkbenchFormatPolicy(),
             settings,
-            activities=Activities(),
+            activities=activities,
+            changes=self.changes,
         )
         deliveries = ResourceDeliveryService(
             self.content, self.versions, self.supervisor, activities=self.supervisor._activities
@@ -276,6 +280,21 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         (self.resources / "new.md").write_text("discovered\n", encoding="utf-8")
         await eventually(lambda: bool(self.versions.history(self.project.id, "resources/new.md")))
         self.assertEqual(self.versions.history(self.project.id, "resources/new.md")[0].sequence, 1)
+
+    async def test_background_initial_versions_invalidate_listing_once(self) -> None:
+        for name in ("first.md", "second.md"):
+            (self.resources / name).write_text("to discover\n", encoding="utf-8")
+        paths = ("resources/first.md", "resources/second.md")
+        before = self.supervisor.capability_states(self.project.id, paths)
+        self.assertTrue(all(not capability.managed for capability in before.values()))
+
+        with patch.object(self.changes, "publish", wraps=self.changes.publish) as publish:
+            await asyncio.to_thread(self.supervisor._process, self.project.id, {self.path}, False)
+            await asyncio.to_thread(self.supervisor._process, self.project.id, set(), False)
+
+        after = self.supervisor.capability_states(self.project.id, paths)
+        self.assertTrue(all(capability.managed for capability in after.values()))
+        publish.assert_called_once_with((Change(ChangeTopic.RESOURCES, subject=self.project.id),))
 
     async def test_scoped_blacklist_removal_discovers_new_but_defers_old_history(self) -> None:
         code = self.resources / "code"

@@ -4,7 +4,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,7 +16,14 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.platform.activity import Activities
 from service.platform.content import ImportMode
-from service.platform.resources import ManagementState, RestorePolicy, VersionOrigin
+from service.platform.resources import (
+    ManagementState,
+    PendingOrigin,
+    PendingSnapshot,
+    ResourceCapability,
+    RestorePolicy,
+    VersionOrigin,
+)
 from service.resources.api.routes import register_resource_routes
 from service.resources.service.history import ResourceVersionError, ResourceVersionService
 from service.resources.service.observe import ResourceVersionSupervisor
@@ -98,6 +107,49 @@ class RepositoryContracts(unittest.TestCase):
         (self.repo / "notes.md").unlink()
         self.versions.record_changes(self.project.id, (self.path,))
         self.assertEqual(self.versions.history(self.project.id, self.path), (first.version,))
+
+    def test_git_capability_skips_disk_inspection_and_retains_history(self) -> None:
+        local_path = "resources/ordinary.md"
+        (self.resources / "ordinary.md").touch()
+        stored = ResourceCapability(
+            path=self.path,
+            managed=True,
+            can_version=True,
+            can_diff=True,
+            can_preview_history=True,
+            max_size_bytes=self.supervisor.max_size_bytes(),
+            management_state=ManagementState.MANAGED,
+            drifted=True,
+            file_id="file",
+            working_revision="working",
+            disk_revision="observed",
+            version_id="saved-version",
+            pending=PendingSnapshot("file", 2, PendingOrigin.USER),
+        )
+        with (
+            patch.object(self.versions, "capability_states", return_value={self.path: stored}),
+            patch.object(self.versions, "manual_admitted_states", return_value={self.path: True}),
+            patch.object(
+                self.content, "resource_entries", wraps=self.content.resource_entries
+            ) as inspect,
+        ):
+            git = self.supervisor.capability_states(self.project.id, (self.path,))
+            inspect.assert_not_called()
+            mixed = self.supervisor.capability_states(self.project.id, (self.path, local_path))
+            inspect.assert_called_once_with(self.project.id, (local_path,))
+
+        self.assertEqual(git[self.path], mixed[self.path])
+        self.assertEqual(
+            git[self.path],
+            replace(
+                stored,
+                management_state=ManagementState.GIT,
+                can_version=False,
+                pending=None,
+                drifted=False,
+                manual_admitted=True,
+            ),
+        )
 
     def test_gitfile_and_nested_roots_and_missing_paths(self) -> None:
         nested = self.repo / "nested"

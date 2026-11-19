@@ -62,6 +62,11 @@ PROJECT_RECOVERY_PENDING = "project_recovery_pending"
 ROOT_SOURCE_CHANGED_ERROR = "root_source_changed"
 ROOT_BUSY_ERROR = "root_busy"
 PATH_OUTSIDE_ROOT_ERROR = "path_outside_root"
+PATH_OUTSIDE_PROJECT_ERROR = "path_outside_project"
+PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR = "path_outside_authorized_root"
+OUTSIDE_GRANT_ERRORS = frozenset(
+    {PATH_OUTSIDE_ROOT_ERROR, PATH_OUTSIDE_PROJECT_ERROR, PATH_OUTSIDE_AUTHORIZED_ROOT_ERROR}
+)
 READ_FAILED = "read_failed"
 READ_PERMISSION_DENIED = "read_permission_denied"
 
