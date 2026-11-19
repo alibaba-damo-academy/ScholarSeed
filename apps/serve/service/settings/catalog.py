@@ -62,13 +62,22 @@ MODEL_CATALOG: List[Dict[str, Any]] = []
 
 # 内置目录条目只声明「连到哪、调哪个模型」; 上下文长度、模态、思考形态一律来自
 # capabilities.json 的 (连接, wire model) 声明 —— 名字不再产出能力真值 (proposal 78 I1)。
+GATEWAY_DEEPSEEK_FLASH_STRATEGY = "deepseek-v4.1-flash"
+GATEWAY_DEEPSEEK_PRO_STRATEGY = "deepseek-v4-pro"
+GATEWAY_AUTO_MODEL_KEY = "auto"
 GATEWAY_STRATEGY_MODELS = (
     ("qwen4-max", "Qwen 4 Max"),
     ("qwen3.8-max", "Qwen 3.8 Max"),
     ("qwen3.8-flash", "Qwen 3.8 Flash"),
     ("qwen3-next-80b-a3b-thinking", "Qwen 3 Next 80B A3B Thinking"),
+    (GATEWAY_DEEPSEEK_FLASH_STRATEGY, "DeepSeek V4.1 Flash"),
+    (GATEWAY_DEEPSEEK_PRO_STRATEGY, "DeepSeek V4 Pro"),
 )
 GATEWAY_DIRECT_MODELS = cast(tuple[tuple[str, str], ...], ())
+_GATEWAY_SNAPSHOT_STRATEGIES = {
+    "bailian/deepseek-v4.1-flash-1017": GATEWAY_DEEPSEEK_FLASH_STRATEGY,
+    "bailian/deepseek-v4-pro-0813": GATEWAY_DEEPSEEK_PRO_STRATEGY,
+}
 GATEWAY_APPROVAL_MODEL_KEY = "auto_review_model"
 GATEWAY_QWEN_APPROVAL_MODEL = "qwen3-next-80b-a3b-thinking"
 GATEWAY_QWEN_MODEL_KEYS = frozenset(
@@ -84,7 +93,14 @@ GATEWAY_APPROVAL_MODELS = {name: GATEWAY_QWEN_APPROVAL_MODEL for name in GATEWAY
 # the visible default on load.
 # 单一事实源: 产品可见性只在这里声明, 服务层不再维护第二张常量表。空集合 = 不收敛。
 GATEWAY_VISIBLE_MODEL_KEYS: frozenset[str] = frozenset(
-    {"auto", "qwen4-max", "qwen3.8-max", "qwen3.8-flash"}
+    {
+        GATEWAY_AUTO_MODEL_KEY,
+        "qwen4-max",
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        GATEWAY_DEEPSEEK_FLASH_STRATEGY,
+        GATEWAY_DEEPSEEK_PRO_STRATEGY,
+    }
 )
 # 连接**身份**字段说明「连到哪、用什么协议、调哪个模型」; 连接**凭据**字段只说明「这条
 # 连接怎么鉴权」。判定内置目录时两组必须分开: 把凭据也算进连接声明, 会让用户一填
@@ -211,13 +227,12 @@ _GATEWAY_STRATEGY_EDITIONS = {
     for name, _label in GATEWAY_STRATEGY_MODELS
     for edition in (BASE_EDITION, LONG_CONTEXT_EDITION)
 }
-# Auto is a fixed product selection, not a gateway routing strategy. Capability
-# facts are resolved by its exact wire model in the shared capability registry.
+# Auto and the explicit Flash choice share a gateway strategy and have distinct product keys.
 GATEWAY_MODEL_CATALOG: List[Dict[str, Any]] = [
     _gateway_model_item(
-        ("bailian/deepseek-v4.1-flash-1017", "Auto"),
-        key="auto",
-        route_kind=GATEWAY_ROUTE_DIRECT,
+        (GATEWAY_DEEPSEEK_FLASH_STRATEGY, "Auto"),
+        key=GATEWAY_AUTO_MODEL_KEY,
+        route_kind=GATEWAY_ROUTE_STRATEGY,
     ),
 ]
 for strategy_name, strategy_label in GATEWAY_STRATEGY_MODELS:
@@ -1010,6 +1025,20 @@ def converge_gateway_model_config(config: Dict[str, Any]) -> Dict[str, Any]:
     cfg = dict(config or {})
     if not GATEWAY_VISIBLE_MODEL_KEYS or not _is_deeprd_gateway(cfg):
         return cfg
+    snapshot_strategy = _GATEWAY_SNAPSHOT_STRATEGIES.get(str(cfg.get("model_name") or ""))
+    if snapshot_strategy:
+        selected_key = cfg.get(SELECTED_MODEL_KEY)
+        if snapshot_strategy == GATEWAY_DEEPSEEK_FLASH_STRATEGY and selected_key in (
+            None,
+            "",
+            GATEWAY_AUTO_MODEL_KEY,
+        ):
+            snapshot_strategy = GATEWAY_AUTO_MODEL_KEY
+        choice = resolve_model_choice(snapshot_strategy, cfg)
+        effort = str(cfg.get("reasoning_effort") or "")
+        if effort in (choice.get("reasoning_efforts") or ()):
+            choice["reasoning_effort"] = effort
+        return apply_model_to_config(cfg, choice)
     if current_model_key(cfg) in GATEWAY_VISIBLE_MODEL_KEYS:
         return cfg
     target = _default_visible_gateway_key()
