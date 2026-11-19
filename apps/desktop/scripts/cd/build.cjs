@@ -27,6 +27,7 @@ const { ensureRipgrep } = require('../../../../scripts/shared/ripgrep.cjs')
 const { checkToolchain, ensureNodeDependencies } = require('../../../../scripts/pre/toolchain.cjs')
 const { stageNotices } = require('./notices.cjs')
 const { prepareNative, readNative, productSigning } = require('./seal.cjs')
+const { APPLICATION_LAYOUT } = require('./layout.cjs')
 const { LIBRARIES, libraries } = require('../../native/libraries.cjs')
 const velopack = require('./velopack.cjs')
 const { finalResult } = require('./acceptance.cjs')
@@ -50,6 +51,7 @@ const APPLE_TEAM_ID = /^[A-Z0-9]{10}$/
 const STAGES = new Set(['backend', 'dir', 'installer'])
 const PUBLIC_TYPES = new Set(['preview', 'release'])
 const CANDIDATE_FLAG = '--candidate'
+const UPDATE_BRIDGE_FLAG = '--macos-update-bridge'
 const BUILD_OPTION_KEYS = new Set([
   'stage', 'type', 'version', 'build-number', 'platform', 'arch', 'result',
   'update-base-url', 'team-id', 'windows-publisher', 'activation-public-keys',
@@ -193,7 +195,7 @@ function installedDmgbuild(context) {
 function buildArguments(argv) {
   const result = {}
   for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === CANDIDATE_FLAG || argv[index] === '--install') {
+    if (argv[index] === CANDIDATE_FLAG || argv[index] === '--install' || argv[index] === UPDATE_BRIDGE_FLAG) {
       result[argv[index].slice(2)] = true
       continue
     }
@@ -260,6 +262,10 @@ function options(argv) {
   if (result.candidate && !PUBLIC_TYPES.has(result.type)) {
     throw new Error('--candidate is only valid with preview or release')
   }
+  const bridge = result[UPDATE_BRIDGE_FLAG.slice(2)]
+  if (bridge && (result.platform !== 'darwin' || result.stage === 'backend'))
+    throw new Error(`${UPDATE_BRIDGE_FLAG} requires a macOS application or installer stage`)
+  result.applicationLayout = bridge ? APPLICATION_LAYOUT.directory : APPLICATION_LAYOUT.asar
   Object.assign(result, policy, { target: selected })
   if (result.candidate) result.signed = false
   if (result.stage === 'installer') result.stage = selected.installer
@@ -376,6 +382,7 @@ function help() {
   --version X.Y.Z
   --build-number YYYYMMDDHHMM   (default: HEAD commit time, Beijing)
   --candidate
+  --macos-update-bridge   (macOS app/installer with a physical Electron app directory)
   --install
   --result NEW_PATH
   --verification-root ABSOLUTE_PATH   (Windows private verification leaf parent)
@@ -684,7 +691,9 @@ function writeBuilderConfiguration(context, args) {
     directories: { ...PACKAGE.build.directories, output: context.output },
     extraMetadata: { version: args.version, author: PACKAGE.author },
     extraResources,
-    asarUnpack: libraries(args.platform).map(name => `out/main/${name}`),
+    ...(context.applicationLayout === APPLICATION_LAYOUT.directory
+      ? { asar: false }
+      : { asarUnpack: libraries(args.platform).map(name => `out/main/${name}`) }),
     artifactName: `${ARTIFACT_BASENAME}-${args.version}-${selected.archType}.\${ext}`,
     afterPack: path.join(__dirname, 'sign.cjs'),
     afterAllArtifactBuild: path.join(__dirname, 'verify.cjs'),
@@ -734,7 +743,8 @@ function acquireMutex() {
 }
 
 function buildRunDirectory(releaseRoot, args) {
-  return path.join(releaseRoot, `${args.type}-${args.platform}-${args.arch}`)
+  const suffix = args.applicationLayout === APPLICATION_LAYOUT.directory ? '-update-bridge' : ''
+  return path.join(releaseRoot, `${args.type}-${args.platform}-${args.arch}${suffix}`)
 }
 
 function resultBase(context, args, source, runtime, builder) {
@@ -771,6 +781,7 @@ function resultBase(context, args, source, runtime, builder) {
         platform: args.platform,
         arch: args.arch,
         arch_type: args.target.archType,
+        ...(context.applicationLayout === APPLICATION_LAYOUT.directory ? { application_layout: context.applicationLayout } : {}),
       },
       publishable: !args['skip-check'] && !args.candidate && args.type !== 'dev',
       verification_skipped: args['skip-check'] === true,
@@ -880,6 +891,7 @@ async function main(argv = process.argv.slice(2)) {
       platform: args.platform,
       arch: args.arch,
       archType: args.target.archType,
+      applicationLayout: args.applicationLayout,
       installer: args.target.installer,
       appId: args.platform === 'win32' ? product.product_id : PACKAGE.build.appId,
       productName: PACKAGE.build.productName,
@@ -1110,7 +1122,7 @@ async function main(argv = process.argv.slice(2)) {
         process.platform === 'win32' ? 'electron-vite.cmd' : 'electron-vite'
       )
       timed('frontend.build', () => run(vite, ['build'], { env: environment }))
-      context.closure = verifyBuiltClosure(DESKTOP, context.native)
+      context.closure = verifyBuiltClosure(DESKTOP, context.native, context.applicationLayout)
       process.env[CONTEXT_ENV] = context.file
       context.builderConfig = writeBuilderConfiguration(context, args)
       if (args.platform === 'win32') context.buildPhase = 'application'
