@@ -203,7 +203,11 @@ class ProjectSpace:
     def relative(self, absolute: Path) -> str:
         """绝对路径 → 相对项目根的路径 (挂载内的落回挂载前缀)。"""
 
-        target = absolute.expanduser().resolve()
+        return self.relative_resolved(absolute.expanduser().resolve())
+
+    def relative_resolved(self, target: Path) -> str:
+        """Map an already resolved target without resolving it a second time."""
+
         for mount in self.mounts:
             tail = _relative_to(target, mount.source)
             if tail == Path("."):

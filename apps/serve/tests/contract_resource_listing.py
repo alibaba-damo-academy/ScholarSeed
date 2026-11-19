@@ -176,6 +176,35 @@ class ResourceListingTests(unittest.TestCase):
         self.assertTrue(rows["resources/repository"]["git_repository"])
         self.assertFalse(paths.intersection(resolved))
 
+    @unittest.skipUnless(os.name == "posix", "Requires native POSIX directory symlinks")
+    def test_plain_directories_share_resolution_between_tree_and_git(self) -> None:
+        repository = self.resources / "repository"
+        nested = repository / "nested"
+        nested.mkdir(parents=True)
+        (repository / ".git").mkdir()
+        (nested / ".git").write_text("gitdir: /unavailable/repository\n", encoding="utf-8")
+        (nested / "note.md").touch()
+        (self.resources / "alias").symlink_to("repository/nested", target_is_directory=True)
+        original = ProjectSpace.absolute
+        resolved = []
+
+        def record_resolution(scope, path):
+            resolved.append(path)
+            return original(scope, path)
+
+        with patch.object(ProjectSpace, "absolute", record_resolution):
+            tree = self.content.flat_resource_tree(
+                self.project.id, ("resources",), include_repositories=True
+            )
+
+        paths = tuple(node.asset.path for node in tree.nodes)
+        self.assertEqual(tree.repositories, self.content.repository_roots(self.project.id, paths))
+        self.assertEqual(tree.repositories["resources/alias"], "resources/repository/nested")
+        self.assertEqual(paths.count("resources/repository/nested/note.md"), 1)
+        self.assertEqual(resolved.count("resources/alias"), 2)
+        self.assertEqual(resolved.count("resources/repository"), 1)
+        self.assertEqual(resolved.count("resources/repository/nested"), 1)
+
     def test_git_classification_preserves_flat_payload_and_grant_boundaries(self) -> None:
         repository = self.resources / "repository"
         nested = repository / "nested"

@@ -62,9 +62,22 @@ class RepositoryLookup:
             if exc.code not in OUTSIDE_GRANT_ERRORS:
                 raise
             return None
+
+        return self._for_target(target, boundary)
+
+    def for_resolved_local_path(self, target: Path, *, is_directory: bool) -> str | None:
+        """Use a local target already resolved and inspected by the traversal."""
+
+        return self._for_target(target, self._resource_root, is_directory=is_directory)
+
+    def _for_target(
+        self, target: Path, boundary: Path, *, is_directory: bool | None = None
+    ) -> str | None:
         if target != boundary and boundary not in target.parents:
             return None
-        return self._for_directory(target if target.is_dir() else target.parent, boundary)
+        if is_directory is None:
+            is_directory = target.is_dir()
+        return self._for_directory(target if is_directory else target.parent, boundary)
 
     def _for_directory(self, directory: Path, boundary: Path) -> str | None:
         key = (boundary, directory)

@@ -50,6 +50,7 @@ from service.platform.content import (
     FileAssetRef,
     FlatResourceTree,
 )
+from service.platform.storage import WINDOWS_PLATFORM
 
 #: 单层单页返回的条目数上限, 防止超大目录拖垮渲染。
 #:
@@ -67,6 +68,13 @@ def _modified_at(entry: Path | os.DirEntry[str]) -> float | None:
         return entry.stat().st_mtime
     except FileNotFoundError:
         return None
+
+
+def _is_plain_directory(entry: os.DirEntry[str]) -> bool:
+    try:
+        return entry.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
 
 
 def _join(parent: str, name: str) -> str:
@@ -298,20 +306,36 @@ def flat_tree(
 ) -> FlatResourceTree:
     """Return complete breadth-first metadata without paging or pre-counting children."""
 
-    pending = deque(roots)
+    pending = deque((root, False) for root in roots)
     visited: set[Path] = set()
     nodes: dict[str, AssetTree] = {}
     repositories: dict[str, str | None] = {}
     lookup = RepositoryLookup(space) if include_repositories else None
+    # Mounted paths and Windows reparse points keep their separate resolution.
+    reuse_directory_resolution = (
+        lookup is not None and not space.mounts and os.name != WINDOWS_PLATFORM
+    )
     while pending:
-        path = pending.popleft()
+        path, classify_directory = pending.popleft()
         check_mount(path)
         directory = space.absolute(path)
-        if directory in visited or not directory.is_dir():
+        already_visited = directory in visited
+        if already_visited and not classify_directory:
+            continue
+        is_directory = directory.is_dir()
+        if lookup is not None and classify_directory:
+            repositories[path] = lookup.for_resolved_local_path(
+                directory, is_directory=is_directory
+            )
+        if already_visited or not is_directory:
             continue
         visited.add(directory)
         try:
-            relative = space.relative(directory)
+            relative = (
+                space.relative_resolved(directory)
+                if classify_directory
+                else space.relative(directory)
+            )
         except ContentError:
             continue
         if space.excluded(relative):
@@ -326,13 +350,24 @@ def flat_tree(
                 node = _child_node(
                     space, item, _join(relative, item.name), 1, origin, count_children=False
                 )
-            nodes[node.asset.path] = node
+            entry_path = node.asset.path
+            nodes[entry_path] = node
+            descend = node.asset.kind is AssetKind.DIR and node.available
+            defer_repository = (
+                reuse_directory_resolution
+                and descend
+                and not isinstance(item, Mount)
+                and "\\" not in entry_path
+                and _is_plain_directory(item)
+            )
             if lookup is not None:
-                repositories[node.asset.path] = lookup.for_entry(
-                    node.asset.path, directory, item, origin
+                repositories[entry_path] = (
+                    None
+                    if defer_repository
+                    else lookup.for_entry(entry_path, directory, item, origin)
                 )
-            if node.asset.kind is AssetKind.DIR and node.available:
-                pending.append(node.asset.path)
+            if descend:
+                pending.append((entry_path, defer_repository))
     return FlatResourceTree(tuple(nodes.values()), repositories)
 
 
