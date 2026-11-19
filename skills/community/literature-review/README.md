@@ -213,6 +213,12 @@ citation keys. Internal bibliography mappings retain the original citation keys.
 The figure brief supplies shared requirements and mode contracts once; per-figure
 packets contain local plans and evidence references without choosing an image mode
 or size unless already specified. No saved cards or user requirements are rewritten.
+Each figure plan identifies a reader question and the relationship the drawing
+must show. Image prompts use direct labels and a paper-white, deep-green editorial
+palette by default. Figure-specific user style and language choices take precedence.
+Conceptual illustrations show the relevant objects and their interactions. Their
+captions introduce the subject and explain one useful comparison or takeaway.
+The paragraph citing each figure develops the mechanism, evidence and limits.
 Outline plans contain no chapter dependency graph. Necessary definitions and their
 sources belong in local descriptions, analytical tasks and paper assignments.
 Chapter roles determine evidence scope, not execution order. Abstracts remain

@@ -198,6 +198,15 @@ def chapter_system(packet):
         sections = [TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE, CHAPTER_GUIDANCE]
     if packet.get("output_format") == "latex_pdf":
         sections.insert(1, LATEX_AUTHORING_GUIDANCE)
+    if packet.get("shared_figures") and packet.get("chapter_kind") != "abstract":
+        sections.append(
+            "At each owned figure callout, use the surrounding paragraph to explain "
+            "the scientific relationship in its content_plan: what connects or changes, "
+            "under which conditions, and why it matters here. Cite the supporting work. "
+            "The caption introduces the comparison; develop it with evidence in the prose. "
+            "Write from the confirmed plan and evidence; "
+            "colors, line styles and panel positions are decided separately by the figure author."
+        )
     if packet.get("shared_tables") and packet.get("chapter_kind") != "abstract":
         sections.append(CAPTION_CONTENT_GUIDANCE)
         sections.append(
