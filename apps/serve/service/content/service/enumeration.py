@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
 from service.content.domain.model import IGNORED_NAMES, ContentError, resolve_root
 from service.content.service.space import ProjectSpace, normalize
 from service.platform.content import ResourceEntry, ResourcePage, ResourceScanObserver, RootKind
+from service.platform.storage import WINDOWS_PLATFORM
 
 GITIGNORE_FILENAME = ".gitignore"
 BIRTH_TIME_ATTRIBUTE = "st_birthtime"
@@ -44,7 +46,9 @@ def _entry(
         return None
     if (
         not _inside(resolved, allowed_roots)
-        or not resolved.is_file()
+        or not (
+            resolved.is_file() if os.name == WINDOWS_PLATFORM else stat.S_ISREG(file_stat.st_mode)
+        )
         or space.excluded(logical)
         or not all(_scan_name(part) for part in PurePosixPath(logical).parts)
     ):
