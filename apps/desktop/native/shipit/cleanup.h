@@ -15,6 +15,7 @@ BOOL SSCleanupReconcilesRollback(NSURL *previous, NSURL *target);
 NSURL *SSCleanupRecoveredTarget(NSURL *source, NSURL *requestedTarget);
 BOOL SSCleanupKnownRequest(NSURL *source);
 BOOL SSCleanupCommittedRequest(NSURL *source, NSURL *target);
+BOOL SSCleanupObservedLaunch(NSURL *source, NSURL *target, NSError **error);
 BOOL SSCleanupLaunchNeeded(NSURL *source, NSURL *target);
 BOOL SSCleanupMarkLaunched(NSURL *source, NSURL *target);
 BOOL SSCleanupDrain(NSURL *protectedTarget);

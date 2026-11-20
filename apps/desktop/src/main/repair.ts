@@ -103,7 +103,9 @@ export interface UpdateRepairScope {
   recovery?: 'orphan' | 'retire'
 }
 
-export function repairNativePaths(scope: UpdateRepairScope) {
+export function repairNativePaths(
+  scope: Pick<UpdateRepairScope, 'bundleId' | 'applicationSupport' | 'cache'>
+) {
   const owner = `${scope.bundleId}${HELPER_SUFFIX}`
   return {
     nativeState: join(scope.cache, owner, NATIVE_STATE),
