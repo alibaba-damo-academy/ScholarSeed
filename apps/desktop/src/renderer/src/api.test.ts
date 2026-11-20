@@ -16,8 +16,7 @@ import {
   formatRuntimeStatus,
 } from './runtime.ts'
 import {
-  adoptProject,
-  createManagedProject,
+  submitProjectCreation,
   serviceErrorDetail,
   openSession,
   loadSessionCatalog,
@@ -850,9 +849,13 @@ test('project catalogs preserve directory creation independently from registrati
     assert.equal(listing?.projects[0].added_at, 200)
     assert.equal(listing?.projects[0].directory_created_at, 10)
     globalThis.fetch = async () => Response.json(project)
-    const adopted = await adoptProject('/imported', 'Imported')
-    assert.equal(adopted?.added_at, 200)
-    assert.equal(adopted?.directory_created_at, 10)
+    const adopted = await submitProjectCreation(
+      { path: '/imported', name: 'Imported' },
+      'a'.repeat(32)
+    )
+    assert.equal(adopted.kind, 'created')
+    assert.equal(adopted.project.added_at, 200)
+    assert.equal(adopted.project.directory_created_at, 10)
     globalThis.fetch = async () =>
       Response.json({
         projects: [{ ...project, directory_created_at: null, available: false }],
@@ -882,9 +885,13 @@ test('project creation preserves backend-managed roots and explicit selected dir
     )
   }
   try {
-    assert.equal((await createManagedProject('Managed'))?.path, '/managed/project')
+    const created = await submitProjectCreation({ name: 'Managed' }, 'b'.repeat(32))
+    assert.equal(created.kind, 'created')
+    assert.equal(created.project.path, '/managed/project')
     for (const path of ['/tmp/研究项目', 'C:\\Research\\项目']) {
-      assert.equal((await adoptProject(path, 'Selected'))?.path, path)
+      const adopted = await submitProjectCreation({ path, name: 'Selected' }, 'c'.repeat(32))
+      assert.equal(adopted.kind, 'created')
+      assert.equal(adopted.project.path, path)
     }
     assert.deepEqual(requests, [
       { url: '/api/content/projects', body: { name: 'Managed' } },
@@ -894,6 +901,49 @@ test('project creation preserves backend-managed roots and explicit selected dir
         body: { path: 'C:\\Research\\项目', name: 'Selected' },
       },
     ])
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('a rejected create recovers and an unknown operation is queried without replaying the write', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  const attempt = 'a'.repeat(32)
+  const operation = 'b'.repeat(32)
+  let posts = 0
+  let reads = 0
+  globalThis.fetch = async (input, init) => {
+    assert.equal(new Headers(init?.headers).get('x-scholarseed-diagnostic-id'), attempt)
+    if (init?.method === 'POST') {
+      assert.equal(String(input), '/api/content/projects')
+      if (++posts === 1) return Response.json({ detail: 'update_maintenance' }, { status: 503 })
+      return Response.json({ operation }, { status: 202 })
+    }
+    assert.equal(String(input), `/api/content/operations/${operation}`)
+    if (++reads === 1)
+      return Response.json({ detail: 'content_operation_unknown' }, { status: 404 })
+    return Response.json({
+      operation,
+      state: 'succeeded',
+      result: { id: 'project', name: 'Project', root: '/workspace/project' },
+    })
+  }
+  try {
+    const input = { name: 'Project' }
+    const pending = await submitProjectCreation(input, attempt)
+    assert.deepEqual(pending, { kind: 'unknown', operation })
+    const recovered = await submitProjectCreation(input, attempt, operation)
+    assert.equal(recovered.kind, 'created')
+    assert.equal(recovered.project.id, 'project')
+    assert.equal(posts, 2)
+    assert.equal(reads, 2)
   } finally {
     globalThis.fetch = previousFetch
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)

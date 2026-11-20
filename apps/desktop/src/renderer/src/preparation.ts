@@ -70,6 +70,7 @@ interface PreparationRequest {
   modelId: string
   serviceInstanceId: string
   persistDefault: boolean
+  warmupOnly?: boolean
 }
 
 interface PreparationDependencies {
@@ -204,7 +205,11 @@ export class RuntimePreparationController {
 
   constructor(private readonly dependencies: PreparationDependencies) {}
 
-  prepare(modelId: string, persistDefault = false): Promise<RuntimePreparation> {
+  prepare(
+    modelId: string,
+    persistDefault = false,
+    warmupOnly = false
+  ): Promise<RuntimePreparation> {
     if (this.disposed) return Promise.reject(new Error(PREPARATION_SUPERSEDED_ERROR))
     const snapshot = this.dependencies.snapshot()
     if (!snapshot.serviceInstanceId)
@@ -221,6 +226,7 @@ export class RuntimePreparationController {
         job &&
         preparationContextMatches(snapshot, job.context) &&
         job.request.modelId === modelId &&
+        (warmupOnly || !job.request.warmupOnly) &&
         (!persistDefault || job.request.persistDefault)
       ) {
         if (job === this.active && this.queued) {
@@ -242,6 +248,7 @@ export class RuntimePreparationController {
       request: {
         modelId,
         persistDefault,
+        ...(warmupOnly ? { warmupOnly } : {}),
         serviceInstanceId: context.serviceInstanceId,
         requestId: this.dependencies.requestId?.() ?? crypto.randomUUID(),
       },
@@ -354,7 +361,10 @@ export class RuntimePreparationController {
         if (operation.service_instance_id !== job.context.serviceInstanceId) {
           throw new Error(PREPARATION_INSTANCE_CHANGED_ERROR)
         }
-        if (preparationContextMatches(this.dependencies.snapshot(), job.context)) {
+        if (
+          (!job.request.warmupOnly || operation.state === 'applied') &&
+          preparationContextMatches(this.dependencies.snapshot(), job.context)
+        ) {
           this.dependencies.publish(operation, job.context)
         }
         if (operation.state !== PREPARATION_PENDING) return operation

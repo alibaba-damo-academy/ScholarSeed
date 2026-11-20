@@ -17,7 +17,7 @@ Total: 15.
 
 ## Style debt
 
-Total: 226.
+Total: 225.
 
 | File | Raw color | Fixed Tailwind color | Visual inline style |
 | --- | ---: | ---: | ---: |

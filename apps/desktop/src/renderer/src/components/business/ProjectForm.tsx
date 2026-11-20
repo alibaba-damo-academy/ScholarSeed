@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Folder, Info } from 'lucide-react'
 
 import type { Project } from '../../api'
-import { adoptProject, createManagedProject } from '../../api'
+import { reportProjectCreation, submitProjectCreation } from '../../api'
 import { PROJECT_DESCRIPTION_MAX, PROJECT_NAME_MAX } from '../../contracts/content'
 import { previewProjectDirectory, renameProject as updateProject } from '../../features/project/api'
 import {
@@ -73,7 +73,7 @@ export function ProjectForm({
   pending?: boolean
   onCancel?: () => void
   onClose: () => void
-  onDone: (message: string, created?: Project) => Promise<void>
+  onDone: (message: string, created?: Project, attemptId?: string) => Promise<void>
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { t: layoutText } = useTranslation('layout')
@@ -84,8 +84,12 @@ export function ProjectForm({
   const [defaultFolder, setDefaultFolder] = React.useState<string | null>(null)
   const [confirmFolder, setConfirmFolder] = React.useState(false)
   const createdProject = React.useRef<Project | null>(null)
+  const attempt = React.useRef<{ id: string; operation?: string; blocked?: boolean } | null>(null)
   const [saving, setBusy] = React.useState(false)
   const busy = saving || pending
+  const creationLocked = Boolean(
+    createdProject.current || attempt.current?.operation || attempt.current?.blocked
+  )
   const [error, setError] = React.useState<
     | {
         messageKey: 'project.required' | 'project.createFailed' | 'project.saveFailed'
@@ -110,40 +114,78 @@ export function ProjectForm({
   const create = async (): Promise<void> => {
     const next = name.trim()
     if (!next) {
+      reportProjectCreation({
+        attemptId: crypto.randomUUID().replaceAll('-', ''),
+        stage: 'preflight',
+        result: 'not_submitted',
+        code: 'name_required',
+      })
       setError({ messageKey: 'project.required' })
       return
     }
-    if (busy) return
+    if (busy || attempt.current?.blocked) return
+    const current = (attempt.current ??= { id: crypto.randomUUID().replaceAll('-', '') })
     setBusy(true)
     setError(null)
-    const created =
-      createdProject.current ??
-      (await (folder ? adoptProject(folder, next) : createManagedProject(next)))
-    if (!created) {
-      setBusy(false)
-      setError({ messageKey: 'project.createFailed' })
-      return
-    }
-    createdProject.current = created
-    const createdName = folder ? next : created.name
-    if (description.trim() || created.name !== createdName) {
-      const metadata = await updateProject(created.id, createdName, {
-        description: description.trim(),
-      })
-      if (!metadata.ok) {
-        setBusy(false)
-        setError({ messageKey: 'project.saveFailed' })
-        return
-      }
-    }
     try {
-      await onDone(t('project.created', { name: createdName }), {
-        ...created,
-        name: createdName,
-        description: description.trim(),
-      })
+      let created = createdProject.current
+      if (!created) {
+        const result = await submitProjectCreation(
+          { name: next, ...(folder ? { path: folder } : {}) },
+          current.id,
+          current.operation
+        )
+        if (result.kind === 'rejected') {
+          attempt.current = null
+          if (!result.maintenance) setError({ messageKey: 'project.createFailed' })
+          return
+        }
+        if (result.kind === 'unknown') {
+          current.operation = result.operation
+          current.blocked = !result.operation
+          return
+        }
+        created = createdProject.current = result.project
+      } else {
+        reportProjectCreation({
+          attemptId: current.id,
+          stage: 'operation',
+          result: 'reuse_project',
+          projectId: created.id,
+        })
+      }
+      const createdName = folder ? next : created.name
+      const nextDescription = description.trim()
+      if ((created.description ?? '') !== nextDescription || created.name !== createdName) {
+        const metadata = await updateProject(created.id, createdName, {
+          description: nextDescription,
+        })
+        reportProjectCreation({
+          attemptId: current.id,
+          stage: 'metadata',
+          projectId: created.id,
+          result: metadata.ok ? 'saved' : 'failed',
+          ...(metadata.ok ? {} : { code: 'metadata_update_failed' }),
+        })
+        if (!metadata.ok) {
+          setError({ messageKey: 'project.saveFailed' })
+          return
+        }
+        created = createdProject.current = {
+          ...created,
+          name: createdName,
+          description: nextDescription,
+        }
+      }
+      await onDone(t('project.created', { name: createdName }), created, current.id)
     } catch {
-      setError({ messageKey: 'project.createFailed' })
+      reportProjectCreation({
+        attemptId: current.id,
+        stage: 'completion',
+        result: 'failed',
+        projectId: createdProject.current?.id,
+        code: 'project_completion_failed',
+      })
     } finally {
       setBusy(false)
     }
@@ -196,7 +238,7 @@ export function ProjectForm({
                   aria-describedby="project-name-count"
                   value={name}
                   data-testid={editing ? 'project-edit-name' : 'project-create-name'}
-                  disabled={busy || Boolean(createdProject.current)}
+                  disabled={busy || creationLocked}
                   maxLength={PROJECT_NAME_MAX}
                   placeholder={t('project.placeholder')}
                   autoComplete="off"
@@ -272,14 +314,22 @@ export function ProjectForm({
                   variant="outline"
                   size="sm"
                   className="!h-[var(--vds-control-height-md)] shrink-0 !gap-[calc(var(--vds-space-1)+var(--vds-space-half))] !border-[var(--vds-divider-default)] !leading-[var(--vds-control-label-line-height)] !font-[var(--vds-fw-regular)]"
-                  disabled={busy || Boolean(createdProject.current)}
+                  disabled={busy || creationLocked}
                   onClick={() => {
                     void window.scholarseed
                       .pickDir()
                       .then((selected) => {
                         if (selected) setFolder(selected)
                       })
-                      .catch(() => setError({ messageKey: 'project.createFailed' }))
+                      .catch(() => {
+                        reportProjectCreation({
+                          attemptId: crypto.randomUUID().replaceAll('-', ''),
+                          stage: 'preflight',
+                          result: 'not_submitted',
+                          code: 'folder_picker_failed',
+                        })
+                        setError({ messageKey: 'project.createFailed' })
+                      })
                   }}
                 >
                   <Folder />
@@ -336,10 +386,9 @@ export function ProjectForm({
           <Button
             type="button"
             data-testid={editing ? 'project-save' : 'project-create'}
-            disabled={busy}
+            disabled={busy || Boolean(attempt.current?.blocked)}
             onClick={() => {
-              if (!editing && folder && name.trim() && !createdProject.current)
-                setConfirmFolder(true)
+              if (!editing && folder && name.trim() && !creationLocked) setConfirmFolder(true)
               else void (editing ? save() : create())
             }}
           >

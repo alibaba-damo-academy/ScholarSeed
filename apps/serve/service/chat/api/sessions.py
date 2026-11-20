@@ -222,6 +222,7 @@ def mount_session_routes(
                 request_id=body.request_id,
                 service_instance_id=body.service_instance_id,
                 persist_default=body.persist_default,
+                warmup_only=body.warmup_only,
             )
         except (ValueError, RuntimeError) as error:
             return JSONResponse({"ok": False, "error": str(error)}, status_code=HTTP_CONFLICT)

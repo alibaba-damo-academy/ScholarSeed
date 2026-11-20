@@ -15,6 +15,8 @@ from hashlib import sha256
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Mapping
 
 from damoatrace.recording.redaction import Redactor
+from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL_NAME
+from service.platform.bridge import SEARCH_RUN
 
 LOGGER = logging.getLogger(__name__)
 DIAGNOSTIC_EVENT = "model_bridge.diagnostic"
@@ -82,6 +84,7 @@ ERROR_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 METADATA_PATTERN = re.compile(r"[a-zA-Z0-9_.:/+\-]+")
 RESPONSE_TERMINALS = frozenset(("response.completed", "response.failed", "response.incomplete"))
 RESPONSE_FAILED = "response.failed"
+RESPONSE_OUTPUT_ITEM_DONE = "response.output_item.done"
 SSE_DATA = b"data:"
 SSE_EVENT = b"event:"
 SSE_DONE = b"[DONE]"
@@ -494,6 +497,7 @@ class StreamObservation:
     usage: dict[str, Any] = field(default_factory=dict)
     text_delta_characters: int = 0
     reasoning_delta_characters: int = 0
+    search_calls: dict[str, bool] = field(default_factory=dict)
 
     def feed(self, chunk: bytes) -> None:
         for index, part in enumerate(chunk.split(b"\n")):
@@ -563,6 +567,8 @@ class StreamObservation:
             self.error_seen = True
         if self.last_event in RESPONSE_TERMINALS:
             self.terminal = self.last_event
+        if self.last_event == RESPONSE_OUTPUT_ITEM_DONE:
+            self.observe_search_call(payload.get("item"))
         response = payload.get("response")
         source = response if isinstance(response, Mapping) else payload
         usage = source.get("usage")
@@ -606,6 +612,35 @@ class StreamObservation:
                 if isinstance(choice, Mapping) and choice.get("finish_reason"):
                     self.finish_reason = metadata_token(choice["finish_reason"])
 
+    def observe_search_call(self, item: object) -> None:
+        if (
+            not isinstance(item, Mapping)
+            or item.get("type") != "function_call"
+            or item.get("name") != SERVICE_BRIDGE_TOOL_NAME
+        ):
+            return
+        call_id = metadata_token(item.get("call_id"))
+        arguments = item.get("arguments")
+        if (
+            not call_id
+            or len(self.search_calls) >= INPUT_FIELD_LIMIT
+            or not isinstance(arguments, str)
+        ):
+            return
+        try:
+            request = json.loads(arguments)
+        except (ValueError, RecursionError):
+            return
+        if (
+            not isinstance(request, dict)
+            or (request.get("capability"), request.get("operation")) != SEARCH_RUN
+        ):
+            return
+        inline = request.get("request")
+        if isinstance(inline, dict):
+            query = inline.get("query")
+            self.search_calls[call_id] = isinstance(query, str) and bool(query.strip())
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "last_event": self.last_event,
@@ -624,6 +659,7 @@ class StreamObservation:
             "usage": dict(self.usage),
             "text_delta_characters": self.text_delta_characters,
             "reasoning_delta_characters": self.reasoning_delta_characters,
+            **({"search_call_has_query": dict(self.search_calls)} if self.search_calls else {}),
         }
 
 

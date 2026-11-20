@@ -14,6 +14,7 @@ import { TodoPanel } from './components/business/TodoPanel'
 import { DocumentWorkspaceContext, documentWorkspaces } from './features/workbench/workspace'
 import { getBackendHealth, getSharedRuntimeReconfiguration } from './api'
 import { projectBackendAvailability } from './runtime'
+import { useLiveSession } from './live'
 
 const localization = createLocalization('zh', resources, { report: () => undefined })
 let store: Store
@@ -82,12 +83,18 @@ function Fixture(): React.JSX.Element {
   )
 }
 
+function LiveFixture(): null {
+  useLiveSession()
+  return null
+}
+
 createRoot(document.getElementById('root')!).render(
   <I18nextProvider i18n={localization}>
     <ToastProvider>
       <StoreProvider assistantSources={[]}>
         <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
           <InteractionPolicyProvider policies={[fileRecovery]}>
+            {Reflect.get(window, 'liveSessionFixture') === true && <LiveFixture />}
             <Fixture />
           </InteractionPolicyProvider>
         </DocumentWorkspaceContext.Provider>
