@@ -44,6 +44,7 @@ from service.content.domain.model import (
     ContentError,
     ContentReadPermissionError,
     resolve_root,
+    root_relative,
     visible,
 )
 from service.content.persistence.catalog import (
@@ -94,6 +95,7 @@ from service.platform.content import (
     ArtifactStorageLocation,
     AssetBinding,
     AssetKind,
+    AssetOrigin,
     AssetPage,
     ContentImportCancellation,
     ContentImportObserver,
@@ -121,6 +123,7 @@ from service.platform.content import (
     ResourceScanObserver,
     ResourceSearchResult,
     ResourceTreeChanges,
+    ResourceTreeObserver,
     RootKind,
     StableContentCapture,
     StableContentSnapshot,
@@ -771,12 +774,17 @@ class ContentService:
         一个还能写的窗口。重建的成本是一次索引查询。
         """
 
+        scope, _ = self._space_with_external_roots(project_id, read_only=read_only)
+        return scope
+
+    def _space_with_external_roots(
+        self, project_id: str | None, *, read_only: bool = False
+    ) -> tuple[space.ProjectSpace, tuple[ExternalRootRow, ...]]:
         project = self._registry.resolve(project_id, read_only=read_only)
         if not project.available:
             raise ContentError(ROOT_UNAVAILABLE_ERROR)
-        return self.project_space(
-            project, self._catalog.external_roots(project.id, read_only=read_only)
-        )
+        external = self._catalog.external_roots(project.id, read_only=read_only)
+        return self.project_space(project, external), external
 
     @staticmethod
     def project_space(
@@ -819,8 +827,13 @@ class ContentService:
 
     def _rooted_space(self, project_id: str) -> space.ProjectSpace:
         scope = self._space(project_id)
-        owned = roots.registered_roots(self.resolve(scope.project.id, PROJECT_DB_RELATIVE))
-        return space.ProjectSpace(scope.project, scope.mounts, owned_roots=owned)
+        return space.ProjectSpace(
+            scope.project, scope.mounts, owned_roots=self._registered_roots(scope)
+        )
+
+    @staticmethod
+    def _registered_roots(scope: space.ProjectSpace) -> dict[RootKind, str]:
+        return roots.registered_roots(str(scope.absolute(PROJECT_DB_RELATIVE)))
 
     def _resource_space(self, project_id: str) -> space.ProjectSpace:
         scope = self._rooted_space(project_id)
@@ -1901,17 +1914,48 @@ class ContentService:
         *,
         include_repositories: bool = False,
         track_parents: bool = False,
+        observe_entries: bool = False,
+        shallow: bool = False,
+        on_directory: ResourceTreeObserver | None = None,
+        check: Callable[[], None] | None = None,
     ) -> FlatResourceTree:
         """Use one local path space and revalidate mount authority within the read."""
 
         if not roots:
             return FlatResourceTree((), {})
         scope = self._resource_space(project_id)
+        ownable = tuple(scope.owned_roots.values()) + tuple(
+            root_relative(scope.project.layout, kind) for kind in OWNED_ROOT_KINDS
+        )
+        owned_prefixes = tuple(f"{path}{space.SEPARATOR}" for path in ownable)
 
         def check_mount(path: str) -> None:
             mount = scope.mount_for(path)
             if mount is not None and self._space(project_id).mount_for(path) != mount:
                 raise ContentError(ROOT_BUSY_ERROR)
+
+        def publish(nodes: tuple[AssetTree, ...], repositories: dict[str, str | None]) -> None:
+            assert on_directory is not None
+            linked_roots: tuple[ExternalRootRef, ...] = ()
+            if any(node.asset.origin is AssetOrigin.LINK for node in nodes):
+                current, external = self._space_with_external_roots(project_id)
+                if not self._resource_grants_match(scope, current):
+                    raise ContentError(ROOT_BUSY_ERROR)
+                # Local rows can alias an owned root. Also keep the claims check
+                # when a legacy mount occupies a path reserved for a future claim.
+                if (
+                    any(
+                        node.asset.origin is AssetOrigin.LOCAL
+                        or node.asset.path in ownable
+                        or node.asset.path.startswith(owned_prefixes)
+                        for node in nodes
+                    )
+                    and self._registered_roots(current) != scope.owned_roots
+                ):
+                    raise ContentError(ROOT_BUSY_ERROR)
+                # Project the grants from the same records used for authorization.
+                linked_roots = tuple(self._roots.reference(row) for row in external)
+            on_directory(nodes, repositories, linked_roots)
 
         result = tree.flat_tree(
             scope,
@@ -1919,6 +1963,10 @@ class ContentService:
             check_mount,
             include_repositories=include_repositories,
             track_parents=track_parents,
+            observe_entries=observe_entries,
+            shallow=shallow,
+            on_directory=publish if on_directory is not None else None,
+            check=check,
         )
         if not self._resource_scope_current(project_id, scope):
             raise ContentError(ROOT_BUSY_ERROR)
@@ -1934,12 +1982,18 @@ class ContentService:
         return result
 
     def _resource_scope_current(self, project_id: str, scope: space.ProjectSpace) -> bool:
-        current = self._resource_space(project_id)
+        current = self._space(project_id)
+        return (
+            self._resource_grants_match(scope, current)
+            and self._registered_roots(current) == scope.owned_roots
+        )
+
+    @staticmethod
+    def _resource_grants_match(scope: space.ProjectSpace, current: space.ProjectSpace) -> bool:
         return (
             current.root == scope.root
             and current.project.layout == scope.project.layout
             and current.mounts == scope.mounts
-            and current.owned_roots == scope.owned_roots
         )
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:

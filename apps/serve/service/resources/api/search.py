@@ -9,11 +9,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from service.chat.service.events import sse_encode
 from service.identity.utils import request_owner_id, request_user_id
 from service.invocation.api.routes import SSE_HEADERS, SSE_MEDIA_TYPE
 from service.invocation.service.runtime import InvocationError
 from service.invocation.service.skills import InvocationSkillError, InvocationSkillRuntimeError
+from service.platform.sse import sse_encode
 from service.resources.api.web import WEB_SEARCH_QUERY_LIMIT
 from service.resources.service.fallback import ResourceSearchFallback
 from service.resources.service.search import OFFICIAL_RESULT_LIMIT, ResourceSearchService

@@ -169,6 +169,7 @@ export function NodeMenu(): React.JSX.Element | null {
         position={
           menu.anchor ? { kind: 'anchor', ...menu.anchor } : { kind: 'point', x: menu.x, y: menu.y }
         }
+        aria-busy={menu.awaitingListing || undefined}
         data-testid="resource-node-menu"
       >
         {items.map((item) => {
@@ -176,7 +177,7 @@ export function NodeMenu(): React.JSX.Element | null {
           return (
             <React.Fragment key={item.key}>
               <DropdownMenuItem
-                disabled={item.disabled}
+                disabled={menu.awaitingListing || item.disabled}
                 destructive={item.danger}
                 data-testid={`menu-${item.key}`}
                 onSelect={() => {
