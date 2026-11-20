@@ -16,6 +16,7 @@ import {
   PopoverContent,
   PopoverTrigger,
   SearchBox,
+  Spinner,
   LoadingFallback,
   Tooltip,
   type ButtonProps,
@@ -351,17 +352,21 @@ export function LibraryFilter({
   value,
   options,
   onChange,
+  onOpenChange,
+  loading,
   includeAll = true,
 }: {
   label: string
   value: string
   options: { value: string; label: string }[]
   onChange: (value: string) => void
+  onOpenChange?: (open: boolean) => void
+  loading?: boolean
   includeAll?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('layout')
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
@@ -380,7 +385,7 @@ export function LibraryFilter({
           />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent>
+      <DropdownMenuContent aria-busy={loading || undefined}>
         <DropdownMenuRadioGroup>
           {includeAll && (
             <>
@@ -404,6 +409,7 @@ export function LibraryFilter({
               {option.label}
             </DropdownMenuRadioItem>
           ))}
+          {loading && <Spinner size="sm" />}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>

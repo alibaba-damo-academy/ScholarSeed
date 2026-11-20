@@ -94,6 +94,7 @@ from service.platform.content import (
     ArtifactStorageLocation,
     AssetBinding,
     AssetKind,
+    AssetOrigin,
     AssetPage,
     ContentImportCancellation,
     ContentImportObserver,
@@ -121,6 +122,7 @@ from service.platform.content import (
     ResourceScanObserver,
     ResourceSearchResult,
     ResourceTreeChanges,
+    ResourceTreeObserver,
     RootKind,
     StableContentCapture,
     StableContentSnapshot,
@@ -1901,6 +1903,10 @@ class ContentService:
         *,
         include_repositories: bool = False,
         track_parents: bool = False,
+        observe_entries: bool = False,
+        shallow: bool = False,
+        on_directory: ResourceTreeObserver | None = None,
+        check: Callable[[], None] | None = None,
     ) -> FlatResourceTree:
         """Use one local path space and revalidate mount authority within the read."""
 
@@ -1913,12 +1919,25 @@ class ContentService:
             if mount is not None and self._space(project_id).mount_for(path) != mount:
                 raise ContentError(ROOT_BUSY_ERROR)
 
+        def publish(nodes: tuple[AssetTree, ...], repositories: dict[str, str | None]) -> None:
+            assert on_directory is not None
+            linked_roots: tuple[ExternalRootRef, ...] = ()
+            if any(node.asset.origin is AssetOrigin.LINK for node in nodes):
+                linked_roots = self.external_roots(project_id)
+                if not self._resource_scope_current(project_id, scope):
+                    raise ContentError(ROOT_BUSY_ERROR)
+            on_directory(nodes, repositories, linked_roots)
+
         result = tree.flat_tree(
             scope,
             roots,
             check_mount,
             include_repositories=include_repositories,
             track_parents=track_parents,
+            observe_entries=observe_entries,
+            shallow=shallow,
+            on_directory=publish if on_directory is not None else None,
+            check=check,
         )
         if not self._resource_scope_current(project_id, scope):
             raise ContentError(ROOT_BUSY_ERROR)

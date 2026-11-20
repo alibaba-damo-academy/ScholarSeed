@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -546,6 +547,7 @@ class ResourceVersionSupervisor:
         paths: tuple[str, ...],
         *,
         repositories: dict[str, str | None] | None = None,
+        observed_entries: Mapping[str, ResourceEntry | None] | None = None,
     ) -> dict[str, ResourceCapability]:
         """Project tree state for selected paths without a repository-wide scan."""
 
@@ -553,9 +555,16 @@ class ResourceVersionSupervisor:
         if not selected:
             return {}
         repository_states = repositories or self._content.repository_roots(project_id, selected)
-        non_git_paths = tuple(path for path in selected if repository_states[path] is None)
-        entries = self._content.resource_entries(project_id, non_git_paths) if non_git_paths else ()
-        by_path = {entry.path: entry for entry in entries}
+        observed = observed_entries or {}
+        inspect_paths = tuple(
+            path for path in selected if repository_states[path] is None and path not in observed
+        )
+        by_path = dict(observed)
+        if inspect_paths:
+            by_path.update(
+                (entry.path, entry)
+                for entry in self._content.resource_entries(project_id, inspect_paths)
+            )
         resource_root = self._content.root_path(project_id, RootKind.RESOURCES)
         persisted = self._versions.capability_states(project_id, selected)
         manual_states = self._versions.manual_admitted_states(project_id, selected)

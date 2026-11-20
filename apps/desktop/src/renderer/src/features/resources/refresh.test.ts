@@ -4,12 +4,117 @@ import test from 'node:test'
 import {
   applyResourceListingChanges,
   createResourceListingRefresh,
+  isResourceListingBoundaryFailure,
+  listingDirectoryNodes,
+  RESOURCE_LISTING_SCOPE_UNAVAILABLE,
+  resourceListingDirectories,
+  resourceListingDirectoryEventPaths,
   resourceListingEventPaths,
 } from './refresh.ts'
 
 async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
 }
+
+test('reachable directory groups ignore closed and removed parents and deduplicate aliases', () => {
+  const alias = { path: 'alias', name: 'alias', kind: 'dir' } as const
+  const note = { path: 'note.md', name: 'note.md', kind: 'file' } as const
+  const orphan = { path: 'orphan/a.md', name: 'a.md', kind: 'file' } as const
+  const directories = new Map([
+    ['', { snapshot: { directory: '', items: [alias, note], versionsLoaded: false } }],
+    ['alias', { snapshot: { directory: '', items: [alias, note], versionsLoaded: false } }],
+    ['orphan', { snapshot: { directory: 'orphan', items: [orphan], versionsLoaded: false } }],
+  ])
+  const visible = resourceListingDirectories(directories, { alias: true, orphan: true })
+  assert.deepEqual(visible, ['', 'alias'])
+  assert.deepEqual(listingDirectoryNodes(directories, visible), [alias, note])
+  assert.deepEqual(resourceListingDirectories(directories, { alias: false }), [''])
+})
+
+test('listing events affect direct parent groups and invalidate moved directory subtrees', () => {
+  assert.deepEqual(resourceListingDirectoryEventPaths('', ['a.md', 'nested/b.md']), ['a.md'])
+  assert.deepEqual(resourceListingDirectoryEventPaths('other', ['a.md', 'nested/b.md']), [])
+  assert.deepEqual(resourceListingDirectoryEventPaths('nested', ['a.md', 'nested/b.md']), [
+    'nested/b.md',
+  ])
+  assert.equal(resourceListingDirectoryEventPaths('nested/child', ['nested']), undefined)
+  assert.equal(resourceListingDirectoryEventPaths('', undefined), undefined)
+})
+
+test('boundary failures clear actionable rows while a busy or transient read preserves them', async () => {
+  assert.equal(isResourceListingBoundaryFailure(400, 'path_outside_root'), true)
+  assert.equal(isResourceListingBoundaryFailure(403), true)
+  assert.equal(isResourceListingBoundaryFailure(404), true)
+  assert.equal(isResourceListingBoundaryFailure(409, 'root_source_changed'), true)
+  assert.equal(isResourceListingBoundaryFailure(409, 'root_busy'), false)
+  assert.equal(isResourceListingBoundaryFailure(503), false)
+  const reads: (string | null | typeof RESOURCE_LISTING_SCOPE_UNAVAILABLE)[] = [
+    'authorized rows',
+    null,
+    RESOURCE_LISTING_SCOPE_UNAVAILABLE,
+  ]
+  const changes: unknown[] = []
+  const refresh = createResourceListingRefresh<string>(
+    async () => reads.shift() ?? null,
+    (snapshot, _refreshing, invalidated) => changes.push([snapshot, invalidated])
+  )
+  for (const _read of [...reads]) {
+    refresh.request()
+    await flush()
+  }
+  assert.deepEqual(changes, [
+    ['authorized rows', false],
+    [null, false],
+    [null, true],
+  ])
+})
+
+test('a current versions read can replace changed structure or revoke the displayed scope', async () => {
+  for (const hydrated of [
+    'updated rows with versions',
+    RESOURCE_LISTING_SCOPE_UNAVAILABLE,
+  ] as const) {
+    const changes: unknown[] = []
+    const refresh = createResourceListingRefresh<string>(
+      async () => 'initial metadata',
+      (snapshot, _refreshing, invalidated) => changes.push([snapshot, invalidated]),
+      undefined,
+      { hydrate: async () => hydrated }
+    )
+    refresh.request()
+    await flush()
+    assert.deepEqual(changes, [
+      ['initial metadata', false],
+      hydrated === RESOURCE_LISTING_SCOPE_UNAVAILABLE ? [null, true] : [hydrated, false],
+    ])
+  }
+})
+
+test('scope metadata and deltas publish immediately, stale version jobs never overwrite a newer read', async () => {
+  const statuses: ((result: string) => void)[] = []
+  const seen: (string | null)[] = []
+  const refresh = createResourceListingRefresh(
+    async () => 'initial metadata',
+    (result) => seen.push(result),
+    async (_old, paths) => paths.join(','),
+    { deltaWhileIdle: true, hydrate: () => new Promise((resolve) => statuses.push(resolve)) }
+  )
+  refresh.request()
+  await flush()
+  assert.deepEqual(seen, ['initial metadata'])
+  assert.equal(statuses.length, 1)
+  refresh.request(['first.md', 'second.md'])
+  await flush()
+  assert.deepEqual(seen, ['initial metadata', 'first.md,second.md'])
+  assert.equal(statuses.length, 1)
+  statuses[0]('stale statuses')
+  await flush()
+  assert.deepEqual(seen, ['initial metadata', 'first.md,second.md'])
+  assert.equal(statuses.length, 2)
+  statuses[1]('current statuses')
+  await flush()
+  assert.deepEqual(seen, ['initial metadata', 'first.md,second.md', 'current statuses'])
+})
 
 test('overlapping resource invalidations publish the first snapshot before one catch-up', async () => {
   const reads: ((value: string) => void)[] = []

@@ -1469,7 +1469,7 @@ export interface Actions extends AssistantIngress {
    * 后端一次只回若干层，更深的层级必须在这里续取 —— 否则深度上限就等于
    * 用户永远看不到的层级。
    */
-  toggleResourceDir: (path: string) => Promise<void>
+  toggleResourceDir: (path: string, loadTreeChildren?: boolean) => Promise<void>
   /** 幂等地补齐某个目录还没投影出来的子节点（已完整则直接返回）。 */
   ensureResourceChildren: (path: string) => Promise<void>
   /**
@@ -4001,7 +4001,7 @@ export function StoreProvider({
         }))
         return true
       },
-      toggleResourceDir: async (path) => {
+      toggleResourceDir: async (path, loadTreeChildren = true) => {
         const open = !(stateRef.current.resource.expanded[path] ?? false)
         setState((current) => ({
           ...current,
@@ -4011,7 +4011,7 @@ export function StoreProvider({
             expanded: { ...current.resource.expanded, [path]: open },
           },
         }))
-        if (open) await actRef.current.ensureResourceChildren(path)
+        if (open && loadTreeChildren) await actRef.current.ensureResourceChildren(path)
       },
       ensureResourceChildren: async (path) => {
         if (!path) return

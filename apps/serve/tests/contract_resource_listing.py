@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 from service.chat.service.settings import SettingsService
 from service.content.domain.model import (
@@ -30,6 +34,7 @@ from service.content.service.tree import PAGE_SIZE
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities
 from service.platform.content import AssetKind
+from service.resources.api import routes
 from service.resources.api.routes import register_resource_routes
 from service.resources.domain.model import ResourceLocationRef
 from service.resources.persistence.catalog import (
@@ -77,6 +82,33 @@ class ResourceListingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    def directory_payload(self, path: str = "", *, versions: bool = True) -> dict:
+        response = self.client.get(
+            "/api/resource/list",
+            params={
+                "project": self.project.id,
+                "directory": path,
+                "versions": versions,
+                "incremental": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def search_listing_frames(self) -> list[dict]:
+        response = self.client.get(
+            "/api/resource/list/search",
+            params={"project": self.project.id},
+            headers={"Accept": "text/event-stream"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+        return [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+
     def entries(self) -> dict[str, dict]:
         return {entry["path"]: entry for entry in self.listing_payload()["items"]}
 
@@ -86,6 +118,476 @@ class ResourceListingTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
+
+    def test_search_stream_reuses_one_ordered_traversal_and_full_listing_fields(self) -> None:
+        repository = self.resources / "repository"
+        repository.mkdir()
+        (repository / ".git").mkdir()
+        (repository / "deep-needle.md").touch()
+        ResourceWriter(self.content).write_markdown(
+            self.project.id, ResourceLocationRef("", "imported.md"), "# root"
+        )
+        settings = SettingsService()
+        formats = WorkbenchFormatPolicy()
+        versions = ResourceVersionService(
+            self.content,
+            ResourceRetentionService(self.content, settings),
+            formats,
+            PdfRecordStore(self.content),
+        )
+        supervisor = ResourceVersionSupervisor(
+            self.content, versions, formats, settings, activities=Activities()
+        )
+        self.client.app.state.resource_version_supervisor = supervisor
+        original = tree._listing
+        scanned = []
+
+        def record_scan(space, directory, relative, origin):
+            scanned.append(relative)
+            return original(space, directory, relative, origin)
+
+        with patch.object(supervisor, "activate_project") as activate:
+            expected = self.listing_payload(incremental=True)
+            activate.reset_mock()
+            with (
+                patch.object(supervisor, "prepare_project") as prepare,
+                patch.object(tree, "_listing", side_effect=record_scan),
+            ):
+                frames = self.search_listing_frames()
+            prepare.assert_called_once_with(self.project.id)
+            activate.assert_not_called()
+
+        self.assertEqual(scanned, ["resources", "resources/repository"])
+        self.assertTrue(frames[:-1])
+        self.assertTrue(all(frame["type"] == "batch" for frame in frames[:-1]))
+        provisional = [row for frame in frames[:-1] for row in frame["items"]]
+        self.assertEqual(
+            [row["path"] for row in provisional], [row["path"] for row in expected["items"]]
+        )
+        self.assertEqual(provisional[1]["source"], ResourceSource.IMPORTED.value)
+        self.assertTrue(all("version" not in row for row in provisional))
+        self.assertEqual(frames[-1], {"type": "complete", **expected})
+
+    def test_search_stream_checks_link_grants_before_sending_candidates(self) -> None:
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        (outside / "linked-needle.md").touch()
+        mount = self.content.authorize_root_at(self.project.id, str(outside), "", "linked")
+
+        frames = self.search_listing_frames()
+        provisional = [
+            (row, frame["linked_roots"])
+            for frame in frames
+            if frame["type"] == "batch"
+            for row in frame["items"]
+        ]
+        candidate, roots = next(
+            (row, roots)
+            for row, roots in provisional
+            if row["path"] == f"{mount.mount_path}/linked-needle.md"
+        )
+        self.assertEqual(candidate["link_root_id"], mount.root_id)
+        self.assertEqual(roots[mount.root_id]["mount_path"], mount.mount_path)
+        self.assertEqual(frames[-1]["type"], "complete")
+
+        original = tree._listing
+
+        def revoke_before_linked_batch(space, directory, relative, origin):
+            rows = original(space, directory, relative, origin)
+            if relative == mount.mount_path:
+                self.content.revoke_root(mount.root_id, self.project.id)
+            return rows
+
+        with patch.object(tree, "_listing", side_effect=revoke_before_linked_batch):
+            frames = self.search_listing_frames()
+        self.assertEqual(frames[-1], {"type": "error", "detail": ROOT_BUSY_ERROR, "status": 409})
+        self.assertFalse(
+            any(
+                row["name"] == "linked-needle.md" for frame in frames[:-1] for row in frame["items"]
+            )
+        )
+
+        mount = self.content.authorize_root_at(self.project.id, str(outside), "", "linked")
+        run_in_threadpool = routes.run_in_threadpool
+
+        async def revoke_after_enqueue(operation):
+            await run_in_threadpool(self.content.revoke_root, mount.root_id, self.project.id)
+            return await run_in_threadpool(operation)
+
+        with patch.object(routes, "run_in_threadpool", side_effect=revoke_after_enqueue) as recheck:
+            frames = self.search_listing_frames()
+        recheck.assert_called_once()
+        self.assertEqual(frames, [{"type": "error", "detail": ROOT_BUSY_ERROR, "status": 409}])
+
+    def test_search_stream_rechecks_link_grants_when_traversal_occupies_the_executor(self) -> None:
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        for i in range(5):
+            directory = outside / str(i)
+            directory.mkdir()
+            (directory / "linked-needle.md").touch()
+        self.content.authorize_root_at(self.project.id, str(outside), "", "linked")
+
+        async def stream() -> list[dict]:
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+            frames = routes._listing_stream_frames(
+                self.content, self.project.id, None, Activities()
+            )
+            return [json.loads(frame.removeprefix("data: ")) async for frame in frames]
+
+        frames = asyncio.run(asyncio.wait_for(stream(), timeout=3))
+        self.assertEqual(frames[-1]["type"], "complete")
+        self.assertEqual(
+            sum(
+                row["name"] == "linked-needle.md" for frame in frames[:-1] for row in frame["items"]
+            ),
+            5,
+        )
+
+    def test_search_stream_disconnect_releases_worker_blocked_on_full_queue(self) -> None:
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        for i in range(5):
+            directory = outside / str(i)
+            directory.mkdir()
+            (directory / "linked-needle.md").touch()
+        self.content.authorize_root_at(self.project.id, str(outside), "", "linked")
+
+        async def disconnect() -> None:
+            loop = asyncio.get_running_loop()
+            activities = Activities()
+            attempted = asyncio.Event()
+            puts = []
+            submit = asyncio.run_coroutine_threadsafe
+
+            def record_put(operation, event_loop):
+                future = submit(operation, event_loop)
+                puts.append(future)
+                if len(puts) == routes.LISTING_STREAM_BUFFER_SIZE + 2:
+                    loop.call_soon_threadsafe(attempted.set)
+                return future
+
+            async def send(message):
+                if message["type"] == "http.response.body":
+                    await asyncio.wait_for(attempted.wait(), timeout=3)
+                    self.assertFalse(puts[-1].done())
+                    raise OSError("client disconnected")
+
+            response = routes._ListingStream(
+                routes._listing_stream_frames(self.content, self.project.id, None, activities)
+            )
+            with (
+                patch.object(asyncio, "run_coroutine_threadsafe", side_effect=record_put),
+                self.assertRaises(ClientDisconnect),
+            ):
+                await response({"type": "http", "asgi": {"spec_version": "2.4"}}, None, send)
+            await loop.shutdown_default_executor(timeout=3)
+            self.assertTrue(puts[-1].cancelled())
+            self.assertFalse(activities.snapshot().counts)
+
+        asyncio.run(disconnect())
+
+    def test_directory_listing_projects_one_group_before_optional_versions(self) -> None:
+        folder = self.resources / "folder"
+        nested = folder / "nested"
+        nested.mkdir(parents=True)
+        (nested / "deep.md").touch()
+        (folder / "child.md").touch()
+        (folder / ".git").mkdir()
+        ResourceWriter(self.content).write_markdown(
+            self.project.id, ResourceLocationRef("", "root.md"), "# root"
+        )
+
+        settings = SettingsService()
+        formats = WorkbenchFormatPolicy()
+        versions = ResourceVersionService(
+            self.content,
+            ResourceRetentionService(self.content, settings),
+            formats,
+            PdfRecordStore(self.content),
+        )
+        supervisor = ResourceVersionSupervisor(
+            self.content, versions, formats, settings, activities=Activities()
+        )
+        self.client.app.state.resource_version_supervisor = supervisor
+        original = tree._listing
+        scanned = []
+
+        def record_scan(space, directory, relative, origin):
+            scanned.append(relative)
+            return original(space, directory, relative, origin)
+
+        with (
+            patch.object(supervisor, "activate_project") as activate,
+            patch.object(supervisor, "prepare_project") as prepare,
+            patch.object(
+                supervisor, "capability_states", wraps=supervisor.capability_states
+            ) as capabilities,
+            patch.object(tree, "_listing", side_effect=record_scan),
+            patch.object(tree, "_child_total") as count,
+        ):
+            first = self.directory_payload(versions=False)
+            activate.assert_not_called()
+            prepare.assert_not_called()
+            capabilities.assert_not_called()
+            count.assert_not_called()
+            self.assertEqual(scanned, ["resources"])
+            self.assertEqual(first["directory"], "resources")
+            self.assertEqual(
+                [row["path"] for row in first["items"]], ["resources/folder", "resources/root.md"]
+            )
+
+            scanned.clear()
+            root = self.directory_payload()
+            self.assertEqual(scanned, ["resources"])
+            scanned.clear()
+            child = self.directory_payload("resources/folder")
+            self.assertEqual(scanned, ["resources/folder"])
+            count.assert_not_called()
+            self.assertEqual(child["directory"], "resources/folder")
+            self.assertEqual(
+                [row["path"] for row in child["items"]],
+                ["resources/folder/nested", "resources/folder/child.md"],
+            )
+            scoped_version_calls = [call.args[1] for call in capabilities.call_args_list]
+            self.assertEqual(
+                scoped_version_calls,
+                [
+                    ("resources/folder", "resources/root.md"),
+                    ("resources/folder/nested", "resources/folder/child.md"),
+                ],
+            )
+            full = self.listing_payload(incremental=True)
+            self.assertEqual(activate.call_count, 2)
+            prepare.assert_called_once_with(self.project.id)
+
+        self.assertNotIn("directory", full)
+        full_groups = {
+            scope: [row for row in full["items"] if row["path"].rpartition("/")[0] == scope]
+            for scope in ("resources", "resources/folder")
+        }
+        for loaded in (root, child):
+            self.assertEqual(loaded["items"], full_groups[loaded["directory"]])
+            self.assertEqual(loaded["linked_roots"], full["linked_roots"])
+        self.assertEqual(
+            first["items"],
+            [
+                {key: value for key, value in row.items() if key != "version"}
+                for row in root["items"]
+            ],
+        )
+        self.assertEqual(root["items"][1]["source"], ResourceSource.IMPORTED.value)
+        self.assertEqual(root["items"][0]["version"]["management_state"], "git")
+        self.assertEqual(first["incremental"]["supported"], os.name == "posix")
+        self.assertEqual(
+            first["incremental"]["parents"], ["resources"] if os.name == "posix" else []
+        )
+
+    def test_directory_listing_distinguishes_the_legacy_root_from_the_complete_list(self) -> None:
+        legacy = self.root / "legacy"
+        (legacy / "folder").mkdir(parents=True)
+        (legacy / "folder" / "nested.md").touch()
+        (legacy / "root.md").touch()
+        project = self.content.adopt_project(str(legacy))
+        full = self.client.get("/api/resource/list", params={"project": project.id})
+        first = self.client.get(
+            "/api/resource/list",
+            params={"project": project.id, "directory": "", "versions": "false"},
+        )
+        self.assertEqual(full.status_code, 200, full.text)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["directory"], "")
+        self.assertEqual(
+            first.json()["items"],
+            [row for row in full.json()["items"] if "/" not in row["path"]],
+        )
+
+    def test_directory_listing_keeps_catalog_rows_outside_its_group(self) -> None:
+        folder = self.resources / "folder"
+        folder.mkdir()
+        (folder / "nested").mkdir()
+        (folder / "nested" / "descendant.md").touch()
+        (folder / "removed.md").touch()
+        (self.resources / "other.md").touch()
+        self.listing_payload()
+        (folder / "removed.md").unlink()
+        self.directory_payload("resources/folder", versions=False)
+        with closing(sqlite3.connect(self.database)) as connection:
+            paths = {row[0] for row in connection.execute(f"SELECT path FROM {LISTING_TABLE}")}
+        self.assertIn("resources/other.md", paths)
+        self.assertIn("resources/folder/nested/descendant.md", paths)
+        self.assertNotIn("resources/folder/removed.md", paths)
+
+    @unittest.skipUnless(os.name == "posix", "Incremental listings require POSIX directories")
+    def test_directory_listing_seeds_incremental_without_loading_ancestors(self) -> None:
+        folder = self.resources / "new" / "nested"
+        folder.mkdir(parents=True)
+        child = self.directory_payload("resources/new/nested", versions=False)
+        self.assertEqual(
+            child["incremental"], {"parents": ["resources/new/nested"], "supported": True}
+        )
+        (folder / "created.md").touch()
+        path = "resources/new/nested/created.md"
+        change = self.listing_changes(path)
+        self.assertIsNotNone(change)
+        assert change is not None
+        self.assertEqual(change["groups"], [{"parent": "resources/new/nested", "paths": [path]}])
+        self.assertEqual(change["items"], self.directory_payload("resources/new/nested")["items"])
+
+    @unittest.skipUnless(os.name == "posix", "Requires native POSIX symlink creation")
+    def test_directory_listing_uses_canonical_alias_scope_and_checks_grants(self) -> None:
+        target = self.resources / "target"
+        target.mkdir()
+        (target / "child.md").touch()
+        (self.resources / "alias").symlink_to("target", target_is_directory=True)
+
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        (outside / "private.md").touch()
+        (self.resources / "outside-alias").symlink_to(outside, target_is_directory=True)
+
+        alias = self.directory_payload("resources/alias")
+        self.assertEqual(alias["directory"], "resources/target")
+        self.assertEqual(alias["items"], self.directory_payload("resources/target")["items"])
+        self.assertFalse(alias["incremental"]["supported"])
+
+        for path in ("resources/outside-alias", "../outside", "resources/.git"):
+            with self.subTest(path=path):
+                response = self.client.get(
+                    "/api/resource/list", params={"project": self.project.id, "directory": path}
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+
+    def test_directory_listing_expands_only_authorized_linked_scope(self) -> None:
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        (outside / "linked.md").touch()
+        (outside / "nested").mkdir()
+        (outside / "nested" / "not-loaded.md").touch()
+        mount = self.content.authorize_root_at(self.project.id, str(outside), "", "node_modules")
+        root = self.directory_payload()
+        self.assertEqual([row["path"] for row in root["items"]], [mount.mount_path])
+        linked = self.directory_payload(mount.mount_path)
+        self.assertEqual(linked["directory"], mount.mount_path)
+        self.assertEqual(
+            [row["path"] for row in linked["items"]],
+            [f"{mount.mount_path}/nested", f"{mount.mount_path}/linked.md"],
+        )
+        self.assertTrue(all(row["link_root_id"] == mount.root_id for row in linked["items"]))
+        self.assertEqual(linked["linked_roots"], root["linked_roots"])
+        self.assertFalse(linked["incremental"]["supported"])
+
+        original = tree._listing
+
+        def revoke_during_scope(space, directory, relative, origin):
+            self.content.revoke_root(mount.root_id, self.project.id)
+            return original(space, directory, relative, origin)
+
+        with patch.object(tree, "_listing", side_effect=revoke_during_scope):
+            revoked = self.client.get(
+                "/api/resource/list",
+                params={"project": self.project.id, "directory": mount.mount_path},
+            )
+        self.assertEqual(revoked.status_code, 409, revoked.text)
+        self.assertEqual(revoked.json()["detail"], ROOT_BUSY_ERROR)
+
+    @unittest.skipUnless(os.name == "posix", "Requires POSIX file observations and symlinks")
+    def test_flat_listing_reuses_regular_file_facts_for_version_projection(self) -> None:
+        settings = SettingsService()
+        formats = WorkbenchFormatPolicy()
+        versions = ResourceVersionService(
+            self.content,
+            ResourceRetentionService(self.content, settings),
+            formats,
+            PdfRecordStore(self.content),
+        )
+        supervisor = ResourceVersionSupervisor(
+            self.content, versions, formats, settings, activities=Activities()
+        )
+        self.client.app.state.resource_version_supervisor = supervisor
+        local = self.resources / "local.md"
+        local.write_text("local", encoding="utf-8")
+        (self.resources / "linked.md").symlink_to(local.name)
+        (self.resources / "broken.md").symlink_to("missing.md")
+        outside = Path(self.project.root) / "outside.md"
+        outside.touch()
+        (self.resources / "outside-link.md").symlink_to(outside)
+        hidden = self.resources / ".hidden"
+        hidden.mkdir()
+        (hidden / "note.md").touch()
+        (self.resources / "directory-alias").symlink_to(hidden.name, target_is_directory=True)
+        (self.resources / "unsupported.bin").touch()
+        (self.resources / "unusual\\name.md").touch()
+        os.mkfifo(self.resources / "pipe.md")
+        os.link(local, self.resources / "hardlink.md")
+        with (self.resources / "large.md").open("wb") as stream:
+            stream.truncate(supervisor.max_size_bytes() + 1)
+        repository = self.resources / "git"
+        nested = repository / "nested"
+        nested.mkdir(parents=True)
+        (repository / ".git").mkdir()
+        (nested / ".git").mkdir()
+        (nested / "tracked.md").touch()
+
+        original = self.content.flat_resource_tree
+
+        def without_observations(project, roots, **options):
+            options["observe_entries"] = False
+            return original(project, roots, **options)
+
+        with patch.object(supervisor, "activate_project"):
+            with patch.object(self.content, "flat_resource_tree", side_effect=without_observations):
+                expected = self.listing_payload(incremental=True)
+            with patch.object(
+                self.content, "resource_entries", wraps=self.content.resource_entries
+            ) as inspect_paths:
+                actual = self.listing_payload(incremental=True)
+
+        self.assertEqual(actual, expected)
+        inspect_paths.assert_called_once()
+        inspected = set(inspect_paths.call_args.args[1])
+        self.assertIn("resources/linked.md", inspected)
+        self.assertIn("resources/.hidden/note.md", inspected)
+        self.assertIn("resources/unusual\\name.md", inspected)
+        self.assertTrue(
+            inspected.isdisjoint(
+                {
+                    "resources/local.md",
+                    "resources/large.md",
+                    "resources/unsupported.bin",
+                    "resources/hardlink.md",
+                    "resources/pipe.md",
+                }
+            )
+        )
+
+    @unittest.skipUnless(os.name == "posix", "Requires POSIX directory descriptors")
+    def test_flat_listing_observations_stay_with_the_pinned_directory(self) -> None:
+        nested = self.resources / "nested"
+        nested.mkdir()
+        (nested / "local.md").write_bytes(b"local")
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        (outside / "private.md").touch()
+        original = tree._listing
+
+        def replace_before_listing(space, directory, relative, origin):
+            if relative == "resources/nested":
+                nested.rename(self.resources / "retired")
+                nested.symlink_to(outside, target_is_directory=True)
+            return original(space, directory, relative, origin)
+
+        with patch.object(tree, "_listing", side_effect=replace_before_listing):
+            result = self.content.flat_resource_tree(
+                self.project.id, ("resources",), observe_entries=True
+            )
+        local = result.observed_entries["resources/nested/local.md"]
+        self.assertIsNotNone(local)
+        assert local is not None
+        self.assertEqual(local.size, len(b"local"))
+        self.assertNotIn("resources/nested/private.md", result.observed_entries)
+        self.assertNotIn("resources/nested/private.md", {node.asset.path for node in result.nodes})
 
     @unittest.skipUnless(os.name == "posix", "Incremental listings require POSIX directories")
     def test_listing_changes_read_only_affected_parents(self) -> None:
@@ -267,10 +769,19 @@ class ResourceListingTests(unittest.TestCase):
             (nested / f"file-{index:03}.md").touch()
         scans = []
         original = os.scandir
+        directories = {}
+        for directory in (self.resources, nested):
+            identity = directory.stat()
+            directories[identity.st_dev, identity.st_ino] = directory
 
         def count_scans(path):
-            if path in (self.resources, nested):
-                scans.append(path)
+            if isinstance(path, int):
+                identity = os.fstat(path)
+                path_key = directories.get((identity.st_dev, identity.st_ino))
+            else:
+                path_key = path
+            if path_key in (self.resources, nested):
+                scans.append(path_key)
             return original(path)
 
         with patch("service.content.service.tree.os.scandir", side_effect=count_scans):
@@ -373,7 +884,9 @@ class ResourceListingTests(unittest.TestCase):
         self.client.app.state.resource_version_supervisor = supervisor
         original = self.content.flat_resource_tree
 
-        def classify_after_traversal(project, roots, *, include_repositories, track_parents=False):
+        def classify_after_traversal(
+            project, roots, *, include_repositories, track_parents=False, observe_entries=False
+        ):
             result = original(project, roots, track_parents=track_parents)
             paths = tuple(node.asset.path for node in result.nodes)
             return replace(result, repositories=self.content.repository_roots(project, paths))
@@ -592,11 +1105,10 @@ class ResourceListingTests(unittest.TestCase):
                 for key in ("name", "kind", "file_type", "source", "updated_at", "origin")
             ),
         )
-        reopened, _, _ = ResourceListing(self.content).snapshot(
-            self.project.id, track_parents=False
-        )
+        reopened = ResourceListing(self.content).snapshot(self.project.id, track_parents=False)
         self.assertEqual(
-            next(entry for entry in reopened if entry.path == renamed_path).source, "imported"
+            next(entry for entry in reopened.entries if entry.path == renamed_path).source,
+            "imported",
         )
         initialize_resource_catalog(self.database, Path(self.project.root))
         self.assertFalse(inspect_resource_catalog(self.database).needs_write)

@@ -5,6 +5,7 @@ import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { createPreviewService } from './service.ts'
+import { sseData } from '../src/renderer/src/sse.ts'
 import { NOTIFICATION_IDLE_MS, NOTIFICATION_PATH, notificationFrame } from '../src/notifications.ts'
 import { readReading } from '../src/renderer/src/components/business/comprehension.ts'
 import {
@@ -851,6 +852,36 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
       file_type: string
       updated_at: number | null
     }[]
+    const directory = 'preview-docs'
+    const scoped = await runtime.request(
+      `/api/resource/list?${project}&directory=${directory}&versions=false`,
+      instance
+    )
+    assert.equal(scoped.status, 200)
+    assert.equal(scoped.body.directory, directory)
+    assert.deepEqual(
+      scoped.body.items.map((item: { path: string }) => item.path),
+      ['preview-docs/nested', 'preview-docs/overview.md']
+    )
+    assert.ok(scoped.body.items.every((item: object) => !('version' in item)))
+
+    const search = await fetch(`${runtime.base}/api/resource/list/search?${project}`, {
+      headers: { 'x-preview-instance': instance },
+    })
+    assert.equal(search.status, 200)
+    assert.match(search.headers.get('content-type') ?? '', /^text\/event-stream/)
+    assert.ok(search.body)
+    const frames: { type: string; items: typeof listing; incremental?: object }[] = []
+    for await (const frame of sseData(search.body)) frames.push(JSON.parse(frame))
+    const terminal = frames.pop()
+    assert.equal(terminal?.type, 'complete')
+    assert.deepEqual(terminal.items, listing)
+    assert.deepEqual(terminal.incremental, { parents: [], supported: false })
+    assert.ok(frames.length > 1 && frames.every(({ type }) => type === 'batch'))
+    assert.deepEqual(
+      frames.flatMap(({ items }) => items.map(({ path }) => path)),
+      listing.map(({ path }) => path)
+    )
     for (const nested of PREVIEW_BROWSING.seed.nested) {
       assert.ok(listing.some((node) => node.path === nested.path))
       const before = (

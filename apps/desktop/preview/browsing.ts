@@ -97,9 +97,10 @@ export class PreviewBrowsing {
     return page
   }
 
-  async listing(signal?: AbortSignal): Promise<PreviewFileEntry[]> {
+  async listing(signal?: AbortSignal, directory?: string): Promise<PreviewFileEntry[]> {
     await this.beforeRead(this.policy.listingRead, PREVIEW_BROWSING.listingFailure, signal)
     this.active(signal)
+    if (directory !== undefined) return this.files.list(directory).sort(compare)
     const pending = ['']
     const entries: PreviewFileEntry[] = []
     while (pending.length) {

@@ -137,6 +137,7 @@ const CONFIG = {
 
 const RESOURCE_LIST_SCOPE = {
   path: '/api/resource/list',
+  searchPath: '/api/resource/list/search',
   validationStatus: 422,
   noProjectStatus: 400,
   unknownProjectStatus: 404,
@@ -3984,6 +3985,7 @@ export function createPreviewService() {
     const resourcePaths = [
       '/api/resource/tree',
       RESOURCE_LIST_SCOPE.path,
+      RESOURCE_LIST_SCOPE.searchPath,
       '/api/resource/count',
       '/api/resource/read',
       '/api/resource/raw',
@@ -3997,7 +3999,8 @@ export function createPreviewService() {
       '/api/content/events',
     ]
     if (resourcePaths.includes(path)) {
-      const listing = path === RESOURCE_LIST_SCOPE.path && method === 'GET'
+      const searchListing = path === RESOURCE_LIST_SCOPE.searchPath && method === 'GET'
+      const listing = (path === RESOURCE_LIST_SCOPE.path && method === 'GET') || searchListing
       const listingProject = url.searchParams.getAll('project').slice(-1)[0]
       if (listing && !listingProject) {
         send(
@@ -4099,46 +4102,76 @@ export function createPreviewService() {
         send({ files: files.manifest().length })
         return
       }
-      if ((path === '/api/resource/tree' || path === '/api/resource/list') && method === 'GET') {
+      if (listing) {
         const owner = projectBrowsing(instance, project.id)
-        if (path.endsWith('/list')) {
-          await archiveResponse(response, async (signal) => {
-            const entries = await owner.listing(signal)
-            if (instances.get(id) !== instance) {
-              send({ detail: 'preview_instance_reset' }, 409)
-              return
-            }
-            if (!instance.projects.all().some((current) => current.id === project.id)) {
-              send(RESOURCE_LIST_SCOPE.unknownProject, RESOURCE_LIST_SCOPE.unknownProjectStatus)
-              return
-            }
-            if (!response.destroyed)
-              send({
-                items: entries.map((entry) =>
-                  resourceNode(
-                    entry,
-                    versions,
-                    entry.kind === 'dir' ? files.list(entry.path).length : 0
-                  )
-                ),
-              })
-          })
-        } else {
-          const page = owner.page(filePath, Number(url.searchParams.get('offset') ?? 0))
-          send({
-            root: project.root,
-            resource_root: project.root,
-            nodes: page.entries.map((entry) =>
-              resourceNode(
-                entry,
-                versions,
-                entry.kind === 'dir' ? files.list(entry.path).length : 0
+        await archiveResponse(response, async (signal) => {
+          const directory = searchListing ? null : url.searchParams.get('directory')
+          const entries = await owner.listing(signal, directory ?? undefined)
+          if (instances.get(id) !== instance) {
+            send({ detail: 'preview_instance_reset' }, 409)
+            return
+          }
+          if (!instance.projects.all().some((current) => current.id === project.id)) {
+            send(RESOURCE_LIST_SCOPE.unknownProject, RESOURCE_LIST_SCOPE.unknownProjectStatus)
+            return
+          }
+          if (response.destroyed) return
+          const projectNode = (entry: PreviewFileEntry, capability?: PreviewVersions) =>
+            resourceNode(
+              entry,
+              capability,
+              entry.kind === 'dir' && directory === null ? files.list(entry.path).length : 0
+            )
+          if (searchListing) {
+            const linkedRoots = {}
+            response.writeHead(200, {
+              'content-type': 'text/event-stream',
+              'cache-control': 'no-store',
+              'x-preview-simulation': 'true',
+            })
+            for (let start = 0; start < entries.length; start += PREVIEW_BROWSING.pageSize) {
+              const items = entries
+                .slice(start, start + PREVIEW_BROWSING.pageSize)
+                .map((entry) => projectNode(entry))
+              response.write(
+                `data: ${JSON.stringify({ type: 'batch', items, linked_roots: linkedRoots })}\n\n`
               )
-            ),
-            total: page.total,
-            offset: page.offset,
-          })
-        }
+            }
+            const items = entries.map((entry) => projectNode(entry, versions))
+            const completed = {
+              type: 'complete',
+              items,
+              linked_roots: linkedRoots,
+              incremental: { parents: [], supported: false },
+            }
+            response.end(`data: ${JSON.stringify(completed)}\n\n`)
+          } else {
+            const withVersions = directory === null || url.searchParams.get('versions') !== 'false'
+            const canonical = directory === null ? null : posix.normalize(directory).replace(/\/$/, '')
+            send({
+              ...(canonical !== null ? { directory: canonical === '.' ? '' : canonical } : {}),
+              items: entries.map((entry) => projectNode(entry, withVersions ? versions : undefined)),
+            })
+          }
+        })
+        return
+      }
+      if (path === '/api/resource/tree' && method === 'GET') {
+        const owner = projectBrowsing(instance, project.id)
+        const page = owner.page(filePath, Number(url.searchParams.get('offset') ?? 0))
+        send({
+          root: project.root,
+          resource_root: project.root,
+          nodes: page.entries.map((entry) =>
+            resourceNode(
+              entry,
+              versions,
+              entry.kind === 'dir' ? files.list(entry.path).length : 0
+            )
+          ),
+          total: page.total,
+          offset: page.offset,
+        })
         return
       }
       if (path === '/api/workbench/open' && method === 'GET') {
