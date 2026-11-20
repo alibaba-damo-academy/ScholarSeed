@@ -76,6 +76,7 @@ import {
   type SquirrelStartupStatus,
 } from './squirrelstartup.ts'
 import { retryMacCleanup } from './squirrelcleanup.ts'
+import { repairNativePaths } from './repair.ts'
 import { RotatingFileLog } from './logfile'
 import { redactUpdateLog } from './redaction.ts'
 import { readRecord, writeJson } from './journal.ts'
@@ -164,6 +165,11 @@ const DMG_ATTACH_ATTEMPTS = 2
 const DMG_ATTACH_RETRY_DELAY_MS = 1500
 const nativeNotarization: OfflineNotarization | undefined =
   process.platform === 'darwin' ? require('./notarization.node') : undefined
+
+const macLaunchObserver =
+  process.platform === MACOS_PLATFORM
+    ? (require('./repair.node') as { observedLaunch(configuration: string): boolean })
+    : undefined
 
 // macOS 安装准备链的外部命令上限（bug 87253073）：hdiutil/codesign 任一条挂起
 // （本地校验、diskarbitration 忙）都不会自己退出，没有上限遮罩就永久转圈、用户只能
@@ -400,12 +406,18 @@ function monotonicUpdateResult(
   return { has_update: false, latest: null }
 }
 
-async function getJson(url: string, log: LogSink, signal?: AbortSignal): Promise<unknown> {
+async function getJson(
+  url: string,
+  log: LogSink,
+  signal?: AbortSignal,
+  redirect: 'follow' | 'error' = 'follow'
+): Promise<unknown> {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
   const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
   try {
     const response = await fetch(url, {
       signal: requestSignal,
+      redirect,
     })
     if (!response.ok) {
       await response.body?.cancel()
@@ -678,6 +690,12 @@ export async function diagnoseUpdate(log: LogSink): Promise<UpdateDiagnosis> {
   return diagnosis
 }
 
+function packageDownloadUrl(config: DesktopUpdateConfig, id: string): URL {
+  return new URL(
+    `${config.baseUrl}${UPDATE_PATH_PREFIX}/packages/${encodeURIComponent(id)}/download`
+  )
+}
+
 export async function getDownloadInfo(
   id: string,
   log: LogSink,
@@ -687,9 +705,7 @@ export async function getDownloadInfo(
   if (!targetArchType) throw new Error('unsupported desktop target')
   const config = resolveDesktopConfig(log)
   const preview = previewUpdatesEnabled(log)
-  const url = new URL(
-    `${config.baseUrl}${UPDATE_PATH_PREFIX}/packages/${encodeURIComponent(id)}/download`
-  )
+  const url = packageDownloadUrl(config, id)
   if (preview) appendPreviewContext(url, currentPreviewContext(log))
   const revision = previewRevision
   const raw = await retryUpdate(() => getJson(url.toString(), log, signal), signal)
@@ -1379,6 +1395,34 @@ export interface MacStartupAdmission {
   }
 }
 
+const orphanedReleaseIdentities = new WeakMap<Readonly<UpdateLaunchContext>, LatestVersionMeta>()
+
+async function confirmOrphanedRelease(
+  expected: Readonly<UpdateLaunchContext>,
+  current: { version: string; buildNumber: string },
+  log: LogSink
+): Promise<boolean> {
+  if (current.buildNumber === expected.targetBuild) return true
+  if (!squirrelLaunchSuperseded(current.buildNumber, expected)) return false
+  let release = orphanedReleaseIdentities.get(expected)
+  if (!release) {
+    const config = resolveDesktopConfig(log)
+    const targetArchType = archType()
+    const url = packageDownloadUrl(config, expected.candidate)
+    if (!targetArchType || url.protocol !== 'https:') return false
+    // This reads an already published identity and does not obtain install consent.
+    // Preview download selection needs initialized storage and ranks a future update.
+    const raw = await getJson(url.toString(), log, undefined, 'error')
+    release = parseDownloadInfo(raw, config, targetArchType, expected.candidate)
+    if (release.build_number !== expected.targetBuild) return false
+    orphanedReleaseIdentities.set(expected, release)
+  }
+  return (
+    isNewerRelease({ version: release.version, buildNumber: release.build_number }, current) ===
+    true
+  )
+}
+
 export async function macStartupAdmission(
   home: string,
   log: LogSink,
@@ -1387,17 +1431,25 @@ export async function macStartupAdmission(
   if (process.platform !== MACOS_PLATFORM || !app.isPackaged) return { admission: 'allow' }
   try {
     const path = squirrelHandoffPath(home)
-    const handoff = readSquirrelHandoff(path)
-    const record = handoff
+    const liveHandoff = readSquirrelHandoff(path)
+    const record = liveHandoff
       ? captureRecord(path, TERMINAL_RECORD_LIMITS.handoff, [process.getuid!()])
       : null
-    if (record && JSON.stringify(decodeSquirrelHandoff(record.bytes)) !== JSON.stringify(handoff))
+    if (
+      record &&
+      JSON.stringify(decodeSquirrelHandoff(record.bytes)) !== JSON.stringify(liveHandoff)
+    )
       throw new Error('Mac handoff changed during startup observation')
+    const admittedBytes = expected?.admittedHandoff
+    if (record && admittedBytes && record.bytes.toString('base64') !== admittedBytes)
+      throw new Error('Mac handoff differs from the retained admission')
+    const handoff =
+      liveHandoff ??
+      (admittedBytes ? decodeSquirrelHandoff(Buffer.from(admittedBytes, 'base64')) : null)
     if (
       expected &&
-      (!handoff ||
-        handoff.candidate !== expected.candidate ||
-        handoff.buildNumber !== expected.targetBuild)
+      handoff &&
+      (handoff.candidate !== expected.candidate || handoff.buildNumber !== expected.targetBuild)
     )
       throw new Error('Mac launch context does not match the pending handoff')
     const config = resolveDesktopConfig(log)
@@ -1407,11 +1459,63 @@ export async function macStartupAdmission(
       evidence: {
         home,
         ...current,
-        handoff: JSON.stringify(handoff),
+        handoff: JSON.stringify(liveHandoff),
         record,
         launch: expected ? JSON.stringify(expected) : null,
       },
     })
+    if (
+      admittedBytes &&
+      expected &&
+      current.buildNumber !== expected.targetBuild &&
+      !squirrelLaunchSuperseded(current.buildNumber, expected)
+    )
+      throw new Error('Mac retained handoff cannot reopen the source build')
+    if (expected && !handoff) {
+      const application = realpathSync(resolve(dirname(process.execPath), '..', '..'))
+      const cache = systemCacheDir()
+      const exactBuild = current.buildNumber === expected.targetBuild
+      if (
+        expected.home !== home ||
+        expected.application !== application ||
+        expected.bundleId !== config.bundleId ||
+        expected.uid !== process.getuid!() ||
+        expected.targetBuild <= expected.sourceBuild ||
+        !(await confirmOrphanedRelease(expected, current, log)) ||
+        !(await inspectSquirrelIdle(
+          cache,
+          config.bundleId,
+          application,
+          null,
+          (target) =>
+            verifySquirrelReplacement(
+              target,
+              config.bundleId,
+              config.expectedTeamId,
+              current.buildNumber
+            ),
+          false,
+          {
+            candidate: expected.candidate,
+            observedLaunch: (source, target) => {
+              const { cleanup } = repairNativePaths({
+                cache,
+                bundleId: config.bundleId,
+                applicationSupport: app.getPath('appData'),
+              })
+              return (
+                macLaunchObserver?.observedLaunch(JSON.stringify({ cleanup, source, target })) ===
+                true
+              )
+            },
+          }
+        )) ||
+        readSquirrelHandoff(path) !== null
+      )
+        throw new Error('Mac launch context without handoff has unconfirmed installation evidence')
+      log('[update] resuming installed Mac launch with a retained context\n')
+      return admitted(exactBuild ? 'allow' : 'superseded')
+    }
     if (squirrelAdmission(current, handoff, 'unconfirmed') === 'allow') {
       if (!handoff) return admitted('allow')
       const application = realpathSync(resolve(dirname(process.execPath), '..', '..'))
@@ -1439,9 +1543,7 @@ export async function macStartupAdmission(
         throw new Error(
           'Superseded Mac launch still has native update activity or uncertain evidence'
         )
-      if (
-        JSON.stringify(readSquirrelHandoff(squirrelHandoffPath(home))) !== JSON.stringify(handoff)
-      )
+      if (JSON.stringify(readSquirrelHandoff(path)) !== JSON.stringify(liveHandoff))
         throw new Error('Mac handoff changed during superseded startup admission')
       log(`[update] startup admission=superseded candidate=${handoff!.candidate}\n`)
       return admitted('superseded')
@@ -1466,7 +1568,7 @@ export async function macStartupAdmission(
         realpathSync(resolve(dirname(process.execPath), '..', '..')),
         handoff
       ))
-    if (JSON.stringify(readSquirrelHandoff(squirrelHandoffPath(home))) !== JSON.stringify(handoff))
+    if (JSON.stringify(readSquirrelHandoff(path)) !== JSON.stringify(liveHandoff))
       throw new Error('Mac handoff changed during startup admission')
     log(
       `[update] startup admission=${admission} status=${status} candidate=${handoff!.candidate}\n`
@@ -1503,10 +1605,13 @@ export async function completeMacStartupAdmission(
   launch?: ObservedUpdateLaunch | null
 ): Promise<void> {
   let handoff = readAdmittedMacHandoff(log, startup)
-  if (startup?.admission === 'superseded') {
+  if (startup?.admission === 'superseded' || (!handoff && launch)) {
     const refreshed = await macStartupAdmission(desktopHome(), log, launch?.context)
-    if (refreshed.admission !== 'superseded')
-      throw new Error('Mac superseded recovery evidence changed or is unavailable')
+    if (
+      refreshed.admission !== startup?.admission ||
+      refreshed.evidence?.handoff !== startup?.evidence?.handoff
+    )
+      throw new Error('Mac installed update recovery evidence changed or is unavailable')
   }
   if (handoff?.state === 'installing' && startup?.admission === 'failed') {
     const refreshed = await macStartupAdmission(desktopHome(), log)
@@ -1526,6 +1631,11 @@ export async function completeMacStartupAdmission(
   const path = squirrelHandoffPath()
   const maintenance = desktopDirectoryMaintenance(dirname(path))
   try {
+    if (launch && !sameRecord(path, record, TERMINAL_RECORD_LIMITS.handoff, [process.getuid!()]))
+      throw new Error('Mac startup handoff file identity changed')
+    // Persist the verified handoff before retiring it. Backend and renderer can
+    // fail before readiness acknowledges the launch context.
+    launch?.retainAdmittedHandoff(record.bytes)
     maintenance.consume(basename(path), record.bytes, record.snapshot.device, record.snapshot.inode)
   } finally {
     maintenance.close()

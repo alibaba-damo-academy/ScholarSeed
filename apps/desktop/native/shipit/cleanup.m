@@ -360,6 +360,18 @@ BOOL SSCleanupKnownRequest(NSURL *source) {
 BOOL SSCleanupCommittedRequest(NSURL *source, NSURL *target) {
     return SSCleanupRecoveredTarget(source, target) != nil;
 }
+BOOL SSCleanupObservedLaunch(NSURL *source, NSURL *target, NSError **error) {
+    if (!SSCleanupReadOnlySnapshot(error)) return NO;
+    NSUInteger matches = 0;
+    for (NSDictionary *record in SSRecords) {
+        id launched = record[@"launched"];
+        if (SSSamePath(record[@"source"], source) && SSSamePath(record[@"originalTarget"], target) &&
+            SSSamePath(record[@"target"], target) && SSObservationBoolean(launched) && [launched boolValue]) matches++;
+    }
+    // Startup verifies the signed installed build separately. A reinstall of
+    // that build can legitimately replace the committed Contents inode.
+    return matches == 1 && SSCleanupReadOnlySnapshot(error) != nil;
+}
 BOOL SSCleanupLaunchNeeded(NSURL *source, NSURL *target) {
     for (NSDictionary *r in SSRecords) if (SSSamePath(r[@"source"], source) && SSTargetMatches(r, target)) return ![r[@"launched"] boolValue];
     return YES;
