@@ -690,6 +690,13 @@ class CasStore:
                 pass
         return descriptor
 
+    def verify_if_present(self, object_id: str) -> ObjectDescriptor | None:
+        """Verify a reusable object under the caller's writer, or report its absence."""
+
+        if not self._object_path(object_id).is_dir():
+            return None
+        return self.verify(object_id)
+
     def chunk_payload_path(self, chunk_id: str) -> Path:
         """Expose a chunk path for scrubbers and deterministic corruption tests."""
 

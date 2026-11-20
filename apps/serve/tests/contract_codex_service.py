@@ -204,6 +204,7 @@ from service.platform.bridge import ComponentInvocation, PlanEnable, PluginInsta
 from service.platform.citations import CITATION_SCHEME
 from service.platform.content import ArtifactScopeKind, RootKind
 from service.platform.files import FILE_ACCESS_DENIED, FILE_ACCESS_FAILED, read_file_raw
+from service.platform.resources import ResourceTurnContext, ReviewCaptureResult
 from service.platform.toolchain import CompilerResources
 from service.platform.vocabulary import BRIDGE_SESSION_HEADER, BRIDGE_TOKEN_HEADER
 from service.settings.capabilities import apply_capability, bundled_registry
@@ -5698,6 +5699,105 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.live.terminated = True
         await self.live.finish_turn_settlement("closed-turn", RuntimeTurnOutcome.FAILED)
         self.assertEqual(self.events.replay(PRODUCT_SESSION_ID)[-1].payload["state"], "closed")
+
+    async def test_project_terminal_queues_followup_until_resource_commit_succeeds(self) -> None:
+        self.live.relocate(
+            cwd=self.workdir, project_path=self.workdir, output_root=self.output_root
+        )
+        self.catalog.relocate(
+            PRODUCT_SESSION_ID,
+            OWNER,
+            runtime_workdir=str(self.workdir),
+            project_path=str(self.workdir),
+            output_root=str(self.output_root),
+        )
+        capture_started, release_capture = asyncio.Event(), asyncio.Event()
+        first_turn, next_turn = "resource-first", "resource-followup"
+        attempts = []
+
+        async def finish(_session_id, turn_id, _outcome):
+            attempts.append(turn_id)
+            if attempts == [first_turn]:
+                capture_started.set()
+                await release_capture.wait()
+                raise OSError("resource publication failed")
+            return ReviewCaptureResult()
+
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(return_value=ResourceTurnContext()),
+            finish_turn=AsyncMock(side_effect=finish),
+        )
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        turns = TurnService(
+            service._sessions, self.logger, activities=Activities(), deliveries=deliveries
+        )
+        with patch.object(
+            self.runtime_session, "submit", wraps=self.runtime_session.submit
+        ) as submit:
+            try:
+                receipt, status = await turns.post(
+                    PRODUCT_SESSION_ID,
+                    {
+                        "client_user_message_id": first_turn,
+                        "input": [{"type": "text", "text": "First"}],
+                    },
+                    side=False,
+                )
+                self.assertEqual(status, 202, receipt)
+                await asyncio.wait_for(capture_started.wait(), 2)
+                first_task = self.live.current_task
+                self.assertIsNotNone(first_task)
+                terminal = self.events.latest_kind(PRODUCT_SESSION_ID, PRODUCT_EVENT_TURN_COMPLETED)
+                self.assertTrue(terminal.payload["resource_finalizing"])
+                self.assertTrue(service.history(PRODUCT_SESSION_ID)["resource_finalizing"])
+                with patch.object(service, "model_admission", side_effect=AssertionError):
+                    async with service.turn_admission(
+                        PRODUCT_SESSION_ID,
+                        OWNER,
+                        actor_id=OWNER.user_id,
+                        model_id=self.live.model_id,
+                        service_instance_id=None,
+                    ):
+                        queued, status = await turns.post(
+                            PRODUCT_SESSION_ID,
+                            {
+                                "client_user_message_id": next_turn,
+                                "input": [{"type": "text", "text": "Next"}],
+                            },
+                            side=False,
+                        )
+                self.assertEqual(status, 202, queued)
+                self.assertEqual(
+                    self.catalog.queued_message(PRODUCT_SESSION_ID, next_turn).state,
+                    QueuedMessageState.QUEUED,
+                )
+                self.assertEqual(deliveries.begin_turn.await_count, 1)
+                self.assertEqual(submit.await_count, 1)
+                release_capture.set()
+                await asyncio.wait_for(first_task, 2)
+                pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+                self.assertTrue(pending.recovery_blocked)
+                self.assertFalse(service.history(PRODUCT_SESSION_ID)["resource_finalizing"])
+                await turns._drain_next(self.live)
+                self.assertEqual(attempts, [first_turn])
+                self.assertEqual(submit.await_count, 1)
+                turns.resume_resource_finalization(PRODUCT_SESSION_ID, next_turn)
+                self.assertIsNone(self.live.current_task)
+                turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                async with asyncio.timeout(2):
+                    while (
+                        self.catalog.queued_message(PRODUCT_SESSION_ID, next_turn).state
+                        is not QueuedMessageState.COMPLETED
+                    ):
+                        await asyncio.sleep(0.01)
+                self.assertEqual(attempts, [first_turn, first_turn, next_turn])
+                self.assertEqual(submit.await_count, 2)
+            finally:
+                release_capture.set()
+                if self.live.current_task is not None:
+                    self.live.current_task.cancel()
+                    await asyncio.gather(self.live.current_task, return_exceptions=True)
 
     async def test_online_settlement_accepts_queue_without_starting_next_turn(self) -> None:
         inspected = asyncio.Event()

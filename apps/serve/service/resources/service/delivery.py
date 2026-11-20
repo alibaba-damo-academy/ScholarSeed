@@ -395,21 +395,24 @@ class ResourceDeliveryService:
         return None
 
     def _begin(self, project_id: str, session_id: str, turn_id: str) -> ResourceTurnContext:
+        started_at = perf_counter()
         with self._versions.writer(project_id):
+            writer_acquired = perf_counter()
             store = self._store(project_id)
             if store.turn_state(session_id, turn_id) is not None:
                 return ResourceTurnContext(store.turn_model_context(session_id, turn_id))
+            scan_started = perf_counter()
             eligible_paths, initial_paths = self._supervisor.scan_turn_inventory(project_id)
-            self._versions.capture_turn_baselines(
+            capture_started = perf_counter()
+            baselines = self._versions.capture_turn_baselines(
                 project_id,
                 session_id,
                 turn_id,
                 eligible_paths,
                 initial_paths,
             )
-            context = ResourceTurnContext(
-                self._store(project_id).turn_model_context(session_id, turn_id)
-            )
+            capture_finished = perf_counter()
+            context = ResourceTurnContext(store.turn_model_context(session_id, turn_id))
             if context.model_context:
                 emit(
                     _log,
@@ -422,7 +425,28 @@ class ResourceDeliveryService:
                     ).hexdigest(),
                     context_chars=len(context.model_context),
                 )
-            return context
+        finished_at = perf_counter()
+        _timing_log.info(
+            "resources.versions.baseline.timing %s",
+            json.dumps(
+                {
+                    "project_id": project_id,
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "candidate_count": len(eligible_paths),
+                    "baseline_count": len(baselines),
+                    "writer_wait_ms": round(
+                        (writer_acquired - started_at) * MILLISECONDS_PER_SECOND, 3
+                    ),
+                    "scan_ms": round((capture_started - scan_started) * MILLISECONDS_PER_SECOND, 3),
+                    "capture_ms": round(
+                        (capture_finished - capture_started) * MILLISECONDS_PER_SECOND, 3
+                    ),
+                    "total_ms": round((finished_at - started_at) * MILLISECONDS_PER_SECOND, 3),
+                }
+            ),
+        )
+        return context
 
     def _finish(
         self,

@@ -184,7 +184,13 @@ export function projectSessionState(
   data: Extract<AspEnvelope, { type: 'session_state' }>['data']
 ): Pick<
   Thread,
-  'runtimeId' | 'running' | 'status' | 'activeTurnId' | 'recoveryBlocked' | 'recoveryPending'
+  | 'runtimeId'
+  | 'running'
+  | 'status'
+  | 'activeTurnId'
+  | 'recoveryBlocked'
+  | 'recoveryPending'
+  | 'resourceFinalizing'
 > {
   let status: SessionStatus = 'dormant'
   if (data.state === 'starting' || data.state === 'running') status = 'running'
@@ -200,6 +206,9 @@ export function projectSessionState(
     status,
     ...(data.recovery_blocked !== undefined ? { recoveryBlocked: data.recovery_blocked } : {}),
     ...(data.recovery_pending !== undefined ? { recoveryPending: data.recovery_pending } : {}),
+    ...(data.resource_finalizing !== undefined
+      ? { resourceFinalizing: data.resource_finalizing }
+      : {}),
   }
 }
 

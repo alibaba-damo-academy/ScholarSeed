@@ -1258,6 +1258,28 @@ test('recoverable notice JSX renders localized messages, pending buttons and bou
   }
 })
 
+test('resource finalization projects separately from blocked recovery', () => {
+  const settling = projectSessionState({
+    state: 'idle',
+    runtime_id: 'codex',
+    recovery_pending: true,
+    recovery_blocked: false,
+    resource_finalizing: true,
+  })
+  assert.equal(settling.running, false)
+  assert.equal(settling.recoveryPending, true)
+  assert.equal(settling.resourceFinalizing, true)
+  const blocked = projectSessionState({
+    state: 'failed',
+    runtime_id: 'codex',
+    recovery_pending: true,
+    recovery_blocked: true,
+    resource_finalizing: false,
+  })
+  assert.equal(blocked.recoveryBlocked, true)
+  assert.equal(blocked.resourceFinalizing, false)
+})
+
 test('assistant copy action requires text, a stopped turn and no pending confirmation', () => {
   const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
   const syntax = ts.createSourceFile(

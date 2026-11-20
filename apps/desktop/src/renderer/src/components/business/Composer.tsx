@@ -771,6 +771,7 @@ export function Composer({
   const selectionBlocked = Boolean(sidNow && modelSelectionBlocked(state.serviceInstanceId, sidNow))
   const selectedEffort = composerReasoningEffort(state)
   const running = Boolean(thread.running)
+  const resourceFinalizing = Boolean(sidNow && thread.resourceFinalizing && !thread.recoveryBlocked)
   const recoveryAvailable =
     canOfferTurnRecovery(thread) && !thread.recoveryPending && !selectionBlocked
   const queuedMessages = thread.queuedMessages ?? []
@@ -781,7 +782,9 @@ export function Composer({
   )
   const [queueEditError, setQueueEditError] = React.useState(false)
   const interrupting = Boolean(thread.interrupting)
-  const canStop = running || interrupting || hasAcceptedMessageAwaitingRuntime(queuedMessages)
+  const canStop =
+    interrupting ||
+    (!resourceFinalizing && (running || hasAcceptedMessageAwaitingRuntime(queuedMessages)))
   const launching =
     state.turnLaunch !== null || thread.resumeState === 'pending' || state.modelSelectionPending > 0
   // 资源页只遮住旧对话页；文档旁的 AI 助手仍可交互，不得因此禁用候选菜单。
@@ -1222,7 +1225,8 @@ export function Composer({
   // 没有队列兜底, 未知态（readiness 尚未加载）同样必须闭门。
   const runtimeReady =
     state.runtimePreparation?.state !== 'restart_required' &&
-    (runtimeAdmission === 'ready' ||
+    (resourceFinalizing ||
+      runtimeAdmission === 'ready' ||
       (runtimeAdmission === 'transient' && Boolean(sidNow)) ||
       (!sidNow && state.runtimePreparationTarget === state.model) ||
       (!sidNow &&
@@ -1239,7 +1243,7 @@ export function Composer({
   const canSend =
     !confirmation.pending &&
     !thread.readOnly &&
-    !(running && (followUp.loading || followUp.saving || followUp.error)) &&
+    !(!resourceFinalizing && running && (followUp.loading || followUp.saving || followUp.error)) &&
     (editing
       ? Boolean(text.trim()) && queuedActionId === null
       : canSubmitComposer({
@@ -1249,7 +1253,7 @@ export function Composer({
             selectedSkillsReady &&
             !selectionBlocked &&
             activeThread(state).terminated !== true &&
-            !thread.recoveryPending,
+            (!thread.recoveryPending || resourceFinalizing),
           creditsAvailable: !creditBlocked,
           modelAvailable,
           launching,
@@ -1713,7 +1717,7 @@ export function Composer({
     // also covers Enter and the desktop driver during a live/authorization turn.
     if (
       confirmation.pending ||
-      (running && (followUp.loading || followUp.saving || followUp.error)) ||
+      (!resourceFinalizing && running && (followUp.loading || followUp.saving || followUp.error)) ||
       thread.readOnly ||
       state.turnLaunch ||
       getSnapshot().modelSelectionPending > 0 ||
@@ -1723,12 +1727,12 @@ export function Composer({
       creditBlocked ||
       !modelAvailable ||
       !selectedSkillsReady ||
-      thread.recoveryPending
+      (thread.recoveryPending && !resourceFinalizing)
     )
       return false
     const v = message.trim()
     const submittedFollowUpMode: FollowUpMode =
-      running && thread.activeTurnId ? followUp.mode : 'queue'
+      !resourceFinalizing && running && thread.activeTurnId ? followUp.mode : 'queue'
     const submittedExpectedTurnId = thread.activeTurnId ?? undefined
     if (!composerHasContent(v, references, pendingContextRefs)) return false
     const submittedDraftRevision = composerDraft.getRevision()
@@ -1821,10 +1825,12 @@ export function Composer({
         composerDraft.set((current) => (current.trim() === v ? '' : current))
       return response.ok
     }
-    const presentAsUserMessage = shouldOptimisticallyPresentUserMessage(
-      Boolean(activeThread(state).running),
-      activeThread(state).queuedMessages ?? []
-    )
+    const presentAsUserMessage =
+      !resourceFinalizing &&
+      shouldOptimisticallyPresentUserMessage(
+        Boolean(activeThread(state).running),
+        activeThread(state).queuedMessages ?? []
+      )
     const clientUserMessageId = crypto.randomUUID()
     const activeDocument = activeDocumentForTurn(state)
     const selectedLiteratureIds = selectedLiteratureForTurn(state)
@@ -1966,7 +1972,9 @@ export function Composer({
         )
       return valid
     }
-    {
+    if (resourceFinalizing) {
+      preparationInstanceId = state.serviceInstanceId ?? undefined
+    } else {
       const controller = new AbortController()
       preparationController = controller
       preparationWait.current = controller
@@ -3998,7 +4006,7 @@ export function Composer({
                         !contextReady && 'context',
                         !selectedSkillsReady && 'skills',
                         thread.terminated === true && 'terminated',
-                        thread.recoveryPending && 'recovery',
+                        thread.recoveryPending && !resourceFinalizing && 'recovery',
                         creditBlocked && 'credits',
                         !modelAvailable && 'model',
                         launching && 'launching',
@@ -4014,7 +4022,7 @@ export function Composer({
                         ? 'submitting'
                         : launching
                           ? 'opening'
-                          : running || interrupting
+                          : resourceFinalizing || running || interrupting
                             ? 'queueing'
                             : 'idle'
                     }
@@ -4022,9 +4030,11 @@ export function Composer({
                     aria-label={
                       editing
                         ? t('composer.editQueued')
-                        : running || interrupting
-                          ? RUNNING_SEND_HINT_TITLE
-                          : t('composer.sendMessage')
+                        : resourceFinalizing
+                          ? t('composer.enqueue')
+                          : running || interrupting
+                            ? RUNNING_SEND_HINT_TITLE
+                            : t('composer.sendMessage')
                     }
                     onClick={() => void submit()}
                     disabled={!canSend || submittingMessage}
@@ -4035,21 +4045,23 @@ export function Composer({
                     title={
                       editing
                         ? t('composer.editQueued')
-                        : running || interrupting
-                          ? RUNNING_SEND_HINT_TITLE
-                          : creditBlocked
-                            ? t('composer.creditsExhaustedTitle')
-                            : !modelAvailable
-                              ? t(
-                                  authenticated
-                                    ? 'composer.noModelAuthenticatedSendTitle'
-                                    : 'composer.noModelSendTitle'
-                                )
-                              : !runtimeReady
-                                ? t('composer.runtimeNotReady')
-                                : launching
-                                  ? t('composer.creating')
-                                  : t('composer.sendMessage')
+                        : resourceFinalizing
+                          ? t('composer.enqueue')
+                          : running || interrupting
+                            ? RUNNING_SEND_HINT_TITLE
+                            : creditBlocked
+                              ? t('composer.creditsExhaustedTitle')
+                              : !modelAvailable
+                                ? t(
+                                    authenticated
+                                      ? 'composer.noModelAuthenticatedSendTitle'
+                                      : 'composer.noModelSendTitle'
+                                  )
+                                : !runtimeReady
+                                  ? t('composer.runtimeNotReady')
+                                  : launching
+                                    ? t('composer.creating')
+                                    : t('composer.sendMessage')
                     }
                   >
                     {launching || submittingMessage ? (

@@ -234,6 +234,7 @@ export interface OpenResp {
   recovery_incident_id?: string | null
   recovery_source_seq?: number | null
   recovery_pending?: boolean
+  resource_finalizing?: boolean
   interrupting?: boolean
   last_interrupt_succeeded?: boolean | null
   todos?: TodoItemUI[]
@@ -883,6 +884,7 @@ export interface ServeSession {
   recovery_incident_id?: string | null
   recovery_source_seq?: number | null
   recovery_pending?: boolean
+  resource_finalizing?: boolean
   /** A live run is blocked on a user question or permission decision. */
   waiting?: boolean
   pinned?: boolean
@@ -1258,6 +1260,7 @@ export interface HistoryResult {
   recovery_incident_id?: string | null
   recovery_source_seq?: number | null
   recovery_pending?: boolean
+  resource_finalizing?: boolean
   /** Persisted complete plan snapshot. */
   todos: TodoItemUI[]
   /** Turn that owns the persisted complete plan snapshot. */
@@ -1292,6 +1295,7 @@ export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | 
       recovery_incident_id?: string | null
       recovery_source_seq?: number | null
       recovery_pending?: boolean
+      resource_finalizing?: boolean
       todos?: TodoItemUI[]
       todo_turn_id?: string | null
       artifacts?: SessionArtifact[]
@@ -1304,6 +1308,7 @@ export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | 
       recovery_incident_id: data.recovery_incident_id ?? null,
       recovery_source_seq: data.recovery_source_seq ?? null,
       recovery_pending: data.recovery_pending === true,
+      resource_finalizing: data.resource_finalizing === true,
       todos: Array.isArray(data.todos) ? data.todos : [],
       todo_turn_id: data.todo_turn_id ?? null,
       artifacts: Array.isArray(data.artifacts) ? data.artifacts : [],
@@ -2711,6 +2716,7 @@ export type ProductEvent =
         recovery_blocked?: boolean
         incident_id?: string | null
         recovery_pending?: boolean
+        resource_finalizing?: boolean
       }
     >
   | ProductEventBase<
@@ -2899,7 +2905,7 @@ export type ProductEvent =
       'context_compacted',
       { phase: 'started' | 'completed' | 'failed'; message?: string }
     >
-  | ProductEventBase<'turn_completed', { stop_reason?: string }>
+  | ProductEventBase<'turn_completed', { stop_reason?: string; resource_finalizing?: boolean }>
   | ProductEventBase<
       'turn_failed',
       {

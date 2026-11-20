@@ -1329,6 +1329,32 @@ class ContentService:
                 self._space(project_id), project_id, path, max_bytes, target
             )
 
+    @contextmanager
+    def capture_stable_batch(
+        self, project_id: str
+    ) -> Iterator[Callable[[str, int, BinaryIO], StableContentCapture]]:
+        """Reuse the catalog read connection, never a stale grant snapshot."""
+
+        if not project_id or project_id == ProjectRegistry.CURRENT:
+            yield lambda path, max_bytes, target: self.capture_stable(
+                project_id, path, max_bytes, target
+            )
+            return
+
+        with (
+            self._activities.enter(ActivityDomain.RESOURCE),
+            self._catalog.read_project_scope() as read_scope,
+        ):
+
+            def capture(path: str, max_bytes: int, target: BinaryIO) -> StableContentCapture:
+                row, external = read_scope(project_id)
+                if row is None:
+                    raise ContentError("unknown_project")
+                scope = self.project_space(self._registry._reference(row), external)
+                return self.capture_from_space(scope, project_id, path, max_bytes, target)
+
+            yield capture
+
     @staticmethod
     def capture_from_space(
         scope: space.ProjectSpace,
@@ -1959,6 +1985,26 @@ class ContentService:
         """Scan all resources once while exposing factual discovery events."""
 
         return enumeration.scan_files(self._resource_space(project_id), observer, paths=paths)
+
+    def scan_resource_inventory(
+        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+    ) -> tuple[tuple[ResourceEntry, ...], dict[str, str | None]]:
+        """Qualify each inventory entry once, including missing baseline paths."""
+
+        scope = self._resource_space(project_id)
+        lookup = repository.RepositoryLookup(scope)
+        repositories: dict[str, str | None] = {}
+
+        def observe(entry: ResourceEntry, target: Path) -> None:
+            repositories[entry.path] = lookup.for_scanned_file(entry.path, target)
+
+        entries = enumeration.scan_files(scope, observe_resolved=observe)
+        for path in include_missing:
+            if path not in repositories:
+                repositories[path] = lookup.for_path(path)
+        if not self._resource_scope_current(project_id, scope):
+            raise ContentError(ROOT_BUSY_ERROR)
+        return entries, repositories
 
     def resource_entries(
         self, project_id: str, paths: tuple[str, ...]

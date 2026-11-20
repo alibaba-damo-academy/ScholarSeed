@@ -612,9 +612,12 @@ def register_version_routes(app: FastAPI) -> None:
             result = await _deliveries(request).retry_finalization(
                 project, session_id, turn_id, idempotency_key
             )
-            return {"file_ids": result.file_ids, "review_ids": result.review_ids}
         except (ContentError, ResourceVersionError, VersionStoreConflict) as exc:
             return _error(exc)
+        resume_settlement = getattr(request.app.state, "resume_resource_finalization", None)
+        if resume_settlement is not None:
+            resume_settlement(session_id, turn_id)
+        return {"file_ids": result.file_ids, "review_ids": result.review_ids}
 
     @app.get(RESOURCE_CAPABILITY_ROUTE, response_model=None)
     async def resource_capability(  # type: ignore[unused-ignore]

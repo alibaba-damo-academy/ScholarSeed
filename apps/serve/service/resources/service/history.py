@@ -1027,12 +1027,15 @@ class ResourceVersionService:
         """Compare a project's final files using one bounded spool under its writer."""
 
         cas = self._cas(project_id)
-        with cas.spool() as spool:
+        with (
+            cas.spool() as spool,
+            self._content.capture_stable_batch(project_id) as capture_stable,
+        ):
 
             def capture(
                 path: str, baseline: TurnBaseline | None
             ) -> tuple[StableContentCapture, ObjectDescriptor | None]:
-                stable = self._content.capture_stable(project_id, path, VERSION_MAX_BYTES, spool)
+                stable = capture_stable(path, VERSION_MAX_BYTES, spool)
                 if (
                     baseline is not None
                     and stable.revision == baseline.revision
@@ -1247,23 +1250,37 @@ class ResourceVersionService:
         eligible = {
             path for path in eligible_paths if repositories[path] is None and self.reviewable(path)
         }
-        with cas.writer():
+        with (
+            cas.writer(),
+            cas.spool() as spool,
+            self._content.capture_stable_batch(project_id) as capture_stable,
+        ):
             store = self._store(project_id)
             captured: list[tuple[TurnBaseline, ObjectDescriptor, ObjectDescriptor | None]] = []
+            managed_files = tuple(
+                managed
+                for managed in store.managed_files(include_deleted=True)
+                if managed.path in eligible
+            )
+            pending_by_file = store.pendings(tuple(managed.file_id for managed in managed_files))
             # A deleted identity may already exist on disk again. Eligibility and
             # stable capture below prove presence; historical head state cannot.
-            for managed in store.managed_files(include_deleted=True):
-                if managed.path not in eligible:
-                    continue
+            for managed in managed_files:
                 try:
-                    stable, object_id, descriptor = self._capture_object(
-                        project_id, managed.path, cas
+                    stable = capture_stable(managed.path, VERSION_MAX_BYTES, spool)
+                    descriptor = (
+                        cas.verify_if_present(stable.revision)
+                        if stable.revision == managed.object_id
+                        else None
                     )
+                    if descriptor is None:
+                        descriptor = self._publish_capture(cas, spool, stable)
+                    object_id = descriptor.object_id
                 except ContentError as exc:
                     if exc.code in ("file_not_found", "file_too_large"):
                         continue
                     raise
-                current_pending = store.pending(managed.file_id)
+                current_pending = pending_by_file.get(managed.file_id)
                 drifted = managed.object_id != object_id or managed.mode_bits != stable.mode_bits
                 if drifted and not (current_pending is not None and current_pending.needs_review):
                     store.accept_working(

@@ -829,6 +829,7 @@ export function onEvent(
         running: false,
         interrupting: false,
         status: 'done',
+        resourceFinalizing: event.data.resource_finalizing === true,
         turnOutcomes: turnOutcomes(thread, event.turn_id, 'completed'),
         turnTimings: turnTimings(thread, event.turn_id, productEventTime(event.ts), true),
         conversation: placeFinalAssistantLast(
@@ -1035,6 +1036,9 @@ function reconcileThreadRuntime(
         ? (session.recovery_source_seq ?? 0)
         : thread.recoverySourceSeq,
       recoveryPending: stateCurrent ? session.recovery_pending === true : thread.recoveryPending,
+      resourceFinalizing: stateCurrent
+        ? session.resource_finalizing === true
+        : thread.resourceFinalizing,
       status,
       workdir: session.runtime_workdir || session.workdir || thread.workdir,
       projectPath:
@@ -1445,6 +1449,7 @@ export function useLiveSession(): void {
               recoveryIncidentId: history.recovery_incident_id ?? null,
               recoverySourceSeq: history.recovery_source_seq ?? 0,
               recoveryPending: history.recovery_pending === true,
+              resourceFinalizing: history.resource_finalizing === true,
             }))
           }
           reportFailure(classifySessionResumeFailure(opened), history?.recovery_blocked === true)
@@ -1565,6 +1570,7 @@ export function useLiveSession(): void {
             recoveryIncidentId: opened.recovery_incident_id ?? null,
             recoverySourceSeq: opened.recovery_source_seq ?? 0,
             recoveryPending: opened.recovery_pending === true,
+            resourceFinalizing: opened.resource_finalizing === true,
             interrupting: Boolean(opened.interrupting),
             queuedMessages: mergeQueuedOutbox(
               sessionId,

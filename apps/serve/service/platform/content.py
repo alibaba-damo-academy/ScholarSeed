@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import AsyncIterator, BinaryIO, Callable, Protocol, runtime_checkable
@@ -754,6 +755,12 @@ class ContentPort(Protocol):
         """Copy one stable generation into a caller-owned seekable stream."""
         ...
 
+    def capture_stable_batch(
+        self, project_id: str
+    ) -> AbstractContextManager[Callable[[str, int, BinaryIO], StableContentCapture]]:
+        """Reuse a reader while resolving current authorization on each capture."""
+        ...
+
     def publish_working_bytes(self, scope: ArtifactScope, path: str, content: bytes) -> bool:
         """Create an exact working file; return True only for identical existing bytes.
 
@@ -904,6 +911,12 @@ class ContentPort(Protocol):
         paths: tuple[str, ...] | None = None,
     ) -> tuple[ResourceEntry, ...]:
         """Scan every resource once and report each newly discovered logical file."""
+        ...
+
+    def scan_resource_inventory(
+        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+    ) -> tuple[tuple[ResourceEntry, ...], dict[str, str | None]]:
+        """Enumerate resources and qualify their repository ownership in one pass."""
         ...
 
     def resource_entries(
