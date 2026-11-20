@@ -26,11 +26,30 @@ the original user receives only a non-inheriting Administrators maintenance ACE
 (directory full control, existing logs modify). New metadata directories use the
 existing private descriptor. Existing native-group rights are validated but never
 expanded; credentials and other descendants are not traversed. Reparse points,
-hardlinked logs, unknown principals, deny rules and identity/security drift fail
-closed. Each object is pinned and checked before and after a handle-based write;
-contents, ownership and all existing ACEs remain unchanged. Tests cover an
-unprotected unrelated descendant to detect unintended inheritance propagation.
-The elevated recovery worker does not perform this metadata maintenance.
+hardlinked logs, unknown principals, deny rules and changes to object identity,
+Owner or security control fail closed. Each object is pinned and checked before
+and after a handle-based write; that write preserves contents, ownership and all
+existing ACEs. Tests cover an unprotected unrelated descendant to detect unintended
+inheritance propagation. The elevated recovery worker does not perform this
+metadata maintenance.
+
+Only a pre-write ACL change on the first `.sandbox` directory may restart this
+metadata plan once, before any metadata or log write. The coordinator freshly
+qualifies Profile, product directory and Home, then rereads all pending objects
+through their original pinned handles. Their original identity, Owner and security
+control must match, and every current ACL must pass the full metadata policy before
+any replacement plan is written. The new plan preserves all current ACE bytes and
+adds only the existing Administrators maintenance grant when required. The actual
+writer's pre-write fingerprint remains byte-exact. A second drift, any post-write
+failure, or drift first detected while writing a log, bin or secrets target is
+terminal. This requalification does not retry a user turn or change macOS behavior.
+
+中文：仅首个 `.sandbox` 目录写入前的 ACL 变化可触发一次完整重新资格审查，且此时尚未写入任何
+元数据或日志。协调者重新核验 Profile、产品目录和 Home，并通过原有固定句柄重读所有待写对象；
+原始对象身份、Owner 和安全控制位必须一致，每个当前 ACL 均须完整通过原策略，之后才能写入新计划。
+新计划保留当前全部 ACE 字节，仅在需要时补充已有规则限定的 Administrators 维护授权；实际写入前仍
+精确比较指纹。再次漂移、写后失败，以及首次在日志、bin、secrets 目标写入时发现的漂移均直接失败，
+不重试用户回合，也不改变 macOS 行为。
 
 The coordinator pins local ancestors and the target without deletion sharing,
 rejects reparse points, and inspects the target before applying recovery-only ACL
