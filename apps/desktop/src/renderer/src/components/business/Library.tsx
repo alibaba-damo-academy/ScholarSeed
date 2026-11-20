@@ -409,8 +409,8 @@ export function LibraryFilter({
               {option.label}
             </DropdownMenuRadioItem>
           ))}
-          {loading && <Spinner size="sm" />}
         </DropdownMenuRadioGroup>
+        {loading && <Spinner size="sm" />}
       </DropdownMenuContent>
     </DropdownMenu>
   )

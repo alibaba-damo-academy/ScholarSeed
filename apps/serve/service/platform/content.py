@@ -1174,5 +1174,6 @@ __all__ = [
     "ResourceScanObserver",
     "ResourceTreeChanges",
     "ResourceTreeGroup",
+    "ResourceTreeObserver",
     "RootKind",
 ]

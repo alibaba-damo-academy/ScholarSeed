@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
+import type { ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
@@ -17,6 +18,7 @@ import { DEFAULT_PROJECT_LAYOUT } from '../src/layout.ts'
 import { resolveContentResponse } from '../src/renderer/src/app/api/content.ts'
 import { PROJECT_NAME_MAX } from '../src/renderer/src/contracts/content.ts'
 import { ProjectSimulation } from './project.ts'
+import { PreviewFiles } from './files.ts'
 import { PREVIEW_DIAGNOSTIC_LIMIT } from './diagnostics.ts'
 import { PREVIEW_DOCUMENTS } from './documents.ts'
 import {
@@ -797,7 +799,7 @@ for (const cancellation of ['reset', 'delete', 'interrupt', 'disconnect'] as con
   })
 }
 
-test('browsing pagination and recursive listing share VFS bytes and do not consume one another policies', async () => {
+test('browsing pagination and recursive listing share VFS bytes and do not consume one another policies', async (context) => {
   const runtime = await fixture()
   const instance = 'browsing-pages'
   const tree = `/api/content/projects/${PREVIEW_PROJECT_ID}/tree`
@@ -851,6 +853,8 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
       count: number | null
       file_type: string
       updated_at: number | null
+      origin: string
+      version?: object
     }[]
     const directory = 'preview-docs'
     const scoped = await runtime.request(
@@ -865,6 +869,16 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     )
     assert.ok(scoped.body.items.every((item: object) => !('version' in item)))
 
+    const listedDirectories: string[] = []
+    const list = PreviewFiles.prototype.list
+    const directoryReads = context.mock.method(
+      PreviewFiles.prototype,
+      'list',
+      function (this: PreviewFiles, path = '') {
+        listedDirectories.push(path)
+        return list.call(this, path)
+      }
+    )
     const search = await fetch(
       `${runtime.base}/api/resource/list/search?${project}&candidate_completion=true`,
       { headers: { 'x-preview-instance': instance } }
@@ -872,8 +886,22 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     assert.equal(search.status, 200)
     assert.match(search.headers.get('content-type') ?? '', /^text\/event-stream/)
     assert.ok(search.body)
-    const frames: { type: string; items: typeof listing; incremental?: object }[] = []
+    const frames: {
+      type: string
+      items: typeof listing
+      linked_roots: object
+      incremental?: object
+    }[] = []
     for await (const frame of sseData(search.body)) frames.push(JSON.parse(frame))
+    directoryReads.mock.restore()
+    assert.deepEqual(listedDirectories, [
+      '',
+      ...listing.filter(({ kind }) => kind === 'dir').map(({ path }) => path),
+    ])
+    for (const { items, linked_roots } of frames) {
+      assert.deepEqual(linked_roots, {})
+      assert.ok(items.every(({ origin }) => origin === 'local'))
+    }
     const terminal = frames.pop()
     assert.equal(terminal?.type, 'complete')
     assert.deepEqual(terminal.items, listing)
@@ -881,8 +909,8 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     assert.deepEqual(frames.pop(), { type: 'candidates_complete', items: [], linked_roots: {} })
     assert.ok(frames.length > 1 && frames.every(({ type }) => type === 'batch'))
     assert.deepEqual(
-      frames.flatMap(({ items }) => items.map(({ path }) => path)),
-      listing.map(({ path }) => path)
+      frames.flatMap(({ items }) => items),
+      listing.map(({ version: _version, ...candidate }) => candidate)
     )
     for (const nested of PREVIEW_BROWSING.seed.nested) {
       assert.ok(listing.some((node) => node.path === nested.path))
@@ -928,6 +956,73 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     runtime.close()
   }
 })
+
+for (const outcome of ['drain', 'disconnect', 'reset'] as const) {
+  test(`browsing search waits for backpressure and handles ${outcome}`, { timeout: 6000 }, async () => {
+    const runtime = await fixture()
+    const instance = `search-${outcome}`
+    const path = '/api/resource/list/search'
+    const controller = new AbortController()
+    const held: { response?: ServerResponse; drain?: () => void; writes: number } = { writes: 0 }
+    runtime.server.prependListener('request', (request, response) => {
+      if (new URL(request.url ?? '/', runtime.base).pathname !== path) return
+      const write = response.write.bind(response)
+      response.write = (chunk: string) => {
+        held.writes++
+        if (held.writes !== 1) return write(chunk)
+        held.response = response
+        held.drain = () => {
+          write(chunk)
+          response.emit('drain')
+        }
+        response.flushHeaders()
+        return false
+      }
+    })
+    const reset = () =>
+      runtime.request('/__preview/reset', instance, {
+        scene: 'browsing-more-failed',
+        pageId: 'viewer-explorer',
+      })
+    try {
+      assert.equal((await reset()).status, 200)
+      const response = await fetch(
+        `${runtime.base}${path}?project=${PREVIEW_PROJECT_ID}&candidate_completion=true`,
+        { headers: { 'x-preview-instance': instance }, signal: controller.signal }
+      )
+      assert.equal(response.status, 200)
+      assert.ok(response.body)
+      const { response: serverResponse, drain } = held
+      assert.ok(serverResponse && drain)
+      assert.equal(held.writes, 1)
+      assert.equal(serverResponse.listenerCount('drain'), 1)
+
+      if (outcome === 'drain') {
+        const frames = sseData(response.body)
+        drain()
+        const types: string[] = []
+        for await (const frame of frames) types.push(JSON.parse(frame).type)
+        assert.ok(types.filter((type) => type === 'batch').length > 1)
+        assert.deepEqual(types.slice(-2), ['candidates_complete', 'complete'])
+      } else {
+        const closed = once(serverResponse, 'close')
+        if (outcome === 'reset') {
+          assert.equal((await reset()).status, 200)
+          drain()
+        } else {
+          controller.abort()
+        }
+        await closed
+        assert.equal(held.writes, 1)
+        assert.equal(serverResponse.writableEnded, false)
+      }
+      assert.equal(serverResponse.listenerCount('drain'), 0)
+    } finally {
+      controller.abort()
+      runtime.close()
+    }
+  })
+}
 
 test('browsing empty seed is a real empty VFS without breaking global bootstrap or other instances', async () => {
   const runtime = await fixture()

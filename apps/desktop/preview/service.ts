@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { posix } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defaultRendererPreferences, sanitizeRendererPreferences } from '../src/preferences.ts'
@@ -4104,6 +4105,8 @@ export function createPreviewService() {
       }
       if (listing) {
         const owner = projectBrowsing(instance, project.id)
+        const projectExists = (): boolean =>
+          instance.projects.all().some((current) => current.id === project.id)
         await archiveResponse(response, async (signal) => {
           const directory = searchListing ? null : url.searchParams.get('directory')
           const entries = await owner.listing(signal, directory ?? undefined)
@@ -4111,37 +4114,59 @@ export function createPreviewService() {
             send({ detail: 'preview_instance_reset' }, 409)
             return
           }
-          if (!instance.projects.all().some((current) => current.id === project.id)) {
+          if (!projectExists()) {
             send(RESOURCE_LIST_SCOPE.unknownProject, RESOURCE_LIST_SCOPE.unknownProjectStatus)
             return
           }
           if (response.destroyed) return
+          const childCounts = new Map<string, number>()
+          if (directory === null) {
+            for (const entry of entries) {
+              const parent = posix.dirname(entry.path)
+              childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1)
+            }
+          }
           const projectNode = (entry: PreviewFileEntry, capability?: PreviewVersions) =>
-            resourceNode(
-              entry,
-              capability,
-              entry.kind === 'dir' && directory === null ? files.list(entry.path).length : 0
-            )
+            resourceNode(entry, capability, childCounts.get(entry.path))
           if (searchListing) {
+            // The browsing VFS models local project files only. External roots are not mounted here.
             const linkedRoots = {}
+            // Capture one VFS view before a slow response allows other requests to modify it.
+            const items = entries.map((entry) => projectNode(entry, versions))
+            const canContinue = (): boolean => {
+              if (signal.aborted || response.destroyed || !response.writable) return false
+              if (instances.get(id) === instance && projectExists()) return true
+              response.destroy()
+              return false
+            }
+            const writeFrame = async (frame: object): Promise<boolean> => {
+              if (!canContinue()) return false
+              if (!response.write(`data: ${JSON.stringify(frame)}\n\n`)) {
+                try {
+                  await once(response, 'drain', { signal })
+                } catch (error) {
+                  if (!signal.aborted) throw error
+                }
+              }
+              return canContinue()
+            }
             response.writeHead(200, {
               'content-type': 'text/event-stream',
               'cache-control': 'no-store',
               'x-preview-simulation': 'true',
             })
-            for (let start = 0; start < entries.length; start += PREVIEW_BROWSING.pageSize) {
-              const items = entries
+            for (let start = 0; start < items.length; start += PREVIEW_BROWSING.pageSize) {
+              const batch = items
                 .slice(start, start + PREVIEW_BROWSING.pageSize)
-                .map((entry) => projectNode(entry))
-              response.write(
-                `data: ${JSON.stringify({ type: 'batch', items, linked_roots: linkedRoots })}\n\n`
-              )
+                .map(({ version: _version, ...item }) => item)
+              if (!(await writeFrame({ type: 'batch', items: batch, linked_roots: linkedRoots })))
+                return
             }
             if (url.searchParams.get('candidate_completion') === 'true') {
               const candidates = { type: 'candidates_complete', items: [], linked_roots: linkedRoots }
-              response.write(`data: ${JSON.stringify(candidates)}\n\n`)
+              if (!(await writeFrame(candidates))) return
             }
-            const items = entries.map((entry) => projectNode(entry, versions))
+            if (!canContinue()) return
             const completed = {
               type: 'complete',
               items,

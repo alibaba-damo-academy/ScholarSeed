@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { streamResourceListingSearch } from './api.ts'
 import { createResourceListingSearch } from './stream.ts'
 
 interface Candidate {
@@ -181,4 +182,39 @@ test('a completed empty result appears before hydration and is cleared if the st
   await flush()
   assert.deepEqual(states.at(-1), { items: null, refreshing: false, failed: true })
   search.dispose()
+})
+
+test('a malformed SSE frame fails the API read without accepting a later completion', async () => {
+  const previousWindow = globalThis.window
+  const previousFetch = globalThis.fetch
+  const payload = [
+    { type: 'batch', items: [{ path: 'file.md', name: 'file.md', kind: 'file', count: null }] },
+    { type: 'candidates_complete', items: [] },
+    { type: 'complete', items: [], incremental: { parents: [], supported: false } },
+  ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`)
+  payload.splice(1, 0, 'data: {bad-json\n\n')
+  globalThis.window = {
+    scholarseed: { getApiBase: () => 'http://service.test' },
+  } as Window & typeof globalThis
+  globalThis.fetch = async () =>
+    new Response(payload.join(''), { headers: { 'content-type': 'text/event-stream' } })
+
+  try {
+    const batches: string[][] = []
+    let completed = false
+    const result = await streamResourceListingSearch(
+      'project',
+      new AbortController().signal,
+      (items) => batches.push(items.map((item) => item.path)),
+      () => {
+        completed = true
+      }
+    )
+    assert.equal(result, null)
+    assert.deepEqual(batches, [['file.md']])
+    assert.equal(completed, false)
+  } finally {
+    globalThis.fetch = previousFetch
+    globalThis.window = previousWindow
+  }
 })

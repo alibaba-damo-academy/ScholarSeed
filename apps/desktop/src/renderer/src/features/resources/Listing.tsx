@@ -117,16 +117,19 @@ function ProjectResourceListing(): React.JSX.Element {
     setFacet((previous) => (open ? target : previous === target ? null : previous))
   }
   const sourceLabel = useCallback(
-    (node: ResourceNode): string =>
-      node.kind === 'dir'
-        ? '—'
-        : node.source === 'imported'
-          ? t('sourceImported')
-          : node.source === 'created'
-            ? t('sourceCreated')
-            : node.source === 'linked'
-              ? t('linkedSource')
-              : '—',
+    (node: ResourceNode): string => {
+      if (node.kind === 'dir') return '—'
+      switch (node.source) {
+        case 'imported':
+          return t('sourceImported')
+        case 'created':
+          return t('sourceCreated')
+        case 'linked':
+          return t('linkedSource')
+        default:
+          return '—'
+      }
+    },
     [t]
   )
   const typeLabel = useCallback(

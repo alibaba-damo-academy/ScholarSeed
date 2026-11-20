@@ -104,8 +104,8 @@ export class PreviewBrowsing {
     const pending = ['']
     const entries: PreviewFileEntry[] = []
     while (pending.length) {
-      const directory = pending.shift()!
-      for (const entry of this.files.list(directory).sort(compare)) {
+      const current = pending.shift()!
+      for (const entry of this.files.list(current).sort(compare)) {
         entries.push(entry)
         if (entry.kind === 'dir') pending.push(entry.path)
       }

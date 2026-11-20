@@ -311,6 +311,50 @@ class ResourceListingTests(unittest.TestCase):
         self.assertEqual([frame["type"] for frame in frames], ["batch", "batch", "error"])
         self.assertEqual(frames[-1], {"type": "error", "detail": ROOT_BUSY_ERROR, "status": 409})
 
+    def test_flat_listing_reads_one_grant_inventory_per_linked_batch(self) -> None:
+        local = self.resources / "local"
+        local.mkdir()
+        (local / "local.md").touch()
+        outside = self.root.resolve() / "outside"
+        nested = outside / "nested"
+        nested.mkdir(parents=True)
+        (nested / "linked.md").touch()
+        self.content.authorize_root_at(self.project.id, str(outside), "", "linked")
+        missing = self.root.resolve() / "missing"
+        missing.mkdir()
+        self.content.authorize_root_at(self.project.id, str(missing), "", "missing-link")
+        missing.rmdir()
+        expected = self.content.external_roots(self.project.id)
+        self.assertEqual([root.available for root in expected], [True, False])
+
+        original = tree.flat_tree
+        inventories = []
+        batches = []
+
+        def observe_tree(*args, on_directory, **kwargs):
+            def observe_batch(nodes, repositories):
+                before = read_grants.call_count
+                on_directory(nodes, repositories)
+                inventories.append(read_grants.call_count - before)
+
+            return original(*args, on_directory=observe_batch, **kwargs)
+
+        with (
+            patch.object(
+                self.content._catalog, "external_roots", wraps=self.content._catalog.external_roots
+            ) as read_grants,
+            patch.object(tree, "flat_tree", side_effect=observe_tree),
+        ):
+            self.content.flat_resource_tree(
+                self.project.id,
+                ("resources",),
+                on_directory=lambda _nodes, _repositories, roots: batches.append(roots),
+            )
+
+        self.assertEqual(batches.count(expected), 3)
+        self.assertEqual(batches.count(()), 1)
+        self.assertEqual(inventories, [1 if roots else 0 for roots in batches])
+
     def test_search_stream_rechecks_link_grants_when_traversal_occupies_the_executor(self) -> None:
         outside = self.root.resolve() / "outside"
         outside.mkdir()

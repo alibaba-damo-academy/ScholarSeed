@@ -773,12 +773,17 @@ class ContentService:
         一个还能写的窗口。重建的成本是一次索引查询。
         """
 
+        scope, _ = self._space_with_external_roots(project_id, read_only=read_only)
+        return scope
+
+    def _space_with_external_roots(
+        self, project_id: str | None, *, read_only: bool = False
+    ) -> tuple[space.ProjectSpace, tuple[ExternalRootRow, ...]]:
         project = self._registry.resolve(project_id, read_only=read_only)
         if not project.available:
             raise ContentError(ROOT_UNAVAILABLE_ERROR)
-        return self.project_space(
-            project, self._catalog.external_roots(project.id, read_only=read_only)
-        )
+        external = self._catalog.external_roots(project.id, read_only=read_only)
+        return self.project_space(project, external), external
 
     @staticmethod
     def project_space(
@@ -821,8 +826,13 @@ class ContentService:
 
     def _rooted_space(self, project_id: str) -> space.ProjectSpace:
         scope = self._space(project_id)
-        owned = roots.registered_roots(self.resolve(scope.project.id, PROJECT_DB_RELATIVE))
-        return space.ProjectSpace(scope.project, scope.mounts, owned_roots=owned)
+        return space.ProjectSpace(
+            scope.project, scope.mounts, owned_roots=self._registered_roots(scope)
+        )
+
+    @staticmethod
+    def _registered_roots(scope: space.ProjectSpace) -> dict[RootKind, str]:
+        return roots.registered_roots(str(scope.absolute(PROJECT_DB_RELATIVE)))
 
     def _resource_space(self, project_id: str) -> space.ProjectSpace:
         scope = self._rooted_space(project_id)
@@ -1923,9 +1933,11 @@ class ContentService:
             assert on_directory is not None
             linked_roots: tuple[ExternalRootRef, ...] = ()
             if any(node.asset.origin is AssetOrigin.LINK for node in nodes):
-                linked_roots = self.external_roots(project_id)
-                if not self._resource_scope_current(project_id, scope):
+                current, external = self._space_with_external_roots(project_id)
+                if not self._resource_scopes_match(scope, current):
                     raise ContentError(ROOT_BUSY_ERROR)
+                # Project the grants from the same records used for authorization.
+                linked_roots = tuple(self._roots.reference(row) for row in external)
             on_directory(nodes, repositories, linked_roots)
 
         result = tree.flat_tree(
@@ -1953,12 +1965,16 @@ class ContentService:
         return result
 
     def _resource_scope_current(self, project_id: str, scope: space.ProjectSpace) -> bool:
-        current = self._resource_space(project_id)
+        return self._resource_scopes_match(scope, self._space(project_id))
+
+    def _resource_scopes_match(
+        self, scope: space.ProjectSpace, current: space.ProjectSpace
+    ) -> bool:
         return (
             current.root == scope.root
             and current.project.layout == scope.project.layout
             and current.mounts == scope.mounts
-            and current.owned_roots == scope.owned_roots
+            and self._registered_roots(current) == scope.owned_roots
         )
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:

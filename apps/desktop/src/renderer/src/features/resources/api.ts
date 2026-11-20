@@ -1266,7 +1266,12 @@ export async function streamResourceListingSearch(
   let candidatesComplete = false
   for await (const data of sseData(response.body)) {
     if (signal.aborted) return null
-    const frame = JSON.parse(data) as (ResourceListingPayload & { type?: string }) | null
+    let frame: (ResourceListingPayload & { type?: string }) | null
+    try {
+      frame = JSON.parse(data)
+    } catch {
+      return null
+    }
     if (
       !frame ||
       (frame.type !== 'batch' &&
