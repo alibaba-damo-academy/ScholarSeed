@@ -572,6 +572,7 @@ def resolve_workspace_root(
 
 
 DIRECTORY_DRAIN_TIMEOUT_SECONDS = 60.0
+CONTENT_DIRECTORY_BUSY = "content_directory_busy"
 DIRECTORY_DRAIN_POLL_SECONDS = 0.05
 # Electron may still be synchronously appending the provider exit log.
 DIRECTORY_LEASE_WAIT_SECONDS = 2.0
@@ -3145,20 +3146,9 @@ def create_app(
             isinstance(command, AuthorizeRoot) and not command.supersede
         ):
             return authorize_concurrently(operation_id, command)
-        if isinstance(command, (ForgetProject, ReconcileProjectRemoval)):
-            # Removing registration changes no project files or directory topology.
-            # Keep existing qualifications alive for in-flight readers and runtimes;
-            # the next ordinary maintenance/exit owns their eventual release.
-            # No await separates the durable removal marker from reconciliation.
+        if isinstance(command, ReconcileProjectRemoval):
             with activities.enter(ActivityDomain.RESOURCE, root=True):
-                if isinstance(command, ForgetProject):
-                    app.state.content.begin_project_forget(
-                        command.project_id, operation_id=operation_id
-                    )
-                return reconcile_project_removal(
-                    operation_id,
-                    command if isinstance(command, ReconcileProjectRemoval) else None,
-                )
+                return reconcile_project_removal(operation_id, command)
         if isinstance(command, RevokeRoot):
             with activities.enter(ActivityDomain.RESOURCE, root=True):
                 plan = app.state.content.plan_root_revocation(command.root_id, command.project_id)
@@ -3177,7 +3167,13 @@ def create_app(
                 return app.state.content.commit_root_revocation(
                     command.root_id, command.project_id, operation_id=operation_id
                 )
-        generation = activities.begin()
+        if isinstance(command, ForgetProject):
+            app.state.content.plan_project_forget(command.project_id)
+            generation = activities.begin_if_idle()
+            if generation is None:
+                raise ContentError(CONTENT_DIRECTORY_BUSY)
+        else:
+            generation = activities.begin()
         released = False
         transition_started = False
         scan_project = None
@@ -3211,8 +3207,23 @@ def create_app(
                         connectors,
                         activities.snapshot().counts,
                     )
-                    raise ContentError("content_directory_busy")
+                    raise ContentError(CONTENT_DIRECTORY_BUSY)
                 await asyncio.sleep(DIRECTORY_DRAIN_POLL_SECONDS)
+            if isinstance(command, ForgetProject):
+
+                def forget():
+                    app.state.content.begin_project_forget(
+                        command.project_id, operation_id=operation_id
+                    )
+                    return reconcile_project_removal(operation_id)
+
+                # Commit with the original qualifications still held. Release
+                # and rebuild from the remaining registrations before reopening.
+                removal = activities.run_maintenance(generation, forget)
+                transition_started = True
+                owner.close()
+                released = True
+                return removal
             # From here cancellation cannot be allowed to abandon requalification.
             # This section is synchronous and closes all owner IO before returning.
             transition_started = True

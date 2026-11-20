@@ -116,6 +116,7 @@
   "project": {
     "required": "请填写项目名",
     "createFailed": "无法创建项目，请重试。",
+    "folderBusy": "所选文件夹或其上级、下级目录可能已被其他项目占用。请选择其他文件夹，或移除占用目录的项目后重试。",
     "saveFailed": "保存失败",
     "removeFailed": "移除失败",
     "created": "已创建项目 {{name}}",
