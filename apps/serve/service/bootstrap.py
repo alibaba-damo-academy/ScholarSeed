@@ -3788,6 +3788,7 @@ def _compose_app(
     )
     cards.register(REVIEW_CARD, validate_review_card, direct=False)
     app.state.runtime_service.bind_cards(cards)
+    app.state.session_service.bind_fork_display_cards(SEARCH_CARD)
     resource_excerpts = ResourceExcerptService(
         content,
         writer,
