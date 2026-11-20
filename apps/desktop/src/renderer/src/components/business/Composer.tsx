@@ -160,6 +160,7 @@ import {
   canOfferTurnRecovery,
   effectiveReadiness,
   hasCurrentTurnCapabilityFailure,
+  isResourceFinalizing,
   permissionModeFeedback,
   permissionModeNeedsConfirmation,
   permissionModeShowsNextTurn,
@@ -771,9 +772,8 @@ export function Composer({
   const selectionBlocked = Boolean(sidNow && modelSelectionBlocked(state.serviceInstanceId, sidNow))
   const selectedEffort = composerReasoningEffort(state)
   const running = Boolean(thread.running)
-  const resourceFinalizing = Boolean(
-    sidNow && !running && thread.resourceFinalizing && !thread.recoveryBlocked
-  )
+  const resourceFinalizing = isResourceFinalizing(thread)
+  const recoveryBlocksSubmission = Boolean(thread.recoveryPending && !resourceFinalizing)
   const recoveryAvailable =
     canOfferTurnRecovery(thread) && !thread.recoveryPending && !selectionBlocked
   const queuedMessages = thread.queuedMessages ?? []
@@ -1243,10 +1243,12 @@ export function Composer({
   const modelAvailable = exactDraftModelId
     ? Boolean(selectedModel && !selectedModel.disabled)
     : hasSelectableModel(state.catalog.models)
+  const runningFollowUpUnavailable =
+    running && (followUp.loading || followUp.saving || followUp.error)
   const canSend =
     !confirmation.pending &&
     !thread.readOnly &&
-    !(!resourceFinalizing && running && (followUp.loading || followUp.saving || followUp.error)) &&
+    !runningFollowUpUnavailable &&
     (editing
       ? Boolean(text.trim()) && queuedActionId === null
       : canSubmitComposer({
@@ -1256,7 +1258,7 @@ export function Composer({
             selectedSkillsReady &&
             !selectionBlocked &&
             activeThread(state).terminated !== true &&
-            (!thread.recoveryPending || resourceFinalizing),
+            !recoveryBlocksSubmission,
           creditsAvailable: !creditBlocked,
           modelAvailable,
           launching,
@@ -1739,7 +1741,7 @@ export function Composer({
     // also covers Enter and the desktop driver during a live/authorization turn.
     if (
       confirmation.pending ||
-      (!resourceFinalizing && running && (followUp.loading || followUp.saving || followUp.error)) ||
+      runningFollowUpUnavailable ||
       thread.readOnly ||
       state.turnLaunch ||
       getSnapshot().modelSelectionPending > 0 ||
@@ -1749,7 +1751,7 @@ export function Composer({
       creditBlocked ||
       !modelAvailable ||
       !selectedSkillsReady ||
-      (thread.recoveryPending && !resourceFinalizing)
+      recoveryBlocksSubmission
     )
       return false
     const v = message.trim()
@@ -1997,7 +1999,11 @@ export function Composer({
       return valid
     }
     if (resourceFinalizing) {
-      preparationInstanceId = state.serviceInstanceId ?? undefined
+      if (!state.serviceInstanceId) {
+        set({ foregroundError: feedback('components', 'composer.runtimeNotReady') })
+        return false
+      }
+      preparationInstanceId = state.serviceInstanceId
     } else {
       if (presentAsUserMessage && activeThreadId) {
         patchThread(activeThreadId, (current) => ({
@@ -2970,7 +2976,7 @@ export function Composer({
     !modelAvailable ||
     creditBlocked ||
     Boolean(thread.terminated) ||
-    Boolean(thread.recoveryPending) ||
+    recoveryBlocksSubmission ||
     selectionBlocked ||
     queuedMessages.length > 0
 
@@ -4031,7 +4037,7 @@ export function Composer({
                         !contextReady && 'context',
                         !selectedSkillsReady && 'skills',
                         thread.terminated === true && 'terminated',
-                        thread.recoveryPending && !resourceFinalizing && 'recovery',
+                        recoveryBlocksSubmission && 'recovery',
                         creditBlocked && 'credits',
                         !modelAvailable && 'model',
                         launching && 'launching',

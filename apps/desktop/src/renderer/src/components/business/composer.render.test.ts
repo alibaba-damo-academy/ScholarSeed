@@ -1,28 +1,26 @@
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
-import { runInNewContext } from 'node:vm'
-import { block } from '../../../../test-helpers/source-contract.ts'
 import { expressions, jsxWithAttributes } from '../../../../test-helpers/syntax.ts'
 import test, { after, type TestContext } from 'node:test'
 import { chromium, expect } from '@playwright/test'
 import { renderFixture } from '../../../../test-helpers/render.ts'
+import { isResourceFinalizing } from '../../runtime.ts'
 
 const UPDATE_COUNT = 50
 const MAX_HEIGHT = 132
 const RENDER_TIMEOUT_MS = 60_000
 let preparing: ReturnType<typeof renderFixture> | undefined
 
-test('Composer ignores a stale resource finalization flag while a turn is running', () => {
-  const source = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
-  const gates = block(source, 'const running = Boolean(thread.running)', 'const recoveryAvailable')
-  const thread = { running: false, resourceFinalizing: true, recoveryBlocked: false }
-  expect(runInNewContext(`${gates}\nresourceFinalizing`, { thread, sidNow: 'session' })).toBe(true)
-  expect(
-    runInNewContext(`${gates}\nresourceFinalizing`, {
-      thread: { ...thread, running: true },
-      sidNow: 'session',
-    })
-  ).toBe(false)
+test('resource finalization requires a healthy settled session', () => {
+  const thread = {
+    sessionId: 'session',
+    running: false,
+    resourceFinalizing: true,
+    recoveryBlocked: false,
+  }
+  expect(isResourceFinalizing(thread)).toBe(true)
+  expect(isResourceFinalizing({ ...thread, running: true })).toBe(false)
+  expect(isResourceFinalizing({ ...thread, recoveryBlocked: true })).toBe(false)
 })
 
 test('floating attachments stay hidden until the editor is clicked, without hover activation', () => {

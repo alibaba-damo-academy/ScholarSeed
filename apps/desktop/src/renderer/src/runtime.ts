@@ -212,6 +212,14 @@ export function projectSessionState(
   }
 }
 
+export function isResourceFinalizing(
+  thread: Pick<Thread, 'sessionId' | 'running' | 'resourceFinalizing' | 'recoveryBlocked'>
+): boolean {
+  return Boolean(
+    thread.sessionId && !thread.running && thread.resourceFinalizing && !thread.recoveryBlocked
+  )
+}
+
 export function canOfferTurnRecovery(
   thread: Pick<Thread, 'running' | 'status' | 'readOnly'>
 ): boolean {

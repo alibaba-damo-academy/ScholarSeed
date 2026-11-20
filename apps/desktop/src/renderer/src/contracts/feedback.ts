@@ -101,6 +101,7 @@ const FEEDBACK_KEYS = {
     'composer.queueRefreshFailed': 'none',
     'composer.queueUnknown': 'none',
     'composer.resendFailed': 'none',
+    'composer.runtimeNotReady': 'none',
     'composer.runtimePreflight': 'none',
     'composer.runtimeUnavailable': 'none',
     'composer.selectionContextChanged': 'name',
