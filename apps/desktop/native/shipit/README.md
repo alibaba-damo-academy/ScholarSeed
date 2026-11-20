@@ -190,14 +190,31 @@ Unknown inspection results still refuse admission. The context bytes and origina
 home/profile/workspace identities remain checked, and admission is repeated before
 storage publication. Only the target or proved superseding build's workbench
 acknowledgement consumes the context through the normal completion path. The old
-handoff is consumed by the existing completion path after revalidating superseded
-admission; the log distinguishes supersession from installation success. User data
+handoff is copied into the matching launch context before the qualified startup
+path consumes it. An interrupted startup can revalidate that evidence and retry
+with the original storage selection until the workbench acknowledges readiness.
+For older contexts whose handoff is already gone, startup requires a signed app,
+stable application and storage identities, and no user/root ShipIt.
+A retained native request must name the context's candidate and installed target
+and match an observed launch in the native cleanup journal. The exact target
+build can resume offline. A newer build must resolve the original candidate and
+build through the update service and compare release versions before it can
+supersede the launch context.
+The log distinguishes supersession from installation success. User data
 and native failure records are not deleted. A replaced application is verified
 against the configured signing Team and bundle identity, with its bundle and
 Contents identities fixed across verification. The historical ack must still
 match the frozen old target, the unchanged target parent and the live bound source;
 ordinary source recovery still requires the old target itself. Replaced source
 identities, missing acknowledgements and legacy unbound requests still refuse.
+
+启动准入核验成功后，Desktop 先把交接凭据写入匹配的启动上下文，再清理原交接记录。
+首次启动中断时，应用重新核验凭据并恢复原存储位置，工作台就绪后清除启动上下文。
+旧版本已经清理交接记录时，必须核验当前安装的签名、应用与存储身份，
+且没有当前用户或 root 的 ShipIt 进程。若原生请求仍存在，必须匹配候选版本、
+安装目标及原生清理日志里的启动记录。精确目标构建可离线恢复，较新构建则须通过
+更新服务核对原候选版本和构建号，再按发布版本顺序判定能否恢复。
+
 A durable native terminal publication proves historical restoration and lets an
 independent new request advance after application replacement under the same parent.
 It never replays the failed source or bypasses the new candidate's signature and

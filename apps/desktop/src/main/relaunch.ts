@@ -10,6 +10,7 @@ import { writeJson, writeRecord } from './journal.ts'
 import type { QualifiedRecordConsumer } from './journal.ts'
 import { explicitUpdateDebugPort, isValidDebugPort } from './debuglaunch.ts'
 import { BUILD_NUMBER_PATTERN } from './version.ts'
+import { decodeSquirrelHandoff } from './squirrel.ts'
 
 const CONTEXT_DIRECTORY = '.scholarseed-update-launch'
 const CONTEXT_FILE = 'context.json'
@@ -51,6 +52,7 @@ export interface UpdateLaunchContext {
   userData: string
   workspace: string
   identities: string[]
+  admittedHandoff?: string
   debugPort?: number
 }
 export interface LaunchIdentity {
@@ -61,6 +63,7 @@ export interface LaunchIdentity {
 }
 export interface ObservedUpdateLaunch {
   context: UpdateLaunchContext
+  retainAdmittedHandoff(bytes: Buffer): void
   complete(): void
   verify(): void
 }
@@ -159,7 +162,7 @@ export function updateStorageIdentities(native: DomainNative, roots: readonly st
   return roots.map((root) => directoryIdentity(native, root))
 }
 
-function removeUpdateLaunch(
+function finishUpdateLaunch(
   native: DomainNative,
   coordinator: string,
   directory: string,
@@ -175,8 +178,10 @@ function removeUpdateLaunch(
         const current = native.readAt(pin, CONTEXT_FILE, MAX_BYTES)
         if (current && !current.equals(expected))
           throw new Error('Mac update launch context changed')
-        if (current && replacement) writeRecord(join(directory, CONTEXT_FILE), replacement)
-        else rmSync(join(directory, CONTEXT_FILE), { force: true })
+        if (replacement) {
+          if (!current) throw new Error('Mac update launch context missing')
+          writeRecord(join(directory, CONTEXT_FILE), replacement)
+        } else rmSync(join(directory, CONTEXT_FILE), { force: true })
       } finally {
         native.release(lock)
       }
@@ -192,7 +197,10 @@ export function decodeUpdateLaunch(bytes: Buffer): UpdateLaunchContext {
   if (
     !record ||
     Object.keys(record).some(
-      (key) => !KEYS.includes(key as (typeof KEYS)[number]) && key !== 'debugPort'
+      (key) =>
+        !KEYS.includes(key as (typeof KEYS)[number]) &&
+        key !== 'debugPort' &&
+        key !== 'admittedHandoff'
     ) ||
     KEYS.some((key) => !Object.hasOwn(record, key)) ||
     (record.schema !== SCHEMA && record.schema !== LEGACY_SCHEMA) ||
@@ -218,6 +226,16 @@ export function decodeUpdateLaunch(bytes: Buffer): UpdateLaunchContext {
     )
   )
     throw new Error('Invalid Mac update launch context')
+  if (Object.hasOwn(record, 'admittedHandoff')) {
+    if (typeof record.admittedHandoff !== 'string')
+      throw new Error('Invalid admitted Mac update handoff')
+    const admittedBytes = Buffer.from(record.admittedHandoff, 'base64')
+    if (admittedBytes.toString('base64') !== record.admittedHandoff)
+      throw new Error('Invalid admitted Mac update handoff encoding')
+    const handoff = decodeSquirrelHandoff(admittedBytes)
+    if (handoff.candidate !== record.candidate || handoff.buildNumber !== record.targetBuild)
+      throw new Error('Admitted Mac update handoff differs from launch context')
+  }
   return record
 }
 export function persistUpdateLaunch(
@@ -289,7 +307,7 @@ export function persistUpdateLaunch(
             // Cancelling a retry retains the original publication. A proved
             // terminal native failure ends that exact transaction instead.
             return (outcome) => {
-              if (outcome === 'failed') removeUpdateLaunch(native, coordinator, directory, pending)
+              if (outcome === 'failed') finishUpdateLaunch(native, coordinator, directory, pending)
             }
           }
           // The running installed build has fulfilled the previous target. Its
@@ -320,7 +338,7 @@ export function persistUpdateLaunch(
   }
   // Neither cancellation nor terminal failure of the next update acknowledges
   // the previous launch's readiness. Restore its exact publication if still ours.
-  return () => removeUpdateLaunch(native, coordinator, directory, published!, replaced)
+  return () => finishUpdateLaunch(native, coordinator, directory, published!, replaced)
 }
 
 /** Native readAt refuses links/unsafe ownership. No path selection happens before validation. */
@@ -351,14 +369,24 @@ export function observeUpdateLaunch(
     context.bundleId !== identity.bundleId
   )
     throw new Error('Mac update launch identity differs')
-  const complete = () => removeUpdateLaunch(native, coordinator, directory, data)
+  let currentBytes = data
+  const complete = () => finishUpdateLaunch(native, coordinator, directory, currentBytes)
   return {
     context,
     complete,
+    retainAdmittedHandoff(bytes) {
+      const admittedHandoff = bytes.toString('base64')
+      if (context.admittedHandoff === admittedHandoff) return
+      const replacement = Buffer.from(JSON.stringify({ ...context, admittedHandoff }))
+      if (replacement.length > MAX_BYTES) throw new Error('Mac update launch context too large')
+      decodeUpdateLaunch(replacement)
+      finishUpdateLaunch(native, coordinator, directory, currentBytes, replacement)
+      currentBytes = replacement
+    },
     verify: () => {
       const current = native.pin(directory, false)
       try {
-        if (!native.readAt(current, CONTEXT_FILE, MAX_BYTES)?.equals(data))
+        if (!native.readAt(current, CONTEXT_FILE, MAX_BYTES)?.equals(currentBytes))
           throw new Error('Mac update launch context changed')
       } finally {
         native.release(current)
