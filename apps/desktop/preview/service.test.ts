@@ -849,6 +849,7 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     const fullListing = await runtime.request(`/api/resource/list?${project}`, instance)
     assert.equal(fullListing.status, 200)
     assert.equal('directory' in fullListing.body, false)
+    assert.deepEqual(fullListing.body.linked_roots, {})
     const listing = fullListing.body.items as {
       path: string
       kind: 'file' | 'dir'
@@ -864,6 +865,7 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     )
     assert.equal(rootListing.status, 200)
     assert.equal(rootListing.body.directory, '')
+    assert.deepEqual(rootListing.body.linked_roots, {})
     assert.deepEqual(
       rootListing.body.items,
       listing
@@ -877,6 +879,7 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     )
     assert.equal(scoped.status, 200)
     assert.equal(scoped.body.directory, directory)
+    assert.deepEqual(scoped.body.linked_roots, {})
     assert.deepEqual(
       scoped.body.items.map((item: { path: string }) => item.path),
       ['preview-docs/nested', 'preview-docs/overview.md']
@@ -904,7 +907,7 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     assert.ok(search.body)
     const frames: {
       type: string
-      items: typeof listing
+      items: Omit<(typeof listing)[number], 'count'>[]
       linked_roots: object
       incremental?: object
     }[] = []
@@ -917,16 +920,18 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     for (const { items, linked_roots } of frames) {
       assert.deepEqual(linked_roots, {})
       assert.ok(items.every(({ origin }) => origin === 'local'))
+      assert.ok(items.every((item) => !('count' in item)))
     }
+    const searchItems = listing.map(({ count: _count, ...item }) => item)
     const terminal = frames.pop()
     assert.equal(terminal?.type, 'complete')
-    assert.deepEqual(terminal.items, listing)
+    assert.deepEqual(terminal.items, searchItems)
     assert.deepEqual(terminal.incremental, { parents: [], supported: false })
     assert.deepEqual(frames.pop(), { type: 'candidates_complete', items: [], linked_roots: {} })
     assert.ok(frames.length > 1 && frames.every(({ type }) => type === 'batch'))
     assert.deepEqual(
       frames.flatMap(({ items }) => items),
-      listing.map(({ version: _version, ...candidate }) => candidate)
+      searchItems.map(({ version: _version, ...candidate }) => candidate)
     )
     for (const nested of PREVIEW_BROWSING.seed.nested) {
       assert.ok(listing.some((node) => node.path === nested.path))
@@ -1090,6 +1095,18 @@ test('browsing read faults remain independent and persistent until explicit inst
   const runtime = await fixture()
   const instance = 'browsing-fault'
   const list = `/api/resource/list?project=${PREVIEW_PROJECT_ID}`
+  const searchFrames = async (): Promise<{ type: string }[]> => {
+    const response = await fetch(
+      `${runtime.base}/api/resource/list/search?project=${PREVIEW_PROJECT_ID}`,
+      { headers: { 'x-preview-instance': instance } }
+    )
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('content-type') ?? '', /^text\/event-stream/)
+    assert.ok(response.body)
+    const frames: { type: string }[] = []
+    for await (const frame of sseData(response.body)) frames.push(JSON.parse(frame))
+    return frames
+  }
   const tree = `/api/content/projects/${PREVIEW_PROJECT_ID}/tree`
   try {
     await runtime.request('/__preview/reset', instance, {
@@ -1131,6 +1148,11 @@ test('browsing read faults remain independent and persistent until explicit inst
         { status: 503, body: { detail: PREVIEW_BROWSING.listingFailure } },
         attempt
       )
+      assert.deepEqual(
+        await searchFrames(),
+        [{ type: 'error', detail: PREVIEW_BROWSING.listingFailure, status: 503 }],
+        attempt
+      )
       assert.equal((await runtime.request(tree, instance)).status, 200)
       assert.equal(
         (await runtime.request(`/api/resource/tree?project=${PREVIEW_PROJECT_ID}`, instance))
@@ -1144,6 +1166,7 @@ test('browsing read faults remain independent and persistent until explicit inst
     )
     await runtime.request(PREVIEW_BROWSING.recoveryPath, instance, {})
     assert.equal((await runtime.request(list, instance)).status, 200)
+    assert.equal((await searchFrames()).at(-1)?.type, 'complete')
     await runtime.request('/__preview/reset', instance, {
       scene: 'browsing-explorer-failed',
       pageId: 'viewer-explorer',

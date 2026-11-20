@@ -4127,9 +4127,36 @@ export function createPreviewService() {
         const owner = projectBrowsing(instance, project.id)
         const projectExists = (): boolean =>
           instance.projects.all().some((current) => current.id === project.id)
+        // The browsing VFS models local project files only.
+        const linkedRoots = {}
         await archiveResponse(response, async (signal) => {
           const directory = searchListing ? null : url.searchParams.get('directory')
-          const entries = await owner.listing(signal, directory ?? undefined)
+          const startStream = (): void => {
+            response.writeHead(200, {
+              'content-type': 'text/event-stream',
+              'cache-control': 'no-store',
+              'x-preview-simulation': 'true',
+            })
+          }
+          const encodeFrame = (frame: object): string => `data: ${JSON.stringify(frame)}\n\n`
+          let entries: PreviewFileEntry[]
+          try {
+            entries = await owner.listing(signal, directory ?? undefined)
+          } catch (error) {
+            if (
+              !searchListing ||
+              !(error instanceof PreviewBrowsingError) ||
+              instances.get(id) !== instance ||
+              !projectExists()
+            )
+              throw error
+            if (signal.aborted || response.destroyed || !response.writable) return
+            startStream()
+            response.end(
+              encodeFrame({ type: 'error', detail: error.message, status: error.status })
+            )
+            return
+          }
           if (instances.get(id) !== instance) {
             send({ detail: 'preview_instance_reset' }, 409)
             return
@@ -4139,8 +4166,9 @@ export function createPreviewService() {
             return
           }
           if (response.destroyed) return
+          const includeCounts = !searchListing && directory === null
           const childCounts = new Map<string, number>()
-          if (directory === null) {
+          if (includeCounts) {
             for (const entry of entries) {
               const parent = posix.dirname(entry.path)
               childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1)
@@ -4151,14 +4179,11 @@ export function createPreviewService() {
             capability?: PreviewVersions
           ): PreviewResourceNode => {
             const node = resourceNode(entry, capability, childCounts.get(entry.path))
-            if (directory === null) return node
-            // A scoped listing uses the Serve contract and leaves child counts unknown.
-            const { count: _count, ...scoped } = node
-            return scoped
+            if (includeCounts) return node
+            const { count: _count, ...item } = node
+            return item
           }
           if (searchListing) {
-            // The browsing VFS models local project files only. External roots are not mounted here.
-            const linkedRoots = {}
             // Capture one VFS view before a slow response allows other requests to modify it.
             const items = entries.map((entry) => projectNode(entry, versions))
             const canContinue = (): boolean => {
@@ -4169,7 +4194,7 @@ export function createPreviewService() {
             }
             const writeFrame = async (frame: object): Promise<boolean> => {
               if (!canContinue()) return false
-              if (!response.write(`data: ${JSON.stringify(frame)}\n\n`)) {
+              if (!response.write(encodeFrame(frame))) {
                 try {
                   await once(response, 'drain', { signal })
                 } catch (error) {
@@ -4178,11 +4203,7 @@ export function createPreviewService() {
               }
               return canContinue()
             }
-            response.writeHead(200, {
-              'content-type': 'text/event-stream',
-              'cache-control': 'no-store',
-              'x-preview-simulation': 'true',
-            })
+            startStream()
             for (let start = 0; start < items.length; start += PREVIEW_BROWSING.pageSize) {
               const batch = items
                 .slice(start, start + PREVIEW_BROWSING.pageSize)
@@ -4201,7 +4222,7 @@ export function createPreviewService() {
               linked_roots: linkedRoots,
               incremental: { parents: [], supported: false },
             }
-            response.end(`data: ${JSON.stringify(completed)}\n\n`)
+            response.end(encodeFrame(completed))
           } else {
             const withVersions = directory === null || url.searchParams.get('versions') !== 'false'
             const canonical = directory === null ? null : posix.normalize(directory).replace(/\/$/, '')
@@ -4209,6 +4230,7 @@ export function createPreviewService() {
             send({
               ...(scopedDirectory !== null ? { directory: scopedDirectory } : {}),
               items: entries.map((entry) => projectNode(entry, withVersions ? versions : undefined)),
+              linked_roots: linkedRoots,
             })
           }
         })
