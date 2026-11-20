@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from contextlib import contextmanager
 from difflib import unified_diff
 from hashlib import sha256
 from pathlib import PurePosixPath
-from typing import Iterator
+from typing import BinaryIO, Iterator
 from unicodedata import category
 
 from service.content.domain.model import ContentError
@@ -1017,15 +1018,31 @@ class ResourceVersionService:
             None,
         )
 
-    def capture_agent(
-        self,
-        project_id: str,
-        path: str,
-    ) -> tuple[StableContentCapture, str, ObjectDescriptor]:
-        """Capture one exact Agent-produced generation into the streaming CAS path."""
+    @contextmanager
+    def capture_agent_files(
+        self, project_id: str
+    ) -> Iterator[
+        Callable[[str, TurnBaseline | None], tuple[StableContentCapture, ObjectDescriptor | None]]
+    ]:
+        """Compare a project's final files using one bounded spool under its writer."""
 
-        self._require_book_versions(project_id, path)
-        return self._capture_object(project_id, path, self._cas(project_id))
+        cas = self._cas(project_id)
+        with cas.spool() as spool:
+
+            def capture(
+                path: str, baseline: TurnBaseline | None
+            ) -> tuple[StableContentCapture, ObjectDescriptor | None]:
+                stable = self._content.capture_stable(project_id, path, VERSION_MAX_BYTES, spool)
+                if (
+                    baseline is not None
+                    and stable.revision == baseline.revision
+                    and stable.mode_bits == baseline.mode_bits
+                ):
+                    return stable, None
+                self._require_book_versions(project_id, path)
+                return stable, self._publish_capture(cas, spool, stable)
+
+            yield capture
 
     def verify_object(self, project_id: str, object_id: str) -> ObjectDescriptor:
         """Resolve and verify one immutable object independently of its layout."""
@@ -1788,13 +1805,20 @@ class ResourceVersionService:
     ) -> tuple[StableContentCapture, str, ObjectDescriptor]:
         with cas.spool() as spool:
             stable = self._content.capture_stable(project_id, path, VERSION_MAX_BYTES, spool)
-            object_id = cas.put_stream(
-                spool,
-                raw_size_bytes=stable.size,
-                expected_object_id=stable.revision,
-                media_hint=stable.media_type,
-            )
-        return stable, object_id, cas.verify(object_id)
+            descriptor = self._publish_capture(cas, spool, stable)
+        return stable, descriptor.object_id, descriptor
+
+    @staticmethod
+    def _publish_capture(
+        cas: CasStore, spool: BinaryIO, stable: StableContentCapture
+    ) -> ObjectDescriptor:
+        object_id = cas.put_stream(
+            spool,
+            raw_size_bytes=stable.size,
+            expected_object_id=stable.revision,
+            media_hint=stable.media_type,
+        )
+        return cas.verify(object_id)
 
     def _capture_metadata(self, project_id: str, path: str) -> StableContentCapture:
         cas = self._cas(project_id)

@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import PurePath
+from time import perf_counter
 
 from service.content.domain.model import ContentError
 from service.paths import PROJECT_DB_RELATIVE
@@ -40,7 +41,21 @@ CREATED_FILE_ID_PREFIX = "file-"
 IDENTIFIER_LENGTH = 32
 UTF8_ENCODING = "utf-8"
 TOOL_CALL_CHANGE_KIND = "tool_call"
+MILLISECONDS_PER_SECOND = 1000
 _log = logging.getLogger("scholarseed.resources.deliveries")
+_timing_log = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _FinalizationTiming:
+    scan_seconds: float | None = None
+    snapshot_seconds: float | None = None
+    candidate_count: int | None = None
+    compared_count: int | None = None
+    compared_bytes: int | None = None
+    unchanged_count: int | None = None
+    snapshot_count: int | None = None
+    snapshot_bytes: int | None = None
 
 
 def _identity(prefix: str, *parts: str) -> str:
@@ -183,7 +198,13 @@ class ResourceDeliveryService:
             if project_id is None:
                 return ReviewCaptureResult()
             return await self._activities.to_thread(
-                ActivityDomain.RESOURCE, self._finish, project_id, session_id, turn_id, outcome
+                ActivityDomain.RESOURCE,
+                self._finish,
+                project_id,
+                session_id,
+                turn_id,
+                outcome,
+                perf_counter(),
             )
 
     def finalizations(
@@ -409,27 +430,72 @@ class ResourceDeliveryService:
         session_id: str,
         turn_id: str,
         outcome: TurnOutcome,
+        submitted_at: float | None = None,
     ) -> ReviewCaptureResult:
         if outcome is TurnOutcome.UNKNOWN:
             return ReviewCaptureResult()
-        with self._versions.writer(project_id):
-            store = self._store(project_id)
-            first_receipt = store.receive_terminal(session_id, turn_id, outcome)
-            try:
-                return self._finish_locked(project_id, session_id, turn_id, outcome, first_receipt)
-            except Exception as exc:
-                store.record_finalization_error(
-                    session_id, turn_id, getattr(exc, "code", type(exc).__name__)
-                )
-                raise
+        worker_started = perf_counter()
+        submitted_at = worker_started if submitted_at is None else submitted_at
+        timing = _FinalizationTiming()
+        writer_acquired = None
+        result = None
+        writer_started = perf_counter()
+        try:
+            with self._versions.writer(project_id):
+                writer_acquired = perf_counter()
+                store = self._store(project_id)
+                first_receipt = store.receive_terminal(session_id, turn_id, outcome)
+                try:
+                    result = self._finish_locked(
+                        project_id, session_id, turn_id, first_receipt, timing
+                    )
+                except Exception as exc:
+                    store.record_finalization_error(
+                        session_id, turn_id, getattr(exc, "code", type(exc).__name__)
+                    )
+                    raise
+            return result
+        finally:
+            finished = perf_counter()
+            writer_wait = (
+                finished if writer_acquired is None else writer_acquired
+            ) - writer_started
+            parts = {
+                "worker_wait_ms": worker_started - submitted_at,
+                "writer_wait_ms": writer_wait,
+                "scan_ms": timing.scan_seconds,
+                "snapshot_ms": timing.snapshot_seconds,
+            }
+            total = finished - submitted_at
+            parts["other_ms"] = total - sum(value for value in parts.values() if value is not None)
+            parts["total_ms"] = total
+            durations = {
+                name: round(value * MILLISECONDS_PER_SECOND, 3) if value is not None else None
+                for name, value in parts.items()
+            }
+            details = {
+                "project_id": project_id,
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "outcome": outcome.value,
+                "candidate_count": timing.candidate_count,
+                "compared_count": timing.compared_count,
+                "compared_bytes": timing.compared_bytes,
+                "unchanged_count": timing.unchanged_count,
+                "snapshot_count": timing.snapshot_count,
+                "snapshot_bytes": timing.snapshot_bytes,
+                "review_file_count": len(result.file_ids) if result is not None else None,
+                **durations,
+            }
+            _timing_log.info("resources.versions.delivery.timing %s", json.dumps(details))
 
     def _finish_locked(
         self,
         project_id: str,
         session_id: str,
         turn_id: str,
-        outcome: TurnOutcome,
         first_receipt: bool,
+        timing: _FinalizationTiming,
     ) -> ReviewCaptureResult:
         store = self._store(project_id)
         existing = store.review_result(session_id, turn_id)
@@ -472,22 +538,44 @@ class ResourceDeliveryService:
         tool_calls = store.turn_tool_calls(session_id, turn_id)
         baseline_by_path = {item.path: item for item in baselines}
         initial_paths = store.turn_inventory(session_id, turn_id)
-        final_paths = self._supervisor.eligible_paths(
-            project_id, include_missing=tuple(baseline_by_path)
-        )
+        scan_started = perf_counter()
+        try:
+            final_paths = self._supervisor.eligible_paths(
+                project_id, include_missing=tuple(baseline_by_path)
+            )
+        finally:
+            timing.scan_seconds = perf_counter() - scan_started
+        timing.candidate_count = len(final_paths)
         final_snapshots: dict[str, tuple[StableContentCapture, str, ObjectDescriptor]] = {}
         removed: dict[str, TurnBaseline] = {}
-        for path in final_paths:
-            if not self._versions.reviewable(path):
-                continue
-            try:
-                final_snapshots[path] = self._versions.capture_agent(project_id, path)
-            except ContentError as exc:
-                if exc.code == "file_not_found":
-                    if path in baseline_by_path:
-                        removed[path] = baseline_by_path[path]
-                elif exc.code != "file_too_large":
-                    raise
+        compared_count = 0
+        compared_bytes = 0
+        snapshot_started = perf_counter()
+        try:
+            with self._versions.capture_agent_files(project_id) as capture:
+                for path in final_paths:
+                    if not self._versions.reviewable(path):
+                        continue
+                    baseline = baseline_by_path.get(path)
+                    try:
+                        stable, descriptor = capture(path, baseline)
+                        compared_count += 1
+                        compared_bytes += stable.size
+                        if descriptor is not None:
+                            final_snapshots[path] = (stable, descriptor.object_id, descriptor)
+                    except ContentError as exc:
+                        if exc.code == "file_not_found":
+                            if baseline is not None:
+                                removed[path] = baseline
+                        elif exc.code != "file_too_large":
+                            raise
+        finally:
+            timing.snapshot_seconds = perf_counter() - snapshot_started
+            timing.compared_count = compared_count
+            timing.compared_bytes = compared_bytes
+            timing.unchanged_count = compared_count - len(final_snapshots)
+            timing.snapshot_count = len(final_snapshots)
+            timing.snapshot_bytes = sum(stable.size for stable, _, _ in final_snapshots.values())
         additions = {
             path: snapshot
             for path, (snapshot, _object_id, _descriptor) in final_snapshots.items()
@@ -563,9 +651,6 @@ class ResourceDeliveryService:
                 )
                 continue
             assert baseline is not None
-            if stable.revision == baseline.revision and stable.mode_bits == baseline.mode_bits:
-                if change_kind != "move":
-                    continue
             prepared_snapshot, descriptor, annotation_descriptor = self._versions.prepare_agent(
                 project_id,
                 path,

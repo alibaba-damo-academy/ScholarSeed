@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import tempfile
 import threading
 import unittest
@@ -18,8 +20,9 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities, MaintenanceActive
-from service.platform.resources import TurnOutcome, VersionOrigin
+from service.platform.resources import PendingOrigin, TurnOutcome, VersionOrigin
 from service.resources.api.versions import register_version_routes
+from service.resources.persistence.objects import CasStore
 from service.resources.persistence.version import VersionStore
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
@@ -111,6 +114,83 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         await self.deliveries.record_change(
             "session", turn, str(self.target), "update", generation="generation"
         )
+
+    async def test_unchanged_turn_records_resource_finalization_timings(self) -> None:
+        self.target.with_name("other.md").write_bytes(b"other\n")
+        await self.deliveries.begin_turn("session", "turn", self.project.root)
+        prefix = "resources.versions.delivery.timing "
+
+        with (
+            self.assertLogs("service.resources.service.delivery", level="INFO") as logs,
+            patch.object(
+                CasStore, "put_stream", autospec=True, side_effect=CasStore.put_stream
+            ) as put,
+            patch.object(CasStore, "verify", autospec=True, side_effect=CasStore.verify) as verify,
+            patch.object(CasStore, "spool", autospec=True, side_effect=CasStore.spool) as spool,
+        ):
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        put.assert_not_called()
+        verify.assert_not_called()
+        spool.assert_called_once()
+        records = [record.getMessage() for record in logs.records]
+        timings = [
+            json.loads(record.removeprefix(prefix))
+            for record in records
+            if record.startswith(prefix)
+        ]
+        self.assertEqual(len(timings), 1)
+        timing = timings[0]
+        self.assertEqual(timing["session_id"], "session")
+        self.assertEqual(timing["turn_id"], "turn")
+        self.assertEqual(timing["compared_count"], 2)
+        self.assertEqual(timing["compared_bytes"], len(b"initial\nother\n"))
+        self.assertEqual(timing["unchanged_count"], 2)
+        self.assertEqual(timing["snapshot_count"], 0)
+        self.assertEqual(timing["snapshot_bytes"], 0)
+        self.assertEqual(timing["review_file_count"], 0)
+        self.assertEqual(result.file_ids, ())
+        phase_keys = ("worker_wait_ms", "writer_wait_ms", "scan_ms", "snapshot_ms", "other_ms")
+        self.assertTrue(all(timing[key] >= 0 for key in phase_keys))
+        self.assertAlmostEqual(
+            sum(timing[key] for key in phase_keys), timing["total_ms"], delta=0.01
+        )
+
+    async def assert_external_edit_finalized(self, expected: bytes) -> None:
+        result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+        self.assertEqual(result.file_ids, ())
+        store = self.deliveries._store(self.project.id)
+        path = "resources/notes.md"
+        working = store.capability_states((path,))[path]
+        self.assertEqual(working.working_revision, f"sha256:{sha256(expected).hexdigest()}")
+        pending = store.pending(working.file_id)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending.origin, PendingOrigin.EXTERNAL)
+        self.assertFalse(pending.needs_review)
+
+    async def test_same_size_external_edit_with_restored_mtime_is_captured(self) -> None:
+        await self.deliveries.begin_turn("session", "turn", self.project.root)
+        baseline = self.target.stat()
+        updated = b"updated\n"
+        self.target.write_bytes(updated)
+        os.utime(self.target, ns=(baseline.st_atime_ns, baseline.st_mtime_ns))
+        current = self.target.stat()
+        self.assertEqual(current.st_size, baseline.st_size)
+        self.assertEqual(current.st_mtime_ns, baseline.st_mtime_ns)
+        await self.assert_external_edit_finalized(updated)
+
+    async def test_atomic_replacement_with_same_size_and_mtime_is_captured(self) -> None:
+        await self.deliveries.begin_turn("session", "turn", self.project.root)
+        baseline = self.target.stat()
+        updated = b"swapped\n"
+        replacement = self.target.with_name("replacement.tmp")
+        replacement.write_bytes(updated)
+        os.utime(replacement, ns=(baseline.st_atime_ns, baseline.st_mtime_ns))
+        replacement.replace(self.target)
+        current = self.target.stat()
+        self.assertEqual(current.st_size, baseline.st_size)
+        self.assertEqual(current.st_mtime_ns, baseline.st_mtime_ns)
+        await self.assert_external_edit_finalized(updated)
 
     async def test_turn_scans_once_and_records_prior_presence_outside_version_policy(self) -> None:
         self.target.with_name("opaque.bin").write_bytes(b"unmanaged input")
