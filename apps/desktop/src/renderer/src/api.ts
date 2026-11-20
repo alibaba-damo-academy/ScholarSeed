@@ -3279,7 +3279,7 @@ export async function listProjects(
  */
 export type ProjectCreationResult =
   | { kind: 'created'; project: Project }
-  | { kind: 'rejected'; maintenance: boolean }
+  | { kind: 'rejected'; maintenance: boolean; code?: string }
   | { kind: 'unknown'; operation?: string }
 
 export function reportProjectCreation(event: {
@@ -3380,7 +3380,7 @@ export async function submitProjectCreation(
           status,
           code,
         })
-        return rejected ? { kind: 'rejected', maintenance } : { kind: 'unknown' }
+        return rejected ? { kind: 'rejected', maintenance, code } : { kind: 'unknown' }
       }
     } else {
       reportProjectCreation({ attemptId, stage, result: 'reuse_operation', operation })
@@ -3411,7 +3411,9 @@ export async function submitProjectCreation(
           status,
           code,
         })
-        return canRetry ? { kind: 'rejected', maintenance: false } : { kind: 'unknown', operation }
+        return canRetry
+          ? { kind: 'rejected', maintenance: false, code }
+          : { kind: 'unknown', operation }
       }
     }
     if (!response) return { kind: 'unknown' }

@@ -4703,11 +4703,15 @@ function ArchivedProjectsPage(): React.JSX.Element {
       const { ok, fail, errors } = await applyToProjects(targets, (project) =>
         forgetProject(project.id)
       )
+      const failureMessage =
+        errors[0] === 'content_directory_busy'
+          ? projectText('notices.removeBusy')
+          : projectText('notices.removeFailed', { code: errors[0] })
       setDeleteTargets([])
       if (single) {
         if (fail > 0) {
           toast({
-            title: projectText('notices.removeFailed', { code: errors[0] }),
+            title: failureMessage,
             tone: 'error',
           })
           return
@@ -4716,8 +4720,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
       } else {
         toast({
           title: t('accountPanel.archives.batchSummary', { ok, fail }),
-          description:
-            fail > 0 ? projectText('notices.removeFailed', { code: errors[0] }) : undefined,
+          description: fail > 0 ? failureMessage : undefined,
           tone: fail === 0 ? 'success' : 'error',
         })
       }

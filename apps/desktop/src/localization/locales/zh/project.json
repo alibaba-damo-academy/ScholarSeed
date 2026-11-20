@@ -60,6 +60,7 @@
   },
   "notices": {
     "removeFailed": "未能移除项目（{{code}}），请确认原因后重试。",
+    "removeBusy": "书深正在处理任务或文件，请等待完成后重试移除。",
     "archivesReadFailed": "无法读取已归档的项目，请重试。",
     "renamed": "已改名（本地目录名不变）",
     "archived": "已归档，项目从默认列表收起，可随时在归档区恢复",

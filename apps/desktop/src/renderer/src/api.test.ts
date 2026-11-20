@@ -908,6 +908,30 @@ test('project creation preserves backend-managed roots and explicit selected dir
   }
 })
 
+test('project creation exposes a busy folder rejection', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  const operation = 'b'.repeat(32)
+  globalThis.fetch = async (_input, init) =>
+    init?.method === 'POST'
+      ? Response.json({ operation }, { status: 202 })
+      : Response.json({ operation, state: 'failed', error: 'ERR_LEASE_BUSY' })
+  try {
+    assert.deepEqual(
+      await submitProjectCreation({ name: 'Project', path: '/workspace' }, 'a'.repeat(32)),
+      { kind: 'rejected', maintenance: false, code: 'ERR_LEASE_BUSY' }
+    )
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
 test('a rejected create recovers and an unknown operation is queried without replaying the write', async () => {
   const previousFetch = globalThis.fetch
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
