@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from functools import partial
 from uuid import uuid4
 
 from service.content.domain.model import (
@@ -52,17 +53,21 @@ class ContentPhase(StrEnum):
 def content_phase(operation_id: str, phase: ContentPhase) -> Iterator[None]:
     started = time.monotonic()
     error_type = ""
+    errno = winerror = None
     _log.info("content_operation_phase operation_id=%s phase=%s event=started", operation_id, phase)
     with measure_directory_validation() as metrics:
         try:
             yield
         except BaseException as error:
             error_type = type(error).__name__
+            if isinstance(error, OSError):
+                errno, winerror = error.errno, getattr(error, "winerror", None)
             raise
         finally:
             _log.info(
                 "content_operation_phase operation_id=%s phase=%s event=%s elapsed_seconds=%.3f "
-                "validation_calls=%s validation_directories=%s validation_seconds=%.3f error_type=%s",
+                "validation_calls=%s validation_directories=%s validation_seconds=%.3f "
+                "error_type=%s errno=%s winerror=%s",
                 operation_id,
                 phase,
                 "failed" if error_type else "finished",
@@ -71,6 +76,8 @@ def content_phase(operation_id: str, phase: ContentPhase) -> Iterator[None]:
                 metrics.directories,
                 metrics.elapsed_seconds,
                 error_type,
+                errno,
+                winerror,
             )
 
 
@@ -223,7 +230,7 @@ class ContentOperations:
         self._ready = asyncio.Event()
         self._startup: asyncio.Task[None] | None = None
         self._startup_error: Exception | None = None
-        self._stop_startup = asyncio.Event()
+        self._stopping = asyncio.Event()
 
     async def start(self, *, defer_until_open: bool = False) -> None:
         if self._worker is not None or self._startup is not None or self._closing:
@@ -244,7 +251,7 @@ class ContentOperations:
 
     async def _start_after_admission(self, batches: RecoveryBatches | None = None) -> None:
         opened = asyncio.create_task(self._activities.wait_open())
-        stopped = asyncio.create_task(self._stop_startup.wait())
+        stopped = asyncio.create_task(self._stopping.wait())
         try:
             await asyncio.wait((opened, stopped), return_when=asyncio.FIRST_COMPLETED)
             if self._closing:
@@ -399,6 +406,14 @@ class ContentOperations:
             or self._worker.done()
             or not self._ready.is_set()
         ):
+            _log.warning(
+                "content_operation_rejected command=%s code=content_operations_unavailable "
+                "worker_stopped=%s startup_failed=%s closing=%s",
+                type(command).__name__,
+                self._worker is not None and self._worker.done(),
+                self._startup_error is not None,
+                self._closing,
+            )
             raise MaintenanceActive("content_operations_unavailable")
         if self._activities.snapshot().phase is not ActivityPhase.OPEN:
             raise MaintenanceActive("update_maintenance")
@@ -536,31 +551,76 @@ class ContentOperations:
             # A qualified owner classified this as project-local. No terminal
             # write may consume the durable reconciliation/creation/removal.
             return
-        with self._activities.enter(ActivityDomain.RESOURCE, root=True):
-            if (
-                row.state is OperationState.FAILED
-                and row.error != DIRECTORY_BUSY
-                and any(
-                    creation.operation_id == identity
-                    for creation in self._catalog.project_creations()
-                )
-            ):
-                self._catalog.defer_project_creation(identity, now=row.recovery_at)
-                row.error = PROJECT_CREATION_RECOVERY_REQUIRED
-                return
-            self._catalog.finish_operation(
-                identity, row.state, row.result, row.error, now=row.recovery_at
+        if (
+            row.state is OperationState.FAILED
+            and row.error != DIRECTORY_BUSY
+            and any(
+                creation.operation_id == identity for creation in self._catalog.project_creations()
             )
+        ):
+            self._catalog.defer_project_creation(identity, now=row.recovery_at)
+            row.error = PROJECT_CREATION_RECOVERY_REQUIRED
+            return
+        self._catalog.finish_operation(
+            identity, row.state, row.result, row.error, now=row.recovery_at
+        )
+
+    async def _with_open_admission(
+        self, identity: str, stage: str, action: Callable[[], None]
+    ) -> bool:
+        # Accepting a command does not hold an execution lease while it is queued.
+        # A running command can also release its last lease before result persistence.
+        while True:
+            try:
+                lease = self._activities.enter(ActivityDomain.RESOURCE, root=True)
+            except MaintenanceActive:
+                if self._closing:
+                    return False
+                snapshot = self._activities.snapshot()
+                _log.info(
+                    "content_operation_waiting operation_id=%s stage=%s instance_id=%s "
+                    "phase=%s generation=%s workbench_ready=%s",
+                    identity,
+                    stage,
+                    snapshot.instance_id,
+                    snapshot.phase.value,
+                    snapshot.generation,
+                    self._activities.workbench_ready,
+                )
+                opened = asyncio.create_task(self._activities.wait_open())
+                stopped = asyncio.create_task(self._stopping.wait())
+                try:
+                    await asyncio.wait((opened, stopped), return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for task in (opened, stopped):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(opened, stopped, return_exceptions=True)
+                if self._closing:
+                    return False
+                continue
+            with lease:
+                action()
+            return True
 
     async def _run(self) -> None:
         try:
             while (identity := await self._queue.get()) is not None:
                 row = self._operations[identity]
+                if (
+                    not self._closing
+                    and row.state is OperationState.QUEUED
+                    and await self._with_open_admission(
+                        identity, "start", partial(self._catalog.start_operation, identity)
+                    )
+                ):
+                    row.state = OperationState.RUNNING
                 if self._closing:
                     row.state = OperationState.FAILED
                     row.error = "content_operations_closed"
                     try:
-                        self._save_result(identity, row)
+                        with self._activities.enter(ActivityDomain.RESOURCE, root=True):
+                            self._save_result(identity, row)
                     except MaintenanceActive:
                         # Closed admission is not permission to write. Cold
                         # exclusive startup will fence the durable queued row.
@@ -568,10 +628,6 @@ class ContentOperations:
                     row.finished_at = time.monotonic()
                     row.finished.set()
                     continue
-                if row.state is OperationState.QUEUED:
-                    with self._activities.enter(ActivityDomain.RESOURCE, root=True):
-                        self._catalog.start_operation(identity)
-                    row.state = OperationState.RUNNING
                 execution_started = time.monotonic()
                 _log.info(
                     "content_operation_started operation_id=%s command=%s queue_seconds=%.3f",
@@ -614,7 +670,13 @@ class ContentOperations:
                             # In particular, legacy creation deferral cannot turn
                             # core database or release errors into a usable app.
                             raise
-                self._save_result(identity, row)
+                if not await self._with_open_admission(
+                    identity, "save_result", partial(self._save_result, identity, row)
+                ):
+                    # The durable row/effect remains for qualified startup recovery.
+                    row.state = OperationState.FAILED
+                    row.result = None
+                    row.error = OPERATION_INTERRUPTED
                 row.finished_at = time.monotonic()
                 row.finished.set()
                 _log.info(
@@ -644,7 +706,7 @@ class ContentOperations:
 
     async def aclose(self) -> None:
         self._closing = True
-        self._stop_startup.set()
+        self._stopping.set()
         self._ready.set()
         cancellation: asyncio.CancelledError | None = None
         if self._startup is not None:

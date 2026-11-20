@@ -1,4 +1,5 @@
 export const API_DIAGNOSTIC_PREFIX = '[api-request]'
+export const PROJECT_CREATION_DIAGNOSTIC_PREFIX = '[project-creation]'
 export const API_DIAGNOSTIC_HEADER = 'x-scholarseed-diagnostic-id'
 export const HTTP_LATENCY_DIAGNOSTIC_PREFIX = '[http-latency]'
 export const REQUEST_TIMEOUT_ERROR_NAME = 'TimeoutError'

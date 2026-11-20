@@ -17,7 +17,7 @@ export function Welcome({
   onComplete,
   onSkip,
 }: {
-  onComplete: (project: Project) => Promise<void>
+  onComplete: (project: Project, attemptId: string) => Promise<void>
   onSkip: () => void
 }): React.JSX.Element {
   const { t } = useTranslation('onboarding')
@@ -32,9 +32,9 @@ export function Welcome({
         onCancel={() => {
           setCreating(false)
         }}
-        onDone={async (_message, project) => {
-          if (!project) throw new Error('onboarding_project_missing')
-          await onComplete(project)
+        onDone={async (_message, project, attemptId) => {
+          if (!project || !attemptId) throw new Error('onboarding_project_missing')
+          await onComplete(project, attemptId)
         }}
         footerLeading={(formBusy) => (
           <Button variant="ghost" disabled={formBusy} onClick={onSkip}>

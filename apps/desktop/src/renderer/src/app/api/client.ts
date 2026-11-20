@@ -48,7 +48,8 @@ export async function apiFetch(path: string, init?: ApiFetchInit): Promise<Respo
 async function requestJson<T>(
   path: string,
   init: RequestInit,
-  timeoutMs?: number
+  timeoutMs?: number,
+  onStatus?: (status: number) => void
 ): Promise<T | null> {
   const startedAt = performance.now()
   let response: Response | undefined
@@ -62,6 +63,7 @@ async function requestJson<T>(
   try {
     const r = await apiFetch(path, { ...init, ...(ctl ? { signal: ctl.signal } : {}) })
     response = r
+    onStatus?.(r.status)
     if (r.status === 401 && !path.startsWith('/api/auth/')) {
       window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
       return null
@@ -80,9 +82,10 @@ async function requestJson<T>(
 export function getJson<T>(
   path: string,
   timeoutMs?: number,
-  options?: Pick<RequestInit, 'cache'>
+  options?: ApiFetchInit,
+  onStatus?: (status: number) => void
 ): Promise<T | null> {
-  return requestJson<T>(path, options ?? {}, timeoutMs)
+  return requestJson<T>(path, options ?? {}, timeoutMs, onStatus)
 }
 
 export async function postJson<T>(
