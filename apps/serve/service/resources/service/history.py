@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import ExitStack, contextmanager
+from contextvars import copy_context
 from difflib import unified_diff
 from hashlib import sha256
+from itertools import batched
 from pathlib import PurePosixPath
-from typing import Iterator
+from typing import BinaryIO, Generator, Iterator
 from unicodedata import category
 
 from service.content.domain.model import ContentError
@@ -80,6 +83,7 @@ REVIEW_SEAL_EVENTS = {
 VERSION_ALIAS_MAX_LENGTH = 80
 VERSION_ALIAS_ACTOR = "user"
 VERSION_HISTORY_ORDERS = frozenset({"newest", "oldest"})
+AGENT_CAPTURE_WORKERS = 4
 
 
 class ResourceVersionService:
@@ -1021,11 +1025,63 @@ class ResourceVersionService:
         self,
         project_id: str,
         path: str,
-    ) -> tuple[StableContentCapture, str, ObjectDescriptor]:
-        """Capture one exact Agent-produced generation into the streaming CAS path."""
+        cas: CasStore,
+        spool: BinaryIO,
+    ) -> tuple[StableContentCapture, ObjectDescriptor | None] | ContentError:
+        """Capture stable bytes and verify a reusable object without taking the writer."""
 
-        self._require_book_versions(project_id, path)
-        return self._capture_object(project_id, path, self._cas(project_id))
+        try:
+            self._require_book_versions(project_id, path)
+            stable = self._content.capture_stable(project_id, path, VERSION_MAX_BYTES, spool)
+            return stable, cas.verify_existing(stable.revision)
+        except ContentError as error:
+            return error
+
+    def capture_agent_files(
+        self, project_id: str, paths: tuple[str, ...]
+    ) -> Generator[
+        tuple[str, tuple[StableContentCapture, str, ObjectDescriptor] | ContentError], None, None
+    ]:
+        """Capture a bounded batch while the caller holds the project writer."""
+        if not paths:
+            return
+        cas = self._cas(project_id)
+        with ThreadPoolExecutor(max_workers=AGENT_CAPTURE_WORKERS) as executor:
+            for batch in batched(paths, AGENT_CAPTURE_WORKERS):
+                with ExitStack() as stack:
+                    spools = [stack.enter_context(cas.spool()) for _ in batch]
+                    futures = []
+                    try:
+                        for path, spool in zip(batch, spools, strict=True):
+                            futures.append(
+                                executor.submit(
+                                    copy_context().run,
+                                    self.capture_agent,
+                                    project_id,
+                                    path,
+                                    cas,
+                                    spool,
+                                )
+                            )
+                        for path, spool, future in zip(batch, spools, futures, strict=True):
+                            result = future.result()
+                            if isinstance(result, ContentError):
+                                yield path, result
+                                continue
+                            stable, descriptor = result
+                            object_id = stable.revision
+                            if descriptor is None:
+                                cas.put_stream(
+                                    spool,
+                                    raw_size_bytes=stable.size,
+                                    expected_object_id=object_id,
+                                    media_hint=stable.media_type,
+                                )
+                                descriptor = cas.verify(object_id)
+                            yield path, (stable, object_id, descriptor)
+                    finally:
+                        # A failed capture must not close spools that other workers still use.
+                        wait(futures)
 
     def verify_object(self, project_id: str, object_id: str) -> ObjectDescriptor:
         """Resolve and verify one immutable object independently of its layout."""
