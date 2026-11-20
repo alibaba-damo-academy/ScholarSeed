@@ -690,6 +690,12 @@ class CasStore:
                 pass
         return descriptor
 
+    def verify_existing(self, object_id: str) -> ObjectDescriptor | None:
+        """Read an existing object while the caller's writer protects it from GC."""
+        if self._object_path(object_id).is_dir():
+            return self.verify(object_id)
+        return None
+
     def chunk_payload_path(self, chunk_id: str) -> Path:
         """Expose a chunk path for scrubbers and deterministic corruption tests."""
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import closing
 from dataclasses import asdict
 from pathlib import PurePath
 
@@ -477,17 +478,16 @@ class ResourceDeliveryService:
         )
         final_snapshots: dict[str, tuple[StableContentCapture, str, ObjectDescriptor]] = {}
         removed: dict[str, TurnBaseline] = {}
-        for path in final_paths:
-            if not self._versions.reviewable(path):
-                continue
-            try:
-                final_snapshots[path] = self._versions.capture_agent(project_id, path)
-            except ContentError as exc:
-                if exc.code == "file_not_found":
+        paths = tuple(path for path in final_paths if self._versions.reviewable(path))
+        with closing(self._versions.capture_agent_files(project_id, paths)) as captures:
+            for path, capture in captures:
+                if not isinstance(capture, ContentError):
+                    final_snapshots[path] = capture
+                elif capture.code == "file_not_found":
                     if path in baseline_by_path:
                         removed[path] = baseline_by_path[path]
-                elif exc.code != "file_too_large":
-                    raise
+                elif capture.code != "file_too_large":
+                    raise capture
         additions = {
             path: snapshot
             for path, (snapshot, _object_id, _descriptor) in final_snapshots.items()
