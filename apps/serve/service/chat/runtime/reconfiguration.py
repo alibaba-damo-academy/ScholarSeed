@@ -56,6 +56,7 @@ class ReconfigurationOperation:
     state: CommandState = CommandState.ACCEPTED
     safe_error: str = ""
     commit_requested: bool = False
+    warmup_only: bool = False
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -129,11 +130,14 @@ class HostReconfiguration:
         apply: Callable[[ActivityLease], Awaitable[CommandReceipt]],
         warm: Callable[[ActivityLease], Awaitable[CommandReceipt]] | None = None,
         commit: Callable[[], None] | None = None,
+        warmup_only: bool = False,
     ) -> dict[str, Any]:
         try:
             UUID(request_id)
         except (ValueError, TypeError, AttributeError):
             raise ValueError(RECONFIGURATION_INVALID) from None
+        if warmup_only and (warm is None or commit is not None):
+            raise ValueError(RECONFIGURATION_INVALID)
         existing = self._operations.get(request_id)
         if existing is not None:
             if (
@@ -141,11 +145,13 @@ class HostReconfiguration:
                 existing.user_id,
                 existing.model_id,
                 existing.commit_requested,
+                existing.warmup_only,
             ) != (
                 session_id,
                 user_id,
                 model_id,
                 commit is not None,
+                warmup_only,
             ):
                 raise ValueError(RECONFIGURATION_STALE)
             return existing.payload()
@@ -164,7 +170,12 @@ class HostReconfiguration:
             owner.close()
             raise
         operation = ReconfigurationOperation(
-            request_id, session_id, user_id, model_id, commit_requested=commit is not None
+            request_id,
+            session_id,
+            user_id,
+            model_id,
+            commit_requested=commit is not None,
+            warmup_only=warmup_only,
         )
         self._operations[request_id] = operation
         self._latest_request_id = request_id
@@ -213,7 +224,8 @@ class HostReconfiguration:
                             or receipt.safe_error == RESOURCE_HOST_CONFIGURATION_UNCERTAIN
                         ):
                             reopen = False
-                            generation = self._activities.begin()
+                            if not warmup_only:
+                                generation = self._activities.begin()
                             operation.state = CommandState.RESTART_REQUIRED
                             operation.safe_error = (
                                 receipt.safe_error or RESOURCE_HOST_CONFIGURATION_UNCERTAIN
@@ -233,6 +245,10 @@ class HostReconfiguration:
                                 raise RuntimeError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN)
                             operation.state = receipt.state
                             operation.safe_error = receipt.safe_error
+                            return
+                        if warmup_only:
+                            operation.state = CommandState.REJECTED
+                            operation.safe_error = RESOURCE_HOST_CONFIGURATION_CONFLICT
                             return
                         generation = self._activities.begin_if_idle()
                         if generation is None:
@@ -333,16 +349,24 @@ class HostReconfiguration:
                             else RESOURCE_HOST_BUSY
                         )
                     )
-                except BaseException:
+                except BaseException as error:
                     reopen = False
                     operation.state = CommandState.RESTART_REQUIRED
                     operation.safe_error = RESOURCE_HOST_CONFIGURATION_UNCERTAIN
-                    self._logger.exception(
-                        "runtime_host_reconfiguration_failed request_id=%s", request_id
-                    )
+                    if warmup_only:
+                        self._logger.warning(
+                            "runtime_host_warmup_failed request_id=%s error_type=%s",
+                            request_id,
+                            type(error).__name__,
+                        )
+                    else:
+                        self._logger.exception(
+                            "runtime_host_reconfiguration_failed request_id=%s", request_id
+                        )
                 finally:
                     if (
                         not reopen
+                        and not warmup_only
                         and generation is None
                         and self._activities.snapshot().phase is ActivityPhase.OPEN
                     ):
@@ -356,9 +380,11 @@ class HostReconfiguration:
                         owner.close()
                         self._activities.release_for_restart(generation)
                     self._logger.info(
-                        "runtime_host_reconfiguration request_id=%s session_id=%s state=%s code=%s",
+                        "runtime_host_reconfiguration request_id=%s session_id=%s warmup_only=%s "
+                        "state=%s code=%s",
                         request_id,
                         session_id,
+                        warmup_only,
                         operation.state.value,
                         operation.safe_error,
                     )

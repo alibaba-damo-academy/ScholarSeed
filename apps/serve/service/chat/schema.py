@@ -29,6 +29,7 @@ class RuntimePreparationRequest(BaseModel):
     model_id: str
     service_instance_id: str
     persist_default: StrictBool = False
+    warmup_only: StrictBool = False
 
 
 class PersonalApiModel(BaseModel):

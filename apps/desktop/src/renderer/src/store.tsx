@@ -157,7 +157,6 @@ import {
   PREPARATION_INSTANCE_CHANGED_ERROR,
   PREPARATION_SUPERSEDED_ERROR,
   RuntimePreparationController,
-  runtimePreparationRequestFailure,
   preparationContextMatches,
   preparationResultMatches,
   type PreparationContext,
@@ -1907,7 +1906,7 @@ export function StoreProvider({
     return preparationControllerRef.current
   }, [])
   const prepareModel = useCallback(
-    (modelId: string, persistDefault = false): Promise<RuntimePreparation> => {
+    (modelId: string, persistDefault = false, warmupOnly = false): Promise<RuntimePreparation> => {
       const instance = stateRef.current.serviceInstanceId
       if (!instance) return Promise.reject(new Error(PREPARATION_INSTANCE_CHANGED_ERROR))
       if (!persistDefault && preparationSnapshot(stateRef.current).model !== modelId) {
@@ -1940,7 +1939,7 @@ export function StoreProvider({
       }
       preparationIntentRef.current = context
       return preparationController()
-        .prepare(modelId, persistDefault)
+        .prepare(modelId, persistDefault, warmupOnly)
         .finally(() => {
           if (preparationSequenceRef.current !== sequence) return
           setState((current) =>
@@ -2107,13 +2106,11 @@ export function StoreProvider({
       )
         return
       console.info('[runtime-preparation]', JSON.stringify({ stage: 'startup-target', ...context }))
-      void prepareModel(modelId).catch((error: unknown) => {
+      void prepareModel(modelId, false, true).catch((error: unknown) => {
         if (error instanceof Error && error.message === PREPARATION_SUPERSEDED_ERROR) return
-        setState((latest) =>
-          preparationContextMatches(preparationSnapshot(latest), context)
-            ? { ...latest, foregroundError: runtimePreparationRequestFailure(error) }
-            : latest
-        )
+        console.info('[runtime-preparation] startup request failed', {
+          errorType: error instanceof Error ? error.name : 'unknown',
+        })
       })
     })
     return () => {
