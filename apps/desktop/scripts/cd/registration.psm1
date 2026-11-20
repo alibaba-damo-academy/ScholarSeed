@@ -10,26 +10,79 @@ function Test-CiOrphanPath([string]$InstallRoot, [string]$AllowedRoot) {
     if ($install -notmatch '\\apps\\desktop\\release\\(?:dev|preview|release)-win32-x86_64\\native-install\\app$') { return $false }
     $attributes = [IO.File]::GetAttributes($allowed)
     if (($attributes -band [IO.FileAttributes]::Directory) -eq 0) { return $false }
+    return -not (Get-InstallDirectoryBlocker $install)
+}
+
+function Get-InstallDirectoryBlocker([string]$Install) {
     # Inspect all existing ancestors: missing/offline drives, denied paths and reparse
     # points must not be interpreted as an orphaned installation.
     $cursor = $install
-    $missing = $false
     while ($cursor) {
         try {
             $attributes = [IO.File]::GetAttributes($cursor)
-            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-            if (($attributes -band [IO.FileAttributes]::Directory) -eq 0) { return $false }
-            if ($cursor -eq $install) { return $false }
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return 'redirected-install-path' }
+            if (($attributes -band [IO.FileAttributes]::Directory) -eq 0) { return 'unexpected-install-path-type' }
+            if ($cursor -eq $install) { return 'installation-directory-present' }
         } catch {
             $cause = $_.Exception.InnerException
             if ($cause -isnot [IO.FileNotFoundException] -and $cause -isnot [IO.DirectoryNotFoundException]) { throw }
-            if ($cursor -eq $install) { $missing = $true }
         }
         $parent = [IO.Directory]::GetParent($cursor)
         if ($null -eq $parent) { break }
         $cursor = $parent.FullName
     }
-    return $missing
+}
+
+function Write-CiVelopackBlocker([string]$Install, [string]$Reason) {
+    $record = @{status='remediation-blocked';kind='velopack';reason=$Reason;installLocation=$Install}
+    [Console]::Error.WriteLine('[installer-preflight] ' + (ConvertTo-Json -Compress -InputObject $record))
+}
+
+function Repair-CiVelopackRegistration(
+    [Microsoft.Win32.RegistryKey]$Base,
+    [string]$KeyName,
+    [string]$Install,
+    [string]$Version
+) {
+    if (-not $Install) { return $false }
+    $expected = '"' + [IO.Path]::Combine($Install, 'Update.exe') + '" --uninstall'
+    $key = $Base.OpenSubKey($KeyName, $false)
+    if ($null -eq $key) { return $false }
+    try {
+        if ($key.SubKeyCount -ne 0) { return $false }
+        $values = @{ InstallLocation = $Install; UninstallString = $expected; DisplayVersion = $Version }
+        foreach ($name in $values.Keys) {
+            if ($name -notin $key.GetValueNames() -or
+                $key.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::String -or
+                $key.GetValue($name) -cne $values[$name]) { return $false }
+        }
+        $reason = Get-InstallDirectoryBlocker $Install
+        if ($reason) {
+            Write-CiVelopackBlocker $Install $reason
+            return $false
+        }
+        $before = Get-RegistrationSnapshot $key
+    } finally { $key.Dispose() }
+
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($Install+'\', [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($processes.Count) {
+        Write-CiVelopackBlocker $Install 'installation-process-active'
+        return $false
+    }
+
+    $key = $Base.OpenSubKey($KeyName, $false)
+    if ($null -eq $key) { return $false }
+    try {
+        if ((Get-RegistrationSnapshot $key) -cne $before -or (Get-InstallDirectoryBlocker $Install)) {
+            throw 'CI Velopack registration changed before remediation'
+        }
+    } finally { $key.Dispose() }
+    $Base.DeleteSubKey($KeyName, $true)
+    $remaining = $Base.OpenSubKey($KeyName, $false)
+    if ($remaining) { $remaining.Dispose(); throw 'CI Velopack registration remediation readback failed' }
+    return $true
 }
 
 function Get-RegistrationSnapshot([Microsoft.Win32.RegistryKey]$Key) {
@@ -97,4 +150,4 @@ function Repair-CiLegacyRegistration(
     return $true
 }
 
-Export-ModuleMember -Function Test-CiOrphanPath, Repair-CiLegacyRegistration
+Export-ModuleMember -Function Test-CiOrphanPath, Repair-CiLegacyRegistration, Repair-CiVelopackRegistration
