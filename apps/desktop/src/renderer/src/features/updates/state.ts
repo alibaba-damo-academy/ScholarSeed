@@ -15,7 +15,7 @@
  */
 
 import type { TFunction } from 'i18next'
-import { useState, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 
 import { primaryLanguageSubtag } from '../../../../locale.ts'
 import {
@@ -177,11 +177,41 @@ export const UPDATE_ENTRY_PHASES: ReadonlySet<UpdateSnapshot['phase']> = new Set
   'rolled-back',
 ])
 
+export function isUpdateCompletionVisible(state: UpdateSnapshot | null): boolean {
+  return state?.startupVerification === 'verified' && !state.candidate && !updateFailureOf(state)
+}
+
 export function isUpdateEntryVisible(state: UpdateSnapshot | null): boolean {
   return (
-    state !== null &&
-    (state.startupVerification === 'verified' || UPDATE_ENTRY_PHASES.has(state.phase))
+    state !== null && (isUpdateCompletionVisible(state) || UPDATE_ENTRY_PHASES.has(state.phase))
   )
+}
+
+export function useUpdateEntryPopup(state: UpdateSnapshot | null) {
+  const [manuallyOpened, setManuallyOpened] = useState(false)
+  const [openedForCompletion, setOpenedForCompletion] = useState(false)
+  const completionVisible = isUpdateCompletionVisible(state)
+  const hasCandidate = Boolean(state?.candidate)
+
+  useEffect(() => {
+    if (completionVisible) setOpenedForCompletion(true)
+    else if (!hasCandidate) setOpenedForCompletion(false)
+  }, [completionVisible, hasCandidate])
+
+  return {
+    open: manuallyOpened || completionVisible || (openedForCompletion && hasCandidate),
+    autoFocus: manuallyOpened,
+    setManuallyOpened,
+    setOpen(open: boolean): void {
+      setManuallyOpened(open)
+      if (!open) {
+        setOpenedForCompletion(false)
+        if (completionVisible) {
+          void window.scholarseed.acknowledgeUpdateAnnouncement('completion')
+        }
+      }
+    },
+  }
 }
 
 export type UpdateEntryBadge = 'none' | 'unread' | 'warning' | 'ready'

@@ -230,7 +230,7 @@ declare global {
     repairUpdate: () => Promise<StartUpdateResult>
     cancelUpdate: () => Promise<StartUpdateResult>
     /** 收起「发现新版本」弹窗；确认由主进程落盘，跨客户端重启有效。false = 当前没有候选包。 */
-    acknowledgeUpdateAnnouncement: () => Promise<boolean>
+    acknowledgeUpdateAnnouncement: (kind?: 'completion') => Promise<boolean>
     onUpdateState: (cb: (state: UpdateSnapshot) => void) => () => void
   }
   interface Window {

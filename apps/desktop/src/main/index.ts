@@ -747,6 +747,18 @@ let latestUpdateCandidate: LatestVersionMeta | null = null
 let lastPreparationDeferral: string | null = null
 
 function publishUpdateSnapshot(next: UpdateSnapshot, archiveLimitedId?: string): UpdateSnapshot {
+  // Once superseded, the previous success must not come back when the new result clears.
+  if (
+    updateStartupVerification === 'verified' &&
+    (next.candidate ||
+      next.phase === 'failed' ||
+      next.phase === 'rolled-back' ||
+      next.error ||
+      next.errorFallback ||
+      next.rollbackVersion !== undefined)
+  ) {
+    updateStartupVerification = undefined
+  }
   const stamped = withAnnouncedKey({
     ...next,
     startupVerification: updateStartupVerification,
@@ -4485,10 +4497,17 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     return { ok: true }
   })
 
-  // 弹窗收起确认。身份由主进程按当前候选自己算，不接受渲染层传来的字符串 —— 那等于把
-  // 「往更新状态目录写任意内容」的授权交出去。落盘后重发快照，两个入口表面同时生效。
-  ipcMain.handle('scholarseed:update-announce-ack', (): boolean => {
+  // A completion receipt is session-scoped. Candidate acknowledgements use the
+  // main snapshot's identity and are persisted independently.
+  ipcMain.handle('scholarseed:update-announce-ack', (_event, kind: unknown): boolean => {
     if (!desktopWorkbenchReady()) return false
+    if (kind === 'completion') {
+      if (updateStartupVerification !== 'verified') return false
+      updateStartupVerification = undefined
+      publishUpdateSnapshot(currentUpdateSnapshot())
+      return true
+    }
+    if (kind !== undefined) return false
     const key = updateCandidateKey(currentUpdateSnapshot().candidate)
     if (!key) return false
     updater.writeAnnouncedKey(key)

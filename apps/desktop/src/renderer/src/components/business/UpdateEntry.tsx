@@ -6,6 +6,7 @@ import {
   isUpdateEntryVisible,
   updateEntryBadgeOf,
   useUpdateAnnouncement,
+  useUpdateEntryPopup,
   useUpdateState,
 } from '../../features/updates/state'
 import { IconButton, Popover, PopoverContent, PopoverTrigger, ProgressBar, Tooltip } from '../ui'
@@ -45,7 +46,7 @@ export function UpdateEntry(): React.JSX.Element | null {
   const { t } = useTranslation('components')
   const state = useUpdateState()
   const announcement = useUpdateAnnouncement()
-  const [open, setOpen] = React.useState(false)
+  const { open, autoFocus, setOpen } = useUpdateEntryPopup(state)
 
   if (!isUpdateEntryVisible(state)) return null
 
@@ -129,6 +130,7 @@ export function UpdateEntry(): React.JSX.Element | null {
         {/* 浮窗在按钮右侧、底部与按钮底部对齐（side=right + align=end）。 */}
         <PopoverContent
           align="end"
+          autoFocus={autoFocus}
           className={ENTRY_POPOVER_CLASS_NAME}
           side="right"
           onClickCapture={announcement.acknowledge}

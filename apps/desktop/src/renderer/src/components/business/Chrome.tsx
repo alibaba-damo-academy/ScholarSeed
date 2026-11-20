@@ -7,6 +7,7 @@ import {
   isUpdateEntryVisible,
   updateFailureOf,
   useUpdateAnnouncement,
+  useUpdateEntryPopup,
   useUpdateState,
 } from '../../features/updates/state'
 import { useApp } from '../../store'
@@ -84,13 +85,23 @@ export function Chrome(): React.JSX.Element {
   // ── version update ──────────────────────────────────────────────────────
   const update = useUpdateState()
   const announcement = useUpdateAnnouncement()
-  const [upMenuOpen, setUpMenuOpen] = React.useState(false)
+  const {
+    open: upMenuOpen,
+    setOpen: setUpMenuOpen,
+    setManuallyOpened,
+  } = useUpdateEntryPopup(update)
 
   React.useEffect(() => {
     if (state.accountMenuOpen || state.modelMenuOpen || state.notifPanelOpen || state.newChooser) {
-      setUpMenuOpen(false)
+      setManuallyOpened(false)
     }
-  }, [state.accountMenuOpen, state.modelMenuOpen, state.notifPanelOpen, state.newChooser])
+  }, [
+    setManuallyOpened,
+    state.accountMenuOpen,
+    state.modelMenuOpen,
+    state.notifPanelOpen,
+    state.newChooser,
+  ])
 
   const phase = update?.phase ?? 'idle'
   const percent = update?.percent ?? 0
@@ -143,9 +154,10 @@ export function Chrome(): React.JSX.Element {
             data-testid="update-entry"
             onClick={() => {
               const open = !upMenuOpen
-              if (open) closeMenus()
-              else closeUpdatePanel()
-              setUpMenuOpen(open)
+              if (open) {
+                closeMenus()
+                setUpMenuOpen(true)
+              } else closeUpdatePanel()
             }}
             className={CHROME_UPDATE_ENTRY_CLASS_NAME}
             size="content"

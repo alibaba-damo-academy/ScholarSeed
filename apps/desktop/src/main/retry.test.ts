@@ -191,6 +191,30 @@ for (const platform of ['win32', 'darwin'] as const)
     assert.equal(h.counts().prepares, 2, 'safe failure must still allow a genuinely newer release')
   })
 
+test('a new candidate consumes the previous success receipt before it is published', async () => {
+  const { context } = await harness('darwin')
+  context.updateStartupVerification = 'verified'
+  runInNewContext(
+    "publishUpdateSnapshot({ phase: 'up-to-date', currentVersion: '0.2.0' })",
+    context
+  )
+  assert.equal(context.updateSnapshot.startupVerification, 'verified')
+
+  runInNewContext(
+    "publishUpdateSnapshot({ phase: 'available', currentVersion: '0.2.0', candidate: latest })",
+    context
+  )
+  assert.equal(context.updateSnapshot.candidate?.id, first.id)
+  assert.equal(context.updateSnapshot.announcedKey, undefined)
+  assert.equal(context.updateSnapshot.startupVerification, undefined)
+
+  runInNewContext(
+    "publishUpdateSnapshot({ phase: 'up-to-date', currentVersion: '0.2.0' })",
+    context
+  )
+  assert.equal(context.updateSnapshot.startupVerification, undefined)
+})
+
 test('native preparation never publishes a workbench-blocking restart, while quiescence does', async () => {
   const current = await harness('darwin')
   const controller = new AbortController()
