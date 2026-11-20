@@ -484,18 +484,22 @@ class ResourceDeliveryService:
             writer_wait = (
                 finished if writer_acquired is None else writer_acquired
             ) - writer_started
-            parts = {
-                "worker_wait_ms": worker_started - submitted_at,
-                "writer_wait_ms": writer_wait,
-                "scan_ms": timing.scan_seconds,
-                "snapshot_ms": timing.snapshot_seconds,
+            parts_seconds = {
+                "worker_wait_seconds": worker_started - submitted_at,
+                "writer_wait_seconds": writer_wait,
+                "scan_seconds": timing.scan_seconds,
+                "snapshot_seconds": timing.snapshot_seconds,
             }
-            total = finished - submitted_at
-            parts["other_ms"] = total - sum(value for value in parts.values() if value is not None)
-            parts["total_ms"] = total
+            total_seconds = finished - submitted_at
+            parts_seconds["other_seconds"] = total_seconds - sum(
+                value for value in parts_seconds.values() if value is not None
+            )
+            parts_seconds["total_seconds"] = total_seconds
             durations = {
-                name: round(value * MILLISECONDS_PER_SECOND, 3) if value is not None else None
-                for name, value in parts.items()
+                f"{name.removesuffix('_seconds')}_ms": (
+                    round(value * MILLISECONDS_PER_SECOND, 3) if value is not None else None
+                )
+                for name, value in parts_seconds.items()
             }
             details = {
                 "project_id": project_id,

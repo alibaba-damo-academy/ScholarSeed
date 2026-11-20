@@ -1365,7 +1365,9 @@ test('successful preparation reconnects only an existing failed session', async 
     if (
       ts.isBlock(node) &&
       node.statements.some(
-        (statement) => statement.getText(syntax) === 'preparationController = controller'
+        (statement) =>
+          ts.isTryStatement(statement) &&
+          statement.tryBlock.getText(syntax).includes('requestSessionResume(sid)')
       )
     )
       blocks.push(node)
@@ -1393,10 +1395,10 @@ test('successful preparation reconnects only an existing failed session', async 
           threads: { thread: { sessionId, resumeState } },
           turnLaunch: null as unknown,
         }
+        const preparationController = new AbortController()
         const result = await runInNewContext(script, {
-          AbortController,
-          preparationController: undefined,
-          preparationWait: { current: null },
+          preparationController,
+          preparationWait: { current: preparationController },
           preparationInstanceId: undefined,
           optimisticUserMessage: { itemId: 'message' },
           clientUserMessageId: 'message',

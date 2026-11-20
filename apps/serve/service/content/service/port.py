@@ -328,7 +328,9 @@ class ProjectRegistry:
         finally:
             self._recovery_scope.reset(token)
 
-    def _reference(self, row: ProjectRow) -> ProjectRef:
+    def reference(self, row: ProjectRow) -> ProjectRef:
+        """Apply current availability gates to an already-read catalog row."""
+
         with self._blocked_lock:
             reason = self._blocked_projects.get(row.project_id)
             recovery = self._recovery_states.get(row.project_id)
@@ -397,7 +399,7 @@ class ProjectRegistry:
         resolved = self.seed_root(path)
         existing = self._catalog.project_by_root(resolved)
         if existing is not None:
-            result = self._reference(existing)
+            result = self.reference(existing)
             if operation_id is not None:
                 self._catalog.record_operation_effect(operation_id, asdict(result))
             return result
@@ -441,7 +443,7 @@ class ProjectRegistry:
         row = self._catalog.project_by_root(resolved)
         if row is None:
             raise ContentError("no_project_selected")
-        return self._reference(row)
+        return self.reference(row)
 
     def resolve(self, project_id: str | None, *, read_only: bool = False) -> ProjectRef:
         """project_id → 项目引用。None 或 CURRENT 取默认项目。"""
@@ -455,10 +457,10 @@ class ProjectRegistry:
             # 未登记的 id 明确拒绝而不是静默回落到当前工作区 —— 静默回落会让
             # 调用方以为自己操作的是另一个项目。
             raise ContentError("unknown_project")
-        return self._reference(row)
+        return self.reference(row)
 
     def projects(self) -> tuple[ProjectRef, ...]:
-        return tuple(self._reference(row) for row in self._catalog.projects())
+        return tuple(self.reference(row) for row in self._catalog.projects())
 
     def for_path(self, absolute: str) -> ProjectRef | None:
         """绝对路径 → 所属项目。取最长匹配的 `dir_root`, 支持项目嵌套。"""
@@ -474,7 +476,7 @@ class ProjectRegistry:
                 continue
             if best is None or len(row.dir_root) > len(best.dir_root):
                 best = row
-        return self._reference(best) if best is not None else None
+        return self.reference(best) if best is not None else None
 
     # ---- 变更 ----
 
@@ -1350,7 +1352,7 @@ class ContentService:
                 row, external = read_scope(project_id)
                 if row is None:
                     raise ContentError("unknown_project")
-                scope = self.project_space(self._registry._reference(row), external)
+                scope = self.project_space(self._registry.reference(row), external)
                 return self.capture_from_space(scope, project_id, path, max_bytes, target)
 
             yield capture

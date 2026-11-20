@@ -95,6 +95,7 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             )
         )
         app = FastAPI()
+        self.app = app
         app.state.resource_deliveries = self.deliveries
         self.resumed_finalizations: list[tuple[str, str]] = []
         app.state.resume_resource_finalization = lambda session_id, turn_id: (
@@ -458,6 +459,42 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         candidate = store.pending(history[0].file_id).review.candidate
         self.assertEqual(candidate.object_id, "sha256:" + sha256(b"terminal bytes\n").hexdigest())
         self.assertEqual(self.target.read_bytes(), b"later external bytes\n")
+
+    async def test_retry_returns_committed_receipt_when_resume_notification_fails(self) -> None:
+        await self.begin()
+        with patch.object(
+            VersionStore, "finalize_review", side_effect=RuntimeError("publish failed")
+        ):
+            with self.assertRaises(RuntimeError):
+                await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+        retry_url = self.url + "/turn/retry"
+        headers = {"Idempotency-Key": "retry-notification-failure"}
+        with (
+            patch.object(
+                self.app.state,
+                "resume_resource_finalization",
+                side_effect=RuntimeError("resume unavailable"),
+            ) as notify,
+            self.assertLogs("service.resources.api.versions", level="WARNING") as logs,
+        ):
+            committed = await self.client.post(retry_url, params=self.params, headers=headers)
+
+        notify.assert_called_once_with("session", "turn")
+        self.assertEqual(committed.status_code, 200)
+        self.assertTrue(committed.json()["file_ids"])
+        (diagnostic,) = logs.records
+        self.assertEqual(
+            diagnostic.getMessage(),
+            f"resource_finalization_resume_failed project_id={self.project.id} "
+            "session_id=session turn_id=turn failure_type=RuntimeError",
+        )
+        self.assertIsNotNone(diagnostic.exc_info)
+        with patch.object(VersionStore, "finalize_review", side_effect=AssertionError) as publish:
+            repeated = await self.client.post(retry_url, params=self.params, headers=headers)
+        publish.assert_not_called()
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.json(), committed.json())
+        self.assertEqual(self.resumed_finalizations, [("session", "turn")])
 
     async def test_failed_archive_listing_has_stable_bounded_pagination(self) -> None:
         for turn in ("first", "second", "third"):
