@@ -263,7 +263,7 @@ def _child_node(
         else:
             try:
                 observed = row.stat(follow_symlinks=False)
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError, NotADirectoryError):
                 observed = None
             if observed is None:
                 return AssetTree(asset=asset)

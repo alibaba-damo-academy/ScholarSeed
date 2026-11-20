@@ -184,9 +184,9 @@ export function useResourceListing(
           reader.refresh.dispose()
           readers.delete(path)
           update((value) => {
-            const active = new Map(value.directories)
-            active.delete(path)
-            return { ...value, directories: active }
+            const nextDirectories = new Map(value.directories)
+            nextDirectories.delete(path)
+            return { ...value, directories: nextDirectories }
           })
         }
         for (const path of paths) {

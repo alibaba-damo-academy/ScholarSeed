@@ -34,7 +34,7 @@ from service.content.service.space import ProjectSpace
 from service.content.service.tree import PAGE_SIZE
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities
-from service.platform.content import AssetKind
+from service.platform.content import AssetKind, RootKind
 from service.resources.api import routes
 from service.resources.api.routes import register_resource_routes
 from service.resources.domain.model import ResourceLocationRef
@@ -329,13 +329,16 @@ class ResourceListingTests(unittest.TestCase):
 
         original = tree.flat_tree
         inventories = []
+        claims = []
         batches = []
 
         def observe_tree(*args, on_directory, **kwargs):
             def observe_batch(nodes, repositories):
                 before = read_grants.call_count
+                before_claims = read_claims.call_count
                 on_directory(nodes, repositories)
                 inventories.append(read_grants.call_count - before)
+                claims.append(read_claims.call_count - before_claims)
 
             return original(*args, on_directory=observe_batch, **kwargs)
 
@@ -343,6 +346,9 @@ class ResourceListingTests(unittest.TestCase):
             patch.object(
                 self.content._catalog, "external_roots", wraps=self.content._catalog.external_roots
             ) as read_grants,
+            patch.object(
+                self.content, "_registered_roots", wraps=self.content._registered_roots
+            ) as read_claims,
             patch.object(tree, "flat_tree", side_effect=observe_tree),
         ):
             self.content.flat_resource_tree(
@@ -354,6 +360,39 @@ class ResourceListingTests(unittest.TestCase):
         self.assertEqual(batches.count(expected), 3)
         self.assertEqual(batches.count(()), 1)
         self.assertEqual(inventories, [1 if roots else 0 for roots in batches])
+        self.assertEqual(claims, [1, 0, 0, 0])
+        self.assertEqual(read_claims.call_count, 3)
+
+    def test_search_stream_keeps_newly_claimed_root_out_of_mixed_batch(self) -> None:
+        legacy = self.root / "legacy"
+        legacy.mkdir()
+        project = self.content.adopt_project(str(legacy))
+        claim_path = legacy / self.content.root_path(project.id, RootKind.ARTIFACTS)
+        claim_path.mkdir()
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        (outside / "linked.md").touch()
+        self.content.authorize_root_at(project.id, str(outside), "", "linked")
+        original = tree._listing
+
+        def claim_before_publish(space, directory, relative, origin):
+            observed = original(space, directory, relative, origin)
+            if not relative:
+                claim_path.rmdir()
+                self.content.root(project.id, RootKind.ARTIFACTS)
+            return observed
+
+        with patch.object(tree, "_listing", side_effect=claim_before_publish):
+            response = self.client.get("/api/resource/list/search", params={"project": project.id})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [
+                json.loads(line.removeprefix("data: "))
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ],
+            [{"type": "error", "detail": ROOT_BUSY_ERROR, "status": 409}],
+        )
 
     def test_search_stream_rechecks_link_grants_when_traversal_occupies_the_executor(self) -> None:
         outside = self.root.resolve() / "outside"
@@ -501,6 +540,7 @@ class ResourceListingTests(unittest.TestCase):
             scanned.clear()
             root = self.directory_payload()
             self.assertEqual(scanned, ["resources"])
+            activate.assert_awaited_once_with(self.project.id, rediscover=False)
             scanned.clear()
             child = self.directory_payload("resources/folder")
             self.assertEqual(scanned, ["resources/folder"])
@@ -519,8 +559,9 @@ class ResourceListingTests(unittest.TestCase):
                 ],
             )
             full = self.listing_payload(incremental=True)
-            self.assertEqual(activate.call_count, 2)
-            prepare.assert_called_once_with(self.project.id)
+            self.assertEqual(activate.await_count, 2)
+            activate.assert_awaited_with(self.project.id)
+            prepare.assert_awaited_once_with(self.project.id)
 
         self.assertNotIn("directory", full)
         full_groups = {

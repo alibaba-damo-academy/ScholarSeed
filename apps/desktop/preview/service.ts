@@ -4126,8 +4126,13 @@ export function createPreviewService() {
               childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1)
             }
           }
-          const projectNode = (entry: PreviewFileEntry, capability?: PreviewVersions) =>
-            resourceNode(entry, capability, childCounts.get(entry.path))
+          const projectNode = (entry: PreviewFileEntry, capability?: PreviewVersions) => {
+            const node = resourceNode(entry, capability, childCounts.get(entry.path))
+            if (directory === null) return node
+            // A scoped listing uses the Serve contract and leaves child counts unknown.
+            const { count: _count, ...scoped } = node
+            return scoped
+          }
           if (searchListing) {
             // The browsing VFS models local project files only. External roots are not mounted here.
             const linkedRoots = {}

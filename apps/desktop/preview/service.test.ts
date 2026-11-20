@@ -868,6 +868,8 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
       ['preview-docs/nested', 'preview-docs/overview.md']
     )
     assert.ok(scoped.body.items.every((item: object) => !('version' in item)))
+    assert.ok(scoped.body.items.every((item: object) => !('count' in item)))
+    assert.equal(listing.find(({ path }) => path === 'preview-docs/nested')?.count, 1)
 
     const listedDirectories: string[] = []
     const list = PreviewFiles.prototype.list

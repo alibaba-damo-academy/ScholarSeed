@@ -114,7 +114,10 @@ function ProjectResourceListing(): React.JSX.Element {
     })
   }, [act, menuNode, project, resource.nodeMenu, set])
   const changeFacet = (target: 'type' | 'source', open: boolean): void => {
-    setFacet((previous) => (open ? target : previous === target ? null : previous))
+    setFacet((previous) => {
+      if (open) return target
+      return previous === target ? null : previous
+    })
   }
   const sourceLabel = useCallback(
     (node: ResourceNode): string => {

@@ -44,6 +44,7 @@ from service.content.domain.model import (
     ContentError,
     ContentReadPermissionError,
     resolve_root,
+    root_relative,
     visible,
 )
 from service.content.persistence.catalog import (
@@ -1923,6 +1924,10 @@ class ContentService:
         if not roots:
             return FlatResourceTree((), {})
         scope = self._resource_space(project_id)
+        ownable = tuple(scope.owned_roots.values()) + tuple(
+            root_relative(scope.project.layout, kind) for kind in OWNED_ROOT_KINDS
+        )
+        owned_prefixes = tuple(f"{path}{space.SEPARATOR}" for path in ownable)
 
         def check_mount(path: str) -> None:
             mount = scope.mount_for(path)
@@ -1934,7 +1939,19 @@ class ContentService:
             linked_roots: tuple[ExternalRootRef, ...] = ()
             if any(node.asset.origin is AssetOrigin.LINK for node in nodes):
                 current, external = self._space_with_external_roots(project_id)
-                if not self._resource_scopes_match(scope, current):
+                if not self._resource_grants_match(scope, current):
+                    raise ContentError(ROOT_BUSY_ERROR)
+                # Local rows can alias an owned root. Also keep the claims check
+                # when a legacy mount occupies a path reserved for a future claim.
+                if (
+                    any(
+                        node.asset.origin is AssetOrigin.LOCAL
+                        or node.asset.path in ownable
+                        or node.asset.path.startswith(owned_prefixes)
+                        for node in nodes
+                    )
+                    and self._registered_roots(current) != scope.owned_roots
+                ):
                     raise ContentError(ROOT_BUSY_ERROR)
                 # Project the grants from the same records used for authorization.
                 linked_roots = tuple(self._roots.reference(row) for row in external)
@@ -1965,16 +1982,18 @@ class ContentService:
         return result
 
     def _resource_scope_current(self, project_id: str, scope: space.ProjectSpace) -> bool:
-        return self._resource_scopes_match(scope, self._space(project_id))
+        current = self._space(project_id)
+        return (
+            self._resource_grants_match(scope, current)
+            and self._registered_roots(current) == scope.owned_roots
+        )
 
-    def _resource_scopes_match(
-        self, scope: space.ProjectSpace, current: space.ProjectSpace
-    ) -> bool:
+    @staticmethod
+    def _resource_grants_match(scope: space.ProjectSpace, current: space.ProjectSpace) -> bool:
         return (
             current.root == scope.root
             and current.project.layout == scope.project.layout
             and current.mounts == scope.mounts
-            and self._registered_roots(current) == scope.owned_roots
         )
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:

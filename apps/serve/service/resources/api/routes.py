@@ -25,7 +25,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from starlette.types import Receive, Scope, Send
 
-from service.chat.service.events import sse_encode
 from service.content.domain.model import ROOT_BUSY_ERROR, ContentError
 from service.content.service.port import DEFAULT_MEDIA_TYPE, ContentService
 from service.content.service.tree import DEFAULT_MAX_DEPTH
@@ -41,6 +40,7 @@ from service.platform.content import (
 )
 from service.platform.excerpts import ExcerptSourceError
 from service.platform.resources import ResourceCapability
+from service.platform.sse import sse_encode
 from service.resources.api.schema import (
     ResourceExcerptsRequest,
     ResourceImportRequest,
@@ -728,10 +728,13 @@ def register_resource_routes(app: FastAPI) -> None:
                 else None
             )
             if supervisor is not None:
-                if directory:
-                    await supervisor.prepare_project(project)
-                else:
+                if directory is None:
                     await supervisor.activate_project(project)
+                elif directory == "":
+                    # First root hydration starts version observation and initial discovery.
+                    await supervisor.activate_project(project, rediscover=False)
+                else:
+                    await supervisor.prepare_project(project)
             return await request.app.state.activities.to_thread(
                 ActivityDomain.RESOURCE,
                 _resource_listing,

@@ -271,8 +271,8 @@ class ResourceVersionSupervisor:
                     raise ContentError(ROOT_UNAVAILABLE_ERROR)
                 self._prepared.add(project.id)
 
-    async def activate_project(self, project_id: str) -> None:
-        """Prepare and observe one project selected by a real product action."""
+    async def activate_project(self, project_id: str, *, rediscover: bool = True) -> None:
+        """Prepare and observe a project, discovering on attachment or an explicit refresh."""
 
         self._activities.require_workbench()
         with self._activities.enter(ActivityDomain.RESOURCE):
@@ -282,10 +282,12 @@ class ResourceVersionSupervisor:
             )
             await self._content.refresh_events(project.id)
             stream = self._streams.get(project.id)
-            if stream is None or stream.done():
+            restarting = stream is None or stream.done()
+            if restarting:
                 self._streams[project.id] = asyncio.create_task(self._consume(project.id))
                 self._reconcile.add(project.id)
-            self.schedule_scan(project.id)
+            if restarting or rediscover:
+                self.schedule_scan(project.id)
 
     async def aclose(self) -> None:
         """Finish or cancel discovery and stop the owned content event hub."""
