@@ -35,9 +35,9 @@ from service.platform.bridge import (
     PLAN_COMPLETE_ACTION,
     PLAN_ENABLE_OPERATION,
     PLAN_NOT_ENABLED,
+    SEARCH_RUN,
     SERVICE_PLAN_TOOL_NAME,
     ArtifactsPublish,
-    ContractDescribe,
     PlanAction,
     PlanRead,
     PlanStructure,
@@ -66,9 +66,10 @@ BRIDGE_ENDPOINT_GUIDANCE = (
 
 
 def service_tool_schema() -> dict[str, Any]:
+    typed_inline_operations = ((CONTRACT_CAPABILITY, CONTRACT_DESCRIBE_OPERATION), SEARCH_RUN)
     operations_by_capability: dict[str, list[str]] = defaultdict(list)
     for capability, operation in BRIDGE_REQUESTS:
-        if (capability, operation) != (CONTRACT_CAPABILITY, CONTRACT_DESCRIBE_OPERATION):
+        if (capability, operation) not in typed_inline_operations:
             operations_by_capability[capability].append(operation)
     return {
         "type": "object",
@@ -95,11 +96,14 @@ def service_tool_schema() -> dict[str, Any]:
         "oneOf": [
             {
                 "properties": {
-                    "capability": {"const": CONTRACT_CAPABILITY},
-                    "operation": {"const": CONTRACT_DESCRIBE_OPERATION},
-                    "request": ContractDescribe.model_json_schema(),
+                    "capability": {"const": capability},
+                    "operation": {"const": operation},
+                    "request": BRIDGE_REQUESTS[
+                        capability, operation
+                    ].request_type.model_json_schema(),
                 },
-            },
+            }
+            for capability, operation in typed_inline_operations
         ]
         + [
             {

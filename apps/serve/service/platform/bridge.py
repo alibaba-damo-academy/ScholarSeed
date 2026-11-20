@@ -180,6 +180,7 @@ RESOURCE_READ_MAX_LIMIT = 32_768
 RESOURCE_READ_ENCODING_TEXT: Literal["text"] = "text"
 RESOURCE_READ_ENCODING_BASE64: Literal["base64"] = "base64"
 SEARCH_ROUTE = BRIDGE_ROUTE_PREFIX + "search/run"
+SEARCH_RUN = ("search", "run")
 SEARCH_BROWSER_ROUTE = BRIDGE_ROUTE_PREFIX + "search/browser"
 SEARCH_RUN_GUIDANCE = (
     'In a conversation, use search/run with request={"query":"...","profile":"browser","limit":20} '
@@ -993,7 +994,7 @@ BRIDGE_REQUESTS[("artifact", ARTIFACT_BATCH_OPERATION)] = BridgeOperation(
         + BRIDGE_REQUESTS[("artifact", "publish")].guidance
     ),
 )
-BRIDGE_REQUESTS[("search", "run")] = BridgeOperation(
+BRIDGE_REQUESTS[SEARCH_RUN] = BridgeOperation(
     WebSearchRequest,
     SEARCH_ROUTE,
     "Collect and register search candidates for the current conversation.",
