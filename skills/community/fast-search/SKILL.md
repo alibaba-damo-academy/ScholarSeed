@@ -1,9 +1,9 @@
 ---
 name: fast-search
 display_name_zh: 快速文献检索
-description: Low-latency academic paper discovery for search-bar queries. Infer hidden entities, use one logical batch through the installed web-search skill to resolve likely paper titles, run one bounded PaperHub keyword/title/citation graph, and return up to 20 precision-first papers in metadata.json. Use when a user or product needs the Veryfast paper-search workflow rather than iterative literature research.
-description_zh: "面向搜索框式查询的低延迟学术论文发现。推断查询背后的隐含实体，用一次经由已安装 web-search 技能的逻辑批量公网搜索解析出候选论文标题，再跑一次有预算约束的 PaperHub 关键词/标题/引用图，最终在 metadata.json 中返回至多 20 篇精准优先的论文。用于用户或产品需要 Veryfast 极速论文检索场景，而非迭代式文献研究。"
-version: "1.2.3"
+description: Low-latency academic paper discovery for search-bar queries. Infer hidden entities, use one logical batch through the installed web-search skill to resolve likely paper titles, and run one bounded PaperHub keyword/title/citation graph. Return only the verified target for a single-paper lookup, or up to 20 precision-first papers for a topic search, in metadata.json. Use when a user or product needs the Veryfast paper-search workflow rather than iterative literature research.
+description_zh: "面向搜索框式查询的低延迟学术论文发现。推断查询背后的隐含实体，用一次经由已安装 web-search 技能的逻辑批量公网搜索解析出候选论文标题，再跑一次有预算约束的 PaperHub 关键词/标题/引用图。查找指定单篇时只在 metadata.json 中返回核验后的目标论文，主题检索时返回至多 20 篇精准优先的论文。用于用户或产品需要 Veryfast 极速论文检索场景，而非迭代式文献研究。"
+version: "1.2.4"
 metadata:
   invocation:
     permission: full-access
@@ -11,9 +11,11 @@ metadata:
 
 # Fast Search
 
-Return up to 20 relevant papers in `metadata.json`, aiming for a useful,
-well-covered result within the search budget. A short or empty result under a
-hard publication window is a last-resort outcome, not the target. This skill exposes exactly one
+For a single-paper lookup, deliver only the verified target in `metadata.json`
+and the reply. For topic or related-work searches, return up to 20 relevant
+papers, aiming for a useful, well-covered result within the search budget.
+A short or empty topic result under a hard publication window is a last-resort
+outcome. This skill exposes exactly one
 workflow: Veryfast. It does not perform iterative gap filling or generate a
 narrative report.
 
@@ -223,11 +225,12 @@ scholarseed-skill-python "SKILL_DIR/tools/quick_search.py" \
   --output-dir "RESULT_DIR"
 ```
 
-For a direct paper lookup, supply the resolved `best_target`. The runner reserves
-the verified target as Tier 1 top-1, even if the topic ranker would place it lower.
+For a direct paper lookup, supply the resolved `best_target`. The runner selects
+only the verified target as the sole Tier 1 result, even if the topic ranker
+would place it lower.
 The eligible pool includes independently verified external metadata when
-PaperHub did not retrieve the paper. A single verified paper is a valid direct
-lookup result; do not pad it with unrelated papers. It fails closed only when
+PaperHub did not retrieve the paper. The reply and result file must contain
+exactly that paper, even when the pool contains related candidates. It fails closed only when
 neither path verifies an eligible target. Conflicting identifiers are rejected;
 if identifiers are missing, an exact match of the web-verified title is allowed.
 For an unresolved URL/DOI, the runner may obtain the canonical metadata itself.
@@ -239,13 +242,13 @@ Never interpolate credentials. The runner validates and bounds the complete
 plan before creating state, runs in a private staging directory, and publishes
 paper results only after success. It executes the single serial PaperHub graph,
 automatically tracks references from two ranked anchors, and selects papers
-using relevance, exact-title match, citation provenance, and diversity. Within
-Tier 1 it first promotes a paper whose arXiv ID, DOI, or full title is explicitly
+using relevance, exact-title match, citation provenance, and diversity. For topic
+searches, within Tier 1 it first promotes a paper whose arXiv ID, DOI, or full title is explicitly
 present in the user query, then the agent-declared best target, and otherwise
 the highest relevance score. For topic searches, the optional declared best
-target never changes tier membership. Only a required single-paper target has
-the reservation described above. Remaining candidates retain their
-existing order. It writes compact `metadata.json` without abstracts and does
+target never changes tier membership. Remaining topic candidates retain their
+existing order. Single-paper lookups deliver only the verified target.
+It writes compact `metadata.json` without abstracts and does
 not generate a report. The runner adds server-side date bounds and checks all
 keyword/title/citation dates before pooling and anchor selection, without extra
 requests. Do not append date clauses yourself. Insufficient date evidence is

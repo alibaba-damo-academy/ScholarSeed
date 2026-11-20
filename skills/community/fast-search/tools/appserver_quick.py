@@ -500,8 +500,8 @@ executes the structured bounds and never infers them from the user text.
 An upper cutoff is not
 a preference for only the newest work; retain useful in-window core papers.
 Do not fill the result with out-of-window papers.
-Aim for a useful, well-covered result within the existing search budget.
-A short or empty result is a last-resort outcome, not the retrieval target.
+For topic or related-work searches, aim for a useful, well-covered result within
+the existing search budget. A short or empty topic result is a last-resort outcome.
 If a date-constrained search produces no verified matches, explain that this
 search found none under the stated dates, not that no such papers exist, and
 suggest a user-approved reformulation without relaxing dates automatically.
@@ -522,7 +522,10 @@ the title, and let the runner verify that locator (use it as a keyword query).
 Retain up to four useful scholarly URLs from the same batch in web_papers
 (title/url only, titles also in the plan). The runner verifies external records
 in parallel with PaperHub; its absence alone is not grounds to discard a paper.
-One verified result is sufficient for a direct lookup. Do not add search rounds.
+A direct lookup must deliver exactly the verified target in metadata.json and
+the reply, even when the candidate pool contains other papers. Do not add search
+rounds. For related work around a paper, set best_target.required=false and
+return the topic-search list.
 For an explicit full paper title, preserve the user's title verbatim in the
 existing web batch, best_target.title and the exact-title query, required=true;
 never substitute a similarly titled preprint or journal version. For URL/DOI
@@ -572,6 +575,8 @@ def _validate_result_papers(document, query):
         raise AppServerError(str(exc)) from exc
     required_match = bool(papers and summary.get("agent_best_target_required") and
         quick_finalize._declared_target_match(papers[0], query, summary.get("agent_best_target_title", "")))
+    if summary.get("agent_best_target_required") and (len(papers) != 1 or not required_match):
+        raise AppServerError("A direct paper lookup must return only the verified target")
     verified_shortfall = bool(papers and (summary.get("external_verification") or {}).get("added_count") and
         any(str(paper.get("paper_id", "")).startswith("external:") and paper.get("verification_url") for paper in papers))
     if len(papers) < 5 and not window and not (required_match or verified_shortfall):
