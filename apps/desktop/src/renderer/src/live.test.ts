@@ -82,7 +82,7 @@ test('live recovery incidents supply the identity used to reject a superseded ch
   assert.equal(recoveryCheckIsCurrent(current, requested), false)
 })
 
-test('only a new active turn supersedes the previous healthy resource settlement', () => {
+test('a new active turn supersedes settlement while blocked recovery remains pending', () => {
   const thread: Thread = {
     id: 'thread',
     title: 'Task',
@@ -108,12 +108,17 @@ test('only a new active turn supersedes the previous healthy resource settlement
     { ...active.data, active_turn_id: undefined },
     { ...active.data, active_turn_id: 'completed-turn' },
     { ...active.data, recovery_pending: true },
-    { ...active.data, recovery_blocked: true },
   ]) {
     const unchanged = liveSessionStateProjector(thread)({ ...active, data })
     assert.equal(unchanged.recoveryPending, true)
     assert.equal(unchanged.resourceFinalizing, true)
   }
+  const blocked = liveSessionStateProjector(thread)({
+    ...active,
+    data: { ...active.data, recovery_blocked: true },
+  })
+  assert.equal(blocked.recoveryPending, true)
+  assert.equal(blocked.resourceFinalizing, false)
 })
 
 test('shared notifications forward subjects without changing legacy record reset delivery', () => {

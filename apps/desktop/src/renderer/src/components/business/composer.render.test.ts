@@ -11,16 +11,18 @@ const MAX_HEIGHT = 132
 const RENDER_TIMEOUT_MS = 60_000
 let preparing: ReturnType<typeof renderFixture> | undefined
 
-test('resource finalization requires a healthy settled session', () => {
+test('resource finalization requires pending settlement without a recovery block', () => {
   const thread = {
     sessionId: 'session',
     running: false,
+    recoveryPending: true,
     resourceFinalizing: true,
     recoveryBlocked: false,
   }
   expect(isResourceFinalizing(thread)).toBe(true)
   expect(isResourceFinalizing({ ...thread, running: true })).toBe(false)
   expect(isResourceFinalizing({ ...thread, recoveryBlocked: true })).toBe(false)
+  expect(isResourceFinalizing({ ...thread, recoveryPending: false })).toBe(false)
 })
 
 test('floating attachments stay hidden until the editor is clicked, without hover activation', () => {

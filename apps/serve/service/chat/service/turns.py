@@ -121,6 +121,7 @@ from service.chat.service.recovery import (
     recovery_key,
 )
 from service.chat.service.titles import SessionTitles
+from service.chat.service.utils import is_resource_finalizing
 from service.content.domain.model import ContentReadPermissionError
 from service.identity.service.skill_credentials import CredentialAdmissionError
 from service.paths import session_attachment_root
@@ -675,9 +676,7 @@ class TurnService:
                 if admission_error:
                     return {"ok": False, "error": admission_error}, HTTP_CONFLICT
                 pending = live.catalog.pending_turn_settlement(live.id)
-                resource_finalizing = pending is not None and pending.resource_finalizing(
-                    record, live_terminal_turn_id=live.resource_finalizing_turn_id
-                )
+                resource_finalizing = is_resource_finalizing(live, record, pending)
                 if not live.running and not resource_finalizing:
                     blockers = await live.previous_turn_blockers()
                     if blockers:
@@ -786,13 +785,7 @@ class TurnService:
         if (
             allow_queue
             and not pending.recovery_blocked
-            and (
-                live.running
-                or pending.resource_finalizing(
-                    live.catalog.get(live.id),
-                    live_terminal_turn_id=live.resource_finalizing_turn_id,
-                )
-            )
+            and (live.running or is_resource_finalizing(live, live.catalog.get(live.id), pending))
         ):
             return None
         if live.pending_hil_snapshot():
@@ -3180,20 +3173,6 @@ class TurnService:
                     else outcomes.get(status, TurnOutcome.UNKNOWN)
                 ),
             )
-            if capture.batch_id and capture.project_id:
-                await live.publish(
-                    PRODUCT_EVENT_REVIEW_READY,
-                    {
-                        "batch_id": capture.batch_id,
-                        "project_id": capture.project_id,
-                        "paths": list(capture.paths),
-                        "file_ids": list(capture.file_ids),
-                        "review_ids": list(capture.review_ids),
-                    },
-                    turn_id=event_turn_id or turn_input.client_user_message_id,
-                    idempotency_key=f"review:{capture.batch_id}:ready",
-                )
-            return True
         except Exception as exc:  # noqa: BLE001 - runtime terminal already occurred
             self._logger.error(
                 RESOURCE_DELIVERY_FAILED,
@@ -3205,6 +3184,33 @@ class TurnService:
                 exc_info=True,
             )
             return False
+        if not capture.batch_id or not capture.project_id:
+            return True
+        try:
+            await live.publish(
+                PRODUCT_EVENT_REVIEW_READY,
+                {
+                    "batch_id": capture.batch_id,
+                    "project_id": capture.project_id,
+                    "paths": list(capture.paths),
+                    "file_ids": list(capture.file_ids),
+                    "review_ids": list(capture.review_ids),
+                },
+                turn_id=event_turn_id or turn_input.client_user_message_id,
+                idempotency_key=f"review:{capture.batch_id}:ready",
+            )
+        except Exception as exc:  # noqa: BLE001 - the resource archive is already durable
+            self._logger.error(
+                "resource_review_publication_failed",
+                extra={
+                    "session_id": live.id,
+                    "turn_id": turn_input.client_user_message_id,
+                    "batch_id": capture.batch_id,
+                    "failure_type": type(exc).__name__,
+                },
+                exc_info=True,
+            )
+        return True
 
     async def _drain_next(self, live: LiveSession) -> None:
         if self._closed or live.closing:

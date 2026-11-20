@@ -1,5 +1,5 @@
-import type { Thread } from '../../model'
-import type { ComposerSubmission } from '../../components/business/submission'
+import type { Thread } from '../../model.ts'
+import type { ComposerSubmission } from '../../components/business/submission.ts'
 import { isResourceFinalizing } from '../../runtime.ts'
 
 export const NEXT_STEPS_CARD = 'next-steps'

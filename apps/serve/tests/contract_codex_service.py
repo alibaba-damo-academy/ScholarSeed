@@ -175,6 +175,7 @@ from service.chat.runtime.projection import (
     ArtifactPublishError,
     readiness_payload,
 )
+from service.chat.runtime.reconfiguration import PREPARATION_INSTANCE_CHANGED, PreparationError
 from service.chat.runtime.secrets import _launch_secret_contract
 from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL, SESSION_SERVICE_TOOLS
 from service.chat.service.artifacts import ArtifactService
@@ -5733,6 +5734,28 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         turns = TurnService(
             service._sessions, self.logger, activities=Activities(), deliveries=deliveries
         )
+        stale_instance_id = Activities().instance_id
+
+        async def assert_stale_instance_rejected() -> None:
+            with self.assertRaises(PreparationError) as failure:
+                async with service.turn_admission(
+                    PRODUCT_SESSION_ID,
+                    OWNER,
+                    actor_id=OWNER.user_id,
+                    model_id=self.live.model_id,
+                    service_instance_id=stale_instance_id,
+                ):
+                    self.fail("admitted a turn bound to an old service instance")
+            self.assertEqual(str(failure.exception), PREPARATION_INSTANCE_CHANGED)
+
+        def assert_resource_finalizing(expected: bool) -> None:
+            status = service.status([PRODUCT_SESSION_ID], OWNER, {})["sessions"][0]
+            _, snapshot = service._snapshot_data(self.live)
+            self.assertIs(status["resource_finalizing"], expected)
+            self.assertIs(snapshot["resource_finalizing"], expected)
+            self.assertIs(service.history(PRODUCT_SESSION_ID)["resource_finalizing"], expected)
+
+        await assert_stale_instance_rejected()
         with patch.object(
             self.runtime_session, "submit", wraps=self.runtime_session.submit
         ) as submit:
@@ -5751,8 +5774,9 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(first_task)
                 terminal = self.events.latest_kind(PRODUCT_SESSION_ID, PRODUCT_EVENT_TURN_COMPLETED)
                 self.assertTrue(terminal.payload["resource_finalizing"])
-                self.assertTrue(service.history(PRODUCT_SESSION_ID)["resource_finalizing"])
+                assert_resource_finalizing(True)
                 with patch.object(service, "model_admission", side_effect=AssertionError):
+                    await assert_stale_instance_rejected()
                     async with service.turn_admission(
                         PRODUCT_SESSION_ID,
                         OWNER,
@@ -5779,7 +5803,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(first_task, 2)
                 pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
                 self.assertTrue(pending.recovery_blocked)
-                self.assertFalse(service.history(PRODUCT_SESSION_ID)["resource_finalizing"])
+                assert_resource_finalizing(False)
                 await turns._drain_next(self.live)
                 self.assertEqual(attempts, [first_turn])
                 self.assertEqual(submit.await_count, 1)

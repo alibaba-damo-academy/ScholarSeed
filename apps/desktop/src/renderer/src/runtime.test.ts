@@ -1274,10 +1274,17 @@ test('resource finalization projects separately from blocked recovery', () => {
     runtime_id: 'codex',
     recovery_pending: true,
     recovery_blocked: true,
-    resource_finalizing: false,
   })
   assert.equal(blocked.recoveryBlocked, true)
   assert.equal(blocked.resourceFinalizing, false)
+  const settled = projectSessionState({
+    state: 'idle',
+    runtime_id: 'codex',
+    recovery_pending: false,
+  })
+  assert.equal(settled.resourceFinalizing, false)
+  const incremental = projectSessionState({ state: 'idle', runtime_id: 'codex' })
+  assert.equal('resourceFinalizing' in incremental, false)
 })
 
 test('assistant copy action requires text, a stopped turn and no pending confirmation', () => {
@@ -1535,16 +1542,23 @@ test('recovery check keeps a live turn running independently of pending settleme
     assert.deepEqual(projectRecoveryCheck({ ...response, activity_active: true }), {
       recoveryBlocked: false,
       recoveryPending: pending,
+      resourceFinalizing: false,
       running: true,
       status: 'running',
     })
     assert.deepEqual(projectRecoveryCheck({ ...response, activity_active: false }), {
       recoveryBlocked: false,
       recoveryPending: pending,
+      ...(!pending ? { resourceFinalizing: false } : {}),
       running: false,
       status: 'done',
     })
   }
+  assert.equal(
+    projectRecoveryCheck({ ok: false, recovery_blocked: true, recovery_pending: true })
+      .resourceFinalizing,
+    false
+  )
 })
 
 test('recovery check ignores superseded recovery state, not ordinary stream progress', () => {
@@ -2208,6 +2222,35 @@ test('session open validates and allow-lists the typed recovery snapshot', () =>
   assert.equal(safeHil?.request_id, 'request-tool')
   assert.equal(safeHil?.command, undefined)
   assert.equal('response' in (safeHil ?? {}), false)
+})
+
+test('session open requires a boolean finalization marker and pending settlement', () => {
+  const snapshot = {
+    session_id: 'session-1',
+    running: false,
+    uncertain_operations: [],
+    unknown_outcome: false,
+    active_turn_id: null,
+  }
+  for (const fields of [
+    { resource_finalizing: 'true', recovery_pending: true },
+    { resource_finalizing: null, recovery_pending: true },
+    { resource_finalizing: true },
+    { resource_finalizing: true, recovery_pending: false },
+  ]) {
+    const parsed = parseOpenSessionResponse({ ...snapshot, ...fields })
+    assert.ok('error' in parsed)
+    assert.equal(parsed.applicationFailure?.key, 'request.invalidRecovery')
+  }
+  for (const marker of [undefined, false, true]) {
+    const parsed = parseOpenSessionResponse({
+      ...snapshot,
+      recovery_pending: marker === true,
+      resource_finalizing: marker,
+    })
+    assert.ok(!('error' in parsed))
+    assert.equal(parsed.resource_finalizing, marker)
+  }
 })
 
 for (const kind of ['user_input', 'permission', 'command_approval']) {

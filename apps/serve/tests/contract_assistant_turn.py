@@ -70,7 +70,7 @@ from service.chat.persistence.catalog import (  # noqa: E402
     UncertaintyKind,
     UncertaintyState,
 )
-from service.chat.persistence.events import ProductEventStore  # noqa: E402
+from service.chat.persistence.events import ProductEventRecord, ProductEventStore  # noqa: E402
 from service.chat.service.events import EventService  # noqa: E402
 from service.chat.service.recovery import RECOVERY_SOURCE  # noqa: E402
 from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome, RuntimeTurnResult  # noqa: E402
@@ -3138,6 +3138,91 @@ class AssistantTurnContract(unittest.TestCase):
         self.assertEqual(len(self.adapter.inputs), 2)
         queued_rows = self.catalog.queued_messages(SESSION_ID)
         self.assertEqual(queued_rows, ())
+
+    def test_review_announcement_failure_does_not_block_settlement_or_queue(self) -> None:
+        batch_id = "committed-review-batch"
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(return_value=ResourceTurnContext()),
+            finish_turn=AsyncMock(
+                side_effect=(
+                    ReviewCaptureResult(batch_id=batch_id, project_id="project-contract"),
+                    ReviewCaptureResult(),
+                )
+            ),
+        )
+        self.live.project_path = self.live.runtime_workdir
+        logger = Mock(wraps=self.live._logger)
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            logger,
+            context_source=self.assistant,
+            deliveries=deliveries,
+            activities=self.activities,
+        )
+        selection = self.select(0)
+        append = self.events.append
+
+        def fail_review_announcement(**fields: Any) -> ProductEventRecord:
+            if fields["kind"] == PRODUCT_EVENT_REVIEW_READY:
+                raise RuntimeError("review announcement journal append failed")
+            return append(**fields)
+
+        async def exercise() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            active, status = await turns.post(
+                SESSION_ID, {**self.body(selection.revision), "wait": False}, side=False
+            )
+            self.assertEqual(status, 202, active)
+            await self.adapter.started.wait()
+            queued, status = await turns.post(
+                SESSION_ID,
+                self.body(selection.revision, client_turn_id="queued-after-review-announcement"),
+                side=False,
+            )
+            self.assertEqual((queued.get("disposition"), status), ("queued", 202), queued)
+            task = self.live.current_task
+            assert task is not None
+            await self.live._project_runtime_event(
+                RuntimeEvent(
+                    schema_version=1,
+                    event_id="completed-before-review-announcement",
+                    runtime_id=RUNTIME_ID,
+                    product_session_id=SESSION_ID,
+                    native_session_id=self.adapter.session_id,
+                    native_turn_id="assistant-vendor-turn",
+                    correlation_id=CLIENT_TURN,
+                    process_generation=1,
+                    sequence=1,
+                    kind=RuntimeEventKind.TURN_COMPLETED,
+                    delivery=DeliveryClass.MUST_PERSIST,
+                    observed_at="fixture",
+                )
+            )
+            self.assertIsNotNone(self.catalog.pending_turn_settlement(SESSION_ID))
+            self.adapter.release.set()
+            result = await task
+            self.assertEqual(result.status, TurnStatus.COMPLETED)
+            self.assertIsNone(self.catalog.pending_turn_settlement(SESSION_ID))
+            async with asyncio.timeout(QUEUE_SETTLEMENT_TIMEOUT_SECONDS):
+                while self.catalog.queued_messages(SESSION_ID) or self.live.current_task:
+                    await asyncio.sleep(0)
+
+        with patch.object(self.events, "append", side_effect=fail_review_announcement):
+            asyncio.run(exercise())
+
+        self.assertEqual(deliveries.finish_turn.await_count, 2)
+        self.assertEqual(len(self.adapter.inputs), 2)
+        logger.error.assert_called_once_with(
+            "resource_review_publication_failed",
+            extra={
+                "session_id": SESSION_ID,
+                "turn_id": CLIENT_TURN,
+                "batch_id": batch_id,
+                "failure_type": "RuntimeError",
+            },
+            exc_info=True,
+        )
 
     def test_completed_runtime_with_failed_finalization_does_not_auto_run_queue(self) -> None:
         selection = self.select(0)

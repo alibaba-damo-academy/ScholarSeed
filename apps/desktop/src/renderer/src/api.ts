@@ -530,6 +530,8 @@ export function parseOpenSessionResponse(value: unknown): OpenResp | OpenErrorRe
         value.recovery_source_seq < 0)) ||
     (value.recovery_pending !== undefined && typeof value.recovery_pending !== 'boolean') ||
     (value.recovery_blocked === true && (value.recovery_pending !== true || value.running)) ||
+    (value.resource_finalizing !== undefined && typeof value.resource_finalizing !== 'boolean') ||
+    (value.resource_finalizing === true && value.recovery_pending !== true) ||
     (value.active_turn_id !== null &&
       (typeof value.active_turn_id !== 'string' || !value.active_turn_id)) ||
     (typeof value.active_turn_id === 'string' && !value.running) ||
