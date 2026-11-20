@@ -829,6 +829,7 @@ export function onEvent(
         running: false,
         interrupting: false,
         status: 'done',
+        ...(event.data.resource_finalizing === true ? { recoveryPending: true } : {}),
         resourceFinalizing: event.data.resource_finalizing === true,
         turnOutcomes: turnOutcomes(thread, event.turn_id, 'completed'),
         turnTimings: turnTimings(thread, event.turn_id, productEventTime(event.ts), true),
@@ -1007,10 +1008,20 @@ function reconcileThreadRuntime(
     const session = byId.get(thread.sessionId ?? thread.id)
     if (!session) continue
     const stateCurrent = catalogRunStateIsCurrent(session, thread)
+    const settlementCurrent =
+      stateCurrent &&
+      (session.last_seq !== undefined || !(thread.recoveryPending || thread.resourceFinalizing))
+    const recoveryBlocked = settlementCurrent
+      ? session.recovery_blocked === true
+      : thread.recoveryBlocked
+    const resourceFinalizing =
+      session.recovery_pending === false || session.recovery_blocked === true
+        ? false
+        : session.resource_finalizing
     const running = stateCurrent ? session.running === true : thread.running
     const status: SessionStatus = !stateCurrent
       ? (thread.status ?? (thread.running ? 'running' : 'done'))
-      : session.recovery_blocked
+      : recoveryBlocked
         ? 'failed'
         : session.waiting
           ? 'waiting'
@@ -1028,16 +1039,18 @@ function reconcileThreadRuntime(
       ...thread,
       ...openedSessionTitle(session),
       running,
-      recoveryBlocked: stateCurrent ? session.recovery_blocked === true : thread.recoveryBlocked,
-      recoveryIncidentId: stateCurrent
+      recoveryBlocked,
+      recoveryIncidentId: settlementCurrent
         ? (session.recovery_incident_id ?? null)
         : thread.recoveryIncidentId,
-      recoverySourceSeq: stateCurrent
+      recoverySourceSeq: settlementCurrent
         ? (session.recovery_source_seq ?? 0)
         : thread.recoverySourceSeq,
-      recoveryPending: stateCurrent ? session.recovery_pending === true : thread.recoveryPending,
-      resourceFinalizing: stateCurrent
-        ? session.resource_finalizing === true
+      recoveryPending: settlementCurrent
+        ? (session.recovery_pending ?? thread.recoveryPending)
+        : thread.recoveryPending,
+      resourceFinalizing: settlementCurrent
+        ? (resourceFinalizing ?? thread.resourceFinalizing)
         : thread.resourceFinalizing,
       status,
       workdir: session.runtime_workdir || session.workdir || thread.workdir,
@@ -1778,6 +1791,30 @@ export function useLiveSession(): void {
       metadataSessions.current = sessions
       const catalogSessionIds = new Set(sessions.map((session) => session.session_id))
       const currentSnapshot = stateRef.current
+      const activeThread = currentSnapshot.activeSession
+        ? currentSnapshot.threads[currentSnapshot.activeSession]
+        : undefined
+      if (activeThread?.recoveryPending && !activeThread.running && !activeThread.recoveryBlocked) {
+        const authoritative = sessions.find(
+          (session) => session.session_id === activeThread.sessionId
+        )
+        if (
+          authoritative?.last_seq !== undefined &&
+          authoritative.recovery_pending === false &&
+          catalogRunStateIsCurrent(authoritative, activeThread)
+        ) {
+          console.info(
+            '[session-recovery]',
+            JSON.stringify({
+              stage: 'settlement-observed',
+              sessionId: authoritative.session_id,
+              projectedSeq: activeThread.lastSeq,
+              authoritativeSeq: authoritative.last_seq,
+              result: 'settled',
+            })
+          )
+        }
+      }
       const nowSeconds = Date.now() / 1_000
       Object.entries(detachers.current).forEach(([threadId, detach]) => {
         const thread = currentSnapshot.threads[threadId]
@@ -1975,12 +2012,36 @@ export function useLiveSession(): void {
   const catalogRefreshNeeded =
     state.mainView === 'home' ||
     sessionCatalogNeedsRefresh(state.sessions, state.activeSession, state.threads)
+  const activeThread = state.activeSession ? state.threads[state.activeSession] : undefined
+  const awaitingSettlement =
+    activeThread?.status === 'done' &&
+    activeThread.recoveryPending === true &&
+    !activeThread.running &&
+    !activeThread.recoveryBlocked
+      ? activeThread.sessionId
+      : null
   useEffect(() => {
     if (!state.backendReady || state.runtimeQuiescing || !catalogRefreshNeeded) return
-    if (window.scholarseed?.notifications) return
+    if (window.scholarseed?.notifications) {
+      if (!awaitingSettlement) return
+      console.info(
+        '[session-recovery]',
+        JSON.stringify({
+          stage: 'settlement-recheck',
+          sessionId: awaitingSettlement,
+          result: 'pending',
+        })
+      )
+    }
     const timer = window.setInterval(() => pollMetadata(), BACKGROUND_SESSION_REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [pollMetadata, state.backendReady, state.runtimeQuiescing, catalogRefreshNeeded])
+  }, [
+    pollMetadata,
+    state.backendReady,
+    state.runtimeQuiescing,
+    catalogRefreshNeeded,
+    awaitingSettlement,
+  ])
 
   useEffect(() => {
     if (!state.backendReady || !state.workbenchReady || state.runtimeQuiescing) return

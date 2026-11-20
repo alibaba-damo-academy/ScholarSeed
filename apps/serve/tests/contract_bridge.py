@@ -111,11 +111,13 @@ class BridgeToolContracts(unittest.TestCase):
         for capability, operation in sorted(set(BRIDGE_REQUESTS) | {("contract", "describe")}):
             with self.subTest(capability=capability, operation=operation):
                 base = {"capability": capability, "operation": operation}
-                request = (
-                    {"target_capability": "history", "target_operation": "list"}
-                    if (capability, operation) == ("contract", "describe")
-                    else {}
-                )
+                request = {
+                    ("contract", "describe"): {
+                        "target_capability": "history",
+                        "target_operation": "list",
+                    },
+                    ("search", "run"): {"query": "long-term memory"},
+                }.get((capability, operation), {})
                 self.assertTrue(validator.is_valid({**base, "request": request}))
                 self.assertTrue(validator.is_valid({**base, "request_file": "output/plot.json"}))
                 for invalid in (
@@ -127,6 +129,15 @@ class BridgeToolContracts(unittest.TestCase):
                     {**base, "request": request, "extra": True},
                 ):
                     self.assertFalse(validator.is_valid(invalid), invalid)
+
+    def test_search_run_exposes_required_query_in_model_tool_declaration(self):
+        validator = Draft202012Validator(SERVICE_BRIDGE_TOOL.input_schema)
+        base = {"capability": "search", "operation": "run"}
+        for request in ({}, {"purpose": "literature evidence"}, {"query": ""}, {"query": []}):
+            with self.subTest(request=request):
+                self.assertFalse(validator.is_valid({**base, "request": request}))
+        validator.validate({**base, "request": {"query": "long-term memory", "limit": 3}})
+        validator.validate({**base, "request_file": "queries/memory.json"})
 
     def test_artifact_contract_distinguishes_explicit_stage_delivery_from_working_files(self):
         contract = describe_contract("artifact", "publish")

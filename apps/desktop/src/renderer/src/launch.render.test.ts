@@ -7,6 +7,7 @@ import test, { after, before, type TestContext } from 'node:test'
 import { chromium, expect, type Page, type Request } from '@playwright/test'
 import { createServer } from 'vite'
 import { renderFixture } from '../../test-helpers/render.ts'
+import { PRODUCT_EVENT_SCHEMA_VERSION } from './api.ts'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const SCREENSHOTS = path.resolve(ROOT, '../../../test-results')
@@ -899,6 +900,310 @@ function opened() {
     running: false,
     project_path: null,
   }
+}
+
+for (const settlementSignal of ['stream', 'notification', 'missing'] as const) {
+  test(
+    `terminal settlement replays with ${settlementSignal} delivery`,
+    { timeout: 60_000 },
+    async (context) => {
+      const native = 'native-turn'
+      const completionSeq = 90
+      let turnCompleted = false
+      let settlementPersisted = false
+      let catalogReads = 0
+      let statusReads = 0
+      let submissions = 0
+      const recoveryDiagnostics: { stage: string; sessionId: string }[] = []
+      const snapshot = () => ({
+        ...opened(),
+        runtime: { ...opened().runtime, model_id: 'model-a' },
+        title: 'Completed task',
+        mtime: settlementPersisted ? 12 : turnCompleted ? 11 : 10,
+        kind: 'session',
+        turns: 1,
+        last_turn_id: native,
+        last_turn_status: turnCompleted ? 'completed' : 'running',
+        running: !turnCompleted,
+        recovery_pending: !settlementPersisted,
+        recovery_blocked: false,
+        last_seq: settlementPersisted
+          ? completionSeq + 2
+          : turnCompleted
+            ? completionSeq
+            : completionSeq - 1,
+      })
+      await fixture(
+        context,
+        async (page) => {
+          page.on('console', (message) => {
+            const text = message.text()
+            const prefix = '[session-recovery] '
+            if (!text.startsWith(prefix)) return
+            const event = JSON.parse(text.slice(prefix.length))
+            if (event.stage.startsWith('settlement-')) recoveryDiagnostics.push(event)
+          })
+          const runtime = await preparation(page)
+          runtime.finish()
+          await page.evaluate(
+            ({ instance, session, initial }) => {
+              const probe = Reflect.get(window, 'launchProbe')
+              probe.patch({
+                activeSession: session,
+                backendReady: true,
+                threads: {
+                  [session]: {
+                    id: session,
+                    sessionId: session,
+                    title: initial.title,
+                    conversation: [],
+                    queuedMessages: [],
+                    running: initial.running,
+                    recoveryPending: initial.recovery_pending,
+                    runtime: initial.runtime,
+                    readiness: initial.readiness,
+                    lastSeq: initial.last_seq,
+                    resumeState: 'ready',
+                    resumeServiceInstanceId: instance,
+                  },
+                },
+              })
+            },
+            { instance: INSTANCE, session: SESSION, initial: snapshot() }
+          )
+          const emit = async (event: { type: string; seq: number; data: object }) =>
+            page.evaluate((frame) => Reflect.get(window, 'settlementReplay').emit(frame), {
+              v: PRODUCT_EVENT_SCHEMA_VERSION,
+              ts: 1,
+              session_id: SESSION,
+              turn_id: native,
+              ...event,
+            })
+          const desktop = () =>
+            page.evaluate((session) => {
+              const state = Reflect.get(window, 'launchProbe').state
+              const thread = state.threads[session]
+              return {
+                lastSeq: thread?.lastSeq,
+                recoveryPending: thread?.recoveryPending,
+                running: thread?.running,
+                context: state.aiPanel.contextState,
+              }
+            }, SESSION)
+          const authority = async () =>
+            page.evaluate(async (session) => {
+              const [history, queue] = await Promise.all([
+                fetch(`/api/serve/history/${session}`).then((response) => response.json()),
+                fetch(`/api/serve/sessions/${session}/queue`).then((response) => response.json()),
+              ])
+              return {
+                pending: history.recovery_pending,
+                completed: history.turn_activity[0]?.outcome,
+                queue: queue.messages.length,
+              }
+            }, SESSION)
+          const input = page.getByTestId('composer-input')
+          const send = page.getByTestId('composer-send')
+          await expect
+            .poll(() => page.evaluate(() => Reflect.get(window, 'settlementReplay').connected))
+            .toBe(true)
+          await expect.poll(() => statusReads).toBeGreaterThan(0)
+          await expect.poll(() => catalogReads).toBeGreaterThan(0)
+          turnCompleted = true
+          const readsBeforeCompletion = catalogReads
+          await emit({ type: 'turn_completed', seq: completionSeq, data: {} })
+          await expect.poll(() => catalogReads).toBeGreaterThan(readsBeforeCompletion)
+          await expect.poll(desktop).toEqual({
+            lastSeq: completionSeq,
+            recoveryPending: true,
+            running: false,
+            context: 'ready',
+          })
+          assert.deepEqual(await authority(), { pending: true, completed: 'completed', queue: 1 })
+          await input.fill('Follow-up draft')
+          await expect(send).toHaveAttribute('data-admission-blockers', 'recovery')
+          await expect(send).toBeDisabled()
+          await input.press('Enter')
+          await expect(input).toHaveValue('Follow-up draft')
+          assert.equal(submissions, 0)
+          console.info('[settlement-replay] completion', {
+            authority: await authority(),
+            desktop: await desktop(),
+            submissions,
+          })
+
+          if (settlementSignal === 'stream') {
+            await page.waitForTimeout(2_200)
+            await expect(send).toBeDisabled()
+            assert.equal(submissions, 0)
+          }
+          settlementPersisted = true
+          if (settlementSignal === 'stream') {
+            await emit({
+              type: 'message_removed',
+              seq: completionSeq + 1,
+              data: { queued_message_id: 'old-message' },
+            })
+            await emit({
+              type: 'session_state',
+              seq: completionSeq + 2,
+              data: {
+                state: 'idle',
+                runtime_id: 'codex',
+                recovery_pending: false,
+                recovery_blocked: false,
+              },
+            })
+          } else if (settlementSignal === 'notification') {
+            const readsBeforeSettlement = statusReads
+            await page.evaluate(
+              (session) => Reflect.get(window, 'settlementReplay').notify(session),
+              SESSION
+            )
+            await expect.poll(() => statusReads).toBeGreaterThan(readsBeforeSettlement)
+          }
+          assert.deepEqual(await authority(), { pending: false, completed: 'completed', queue: 0 })
+          try {
+            await expect(send).toBeEnabled()
+          } finally {
+            console.info('[settlement-replay] authority settled', {
+              settlementSignal,
+              authority: await authority(),
+              desktop: await desktop(),
+              blockers: await send.getAttribute('data-admission-blockers'),
+              submissions,
+            })
+          }
+          await send.click()
+          await expect.poll(() => submissions).toBe(1)
+          if (settlementSignal === 'missing') {
+            assert.deepEqual(
+              recoveryDiagnostics.map(({ stage, sessionId }) => ({ stage, sessionId })),
+              [
+                { stage: 'settlement-recheck', sessionId: SESSION },
+                { stage: 'settlement-observed', sessionId: SESSION },
+              ]
+            )
+          }
+          console.info('[settlement-replay] submission', {
+            settlementSignal,
+            submissions,
+            recoveryDiagnostics,
+          })
+        },
+        async (page) => {
+          await page.addInitScript(() => {
+            Reflect.set(window, 'liveSessionFixture', true)
+            const probe = {
+              connected: false,
+              emit: (_frame: object): void => {},
+              notify: (_session: string): void => {},
+            }
+            Reflect.set(window, 'settlementReplay', probe)
+            class ReplayEventSource extends EventTarget {
+              onopen?: () => void
+              onmessage?: (event: MessageEvent<string>) => void
+
+              constructor() {
+                super()
+                queueMicrotask(() => {
+                  probe.connected = true
+                  this.onopen?.()
+                  probe.emit = (frame) =>
+                    this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(frame) }))
+                })
+              }
+
+              close(): void {
+                probe.connected = false
+              }
+            }
+            Reflect.set(window, 'EventSource', ReplayEventSource)
+            window.addEventListener(
+              'DOMContentLoaded',
+              () => {
+                Reflect.set(window.scholarseed, 'notifications', {
+                  sync: async () => {},
+                  onChange: (receive: (event: object) => void) => {
+                    probe.notify = (session) =>
+                      receive({ reset: false, changes: [{ topic: 'sessions', subject: session }] })
+                    return () => {}
+                  },
+                })
+              },
+              { once: true }
+            )
+          })
+          await page.route('**/api/content/projects', (route) =>
+            route.fulfill({ json: { projects: [] } })
+          )
+          await page.route('**/api/serve/models', (route) =>
+            route.fulfill({ json: { models: MODELS, default_model: 'model-a' } })
+          )
+          await page.route(`**/api/serve/sessions/${SESSION}/runtime/reconfigure`, (route) =>
+            route.fulfill({ status: 204 })
+          )
+          await page.route(`**/api/serve/sessions/${SESSION}/model`, (route) =>
+            route.fulfill({
+              json: { session_id: SESSION, model_id: 'model-a', runtime: snapshot().runtime },
+            })
+          )
+          await page.route('**/api/serve/sessions?*', (route) => {
+            catalogReads++
+            return route.fulfill({ json: { sessions: [snapshot()] } })
+          })
+          await page.route('**/api/serve/status', (route) => {
+            statusReads++
+            return route.fulfill({
+              json: {
+                sessions: [
+                  {
+                    ...snapshot(),
+                    summary_seq: snapshot().last_seq,
+                    queued_messages: [],
+                    acknowledged_queue_ids: [],
+                    pending_hil: [],
+                  },
+                ],
+              },
+            })
+          })
+          await page.route(`**/api/serve/history/${SESSION}`, (route) =>
+            route.fulfill({
+              json: {
+                recovery_pending: snapshot().recovery_pending,
+                turn_activity: turnCompleted ? [{ turn_id: native, outcome: 'completed' }] : [],
+              },
+            })
+          )
+          await page.route(`**/api/assistant/sessions/${SESSION}/context`, (route) =>
+            route.fulfill({
+              json: { session_id: SESSION, revision: 1, refs: [], capabilities: [] },
+            })
+          )
+          await page.route(`**/api/serve/sessions/${SESSION}/queue`, (route) =>
+            route.fulfill({
+              json: {
+                messages: settlementPersisted ? [] : [{ id: 'old-message', state: 'running' }],
+              },
+            })
+          )
+          await page.route(`**/api/serve/sessions/${SESSION}/turns`, (route) => {
+            submissions++
+            return route.fulfill({
+              status: 202,
+              json: {
+                ok: true,
+                accepted: true,
+                disposition: 'direct',
+                queued_message_id: route.request().postDataJSON().client_user_message_id,
+              },
+            })
+          })
+        }
+      )
+    }
+  )
 }
 
 async function chooseAndSend(page: Page): Promise<void> {
