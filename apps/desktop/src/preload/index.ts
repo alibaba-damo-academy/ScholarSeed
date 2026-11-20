@@ -716,9 +716,9 @@ const bridge = {
   cancelUpdate(): Promise<StartUpdateResult> {
     return ipcRenderer.invoke('scholarseed:update-cancel')
   },
-  // 不带参数：要记哪个候选由主进程按当前快照自己算，渲染层不传身份。
-  acknowledgeUpdateAnnouncement(): Promise<boolean> {
-    return ipcRenderer.invoke('scholarseed:update-announce-ack')
+  // The main process resolves the candidate identity from its own snapshot.
+  acknowledgeUpdateAnnouncement(kind?: 'completion'): Promise<boolean> {
+    return ipcRenderer.invoke('scholarseed:update-announce-ack', kind)
   },
   onUpdateState(cb: (state: UpdateSnapshot) => void): () => void {
     const h = (_e: unknown, state: UpdateSnapshot) => cb(state)

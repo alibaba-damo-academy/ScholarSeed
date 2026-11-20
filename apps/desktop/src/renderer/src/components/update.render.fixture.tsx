@@ -48,8 +48,11 @@ Object.assign(window, {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
-    acknowledgeUpdateAnnouncement: async () => {
-      publish({ ...snapshot, announcedKey: updateCandidateKey(snapshot.candidate) ?? undefined })
+    acknowledgeUpdateAnnouncement: async (kind?: 'completion') => {
+      if (kind === 'completion') publish({ ...snapshot, startupVerification: undefined })
+      else
+        publish({ ...snapshot, announcedKey: updateCandidateKey(snapshot.candidate) ?? undefined })
+      return true
     },
     cancelUpdate: async () => {
       if (snapshot.installation)

@@ -1236,6 +1236,25 @@ class CompletionBridgeContract(unittest.TestCase):
         self.assertEqual(observer.oversized_events, 1)
         self.assertEqual(observer.snapshot()["pending_bytes"], 0)
 
+    def test_search_call_diagnostics_preserve_ids_and_query_presence_only(self):
+        observer = StreamObservation()
+        for call_id, request in (("call_missing", {}), ("call_valid", {"query": "private text"})):
+            item = {
+                "type": "function_call",
+                "name": "scholarseed_bridge",
+                "call_id": call_id,
+                "arguments": json.dumps(
+                    {"capability": "search", "operation": "run", "request": request}
+                ),
+            }
+            event = {"type": "response.output_item.done", "item": item}
+            observer.feed(f"data: {json.dumps(event)}\n\n".encode())
+        fields = observer.snapshot()
+        self.assertEqual(
+            fields["search_call_has_query"], {"call_missing": False, "call_valid": True}
+        )
+        self.assertNotIn("private text", json.dumps(fields))
+
     def test_flat_sse_error_is_observed_and_credentials_are_redacted(self):
         diagnostic = CompletionDiagnostic("session", "codex-auto-review")
         diagnostic.protect({"Authorization": "Bearer opaque-credential-value"})
