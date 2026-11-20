@@ -1997,7 +1997,12 @@ export interface RuntimePreparation {
 
 async function runtimePreparationRequest(
   requestId: string,
-  options: { modelId: string; serviceInstanceId: string; persistDefault: boolean } | null,
+  options: {
+    modelId: string
+    serviceInstanceId: string
+    persistDefault: boolean
+    warmupOnly?: boolean
+  } | null,
   signal?: AbortSignal
 ): Promise<RuntimePreparation> {
   const response = await apiFetch(
@@ -2017,6 +2022,7 @@ async function runtimePreparationRequest(
               model_id: options.modelId,
               service_instance_id: options.serviceInstanceId,
               persist_default: options.persistDefault,
+              ...(options.warmupOnly ? { warmup_only: true } : {}),
             }),
           }
         : {}),
@@ -2051,6 +2057,7 @@ export function prepareRuntime(
     modelId: string
     serviceInstanceId: string
     persistDefault: boolean
+    warmupOnly?: boolean
   },
   signal?: AbortSignal
 ): Promise<RuntimePreparation> {

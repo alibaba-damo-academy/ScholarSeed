@@ -187,6 +187,7 @@ function fixture() {
     modelId: string
     serviceInstanceId: string
     persistDefault: boolean
+    warmupOnly?: boolean
   }> = []
   const reads: string[] = []
   const publications: RuntimePreparation[] = []
@@ -248,6 +249,26 @@ test('a completed preparation is never reused as an unverified future admission'
     [true, false]
   )
   assert.deepEqual(probe.publications, [first, second])
+})
+
+test('foreground preparation cannot join a deferred startup warmup', async () => {
+  const probe = fixture()
+  const release = deferred<void>()
+  probe.handlers.prepare = async () => {
+    if (probe.requests.at(-1)?.warmupOnly) {
+      await release.promise
+      return probe.operation('rejected')
+    }
+    return probe.operation('applied')
+  }
+  const warmup = probe.controller.prepare('model-a', false, true)
+  const foreground = probe.controller.prepare('model-a')
+  release.resolve()
+  assert.equal((await warmup).state, 'rejected')
+  const applied = await foreground
+  assert.equal(applied.state, 'applied')
+  assert.equal(probe.requests.length, 2)
+  assert.deepEqual(probe.publications, [applied])
 })
 
 test('a matching in-flight prepare joins without another control request', async () => {
