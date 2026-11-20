@@ -29,6 +29,10 @@ import type {
 } from '../src/renderer/src/contracts/workbench.ts'
 import type { ProjectTreePage } from '../src/renderer/src/features/project/api.ts'
 import type { FileEvent } from '../src/renderer/src/contracts/content.ts'
+import type {
+  ResourceCapability,
+  ResourcePending,
+} from '../src/renderer/src/features/resources/api.ts'
 import { PREVIEW_CATALOG } from './catalog.ts'
 import {
   PREVIEW_REFERENCE_FILES,
@@ -1547,7 +1551,23 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
   return body as Record<string, unknown>
 }
 
-function resourceNode(entry: PreviewFileEntry, versions?: PreviewVersions, children = 0) {
+interface PreviewResourceNode extends Pick<PreviewFileEntry, 'path' | 'name' | 'kind'> {
+  count?: number | null
+  updated_at: number | null
+  source: 'created'
+  file_type: string
+  origin: 'local'
+  version?: Pick<ResourceCapability, 'management_state' | 'drifted' | 'snapshot_state'> & {
+    pending_origin: ResourcePending['origin'] | null
+    needs_review: boolean
+  }
+}
+
+function resourceNode(
+  entry: PreviewFileEntry,
+  versions?: PreviewVersions,
+  children = 0
+): PreviewResourceNode {
   const capability = entry.kind === 'file' ? versions?.capability(entry.path) : undefined
   return {
     path: entry.path,
@@ -4126,7 +4146,10 @@ export function createPreviewService() {
               childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1)
             }
           }
-          const projectNode = (entry: PreviewFileEntry, capability?: PreviewVersions) => {
+          const projectNode = (
+            entry: PreviewFileEntry,
+            capability?: PreviewVersions
+          ): PreviewResourceNode => {
             const node = resourceNode(entry, capability, childCounts.get(entry.path))
             if (directory === null) return node
             // A scoped listing uses the Serve contract and leaves child counts unknown.
@@ -4182,8 +4205,9 @@ export function createPreviewService() {
           } else {
             const withVersions = directory === null || url.searchParams.get('versions') !== 'false'
             const canonical = directory === null ? null : posix.normalize(directory).replace(/\/$/, '')
+            const scopedDirectory = canonical === '.' ? '' : canonical
             send({
-              ...(canonical !== null ? { directory: canonical === '.' ? '' : canonical } : {}),
+              ...(scopedDirectory !== null ? { directory: scopedDirectory } : {}),
               items: entries.map((entry) => projectNode(entry, withVersions ? versions : undefined)),
             })
           }

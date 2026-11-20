@@ -89,30 +89,39 @@ function ProjectResourceListing(): React.JSX.Element {
   const menuNode = resource.nodeMenu
     ? nodes.find((node) => node.path === resource.nodeMenu?.path)
     : undefined
+  const awaitingMenuNode = filtered && refreshing && !menuNode
   useEffect(() => {
-    if (!resource.nodeMenu || resource.nodeMenu.path !== openedMenuPath.current) {
+    const opened = resource.nodeMenu
+    if (!opened || opened.path !== openedMenuPath.current) {
       openedMenuPath.current = null
       return
     }
-    if (!menuNode) {
+    if (!menuNode && !awaitingMenuNode) {
       act.closeResourceMenu()
       return
     }
-    if (!menuNode?.version) return
+    const version = menuNode?.version
+    if (
+      (!version || opened.version === version) &&
+      Boolean(opened.awaitingListing) === awaitingMenuNode
+    )
+      return
     set((current) => {
       const menu = current.resource.nodeMenu
-      if (
-        current.homeSelectedProjectId !== project ||
-        menu?.path !== menuNode.path ||
-        menu.version === menuNode.version
-      )
-        return current
+      if (current.homeSelectedProjectId !== project || menu?.path !== opened.path) return current
       return {
         ...current,
-        resource: { ...current.resource, nodeMenu: { ...menu, version: menuNode.version } },
+        resource: {
+          ...current.resource,
+          nodeMenu: {
+            ...menu,
+            version: version ?? menu.version,
+            awaitingListing: awaitingMenuNode,
+          },
+        },
       }
     })
-  }, [act, menuNode, project, resource.nodeMenu, set])
+  }, [act, awaitingMenuNode, menuNode, project, resource.nodeMenu, set])
   const changeFacet = (target: 'type' | 'source', open: boolean): void => {
     setFacet((previous) => {
       if (open) return target

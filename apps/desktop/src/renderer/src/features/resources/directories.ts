@@ -35,7 +35,7 @@ interface ProjectListing {
 
 interface DirectoryReader {
   refresh: ResourceListingRefresh
-  directory?: string
+  readonly directory?: string
 }
 
 const EMPTY_READ = { snapshot: null, refreshing: true, failed: false }
@@ -109,14 +109,15 @@ export function useResourceListing(
     )
 
     const startDirectory = (path: string): DirectoryReader => {
+      let directory: string | undefined
       const refresh = createResourceListingRefresh(
         async () => {
           await waitForObservations()
           return fetchResourceListingDirectory(project, path, false)
         },
         (result, refreshing, invalidated) => {
-          if (result) directoryReader.directory = result.directory
-          if (invalidated) directoryReader.directory = undefined
+          if (result) directory = result.directory
+          if (invalidated) directory = undefined
           updateDirectory(path, (old) => ({
             snapshot: invalidated ? null : (result ?? old.snapshot),
             refreshing,
@@ -135,7 +136,12 @@ export function useResourceListing(
           },
         }
       )
-      const directoryReader: DirectoryReader = { refresh }
+      const directoryReader: DirectoryReader = {
+        refresh,
+        get directory() {
+          return directory
+        },
+      }
       readers.set(path, directoryReader)
       return directoryReader
     }
@@ -178,6 +184,8 @@ export function useResourceListing(
     }
     controller.current = {
       syncDirectories(paths): void {
+        // Refresh status changes usually leave the reader set intact.
+        if (paths.length === readers.size && paths.every((path) => readers.has(path))) return
         const visible = new Set(paths)
         for (const [path, reader] of readers) {
           if (visible.has(path)) continue

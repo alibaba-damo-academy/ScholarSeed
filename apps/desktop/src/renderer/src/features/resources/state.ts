@@ -323,6 +323,7 @@ export type ImportDialogState =
 export interface NodeMenuState {
   version?: ResourceNodeVersionState
   anchor?: { bottom: number; left: number; right: number; top: number; width: number }
+  awaitingListing?: boolean
   path: string
   name: string
   kind: 'file' | 'dir'

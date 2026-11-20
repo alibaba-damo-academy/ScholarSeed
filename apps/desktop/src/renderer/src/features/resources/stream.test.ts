@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { streamResourceListingSearch } from './api.ts'
+import { ResourceListingSearchError, streamResourceListingSearch } from './api.ts'
 import { createResourceListingSearch } from './stream.ts'
 
 interface Candidate {
@@ -192,29 +192,85 @@ test('a malformed SSE frame fails the API read without accepting a later complet
     { type: 'candidates_complete', items: [] },
     { type: 'complete', items: [], incremental: { parents: [], supported: false } },
   ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`)
-  payload.splice(1, 0, 'data: {bad-json\n\n')
   globalThis.window = {
     scholarseed: { getApiBase: () => 'http://service.test' },
   } as Window & typeof globalThis
-  globalThis.fetch = async () =>
-    new Response(payload.join(''), { headers: { 'content-type': 'text/event-stream' } })
 
   try {
-    const batches: string[][] = []
-    let completed = false
-    const result = await streamResourceListingSearch(
+    for (const invalid of ['{bad-json', '{"type":"error","status":"409","detail":"root_busy"}']) {
+      const [first, ...remaining] = payload
+      globalThis.fetch = async () =>
+        new Response([first, `data: ${invalid}\n\n`, ...remaining].join(''), {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      const batches: string[][] = []
+      let completed = false
+      const result = await streamResourceListingSearch(
+        'project',
+        new AbortController().signal,
+        (items) => batches.push(items.map((item) => item.path)),
+        () => {
+          completed = true
+        }
+      )
+      assert.equal(result, null)
+      assert.deepEqual(batches, [['file.md']])
+      assert.equal(completed, false)
+    }
+  } finally {
+    globalThis.fetch = previousFetch
+    globalThis.window = previousWindow
+  }
+})
+
+test('a terminal SSE failure preserves the service status and detail and cancels the unread body', async (context) => {
+  const previousWindow = globalThis.window
+  globalThis.window = {
+    scholarseed: { getApiBase: () => 'http://service.test' },
+  } as Window & typeof globalThis
+  context.after(() => {
+    globalThis.window = previousWindow
+  })
+  const warning = context.mock.method(console, 'warn', () => undefined)
+  const frames = [
+    { type: 'batch', items: [{ path: 'file.md', name: 'file.md', kind: 'file' }] },
+    { type: 'candidates_complete', items: [] },
+    { type: 'error', status: 409, detail: 'root_busy' },
+    { type: 'complete', items: [], incremental: { parents: [], supported: false } },
+  ]
+  let cancelled = false
+  context.mock.method(globalThis, 'fetch', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const payload = frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')
+        controller.enqueue(new TextEncoder().encode(payload))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
+  })
+
+  const batches: string[][] = []
+  let completed = false
+  await assert.rejects(
+    streamResourceListingSearch(
       'project',
       new AbortController().signal,
       (items) => batches.push(items.map((item) => item.path)),
       () => {
         completed = true
       }
-    )
-    assert.equal(result, null)
-    assert.deepEqual(batches, [['file.md']])
-    assert.equal(completed, false)
-  } finally {
-    globalThis.fetch = previousFetch
-    globalThis.window = previousWindow
-  }
+    ),
+    (error: unknown) =>
+      error instanceof ResourceListingSearchError &&
+      error.status === 409 &&
+      error.detail === 'root_busy'
+  )
+  assert.deepEqual(batches, [['file.md'], []])
+  assert.equal(completed, true)
+  assert.equal(cancelled, true)
+  assert.equal(warning.mock.callCount(), 1)
+  assert.deepEqual(warning.mock.calls[0].arguments.at(-1), { status: 409, detail: 'root_busy' })
 })

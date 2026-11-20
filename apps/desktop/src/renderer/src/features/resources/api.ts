@@ -1248,6 +1248,21 @@ export async function fetchResourceListing(project: string): Promise<ResourceNod
 
 const RESOURCE_LISTING_SEARCH = '/api/resource/list/search'
 const RESOURCE_LISTING_STREAM_MEDIA_TYPE = 'text/event-stream'
+const MIN_HTTP_ERROR_STATUS = 400
+const MAX_HTTP_ERROR_STATUS = 599
+
+type ResourceListingStreamFrame =
+  | (ResourceListingPayload & { type: 'batch' | 'candidates_complete' | 'complete' })
+  | { type: 'error'; status?: unknown; detail?: unknown }
+
+export class ResourceListingSearchError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string
+  ) {
+    super(detail)
+  }
+}
 
 export async function streamResourceListingSearch(
   project: string,
@@ -1266,11 +1281,25 @@ export async function streamResourceListingSearch(
   let candidatesComplete = false
   for await (const data of sseData(response.body)) {
     if (signal.aborted) return null
-    let frame: (ResourceListingPayload & { type?: string }) | null
+    let frame: ResourceListingStreamFrame | null
     try {
       frame = JSON.parse(data)
     } catch {
       return null
+    }
+    if (frame?.type === 'error') {
+      const { status, detail } = frame
+      if (
+        typeof status !== 'number' ||
+        !Number.isInteger(status) ||
+        status < MIN_HTTP_ERROR_STATUS ||
+        status > MAX_HTTP_ERROR_STATUS ||
+        typeof detail !== 'string' ||
+        !detail
+      )
+        return null
+      console.warn('[resource-listing-search] stream failed', { status, detail })
+      throw new ResourceListingSearchError(status, detail)
     }
     if (
       !frame ||

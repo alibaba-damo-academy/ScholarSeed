@@ -846,8 +846,10 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     )
     assert.equal(end.body.offset, first.body.total)
     assert.deepEqual(end.body.nodes, [])
-    const listing = (await runtime.request(`/api/resource/list?${project}`, instance)).body
-      .items as {
+    const fullListing = await runtime.request(`/api/resource/list?${project}`, instance)
+    assert.equal(fullListing.status, 200)
+    assert.equal('directory' in fullListing.body, false)
+    const listing = fullListing.body.items as {
       path: string
       kind: 'file' | 'dir'
       count: number | null
@@ -856,6 +858,18 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
       origin: string
       version?: object
     }[]
+    const rootListing = await runtime.request(
+      `/api/resource/list?${project}&directory=.&versions=false`,
+      instance
+    )
+    assert.equal(rootListing.status, 200)
+    assert.equal(rootListing.body.directory, '')
+    assert.deepEqual(
+      rootListing.body.items,
+      listing
+        .filter(({ path }) => !path.includes('/'))
+        .map(({ count: _count, version: _version, ...item }) => item)
+    )
     const directory = 'preview-docs'
     const scoped = await runtime.request(
       `/api/resource/list?${project}&directory=${directory}&versions=false`,
