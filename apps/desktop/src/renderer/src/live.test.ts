@@ -27,14 +27,8 @@ const liveSource = readFileSync(new URL('./live.ts', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('./api.ts', import.meta.url), 'utf8')
 const storeSource = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
 
-test('live recovery incidents supply the identity used to reject a superseded check', () => {
-  let current: Thread = {
-    id: 'thread',
-    title: 'Task',
-    sessionId: 'session',
-    conversation: [],
-    lastSeq: 0,
-  }
+function liveSessionStateProjector(initial: Thread) {
+  let current = initial
   const branch = block(liveSource, "case 'session_state': {", "case 'session_title_updated':")
   const apply = runInNewContext(
     ts.transpileModule(`(event) => { switch (event.type) { ${branch} } }`, {
@@ -46,12 +40,28 @@ test('live recovery incidents supply the identity used to reject a superseded ch
       patchThread: (_id: string, update: (thread: Thread) => Partial<Thread>) => {
         current = { ...current, ...update(current) }
       },
+      turnTimings: (thread: Thread) => thread.turnTimings,
+      productEventTime: () => 0,
       set: () => {},
       refreshMeta: { current: () => {} },
     }
   ) as (
     event: Pick<Extract<AspEnvelope, { type: 'session_state' }>, 'type' | 'data' | 'seq'>
   ) => void
+  return (event: Parameters<typeof apply>[0]): Thread => {
+    apply(event)
+    return current
+  }
+}
+
+test('live recovery incidents supply the identity used to reject a superseded check', () => {
+  const apply = liveSessionStateProjector({
+    id: 'thread',
+    title: 'Task',
+    sessionId: 'session',
+    conversation: [],
+    lastSeq: 0,
+  })
   const blocked = {
     state: 'failed',
     runtime_id: 'codex',
@@ -59,14 +69,51 @@ test('live recovery incidents supply the identity used to reject a superseded ch
     recovery_pending: true,
     incident_id: 'incident-1',
   } as const
-  apply({ type: 'session_state', seq: 10, data: blocked })
-  const requested = current
+  const requested = apply({ type: 'session_state', seq: 10, data: blocked })
   assert.equal(requested.recoveryIncidentId, 'incident-1')
   assert.equal(requested.recoverySourceSeq, 10)
-  apply({ type: 'session_state', seq: 12, data: { ...blocked, incident_id: 'incident-2' } })
+  const current = apply({
+    type: 'session_state',
+    seq: 12,
+    data: { ...blocked, incident_id: 'incident-2' },
+  })
   assert.equal(current.recoveryIncidentId, 'incident-2')
   assert.equal(current.recoverySourceSeq, 12)
   assert.equal(recoveryCheckIsCurrent(current, requested), false)
+})
+
+test('only a new active turn supersedes the previous healthy resource settlement', () => {
+  const thread: Thread = {
+    id: 'thread',
+    title: 'Task',
+    sessionId: 'session',
+    conversation: [],
+    lastSeq: 20,
+    activeTurnId: 'completed-turn',
+    recoveryPending: true,
+    resourceFinalizing: true,
+  }
+  const active = {
+    type: 'session_state',
+    seq: 21,
+    data: { state: 'running', runtime_id: 'codex', active_turn_id: 'next-turn' },
+  } as const
+  const next = liveSessionStateProjector(thread)(active)
+  assert.equal(next.running, true)
+  assert.equal(next.activeTurnId, 'next-turn')
+  assert.equal(next.recoveryPending, false)
+  assert.equal(next.resourceFinalizing, false)
+
+  for (const data of [
+    { ...active.data, active_turn_id: undefined },
+    { ...active.data, active_turn_id: 'completed-turn' },
+    { ...active.data, recovery_pending: true },
+    { ...active.data, recovery_blocked: true },
+  ]) {
+    const unchanged = liveSessionStateProjector(thread)({ ...active, data })
+    assert.equal(unchanged.recoveryPending, true)
+    assert.equal(unchanged.resourceFinalizing, true)
+  }
 })
 
 test('shared notifications forward subjects without changing legacy record reset delivery', () => {

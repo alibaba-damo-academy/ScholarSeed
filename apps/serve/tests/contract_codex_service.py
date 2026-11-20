@@ -5712,6 +5712,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             output_root=str(self.output_root),
         )
         capture_started, release_capture = asyncio.Event(), asyncio.Event()
+        release_active = asyncio.Event()
         first_turn, next_turn = "resource-first", "resource-followup"
         attempts = []
 
@@ -5782,9 +5783,28 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 await turns._drain_next(self.live)
                 self.assertEqual(attempts, [first_turn])
                 self.assertEqual(submit.await_count, 1)
-                turns.resume_resource_finalization(PRODUCT_SESSION_ID, next_turn)
-                self.assertIsNone(self.live.current_task)
-                turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                read_pending = self.catalog.pending_turn_settlement
+                pending_reads: list[int] = []
+
+                def read_pending_off_loop(session_id):
+                    pending_reads.append(threading.get_ident())
+                    return read_pending(session_id)
+
+                with patch.object(
+                    self.catalog, "pending_turn_settlement", side_effect=read_pending_off_loop
+                ):
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, next_turn)
+                    self.assertIsNone(self.live.current_task)
+                    active = asyncio.create_task(release_active.wait())
+                    self.live.current_task = active
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                    self.assertIs(self.live.current_task, active)
+                    self.assertEqual(len(pending_reads), 2)
+                    self.assertNotIn(threading.get_ident(), pending_reads)
+                self.assertEqual(attempts, [first_turn])
+                release_active.set()
+                await asyncio.wait_for(active, 2)
                 async with asyncio.timeout(2):
                     while (
                         self.catalog.queued_message(PRODUCT_SESSION_ID, next_turn).state
@@ -5795,6 +5815,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(submit.await_count, 2)
             finally:
                 release_capture.set()
+                release_active.set()
                 if self.live.current_task is not None:
                     self.live.current_task.cancel()
                     await asyncio.gather(self.live.current_task, return_exceptions=True)

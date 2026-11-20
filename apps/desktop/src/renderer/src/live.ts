@@ -359,7 +359,17 @@ export function onEvent(
     case 'session_state': {
       const runtimeState = projectSessionState(event.data)
       const status = runtimeState.status ?? 'dormant'
+      const runningTurnId = event.data.state === 'running' ? runtimeState.activeTurnId : null
       patchThread(threadId, (thread) => ({
+        // A new native turn supersedes the previous healthy resource settlement.
+        ...(thread.resourceFinalizing &&
+        !thread.recoveryBlocked &&
+        runningTurnId &&
+        runningTurnId !== thread.activeTurnId &&
+        !runtimeState.recoveryPending &&
+        !runtimeState.resourceFinalizing
+          ? { recoveryPending: false, resourceFinalizing: false }
+          : {}),
         ...runtimeState,
         recoveryIncidentId: event.data.recovery_blocked ? (event.data.incident_id ?? null) : null,
         recoverySourceSeq: event.data.recovery_blocked ? event.seq : 0,

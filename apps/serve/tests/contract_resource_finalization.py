@@ -11,7 +11,7 @@ import unittest
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI
@@ -98,9 +98,11 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         self.app = app
         app.state.resource_deliveries = self.deliveries
         self.resumed_finalizations: list[tuple[str, str]] = []
-        app.state.resume_resource_finalization = lambda session_id, turn_id: (
+
+        async def resume(session_id: str, turn_id: str) -> None:
             self.resumed_finalizations.append((session_id, turn_id))
-        )
+
+        app.state.resume_resource_finalization = resume
         register_version_routes(app)
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -473,13 +475,13 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 self.app.state,
                 "resume_resource_finalization",
-                side_effect=RuntimeError("resume unavailable"),
+                new=AsyncMock(side_effect=RuntimeError("resume unavailable")),
             ) as notify,
             self.assertLogs("service.resources.api.versions", level="WARNING") as logs,
         ):
             committed = await self.client.post(retry_url, params=self.params, headers=headers)
 
-        notify.assert_called_once_with("session", "turn")
+        notify.assert_awaited_once_with("session", "turn")
         self.assertEqual(committed.status_code, 200)
         self.assertTrue(committed.json()["file_ids"])
         (diagnostic,) = logs.records

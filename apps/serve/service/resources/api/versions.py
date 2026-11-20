@@ -620,7 +620,7 @@ def register_version_routes(app: FastAPI) -> None:
         resume_settlement = getattr(request.app.state, "resume_resource_finalization", None)
         if resume_settlement is not None:
             try:
-                resume_settlement(session_id, turn_id)
+                await resume_settlement(session_id, turn_id)
             except Exception as exc:  # noqa: BLE001 - the archive receipt is already durable
                 _log.warning(
                     "resource_finalization_resume_failed project_id=%s session_id=%s "

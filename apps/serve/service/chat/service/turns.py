@@ -288,6 +288,10 @@ class TurnService:
         self._sessions = sessions
         self._activities = activities
         self._queue_waiters: dict[str, asyncio.Task[None]] = {}
+        self._resource_resume_callbacks: dict[
+            tuple[asyncio.Task[Any], str], Callable[[asyncio.Task[Any]], None]
+        ] = {}
+        self._resource_resume_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
         self._logger = logger
         self._prepare = prepare
@@ -317,15 +321,19 @@ class TurnService:
 
     async def aclose(self) -> None:
         self._closed = True
+        for (active, _turn_id), callback in self._resource_resume_callbacks.items():
+            active.remove_done_callback(callback)
+        self._resource_resume_callbacks.clear()
         if self._titles is not None:
             await self._titles.aclose()
         if self.recovery is not None:
             await self.recovery.aclose()
-        waiters = tuple(self._queue_waiters.values())
+        waiters = (*self._queue_waiters.values(), *self._resource_resume_tasks)
         for task in waiters:
             task.cancel()
         await asyncio.gather(*waiters, return_exceptions=True)
         self._queue_waiters.clear()
+        self._resource_resume_tasks.clear()
 
     async def _enqueue_recovery(
         self, live: LiveSession, checkpoint: RecoveryCheckpoint, generation: str
@@ -2924,40 +2932,103 @@ class TurnService:
         pending = live.catalog.pending_turn_settlement(live.id)
         if pending is None:
             return
-        live.active_product_turn_id = pending.client_turn_id
+        self._start_pending_settlement(live, pending.client_turn_id)
+
+    def _start_pending_settlement(
+        self,
+        live: LiveSession,
+        client_turn_id: str,
+        *,
+        pending: PendingTurnSettlement | None = None,
+    ) -> None:
         task = self._activities.spawn(
-            ActivityDomain.SETTLEMENT, lambda: self._recover_pending_settlement(live)
+            ActivityDomain.SETTLEMENT, lambda: self._recover_pending_settlement(live, pending)
         )
+        live.active_product_turn_id = client_turn_id
         live.current_task = task
 
-    def resume_resource_finalization(self, session_id: str, client_turn_id: str) -> None:
+    async def resume_resource_finalization(self, session_id: str, client_turn_id: str) -> None:
         """Resume the matching product turn once its resource retry committed."""
 
         live = self._sessions.get(session_id)
-        if live is None:
+        if self._closed or live is None or live.closing:
             return
-        pending = live.catalog.pending_turn_settlement(session_id)
-        if pending is None or pending.client_turn_id != client_turn_id:
-            return
-        active = live.current_task
-        if active is not None and not active.done():
-            active.add_done_callback(
-                lambda _done: self.resume_resource_finalization(session_id, client_turn_id)
+        async with live.lifecycle_lock:
+            active = live.current_task
+            if active is not None and (active, client_turn_id) in self._resource_resume_callbacks:
+                return
+            # The settlement commit also holds this lock when clearing the pending turn.
+            pending = await self._activities.to_thread(
+                ActivityDomain.SETTLEMENT, live.catalog.pending_turn_settlement, session_id
             )
-            return
-        self.resume_pending_settlement(live)
+            if (
+                pending is None
+                or pending.client_turn_id != client_turn_id
+                or self._closed
+                or live.closing
+                or self._sessions.get(session_id) is not live
+            ):
+                return
+            active = live.current_task
+            if active is not None and not active.done():
+                self._defer_resource_finalization_resume(live, client_turn_id, active)
+                return
+            self._start_pending_settlement(live, client_turn_id, pending=pending)
 
-    async def _recover_pending_settlement(self, live: LiveSession) -> None:
+    def _defer_resource_finalization_resume(
+        self, live: LiveSession, client_turn_id: str, active: asyncio.Task[Any]
+    ) -> None:
+        key = (active, client_turn_id)
+
+        def report_failure(error: Exception) -> None:
+            self._logger.warning(
+                "resource_finalization_deferred_resume_failed session_id=%s turn_id=%s failure_type=%s",
+                live.id,
+                client_turn_id,
+                type(error).__name__,
+                exc_info=error,
+            )
+
+        async def resume() -> None:
+            if self._sessions.get(live.id) is not live:
+                return
+            try:
+                await self.resume_resource_finalization(live.id, client_turn_id)
+            except Exception as exc:  # noqa: BLE001 - the resource archive is already durable
+                report_failure(exc)
+
+        def active_finished(_done: asyncio.Task[Any]) -> None:
+            self._resource_resume_callbacks.pop(key, None)
+            if self._closed or live.closing:
+                return
+            try:
+                task = self._activities.spawn(ActivityDomain.SETTLEMENT, resume)
+            except Exception as exc:  # noqa: BLE001 - the resource archive is already durable
+                report_failure(exc)
+                return
+            self._resource_resume_tasks.add(task)
+            task.add_done_callback(self._resource_resume_tasks.discard)
+
+        if key not in self._resource_resume_callbacks:
+            self._resource_resume_callbacks[key] = active_finished
+            active.add_done_callback(active_finished)
+
+    async def _recover_pending_settlement(
+        self, live: LiveSession, pending: PendingTurnSettlement | None
+    ) -> None:
         with self._activities.enter(ActivityDomain.SETTLEMENT) as activity:
             live.turn_activity = activity
             try:
-                await self._recover_settlement(live)
+                await self._recover_settlement(live, pending)
             finally:
                 if live.turn_activity is activity:
                     live.turn_activity = None
 
-    async def _recover_settlement(self, live: LiveSession) -> None:
-        pending = live.catalog.pending_turn_settlement(live.id)
+    async def _recover_settlement(
+        self, live: LiveSession, pending: PendingTurnSettlement | None = None
+    ) -> None:
+        if pending is None:
+            pending = live.catalog.pending_turn_settlement(live.id)
         if pending is None:
             return
         should_drain = False

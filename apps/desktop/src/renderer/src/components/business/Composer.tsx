@@ -771,7 +771,9 @@ export function Composer({
   const selectionBlocked = Boolean(sidNow && modelSelectionBlocked(state.serviceInstanceId, sidNow))
   const selectedEffort = composerReasoningEffort(state)
   const running = Boolean(thread.running)
-  const resourceFinalizing = Boolean(sidNow && thread.resourceFinalizing && !thread.recoveryBlocked)
+  const resourceFinalizing = Boolean(
+    sidNow && !running && thread.resourceFinalizing && !thread.recoveryBlocked
+  )
   const recoveryAvailable =
     canOfferTurnRecovery(thread) && !thread.recoveryPending && !selectionBlocked
   const queuedMessages = thread.queuedMessages ?? []
@@ -784,7 +786,8 @@ export function Composer({
   const interrupting = Boolean(thread.interrupting)
   const canStop =
     interrupting ||
-    (!resourceFinalizing && (running || hasAcceptedMessageAwaitingRuntime(queuedMessages)))
+    running ||
+    (!resourceFinalizing && hasAcceptedMessageAwaitingRuntime(queuedMessages))
   const launching =
     state.turnLaunch !== null || thread.resumeState === 'pending' || state.modelSelectionPending > 0
   // 资源页只遮住旧对话页；文档旁的 AI 助手仍可交互，不得因此禁用候选菜单。
@@ -1751,7 +1754,7 @@ export function Composer({
       return false
     const v = message.trim()
     const submittedFollowUpMode: FollowUpMode =
-      !resourceFinalizing && running && thread.activeTurnId ? followUp.mode : 'queue'
+      running && thread.activeTurnId ? followUp.mode : 'queue'
     const submittedExpectedTurnId = thread.activeTurnId ?? undefined
     if (!composerHasContent(v, references, pendingContextRefs)) return false
     const submittedDraftRevision = composerDraft.getRevision()
