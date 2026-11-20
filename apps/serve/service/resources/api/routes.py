@@ -542,6 +542,8 @@ async def _listing_stream_frames(
     project: str,
     supervisor: ResourceVersionSupervisor | None,
     activities: Activities,
+    *,
+    candidate_completion: bool = False,
 ) -> AsyncGenerator[str, None]:
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[_ListingFrame] = asyncio.Queue(LISTING_STREAM_BUFFER_SIZE)
@@ -569,15 +571,14 @@ async def _listing_stream_frames(
         pending: list[dict] = []
         published = False
 
-        def emit(items: list[dict], linked_roots: tuple[ExternalRootRef, ...]) -> None:
-            nonlocal published
-            if not items:
-                return
+        def emit_frame(
+            kind: str, items: list[dict], linked_roots: tuple[ExternalRootRef, ...]
+        ) -> None:
             enqueue(
                 _ListingFrame(
                     sse_encode(
                         {
-                            "type": "batch",
+                            "type": kind,
                             "items": items,
                             "linked_roots": _linked_roots_payload(linked_roots),
                         }
@@ -585,7 +586,17 @@ async def _listing_stream_frames(
                     linked_roots=linked_roots,
                 )
             )
+
+        def emit(items: list[dict], linked_roots: tuple[ExternalRootRef, ...]) -> None:
+            nonlocal published
+            if not items:
+                return
+            emit_frame("batch", items, linked_roots)
             published = True
+
+        def flush() -> None:
+            emit(pending, ())
+            pending.clear()
 
         def publish(
             entries: tuple[ResourceListEntry, ...],
@@ -594,17 +605,31 @@ async def _listing_stream_frames(
         ) -> None:
             items = _resource_list_items(project, None, entries, repositories, linked_roots)
             if linked_roots:
-                emit(pending, ())
-                pending.clear()
+                flush()
                 emit(items, linked_roots)
                 return
             pending.extend(items)
             if not published or len(pending) >= LISTING_STREAM_BATCH_SIZE:
-                emit(pending, ())
-                pending.clear()
+                flush()
 
-        snapshot, roots = ResourceListing(content).progressive_snapshot(project, publish, check)
-        emit(pending, ())
+        def complete_candidates(
+            entries: tuple[ResourceListEntry, ...],
+            repositories: dict[str, str | None],
+            linked_roots: tuple[ExternalRootRef, ...],
+        ) -> None:
+            emit_frame(
+                "candidates_complete",
+                _resource_list_items(project, None, entries, repositories, linked_roots),
+                linked_roots,
+            )
+
+        snapshot, roots = ResourceListing(content).progressive_snapshot(
+            project,
+            publish,
+            check,
+            flush=flush,
+            complete_candidates=complete_candidates if candidate_completion else None,
+        )
         check()
         body = _listing_payload(project, supervisor, snapshot, roots, incremental=True)
         return _ListingFrame(
@@ -721,12 +746,18 @@ def register_resource_routes(app: FastAPI) -> None:
 
     @app.get(f"{RESOURCE_ROUTE_PREFIX}/list/search")
     async def resource_listing_search(
-        request: Request, project: str = Query(min_length=1)
+        request: Request, project: str = Query(min_length=1), candidate_completion: bool = False
     ) -> StreamingResponse:
         content = _content(request)
         supervisor = getattr(request.app.state, "resource_version_supervisor", None)
         return _ListingStream(
-            _listing_stream_frames(content, project, supervisor, request.app.state.activities)
+            _listing_stream_frames(
+                content,
+                project,
+                supervisor,
+                request.app.state.activities,
+                candidate_completion=candidate_completion,
+            )
         )
 
     @app.post(f"{RESOURCE_ROUTE_PREFIX}/list/changes")

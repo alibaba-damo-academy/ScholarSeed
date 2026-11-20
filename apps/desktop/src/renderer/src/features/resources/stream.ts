@@ -2,7 +2,8 @@ import { createResourceListingRefresh } from './refresh.ts'
 
 type SearchRead<Item, Snapshot> = (
   signal: AbortSignal,
-  onBatch: (items: Item[]) => void
+  onBatch: (items: Item[]) => void,
+  onCandidatesComplete: () => void
 ) => Promise<Snapshot | null>
 
 export function createResourceListingSearch<
@@ -20,6 +21,7 @@ export function createResourceListingSearch<
   let refreshing = true
   let currentItems: Item[] | null = null
   let current: AbortController | null = null
+  let changeRevision = 0
 
   const update = (items: Item[] | null, pending: boolean, failed: boolean): void => {
     currentItems = items
@@ -31,27 +33,40 @@ export function createResourceListingSearch<
     createResourceListingRefresh(
       async () => {
         const task = new AbortController()
+        const readRevision = changeRevision
         current = task
         if (currentItems !== null) update(null, true, false)
         const candidates = new Map<string, Item>()
         let published = false
         let paintQueued = false
+        let candidatesComplete = false
         const publishCandidates = (): void => {
           paintQueued = false
-          if (current === task) update([...candidates.values()], true, false)
+          if (current === task && !candidatesComplete) {
+            update([...candidates.values()], true, false)
+          }
         }
         try {
-          const result = await read(task.signal, (batch) => {
-            if (current !== task || !batch.length) return
-            for (const item of batch) candidates.set(item.path, item)
-            if (!published) {
-              published = true
-              publishCandidates()
-            } else if (!paintQueued) {
-              paintQueued = true
-              schedulePaint(publishCandidates)
+          const result = await read(
+            task.signal,
+            (batch) => {
+              if (current !== task || candidatesComplete || !batch.length) return
+              for (const item of batch) candidates.set(item.path, item)
+              if (!published) {
+                published = true
+                publishCandidates()
+              } else if (!paintQueued) {
+                paintQueued = true
+                schedulePaint(publishCandidates)
+              }
+            },
+            () => {
+              if (current !== task || candidatesComplete) return
+              candidatesComplete = true
+              // Keep the refresh queue active until the authoritative snapshot arrives.
+              update([...candidates.values()], changeRevision !== readRevision, false)
             }
-          }).catch(() => null)
+          ).catch(() => null)
           if (result === null && current === task) update(null, true, false)
           return result
         } finally {
@@ -89,6 +104,7 @@ export function createResourceListingSearch<
     invalidate(paths?: readonly string[]): void {
       if (disposed) return
       if (wanted && paths?.length) {
+        changeRevision += 1
         if (dirty) start()
         else {
           if (!refreshing) update(currentItems, true, false)

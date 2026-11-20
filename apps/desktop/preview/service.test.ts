@@ -865,9 +865,10 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     )
     assert.ok(scoped.body.items.every((item: object) => !('version' in item)))
 
-    const search = await fetch(`${runtime.base}/api/resource/list/search?${project}`, {
-      headers: { 'x-preview-instance': instance },
-    })
+    const search = await fetch(
+      `${runtime.base}/api/resource/list/search?${project}&candidate_completion=true`,
+      { headers: { 'x-preview-instance': instance } }
+    )
     assert.equal(search.status, 200)
     assert.match(search.headers.get('content-type') ?? '', /^text\/event-stream/)
     assert.ok(search.body)
@@ -877,6 +878,7 @@ test('browsing pagination and recursive listing share VFS bytes and do not consu
     assert.equal(terminal?.type, 'complete')
     assert.deepEqual(terminal.items, listing)
     assert.deepEqual(terminal.incremental, { parents: [], supported: false })
+    assert.deepEqual(frames.pop(), { type: 'candidates_complete', items: [], linked_roots: {} })
     assert.ok(frames.length > 1 && frames.every(({ type }) => type === 'batch'))
     assert.deepEqual(
       frames.flatMap(({ items }) => items.map(({ path }) => path)),

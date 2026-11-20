@@ -19,6 +19,7 @@ function searchFixture() {
   const requests: {
     signal: AbortSignal
     batch: (items: Candidate[]) => void
+    completeCandidates: () => void
     finish: (result: Snapshot | null) => void
   }[] = []
   const deltas: {
@@ -29,7 +30,8 @@ function searchFixture() {
   const states: { items: Candidate[] | null; refreshing: boolean; failed: boolean }[] = []
   const paints: (() => void)[] = []
   const search = createResourceListingSearch<Candidate, Snapshot>(
-    (signal, batch) => new Promise((finish) => requests.push({ signal, batch, finish })),
+    (signal, batch, completeCandidates) =>
+      new Promise((finish) => requests.push({ signal, batch, completeCandidates, finish })),
     (snapshot, paths) => new Promise((finish) => deltas.push({ snapshot, paths, finish })),
     (items, refreshing, failed) => states.push({ items, refreshing, failed }),
     (paint) => paints.push(paint)
@@ -76,8 +78,10 @@ test('ordinary updates do not abort a first stream and merge after its authorita
   requests[0].batch([candidate('first')])
   search.invalidate(['file-a', 'file-b'])
   search.invalidate(['file-b', 'file-c'])
+  requests[0].completeCandidates()
   assert.equal(requests[0].signal.aborted, false)
   assert.equal(deltas.length, 0)
+  assert.equal(states.at(-1)?.refreshing, true)
   const complete = { items: [candidate('first'), candidate('second')], revision: 1 }
   requests[0].finish(complete)
   await flush()
@@ -94,6 +98,31 @@ test('ordinary updates do not abort a first stream and merge after its authorita
   search.dispose()
 })
 
+test('candidate completion flushes the queued paint and leaves final fields to the same stream', async () => {
+  const { search, requests, states, paints } = searchFixture()
+  search.setWanted(true)
+  await flush()
+  requests[0].batch([candidate('a'), candidate('b')])
+  requests[0].batch([candidate('c')])
+  requests[0].batch([candidate('a', 'corrected')])
+  requests[0].completeCandidates()
+  const partialCount = states.length
+  assert.deepEqual(states.at(-1), {
+    items: [candidate('a', 'corrected'), candidate('b'), candidate('c')],
+    refreshing: false,
+    failed: false,
+  })
+  paints[0]()
+  assert.equal(states.length, partialCount)
+  search.setWanted(true)
+  assert.equal(requests.length, 1)
+  const items = [candidate('a', 'hydrated'), candidate('b'), candidate('c')]
+  requests[0].finish({ items, revision: 1 })
+  await flush()
+  assert.deepEqual(states.at(-1), { items, refreshing: false, failed: false })
+  search.dispose()
+})
+
 test('rescans evict partial state and ignore old callbacks and hidden stale results', async () => {
   const { search, requests, states, paints } = searchFixture()
   search.setWanted(true)
@@ -106,6 +135,7 @@ test('rescans evict partial state and ignore old callbacks and hidden stale resu
   await flush()
   assert.equal(requests.length, 2)
   requests[0].batch([candidate('old late')])
+  requests[0].completeCandidates()
   requests[0].finish({ items: [candidate('old complete')], revision: 1 })
   paints[0]()
   await flush()
@@ -138,5 +168,17 @@ test('an incomplete stream clears provisional rows and exposes retry instead of 
   requests[1].finish({ items: [], revision: 2 })
   await flush()
   assert.deepEqual(states.at(-1), { items: [], refreshing: false, failed: false })
+  search.dispose()
+})
+
+test('a completed empty result appears before hydration and is cleared if the stream fails later', async () => {
+  const { search, requests, states } = searchFixture()
+  search.setWanted(true)
+  await flush()
+  requests[0].completeCandidates()
+  assert.deepEqual(states.at(-1), { items: [], refreshing: false, failed: false })
+  requests[0].finish(null)
+  await flush()
+  assert.deepEqual(states.at(-1), { items: null, refreshing: false, failed: true })
   search.dispose()
 })

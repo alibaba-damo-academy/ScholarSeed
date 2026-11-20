@@ -1252,9 +1252,10 @@ const RESOURCE_LISTING_STREAM_MEDIA_TYPE = 'text/event-stream'
 export async function streamResourceListingSearch(
   project: string,
   signal: AbortSignal,
-  onBatch: (items: ResourceNode[]) => void
+  onBatch: (items: ResourceNode[]) => void,
+  onCandidatesComplete: () => void
 ): Promise<ResourceListingProjection | null> {
-  const params = new URLSearchParams({ project })
+  const params = new URLSearchParams({ project, candidate_completion: 'true' })
   const response = await fetch(`${base()}${RESOURCE_LISTING_SEARCH}?${params}`, {
     credentials: 'include',
     cache: 'no-store',
@@ -1262,12 +1263,15 @@ export async function streamResourceListingSearch(
     signal,
   })
   if (!response.ok || !response.body) return null
+  let candidatesComplete = false
   for await (const data of sseData(response.body)) {
     if (signal.aborted) return null
     const frame = JSON.parse(data) as (ResourceListingPayload & { type?: string }) | null
     if (
       !frame ||
-      (frame.type !== 'batch' && frame.type !== 'complete') ||
+      (frame.type !== 'batch' &&
+        frame.type !== 'candidates_complete' &&
+        frame.type !== 'complete') ||
       !Array.isArray(frame.items) ||
       !frame.items.every(
         (item) =>
@@ -1286,7 +1290,12 @@ export async function streamResourceListingSearch(
         ? { items, linkedRoots, incremental: frame.incremental }
         : null
     }
+    if (candidatesComplete) return null
     onBatch(items)
+    if (frame.type === 'candidates_complete') {
+      candidatesComplete = true
+      onCandidatesComplete()
+    }
   }
   return null
 }

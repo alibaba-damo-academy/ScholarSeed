@@ -33,6 +33,12 @@ class ResourceListingSnapshot:
     directory: str | None = None
 
 
+_CandidatePublisher = Callable[
+    [tuple[ResourceListEntry, ...], dict[str, str | None], tuple[ExternalRootRef, ...]],
+    None,
+]
+
+
 class ResourceListing:
     def __init__(self, content: ContentPort) -> None:
         self._content = content
@@ -60,11 +66,11 @@ class ResourceListing:
     def progressive_snapshot(
         self,
         project: str,
-        publish: Callable[
-            [tuple[ResourceListEntry, ...], dict[str, str | None], tuple[ExternalRootRef, ...]],
-            None,
-        ],
+        publish: _CandidatePublisher,
         check: Callable[[], None],
+        *,
+        flush: Callable[[], None],
+        complete_candidates: _CandidatePublisher | None = None,
     ) -> tuple[ResourceListingSnapshot, tuple[ExternalRootRef, ...]]:
         """Publish directory facts, then synchronize the completed inventory once."""
         root = self._content.root(project, RootKind.RESOURCES)
@@ -92,6 +98,28 @@ class ResourceListing:
         check()
         if self._content.external_roots(project) != expected_roots:
             raise ContentError(ROOT_BUSY_ERROR)
+        flush()
+        if complete_candidates is not None:
+            current_sources = self._catalog.sources(project)
+            corrected = (
+                tuple(
+                    node
+                    for node in tree.nodes
+                    if sources.get(node.asset.path) != current_sources.get(node.asset.path)
+                )
+                if sources != current_sources
+                else ()
+            )
+            complete_candidates(
+                self._catalog.project_entries(corrected, current_sources),
+                tree.repositories,
+                expected_roots,
+            )
+            # Publication can wait on the network queue. Recheck the captured
+            # grants before reconciling the catalog from those observations.
+            if expected_roots and self._content.external_roots(project) != expected_roots:
+                raise ContentError(ROOT_BUSY_ERROR)
+        check()
         return self._snapshot(project, tree), expected_roots
 
     def directory(

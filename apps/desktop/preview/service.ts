@@ -4137,6 +4137,10 @@ export function createPreviewService() {
                 `data: ${JSON.stringify({ type: 'batch', items, linked_roots: linkedRoots })}\n\n`
               )
             }
+            if (url.searchParams.get('candidate_completion') === 'true') {
+              const candidates = { type: 'candidates_complete', items: [], linked_roots: linkedRoots }
+              response.write(`data: ${JSON.stringify(candidates)}\n\n`)
+            }
             const items = entries.map((entry) => projectNode(entry, versions))
             const completed = {
               type: 'complete',

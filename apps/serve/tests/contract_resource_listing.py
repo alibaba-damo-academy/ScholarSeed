@@ -10,9 +10,10 @@ import subprocess
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import aclosing, closing
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -43,6 +44,7 @@ from service.resources.persistence.catalog import (
 )
 from service.resources.persistence.listing import (
     LISTING_TABLE,
+    ResourceListingCatalog,
     ResourceSource,
 )
 from service.resources.service.history import ResourceVersionService
@@ -95,10 +97,13 @@ class ResourceListingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
-    def search_listing_frames(self) -> list[dict]:
+    def search_listing_frames(self, *, candidate_completion: bool = False) -> list[dict]:
         response = self.client.get(
             "/api/resource/list/search",
-            params={"project": self.project.id},
+            params={
+                "project": self.project.id,
+                **({"candidate_completion": True} if candidate_completion else {}),
+            },
             headers={"Accept": "text/event-stream"},
         )
         self.assertEqual(response.status_code, 200, response.text)
@@ -168,6 +173,77 @@ class ResourceListingTests(unittest.TestCase):
         self.assertTrue(all("version" not in row for row in provisional))
         self.assertEqual(frames[-1], {"type": "complete", **expected})
 
+    def test_search_candidates_complete_before_reconciling_the_full_catalog(self) -> None:
+        directory = self.resources / "deep"
+        directory.mkdir()
+        (directory / "last-needle.md").touch()
+        expected = self.listing_payload(incremental=True)
+        synchronize = ResourceListingCatalog.synchronize
+
+        async def stream() -> None:
+            loop = asyncio.get_running_loop()
+            sync_started = asyncio.Event()
+            resume_sync = Event()
+
+            def hold_sync(catalog, project, nodes):
+                loop.call_soon_threadsafe(sync_started.set)
+                if not resume_sync.wait(timeout=5):
+                    raise RuntimeError("test did not release catalog synchronization")
+                return synchronize(catalog, project, nodes)
+
+            frames = routes._listing_stream_frames(
+                self.content, self.project.id, None, Activities(), candidate_completion=True
+            )
+            with patch.object(ResourceListingCatalog, "synchronize", hold_sync):
+                async with aclosing(frames):
+                    try:
+                        first, last, ready = [
+                            json.loads(
+                                (await asyncio.wait_for(anext(frames), 3)).removeprefix("data: ")
+                            )
+                            for _ in range(3)
+                        ]
+                        await asyncio.wait_for(sync_started.wait(), timeout=3)
+                        self.assertEqual(first["type"], "batch")
+                        self.assertEqual(last["type"], "batch")
+                        self.assertEqual(last["items"][0]["name"], "last-needle.md")
+                        self.assertEqual(
+                            ready, {"type": "candidates_complete", "items": [], "linked_roots": {}}
+                        )
+                    finally:
+                        resume_sync.set()
+                    terminal = json.loads((await anext(frames)).removeprefix("data: "))
+                    self.assertEqual(terminal, {"type": "complete", **expected})
+
+        asyncio.run(stream())
+
+    def test_search_candidate_completion_corrects_provenance_changed_during_traversal(self) -> None:
+        (self.resources / "folder").mkdir()
+        (self.resources / "root-needle.md").touch()
+        nodes = self.content.flat_resource_tree(self.project.id, ("resources",)).nodes
+        asset = next(node.asset for node in nodes if node.asset.name == "root-needle.md")
+        catalog = ResourceListingCatalog(self.content)
+        original = tree._listing
+
+        def update_provenance(space, directory, relative, origin):
+            if relative == "resources/folder":
+                catalog.record(self.project.id, (asset,), ResourceSource.IMPORTED)
+            return original(space, directory, relative, origin)
+
+        with patch.object(tree, "_listing", side_effect=update_provenance):
+            frames = self.search_listing_frames(candidate_completion=True)
+        row = next(row for row in frames[0]["items"] if row["path"] == asset.path)
+        self.assertIsNone(row["source"])
+        self.assertEqual(
+            frames[-2],
+            {
+                "type": "candidates_complete",
+                "items": [{**row, "source": ResourceSource.IMPORTED.value}],
+                "linked_roots": {},
+            },
+        )
+        self.assertEqual(frames[-1], {"type": "complete", **self.listing_payload(incremental=True)})
+
     def test_search_stream_checks_link_grants_before_sending_candidates(self) -> None:
         outside = self.root.resolve() / "outside"
         outside.mkdir()
@@ -219,6 +295,22 @@ class ResourceListingTests(unittest.TestCase):
         recheck.assert_called_once()
         self.assertEqual(frames, [{"type": "error", "detail": ROOT_BUSY_ERROR, "status": 409}])
 
+        mount = self.content.authorize_root_at(self.project.id, str(outside), "", "linked")
+        rechecks = 0
+
+        async def revoke_on_candidate_completion(operation):
+            nonlocal rechecks
+            rechecks += 1
+            if rechecks == 3:
+                await run_in_threadpool(self.content.revoke_root, mount.root_id, self.project.id)
+            return await run_in_threadpool(operation)
+
+        with patch.object(routes, "run_in_threadpool", side_effect=revoke_on_candidate_completion):
+            frames = self.search_listing_frames(candidate_completion=True)
+        self.assertEqual(rechecks, 3)
+        self.assertEqual([frame["type"] for frame in frames], ["batch", "batch", "error"])
+        self.assertEqual(frames[-1], {"type": "error", "detail": ROOT_BUSY_ERROR, "status": 409})
+
     def test_search_stream_rechecks_link_grants_when_traversal_occupies_the_executor(self) -> None:
         outside = self.root.resolve() / "outside"
         outside.mkdir()
@@ -244,6 +336,30 @@ class ResourceListingTests(unittest.TestCase):
             ),
             5,
         )
+
+    def test_search_does_not_reconcile_mount_revoked_during_candidate_completion(self) -> None:
+        outside = self.root.resolve() / "outside"
+        outside.mkdir()
+        (outside / "linked-needle.md").touch()
+        mount = self.content.authorize_root_at(self.project.id, str(outside), "", "linked")
+
+        def revoke(_entries, _repositories, roots):
+            self.assertEqual(tuple(root.root_id for root in roots), (mount.root_id,))
+            self.content.revoke_root(mount.root_id, self.project.id)
+
+        with (
+            patch.object(ResourceListingCatalog, "synchronize") as synchronize,
+            self.assertRaises(ContentError) as error,
+        ):
+            ResourceListing(self.content).progressive_snapshot(
+                self.project.id,
+                lambda *_: None,
+                lambda: None,
+                flush=lambda: None,
+                complete_candidates=revoke,
+            )
+        self.assertEqual(error.exception.code, ROOT_BUSY_ERROR)
+        synchronize.assert_not_called()
 
     def test_search_stream_disconnect_releases_worker_blocked_on_full_queue(self) -> None:
         outside = self.root.resolve() / "outside"

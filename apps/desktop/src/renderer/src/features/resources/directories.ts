@@ -94,10 +94,10 @@ export function useResourceListing(
       }))
     let globalEnabled = false
     const globalRead = createResourceListingSearch<ResourceNode, ResourceListingProjection>(
-      async (signal, onBatch) => {
+      async (signal, onBatch, onCandidatesComplete) => {
         await waitForObservations()
         if (signal.aborted) return null
-        return streamResourceListingSearch(project, signal, onBatch)
+        return streamResourceListingSearch(project, signal, onBatch, onCandidatesComplete)
       },
       async (snapshot, paths) => {
         await waitForObservations()
