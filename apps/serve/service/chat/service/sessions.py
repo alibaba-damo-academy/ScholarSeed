@@ -4004,6 +4004,7 @@ class SessionService:
         request_id: str,
         service_instance_id: str,
         persist_default: bool = False,
+        warmup_only: bool = False,
     ) -> dict[str, Any]:
         if service_instance_id != self._activities.instance_id:
             raise ValueError(PREPARATION_INSTANCE_CHANGED)
@@ -4026,6 +4027,7 @@ class SessionService:
             wait_seconds=self._runtime.reconfiguration_wait_seconds,
             validate=validate,
             commit=commit if persist_default else None,
+            warmup_only=warmup_only,
             warm=lambda owner: self._runtime.warm_host(
                 user_id=actor_id,
                 model_id=model_id,

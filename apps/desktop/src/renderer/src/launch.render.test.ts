@@ -2675,6 +2675,7 @@ test(
       await expect.poll(() => requests.length).toBe(1)
       assert.equal(requests[0].model_id, 'model-b')
       assert.equal(requests[0].persist_default, false)
+      assert.equal(requests[0].warmup_only, true)
       control.finish()
       await expect
         .poll(() =>
@@ -2756,6 +2757,7 @@ test(
       })
       await expect.poll(() => requests.length).toBe(1)
       assert.equal(requests[0].model_id, 'model-a')
+      assert.equal(requests[0].warmup_only, true)
       control.finish()
       await expect
         .poll(() =>

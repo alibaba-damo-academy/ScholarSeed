@@ -504,6 +504,39 @@ class PreparationContracts(unittest.IsolatedAsyncioTestCase):
         )
         await self.assert_conflict_rejects_busy_then_retries()
 
+    async def test_startup_conflict_leaves_workbench_open_for_later_model_use(self):
+        self.warm.return_value = CommandReceipt(
+            RUNTIME_HOST_WARMUP_COMMAND,
+            CommandState.RESTART_REQUIRED,
+            safe_error=RESOURCE_HOST_CONFIGURATION_CONFLICT,
+        )
+        self.start(commit=None, warmup_only=True)
+        result = await self.wait()
+        self.assertEqual(
+            (result["state"], result["error"]), ("rejected", RESOURCE_HOST_CONFIGURATION_CONFLICT)
+        )
+        self.assertIs(self.activities.snapshot().phase, ActivityPhase.OPEN)
+        self.drain.assert_not_awaited()
+        self.apply.assert_not_awaited()
+        with self.assertRaisesRegex(ValueError, RECONFIGURATION_STALE):
+            self.start(commit=None)
+        self.identity = str(uuid4())
+        self.start(commit=None)
+        self.assertEqual((await self.wait())["state"], "applied")
+        self.apply.assert_awaited_once()
+
+    async def test_startup_uncertainty_blocks_model_retry_without_draining_workbench(self):
+        self.warm.side_effect = OSError("host outcome unknown")
+        with self.assertLogs(__name__, level="WARNING"):
+            self.start(commit=None, warmup_only=True)
+            self.assertEqual((await self.wait())["state"], "restart_required")
+        self.assertIs(self.activities.snapshot().phase, ActivityPhase.OPEN)
+        self.drain.assert_not_awaited()
+        self.apply.assert_not_awaited()
+        self.identity = str(uuid4())
+        with self.assertRaisesRegex(ValueError, RESOURCE_HOST_CONFIGURATION_UNCERTAIN):
+            self.start(commit=None)
+
     async def test_precise_conflict_exception_retries_only_after_idle(self):
         self.warm.side_effect = SessionActivationError(RESOURCE_HOST_CONFIGURATION_CONFLICT)
         await self.assert_conflict_rejects_busy_then_retries()
