@@ -1,5 +1,6 @@
 """Standard-library runtime discovery shared by launchers, doctor and binding."""
 import json
+import ntpath
 import os
 from pathlib import Path
 import platform
@@ -11,6 +12,12 @@ import sys
 PRODUCT_LAUNCHER_MODULE = 'service.cli.skill_python'
 MIN_PYTHON = (3, 12)
 PYTHON_REQUIREMENT = f'Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ within {MIN_PYTHON[0]}.x'
+WINDOWS_EXTENDED_PREFIX = '\\\\?\\'
+WINDOWS_EXTENDED_UNC_PREFIX = '\\\\?\\UNC\\'
+WINDOWS_DRIVE_ROOT = re.compile(r'^[A-Za-z]:\\')
+INTERPRETER_LITERAL = 'literal'
+INTERPRETER_ABSOLUTE = 'absolute'
+INTERPRETER_RESOLVED = 'resolved'
 
 
 def supports_python(version):
@@ -38,6 +45,43 @@ def utf8_env(base=None):
     return env
 
 
+def _interpreter_path(python, mode):
+    path = Path(python)
+    if not path.is_file():
+        raise ValueError('Product Python is unavailable.')
+    if mode == INTERPRETER_RESOLVED:
+        selected = str(path.resolve(strict=True))
+    elif mode == INTERPRETER_ABSOLUTE:
+        selected = str(path.absolute())
+    elif mode == INTERPRETER_LITERAL:
+        selected = str(python)
+    else:
+        raise ValueError('Unknown interpreter comparison mode.')
+    if os.name == 'nt':
+        ordinary = selected
+        if selected.upper().startswith(WINDOWS_EXTENDED_UNC_PREFIX):
+            ordinary = '\\\\' + selected[len(WINDOWS_EXTENDED_UNC_PREFIX):]
+        elif selected.startswith(WINDOWS_EXTENDED_PREFIX):
+            ordinary = selected[len(WINDOWS_EXTENDED_PREFIX):]
+            if not WINDOWS_DRIVE_ROOT.match(ordinary):
+                raise ValueError('Product Python must resolve to a DOS or UNC path.')
+        # Extended paths can retain components that ordinary Win32 paths trim.
+        # Keep those distinct instead of changing the location a binding names.
+        components = ordinary.replace('/', '\\').split('\\')
+        if not any(part in ('.', '..') or part.endswith((' ', '.')) for part in components if part):
+            selected = ordinary
+        return selected if mode == INTERPRETER_LITERAL else ntpath.normcase(selected)
+    return selected
+
+
+def same_interpreter(left, right, *, mode):
+    """Normalize namespace spelling without changing the caller's path policy."""
+    try:
+        return _interpreter_path(left, mode) == _interpreter_path(right, mode)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def probe_python(command):
     try:
         result = subprocess.run([*command, '-X', 'utf8', '-c',
@@ -59,7 +103,7 @@ def discover_python(root, explicit=None, workspace=None):
         info = probe_python([candidate])
         if not info:
             raise ValueError('Bound Python is unavailable; restore the workspace runtime.')
-        if explicit and Path(explicit).absolute() != Path(candidate).absolute():
+        if explicit and not same_interpreter(explicit, candidate, mode=INTERPRETER_ABSOLUTE):
             raise ValueError('Explicit Python conflicts with the workspace binding.')
         return info
     if explicit:
@@ -86,9 +130,15 @@ def command_spec(argv):
 
 def runtime_info(root, workspace=None):
     root = Path(root).resolve()
-    argv = product_command(root / 'scripts/slr.py')
-    if workspace:
-        argv = product_command(root / 'scripts/workspace_entry.py', Path(workspace).resolve())
+    if os.name == 'nt':
+        # Each tool call starts with isolated Python paths. The public wrappers
+        # restore product imports before the bound interpreter is validated.
+        argv = [str(Path(workspace).resolve() / 'slr.cmd' if workspace
+                    else root / 'scripts/slr.cmd')]
+    else:
+        argv = product_command(root / 'scripts/slr.py')
+        if workspace:
+            argv = product_command(root / 'scripts/workspace_entry.py', Path(workspace).resolve())
     return {'os': platform.system(), 'architecture': platform.machine(),
             'wsl': sys.platform == 'linux' and ('microsoft' in platform.release().lower()
                                                or bool(os.environ.get('WSL_DISTRO_NAME'))),
