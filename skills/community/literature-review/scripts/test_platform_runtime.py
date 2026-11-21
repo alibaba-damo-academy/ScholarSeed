@@ -85,6 +85,39 @@ class InterpreterPolicyTest(unittest.TestCase):
                 discover_python(ROOT, explicit=str(workspace / 'other-python'), workspace=workspace)
             self.assertEqual(binding.read_bytes(), original)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX virtual environments use symlinked Python entries')
+    def test_different_virtual_environment_entries_keep_binding_immutable(self):
+        with tempfile.TemporaryDirectory(prefix='slr environments ') as directory:
+            folder = Path(directory)
+            entries = []
+            for name in ('first', 'second'):
+                environment = folder / name
+                venv.EnvBuilder(with_pip=False, symlinks=True).create(environment / '.venv')
+                entries.append(venv_python(environment))
+            first, second = entries
+            self.assertNotEqual(first.absolute(), second.absolute())
+            self.assertEqual(first.resolve(), second.resolve())
+            self.assertTrue(platform_runtime.same_interpreter(
+                first, second, mode=platform_runtime.INTERPRETER_RESOLVED))
+            self.assertFalse(platform_runtime.same_interpreter(
+                first, second, mode=platform_runtime.INTERPRETER_ABSOLUTE))
+            self.assertFalse(platform_runtime.same_interpreter(
+                str(first), str(second), mode=platform_runtime.INTERPRETER_LITERAL))
+            workspace = folder / 'workspace'
+            workspace.mkdir()
+            with patch.object(sys, 'executable', str(first)):
+                bind(workspace, ROOT)
+            binding = workspace / '.slr-binding.json'
+            before = binding.read_bytes()
+            with self.subTest(boundary='explicit discovery'):
+                with self.assertRaisesRegex(ValueError, 'conflicts'):
+                    discover_python(ROOT, explicit=str(second), workspace=workspace)
+            self.assertEqual(binding.read_bytes(), before)
+            with self.subTest(boundary='binding reentry'), patch.object(sys, 'executable', str(second)):
+                with self.assertRaisesRegex(ValueError, 'binding changed'):
+                    bind(workspace, ROOT)
+            self.assertEqual(binding.read_bytes(), before)
+
     def test_preflight_accepts_active_supported_runtime(self):
         report = preflight.Report()
         preflight.check_python(report)
@@ -127,6 +160,111 @@ class InterpreterPolicyTest(unittest.TestCase):
                                          str(workspace), 'info'], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(binding.read_bytes(), original)
+
+
+@unittest.skipUnless(os.name == 'nt', 'Windows interpreter namespace semantics')
+class WindowsInterpreterNamespaceTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='slr namespace ')
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name).resolve()
+        executable = str(Path(sys.executable).resolve(strict=True))
+        if executable.startswith('\\\\?\\UNC\\'):
+            ordinary = '\\\\' + executable[8:]
+        else:
+            ordinary = executable.removeprefix('\\\\?\\')
+        extended = ('\\\\?\\UNC\\' + ordinary[2:] if ordinary.startswith('\\\\')
+                    else '\\\\?\\' + ordinary)
+        self.spellings = ((extended, ordinary), (ordinary, extended))
+        self.assertTrue(os.path.samefile(ordinary, extended))
+
+    def workspace(self, index, python):
+        workspace = self.folder / str(index)
+        workspace.mkdir()
+        with patch.object(sys, 'executable', python):
+            bind(workspace, ROOT)
+        return workspace
+
+    def test_bootstrap_accepts_both_spellings_with_a_real_interpreter_probe(self):
+        script = ROOT / 'scripts/bootstrap.py'
+        entry = runpy.run_path(str(script))['main']
+        for active, selected in self.spellings:
+            with self.subTest(active=active), \
+                 patch.object(sys, 'executable', active), \
+                 patch.object(sys, 'argv', [str(script), 'init', '--describe-input', '--field', 'sources']), \
+                 patch.dict(os.environ, {'SCHOLARSEED_PYTHON': selected}), \
+                 patch('subprocess.call', return_value=0) as dispatch:
+                # Keep real Win32 resolution and the real Python probe; only the
+                # already-admitted CLI dispatch is outside this identity test.
+                self.assertEqual(entry(), 0)
+                self.assertEqual(dispatch.call_args.args[0][-4:],
+                                 ['init', '--describe-input', '--field', 'sources'])
+
+    def test_discovery_accepts_equivalent_explicit_binding_without_rewriting(self):
+        for index, (active, bound) in enumerate(self.spellings):
+            workspace = self.workspace(index, bound)
+            binding = workspace / '.slr-binding.json'
+            before = binding.read_bytes()
+            with self.subTest(active=active), patch.object(sys, 'executable', active):
+                info = discover_python(ROOT, explicit=active, workspace=workspace)
+                self.assertTrue(os.path.samefile(info['python'], active))
+                self.assertEqual(binding.read_bytes(), before)
+
+    def test_workspace_entry_accepts_equivalent_interpreter_without_rewriting(self):
+        script = ROOT / 'scripts/workspace_entry.py'
+        entry = runpy.run_path(str(script))['main']
+        for index, (active, bound) in enumerate(self.spellings):
+            workspace = self.workspace(index, bound)
+            binding = workspace / '.slr-binding.json'
+            before = binding.read_bytes()
+            with self.subTest(active=active), \
+                 patch.object(sys, 'executable', active), \
+                 patch.object(sys, 'argv', [str(script), str(workspace), 'info']), \
+                 patch.dict(os.environ, {'SLR_WORKSPACE': ''}), \
+                 patch('subprocess.call', return_value=0) as dispatch:
+                with self.assertRaises(SystemExit) as exited:
+                    entry()
+                self.assertEqual(exited.exception.code, 0)
+                dispatch.assert_called_once()
+                self.assertEqual(binding.read_bytes(), before)
+
+    def test_binding_reentry_preserves_bytes_for_equivalent_interpreter(self):
+        for index, (active, bound) in enumerate(self.spellings):
+            workspace = self.workspace(index, bound)
+            binding = workspace / '.slr-binding.json'
+            before = binding.read_bytes()
+            with self.subTest(active=active), patch.object(sys, 'executable', active):
+                self.assertEqual(bind(workspace, ROOT), workspace / 'slr.cmd')
+                self.assertEqual(binding.read_bytes(), before)
+
+    def test_doctor_accepts_equivalent_explicit_interpreter(self):
+        for active, selected in self.spellings:
+            report = preflight.Report()
+            with self.subTest(active=active), \
+                 patch.object(sys, 'executable', active), \
+                 patch.dict(os.environ, {'SCHOLARSEED_PYTHON': selected}):
+                preflight.check_python(report)
+                self.assertFalse(report.blocking)
+
+    def test_bootstrap_rejects_a_different_directory_even_for_a_hardlink(self):
+        script = ROOT / 'scripts/bootstrap.py'
+        entry = runpy.run_path(str(script))['main']
+        original = self.folder / 'original' / 'python.exe'
+        original.parent.mkdir()
+        original.write_bytes(b'interpreter identity fixture')
+        linked = self.folder / 'other' / 'python.exe'
+        linked.parent.mkdir()
+        os.link(original, linked)
+        self.assertTrue(os.path.samefile(original, linked))
+        selected = {'python': str(linked), 'version': list(sys.version_info[:3])}
+        output = io.StringIO()
+        with patch.object(sys, 'executable', str(original)), \
+             patch.object(sys, 'argv', [str(script), 'init', '--describe-input']), \
+             patch.dict(entry.__globals__, {'discover_python': lambda *args: selected}), \
+             patch('subprocess.call') as dispatch, contextlib.redirect_stdout(output):
+            self.assertEqual(entry(), 1)
+        dispatch.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue())['code'], 'RUNTIME_UNAVAILABLE')
 
 
 class PlatformRuntimeTest(unittest.TestCase):

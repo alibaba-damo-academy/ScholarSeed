@@ -13,8 +13,8 @@ description_zh: >-
   快速模式基于摘要生成Markdown，不含图片；标准模式支持全文分析、
   图表及Markdown、PDF或DOCX交付。
 metadata:
-  version: "2026.11.21+1"
-version: "2026.11.21+1"
+  version: "2026.11.21+2"
+version: "2026.11.21+2"
 ---
 # Literature review
 

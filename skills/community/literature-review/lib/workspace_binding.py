@@ -4,7 +4,7 @@ import shlex
 import sys
 import os
 import json
-from platform_runtime import PRODUCT_LAUNCHER_MODULE
+from platform_runtime import PRODUCT_LAUNCHER_MODULE, same_interpreter, INTERPRETER_LITERAL
 from task_contract import atomic_json
 
 
@@ -21,7 +21,11 @@ def bind(workspace, skill):
             if not isinstance(actual['run_id'],str) or not actual['run_id']:
                 raise ValueError('workspace run identity is invalid')
             actual={key:value for key,value in actual.items() if key!='run_id'}
-        if not path.is_file() or actual not in (legacy,expected):
+        matches = actual == legacy
+        if isinstance(actual, dict) and actual.keys() == expected.keys():
+            matches = (all(actual[key] == value for key, value in expected.items() if key != 'python')
+                       and same_interpreter(actual['python'], expected['python'], mode=INTERPRETER_LITERAL))
+        if not path.is_file() or not matches:
             raise ValueError('workspace launcher already exists or skill binding changed; choose a new entry location')
         return path
     atomic_json(config,expected)

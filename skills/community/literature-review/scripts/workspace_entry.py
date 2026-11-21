@@ -6,7 +6,7 @@ import sys
 import subprocess
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
-from platform_runtime import PYTHON_REQUIREMENT, supports_python, utf8_env, product_command
+from platform_runtime import PYTHON_REQUIREMENT, supports_python, utf8_env, product_command, same_interpreter, INTERPRETER_RESOLVED
 
 
 def main():
@@ -26,7 +26,7 @@ def main():
         supplied=args[i+1] if arg=='--workspace' and i+1<len(args) else arg.split('=',1)[1] if arg.startswith('--workspace=') else None
         if supplied is not None and Path(supplied).resolve()!=ws:
             raise SystemExit('explicit workspace conflicts with this bound launcher')
-    if Path(python).resolve() != Path(sys.executable).resolve():
+    if not same_interpreter(python, sys.executable, mode=INTERPRETER_RESOLVED):
         raise SystemExit('current product Python conflicts with workspace binding')
     os.environ['SLR_WORKSPACE']=str(ws)
     raise SystemExit(subprocess.call(product_command(skill/'scripts/slr.py',*args),env=utf8_env()))
