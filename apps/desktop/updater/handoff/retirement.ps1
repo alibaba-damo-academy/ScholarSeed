@@ -1,5 +1,9 @@
 # Embedded, fixed code. The caller supplies inherited capabilities, never delete paths.
 $ErrorActionPreference = 'Stop'
+$retirementRootAttempts = 6
+$retirementRootRetryMilliseconds = 25
+$retirementRootRetryLimitMilliseconds = 200
+$retirementDirectoryNotEmpty = 145
 $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('ScholarSeedRetirement'), [Reflection.Emit.AssemblyBuilderAccess]::Run)
 $module = $assembly.DefineDynamicModule('Native')
 $builder = $module.DefineType('RetirementNative', 'Public, Sealed, Abstract')
@@ -70,11 +74,41 @@ function Remove-Pinned([IntPtr]$handle, [string]$expected, [bool]$directory) {
         if (![string]::Equals((Handle-Path $handle), $expected, [StringComparison]::OrdinalIgnoreCase)) { throw 'retirement identity changed' }
         [Runtime.InteropServices.Marshal]::WriteByte($info, 0, 1)
         # FileDispositionInfo never recursively deletes directory members.
-        if (!$native::SetFileInformationByHandle($handle, 4, $info, 1)) { throw 'retirement deletion refused' }
+        if (!$native::SetFileInformationByHandle($handle, 4, $info, 1)) {
+            $code = $native::GetLastError()
+            throw [ComponentModel.Win32Exception]::new([int]$code, 'retirement deletion refused')
+        }
     } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($info) }
 }
 
+function Remove-EmptyRoot([IntPtr]$root, [string]$expected, [Diagnostics.Stopwatch]$clock, [uint32]$timeout) {
+    $retry = [Diagnostics.Stopwatch]::StartNew()
+    $refusal = $null
+    for ($attempt = 1; ; $attempt++) {
+        if ($clock.ElapsedMilliseconds -ge $timeout -or
+            ($attempt -gt 1 -and $retry.ElapsedMilliseconds -ge $retirementRootRetryLimitMilliseconds)) {
+            if ($null -ne $refusal) { throw $refusal }
+            throw 'retirement root deletion budget exhausted'
+        }
+        try {
+            # Recheck the same pinned object on every attempt; never remove members.
+            Remove-Pinned $root $expected $true
+            return
+        } catch [ComponentModel.Win32Exception] {
+            $remaining = [Math]::Min(
+                [long]$timeout - $clock.ElapsedMilliseconds,
+                $retirementRootRetryLimitMilliseconds - $retry.ElapsedMilliseconds)
+            if ($_.Exception.NativeErrorCode -ne $retirementDirectoryNotEmpty -or
+                $attempt -ge $retirementRootAttempts -or
+                $remaining -lt $retirementRootRetryMilliseconds) { throw }
+            $refusal = $_.Exception
+            Start-Sleep -Milliseconds $retirementRootRetryMilliseconds
+        }
+    }
+}
+
 function Invoke-Retirement([IntPtr]$process, [IntPtr]$image, [IntPtr]$root, [uint32]$timeout) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
         $rootPath = Handle-Path $root
         $imagePath = Handle-Path $image
@@ -82,7 +116,8 @@ function Invoke-Retirement([IntPtr]$process, [IntPtr]$image, [IntPtr]$root, [uin
         if ($native::WaitForSingleObject($process, 0) -ne 258) { throw 'retirement parent is not running' }
         [Console]::Out.WriteLine('ready')
         [Console]::Out.Flush()
-        if ($native::WaitForSingleObject($process, $timeout) -ne 0) { throw 'retirement parent exit timeout' }
+        $remaining = [uint32][Math]::Max(0, [long]$timeout - $clock.ElapsedMilliseconds)
+        if ($native::WaitForSingleObject($process, $remaining) -ne 0) { throw 'retirement parent exit timeout' }
         [uint32]$code = 0
         if (!$native::GetExitCodeProcess($process, [ref]$code) -or $code -ne 0) { throw 'retirement parent failed' }
         Reopen-Deletion ([ref]$root) $rootPath 'root'
@@ -90,7 +125,7 @@ function Invoke-Retirement([IntPtr]$process, [IntPtr]$image, [IntPtr]$root, [uin
         Remove-Pinned $image $imagePath $false
         [void]$native::CloseHandle($image)
         $image = [IntPtr]::Zero
-        Remove-Pinned $root $rootPath $true
+        Remove-EmptyRoot $root $rootPath $clock $timeout
         exit 0
     } catch {
         [Console]::Error.WriteLine($_.Exception.Message)

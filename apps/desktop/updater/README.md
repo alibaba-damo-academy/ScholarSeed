@@ -417,6 +417,15 @@ deletion access and checks their volume and 128-bit file identities before delet
 only that image and the empty root through their handles. Ancestors remain pinned
 throughout; a replacement during reopening is refused. Unknown members, access errors, failed
 updater exit and timeout remain failures; there is no recursive cleanup fallback.
+After the image deletion is committed and its handle closed, only directory-not-empty
+(Win32 145) on the same pinned root may be retried: at most six attempts, 25 ms apart,
+with new attempts admitted only within a 200 ms local cap and the original monotonic
+retirement budget. In-flight filesystem calls are not forcibly interrupted. Every attempt
+repeats the complete object checks. Image deletion, access/sharing errors and all other
+failures are not retried; an unknown member is never removed and still prevents retirement.
+中文：仅在映像已提交删除并关闭句柄后，对同一固定根目录的 Win32 145 最多尝试六次、间隔
+25 毫秒；新尝试同时受 200 毫秒局部上限和原单调时钟预算约束，不强行中断已进入的文件系统调用。
+每次完整复核对象。映像删除、访问或共享错误及其他失败均不重试，不删除未知成员，也不延长既有超时。
 The embedded script participates in the native build source digest. The installer
 verifier still independently requires whole-root disappearance within 120 seconds.
 macOS retains its existing Squirrel.Mac lifecycle and never starts this child.
