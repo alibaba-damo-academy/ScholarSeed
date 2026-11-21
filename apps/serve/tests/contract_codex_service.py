@@ -10348,7 +10348,7 @@ class ToolEnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("SCHOLARSEED_TASK_PYTHON", tools)
                 self.assertIn("VIRTUAL_ENV", tools)
 
-    async def test_process_credentials_do_not_create_implicit_tool_bindings(self) -> None:
+    async def test_preparing_the_host_does_not_bind_the_account_access_token(self) -> None:
         admitted = {"SCHOLARSEED_API_KEY": "admitted-key", "SCHOLARSEED_ACCOUNT_TOKEN": "jwt"}
         intent, port = _launch_secret_contract(admitted)
         self.assertNotIn("admitted-key", repr(intent))
@@ -10359,13 +10359,34 @@ class ToolEnvironmentTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(
             resolved,
-            {(LaunchSecretScope.PROCESS, name): value for name, value in admitted.items()},
+            {(LaunchSecretScope.PROCESS, "SCHOLARSEED_API_KEY"): "admitted-key"},
         )
         anonymous, anonymous_port = _launch_secret_contract({})
         self.assertEqual(anonymous.bindings, ())
         self.assertIsNone(anonymous_port)
         self.assertIn("SCHOLARSEED_API_KEY", anonymous.remove_environment)
         self.assertIn("SCHOLARSEED_ACCOUNT_TOKEN", anonymous.remove_environment)
+
+    async def test_renewed_account_access_token_changes_only_the_tool_environment(self) -> None:
+        for token in ("account-access-before-renewal", "account-access-after-renewal"):
+            intent, port = _launch_secret_contract(
+                {"SCHOLARSEED_API_KEY": "admitted-key", "SCHOLARSEED_ACCOUNT_TOKEN": token},
+                include_skill_credentials=True,
+            )
+            self.assertIsNotNone(port)
+            resolved = {
+                (binding.scope, binding.name): (await port.resolve(binding.secret_ref)).value
+                for binding in intent.bindings
+            }
+            self.assertEqual(
+                resolved,
+                {
+                    (LaunchSecretScope.PROCESS, "SCHOLARSEED_API_KEY"): "admitted-key",
+                    (LaunchSecretScope.TOOL, "SCHOLARSEED_API_KEY"): "admitted-key",
+                    (LaunchSecretScope.TOOL, "SCHOLARSEED_ACCOUNT_TOKEN"): token,
+                },
+            )
+            self.assertIn("SCHOLARSEED_ACCOUNT_TOKEN", intent.remove_environment)
 
     async def test_explicit_tool_bindings_preserve_custom_skill_credentials(self) -> None:
         tools = {"CUSTOM_SKILL_API_KEY": "custom-key", "CUSTOM_SKILL_CONFIG": "custom-config"}

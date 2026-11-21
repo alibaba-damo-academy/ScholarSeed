@@ -134,6 +134,22 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         baselines = store.turn_baselines("session", "turn")
         self.assertEqual([baseline.path for baseline in baselines], ["resources/notes.md"])
 
+    async def test_finalization_captures_two_files_concurrently(self) -> None:
+        self.target.with_name("other.md").write_bytes(b"unchanged peer\n")
+        await self.begin()
+        barrier = threading.Barrier(2)
+        original = self.content.capture_stable
+
+        def capture(*args, **kwargs):
+            barrier.wait(timeout=5)
+            return original(*args, **kwargs)
+
+        with patch.object(self.content, "capture_stable", side_effect=capture) as captured:
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        self.assertEqual(captured.call_count, 2)
+        self.assertEqual(result.paths, ("resources/notes.md",))
+
     async def test_cancelled_finalization_remains_busy_until_snapshot_is_committed(self) -> None:
         await self.begin()
         gate = self.supervisor._activities
