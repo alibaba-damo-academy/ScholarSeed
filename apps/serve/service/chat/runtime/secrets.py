@@ -15,7 +15,7 @@ from scholarseed_runtime.contract import (
     RuntimeSecret,
     RuntimeSecretPort,
 )
-from service.identity.service.skill_credentials import PLATFORM_ENVIRONMENT_KEYS
+from service.identity.service.skill_credentials import ACCOUNT_TOKEN_ENV, PLATFORM_ENVIRONMENT_KEYS
 from service.identity.utils import HOST_PROCESS_KEY_ENV
 from service.platform.python import task_environment
 from service.platform.vocabulary import (
@@ -83,8 +83,15 @@ def _launch_secret_contract(
             if include_skill_credentials and name in PLATFORM_ENVIRONMENT_KEYS
         }
     )
+    # A renewed account token belongs to the task's tools, not to the shared host.
+    # generate by onesec-code-guardian skill
+    process_environment = {
+        name: value
+        for name, value in (environment or {}).items()
+        if name.upper() != ACCOUNT_TOKEN_ENV
+    }
     for scope, source in (
-        (LaunchSecretScope.PROCESS, environment),
+        (LaunchSecretScope.PROCESS, process_environment),
         (LaunchSecretScope.TOOL, skill_environment),
     ):
         for name, value in sorted(dict(source or {}).items()):
