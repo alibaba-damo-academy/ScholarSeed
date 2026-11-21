@@ -86,9 +86,15 @@ def command_spec(argv):
 
 def runtime_info(root, workspace=None):
     root = Path(root).resolve()
-    argv = product_command(root / 'scripts/slr.py')
-    if workspace:
-        argv = product_command(root / 'scripts/workspace_entry.py', Path(workspace).resolve())
+    if os.name == 'nt':
+        # Each tool call starts with isolated Python paths. The public wrappers
+        # restore product imports before the bound interpreter is validated.
+        argv = [str(Path(workspace).resolve() / 'slr.cmd' if workspace
+                    else root / 'scripts/slr.cmd')]
+    else:
+        argv = product_command(root / 'scripts/slr.py')
+        if workspace:
+            argv = product_command(root / 'scripts/workspace_entry.py', Path(workspace).resolve())
     return {'os': platform.system(), 'architecture': platform.machine(),
             'wsl': sys.platform == 'linux' and ('microsoft' in platform.release().lower()
                                                or bool(os.environ.get('WSL_DISTRO_NAME'))),

@@ -31,12 +31,13 @@ SLR_BOUND_WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec SKILL_PYTHON SKILL_DRIVER "$SLR_BOUND_WORKSPACE" "$@"
 '''.replace('SKILL_PYTHON',shlex.quote(sys.executable)+' -X utf8 -m '+PRODUCT_LAUNCHER_MODULE).replace('SKILL_DRIVER',shlex.quote(str(skill/'scripts/workspace_entry.py')))
     if os.name=='nt':
-        python=sys.executable.replace('%','%%')
         driver=str(skill/'scripts/workspace_entry.py').replace('%','%%')
         body=('@echo off\nsetlocal DisableDelayedExpansion\n'
               'for /f "tokens=2 delims=:" %%C in (\'chcp\') do set "SLR_OLD_CP=%%C"\n'
               'chcp 65001 >nul\n'
-              f'"{python}" -X utf8 -m {PRODUCT_LAUNCHER_MODULE} "{driver}" "%~dp0." %*\n'
+              'set "SLR_SKILL_PYTHON=%SCHOLARSEED_SKILL_PYTHON%"\n'
+              'if not defined SLR_SKILL_PYTHON set "SLR_SKILL_PYTHON=scholarseed-skill-python"\n'
+              f'call "%SLR_SKILL_PYTHON%" "{driver}" "%~dp0." %*\n'
               'set "SLR_EXIT=%errorlevel%"\n'
               'if defined SLR_OLD_CP chcp %SLR_OLD_CP% >nul\nexit /b %SLR_EXIT%\n')
     with path.open('x',encoding='utf-8',newline='\r\n' if os.name=='nt' else '\n') as f: f.write(body)

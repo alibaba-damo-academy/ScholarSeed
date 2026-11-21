@@ -16,7 +16,7 @@ import runpy
 
 ROOT=Path(os.environ.get('TEST_SKILL_ROOT', Path(__file__).resolve().parents[1])).resolve()
 sys.path[:0]=[str(ROOT/'lib'),str(ROOT/'scripts')]
-from platform_runtime import command_spec, discover_python, utf8_env, venv_python
+from platform_runtime import command_spec, discover_python, runtime_info, utf8_env, venv_python
 from platform_io import file_lock, run_stream
 from workspace_binding import bind
 import platform_runtime
@@ -47,6 +47,16 @@ class InterpreterPolicyTest(unittest.TestCase):
 
     def test_child_environment_disables_bytecode_in_the_frozen_pack(self):
         self.assertEqual(utf8_env({}).get('PYTHONDONTWRITEBYTECODE'), '1')
+
+    def test_windows_reported_cli_survives_a_fresh_task_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            with patch.object(platform_runtime, 'os', SimpleNamespace(name='nt', environ={})):
+                installed = runtime_info(ROOT)
+                bound = runtime_info(ROOT, workspace)
+            self.assertEqual(installed['cli']['argv'], [str(ROOT / 'scripts/slr.cmd')])
+            self.assertEqual(bound['cli']['argv'], [str(workspace / 'slr.cmd')])
+            self.assertEqual(bound['python'], sys.executable)
 
     def test_probe_accepts_supported_python_and_rejects_other_versions(self):
         for version, accepted in [([3, 12, 13], True), ([3, 13, 0], True),
@@ -138,13 +148,16 @@ class PlatformRuntimeTest(unittest.TestCase):
         binding=json.loads((Path(result['workspace'])/'.slr-binding.json').read_text(encoding='utf-8'))
         self.assertEqual(binding['schema_version'],2)
         self.assertEqual(binding['python'],sys.executable)
+        invocation_environment=dict(self.env)
+        if os.name=='nt':
+            invocation_environment.update(PYTHONPATH='',PYTHONHOME='')
         argv=result['runtime']['cli']['argv']
-        info=subprocess.run([*argv,'info'],cwd=self.ws,env=self.env,capture_output=True,encoding='utf-8')
+        info=subprocess.run([*argv,'info'],cwd=self.ws,env=invocation_environment,capture_output=True,encoding='utf-8')
         self.assertEqual(info.returncode,0,info.stderr)
         self.assertEqual(json.loads(info.stdout)['workspace'],result['workspace'])
-        conflict=subprocess.run([*argv,'status','--workspace',str(self.ws)],env=self.env,capture_output=True)
+        conflict=subprocess.run([*argv,'status','--workspace',str(self.ws)],env=invocation_environment,capture_output=True)
         self.assertNotEqual(conflict.returncode,0)
-        wrapper=subprocess.run([result['entrypoint'],'info'],cwd=self.ws,env=self.env,
+        wrapper=subprocess.run([result['entrypoint'],'info'],cwd=self.ws,env=invocation_environment,
                                capture_output=True,encoding='utf-8')
         self.assertEqual(wrapper.returncode,0,wrapper.stdout+wrapper.stderr)
         self.assertEqual(json.loads(wrapper.stdout)['workspace'],result['workspace'])
@@ -238,10 +251,52 @@ class PlatformRuntimeTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name=='nt','native Windows launcher')
     def test_windows_skill_wrapper(self):
-        result=subprocess.run([str(ROOT/'scripts/slr.cmd'),'info'],env=self.env,
+        environment={**self.env, 'PYTHONPATH':'', 'PYTHONHOME':''}
+        result=subprocess.run([str(ROOT/'scripts/slr.cmd'),'info'],env=environment,
                               capture_output=True,encoding='utf-8')
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIsInstance(json.loads(result.stdout),dict)
+
+    @unittest.skipUnless(os.name=='nt','native Windows launcher')
+    def test_windows_entries_delegate_arguments_and_exit_status_without_module_paths(self):
+        launcher=self.ws/'product & launcher.cmd'
+        recorder=self.ws/'record.py'
+        capture=self.ws/'arguments.json'
+        recorder.write_text('import json,os,sys\nfrom pathlib import Path\n'
+                            'Path(os.environ["SLR_CAPTURE"]).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")\n'
+                            'raise SystemExit(23)\n',encoding='utf-8')
+        launcher.write_text('@echo off\nsetlocal DisableDelayedExpansion\n'
+                            'if "%SLR_TEST_PYTHON:~0,4%"=="\\\\?\\" set "SLR_TEST_PYTHON=%SLR_TEST_PYTHON:~4%"\n'
+                            '"%SLR_TEST_PYTHON%" "%~dp0record.py" %*\nexit /b %errorlevel%\n',
+                            encoding='utf-8',newline='\r\n')
+        environment={**self.env, 'PYTHONPATH':'', 'PYTHONHOME':'',
+                     'SCHOLARSEED_SKILL_PYTHON':str(launcher), 'SLR_CAPTURE':str(capture),
+                     'SLR_TEST_PYTHON':sys.executable}
+        bound=bind(self.ws,ROOT)
+        arguments=['writing','configure','--request','request & 中文 space.json']
+        for entry, prefix in (
+            (ROOT/'scripts/slr.cmd',[str(ROOT/'scripts/bootstrap.py')]),
+            (bound,[str(ROOT/'scripts/workspace_entry.py'),str(self.ws)]),
+        ):
+            with self.subTest(entry=entry):
+                result=subprocess.run([str(entry),*arguments],cwd=self.ws.parent,
+                                      env=environment,capture_output=True,encoding='utf-8')
+                self.assertEqual(result.returncode,23,result.stdout+result.stderr)
+                observed=json.loads(capture.read_text(encoding='utf-8'))
+                self.assertEqual(Path(observed[0]).resolve(),Path(prefix[0]).resolve())
+                if len(prefix)>1:
+                    self.assertEqual(Path(observed[1]).resolve(),self.ws)
+                self.assertEqual(observed[len(prefix):],arguments)
+
+    @unittest.skipUnless(os.name=='nt','native Windows launcher')
+    def test_windows_missing_explicit_launcher_does_not_fall_back_to_python(self):
+        environment={**self.env, 'PYTHONPATH':'', 'PYTHONHOME':'',
+                     'SCHOLARSEED_SKILL_PYTHON':str(self.ws/'missing-launcher.cmd')}
+        for entry in (ROOT/'scripts/slr.cmd',bind(self.ws,ROOT)):
+            with self.subTest(entry=entry):
+                result=subprocess.run([str(entry),'info'],cwd=self.ws.parent,
+                                      env=environment,capture_output=True,encoding='utf-8')
+                self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
 
 
 if __name__=='__main__':
