@@ -120,7 +120,7 @@ func TestRetirementExitBarrier(t *testing.T) {
 // Faults replace a PowerShell function only inside this test's child process.
 // The production script, process-exit barrier and native deletion checks still run.
 func TestRetirementRootDeletionRetry(t *testing.T) {
-	for _, scenario := range []string{"transient", "unknown", "access", "sharing", "other", "image"} {
+	for _, scenario := range []string{"transient", "delayed", "unknown", "access", "sharing", "other", "image"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "书深 with spaces")
 			if err := os.Mkdir(root, 0700); err != nil {
@@ -197,6 +197,7 @@ function Remove-Pinned([IntPtr]$handle, [string]$expected, [bool]$directory) {
     if (!$directory -and '%[1]s' -eq 'image') { $code = 145 }
     if ($directory) {
         if ('%[1]s' -eq 'transient' -and $script:rootCalls -le 2) { $code = 145 }
+        if ('%[1]s' -eq 'delayed' -and $script:rootCalls -le 8) { $code = 145 }
         if ('%[1]s' -eq 'access') { $code = 5 }
         if ('%[1]s' -eq 'sharing') { $code = 32 }
         if ('%[1]s' -eq 'other') { $code = 87 }
@@ -209,7 +210,7 @@ $image = $native::CreateFileW("$env:SCHOLARSEED_RETIREMENT_FAULT_ROOT\Update.exe
 if ($root -eq [IntPtr]::new(-1) -or $image -eq [IntPtr]::new(-1)) { throw 'fault fixture could not pin its objects' }
 Invoke-Retirement %[2]d $image $root %[3]d
 `, scenario, inherited, retirementWait/time.Millisecond)
-			worker := retirementTestScript(script, root)
+			worker := retirementTestScript(t, script, root)
 			worker.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, AdditionalInheritedHandles: []syscall.Handle{inherited}}
 			var diagnostics bytes.Buffer
 			worker.Stderr = &diagnostics
@@ -268,9 +269,13 @@ Invoke-Retirement %[2]d $image $root %[3]d
 			if images != 1 {
 				t.Fatalf("image deletion retried: %d; %s", images, diagnostics.String())
 			}
-			if scenario == "transient" {
-				if workerErr != nil || roots < 3 || roots > 6 {
-					t.Fatalf("transient root refusal not recovered: calls=%d err=%v %s", roots, workerErr, diagnostics.String())
+			if scenario == "transient" || scenario == "delayed" {
+				minimum := 3
+				if scenario == "delayed" {
+					minimum = 9
+				}
+				if workerErr != nil || roots < minimum || roots > 80 {
+					t.Fatalf("bounded root refusal not recovered: calls=%d err=%v %s", roots, workerErr, diagnostics.String())
 				}
 				if _, err = os.Lstat(root); !os.IsNotExist(err) {
 					t.Fatalf("root retained: %v", err)
@@ -291,7 +296,7 @@ Invoke-Retirement %[2]d $image $root %[3]d
 				if kept, readErr := os.ReadFile(filepath.Join(root, "user.txt")); readErr != nil || string(kept) != "keep" {
 					t.Fatal("unknown member changed", readErr)
 				}
-				if roots < 1 || roots > 6 {
+				if roots < 1 || roots > 80 {
 					t.Fatalf("unbounded unknown-member refusal: %d", roots)
 				}
 				return
@@ -303,7 +308,8 @@ Invoke-Retirement %[2]d $image $root %[3]d
 	}
 }
 
-func retirementTestScript(script, root string) *exec.Cmd {
+func retirementTestScript(t *testing.T, script, root string) *exec.Cmd {
+	t.Helper()
 	words := utf16.Encode([]rune(script))
 	raw := make([]byte, len(words)*2)
 	for index, word := range words {
@@ -313,7 +319,133 @@ func retirementTestScript(script, root string) *exec.Cmd {
 	command := exec.Command(filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(raw))
 	command.Dir = system
 	command.Env = []string{"SystemRoot=" + filepath.Dir(system), "WINDIR=" + filepath.Dir(system), "PATH=" + system, "PSModulePath=" + filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules"), "SCHOLARSEED_RETIREMENT_FAULT_ROOT=" + root}
+	retirementAssertCommandLine(t, command.Args)
+	// Check every appended fixture, as well as production, with a long quoted
+	// executable path. The actual child still uses the real system executable.
+	worst := append([]string(nil), command.Args...)
+	const prefix, suffix = `C:\system `, `\powershell.exe`
+	worst[0] = prefix + strings.Repeat("a", 259-len(prefix)-len(suffix)) + suffix
+	retirementAssertCommandLine(t, worst)
 	return command
+}
+
+func retirementAssertCommandLine(t *testing.T, args []string) {
+	t.Helper()
+	const limit = 32767 // CreateProcessW includes the UTF-16 terminating NUL.
+	var escaped []string
+	for _, arg := range args {
+		escaped = append(escaped, syscall.EscapeArg(arg))
+	}
+	units := len(utf16.Encode([]rune(strings.Join(escaped, " ")))) + 1
+	if units > limit {
+		t.Fatalf("retirement command exceeds CreateProcessW limit: %d > %d", units, limit)
+	}
+	t.Logf("retirement command UTF-16 units including NUL: %d", units)
+}
+
+func TestRetirementCommandLineBudget(t *testing.T) {
+	const largestHandle = ^uint64(0)
+	script := retirementScript + fmt.Sprintf("\nInvoke-Retirement %d %d %d %d\n", largestHandle, largestHandle, largestHandle, retirementWait/time.Millisecond)
+	_ = retirementTestScript(t, script, "")
+}
+
+func TestRetirementDispositionCapture(t *testing.T) {
+	for _, scenario := range []string{"invalid-handle", "nonempty", "access", "true-stale", "false-zero"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "keep.txt"), []byte("keep"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			script := retirementScript + `
+if (!$native.GetMethod('Disposition')) { throw 'disposition capture missing' }
+$flag = [Attribute]::GetCustomAttribute($native.GetMethod('SetFileInformationByHandle'), [Runtime.InteropServices.DllImportAttribute])
+if (!$flag.SetLastError) { throw 'disposition error caching disabled' }
+`
+			if scenario == "true-stale" || scenario == "false-zero" {
+				// This proxy exists only in this test's PowerShell child. Real object
+				// checks forward to the production imports; only the disposition
+				// result is controlled to cover BOOL/error combinations reliably.
+				result, code := 1, 145
+				if scenario == "false-zero" {
+					result, code = 0, 0
+				}
+				script += fmt.Sprintf(`
+$original = $native
+$proxy = $module.DefineType('DispositionResultFixture', 'Public, Sealed, Abstract')
+foreach ($name in @('GetFileInformationByHandleEx', 'GetFinalPathNameByHandleW')) {
+    $target = $original.GetMethod($name)
+    $parameters = [Type[]]@($target.GetParameters() | ForEach-Object { $_.ParameterType })
+    $forward = $proxy.DefineMethod($name, 'Public, Static', $target.ReturnType, $parameters)
+    $emit = $forward.GetILGenerator()
+    for ($i = 0; $i -lt $parameters.Length; $i++) { $emit.Emit([Reflection.Emit.OpCodes]::Ldarg, [int16]$i) }
+    $emit.Emit([Reflection.Emit.OpCodes]::Call, $target)
+    $emit.Emit([Reflection.Emit.OpCodes]::Ret)
+}
+$fixture = $proxy.DefineMethod('Disposition', 'Public, Static', [bool], [Type[]]@([IntPtr], [int], [IntPtr], [uint32], [int].MakeByRefType()))
+$emit = $fixture.GetILGenerator()
+$emit.Emit([Reflection.Emit.OpCodes]::Ldarg, [int16]4)
+$emit.Emit([Reflection.Emit.OpCodes]::Ldc_I4, [int]%[1]d)
+$emit.Emit([Reflection.Emit.OpCodes]::Stind_I4)
+$emit.Emit([Reflection.Emit.OpCodes]::Ldc_I4, [int]%[2]d)
+$emit.Emit([Reflection.Emit.OpCodes]::Ret)
+$native = $proxy.CreateType()
+$handle = $original::CreateFileW("$env:SCHOLARSEED_RETIREMENT_FAULT_ROOT\keep.txt", 0x80, 7, [IntPtr]::Zero, 3, 0x00200000, [IntPtr]::Zero)
+if ($handle -eq [IntPtr]::new(-1)) { throw 'consumer fixture open failed' }
+try {
+    $refused = $false
+    try { Remove-Pinned $handle (Handle-Path $handle) $false }
+    catch [ComponentModel.Win32Exception] {
+        $refused = $true
+        if ($_.Exception.NativeErrorCode -ne 0 -or %[2]d -ne 0) { throw }
+    }
+    if ($refused -ne (%[2]d -eq 0)) { throw 'native BOOL was confused with its error code' }
+} finally { [void]$original::CloseHandle($handle) }
+`, code, result)
+			} else {
+				script += fmt.Sprintf(`
+$handle = [IntPtr]::new(-1)
+$buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal(1)
+try {
+    [Runtime.InteropServices.Marshal]::WriteByte($buffer, 0, 1)
+    $wanted = 6
+    $directory = '%[1]s' -eq 'nonempty'
+    if ($directory) {
+        $wanted = 145
+        $handle = $native::CreateFileW($env:SCHOLARSEED_RETIREMENT_FAULT_ROOT, 0x10080, 7, [IntPtr]::Zero, 3, 0x02200000, [IntPtr]::Zero)
+    } elseif ('%[1]s' -eq 'access') {
+        $wanted = 5
+        $handle = $native::CreateFileW("$env:SCHOLARSEED_RETIREMENT_FAULT_ROOT\keep.txt", 0x80, 7, [IntPtr]::Zero, 3, 0x00200000, [IntPtr]::Zero)
+    }
+    if ('%[1]s' -ne 'invalid-handle' -and $handle -eq [IntPtr]::new(-1)) { throw 'native fixture open failed' }
+    [int]$code = 0
+    $ok = $native::Disposition($handle, 4, $buffer, 1, [ref]$code)
+    if ($ok -or $code -ne $wanted) { throw "native failure capture mismatch: success=$ok code=$code wanted=$wanted" }
+    if ('%[1]s' -ne 'invalid-handle') {
+        $refused = $false
+        try { Remove-Pinned $handle (Handle-Path $handle) $directory }
+        catch [ComponentModel.Win32Exception] {
+            $refused = $true
+            if ($_.Exception.NativeErrorCode -ne $wanted) { throw }
+            if (!$_.Exception.Message.Contains("Win32=$wanted") -or !$_.Exception.Message.Contains("directory=$directory")) { throw 'native diagnostic context missing' }
+        }
+        if (!$refused) { throw 'native deletion refusal was lost' }
+    }
+} finally {
+    if ($handle -ne [IntPtr]::new(-1)) { [void]$native::CloseHandle($handle) }
+    [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
+}
+`, scenario)
+			}
+			script += "\n[Console]::Out.WriteLine('capture-passed')\n"
+			output, err := retirementTestScript(t, script, root).CombinedOutput()
+			if err != nil || strings.TrimSpace(string(output)) != "capture-passed" {
+				t.Fatalf("retirement disposition capture failed: %v %s", err, output)
+			}
+			if raw, err := os.ReadFile(filepath.Join(root, "keep.txt")); err != nil || string(raw) != "keep" {
+				t.Fatal("capture fixture member changed", err)
+			}
+		})
+	}
 }
 
 func TestRetirementRootDeletionBudget(t *testing.T) {
@@ -324,11 +456,11 @@ if (!(Get-Command Remove-EmptyRoot -CommandType Function -ErrorAction SilentlyCo
 $script:calls = 0
 function Remove-Pinned([IntPtr]$handle, [string]$expected, [bool]$directory) {
     $script:calls++
-    if ('%[1]s' -eq 'local-cap') { [Threading.Thread]::Sleep(210) }
+    if ('%[1]s' -eq 'local-cap') { [Threading.Thread]::Sleep(2010) }
     throw [ComponentModel.Win32Exception]::new(145, 'injected root refusal')
 }
 if ('%[1]s' -eq 'oversleep') {
-    function Start-Sleep([int]$Milliseconds) { [Threading.Thread]::Sleep(210) }
+    function Start-Sleep([int]$Milliseconds) { [Threading.Thread]::Sleep(2010) }
 }
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $timeout = %[2]d
@@ -344,7 +476,7 @@ catch {
 if (!$refused -or $script:calls -ne $wanted) { throw "deletion budget renewed: calls=$script:calls" }
 [Console]::Out.WriteLine('budget-guarded')
 `, scenario, retirementWait/time.Millisecond)
-			output, err := retirementTestScript(script, "").CombinedOutput()
+			output, err := retirementTestScript(t, script, "").CombinedOutput()
 			if err != nil || strings.TrimSpace(string(output)) != "budget-guarded" {
 				t.Fatalf("retirement budget failed: %v %s", err, output)
 			}

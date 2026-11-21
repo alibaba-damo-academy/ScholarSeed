@@ -1,9 +1,12 @@
 # Embedded, fixed code. The caller supplies inherited capabilities, never delete paths.
 $ErrorActionPreference = 'Stop'
-$retirementRootAttempts = 6
+$retirementRootAttempts = 80
 $retirementRootRetryMilliseconds = 25
-$retirementRootRetryLimitMilliseconds = 200
+$retirementRootRetryLimitMilliseconds = 2000
 $retirementDirectoryNotEmpty = 145
+# Diagnostic state does not participate in retry admission.
+$retirementRootAttempt = 0
+$retirementRootClock = $null
 $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('ScholarSeedRetirement'), [Reflection.Emit.AssemblyBuilderAccess]::Run)
 $module = $assembly.DefineDynamicModule('Native')
 $builder = $module.DefineType('RetirementNative', 'Public, Sealed, Abstract')
@@ -14,12 +17,30 @@ function Import-Native($name, $result, $parameters) {
 Import-Native 'WaitForSingleObject' ([uint32]) @([IntPtr], [uint32])
 Import-Native 'GetExitCodeProcess' ([bool]) @([IntPtr], [uint32].MakeByRefType())
 Import-Native 'GetFileInformationByHandleEx' ([bool]) @([IntPtr], [int], [IntPtr], [uint32])
-Import-Native 'SetFileInformationByHandle' ([bool]) @([IntPtr], [int], [IntPtr], [uint32])
+# Use one complete DllImport map, then capture BOOL/error before returning to PowerShell.
+$signature = [Type[]]@([IntPtr], [int], [IntPtr], [uint32])
+$disposition = $builder.DefineMethod('SetFileInformationByHandle', 'Public, Static, PinvokeImpl', [bool], $signature)
+$import = [Runtime.InteropServices.DllImportAttribute]
+$fields = [Reflection.FieldInfo[]]@('EntryPoint', 'SetLastError', 'CharSet', 'CallingConvention', 'PreserveSig' | ForEach-Object { $import.GetField($_) })
+$values = [object[]]@('SetFileInformationByHandle', $true, [Runtime.InteropServices.CharSet]::Unicode, [Runtime.InteropServices.CallingConvention]::Winapi, $true)
+$disposition.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new($import.GetConstructor([Type[]]@([string])), [object[]]@('kernel32.dll'), $fields, $values))
+$capture = $builder.DefineMethod('Disposition', 'Public, Static', [bool], [Type[]]($signature + [int].MakeByRefType()))
+$il = $capture.GetILGenerator()
+$ok = $il.DeclareLocal([bool])
+foreach ($index in 0..3) { $il.Emit([Reflection.Emit.OpCodes]::Ldarg, [int16]$index) }
+$il.Emit([Reflection.Emit.OpCodes]::Call, $disposition)
+$il.Emit([Reflection.Emit.OpCodes]::Stloc, $ok)
+$il.Emit([Reflection.Emit.OpCodes]::Ldarg, [int16]4)
+$il.Emit([Reflection.Emit.OpCodes]::Call, [Runtime.InteropServices.Marshal].GetMethod('GetLastWin32Error', [Type[]]@()))
+$il.Emit([Reflection.Emit.OpCodes]::Stind_I4)
+$il.Emit([Reflection.Emit.OpCodes]::Ldloc, $ok)
+$il.Emit([Reflection.Emit.OpCodes]::Ret)
 Import-Native 'GetFinalPathNameByHandleW' ([uint32]) @([IntPtr], [Text.StringBuilder], [uint32], [uint32])
 Import-Native 'CloseHandle' ([bool]) @([IntPtr])
 Import-Native 'GetLastError' ([uint32]) @()
 Import-Native 'CreateFileW' ([IntPtr]) @([string], [uint32], [uint32], [IntPtr], [uint32], [uint32], [IntPtr])
 $native = $builder.CreateType()
+if (!([Attribute]::GetCustomAttribute($native.GetMethod('SetFileInformationByHandle'), $import)).SetLastError) { throw 'retirement error capture unavailable' }
 
 function File-Identity([IntPtr]$handle) {
     $info = [Runtime.InteropServices.Marshal]::AllocHGlobal(24)
@@ -74,15 +95,16 @@ function Remove-Pinned([IntPtr]$handle, [string]$expected, [bool]$directory) {
         if (![string]::Equals((Handle-Path $handle), $expected, [StringComparison]::OrdinalIgnoreCase)) { throw 'retirement identity changed' }
         [Runtime.InteropServices.Marshal]::WriteByte($info, 0, 1)
         # FileDispositionInfo never recursively deletes directory members.
-        if (!$native::SetFileInformationByHandle($handle, 4, $info, 1)) {
-            $code = $native::GetLastError()
-            throw [ComponentModel.Win32Exception]::new([int]$code, 'retirement deletion refused')
+        [int]$code = 0
+        if (!$native::Disposition($handle, 4, $info, 1, [ref]$code)) {
+            throw [ComponentModel.Win32Exception]::new($code, "retirement deletion refused: directory=$directory Win32=$code")
         }
     } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($info) }
 }
 
 function Remove-EmptyRoot([IntPtr]$root, [string]$expected, [Diagnostics.Stopwatch]$clock, [uint32]$timeout) {
     $retry = [Diagnostics.Stopwatch]::StartNew()
+    $script:retirementRootClock = $retry
     $refusal = $null
     for ($attempt = 1; ; $attempt++) {
         if ($clock.ElapsedMilliseconds -ge $timeout -or
@@ -92,6 +114,7 @@ function Remove-EmptyRoot([IntPtr]$root, [string]$expected, [Diagnostics.Stopwat
         }
         try {
             # Recheck the same pinned object on every attempt; never remove members.
+            $script:retirementRootAttempt = $attempt
             Remove-Pinned $root $expected $true
             return
         } catch [ComponentModel.Win32Exception] {
@@ -128,7 +151,9 @@ function Invoke-Retirement([IntPtr]$process, [IntPtr]$image, [IntPtr]$root, [uin
         Remove-EmptyRoot $root $rootPath $clock $timeout
         exit 0
     } catch {
-        [Console]::Error.WriteLine($_.Exception.Message)
+        $message = $_.Exception.Message
+        if ($null -ne $retirementRootClock) { $message += "; root_attempt=$retirementRootAttempt root_elapsed_ms=$($retirementRootClock.ElapsedMilliseconds)" }
+        [Console]::Error.WriteLine($message)
         exit 1
     } finally {
         foreach ($handle in @($process, $image, $root)) {

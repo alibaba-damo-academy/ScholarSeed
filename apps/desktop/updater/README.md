@@ -418,14 +418,22 @@ only that image and the empty root through their handles. Ancestors remain pinne
 throughout; a replacement during reopening is refused. Unknown members, access errors, failed
 updater exit and timeout remain failures; there is no recursive cleanup fallback.
 After the image deletion is committed and its handle closed, only directory-not-empty
-(Win32 145) on the same pinned root may be retried: at most six attempts, 25 ms apart,
-with new attempts admitted only within a 200 ms local cap and the original monotonic
-retirement budget. In-flight filesystem calls are not forcibly interrupted. Every attempt
+(Win32 145) on the same pinned root may be retried: at most 80 attempts with 25 ms delays.
+New attempts are admitted only within a two-second local grace period and the remaining
+original monotonic retirement budget. The grace bounds additional waiting; Windows does
+not guarantee deletion completes within it. In-flight filesystem calls are not forcibly
+interrupted. Every attempt
 repeats the complete object checks. Image deletion, access/sharing errors and all other
 failures are not retried; an unknown member is never removed and still prevents retirement.
-中文：仅在映像已提交删除并关闭句柄后，对同一固定根目录的 Win32 145 最多尝试六次、间隔
-25 毫秒；新尝试同时受 200 毫秒局部上限和原单调时钟预算约束，不强行中断已进入的文件系统调用。
+Disposition calls retain the native BOOL separately from the Win32 error captured by the
+CLR in the same managed frame. Only a failed BOOL uses that code for retry classification
+and diagnostics; a successful BOOL is accepted even when its error slot is stale.
+中文：仅在映像已提交删除并关闭句柄后，对同一固定根目录的 Win32 145 最多尝试 80 次、间隔
+25 毫秒；新尝试同时受两秒局部宽限和原单调时钟剩余预算约束。该窗口用于有界等待，不承诺操作系统
+在此期间完成删除，也不强行中断已进入的文件系统调用。
 每次完整复核对象。映像删除、访问或共享错误及其他失败均不重试，不删除未知成员，也不延长既有超时。
+删除调用在同一托管帧内分别保留原生 BOOL 和 CLR 捕获的 Win32 错误码；仅 BOOL 失败时用该码
+分类重试并输出诊断，BOOL 成功时不受残留错误码影响。
 The embedded script participates in the native build source digest. The installer
 verifier still independently requires whole-root disappearance within 120 seconds.
 macOS retains its existing Squirrel.Mac lifecycle and never starts this child.
