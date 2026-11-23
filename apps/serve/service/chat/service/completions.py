@@ -51,7 +51,9 @@ from service.chat.service.rejections import (
     rate_limit_policy,
 )
 from service.chat.service.streams import (
+    OUTPUT_LIMIT_CODE,
     RESPONSE_FAILED,
+    RESPONSE_INCOMPLETE,
     SSE_BUFFER_LIMIT,
     CompletionDiagnostic,
     NativeResponseNormalizer,
@@ -102,6 +104,7 @@ INLINE_IMAGE_QUALITY_STEPS = (85, 70, 55, 40, 25)
 MODEL_BRIDGE_INPUT_TOO_LARGE = "model_bridge_input_too_large"
 TOOL_IMAGE_OUTPUT_PLACEHOLDER = "Tool returned image output."
 INCOMPLETE_FINISH_REASONS = frozenset(("length", "content_filter"))
+INCOMPLETE_REASON_BY_FINISH = {"length": OUTPUT_LIMIT_CODE, "content_filter": "content_filter"}
 COMPLETION_STATUS_INCOMPLETE = "incomplete"
 COMPLETION_STATUS_COMPLETED = "completed"
 COMPLETION_STATUS_FAILED = "failed"
@@ -348,6 +351,7 @@ class CompletionStream(StreamingResponse):
             elif self.call.diagnostic.upstream_end in (
                 StreamEnd.TRANSPORT_ERROR.value,
                 StreamEnd.PROVIDER_ERROR.value,
+                StreamEnd.INCOMPLETE.value,
             ):
                 reason = self.call.diagnostic.upstream_end
             elif (
@@ -2055,6 +2059,9 @@ class CompletionBridge:
                 if downstream.terminal == RESPONSE_FAILED and downstream.error_code:
                     call.diagnostic.upstream_end = StreamEnd.PROVIDER_ERROR.value
                     call.diagnostic.failure_type = downstream.error_code
+                elif downstream.terminal == RESPONSE_INCOMPLETE:
+                    call.diagnostic.upstream_end = StreamEnd.INCOMPLETE.value
+                    call.diagnostic.failure_type = downstream.error_code
                 else:
                     call.diagnostic.upstream_end = StreamEnd.EOF.value
 
@@ -3141,10 +3148,23 @@ async def chat_stream_to_responses(
         next_output_index += 1
     yield response_event(
         {
-            "type": "response.completed",
+            "type": (
+                RESPONSE_INCOMPLETE
+                if finish_reason in INCOMPLETE_FINISH_REASONS
+                else "response.completed"
+            ),
             "response": {
                 "id": response_id,
-                "status": "completed",
+                "status": (
+                    COMPLETION_STATUS_INCOMPLETE
+                    if finish_reason in INCOMPLETE_FINISH_REASONS
+                    else COMPLETION_STATUS_COMPLETED
+                ),
+                **(
+                    {"incomplete_details": {"reason": INCOMPLETE_REASON_BY_FINISH[finish_reason]}}
+                    if finish_reason in INCOMPLETE_FINISH_REASONS
+                    else {}
+                ),
                 "end_turn": finish_reason != "tool_calls",
                 "usage": _responses_usage(usage),
             },
@@ -3211,6 +3231,11 @@ def chat_response_to_response(
             else COMPLETION_STATUS_COMPLETED
         ),
         "output": output,
+        **(
+            {"incomplete_details": {"reason": INCOMPLETE_REASON_BY_FINISH[choice["finish_reason"]]}}
+            if choice.get("finish_reason") in INCOMPLETE_FINISH_REASONS
+            else {}
+        ),
         "usage": _responses_usage(dict(usage) if isinstance(usage, Mapping) else {}),
     }
 

@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import type { ConvItem, SessionArtifact } from './model.ts'
 import type { ActivityRow } from './activity.ts'
+import { projectContextCompaction, settleInterruptedActivities } from './transcript.ts'
 import {
   processRows,
   webSearchRecordData,
@@ -453,6 +454,36 @@ test('answered HIL restores working until a live activity or answer arrives', ()
     false
   )
   assert.equal(hasVisibleTurnProgress(activityRows(history, outcomes)), false)
+})
+
+test('compaction owns working feedback only while the active turn is compacting', () => {
+  const event = {
+    v: 2 as const,
+    seq: 1,
+    ts: 1,
+    session_id: 'session',
+    turn_id: 'turn',
+    item_id: 'compact',
+    type: 'context_compacted' as const,
+    data: { phase: 'started' as const },
+  }
+  const running = projectContextCompaction([], event)
+  const visible = (items: ConvItem[], turnId = 'turn') =>
+    hasVisibleTurnProgress(activityRows(items), turnId)
+  assert.equal(visible(running), true)
+  assert.equal(workingIndicatorVisible(true, false, 0, visible(running)), false)
+  assert.equal(visible(running, 'other-turn'), false)
+  const completed = projectContextCompaction(running, {
+    ...event,
+    seq: 2,
+    data: { phase: 'completed' },
+  })
+  assert.equal(visible(completed), false)
+  assert.equal(workingIndicatorVisible(true, false, 0, visible(completed)), true)
+  const interrupted = settleInterruptedActivities(running, 'turn', 3)
+  assert.equal(visible(interrupted), false)
+  assert.equal(workingIndicatorVisible(false, false, 0, visible(interrupted)), false)
+  assert.equal(visible([...completed, { kind: 'agent', text: 'Answer', turnId: 'turn' }]), true)
 })
 
 test('all card snapshots retain their evidence identities after a later card supersedes them', () => {

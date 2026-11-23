@@ -15,6 +15,8 @@ import {
 import type { AspEnvelope, ServeSession, SessionStatusSnapshot } from './api.ts'
 import type { Thread } from './model.ts'
 import { catalogRunStateIsCurrent, projectSessionState, recoveryCheckIsCurrent } from './runtime.ts'
+import { projectContextCompaction } from './transcript.ts'
+import { activityRows, hasVisibleTurnProgress, workingIndicatorVisible } from './activity.ts'
 
 /**
  * 「AI 改了产品数据 → 界面按数据域失效重取」这条接线的契约测试。
@@ -26,6 +28,68 @@ import { catalogRunStateIsCurrent, projectSessionState, recoveryCheckIsCurrent }
 const liveSource = readFileSync(new URL('./live.ts', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('./api.ts', import.meta.url), 'utf8')
 const storeSource = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
+
+test('native compaction establishes active turn progress before any answer or tool event', () => {
+  let current: Thread = {
+    id: 'thread',
+    title: 'Task',
+    sessionId: 'session',
+    conversation: [],
+    lastSeq: 0,
+  }
+  const branch = block(liveSource, "case 'context_compacted':", "case 'turn_completed':")
+  const apply = runInNewContext(
+    ts.transpileModule(
+      `${block(liveSource, 'function turnOutcomes(', 'function productEventTime(')}
+      (event) => { switch (event.type) { ${branch} } }`,
+      {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }
+    ).outputText,
+    {
+      threadId: current.id,
+      projectContextCompaction,
+      patchThread: (_id: string, update: (thread: Thread) => Partial<Thread>) => {
+        current = { ...current, ...update(current) }
+      },
+    }
+  ) as (event: Extract<AspEnvelope, { type: 'context_compacted' }>) => void
+  const event: Extract<AspEnvelope, { type: 'context_compacted' }> = {
+    v: 2,
+    seq: 1,
+    ts: 1,
+    session_id: 'session',
+    turn_id: 'native-turn',
+    item_id: 'compact',
+    type: 'context_compacted',
+    data: { phase: 'started' },
+  }
+  apply(event)
+  const active = Object.entries(current.turnOutcomes ?? {})
+    .filter(([, v]) => v === 'running')
+    .at(-1)?.[0]
+  assert.equal(active, 'native-turn')
+  assert.equal(current.running, true)
+  assert.equal(
+    workingIndicatorVisible(
+      true,
+      false,
+      0,
+      hasVisibleTurnProgress(activityRows(current.conversation), active)
+    ),
+    false
+  )
+  apply({ ...event, seq: 2, data: { phase: 'completed' } })
+  assert.equal(
+    workingIndicatorVisible(
+      true,
+      false,
+      0,
+      hasVisibleTurnProgress(activityRows(current.conversation), active)
+    ),
+    true
+  )
+})
 
 function liveSessionStateProjector(initial: Thread) {
   let current = initial

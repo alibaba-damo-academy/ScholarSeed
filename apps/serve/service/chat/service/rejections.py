@@ -29,7 +29,10 @@ from service.chat.service.streams import (
     CODEX_INVALID_PROMPT,
     CONTENT_SAFETY_BLOCKED,
     CONTENT_SAFETY_MESSAGE,
+    OUTPUT_LIMIT_CODE,
+    OUTPUT_LIMIT_MESSAGE,
     RESPONSE_FAILED,
+    RESPONSE_INCOMPLETE,
     StreamEnd,
 )
 from service.chat.service.transport import TransportFailureCategory
@@ -146,6 +149,12 @@ TRANSIENT_PROVIDER_CODES = frozenset(
 # 头部 5xx 耗尽由上方 HTTP 状态集合单独恢复；流内 200 的瞬时 5xx 码走 TRANSIENT_PROVIDER_CODES。
 # 键一律 casefold（匹配时 ``code.casefold()``）。
 PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
+    OUTPUT_LIMIT_CODE: RejectionPolicy(
+        retryability=RuntimeRetryability.USER_RETRYABLE,
+        http_status=HTTPStatus.OK,
+        message=RejectionMessage.FIXED,
+        safe_message=OUTPUT_LIMIT_MESSAGE,
+    ),
     SUBSCRIPTION_CAPABILITY_UNSUPPORTED_CODE: RejectionPolicy(
         retryability=RuntimeRetryability.TERMINAL,
         http_status=HTTPStatus.BAD_REQUEST,
@@ -375,7 +384,7 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
     # 终态帧不可解析时 terminal 为空，但 bridge 观测到结构化上游错误后已升格
     # PROVIDER_ERROR（completions 的 settle / 合成终态分支）；此时仍须放行白名单码，
     # 否则订阅额度耗尽这类确定性拒绝会塌进通用失败文案。
-    if downstream.get("terminal_event") != RESPONSE_FAILED and not (
+    if downstream.get("terminal_event") not in (RESPONSE_FAILED, RESPONSE_INCOMPLETE) and not (
         fields.get("upstream_end") == StreamEnd.PROVIDER_ERROR.value
         and downstream.get("error_code")
     ):

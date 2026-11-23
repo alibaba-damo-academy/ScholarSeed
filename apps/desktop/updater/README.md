@@ -3,7 +3,7 @@
 ## Sandbox private ownership
 
 The installed helper has a separate `--sandbox-home` entry, not an extension of
-the update or `group` request. It accepts only reviewed 0.165.0 execution whose
+the update or `group` request. It accepts only reviewed 0.171.0 execution whose
 path and entry hash match this build's authenticated runtime manifest. The
 component's upstream version must match the requested execution version exactly;
 a reviewed component for the other version cannot substitute for it. The
@@ -130,10 +130,12 @@ are never delegated. Windows installation, UAC
 consent/cancellation, full native setup and conversation recovery require real
 Windows acceptance; cross-compilation and deterministic tests do not prove them.
 
-The 0.165.0 admission follows the bounded upstream source comparison recorded in
-the [Codex Adapter compatibility notes](../../../packages/adapters/codex/README.md#windows-01650-沙箱适配).
+The 0.171.0 admission follows the bounded upstream source comparison recorded in
+the [Codex Adapter compatibility notes](../../../packages/adapters/codex/README.md#windows-01710-沙箱适配).
 Windows acceptance for this version remains pending; the additional exact version does not relax UAC or directory qualification.
 Credential maintenance is the bounded change described above.
+
+中文：当前辅助程序仅接受已审查的官方 0.171.0，并严格核对已认证组件版本、入口摘要和原始用户身份；本次不放宽 ACL、目录资格或 UAC，Windows 真机验收仍待完成。
 
 Recovery ancestor qualification additionally accepts allow ACEs limited to FILE_TRAVERSE
 and SYNCHRONIZE, applying only to that directory (an inherited marker is allowed,

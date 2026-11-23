@@ -3423,6 +3423,10 @@ declare module 'i18next' {
             "title": "回答生成失败",
             "frame": "模型服务返回了无法识别的错误。",
             "runtime": "请求未能到达 Codex Runtime。",
+            "outputLimit": {
+                "message": "本次生成已达到模型输出上限。",
+                "action": "已生成内容、本轮问题和上下文已保留。可继续任务生成剩余内容，或切换模型后继续。"
+            },
             "quota": {
                 "message": "模型限流",
                 "action": "请稍后重试或切换模型。"
@@ -3502,8 +3506,9 @@ declare module 'i18next' {
             "skill": "使用技能 {{name}}"
         },
         "context": {
-            "compacting": "正在整理上下文…",
-            "compacted": "上下文已压缩，正在继续执行"
+            "compacting": "正在压缩上下文…",
+            "compacted": "上下文已自动压缩",
+            "compactionIncomplete": "上下文整理未完成。"
         },
         "artifactFailure": {
             "missing": "文件不存在，未能展示产物。",

@@ -77,6 +77,7 @@ from scholarseed_codex.protocol.state import (
 )
 from scholarseed_codex.router import ThreadRouter
 from scholarseed_codex.rpc import RpcSubmission, RpcSubmissionState
+from scholarseed_codex.usage import UsageAccounting
 from scholarseed_codex.watch import WorkspaceWatch
 from scholarseed_runtime.contract.command import RUNTIME_ACTIVE_TURN_CHANGED
 from scholarseed_runtime.contract.content import (
@@ -106,6 +107,7 @@ INTERRUPTED_TERMINAL_CLEANUP_SECONDS = 10.0
 INTERRUPTED_TERMINAL_POLL_SECONDS = 0.2
 INTERRUPTED_TERMINAL_EMPTY_CONFIRMATIONS = 2
 INTERRUPTED_TERMINAL_CLEANUP_ERROR = "codex_interrupted_terminal_cleanup_failed"
+CODEX_COMPACTION_ITEM = "contextCompaction"
 
 
 class ThreadContext(Protocol):
@@ -177,6 +179,7 @@ class CodexTurnRuntime:
         self.turn_done: asyncio.Future[dict[str, Any]] | None = None
         self.final_text: str = ""
         self.usage: CodexUsage = CodexUsage()
+        self._accounting = UsageAccounting()
         self.item_names: dict[str, str] = dict()
         self.item_output: dict[str, str] = dict()
         self.item_details: dict[str, Mapping[str, Any]] = dict()
@@ -215,6 +218,8 @@ class CodexTurnRuntime:
 
     async def reconcile(self, thread: Mapping[str, Any], generation: int) -> None:
         self._generation = generation
+        if thread.get("turns") and not self.resume_turns and not self.submission_attempted:
+            self._accounting.resume()
         self.resume_turns = resume_turn_snapshots(thread)
         await self._reconcile_interrupted_from_thread(thread, generation)
         await self._reconcile_ambiguous_from_thread(thread)
@@ -263,7 +268,7 @@ class CodexTurnRuntime:
         turn_id = str(params.get("turnId") or nested_turn.get("id") or "")
         item_id = str(params.get("itemId") or "")
         thread_id = self._thread.thread_id
-        if turn_id and turn_id in self._settled_turns:
+        if turn_id and turn_id in self._settled_turns and method != "thread/tokenUsage/updated":
             self._diagnostic(f"suppressed_settled_turn_projection:{method}")
             return
         if self.interrupted_turn_id and turn_id == self.interrupted_turn_id:
@@ -499,13 +504,10 @@ class CodexTurnRuntime:
             return
         if method == "thread/tokenUsage/updated":
             token_usage = dict(params.get("tokenUsage") or {})
-            last = dict(token_usage.get("last") or {})
-            self.usage = CodexUsage(
-                input_tokens=int(last.get("inputTokens", 0) or 0),
-                output_tokens=int(last.get("outputTokens", 0) or 0),
-                cache_read_tokens=int(last.get("cachedInputTokens", 0) or 0),
-                cache_creation_tokens=int(last.get("cacheWriteInputTokens", 0) or 0),
-            )
+            usage = self._accounting.observe(token_usage)
+            if usage is None or turn_id in self._settled_turns:
+                return
+            self.usage = usage
             await self._emitter.emit(
                 self._thread,
                 CodexSessionEventKind.USAGE_UPDATED,
@@ -999,6 +1001,7 @@ class CodexTurnRuntime:
             )
         if self.turn_done is not None and not self.turn_done.done():
             raise AppServerError(f"Codex thread already has an active turn: {thread_id}")
+
         self._submission = submission
         params = start_parameters(
             thread_id,
@@ -1445,6 +1448,15 @@ class CodexTurnRuntime:
     ) -> None:
         item_type = str(item.get("type") or "")
         item_id = str(item.get("id") or "")
+        if item_type == CODEX_COMPACTION_ITEM:
+            await self._emitter.emit(
+                self._thread,
+                CodexSessionEventKind.CONTEXT_COMPACTED,
+                turn_id=turn_id,
+                item_id=item_id,
+                payload={"phase": "started"},
+            )
+            return
         if item_id:
             self._router.bind_item(item_id, self._thread.thread_id)
             self.item_details[item_id] = dict(item)
@@ -1530,6 +1542,15 @@ class CodexTurnRuntime:
     ) -> None:
         item_type = str(item.get("type") or "")
         item_id = str(item.get("id") or "")
+        if item_type == CODEX_COMPACTION_ITEM:
+            await self._emitter.emit(
+                self._thread,
+                CodexSessionEventKind.CONTEXT_COMPACTED,
+                turn_id=turn_id,
+                item_id=item_id,
+                payload={"phase": "completed"},
+            )
+            return
         if item_type == "reasoning":
             if item_id not in self.streamed_reasoning:
                 for summary_index, summary in enumerate(public_summary_parts(item)):
@@ -1822,9 +1843,9 @@ class CodexTurnRuntime:
         failure: ProviderFailure | None = None,
     ) -> str | None:
         if not self.provider_incident_id:
-            return
+            return None
         if self.provider_incident_turn_id and self.provider_incident_turn_id != turn_id:
-            return
+            return None
         terminal_failure = failure or self.provider_failure or provider_failure(None)
         incident = RuntimeIncident(
             incident_id=self.provider_incident_id,

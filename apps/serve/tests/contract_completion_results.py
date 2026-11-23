@@ -38,6 +38,105 @@ from service.identity.service.account_token import AccountTokenHolder
 
 
 class CompletionRenewalContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_official_openai_chat_output_budget_uses_supported_parameter(self):
+        for maximum, explicit in ((100000, None), (100000, 512)):
+            _codex_provider(
+                {
+                    "base_url": "https://api.openai.com/v1",
+                    "call_url": "https://api.openai.com/v1/chat/completions",
+                    "provider": "openai",
+                    "model_name": "o3",
+                    "max_output_tokens": maximum,
+                },
+                self.bridge,
+                session_id=f"openai-budget-{explicit}",
+            )
+            upstream = next(reversed(self.bridge._upstreams.values()))
+            request = upstream.request_policy(
+                {"model": "o3", **({"max_tokens": explicit} if explicit else {})}
+            )
+            self.assertNotIn("max_tokens", request)
+            self.assertEqual(request["max_completion_tokens"], explicit or maximum)
+
+    async def test_declared_output_budget_is_applied_per_model(self):
+        _codex_provider(
+            {
+                "base_url": "https://provider.example/v1",
+                "model_name": "selected",
+                "max_output_tokens": 131072,
+            },
+            self.bridge,
+            session_id="budget-session",
+            runtime_model_ref="private-selected",
+        )
+        upstream = next(iter(self.bridge._upstreams.values()))
+        self.assertEqual(
+            upstream.request_policy({"model": "private-selected"}),
+            {"model": "selected", "max_output_tokens": 131072},
+        )
+        self.assertEqual(
+            upstream.request_policy({"model": "selected", "max_output_tokens": 1000})[
+                "max_output_tokens"
+            ],
+            1000,
+        )
+
+    async def test_output_limit_terminal_keeps_its_reason(self):
+        observation = StreamObservation()
+        observation.feed(
+            b'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}\n\n'
+        )
+        failure = terminal_provider_failure(
+            {"phase": "finished", "downstream": observation.snapshot()}
+        )
+        self.assertEqual(failure.get("error_code"), "max_output_tokens")
+        self.assertEqual(failure.get("retryability"), "user_retryable")
+
+    async def test_output_budget_boundaries_and_chat_protocol(self):
+        for protocol, budget_key in (
+            ("responses", "max_output_tokens"),
+            ("chat/completions", "max_tokens"),
+        ):
+            for declared, requested, expected in (
+                (131072, None, 131072),
+                (131072, 1000, 1000),
+                (131072, 200000, 131072),
+                (None, None, None),
+            ):
+                with self.subTest(protocol=protocol, declared=declared, requested=requested):
+                    _codex_provider(
+                        {
+                            "base_url": "https://provider.example/v1",
+                            "call_url": f"https://provider.example/v1/{protocol}",
+                            "model_name": "selected",
+                            "max_output_tokens": declared,
+                        },
+                        self.bridge,
+                        session_id=f"budget-{protocol}-{declared}-{requested}",
+                    )
+                    upstream = next(reversed(self.bridge._upstreams.values()))
+                    payload = {
+                        "model": "selected",
+                        **({budget_key: requested} if requested else {}),
+                    }
+                    self.assertEqual(upstream.request_policy(payload).get(budget_key), expected)
+                    self.assertEqual(upstream.request_policy(payload)["model"], "selected")
+
+    async def test_other_incomplete_reasons_are_not_output_limits(self):
+        for reason in ("unknown_reason", None):
+            observation = StreamObservation()
+            event = {
+                "type": "response.incomplete",
+                "response": {"incomplete_details": {"reason": reason}},
+            }
+            observation.feed(f"data: {json.dumps(event)}\n\n".encode())
+            self.assertEqual(
+                terminal_provider_failure(
+                    {"phase": "finished", "downstream": observation.snapshot()}
+                ),
+                {},
+            )
+
     async def asyncSetUp(self):
         self.bridge = CompletionBridge("http://127.0.0.1")
         self.addAsyncCleanup(self.bridge.close)
@@ -862,6 +961,8 @@ class CompletionBridgeContract(unittest.TestCase):
         status=200,
         inputs="hello",
         tools=None,
+        model_config=None,
+        output_budget=None,
     ):
         observed = []
         self.diagnostics = []
@@ -873,16 +974,23 @@ class CompletionBridgeContract(unittest.TestCase):
             turn_ids=lambda session: turn[0],
             on_diagnostic=lambda session, fields: self.diagnostics.append((session, fields)),
         )
-        registration = bridge.register(
-            endpoint="https://provider.example/v1/chat/completions",
-            responses_endpoint="https://provider.example/v1/responses",
-            wire_protocol=(
-                ModelWireProtocol.RESPONSES if native else ModelWireProtocol.CHAT_COMPLETIONS
-            ),
-            api_key="",
-            session_id=session_id,
-            model_routes={"codex-auto-review": "selected"},
-        )
+        if model_config is None:
+            registration = bridge.register(
+                endpoint="https://provider.example/v1/chat/completions",
+                responses_endpoint="https://provider.example/v1/responses",
+                wire_protocol=(
+                    ModelWireProtocol.RESPONSES if native else ModelWireProtocol.CHAT_COMPLETIONS
+                ),
+                api_key="",
+                session_id=session_id,
+                model_routes={"codex-auto-review": "selected"},
+            )
+            bridge_id = registration.bridge_id
+        else:
+            _codex_provider(
+                model_config, bridge, session_id=session_id, runtime_model_ref="codex-auto-review"
+            )
+            bridge_id = next(iter(bridge._upstreams))
         app = FastAPI()
         mount_completion_bridge(app, bridge)
 
@@ -906,12 +1014,17 @@ class CompletionBridgeContract(unittest.TestCase):
         ):
             with TestClient(app) as client:
                 response = client.post(
-                    f"/api/internal/model-bridge/{registration.bridge_id}/v1/responses",
+                    f"/api/internal/model-bridge/{bridge_id}/v1/responses",
                     json={
                         "model": "codex-auto-review",
                         "input": inputs,
                         "stream": streaming,
                         **({"tools": tools} if tools is not None else {}),
+                        **(
+                            {"max_output_tokens": output_budget}
+                            if output_budget is not None
+                            else {}
+                        ),
                     },
                 )
                 client.portal.call(bridge.close)
@@ -933,12 +1046,71 @@ class CompletionBridgeContract(unittest.TestCase):
             self.assertEqual(fields["upstream_request_id"], "upstream-id")
             self.assertEqual(fields["status_code"], 200)
             self.assertEqual(fields["content_type"], "text/event-stream")
-            self.assertEqual(fields["end_reason"], "eof")
-            self.assertEqual(fields["upstream_end"], "eof")
+            expected_end = "incomplete" if terminal == "response.incomplete" else "eof"
+            self.assertEqual(fields["end_reason"], expected_end)
+            self.assertEqual(fields["upstream_end"], expected_end)
             for boundary in ("upstream", "downstream"):
                 self.assertEqual(fields[boundary]["terminal_event"], terminal)
             self.assertNotIn("do-not-log", json.dumps(self.diagnostics))
             self.assertEqual(len({item[1]["request_id"] for item in self.diagnostics}), 1)
+
+    def test_chat_output_limit_is_incomplete_and_retains_usage(self):
+        body = b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}],"usage":{"completion_tokens":512}}\n\ndata: [DONE]\n\n'
+        _, returned = self.model_response(body, native=False, streaming=True)
+        self.assertIn(b"response.incomplete", returned)
+        self.assertNotIn(b"response.completed", returned)
+        failure = terminal_provider_failure(self.diagnostics[-1][1])
+        self.assertEqual(failure["error_code"], "max_output_tokens")
+        self.assertEqual(self.diagnostics[-1][1]["downstream"]["usage"]["output_tokens"], 512)
+
+    def test_budget_parameter_reaches_the_correct_upstream_protocol(self):
+        for base, protocol, parameter in (
+            ("https://api.openai.com/v1", "chat/completions", "max_completion_tokens"),
+            ("https://api.openai.com/v1", "responses", "max_output_tokens"),
+            ("https://provider.example/v1", "chat/completions", "max_tokens"),
+        ):
+            for requested, expected in ((None, 100000), (512, 512), (200000, 100000)):
+                with self.subTest(base=base, protocol=protocol, requested=requested):
+                    native = protocol == "responses"
+                    body = (
+                        b'data: {"type":"response.completed","response":{"id":"result","status":"completed","output":[]}}\n\n'
+                        if native
+                        else b'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+                    )
+                    self.model_response(
+                        body,
+                        native=native,
+                        streaming=True,
+                        output_budget=requested,
+                        model_config={
+                            "base_url": base,
+                            "call_url": f"{base}/{protocol}",
+                            "model_name": "o3",
+                            "max_output_tokens": 100000,
+                        },
+                    )
+                    sent = self.requests[0]
+                    self.assertEqual(sent[parameter], expected)
+                    for other in {"max_output_tokens", "max_tokens", "max_completion_tokens"} - {
+                        parameter
+                    }:
+                        self.assertNotIn(other, sent)
+
+    def test_native_content_filter_keeps_terminal_content_safety_classification(self):
+        body = b'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}\n\n'
+        self.model_response(body, native=True, streaming=True)
+        failure = terminal_provider_failure(self.diagnostics[-1][1])
+        self.assertEqual(failure.get("error_code"), "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(failure.get("retryability"), "terminal")
+
+    def test_chat_content_filter_keeps_terminal_content_safety_classification(self):
+        body = (
+            b'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\ndata: [DONE]\n\n'
+        )
+        self.model_response(body, native=False, streaming=True)
+        failure = terminal_provider_failure(self.diagnostics[-1][1])
+        self.assertEqual(failure.get("error_code"), "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(failure.get("retryability"), "terminal")
 
     def test_diagnostics_observe_chat_conversion_boundaries(self):
         body = (

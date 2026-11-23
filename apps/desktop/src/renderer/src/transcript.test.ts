@@ -20,6 +20,7 @@ import {
   projectAnswerSources,
   projectArtifactSnapshot,
   projectArtifactFailure,
+  projectContextCompaction,
   projectHistory,
   projectHistorySnapshot,
   projectTurnInterruption,
@@ -41,6 +42,95 @@ import {
   upsertUserMessageEvent,
   upsertConversationArtifact,
 } from './transcript.ts'
+
+test('compaction phases survive history reopen and replay without duplicates', () => {
+  const events = ['started', 'completed'].map((phase, index) => ({
+    v: 2,
+    seq: index + 2,
+    ts: index + 2,
+    session_id: 'session',
+    turn_id: 'turn',
+    item_id: 'compaction',
+    type: 'context_compacted',
+    data: { phase },
+  })) as Extract<ProductEvent, { type: 'context_compacted' }>[]
+  const history: HistoryResult = {
+    turns: [
+      { kind: 'user', text: 'Question', turn_id: 'turn', item_id: 'user' },
+      { kind: 'text', role: 'assistant', text: 'Answer', turn_id: 'turn', item_id: 'answer' },
+    ],
+    todos: [],
+    todo_turn_id: null,
+    activity_events: events,
+    turn_activity: [{ turn_id: 'turn', outcome: 'completed', started_at: 1 }],
+    artifacts: [],
+  }
+  const restored = projectHistorySnapshot(history, [])
+  const statuses = restored.filter((item) => item.kind === 'status')
+  assert.deepEqual(
+    statuses.map((item) => item.text),
+    [{ key: 'context.compacted' }]
+  )
+  assert.deepEqual(
+    statuses.map((item) => item.eventSeq),
+    [3]
+  )
+  assert.deepEqual(
+    projectHistorySnapshot(history, events.reduce<ConvItem[]>(projectContextCompaction, [])),
+    restored
+  )
+  assert.deepEqual(projectActivityEvents(restored, events), restored)
+  assert.deepEqual(projectHistorySnapshot(history, restored), restored)
+  // A history read begun before SSE arrived must not erase either phase.
+  assert.deepEqual(projectHistorySnapshot({ ...history, activity_events: [] }, restored), restored)
+  assert.equal(restored.at(-1)?.kind, 'agent')
+})
+
+test('compaction progress updates one notice and settles when its turn ends', () => {
+  const started: Extract<ProductEvent, { type: 'context_compacted' }> = {
+    v: 2,
+    seq: 2,
+    ts: 2,
+    session_id: 'session',
+    turn_id: 'turn',
+    item_id: 'compact',
+    type: 'context_compacted',
+    data: { phase: 'started' },
+  }
+  const running = projectContextCompaction([], started)
+  assert.equal(running.length, 1)
+  assert.deepEqual(running[0].kind === 'status' && running[0].text, { key: 'context.compacting' })
+  const completed = { ...started, seq: 3, data: { phase: 'completed' as const } }
+  const done = projectContextCompaction(running, completed)
+  assert.equal(done.length, 1)
+  assert.deepEqual(done[0].kind === 'status' && done[0].text, { key: 'context.compacted' })
+  assert.deepEqual(projectContextCompaction(done, started), done)
+  assert.deepEqual(projectContextCompaction(done, completed), done)
+  assert.equal(
+    projectContextCompaction(done, { ...started, seq: 4, item_id: 'compact-2' }).length,
+    2
+  )
+  assert.equal(
+    projectContextCompaction(done, { ...started, seq: 4, turn_id: 'other-turn' }).length,
+    2
+  )
+  for (const settled of [
+    settleInterruptedActivities(running, 'turn', 4),
+    placeFinalAssistantLast(running, ['turn']),
+  ]) {
+    assert.deepEqual(settled[0].kind === 'status' && settled[0].text, {
+      key: 'context.compactionIncomplete',
+    })
+  }
+  assert.deepEqual(settleInterruptedActivities(running, 'other-turn', 4), running)
+  assert.deepEqual(settleInterruptedActivities(done, 'turn', 4), done)
+  assert.deepEqual(projectContextCompaction([], { ...started, data: { phase: 'failed' } })[0], {
+    ...running[0],
+    text: { key: 'context.compactionIncomplete' },
+    tone: 'tension',
+    compactionPhase: 'failed',
+  })
+})
 
 test('failed history replay retains the causal reference when an old matching card already exists', () => {
   const event: ProductEvent = {

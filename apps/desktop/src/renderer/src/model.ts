@@ -548,6 +548,7 @@ export type RuntimeStatusMessage = (
         | 'runtime.closed'
         | 'context.compacting'
         | 'context.compacted'
+        | 'context.compactionIncomplete'
         | 'artifactFailure.missing'
         | 'artifactFailure.changed'
         | 'artifactFailure.conflict'
@@ -635,6 +636,7 @@ export type ConvItem = TurnOwned &
         actionSessionId?: string
         hideIcon?: boolean
         interruptionReason?: string
+        compactionPhase?: 'started' | 'completed' | 'failed'
         /** Terminal live-only outcome that must survive a durable history refresh. */
         retainOnHistoryRefresh?: boolean
       }
@@ -663,6 +665,7 @@ export type ConvItem = TurnOwned &
             | 'connection'
             | 'overloaded'
             | 'content_policy'
+            | 'output_limit'
             | 'unknown'
           fallback: 'frame' | 'runtime' | 'raw'
           authentication?: 'account' | 'model'
