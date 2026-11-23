@@ -67,6 +67,7 @@ from service.identity.utils import (
     OWNERSHIP_AXIS_STATE,
     resolve_ownership_axis,
 )
+from service.inference.auto import AutoRoute
 from service.inference.source import ContentSource
 from service.paths import (
     SERVICE_BUNDLED_SKILLS_DIR,
@@ -308,6 +309,11 @@ def create_chat_app(
         live = sessions.get(session_id)
         return live.attachment_model_bridge_id() if live is not None else None
 
+    def auto_route(session_id: str, turn: str) -> AutoRoute | None:
+        live = sessions.get(session_id)
+        route = live.auto_route if live is not None else None
+        return route if route and route.turn == turn else None
+
     completion_bridge = CompletionBridge(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),
         on_model=observe_model,
@@ -315,6 +321,7 @@ def create_chat_app(
         on_sources=observe_sources,
         on_tool_outputs=observe_tool_outputs,
         turn_ids=session_turn_id,
+        auto_route=auto_route,
         content_source=content_source,
         source_endpoints=(DEEPRD_GATEWAY_BASE_URL,),
         retryable_tool_endpoints={
@@ -451,6 +458,7 @@ def create_chat_app(
         _log,
         activities=activities,
         prepare=session_service.prepare_turn,
+        auto_accounts=account_tokens,
         deliveries=resource_deliveries,
         catalog=access_store,
         events=event_store,

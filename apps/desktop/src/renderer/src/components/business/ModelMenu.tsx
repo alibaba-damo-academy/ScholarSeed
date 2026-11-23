@@ -223,7 +223,7 @@ export function ModelMenu({
   modelKey,
   onModelSelect,
   modelFilter,
-  showEffort = true,
+  showEffort: allowEffort = true,
   variant = 'ghost',
 }: {
   compact?: boolean
@@ -266,6 +266,7 @@ export function ModelMenu({
   )
   const controlled = onModelSelect !== undefined
   const selectedModelKey = controlled ? (modelKey ?? '') : sessionModelKey
+  const showEffort = allowEffort && selectedModelKey !== 'auto'
   const selectedModel = models.find((model) => model.key === selectedModelKey)
   const visibleModels = React.useMemo(
     () => (modelFilter ? models.filter(modelFilter) : models),

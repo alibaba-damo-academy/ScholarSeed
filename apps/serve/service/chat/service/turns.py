@@ -124,6 +124,7 @@ from service.chat.service.titles import SessionTitles
 from service.chat.service.utils import is_resource_finalizing
 from service.content.domain.model import ContentReadPermissionError
 from service.identity.service.skill_credentials import CredentialAdmissionError
+from service.inference.auto import decide
 from service.paths import session_attachment_root
 from service.platform.activity import (
     Activities,
@@ -279,6 +280,7 @@ class TurnService:
         logger: Any,
         *,
         activities: Activities,
+        auto_accounts=None,
         prepare: TurnPreparation | None = None,
         context_source: AssistantTurnContextSource | None = None,
         deliveries: ResourceDeliveryService | None = None,
@@ -288,6 +290,7 @@ class TurnService:
     ) -> None:
         self._sessions = sessions
         self._activities = activities
+        self._auto_accounts = auto_accounts
         self._queue_waiters: dict[str, asyncio.Task[None]] = {}
         self._resource_resume_callbacks: dict[
             tuple[asyncio.Task[Any], str], Callable[[asyncio.Task[Any]], None]
@@ -2507,6 +2510,14 @@ class TurnService:
 
         live.submission_retry_authorizer = authorize_retry
         try:
+            if (
+                self._auto_accounts is not None
+                and live.catalog.model_state(live.id).selected_model_id == "auto"
+            ):
+                route = await decide(live, turn_input, self._auto_accounts)
+                if intent() != original_intent or live.interrupt_generation != interrupt_generation:
+                    raise RuntimeError(RECOVERY_STALE)
+                live.auto_route = route
             replaced = False
             frozen_request = None
             while True:
@@ -2754,6 +2765,7 @@ class TurnService:
             )
             return result
         finally:
+            live.auto_route = None
             live.submission_retry_authorizer = None
             live.active_assistant_snapshot_id = ""
             live.active_assistant_revision = None

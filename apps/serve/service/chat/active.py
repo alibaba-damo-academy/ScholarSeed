@@ -93,12 +93,19 @@ def base_instructions() -> str:
     return prompt
 
 
-def developer_instructions(*, output_directory: str = "", project_context: str = "") -> str:
+def developer_instructions(
+    *, output_directory: str = "", project_context: str = "", auto: bool = False
+) -> str:
     """读取产品开发者附加指令; 缺失或为空是产品资产缺陷, 显式失败。"""
 
     prompt = DEVELOPER_PROMPT_FILE.read_text(encoding=TEXT_ENCODING)
     if not prompt.strip():
         raise ValueError(f"ScholarSeed developer instructions are empty: {DEVELOPER_PROMPT_FILE}")
+    if auto:
+        # Auto selects these two guide sources before the model request.
+        start = prompt.index("## Request Type Gate")
+        end = prompt.index("Use supported product operations;", start)
+        prompt = prompt[:start] + prompt[end:]
     if output_directory:
         prompt += OUTPUT_DIRECTORY_INSTRUCTIONS.format(path=json.dumps(output_directory))
     if project_context:
