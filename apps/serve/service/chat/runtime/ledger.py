@@ -868,6 +868,7 @@ class SessionLedger:
         *,
         fallback_submission_id: str,
         finish_messages: Callable[[str], None],
+        resource_finalizing: bool = False,
     ) -> bool:
         incident = event_incident(event)
         event = replace(
@@ -929,6 +930,11 @@ class SessionLedger:
                     "status": str(payload.get("status") or outcome),
                     "message": self._terminal_safe_error(event),
                     "resolved_incident_ids": list(resolved),
+                    **(
+                        {"resource_finalizing": True}
+                        if resource_finalizing and outcome == PRODUCT_TURN_OUTCOME_COMPLETED
+                        else {}
+                    ),
                     **(
                         {INCIDENT_ID_KEY: payload[INCIDENT_ID_KEY]}
                         if outcome == PRODUCT_TURN_OUTCOME_FAILED

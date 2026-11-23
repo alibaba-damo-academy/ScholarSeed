@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -270,8 +271,8 @@ class ResourceVersionSupervisor:
                     raise ContentError(ROOT_UNAVAILABLE_ERROR)
                 self._prepared.add(project.id)
 
-    async def activate_project(self, project_id: str) -> None:
-        """Prepare and observe one project selected by a real product action."""
+    async def activate_project(self, project_id: str, *, rediscover: bool = True) -> None:
+        """Prepare and observe a project, discovering on attachment or an explicit refresh."""
 
         self._activities.require_workbench()
         with self._activities.enter(ActivityDomain.RESOURCE):
@@ -281,10 +282,12 @@ class ResourceVersionSupervisor:
             )
             await self._content.refresh_events(project.id)
             stream = self._streams.get(project.id)
-            if stream is None or stream.done():
+            restarting = stream is None or stream.done()
+            if restarting:
                 self._streams[project.id] = asyncio.create_task(self._consume(project.id))
                 self._reconcile.add(project.id)
-            self.schedule_scan(project.id)
+            if restarting or rediscover:
+                self.schedule_scan(project.id)
 
     async def aclose(self) -> None:
         """Finish or cancel discovery and stop the owned content event hub."""
@@ -546,6 +549,7 @@ class ResourceVersionSupervisor:
         paths: tuple[str, ...],
         *,
         repositories: dict[str, str | None] | None = None,
+        observed_entries: Mapping[str, ResourceEntry | None] | None = None,
     ) -> dict[str, ResourceCapability]:
         """Project tree state for selected paths without a repository-wide scan."""
 
@@ -553,9 +557,16 @@ class ResourceVersionSupervisor:
         if not selected:
             return {}
         repository_states = repositories or self._content.repository_roots(project_id, selected)
-        non_git_paths = tuple(path for path in selected if repository_states[path] is None)
-        entries = self._content.resource_entries(project_id, non_git_paths) if non_git_paths else ()
-        by_path = {entry.path: entry for entry in entries}
+        observed = observed_entries or {}
+        inspect_paths = tuple(
+            path for path in selected if repository_states[path] is None and path not in observed
+        )
+        by_path = dict(observed)
+        if inspect_paths:
+            by_path.update(
+                (entry.path, entry)
+                for entry in self._content.resource_entries(project_id, inspect_paths)
+            )
         resource_root = self._content.root_path(project_id, RootKind.RESOURCES)
         persisted = self._versions.capability_states(project_id, selected)
         manual_states = self._versions.manual_admitted_states(project_id, selected)
@@ -615,10 +626,13 @@ class ResourceVersionSupervisor:
         )
         return eligible, initial_paths
 
-    def _inventory(self, project_id: str) -> _ResourceInventory:
-        entries = self._entries(project_id)
-        paths = tuple(entry.path for entry in entries)
-        return _ResourceInventory(entries, self._content.repository_roots(project_id, paths))
+    def _inventory(
+        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+    ) -> _ResourceInventory:
+        entries, repositories = self._content.scan_resource_inventory(
+            project_id, include_missing=include_missing
+        )
+        return _ResourceInventory(entries, repositories)
 
     def _scan_project(
         self, project_id: str, inventory: _ResourceInventory | None = None
@@ -770,13 +784,15 @@ class ResourceVersionSupervisor:
                 tuple(ResourceEntry(path=path, size=0) for path in include_missing),
             )
             return tuple(cached | set(additions))
-        entries = self._entries(project_id)
-        present = {entry.path for entry in entries}
+        inventory = self._inventory(project_id, include_missing=include_missing)
+        present = {entry.path for entry in inventory.entries}
         entries = (
-            *entries,
+            *inventory.entries,
             *(ResourceEntry(path=path, size=0) for path in include_missing if path not in present),
         )
-        eligible, _ignored, _oversized, _unsupported = self._eligible(project_id, entries)
+        eligible, _ignored, _oversized, _unsupported = self._eligible(
+            project_id, entries, repositories=inventory.repositories
+        )
         return eligible
 
     @contextmanager

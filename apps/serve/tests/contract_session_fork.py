@@ -17,7 +17,9 @@ from service.assistant.persistence.citations import CitationStore
 from service.assistant.persistence.store import AssistantStore
 from service.chat import utils as chat_utils
 from service.chat.constants import (
+    PRODUCT_EVENT_DISPLAY_CARD,
     PRODUCT_EVENT_FILE_CHANGED,
+    PRODUCT_EVENT_HIL_REQUESTED,
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_MESSAGE_QUEUED,
     PRODUCT_EVENT_TURN_COMPLETED,
@@ -55,6 +57,7 @@ from service.chat.service.sessions import (
     SessionService,
 )
 from service.content.domain.model import PROJECT_STATE_DIRNAME
+from service.literature.service.result import SEARCH_CARD
 from service.paths import (
     SESSION_ATTACHMENT_DIRNAME,
     SESSION_OUTPUT_DIRNAME,
@@ -1166,6 +1169,58 @@ class ForkTests(unittest.TestCase):
             self.assertEqual(
                 self.open({"fork_session_id": "source", "fork_turn_id": "done"})[1], 200
             )
+
+    def test_fork_keeps_search_cards_at_the_cut_without_inheriting_interactions(self) -> None:
+        early = self.append("early", PRODUCT_EVENT_TURN_COMPLETED, {"status": "completed"})
+        card = {
+            "type": SEARCH_CARD,
+            "card_id": "search-card",
+            "content": {"session_id": "source", "metadata": {"artifact_id": "metadata"}},
+        }
+        source_card = self.append(
+            "search", PRODUCT_EVENT_DISPLAY_CARD, {**card, "component": {"component": "source"}}
+        )
+        self.append("search", PRODUCT_EVENT_HIL_REQUESTED, {"request_id": "authorization"})
+        self.append(
+            "other",
+            PRODUCT_EVENT_DISPLAY_CARD,
+            {"type": "other", "card_id": "other-card"},
+        )
+        cut = self.append("search", PRODUCT_EVENT_TURN_COMPLETED, {"status": "completed"})
+        self.append("later", PRODUCT_EVENT_DISPLAY_CARD, {**card, "card_id": "later-card"})
+
+        self.service.bind_fork_display_cards(SEARCH_CARD)
+        for child, through_seq in (
+            ("early-child", early.product_seq),
+            ("search-child", cut.product_seq),
+        ):
+            target = self.register(child)
+            origin = self.events.append(
+                session_id=child,
+                runtime_id="codex",
+                vendor_thread_id=target.vendor_thread_id,
+                vendor_turn_id=None,
+                vendor_item_id=None,
+                kind=SESSION_FORK_EVENT,
+                payload={"source_session_id": "source", "source_product_seq": through_seq},
+                idempotency_key=SESSION_FORK_KEY,
+            )
+            self.service._inherit_fork_history(
+                child, origin, target, copied_workdir=None, imported=False
+            )
+            self.service._inherit_fork_history(
+                child, origin, target, copied_workdir=None, imported=True
+            )
+
+        reopened = ProductEventStore(self.catalog.database)
+        kinds = {PRODUCT_EVENT_DISPLAY_CARD, PRODUCT_EVENT_HIL_REQUESTED}
+        self.assertEqual([row for row in reopened.replay("early-child") if row.kind in kinds], [])
+        inherited = [row for row in reopened.replay("search-child") if row.kind in kinds]
+        self.assertEqual(
+            [(row.kind, row.vendor_turn_id, row.payload) for row in inherited],
+            [(PRODUCT_EVENT_DISPLAY_CARD, "search", card)],
+        )
+        self.assertEqual(reopened.by_key("source", source_card.idempotency_key), source_card)
 
     def test_artifacts_keep_original_identity_and_do_not_copy_files(self) -> None:
         source = self.append("one", PRODUCT_EVENT_FILE_CHANGED, {"path": "report.md"})

@@ -175,6 +175,7 @@ from service.chat.runtime.projection import (
     ArtifactPublishError,
     readiness_payload,
 )
+from service.chat.runtime.reconfiguration import PREPARATION_INSTANCE_CHANGED, PreparationError
 from service.chat.runtime.secrets import _launch_secret_contract
 from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL, SESSION_SERVICE_TOOLS
 from service.chat.service.artifacts import ArtifactService
@@ -204,6 +205,7 @@ from service.platform.bridge import ComponentInvocation, PlanEnable, PluginInsta
 from service.platform.citations import CITATION_SCHEME
 from service.platform.content import ArtifactScopeKind, RootKind
 from service.platform.files import FILE_ACCESS_DENIED, FILE_ACCESS_FAILED, read_file_raw
+from service.platform.resources import ResourceTurnContext, ReviewCaptureResult
 from service.platform.toolchain import CompilerResources
 from service.platform.vocabulary import BRIDGE_SESSION_HEADER, BRIDGE_TOKEN_HEADER
 from service.settings.capabilities import apply_capability, bundled_registry
@@ -5699,6 +5701,149 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         await self.live.finish_turn_settlement("closed-turn", RuntimeTurnOutcome.FAILED)
         self.assertEqual(self.events.replay(PRODUCT_SESSION_ID)[-1].payload["state"], "closed")
 
+    async def test_project_terminal_queues_followup_until_resource_commit_succeeds(self) -> None:
+        self.live.relocate(
+            cwd=self.workdir, project_path=self.workdir, output_root=self.output_root
+        )
+        self.catalog.relocate(
+            PRODUCT_SESSION_ID,
+            OWNER,
+            runtime_workdir=str(self.workdir),
+            project_path=str(self.workdir),
+            output_root=str(self.output_root),
+        )
+        capture_started, release_capture = asyncio.Event(), asyncio.Event()
+        release_active = asyncio.Event()
+        first_turn, next_turn = "resource-first", "resource-followup"
+        attempts = []
+
+        async def finish(_session_id, turn_id, _outcome):
+            attempts.append(turn_id)
+            if attempts == [first_turn]:
+                capture_started.set()
+                await release_capture.wait()
+                raise OSError("resource publication failed")
+            return ReviewCaptureResult()
+
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(return_value=ResourceTurnContext()),
+            finish_turn=AsyncMock(side_effect=finish),
+        )
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        turns = TurnService(
+            service._sessions, self.logger, activities=Activities(), deliveries=deliveries
+        )
+        stale_instance_id = Activities().instance_id
+
+        async def assert_stale_instance_rejected() -> None:
+            with self.assertRaises(PreparationError) as failure:
+                async with service.turn_admission(
+                    PRODUCT_SESSION_ID,
+                    OWNER,
+                    actor_id=OWNER.user_id,
+                    model_id=self.live.model_id,
+                    service_instance_id=stale_instance_id,
+                ):
+                    self.fail("admitted a turn bound to an old service instance")
+            self.assertEqual(str(failure.exception), PREPARATION_INSTANCE_CHANGED)
+
+        def assert_resource_finalizing(expected: bool) -> None:
+            status = service.status([PRODUCT_SESSION_ID], OWNER, {})["sessions"][0]
+            _, snapshot = service._snapshot_data(self.live)
+            self.assertIs(status["resource_finalizing"], expected)
+            self.assertIs(snapshot["resource_finalizing"], expected)
+            self.assertIs(service.history(PRODUCT_SESSION_ID)["resource_finalizing"], expected)
+
+        await assert_stale_instance_rejected()
+        with patch.object(
+            self.runtime_session, "submit", wraps=self.runtime_session.submit
+        ) as submit:
+            try:
+                receipt, status = await turns.post(
+                    PRODUCT_SESSION_ID,
+                    {
+                        "client_user_message_id": first_turn,
+                        "input": [{"type": "text", "text": "First"}],
+                    },
+                    side=False,
+                )
+                self.assertEqual(status, 202, receipt)
+                await asyncio.wait_for(capture_started.wait(), 2)
+                first_task = self.live.current_task
+                self.assertIsNotNone(first_task)
+                terminal = self.events.latest_kind(PRODUCT_SESSION_ID, PRODUCT_EVENT_TURN_COMPLETED)
+                self.assertTrue(terminal.payload["resource_finalizing"])
+                assert_resource_finalizing(True)
+                with patch.object(service, "model_admission", side_effect=AssertionError):
+                    await assert_stale_instance_rejected()
+                    async with service.turn_admission(
+                        PRODUCT_SESSION_ID,
+                        OWNER,
+                        actor_id=OWNER.user_id,
+                        model_id=self.live.model_id,
+                        service_instance_id=None,
+                    ):
+                        queued, status = await turns.post(
+                            PRODUCT_SESSION_ID,
+                            {
+                                "client_user_message_id": next_turn,
+                                "input": [{"type": "text", "text": "Next"}],
+                            },
+                            side=False,
+                        )
+                self.assertEqual(status, 202, queued)
+                self.assertEqual(
+                    self.catalog.queued_message(PRODUCT_SESSION_ID, next_turn).state,
+                    QueuedMessageState.QUEUED,
+                )
+                self.assertEqual(deliveries.begin_turn.await_count, 1)
+                self.assertEqual(submit.await_count, 1)
+                release_capture.set()
+                await asyncio.wait_for(first_task, 2)
+                pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+                self.assertTrue(pending.recovery_blocked)
+                assert_resource_finalizing(False)
+                await turns._drain_next(self.live)
+                self.assertEqual(attempts, [first_turn])
+                self.assertEqual(submit.await_count, 1)
+                read_pending = self.catalog.pending_turn_settlement
+                pending_reads: list[int] = []
+
+                def read_pending_off_loop(session_id):
+                    pending_reads.append(threading.get_ident())
+                    return read_pending(session_id)
+
+                with patch.object(
+                    self.catalog, "pending_turn_settlement", side_effect=read_pending_off_loop
+                ):
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, next_turn)
+                    self.assertIsNone(self.live.current_task)
+                    active = asyncio.create_task(release_active.wait())
+                    self.live.current_task = active
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                    self.assertIs(self.live.current_task, active)
+                    self.assertEqual(len(pending_reads), 2)
+                    self.assertNotIn(threading.get_ident(), pending_reads)
+                self.assertEqual(attempts, [first_turn])
+                release_active.set()
+                await asyncio.wait_for(active, 2)
+                async with asyncio.timeout(2):
+                    while (
+                        self.catalog.queued_message(PRODUCT_SESSION_ID, next_turn).state
+                        is not QueuedMessageState.COMPLETED
+                    ):
+                        await asyncio.sleep(0.01)
+                self.assertEqual(attempts, [first_turn, first_turn, next_turn])
+                self.assertEqual(submit.await_count, 2)
+            finally:
+                release_capture.set()
+                release_active.set()
+                if self.live.current_task is not None:
+                    self.live.current_task.cancel()
+                    await asyncio.gather(self.live.current_task, return_exceptions=True)
+
     async def test_online_settlement_accepts_queue_without_starting_next_turn(self) -> None:
         inspected = asyncio.Event()
         allow_failures = asyncio.Event()
@@ -10348,7 +10493,7 @@ class ToolEnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("SCHOLARSEED_TASK_PYTHON", tools)
                 self.assertIn("VIRTUAL_ENV", tools)
 
-    async def test_process_credentials_do_not_create_implicit_tool_bindings(self) -> None:
+    async def test_preparing_the_host_does_not_bind_the_account_access_token(self) -> None:
         admitted = {"SCHOLARSEED_API_KEY": "admitted-key", "SCHOLARSEED_ACCOUNT_TOKEN": "jwt"}
         intent, port = _launch_secret_contract(admitted)
         self.assertNotIn("admitted-key", repr(intent))
@@ -10359,13 +10504,34 @@ class ToolEnvironmentTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(
             resolved,
-            {(LaunchSecretScope.PROCESS, name): value for name, value in admitted.items()},
+            {(LaunchSecretScope.PROCESS, "SCHOLARSEED_API_KEY"): "admitted-key"},
         )
         anonymous, anonymous_port = _launch_secret_contract({})
         self.assertEqual(anonymous.bindings, ())
         self.assertIsNone(anonymous_port)
         self.assertIn("SCHOLARSEED_API_KEY", anonymous.remove_environment)
         self.assertIn("SCHOLARSEED_ACCOUNT_TOKEN", anonymous.remove_environment)
+
+    async def test_renewed_account_access_token_changes_only_the_tool_environment(self) -> None:
+        for token in ("account-access-before-renewal", "account-access-after-renewal"):
+            intent, port = _launch_secret_contract(
+                {"SCHOLARSEED_API_KEY": "admitted-key", "SCHOLARSEED_ACCOUNT_TOKEN": token},
+                include_skill_credentials=True,
+            )
+            self.assertIsNotNone(port)
+            resolved = {
+                (binding.scope, binding.name): (await port.resolve(binding.secret_ref)).value
+                for binding in intent.bindings
+            }
+            self.assertEqual(
+                resolved,
+                {
+                    (LaunchSecretScope.PROCESS, "SCHOLARSEED_API_KEY"): "admitted-key",
+                    (LaunchSecretScope.TOOL, "SCHOLARSEED_API_KEY"): "admitted-key",
+                    (LaunchSecretScope.TOOL, "SCHOLARSEED_ACCOUNT_TOKEN"): token,
+                },
+            )
+            self.assertIn("SCHOLARSEED_ACCOUNT_TOKEN", intent.remove_environment)
 
     async def test_explicit_tool_bindings_preserve_custom_skill_credentials(self) -> None:
         tools = {"CUSTOM_SKILL_API_KEY": "custom-key", "CUSTOM_SKILL_CONFIG": "custom-config"}

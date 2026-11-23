@@ -21,7 +21,7 @@ import time
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 from uuid import uuid4
 
 from service.content.domain import naming
@@ -1202,6 +1202,36 @@ class ContentCatalog:
     ) -> tuple[ExternalRootRow, ...]:
         with reader(self.path) if read_only else self._tx() as connection:
             return self.external_root_rows(connection, project_id, include_revoked=include_revoked)
+
+    @contextmanager
+    def read_project_scope(
+        self,
+    ) -> Iterator[Callable[[str], tuple[ProjectRow | None, tuple[ExternalRootRow, ...]]]]:
+        """Read each project and its active grants in one fresh statement."""
+
+        with reader(self.path) as connection:
+
+            def read_scope(
+                project_id: str,
+            ) -> tuple[ProjectRow | None, tuple[ExternalRootRow, ...]]:
+                rows = connection.execute(
+                    f"""SELECT project.project_id, project.display_name, project.dir_root,
+                               project.layout, project.created_at, project.seeded_from,
+                               project.{PROJECT_ARCHIVED_AT_COLUMN}, project.{PROJECT_DESCRIPTION_COLUMN},
+                               project.{PROJECT_PINNED_COLUMN}, root.root_id, root.source_path, root.mount_path,
+                               root.{EXTERNAL_ROOT_KIND_COLUMN}, root.authorized_at, root.revoked_at
+                        FROM {PROJECTS_TABLE} AS project
+                        LEFT JOIN {EXTERNAL_ROOTS_TABLE} AS root
+                            ON root.project_id = project.project_id AND root.revoked_at IS NULL
+                        WHERE project.project_id = ? ORDER BY root.authorized_at ASC""",
+                    (project_id,),
+                ).fetchall()
+                return (
+                    _project_row(rows[0]) if rows else None,
+                    tuple(_external_row(row) for row in rows if row["root_id"] is not None),
+                )
+
+            yield read_scope
 
     @staticmethod
     def external_root_rows(

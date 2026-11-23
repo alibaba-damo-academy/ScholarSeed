@@ -26,11 +26,30 @@ the original user receives only a non-inheriting Administrators maintenance ACE
 (directory full control, existing logs modify). New metadata directories use the
 existing private descriptor. Existing native-group rights are validated but never
 expanded; credentials and other descendants are not traversed. Reparse points,
-hardlinked logs, unknown principals, deny rules and identity/security drift fail
-closed. Each object is pinned and checked before and after a handle-based write;
-contents, ownership and all existing ACEs remain unchanged. Tests cover an
-unprotected unrelated descendant to detect unintended inheritance propagation.
-The elevated recovery worker does not perform this metadata maintenance.
+hardlinked logs, unknown principals, deny rules and changes to object identity,
+Owner or security control fail closed. Each object is pinned and checked before
+and after a handle-based write; that write preserves contents, ownership and all
+existing ACEs. Tests cover an unprotected unrelated descendant to detect unintended
+inheritance propagation. The elevated recovery worker does not perform this
+metadata maintenance.
+
+Only a pre-write ACL change on the first `.sandbox` directory may restart this
+metadata plan once, before any metadata or log write. The coordinator freshly
+qualifies Profile, product directory and Home, then rereads all pending objects
+through their original pinned handles. Their original identity, Owner and security
+control must match, and every current ACL must pass the full metadata policy before
+any replacement plan is written. The new plan preserves all current ACE bytes and
+adds only the existing Administrators maintenance grant when required. The actual
+writer's pre-write fingerprint remains byte-exact. A second drift, any post-write
+failure, or drift first detected while writing a log, bin or secrets target is
+terminal. This requalification does not retry a user turn or change macOS behavior.
+
+中文：仅首个 `.sandbox` 目录写入前的 ACL 变化可触发一次完整重新资格审查，且此时尚未写入任何
+元数据或日志。协调者重新核验 Profile、产品目录和 Home，并通过原有固定句柄重读所有待写对象；
+原始对象身份、Owner 和安全控制位必须一致，每个当前 ACL 均须完整通过原策略，之后才能写入新计划。
+新计划保留当前全部 ACE 字节，仅在需要时补充已有规则限定的 Administrators 维护授权；实际写入前仍
+精确比较指纹。再次漂移、写后失败，以及首次在日志、bin、secrets 目标写入时发现的漂移均直接失败，
+不重试用户回合，也不改变 macOS 行为。
 
 The coordinator pins local ancestors and the target without deletion sharing,
 rejects reparse points, and inspects the target before applying recovery-only ACL
@@ -398,6 +417,23 @@ deletion access and checks their volume and 128-bit file identities before delet
 only that image and the empty root through their handles. Ancestors remain pinned
 throughout; a replacement during reopening is refused. Unknown members, access errors, failed
 updater exit and timeout remain failures; there is no recursive cleanup fallback.
+After the image deletion is committed and its handle closed, only directory-not-empty
+(Win32 145) on the same pinned root may be retried: at most 80 attempts with 25 ms delays.
+New attempts are admitted only within a two-second local grace period and the remaining
+original monotonic retirement budget. The grace bounds additional waiting; Windows does
+not guarantee deletion completes within it. In-flight filesystem calls are not forcibly
+interrupted. Every attempt
+repeats the complete object checks. Image deletion, access/sharing errors and all other
+failures are not retried; an unknown member is never removed and still prevents retirement.
+Disposition calls retain the native BOOL separately from the Win32 error captured by the
+CLR in the same managed frame. Only a failed BOOL uses that code for retry classification
+and diagnostics; a successful BOOL is accepted even when its error slot is stale.
+中文：仅在映像已提交删除并关闭句柄后，对同一固定根目录的 Win32 145 最多尝试 80 次、间隔
+25 毫秒；新尝试同时受两秒局部宽限和原单调时钟剩余预算约束。该窗口用于有界等待，不承诺操作系统
+在此期间完成删除，也不强行中断已进入的文件系统调用。
+每次完整复核对象。映像删除、访问或共享错误及其他失败均不重试，不删除未知成员，也不延长既有超时。
+删除调用在同一托管帧内分别保留原生 BOOL 和 CLR 捕获的 Win32 错误码；仅 BOOL 失败时用该码
+分类重试并输出诊断，BOOL 成功时不受残留错误码影响。
 The embedded script participates in the native build source digest. The installer
 verifier still independently requires whole-root disappearance within 120 seconds.
 macOS retains its existing Squirrel.Mac lifecycle and never starts this child.

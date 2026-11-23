@@ -18,6 +18,16 @@ import (
 const sandboxMetadata = ".sandbox"
 const sandboxMaximumAllowed = 0x02000000
 
+// A plan retains the no-delete handles and the exact policy qualified for each
+// bounded metadata object. The directory is always first.
+type sandboxMetadataChange struct {
+	handle    syscall.Handle
+	before    sandboxSecurity
+	acl       []byte
+	directory bool
+	object    string
+}
+
 // The upstream rolling logger uses UTC dates. Only its bounded, direct log
 // entries are repaired; credentials, setup inputs and descendants are not walked.
 func sandboxMetadataLog(name string) bool {
@@ -155,7 +165,59 @@ func sandboxMetadataWrite(handle syscall.Handle, before sandboxSecurity, acl []b
 	return nil
 }
 
-func sandboxPrepareMetadata(home, user, group string, readers ...string) (failure error) {
+// Requalify the entire pending plan before any metadata write. Keep the
+// original handles and object bindings; only a freshly reviewed ACL may differ.
+func sandboxMetadataReplan(home, user, group string, changes []sandboxMetadataChange, readers ...string) ([]sandboxMetadataChange, error) {
+	if err := sandboxMetadataAncestors(home, user, group, readers...); err != nil {
+		return nil, err
+	}
+	fresh := make([]sandboxMetadataChange, 0, len(changes))
+	for _, change := range changes {
+		current, err := sandboxObjectSnapshot(change.handle, change.directory)
+		if err != nil {
+			return nil, sandboxMetadataFailure(change.object, err)
+		}
+		if current.identity != change.before.identity || current.owner != change.before.owner || current.control != change.before.control {
+			return nil, sandboxMetadataFailure(change.object, sandboxCheckFailure(sandboxRuleDrift, errors.New("sandbox metadata binding changed before replanning")))
+		}
+		acl, err := sandboxMetadataACL(current, user, group, change.directory, readers...)
+		if err != nil {
+			return nil, sandboxMetadataFailure(change.object, err)
+		}
+		fresh = append(fresh, sandboxMetadataChange{change.handle, current, acl, change.directory, change.object})
+	}
+	return fresh, nil
+}
+
+func sandboxMetadataApply(home, user, group string, changes []sandboxMetadataChange, readers ...string) error {
+	if len(changes) == 0 {
+		return nil
+	}
+	first := changes[0]
+	if err := sandboxMetadataWrite(first.handle, first.before, first.acl, first.directory); err != nil {
+		var check *sandboxCheckError
+		if first.object != sandboxObjectMetadata || !first.directory || !errors.As(err, &check) || check.rule != sandboxRuleDrift {
+			return sandboxMetadataFailure(first.object, err)
+		}
+		var replanErr error
+		changes, replanErr = sandboxMetadataReplan(home, user, group, changes, readers...)
+		if replanErr != nil {
+			return replanErr
+		}
+	} else {
+		changes = changes[1:]
+	}
+	// A directory replan is allowed only above, before any metadata mutation.
+	// Every later failure, including a second drift or any log drift, is terminal.
+	for _, change := range changes {
+		if err := sandboxMetadataWrite(change.handle, change.before, change.acl, change.directory); err != nil {
+			return sandboxMetadataFailure(change.object, err)
+		}
+	}
+	return nil
+}
+
+func sandboxMetadataAncestors(home, user, group string, readers ...string) (failure error) {
 	object := sandboxObjectProfile
 	defer func() { failure = sandboxMetadataFailure(object, failure) }()
 	for index, path := range []string{filepath.Dir(filepath.Dir(home)), filepath.Dir(home), home} {
@@ -177,10 +239,18 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) (failur
 			return err
 		}
 	}
+	return nil
+}
+
+func sandboxPrepareMetadata(home, user, group string, readers ...string) (failure error) {
+	object := sandboxObjectMetadata
+	defer func() { failure = sandboxMetadataFailure(object, failure) }()
+	if err := sandboxMetadataAncestors(home, user, group, readers...); err != nil {
+		return err
+	}
 	if err := sandboxPrepareBin(home, user, group, readers...); err != nil {
 		return err
 	}
-	object = sandboxObjectMetadata
 	target := filepath.Join(home, sandboxMetadata)
 	if _, err := createSandboxDirectory(target, user); err != nil {
 		return err
@@ -191,14 +261,7 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) (failur
 	}
 	directory := os.NewFile(uintptr(dir), target)
 	defer directory.Close()
-	type change struct {
-		handle    syscall.Handle
-		before    sandboxSecurity
-		acl       []byte
-		directory bool
-		object    string
-	}
-	var changes []change
+	var changes []sandboxMetadataChange
 	defer func() {
 		for _, change := range changes {
 			if !change.directory {
@@ -214,7 +277,7 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) (failur
 	if err != nil {
 		return err
 	}
-	changes = append(changes, change{dir, before, acl, true, sandboxObjectMetadata})
+	changes = append(changes, sandboxMetadataChange{dir, before, acl, true, sandboxObjectMetadata})
 	entries, err := directory.ReadDir(-1)
 	if err != nil {
 		return err
@@ -248,15 +311,9 @@ func sandboxPrepareMetadata(home, user, group string, readers ...string) (failur
 			return err
 		}
 
-		changes = append(changes, change{handle, before, acl, false, sandboxObjectLog})
+		changes = append(changes, sandboxMetadataChange{handle, before, acl, false, sandboxObjectLog})
 	}
-	for _, change := range changes {
-		object = change.object
-		if err := sandboxMetadataWrite(change.handle, change.before, change.acl, change.directory); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sandboxMetadataApply(home, user, group, changes, readers...)
 }
 
 // Native elevated setup cannot create this sibling beneath the original user's

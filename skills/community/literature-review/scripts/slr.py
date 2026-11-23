@@ -42,7 +42,7 @@ from strategy import policy, QUICK
 from budget import measure, search_finished, timing
 from response import import_outline
 from platform_io import run_stream
-from platform_runtime import runtime_info, utf8_env, discover_python
+from platform_runtime import runtime_info, utf8_env, discover_python, same_interpreter, INTERPRETER_ABSOLUTE
 from citation_styles import style_ids
 from usage import accumulate
 from lifecycle import STOPPED_STATUSES, OperationBlocked, operation, read_status
@@ -502,7 +502,7 @@ def cmd_init(args) -> int:
     workspace = _resolve_workspace(args)
     runtime = discover_python(slr_paths.HOME, os.environ.get('SCHOLARSEED_PYTHON'),
                               workspace if (workspace/'.slr-binding.json').exists() else None)
-    if Path(runtime['python']).absolute() != Path(sys.executable).absolute():
+    if not same_interpreter(runtime['python'], sys.executable, mode=INTERPRETER_ABSOLUTE):
         raise ValueError('Initialize with the bound product Python returned by doctor --scope runtime.')
     supplied = json_input(args.request) if getattr(args, 'request', None) else None
     if supplied is not None and not isinstance(supplied, dict):

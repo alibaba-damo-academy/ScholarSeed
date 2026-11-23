@@ -7,7 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
-from platform_runtime import discover_python, utf8_env, product_command
+from platform_runtime import discover_python, utf8_env, product_command, same_interpreter, INTERPRETER_RESOLVED
 
 
 def main():
@@ -25,7 +25,7 @@ def main():
         binding=Path(workspace)/'.slr-binding.json' if workspace else None
         if binding and binding.exists() and json.loads(binding.read_text(encoding='utf-8')).get('skill')!=str(ROOT):
             raise ValueError('Workspace is bound to a different skill; use its returned CLI.')
-        if Path(info['python']).resolve() != Path(sys.executable).resolve():
+        if not same_interpreter(info['python'], sys.executable, mode=INTERPRETER_RESOLVED):
             raise ValueError('Launch with the bound product interpreter.')
         script = 'setup.py' if setup else 'preflight.py' if doctor else 'slr.py'
         if doctor:

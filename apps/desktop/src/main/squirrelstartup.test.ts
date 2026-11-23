@@ -110,6 +110,12 @@ test('superseded recovery refuses active user or root helpers and incomplete pro
     await squirrelHelpersAbsent('502 /Applications/Other.app/ShipIt\r\n', 501, helpers),
     true
   )
+  for (const uid of [0, 501, 502]) {
+    assert.equal(
+      await squirrelHelpersAbsent(`${uid} /cache/unknown/ShipIt\n`, 501, helpers, undefined, true),
+      uid === 502
+    )
+  }
 })
 
 test(
@@ -666,6 +672,18 @@ test(
       await writeFile(state, JSON.stringify({ ...request, ...patch }))
       assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
     }
+    await writeFile(state, original[0])
+    const inspectOrphan = (candidate: string, observed: boolean) =>
+      inspectSquirrelIdle(directory, bundle, application, null, async () => {}, false, {
+        candidate,
+        observedLaunch: (requestedSource, requestedTarget) =>
+          observed && requestedSource === source && requestedTarget === application,
+      })
+    assert.equal(await inspectOrphan(native.binding.candidate, true), true)
+    assert.equal(await inspectOrphan(native.binding.candidate, false), false)
+    assert.equal(await inspectOrphan('another-candidate', true), false)
+    await writeFile(state, JSON.stringify({ ...request, installationAuthorized: false }))
+    assert.equal(await inspectOrphan(native.binding.candidate, true), false)
     await writeFile(state, original[0])
     await writeFile(ack, JSON.stringify({ ...native, ready: true }))
     assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)

@@ -73,7 +73,7 @@ static BOOL BridgePath(id value) {
         ![[value pathComponents] containsObject:@"."] && ![[value pathComponents] containsObject:@".."];
 }
 
-static NSDictionary *BridgeConfig(napi_env environment, napi_value argument) {
+static NSDictionary *BridgeArguments(napi_env environment, napi_value argument) {
     size_t length = 0, copied = 0;
     if (napi_get_value_string_utf8(environment, argument, NULL, 0, &length) != napi_ok || !length || length > SSPreflightArgumentBytes) return nil;
     char *buffer = calloc(length + 1, 1);
@@ -82,7 +82,12 @@ static NSDictionary *BridgeConfig(napi_env environment, napi_value argument) {
     NSData *bytes = valid ? [NSData dataWithBytes:buffer length:length] : nil;
     free(buffer);
     NSDictionary *config = bytes ? [NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL] : nil;
-    if (![config isKindOfClass:NSDictionary.class]) return nil;
+    return [config isKindOfClass:NSDictionary.class] ? config : nil;
+}
+
+static NSDictionary *BridgeConfig(napi_env environment, napi_value argument) {
+    NSDictionary *config = BridgeArguments(environment, argument);
+    if (!config) return nil;
     BOOL planning = [config[@"mode"] isEqual:@"orphan-plan"];
     BOOL orphan = [config[@"mode"] isEqual:@"orphan"] || [config[@"mode"] isEqual:@"retire"] || planning;
     BOOL parking = [config[@"park"] isEqual:@YES] && SSObservationBoolean(config[@"park"]);
@@ -346,9 +351,38 @@ static napi_value BridgeOpen(napi_env environment, napi_callback_info info) {
     }
 }
 
+static napi_value BridgeObservedLaunch(napi_env environment, napi_callback_info info) {
+    @autoreleasepool {
+        size_t count = 1;
+        napi_value argument, result;
+        if (napi_get_cb_info(environment, info, &count, &argument, NULL, NULL) != napi_ok || count != 1)
+            return BridgeFail(environment, "ERR_TERMINAL_ARGUMENT", EINVAL);
+        NSDictionary *config = BridgeArguments(environment, argument);
+        if (config.count != 3 || !BridgePath(config[@"cleanup"]) ||
+            !BridgePath(config[@"source"]) || !BridgePath(config[@"target"]))
+            return BridgeFail(environment, "ERR_TERMINAL_ARGUMENT", EINVAL);
+        pthread_mutex_lock(&SSBridgeMutex);
+        @try {
+            if (SSBridgeActive) return BridgeFail(environment, "ERR_TERMINAL_OPEN", EBUSY);
+            BOOL observed = SSCleanupOpenExistingDirectory(config[@"cleanup"], NULL) &&
+                SSCleanupObservedLaunch([NSURL fileURLWithPath:config[@"source"]],
+                                        [NSURL fileURLWithPath:config[@"target"]], NULL);
+            if (!SSCleanupCloseChecked(NULL)) return BridgeFail(environment, "ERR_TERMINAL_RELEASE", EIO);
+            if (napi_get_boolean(environment, observed, &result) != napi_ok)
+                return BridgeFail(environment, "ERR_TERMINAL_NATIVE", EIO);
+            return result;
+        } @finally {
+            pthread_mutex_unlock(&SSBridgeMutex);
+        }
+    }
+}
+
 static napi_value BridgeInitialize(napi_env environment, napi_value exports) {
-    napi_property_descriptor method = {.utf8name = "open", .method = BridgeOpen, .attributes = napi_default};
-    if (napi_define_properties(environment, exports, 1, &method) != napi_ok) return BridgeFail(environment, "ERR_TERMINAL_NATIVE", EIO);
+    napi_property_descriptor methods[] = {
+        {.utf8name = "open", .method = BridgeOpen, .attributes = napi_default},
+        {.utf8name = "observedLaunch", .method = BridgeObservedLaunch, .attributes = napi_default},
+    };
+    if (napi_define_properties(environment, exports, sizeof(methods) / sizeof(methods[0]), methods) != napi_ok) return BridgeFail(environment, "ERR_TERMINAL_NATIVE", EIO);
     return exports;
 }
 

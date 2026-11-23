@@ -268,16 +268,16 @@ def finalize_quick(
             "required direct target could not be verified in the eligible candidate pool: %s"
             % (best_title or query)
         )
-    selected = _select(papers, concepts, count, diversity_weight)
     if require_best_target:
-        # An explicit single-paper request has an unambiguous relevance anchor.
-        # Reserve it without changing the topic ranker or other candidates' order.
+        # A direct lookup delivers only its verified target, regardless of pool size.
         target = max(target_pool_matches, key=lambda paper: (
             _direct_query_match(paper, query), _best_title_match(paper, best_title),
             float(paper.get("_quick_score", 0) or 0),
         ))
-        selected = [target] + [paper for paper in selected if _identity(paper) != _identity(target)]
-        selected = selected[:count]
+        selected = [target]
+        count = len(selected)
+    else:
+        selected = _select(papers, concepts, count, diversity_weight)
     configured_budget = list(policy["tier_budget"])
     if count != sum(configured_budget):
         tier1 = min(4, max(1, round(count * 0.2)))

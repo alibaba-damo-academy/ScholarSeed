@@ -116,6 +116,7 @@
   "project": {
     "required": "Enter a project name",
     "createFailed": "Unable to create the project. Please retry.",
+    "folderBusy": "Another project may be using the selected folder, a parent folder, or a subfolder. Choose a different folder or remove the project using it and try again.",
     "saveFailed": "Save failed",
     "removeFailed": "Removal failed",
     "created": "Created project {{name}}",

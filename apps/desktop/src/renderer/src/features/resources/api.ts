@@ -16,9 +16,13 @@ import {
 } from '../../contracts/resources.ts'
 import type { FileEvent } from '../../contracts/content'
 import type { FindTextReveal } from '../../contracts/workbench.ts'
+import { sseData } from '../../sse.ts'
 import {
   applyResourceListingChanges,
+  isResourceListingBoundaryFailure,
+  RESOURCE_LISTING_SCOPE_UNAVAILABLE,
   type ResourceListingChanges,
+  type ResourceListingDirectorySnapshot,
   type ResourceListingSnapshot,
 } from './refresh.ts'
 import type { AssetOrigin, ResourceLinkRoot, ResourceManagementState, ResourceNode } from './state'
@@ -1185,28 +1189,50 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<Re
 
 interface ResourceListingPayload extends ResourceListingSnapshot<ResourceNodePayload> {
   linked_roots?: ResourceTreePayload['linked_roots']
+  directory?: string
 }
 
-interface ResourceListingProjection extends ResourceListingSnapshot<ResourceNode> {
+export interface ResourceListingProjection extends ResourceListingSnapshot<ResourceNode> {
   linkedRoots: Record<string, ResourceLinkRoot>
 }
 
+export type ResourceListingDirectory = ResourceListingProjection & ResourceListingDirectorySnapshot
+
 async function loadResourceListing(
   project: string,
-  incremental: boolean
-): Promise<ResourceListingProjection | null> {
+  incremental: boolean,
+  scope?: { directory: string; versions: boolean }
+): Promise<
+  | (ResourceListingProjection & { directory?: string })
+  | null
+  | typeof RESOURCE_LISTING_SCOPE_UNAVAILABLE
+> {
   try {
     const params = new URLSearchParams({ project })
     if (incremental) params.set('incremental', 'true')
+    if (scope) {
+      params.set('directory', scope.directory)
+      params.set('versions', String(scope.versions))
+    }
     const response = await fetch(`${base()}/api/resource/list?${params}`, {
       credentials: 'include',
       cache: 'no-store',
     })
-    if (!response.ok) return null
+    if (!response.ok) {
+      if (!scope) return null
+      const error =
+        response.status === 409
+          ? ((await response.json().catch(() => null)) as { detail?: string } | null)
+          : null
+      return isResourceListingBoundaryFailure(response.status, error?.detail)
+        ? RESOURCE_LISTING_SCOPE_UNAVAILABLE
+        : null
+    }
     const payload = (await response.json()) as ResourceListingPayload
     const linkedRoots = toLinkRoots(payload.linked_roots)
     return {
       linkedRoots,
+      ...(scope && typeof payload.directory === 'string' ? { directory: payload.directory } : {}),
       incremental: payload.incremental,
       items: payload.items.map((item) => toNode(item, linkedRoots)),
     }
@@ -1217,20 +1243,114 @@ async function loadResourceListing(
 
 export async function fetchResourceListing(project: string): Promise<ResourceNode[] | null> {
   const result = await loadResourceListing(project, false)
-  return result && result.items
+  return result && result !== RESOURCE_LISTING_SCOPE_UNAVAILABLE ? result.items : null
 }
 
-export function fetchResourceListingSnapshot(
-  project: string
-): Promise<ResourceListingProjection | null> {
-  return loadResourceListing(project, true)
+const RESOURCE_LISTING_SEARCH = '/api/resource/list/search'
+const RESOURCE_LISTING_STREAM_MEDIA_TYPE = 'text/event-stream'
+const MIN_HTTP_ERROR_STATUS = 400
+const MAX_HTTP_ERROR_STATUS = 599
+
+type ResourceListingStreamFrame =
+  | (ResourceListingPayload & { type: 'batch' | 'candidates_complete' | 'complete' })
+  | { type: 'error'; status?: unknown; detail?: unknown }
+
+export class ResourceListingSearchError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string
+  ) {
+    super(detail)
+  }
 }
 
-export async function fetchResourceListingChanges(
+export async function streamResourceListingSearch(
   project: string,
-  snapshot: ResourceListingProjection,
-  paths: readonly string[]
+  signal: AbortSignal,
+  onBatch: (items: ResourceNode[]) => void,
+  onCandidatesComplete: () => void
 ): Promise<ResourceListingProjection | null> {
+  const params = new URLSearchParams({ project, candidate_completion: 'true' })
+  const response = await fetch(`${base()}${RESOURCE_LISTING_SEARCH}?${params}`, {
+    credentials: 'include',
+    cache: 'no-store',
+    headers: { Accept: RESOURCE_LISTING_STREAM_MEDIA_TYPE },
+    signal,
+  })
+  if (!response.ok || !response.body) return null
+  let candidatesComplete = false
+  for await (const data of sseData(response.body)) {
+    if (signal.aborted) return null
+    let frame: ResourceListingStreamFrame | null
+    try {
+      frame = JSON.parse(data)
+    } catch {
+      return null
+    }
+    if (frame?.type === 'error') {
+      const { status, detail } = frame
+      if (
+        typeof status !== 'number' ||
+        !Number.isInteger(status) ||
+        status < MIN_HTTP_ERROR_STATUS ||
+        status > MAX_HTTP_ERROR_STATUS ||
+        typeof detail !== 'string' ||
+        !detail
+      )
+        return null
+      console.warn('[resource-listing-search] stream failed', { status, detail })
+      throw new ResourceListingSearchError(status, detail)
+    }
+    if (
+      !frame ||
+      (frame.type !== 'batch' &&
+        frame.type !== 'candidates_complete' &&
+        frame.type !== 'complete') ||
+      !Array.isArray(frame.items) ||
+      !frame.items.every(
+        (item) =>
+          item &&
+          typeof item.path === 'string' &&
+          typeof item.name === 'string' &&
+          (item.kind === 'file' || item.kind === 'dir')
+      )
+    )
+      return null
+    const linkedRoots = toLinkRoots(frame.linked_roots)
+    const items = frame.items.map((item) => toNode(item, linkedRoots))
+    if (frame.type === 'complete') {
+      return Array.isArray(frame.incremental?.parents) &&
+        typeof frame.incremental?.supported === 'boolean'
+        ? { items, linkedRoots, incremental: frame.incremental }
+        : null
+    }
+    if (candidatesComplete) return null
+    onBatch(items)
+    if (frame.type === 'candidates_complete') {
+      candidatesComplete = true
+      onCandidatesComplete()
+    }
+  }
+  return null
+}
+
+export async function fetchResourceListingDirectory(
+  project: string,
+  directory: string,
+  versions: boolean
+): Promise<ResourceListingDirectory | null | typeof RESOURCE_LISTING_SCOPE_UNAVAILABLE> {
+  const result = await loadResourceListing(project, true, { directory, versions })
+  if (!result || result === RESOURCE_LISTING_SCOPE_UNAVAILABLE) return result
+  return typeof result.directory === 'string'
+    ? { ...result, directory: result.directory, versionsLoaded: versions }
+    : RESOURCE_LISTING_SCOPE_UNAVAILABLE
+}
+
+export async function fetchResourceListingChanges<Snapshot extends ResourceListingProjection>(
+  project: string,
+  snapshot: Snapshot,
+  paths: readonly string[]
+): Promise<Snapshot | null> {
   if (!snapshot.incremental?.supported) return null
   try {
     const response = await fetch(`${base()}/api/resource/list/changes`, {

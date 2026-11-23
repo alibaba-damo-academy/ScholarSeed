@@ -10,11 +10,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.status import HTTP_404_NOT_FOUND, HTTP_409_CONFLICT
 
-from service.chat.service.events import SSE_HEARTBEAT_FRAME, sse_encode
 from service.content.domain.model import ContentError
 from service.identity.utils import request_owner_id
 from service.platform.content import ImportMode, RootKind
 from service.platform.passive_events import passive_events
+from service.platform.sse import SSE_HEARTBEAT_FRAME, sse_encode
 from service.resources.service.jobs import (
     ResourceImportError,
     ResourceImportService,

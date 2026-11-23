@@ -234,6 +234,7 @@ export interface OpenResp {
   recovery_incident_id?: string | null
   recovery_source_seq?: number | null
   recovery_pending?: boolean
+  resource_finalizing?: boolean
   interrupting?: boolean
   last_interrupt_succeeded?: boolean | null
   todos?: TodoItemUI[]
@@ -529,6 +530,8 @@ export function parseOpenSessionResponse(value: unknown): OpenResp | OpenErrorRe
         value.recovery_source_seq < 0)) ||
     (value.recovery_pending !== undefined && typeof value.recovery_pending !== 'boolean') ||
     (value.recovery_blocked === true && (value.recovery_pending !== true || value.running)) ||
+    (value.resource_finalizing !== undefined && typeof value.resource_finalizing !== 'boolean') ||
+    (value.resource_finalizing === true && value.recovery_pending !== true) ||
     (value.active_turn_id !== null &&
       (typeof value.active_turn_id !== 'string' || !value.active_turn_id)) ||
     (typeof value.active_turn_id === 'string' && !value.running) ||
@@ -883,6 +886,7 @@ export interface ServeSession {
   recovery_incident_id?: string | null
   recovery_source_seq?: number | null
   recovery_pending?: boolean
+  resource_finalizing?: boolean
   /** A live run is blocked on a user question or permission decision. */
   waiting?: boolean
   pinned?: boolean
@@ -1258,6 +1262,7 @@ export interface HistoryResult {
   recovery_incident_id?: string | null
   recovery_source_seq?: number | null
   recovery_pending?: boolean
+  resource_finalizing?: boolean
   /** Persisted complete plan snapshot. */
   todos: TodoItemUI[]
   /** Turn that owns the persisted complete plan snapshot. */
@@ -1292,6 +1297,7 @@ export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | 
       recovery_incident_id?: string | null
       recovery_source_seq?: number | null
       recovery_pending?: boolean
+      resource_finalizing?: boolean
       todos?: TodoItemUI[]
       todo_turn_id?: string | null
       artifacts?: SessionArtifact[]
@@ -1304,6 +1310,7 @@ export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | 
       recovery_incident_id: data.recovery_incident_id ?? null,
       recovery_source_seq: data.recovery_source_seq ?? null,
       recovery_pending: data.recovery_pending === true,
+      resource_finalizing: data.resource_finalizing === true,
       todos: Array.isArray(data.todos) ? data.todos : [],
       todo_turn_id: data.todo_turn_id ?? null,
       artifacts: Array.isArray(data.artifacts) ? data.artifacts : [],
@@ -2711,6 +2718,7 @@ export type ProductEvent =
         recovery_blocked?: boolean
         incident_id?: string | null
         recovery_pending?: boolean
+        resource_finalizing?: boolean
       }
     >
   | ProductEventBase<
@@ -2899,7 +2907,7 @@ export type ProductEvent =
       'context_compacted',
       { phase: 'started' | 'completed' | 'failed'; message?: string }
     >
-  | ProductEventBase<'turn_completed', { stop_reason?: string }>
+  | ProductEventBase<'turn_completed', { stop_reason?: string; resource_finalizing?: boolean }>
   | ProductEventBase<
       'turn_failed',
       {
@@ -3279,7 +3287,7 @@ export async function listProjects(
  */
 export type ProjectCreationResult =
   | { kind: 'created'; project: Project }
-  | { kind: 'rejected'; maintenance: boolean }
+  | { kind: 'rejected'; maintenance: boolean; code?: string }
   | { kind: 'unknown'; operation?: string }
 
 export function reportProjectCreation(event: {
@@ -3380,7 +3388,7 @@ export async function submitProjectCreation(
           status,
           code,
         })
-        return rejected ? { kind: 'rejected', maintenance } : { kind: 'unknown' }
+        return rejected ? { kind: 'rejected', maintenance, code } : { kind: 'unknown' }
       }
     } else {
       reportProjectCreation({ attemptId, stage, result: 'reuse_operation', operation })
@@ -3411,7 +3419,9 @@ export async function submitProjectCreation(
           status,
           code,
         })
-        return canRetry ? { kind: 'rejected', maintenance: false } : { kind: 'unknown', operation }
+        return canRetry
+          ? { kind: 'rejected', maintenance: false, code }
+          : { kind: 'unknown', operation }
       }
     }
     if (!response) return { kind: 'unknown' }

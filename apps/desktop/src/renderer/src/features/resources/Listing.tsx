@@ -1,4 +1,11 @@
-import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronRight, EllipsisVertical, Plus } from 'lucide-react'
 
@@ -11,6 +18,7 @@ import {
   EllipsisText,
   EmptyState,
   IconButton,
+  Spinner,
   Table,
   TableBody,
   TableCell,
@@ -31,22 +39,22 @@ import { fileIconForName } from '../../components/primitive'
 import { useApp } from '../../store'
 import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
-import type { FileEvent } from '../../contracts/content'
 import type { ResourceNode } from './state'
-import {
-  fetchResourceListingChanges,
-  fetchResourceListingSnapshot,
-  resourceFileEventObservation,
-} from './api'
-import { createResourceListingRefresh, resourceListingEventPaths } from './refresh'
+import { useResourceListing } from './directories'
 import { resourceProjectRevision, subscribeResourceRevisions } from './revision'
-import { subscribeFileEvents, whenFileEventCursorLoaded } from '../project/events'
-import { refreshesResourceTree } from './lifecycle'
+import { RESOURCE_ROOT_DIRECTORY } from './lifecycle'
 import { NameEditor } from './ResourcePanel'
 import { resourceListingRows } from './utils'
 import emptyImage from '../../assets/empty_img.webp'
 
+const EMPTY_RESOURCE_NODES: ResourceNode[] = []
+
 export function ResourceListing(): React.JSX.Element {
+  const { state } = useApp()
+  return <ProjectResourceListing key={state.homeSelectedProjectId} />
+}
+
+function ProjectResourceListing(): React.JSX.Element {
   const { state, set, act } = useApp()
   const { t, i18n } = useTranslation('layout')
   const { t: resourceText } = useTranslation('resources')
@@ -54,107 +62,121 @@ export function ResourceListing(): React.JSX.Element {
   const [type, setType] = useState('')
   const [source, setSource] = useState('')
   const [ascending, setAscending] = useState<boolean | undefined>(undefined)
+  const [facet, setFacet] = useState<'type' | 'source' | null>(null)
   const [createDirectory, setCreateDirectory] = useState<string | null>(null)
   const [emptyCreateOpen, setEmptyCreateOpen] = useState(false)
-  const [snapshot, setSnapshot] = useState<{ project: string; nodes: ResourceNode[] } | null>(null)
-  const [refreshing, setRefreshing] = useState(true)
-  const [failed, setFailed] = useState(false)
-  const [refresh, setRefresh] = useState(0)
-  const listingRefresh = useRef<(() => void) | null>(null)
+  const openedMenuPath = useRef<string | null>(null)
   const resource = state.resource
   const project = state.homeSelectedProjectId
-  const visibleSnapshot = snapshot?.project === project ? snapshot : null
-  const nodes = visibleSnapshot?.nodes ?? []
-  const loading = refreshing && visibleSnapshot === null
-  useEffect(() => {
-    setQuery('')
-    setType('')
-    setSource('')
-    setAscending(undefined)
-    setSnapshot(null)
-  }, [project])
+  const keyword = query.trim().toLocaleLowerCase()
+  const filtered = Boolean(keyword || type || source)
   const revision = useSyncExternalStore(subscribeResourceRevisions, () =>
     resourceProjectRevision(project)
   )
-  useEffect(() => {
-    if (!project) return
-    const events = new Set<FileEvent>()
-    const waitForObservations = async (): Promise<void> => {
-      // Listeners share the frame; the panel may start its version observation after this listener.
-      const observations = Array.from(events, resourceFileEventObservation)
-      events.clear()
-      await Promise.all(observations)
-    }
-    const reader = createResourceListingRefresh(
-      async () => {
-        await waitForObservations()
-        return fetchResourceListingSnapshot(project)
-      },
-      (result, pending) => {
-        setRefreshing(pending)
-        setFailed(result === null)
-        if (result !== null) setSnapshot({ project, nodes: result.items })
-      },
-      async (current, paths) => {
-        await waitForObservations()
-        return fetchResourceListingChanges(project, current, paths)
-      }
-    )
-    let epoch = ''
-    const unsubscribe = subscribeFileEvents(project, (event) => {
-      if (event.project_id !== project) return
-      const continuous =
-        typeof event.epoch === 'string' && !!event.epoch && (!epoch || epoch === event.epoch)
-      epoch = event.epoch
-      const resourceEvent = refreshesResourceTree(event)
-      if (continuous && !resourceEvent && event.kind !== 'moved') return
-      events.add(event)
-      setRefreshing(true)
-      setFailed(false)
-      reader.request(continuous && resourceEvent ? resourceListingEventPaths(event) : undefined)
-    })
-    const cursorLoaded = whenFileEventCursorLoaded(project)
-    listingRefresh.current = () => void cursorLoaded.then(() => reader.request())
-    return () => {
-      unsubscribe()
-      reader.dispose()
-      listingRefresh.current = null
-    }
-  }, [project])
-  useEffect(() => {
-    setRefreshing(Boolean(project))
-    setFailed(false)
-    listingRefresh.current?.()
-  }, [project, revision, state.resourceListingRevision, refresh])
-  const sourceLabel = (node: ResourceNode): string =>
-    node.kind === 'dir'
-      ? '—'
-      : node.source === 'imported'
-        ? t('sourceImported')
-        : node.source === 'created'
-          ? t('sourceCreated')
-          : node.source === 'linked'
-            ? t('linkedSource')
-            : '—'
-  const typeLabel = (node: ResourceNode): string =>
-    node.kind === 'dir' ? t('folderType') : node.fileType || '—'
-  const types = [...new Set(nodes.map(typeLabel))].sort().map((value) => ({ value, label: value }))
-  const sources = [
-    ...new Set(nodes.filter((node) => node.kind === 'file' && node.source).map(sourceLabel)),
-  ].map((value) => ({ value, label: value }))
-  const matching = nodes.filter(
-    (node) =>
-      node.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) &&
-      (!type || typeLabel(node) === type) &&
-      (!source || sourceLabel(node) === source)
-  )
-  const filtered = Boolean(query.trim() || type || source)
-  const visible = resourceListingRows(
-    nodes,
+  const listing = useResourceListing(
+    project,
     resource.expanded,
-    filtered ? new Set(matching.map((node) => node.path)) : undefined,
-    ascending
+    filtered || facet !== null,
+    revision,
+    state.resourceListingRevision
   )
+  const globalNodes = listing.global.snapshot ?? EMPTY_RESOURCE_NODES
+  const nodes = filtered ? globalNodes : listing.nodes
+  const read = filtered ? listing.global : listing.directories.get(RESOURCE_ROOT_DIRECTORY)
+  const refreshing = Boolean(project) && (read?.refreshing ?? true)
+  const loading = refreshing && (filtered || !read?.snapshot)
+  const failed = read?.failed || (facet !== null && listing.global.failed)
+  const menuNode = resource.nodeMenu
+    ? nodes.find((node) => node.path === resource.nodeMenu?.path)
+    : undefined
+  const awaitingMenuNode = filtered && refreshing && !menuNode
+  useEffect(() => {
+    const opened = resource.nodeMenu
+    if (!opened || opened.path !== openedMenuPath.current) {
+      openedMenuPath.current = null
+      return
+    }
+    if (!menuNode && !awaitingMenuNode) {
+      act.closeResourceMenu()
+      return
+    }
+    const version = menuNode?.version
+    if (
+      (!version || opened.version === version) &&
+      Boolean(opened.awaitingListing) === awaitingMenuNode
+    )
+      return
+    set((current) => {
+      const menu = current.resource.nodeMenu
+      if (current.homeSelectedProjectId !== project || menu?.path !== opened.path) return current
+      return {
+        ...current,
+        resource: {
+          ...current.resource,
+          nodeMenu: {
+            ...menu,
+            version: version ?? menu.version,
+            awaitingListing: awaitingMenuNode,
+          },
+        },
+      }
+    })
+  }, [act, awaitingMenuNode, menuNode, project, resource.nodeMenu, set])
+  const changeFacet = (target: 'type' | 'source', open: boolean): void => {
+    setFacet((previous) => {
+      if (open) return target
+      return previous === target ? null : previous
+    })
+  }
+  const sourceLabel = useCallback(
+    (node: ResourceNode): string => {
+      if (node.kind === 'dir') return '—'
+      switch (node.source) {
+        case 'imported':
+          return t('sourceImported')
+        case 'created':
+          return t('sourceCreated')
+        case 'linked':
+          return t('linkedSource')
+        default:
+          return '—'
+      }
+    },
+    [t]
+  )
+  const typeLabel = useCallback(
+    (node: ResourceNode): string => (node.kind === 'dir' ? t('folderType') : node.fileType || '—'),
+    [t]
+  )
+  const facetNodes = listing.global.refreshing ? EMPTY_RESOURCE_NODES : globalNodes
+  const types = useMemo(
+    () => [...new Set(facetNodes.map(typeLabel))].sort().map((value) => ({ value, label: value })),
+    [facetNodes, typeLabel]
+  )
+  const sources = useMemo(
+    () =>
+      [
+        ...new Set(
+          facetNodes.filter((node) => node.kind === 'file' && node.source).map(sourceLabel)
+        ),
+      ].map((value) => ({ value, label: value })),
+    [facetNodes, sourceLabel]
+  )
+  const visible = useMemo(() => {
+    const matching = filtered
+      ? new Set(
+          nodes
+            .filter(
+              (node) =>
+                node.name.toLocaleLowerCase().includes(keyword) &&
+                (!type || typeLabel(node) === type) &&
+                (!source || sourceLabel(node) === source)
+            )
+            .map((node) => node.path)
+        )
+      : undefined
+    return resourceListingRows(nodes, resource.expanded, matching, ascending)
+  }, [ascending, filtered, keyword, nodes, resource.expanded, source, sourceLabel, type, typeLabel])
   const draft = resource.nameDraft
   const editor = (): React.JSX.Element => (
     <NameEditor
@@ -219,6 +241,7 @@ export function ResourceListing(): React.JSX.Element {
   )
   const openMenu = (node: ResourceNode, event: React.MouseEvent): void => {
     event.preventDefault()
+    openedMenuPath.current = node.path
     act.openResourceMenu({
       path: node.path,
       name: node.name,
@@ -239,7 +262,7 @@ export function ResourceListing(): React.JSX.Element {
         onQuery={setQuery}
         placeholder={t('searchFiles')}
         refreshing={refreshing}
-        onRefresh={() => setRefresh((value) => value + 1)}
+        onRefresh={() => listing.refresh()}
       >
         {createMenu('')}
       </LibraryToolbar>
@@ -247,6 +270,7 @@ export function ResourceListing(): React.JSX.Element {
         className="min-h-0 min-w-0 flex-1 overflow-auto rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)]"
         role="region"
         aria-label={t('materials')}
+        aria-busy={loading || undefined}
         tabIndex={0}
       >
         <Table
@@ -261,6 +285,8 @@ export function ResourceListing(): React.JSX.Element {
                   value={type}
                   options={types}
                   onChange={setType}
+                  onOpenChange={(open) => changeFacet('type', open)}
+                  loading={facet === 'type' && listing.global.refreshing}
                 />
               </TableHead>
               <TableHead>
@@ -269,6 +295,8 @@ export function ResourceListing(): React.JSX.Element {
                   value={source}
                   options={sources}
                   onChange={setSource}
+                  onOpenChange={(open) => changeFacet('source', open)}
+                  loading={facet === 'source' && listing.global.refreshing}
                 />
               </TableHead>
               <TableHead
@@ -294,12 +322,17 @@ export function ResourceListing(): React.JSX.Element {
             {visible.map(({ node, depth }) => {
               const FileIcon = fileIconForName(node.name, node.kind)
               const expanded = Boolean(resource.expanded[node.path]) || filtered
+              const showingChildren = !filtered && node.kind === 'dir' && expanded
+              const children = showingChildren ? listing.directories.get(node.path) : undefined
+              const loadingChildren =
+                showingChildren && (!children || (children.refreshing && !children.snapshot))
               return (
                 <React.Fragment key={node.path}>
                   <TableRow
                     className="group/material hover:!bg-[var(--vds-bg-gray-hover)]"
                     key={node.path}
                     data-testid={`material-${node.path}`}
+                    data-version-ready={node.version !== undefined || undefined}
                     draggable={Boolean(project) && draft?.target !== node.path}
                     onDragStart={(event) => {
                       if (!project) return
@@ -323,7 +356,7 @@ export function ResourceListing(): React.JSX.Element {
                             onClick={() =>
                               node.kind === 'file'
                                 ? act.openResourceFile(node.path)
-                                : void act.toggleResourceDir(node.path)
+                                : void act.toggleResourceDir(node.path, false)
                             }
                           >
                             <ChevronRight
@@ -370,14 +403,34 @@ export function ResourceListing(): React.JSX.Element {
                       </div>
                     </TableCell>
                   </TableRow>
+                  {(loadingChildren || children?.failed) && (
+                    <TableRow>
+                      <TableCell colSpan={5}>
+                        {loadingChildren ? (
+                          <Spinner size="sm" />
+                        ) : (
+                          <Button variant="outline" onClick={() => listing.refresh(node.path)}>
+                            {t('readFailed')}
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </React.Fragment>
               )
             })}
+            {filtered && loading && visible.length > 0 && (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Spinner size="sm" />
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
         {loading && !visible.length && <LibraryLoading />}
         {failed && (
-          <Button variant="outline" onClick={() => setRefresh((value) => value + 1)}>
+          <Button variant="outline" onClick={() => listing.refresh()}>
             {t('readFailed')}
           </Button>
         )}

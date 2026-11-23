@@ -229,6 +229,10 @@ test('only a completed owner turn with no later user input offers a next step', 
   assert.equal(nextStepsAvailable(thread({ running: true }), 'card', 'turn'), false)
   assert.equal(nextStepsAvailable(thread({ terminated: true }), 'card', 'turn'), false)
   assert.equal(nextStepsAvailable(thread({ recoveryPending: true }), 'card', 'turn'), false)
+  assert.equal(
+    nextStepsAvailable(thread({ recoveryPending: true, resourceFinalizing: true }), 'card', 'turn'),
+    true
+  )
   assert.equal(nextStepsAvailable(thread({ status: 'waiting' }), 'card', 'turn'), false)
   const old = thread()
   old.conversation.push({ kind: 'user', text: 'continue' })
@@ -259,7 +263,9 @@ test('the card sender rereads the owner turn before sending and never answers an
   current = thread()
   current.conversation.push({ kind: 'user', text: 'another next step' })
   assert.equal(await send('no'), false)
-  current = thread()
+  current = thread({ recoveryPending: true, resourceFinalizing: true, recoveryBlocked: true })
+  assert.equal(await send('no'), false)
+  current = thread({ recoveryPending: true, resourceFinalizing: true })
   const visible = nextStepMessage(content.options[0])
   assert.equal(await send(visible), true)
   assert.deepEqual(messages, [visible])

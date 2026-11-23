@@ -1247,6 +1247,7 @@ declare module 'i18next' {
         "project": {
             "required": "请填写项目名",
             "createFailed": "无法创建项目，请重试。",
+            "folderBusy": "所选文件夹或其上级、下级目录可能已被其他项目占用。请选择其他文件夹，或移除占用目录的项目后重试。",
             "saveFailed": "保存失败",
             "removeFailed": "移除失败",
             "created": "已创建项目 {{name}}",
@@ -6936,6 +6937,7 @@ declare module 'i18next' {
         },
         "notices": {
             "removeFailed": "未能移除项目（{{code}}），请确认原因后重试。",
+            "removeBusy": "书深正在处理任务或文件，请等待完成后重试移除。",
             "archivesReadFailed": "无法读取已归档的项目，请重试。",
             "renamed": "已改名（本地目录名不变）",
             "archived": "已归档，项目从默认列表收起，可随时在归档区恢复",

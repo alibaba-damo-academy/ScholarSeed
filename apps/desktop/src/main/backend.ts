@@ -103,7 +103,7 @@ import {
   texliveExecutionResources,
 } from '../../runtime/texlive.cjs'
 import { isFirstRun, resolveStartupBudgetMs, writeStartupMarker } from './startupmarker'
-import { clientVersion } from './version'
+import { clientVersion, STARTUP_BUILD_NUMBER } from './version'
 import { createAgentTransport, type AgentTransport } from './agenttransport'
 import type { StorageLaunchProjection } from './vaultstorage'
 import { stopChildProcess } from './subprocess'
@@ -818,6 +818,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
         platform: process.platform,
         arch: process.arch,
         version: app.getVersion(),
+        buildNumber: readProductConfig(log).config.buildNumber || STARTUP_BUILD_NUMBER,
         phase,
         event,
         elapsedMs: Math.round(now - startedAt),

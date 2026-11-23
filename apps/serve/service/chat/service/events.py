@@ -67,10 +67,8 @@ from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.live import LiveSession
 from service.chat.service.plan import PlanToolProjection
 from service.platform.context import ASSISTANT_CONTEXT_MARKER
+from service.platform.sse import SSE_HEARTBEAT_FRAME, sse_encode
 
-SSE_DATA_PREFIX = "data: "
-SSE_FRAME_SUFFIX = "\n\n"
-SSE_HEARTBEAT_FRAME = "event: heartbeat\ndata: {}\n\n"
 HISTORY_ACTIVITY_EVENT_KINDS = frozenset(
     {
         PRODUCT_EVENT_ANSWER_SOURCES,
@@ -114,10 +112,6 @@ TURN_OUTCOME_BY_EVENT_KIND = {
 }
 ASSISTANT_HISTORY_INCOMPLETE = "assistant_context_history_incomplete"
 ASSISTANT_HISTORY_INCOMPLETE_TEXT = "上下文历史投影不完整，请重新发送该问题。"
-
-
-def sse_encode(event: dict[str, Any]) -> str:
-    return f"{SSE_DATA_PREFIX}{json.dumps(event, ensure_ascii=False, separators=(',', ':'))}{SSE_FRAME_SUFFIX}"
 
 
 class EventService:

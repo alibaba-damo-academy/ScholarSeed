@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { posix } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defaultRendererPreferences, sanitizeRendererPreferences } from '../src/preferences.ts'
@@ -28,6 +29,10 @@ import type {
 } from '../src/renderer/src/contracts/workbench.ts'
 import type { ProjectTreePage } from '../src/renderer/src/features/project/api.ts'
 import type { FileEvent } from '../src/renderer/src/contracts/content.ts'
+import type {
+  ResourceCapability,
+  ResourcePending,
+} from '../src/renderer/src/features/resources/api.ts'
 import { PREVIEW_CATALOG } from './catalog.ts'
 import {
   PREVIEW_REFERENCE_FILES,
@@ -137,6 +142,7 @@ const CONFIG = {
 
 const RESOURCE_LIST_SCOPE = {
   path: '/api/resource/list',
+  searchPath: '/api/resource/list/search',
   validationStatus: 422,
   noProjectStatus: 400,
   unknownProjectStatus: 404,
@@ -1545,7 +1551,23 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
   return body as Record<string, unknown>
 }
 
-function resourceNode(entry: PreviewFileEntry, versions?: PreviewVersions, children = 0) {
+interface PreviewResourceNode extends Pick<PreviewFileEntry, 'path' | 'name' | 'kind'> {
+  count?: number | null
+  updated_at: number | null
+  source: 'created'
+  file_type: string
+  origin: 'local'
+  version?: Pick<ResourceCapability, 'management_state' | 'drifted' | 'snapshot_state'> & {
+    pending_origin: ResourcePending['origin'] | null
+    needs_review: boolean
+  }
+}
+
+function resourceNode(
+  entry: PreviewFileEntry,
+  versions?: PreviewVersions,
+  children = 0
+): PreviewResourceNode {
   const capability = entry.kind === 'file' ? versions?.capability(entry.path) : undefined
   return {
     path: entry.path,
@@ -3984,6 +4006,7 @@ export function createPreviewService() {
     const resourcePaths = [
       '/api/resource/tree',
       RESOURCE_LIST_SCOPE.path,
+      RESOURCE_LIST_SCOPE.searchPath,
       '/api/resource/count',
       '/api/resource/read',
       '/api/resource/raw',
@@ -3997,7 +4020,8 @@ export function createPreviewService() {
       '/api/content/events',
     ]
     if (resourcePaths.includes(path)) {
-      const listing = path === RESOURCE_LIST_SCOPE.path && method === 'GET'
+      const searchListing = path === RESOURCE_LIST_SCOPE.searchPath && method === 'GET'
+      const listing = (path === RESOURCE_LIST_SCOPE.path && method === 'GET') || searchListing
       const listingProject = url.searchParams.getAll('project').slice(-1)[0]
       if (listing && !listingProject) {
         send(
@@ -4099,46 +4123,135 @@ export function createPreviewService() {
         send({ files: files.manifest().length })
         return
       }
-      if ((path === '/api/resource/tree' || path === '/api/resource/list') && method === 'GET') {
+      if (listing) {
         const owner = projectBrowsing(instance, project.id)
-        if (path.endsWith('/list')) {
-          await archiveResponse(response, async (signal) => {
-            const entries = await owner.listing(signal)
-            if (instances.get(id) !== instance) {
-              send({ detail: 'preview_instance_reset' }, 409)
-              return
+        const projectExists = (): boolean =>
+          instance.projects.all().some((current) => current.id === project.id)
+        // The browsing VFS models local project files only.
+        const linkedRoots = {}
+        await archiveResponse(response, async (signal) => {
+          const directory = searchListing ? null : url.searchParams.get('directory')
+          const startStream = (): void => {
+            response.writeHead(200, {
+              'content-type': 'text/event-stream',
+              'cache-control': 'no-store',
+              'x-preview-simulation': 'true',
+            })
+          }
+          const encodeFrame = (frame: object): string => `data: ${JSON.stringify(frame)}\n\n`
+          let entries: PreviewFileEntry[]
+          try {
+            entries = await owner.listing(signal, directory ?? undefined)
+          } catch (error) {
+            if (
+              !searchListing ||
+              !(error instanceof PreviewBrowsingError) ||
+              instances.get(id) !== instance ||
+              !projectExists()
+            )
+              throw error
+            if (signal.aborted || response.destroyed || !response.writable) return
+            startStream()
+            response.end(
+              encodeFrame({ type: 'error', detail: error.message, status: error.status })
+            )
+            return
+          }
+          if (instances.get(id) !== instance) {
+            send({ detail: 'preview_instance_reset' }, 409)
+            return
+          }
+          if (!projectExists()) {
+            send(RESOURCE_LIST_SCOPE.unknownProject, RESOURCE_LIST_SCOPE.unknownProjectStatus)
+            return
+          }
+          if (response.destroyed) return
+          const includeCounts = !searchListing && directory === null
+          const childCounts = new Map<string, number>()
+          if (includeCounts) {
+            for (const entry of entries) {
+              const parent = posix.dirname(entry.path)
+              childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1)
             }
-            if (!instance.projects.all().some((current) => current.id === project.id)) {
-              send(RESOURCE_LIST_SCOPE.unknownProject, RESOURCE_LIST_SCOPE.unknownProjectStatus)
-              return
+          }
+          const projectNode = (
+            entry: PreviewFileEntry,
+            capability?: PreviewVersions
+          ): PreviewResourceNode => {
+            const node = resourceNode(entry, capability, childCounts.get(entry.path))
+            if (includeCounts) return node
+            const { count: _count, ...item } = node
+            return item
+          }
+          if (searchListing) {
+            // Capture one VFS view before a slow response allows other requests to modify it.
+            const items = entries.map((entry) => projectNode(entry, versions))
+            const canContinue = (): boolean => {
+              if (signal.aborted || response.destroyed || !response.writable) return false
+              if (instances.get(id) === instance && projectExists()) return true
+              response.destroy()
+              return false
             }
-            if (!response.destroyed)
-              send({
-                items: entries.map((entry) =>
-                  resourceNode(
-                    entry,
-                    versions,
-                    entry.kind === 'dir' ? files.list(entry.path).length : 0
-                  )
-                ),
-              })
-          })
-        } else {
-          const page = owner.page(filePath, Number(url.searchParams.get('offset') ?? 0))
-          send({
-            root: project.root,
-            resource_root: project.root,
-            nodes: page.entries.map((entry) =>
-              resourceNode(
-                entry,
-                versions,
-                entry.kind === 'dir' ? files.list(entry.path).length : 0
-              )
-            ),
-            total: page.total,
-            offset: page.offset,
-          })
-        }
+            const writeFrame = async (frame: object): Promise<boolean> => {
+              if (!canContinue()) return false
+              if (!response.write(encodeFrame(frame))) {
+                try {
+                  await once(response, 'drain', { signal })
+                } catch (error) {
+                  if (!signal.aborted) throw error
+                }
+              }
+              return canContinue()
+            }
+            startStream()
+            for (let start = 0; start < items.length; start += PREVIEW_BROWSING.pageSize) {
+              const batch = items
+                .slice(start, start + PREVIEW_BROWSING.pageSize)
+                .map(({ version: _version, ...item }) => item)
+              if (!(await writeFrame({ type: 'batch', items: batch, linked_roots: linkedRoots })))
+                return
+            }
+            if (url.searchParams.get('candidate_completion') === 'true') {
+              const candidates = { type: 'candidates_complete', items: [], linked_roots: linkedRoots }
+              if (!(await writeFrame(candidates))) return
+            }
+            if (!canContinue()) return
+            const completed = {
+              type: 'complete',
+              items,
+              linked_roots: linkedRoots,
+              incremental: { parents: [], supported: false },
+            }
+            response.end(encodeFrame(completed))
+          } else {
+            const withVersions = directory === null || url.searchParams.get('versions') !== 'false'
+            const canonical = directory === null ? null : posix.normalize(directory).replace(/\/$/, '')
+            const scopedDirectory = canonical === '.' ? '' : canonical
+            send({
+              ...(scopedDirectory !== null ? { directory: scopedDirectory } : {}),
+              items: entries.map((entry) => projectNode(entry, withVersions ? versions : undefined)),
+              linked_roots: linkedRoots,
+            })
+          }
+        })
+        return
+      }
+      if (path === '/api/resource/tree' && method === 'GET') {
+        const owner = projectBrowsing(instance, project.id)
+        const page = owner.page(filePath, Number(url.searchParams.get('offset') ?? 0))
+        send({
+          root: project.root,
+          resource_root: project.root,
+          nodes: page.entries.map((entry) =>
+            resourceNode(
+              entry,
+              versions,
+              entry.kind === 'dir' ? files.list(entry.path).length : 0
+            )
+          ),
+          total: page.total,
+          offset: page.offset,
+        })
         return
       }
       if (path === '/api/workbench/open' && method === 'GET') {
