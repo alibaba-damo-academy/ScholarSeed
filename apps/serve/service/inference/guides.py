@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from service.paths import SERVICE_BUNDLED_SKILLS_DIR
+
+logger = logging.getLogger(__name__)
 
 RESEARCH = "academic-research-guidance"
 PRODUCT = "scholarseed-product-operations"
@@ -135,45 +138,59 @@ class Document:
 @lru_cache(maxsize=128)
 def _document(path: Path, version: str, modified: int, size: int, operation: str = "") -> Document:
     text = path.read_text(encoding=GUIDE_ENCODING)
+    if not text.strip():
+        raise ValueError("empty bundled guide")
     if operation:
-        matches = [
-            line
-            for line in text.splitlines()
-            if (row := json.loads(line)).get("capability") == "component"
-            and row.get("operation") == operation
-        ]
+        matches = []
+        for line in text.splitlines():
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError("invalid bundled component contract")
+            if row.get("capability") == "component" and row.get("operation") == operation:
+                matches.append(line)
         if len(matches) != 1:
             raise ValueError("missing or ambiguous bundled component contract")
         text = matches[0]
     return Document(path, text, hashlib.sha256(text.encode()).hexdigest())
 
 
+def _load(root: Path, version: str, relative: str, operation: str = "") -> Document:
+    path = (root / "references" / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("guide outside bundled skill")
+    stat = path.stat()
+    return _document(path, version, stat.st_mtime_ns, stat.st_size, operation)
+
+
 async def documents(labels, identity_for):
     selected = {key: guide for key, guide in GUIDES.items() if labels.get(key) is True}
-    if any(guide.bridge for guide in selected.values()):
-        selected["bridge"] = PROTOCOL
     available = {}
     for skill in {guide.skill for guide in selected.values()}:
-        identity = await identity_for(skill, force_reload=False)
-        root = (SERVICE_BUNDLED_SKILLS_DIR / skill).resolve()
-        if identity and Path(identity["path"]).resolve() == root / "SKILL.md":
-            available[skill] = root, str(identity.get("version") or "")
+        try:
+            identity = await identity_for(skill, force_reload=False)
+            root = (SERVICE_BUNDLED_SKILLS_DIR / skill).resolve()
+            if identity and Path(identity["path"]).resolve() == root / "SKILL.md":
+                available[skill] = root, str(identity.get("version") or "")
+        except (OSError, ValueError) as exc:
+            logger.warning("guide_skill_unavailable skill=%s error=%s", skill, type(exc).__name__)
+
     result = {}
     for key, guide in selected.items():
         if guide.skill not in available:
+            logger.warning("guide_unavailable guide=%s reason=missing_skill", key)
             continue
         root, version = available[guide.skill]
-        path = (root / "references" / (guide.path + ".md")).resolve()
-        if not path.is_relative_to(root):
-            raise ValueError("guide outside bundled skill")
-        stat = path.stat()
-        result[key] = _document(path, version, stat.st_mtime_ns, stat.st_size)
-        if operation := COMPONENT_CONTRACTS.get(key):
-            contract = (root / "references" / BRIDGE / COMPONENT_SCHEMA).resolve()
-            if not contract.is_relative_to(root):
-                raise ValueError("contract outside bundled skill")
-            stat = contract.stat()
-            result["component/" + operation] = _document(
-                contract, version, stat.st_mtime_ns, stat.st_size, operation
-            )
+        # Publish a guide only after its protocol and component contract have loaded.
+        try:
+            bundle = {key: _load(root, version, guide.path + ".md")}
+            if guide.bridge and "bridge" not in result:
+                bundle["bridge"] = _load(root, version, PROTOCOL.path + ".md")
+            if operation := COMPONENT_CONTRACTS.get(key):
+                bundle["component/" + operation] = _load(
+                    root, version, BRIDGE + COMPONENT_SCHEMA, operation
+                )
+        except (OSError, ValueError) as exc:
+            logger.warning("guide_unavailable guide=%s error=%s", key, type(exc).__name__)
+            continue
+        result.update(bundle)
     return result

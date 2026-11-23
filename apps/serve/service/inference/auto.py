@@ -105,7 +105,7 @@ argument_criteria["qwen4-max@high"] += (
 @dataclass(frozen=True)
 class GuideDecision:
     turn: str
-    guidance: str
+    guidance: str | None  # None restores skill discovery; an empty string means no guide.
 
 
 @dataclass(frozen=True)
@@ -204,18 +204,17 @@ async def decide(live, turn_input, accounts, *, auto=True):
         if type(probability) in (float, int) and 0 <= probability <= 1:
             if probability >= 0.8:
                 labels[key] = True
-            elif probability <= 1 - 0.8:
+            elif probability <= 0.2:
                 labels[key] = False
-    if not auto and (status != "accepted" or all(value is None for value in labels.values())):
+    docs = await documents(labels, live.skill_identity_by_name)
+    use_discovery = not docs and not all(value is False for value in labels.values())
+    if use_discovery:
         logger.info(
-            "manual_guides_fallback session=%s turn=%s status=%s elapsed_ms=%.0f",
+            "guide_discovery_fallback session=%s turn=%s reason=%s",
             live.id,
             turn,
-            status if status != "accepted" else "inconclusive",
-            (time.monotonic() - start) * 1000,
+            "guides_unavailable" if any(labels.values()) else "inconclusive",
         )
-        return None
-    docs = await documents(labels, live.skill_identity_by_name)
     live.auto_history = [
         *recent,
         {
@@ -239,7 +238,7 @@ async def decide(live, turn_input, accounts, *, auto=True):
         status,
         (time.monotonic() - start) * 1000,
     )
-    guidance = "\n\n".join(doc.block for doc in docs.values())
+    guidance = None if use_discovery else "\n\n".join(doc.block for doc in docs.values())
     if auto:
         return AutoRoute(turn=turn, model=model, effort=effort, guidance=guidance)
     return GuideDecision(turn, guidance)
@@ -300,11 +299,13 @@ def project_guidance(payload, route: GuideDecision | None):
     # A resumed native thread can replay developer messages from an earlier mode.
     # Apply this turn's policy to privileged text only, leaving user history intact.
     manual = manual_skill_instructions()
+    guidance = route.guidance if route else None
+    discover = guidance is None
     has_manual = False
 
     def project_text(text):
         nonlocal has_manual
-        if route is None:
+        if discover:
             has_manual |= manual in text
             return text
         return guide_inventory(text.replace(manual, ""))
@@ -333,7 +334,8 @@ def project_guidance(payload, route: GuideDecision | None):
                 ]
                 projected = dict(item, content=parts)
         items.append(projected)
-    guidance = route.guidance if route else ("" if has_manual else manual)
+    if discover and not has_manual:
+        guidance = manual
     if guidance:
         items.insert(
             0, {"role": "developer", "content": [{"type": "input_text", "text": guidance}]}
