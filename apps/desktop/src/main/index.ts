@@ -318,6 +318,7 @@ import { showStartupScreen, type StartupScreen } from './startup'
 import { MacStartupAdmissionError, recoverStartupAdmission, reportMacRepair } from './admission'
 import * as updater from './updater'
 import { STARTUP_BUILD_NUMBER, clientVersion, isNewerRelease } from './version'
+import { clientReleaseForLogin } from './release-report'
 import type {
   StartUpdateResult,
   LatestVersionMeta,
@@ -2917,6 +2918,8 @@ const desktopHandoff = new DesktopHandoff({
   log: logWindowLifecycle,
   accountBaseUrl: accountBaseUrlFromServe,
   deviceFields: resolveDeviceInfo,
+  clientReleaseFields: (base) =>
+    clientReleaseForLogin(resolveProductConfig(logWindowLifecycle), app.getVersion(), base),
   adoptTokens: async (token, refreshToken) => {
     const win = mainWindow
     if (!win || win.isDestroyed()) {

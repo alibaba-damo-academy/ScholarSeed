@@ -3725,12 +3725,24 @@ def main() -> int:
     test_http_rejections_publish_known_codes_before_finished_diagnostic()
     test_http_credential_revocation_precedes_provider_authentication_diagnostic()
     source_payload = {"model": "alias", "input": "系统上下文和用户原文", "stream": False}
+    release = {
+        "client_version": "0.3.2",
+        "client_build_number": "202611231430",
+        "client_channel": "preview",
+        "production": True,
+    }
     for destinations in ((), ("https://gateway.example/v1",)):
-        response, requests = forward_contract(
-            source_payload,
-            b'{"choices":[{"message":{"content":"ok"}}]}',
-            source_endpoints=destinations,
-            turn_id_provider=lambda _session: "turn-source",
+        with patch.dict(os.environ, {"SCHOLARSEED_CLIENT_RELEASE": json.dumps(release)}):
+            response, requests = forward_contract(
+                source_payload,
+                b'{"choices":[{"message":{"content":"ok"}}]}',
+                source_endpoints=destinations,
+                turn_id_provider=lambda _session: "turn-source",
+            )
+        check(
+            "release fields follow the product gateway boundary",
+            requests[0].headers.get("x-scholarseed-client-channel")
+            == ("preview" if destinations else None),
         )
         sent = json.loads(requests[0].content)
         check(

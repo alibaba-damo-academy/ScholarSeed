@@ -553,6 +553,8 @@ function frozenProductConfiguration(args, binaries) {
   // app.getVersion() only carries the SemVer, so the build stamp has to travel in
   // the frozen policy for the client to rank builds of the same version.
   product.build_number = args.buildNumber
+  product.client_release_channel = args.type === 'dev' ? 'dev' : args.channel
+  product.client_release_production = Boolean(args.signed && !args.candidate && !args['skip-check'])
   // Electron's data-directory name is its package name, not the localized
   // product display name. The pre-Electron planner consumes this signed value.
   product.desktop_name = PACKAGE.name
