@@ -19,6 +19,7 @@ import {
   MODEL_PROFILES_PATH,
   MODEL_PROVIDERS_PATH,
   SESSION_CATALOG_PATH,
+  HISTORY_PATH_PREFIX,
   REQUEST_TIMEOUT_ERROR_NAME,
   REQUEST_ABORT_ERROR_NAME,
 } from '../../requests.ts'
@@ -1297,7 +1298,8 @@ export async function getHistoryWithTodos(
   caller?: HistoryCaller
 ): Promise<HistoryResult | null> {
   try {
-    const r = await apiFetch(`/api/serve/history/${encodeURIComponent(sid)}?compact_activity=true`, {
+    const path = `${HISTORY_PATH_PREFIX}${encodeURIComponent(sid)}?compact_activity=true`
+    const r = await apiFetch(path, {
       timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
       historyCaller: caller,
     })

@@ -43,6 +43,23 @@ LOOP_JOIN_POLL_SECONDS = 0.01
 logger = logging.getLogger(LOGGER_NAME)
 
 
+def _expose_request_id(headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+    remaining = []
+    exposed: dict[bytes, bytes] = {}
+    for name, value in headers:
+        if name.lower() != EXPOSE_HEADERS:
+            remaining.append((name, value))
+            continue
+        for token in value.split(b","):
+            field = token.strip(b" \t")
+            if field:
+                exposed.setdefault(field.lower(), field)
+    # Credentialed requests require an explicit name even when "*" is present.
+    exposed.setdefault(REQUEST_ID_HEADER, REQUEST_ID_HEADER)
+    remaining.append((EXPOSE_HEADERS, b", ".join(exposed.values())))
+    return remaining
+
+
 class LoopMonitor:
     def __init__(
         self, *, interval: float = LOOP_SAMPLE_SECONDS, threshold: float = LOOP_LAG_WARNING_SECONDS
@@ -333,7 +350,7 @@ class RequestLatency:
         origins = [value for name, value in self.scope.get("headers", []) if name == ORIGIN_HEADER]
         if len(origins) == 1 and origins[0] != b"*" and (CORS_ORIGIN_HEADER, origins[0]) in headers:
             if shared_id is not None:
-                headers = [*headers, (EXPOSE_HEADERS, REQUEST_ID_HEADER)]
+                headers = _expose_request_id(headers)
             if (self.clientRequestId is not None or shared_id is not None) and not any(
                 name == TIMING_ORIGIN_HEADER for name, _value in headers
             ):

@@ -53,6 +53,31 @@ class LatencyContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["event"] for row in rows], ["headers", "finished"])
         self.assertTrue(all(row["request_id"] == observation.requestId for row in rows))
 
+    async def test_history_merges_cors_exposed_headers_for_an_allowed_origin(self):
+        scope = self.scope()
+        origin = b"http://127.0.0.1:9000"
+        scope["headers"].append((b"origin", origin))
+        expose = b"access-control-expose-headers"
+        cors = (b"access-control-allow-origin", origin)
+        with RequestLatency(scope) as observation:
+            requestPhases(scope, expose_request_id=True)
+            response_id = (REQUEST_ID_HEADER, observation.requestId.encode("ascii"))
+            for existing, expected in (
+                ([(expose, b"ETag, X-Revision")], b"ETag, X-Revision, " + REQUEST_ID_HEADER),
+                (
+                    [
+                        (expose, b"ETag, X-ScholarSeed-Request-Id"),
+                        (expose.upper(), b"etag,  X-Revision"),
+                    ],
+                    b"ETag, X-ScholarSeed-Request-Id, X-Revision",
+                ),
+                ([(expose, b"*")], b"*, " + REQUEST_ID_HEADER),
+            ):
+                with self.subTest(existing=existing):
+                    headers = observation.timingHeaders([cors, *existing])
+                    self.assertEqual([v for k, v in headers if k.lower() == expose], [expected])
+                    self.assertEqual(observation.timingHeaders(existing), [*existing, response_id])
+
     async def test_handler_timings_are_scoped_to_the_request_and_correlated_with_headers(self):
         scope = self.scope()
         with self.assertLogs(LOGGER_NAME, level=logging.DEBUG) as records:

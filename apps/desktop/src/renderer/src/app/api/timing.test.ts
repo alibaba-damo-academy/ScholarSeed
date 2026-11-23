@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { getHistoryWithTodos } from '../../api.ts'
 import { apiFetch, LIVE_CATALOG_REQUEST } from './client.ts'
 import {
   API_DIAGNOSTIC_HEADER,
@@ -78,24 +79,26 @@ test('ordinary catalog requests correlate fetch and JSON without recording priva
 })
 
 test('overlapping history readers retain separate correlations and report the caller before headers', async (context) => {
-  const records = fixture(context, async (_, init) => {
+  const records = fixture(context, async (input, init) => {
+    const url = new URL(String(input))
+    assert.equal(url.pathname, '/api/serve/history/private%2Fsession')
+    assert.equal(url.searchParams.get('compact_activity'), 'true')
     assert.equal(new Headers(init?.headers).has(API_DIAGNOSTIC_HEADER), false)
     return Response.json(
       { turns: ['private-answer'] },
       { headers: { [API_REQUEST_ID_HEADER]: CORRELATION } }
     )
   })
-  const path = '/api/serve/history/private-session'
   const readers = ['transcript', 'resume'] as const
-  const requests = readers.map((historyCaller) => apiFetch(path, { historyCaller }))
+  const requests = readers.map((caller) => getHistoryWithTodos('private/session', caller))
   assert.deepEqual(
     records.map((record) => record.caller),
     readers
   )
   const identifiers = records.map((record) => record.client_request_id)
   assert.equal(new Set(identifiers).size, 2)
-  for (const response of await Promise.all(requests)) {
-    assert.deepEqual(await readApiJson(response), { turns: ['private-answer'] })
+  for (const history of await Promise.all(requests)) {
+    assert.deepEqual(history?.turns, ['private-answer'])
   }
   for (const [index, id] of identifiers.entries()) {
     const rows = records.filter((record) => record.client_request_id === id)
@@ -113,6 +116,20 @@ test('overlapping history readers retain separate correlations and report the ca
     )
   }
   assert.ok(!JSON.stringify(records).includes('private'))
+})
+
+test('history timing excludes empty session IDs, nested paths and similar route prefixes', async (context) => {
+  const records = fixture(context, async () => Response.json({}))
+  for (const path of [
+    '/api/serve/history',
+    '/api/serve/history/?compact_activity=true',
+    '/api/serve/history/id/',
+    '/api/serve/history/id/events',
+    '/api/serve/history-archive/id',
+  ]) {
+    await readApiJson(await apiFetch(path, { historyCaller: 'resume' }))
+  }
+  assert.deepEqual(records, [])
 })
 
 test('caller abort and timeout remain failures with the original reason and no retry', async (context) => {

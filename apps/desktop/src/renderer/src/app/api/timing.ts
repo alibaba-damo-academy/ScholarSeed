@@ -1,6 +1,7 @@
 import {
   API_DIAGNOSTIC_HEADER,
   API_REQUEST_ID_HEADER,
+  HISTORY_PATH_PREFIX,
   HTTP_LATENCY_DIAGNOSTIC_PREFIX,
   SESSION_CATALOG_PATH,
   isRequestDiagnosticId,
@@ -11,7 +12,7 @@ import { captureCatalogResource, type CatalogResourceCapture } from './resources
 const ERROR_NAMES = new Set(['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'])
 export type HistoryCaller =
   'transcript' | 'resume' | 'resume_fallback' | 'archive' | 'archived_task' | 'literature'
-const HISTORY_ROUTE = '/api/serve/history/{session_id}'
+const HISTORY_ROUTE = `${HISTORY_PATH_PREFIX}{session_id}`
 const responseTimings = new WeakMap<Response, RequestTiming>()
 type TimingEvent =
   | 'fetch_started'
@@ -137,7 +138,10 @@ export function startRequestTiming(
 ): RequestTiming | undefined {
   if (method !== 'GET') return undefined
   const pathname = path.split('?')[0]
-  const caller = /^\/api\/serve\/history\/[^/]+$/.test(pathname) ? historyCaller : undefined
+  const isHistory =
+    pathname.startsWith(HISTORY_PATH_PREFIX) &&
+    /^[^/]+$/.test(pathname.slice(HISTORY_PATH_PREFIX.length))
+  const caller = isHistory ? historyCaller : undefined
   if (!caller && pathname !== SESSION_CATALOG_PATH) return undefined
   try {
     const supplied = headers.get(API_DIAGNOSTIC_HEADER)
