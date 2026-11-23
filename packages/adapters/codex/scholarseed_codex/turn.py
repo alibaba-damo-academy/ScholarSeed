@@ -77,6 +77,7 @@ from scholarseed_codex.protocol.state import (
 )
 from scholarseed_codex.router import ThreadRouter
 from scholarseed_codex.rpc import RpcSubmission, RpcSubmissionState
+from scholarseed_codex.usage import UsageAccounting
 from scholarseed_codex.watch import WorkspaceWatch
 from scholarseed_runtime.contract.command import RUNTIME_ACTIVE_TURN_CHANGED
 from scholarseed_runtime.contract.content import (
@@ -106,6 +107,9 @@ INTERRUPTED_TERMINAL_CLEANUP_SECONDS = 10.0
 INTERRUPTED_TERMINAL_POLL_SECONDS = 0.2
 INTERRUPTED_TERMINAL_EMPTY_CONFIRMATIONS = 2
 INTERRUPTED_TERMINAL_CLEANUP_ERROR = "codex_interrupted_terminal_cleanup_failed"
+CODEX_COMPACT_METHOD = "thread/compact/start"
+CODEX_COMPACTION_ITEM = "contextCompaction"
+CODEX_COMPACTION_FAILED = "codex_context_compaction_failed"
 
 
 class ThreadContext(Protocol):
@@ -177,6 +181,12 @@ class CodexTurnRuntime:
         self.turn_done: asyncio.Future[dict[str, Any]] | None = None
         self.final_text: str = ""
         self.usage: CodexUsage = CodexUsage()
+        self._accounting = UsageAccounting()
+        self._usage_turn_id = ""
+        self._output_limit_context_full = False
+        self._compaction_done: asyncio.Future[dict[str, Any]] | None = None
+        self._compaction_error: ProviderFailure | None = None
+        self._output_limit_configuration: tuple[object, object] | None = None
         self.item_names: dict[str, str] = dict()
         self.item_output: dict[str, str] = dict()
         self.item_details: dict[str, Mapping[str, Any]] = dict()
@@ -215,6 +225,8 @@ class CodexTurnRuntime:
 
     async def reconcile(self, thread: Mapping[str, Any], generation: int) -> None:
         self._generation = generation
+        if thread.get("turns") and not self.resume_turns and not self.submission_attempted:
+            self._accounting.resume()
         self.resume_turns = resume_turn_snapshots(thread)
         await self._reconcile_interrupted_from_thread(thread, generation)
         await self._reconcile_ambiguous_from_thread(thread)
@@ -245,6 +257,8 @@ class CodexTurnRuntime:
         await self._stale_requests(self.thread_id, "", "thread_closed")
         if self.turn_done is not None and not self.turn_done.done():
             self.turn_done.cancel()
+        if self._compaction_done is not None and not self._compaction_done.done():
+            self._compaction_done.cancel()
 
     async def notification(
         self, method: str, params: Mapping[str, Any], *, generation: int
@@ -263,9 +277,44 @@ class CodexTurnRuntime:
         turn_id = str(params.get("turnId") or nested_turn.get("id") or "")
         item_id = str(params.get("itemId") or "")
         thread_id = self._thread.thread_id
-        if turn_id and turn_id in self._settled_turns:
+        if turn_id and turn_id in self._settled_turns and method != "thread/tokenUsage/updated":
             self._diagnostic(f"suppressed_settled_turn_projection:{method}")
             return
+        if self._compaction_done is not None and not self._compaction_done.done():
+            if method == "turn/started":
+                self.active_turn_id = turn_id
+                self._router.bind_turn(turn_id, thread_id)
+                return
+            if method == "error":
+                self._compaction_error = provider_failure(params.get("error"))
+                return
+            if method == "turn/completed":
+                if not turn_id or turn_id != self.active_turn_id:
+                    return
+                self._settled_turns.add(turn_id)
+                self._router.forget_turn(turn_id)
+                self.active_turn_id = ""
+                if nested_turn.get("status") == "completed":
+                    self._output_limit_context_full = False
+                    await self._emitter.emit(self._thread, CodexSessionEventKind.CONTEXT_COMPACTED)
+                    self._compaction_done.set_result(nested_turn)
+                else:
+                    failure = self._compaction_error
+                    self._compaction_done.set_exception(
+                        AppServerError(
+                            "Codex context compaction did not complete",
+                            safe_error=failure.code if failure else CODEX_COMPACTION_FAILED,
+                            retryability=(
+                                failure.retryability
+                                if failure
+                                else RuntimeRetryability.USER_RETRYABLE
+                            ),
+                            submission_not_applied=True,
+                        )
+                    )
+                return
+            if method.startswith(("turn/", "item/", "hook/")) or method == "thread/compacted":
+                return
         if self.interrupted_turn_id and turn_id == self.interrupted_turn_id:
             if method == "turn/completed":
                 terminal_status = terminal_turn_status(str(nested_turn.get("status") or ""))
@@ -499,13 +548,11 @@ class CodexTurnRuntime:
             return
         if method == "thread/tokenUsage/updated":
             token_usage = dict(params.get("tokenUsage") or {})
-            last = dict(token_usage.get("last") or {})
-            self.usage = CodexUsage(
-                input_tokens=int(last.get("inputTokens", 0) or 0),
-                output_tokens=int(last.get("outputTokens", 0) or 0),
-                cache_read_tokens=int(last.get("cachedInputTokens", 0) or 0),
-                cache_creation_tokens=int(last.get("cacheWriteInputTokens", 0) or 0),
-            )
+            usage = self._accounting.observe(token_usage)
+            if usage is None or turn_id in self._settled_turns:
+                return
+            self._usage_turn_id = turn_id
+            self.usage = usage
             await self._emitter.emit(
                 self._thread,
                 CodexSessionEventKind.USAGE_UPDATED,
@@ -519,11 +566,19 @@ class CodexTurnRuntime:
             )
             return
         if method == "thread/compacted":
+            self._output_limit_context_full = False
             await self._emitter.emit(self._thread, CodexSessionEventKind.CONTEXT_COMPACTED)
             return
         if method == "error":
             will_retry = bool(params.get("willRetry"))
             failure = provider_failure(params.get("error"))
+            if (
+                failure.code == "max_output_tokens"
+                and self._usage_turn_id == turn_id
+                and self._accounting.context_full
+            ):
+                self._output_limit_context_full = True
+                self._output_limit_configuration = self._model_configuration()
             logger.info(
                 "codex_provider_error thread_id=%s turn_id=%s code=%s http_status=%s will_retry=%s",
                 self._thread.thread_id,
@@ -999,6 +1054,14 @@ class CodexTurnRuntime:
             )
         if self.turn_done is not None and not self.turn_done.done():
             raise AppServerError(f"Codex thread already has an active turn: {thread_id}")
+
+        def authorize_context() -> None:
+            before_write()
+            if turn_input.admission is not None and not turn_input.admission.current():
+                raise AppServerError(TURN_ADMISSION_STALE, safe_error=TURN_ADMISSION_STALE)
+
+        authorize_context()
+        await self._compact_output_limit_context(before_write=authorize_context)
         self._submission = submission
         params = start_parameters(
             thread_id,
@@ -1178,6 +1241,73 @@ class CodexTurnRuntime:
             error=error,
             usage=self.usage,
         )
+
+    async def _compact_output_limit_context(
+        self, *, before_write: Callable[[], None] | None = None
+    ) -> None:
+        """Recover full context after truncated sampling without forging a successful response."""
+        if not self._output_limit_context_full:
+            return
+        if self._output_limit_configuration != self._model_configuration():
+            self._output_limit_context_full = False
+            return
+        if self._compaction_done is not None and not self._compaction_done.done():
+            raise AppServerError(
+                "Codex context compaction is still running",
+                safe_error=CODEX_COMPACTION_FAILED,
+                retryability=RuntimeRetryability.IN_PROGRESS,
+                submission_not_applied=True,
+            )
+        completion = asyncio.get_running_loop().create_future()
+        self._compaction_done = completion
+        self.turn_done = completion
+        completion.add_done_callback(
+            lambda future: None if future.cancelled() else future.exception()
+        )
+        self._compaction_error = None
+        submission = RpcSubmission()
+        try:
+            await self._request(
+                CODEX_COMPACT_METHOD,
+                {"threadId": self.thread_id},
+                generation=self._generation,
+                before_write=before_write,
+                submission=submission,
+            )
+            await asyncio.shield(completion)
+        except asyncio.CancelledError:
+            if submission.state is RpcSubmissionState.NOT_SUBMITTED and not self.active_turn_id:
+                completion.cancel()
+            if self.active_turn_id and not completion.done():
+                await self._request(
+                    "turn/interrupt",
+                    {"threadId": self.thread_id, "turnId": self.active_turn_id},
+                    generation=self._generation,
+                )
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(completion), INTERRUPTED_TERMINAL_CLEANUP_SECONDS
+                    )
+                except (TimeoutError, AppServerError):
+                    pass
+            raise
+        except AppServerError as error:
+            if (
+                (error.rpc_code is not None or submission.state is RpcSubmissionState.NOT_SUBMITTED)
+                and not self.active_turn_id
+                and not completion.done()
+            ):
+                completion.cancel()
+            raise
+        finally:
+            if completion.done():
+                self._compaction_done = None
+                if self.turn_done is completion:
+                    self.turn_done = None
+
+    def _model_configuration(self) -> tuple[object, object]:
+        request = getattr(self._thread, "request", None)
+        return getattr(self._thread, "model", ""), getattr(request, "thread_config", None)
 
     @staticmethod
     def _turn_status(status: str) -> TurnStatus:
@@ -1445,6 +1575,8 @@ class CodexTurnRuntime:
     ) -> None:
         item_type = str(item.get("type") or "")
         item_id = str(item.get("id") or "")
+        if item_type == CODEX_COMPACTION_ITEM:
+            return
         if item_id:
             self._router.bind_item(item_id, self._thread.thread_id)
             self.item_details[item_id] = dict(item)
@@ -1530,6 +1662,12 @@ class CodexTurnRuntime:
     ) -> None:
         item_type = str(item.get("type") or "")
         item_id = str(item.get("id") or "")
+        if item_type == CODEX_COMPACTION_ITEM:
+            self._output_limit_context_full = False
+            await self._emitter.emit(
+                self._thread, CodexSessionEventKind.CONTEXT_COMPACTED, turn_id=turn_id
+            )
+            return
         if item_type == "reasoning":
             if item_id not in self.streamed_reasoning:
                 for summary_index, summary in enumerate(public_summary_parts(item)):
@@ -1822,9 +1960,9 @@ class CodexTurnRuntime:
         failure: ProviderFailure | None = None,
     ) -> str | None:
         if not self.provider_incident_id:
-            return
+            return None
         if self.provider_incident_turn_id and self.provider_incident_turn_id != turn_id:
-            return
+            return None
         terminal_failure = failure or self.provider_failure or provider_failure(None)
         incident = RuntimeIncident(
             incident_id=self.provider_incident_id,
@@ -1854,6 +1992,16 @@ class CodexTurnRuntime:
         return incident.incident_id
 
     async def connection_lost(self, incident: RuntimeIncident, exit_generation: int) -> None:
+        if self._compaction_done is not None and not self._compaction_done.done():
+            self._compaction_done.set_exception(
+                AppServerError(
+                    "Codex process exited during context compaction",
+                    safe_error=CODEX_COMPACTION_FAILED,
+                    submission_not_applied=True,
+                )
+            )
+            self._router.forget_turn(self.active_turn_id)
+            self.active_turn_id = ""
         self.fs_watch_id = ""
         self.abandon_files()
         turn_id = self.active_turn_id
