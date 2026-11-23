@@ -97,6 +97,10 @@ RETRY_SAFE_RESPONSE_EVENTS = frozenset(
 )
 CONTENT_SAFETY_BLOCKED = "CONTENT_SAFETY_BLOCKED"
 CONTENT_SAFETY_MESSAGE = "The request did not pass content safety review."
+INCOMPLETE_FAILURES = {
+    OUTPUT_LIMIT_CODE: (OUTPUT_LIMIT_CODE, OUTPUT_LIMIT_MESSAGE),
+    "content_filter": (CONTENT_SAFETY_BLOCKED, CONTENT_SAFETY_MESSAGE),
+}
 CODEX_INVALID_PROMPT = "invalid_prompt"
 PROVIDER_ERROR_PREFIX = re.compile(r"^<(\d{3})>\s+([A-Za-z][A-Za-z0-9_.-]*)(?::|$)", re.IGNORECASE)
 PROVIDER_FAILURE_CODES = {
@@ -601,9 +605,9 @@ class StreamObservation:
         incomplete = source.get("incomplete_details")
         if self.last_event == RESPONSE_INCOMPLETE and isinstance(incomplete, Mapping):
             self.finish_reason = metadata_token(incomplete.get("reason"))
-            if self.finish_reason == OUTPUT_LIMIT_CODE:
-                self.error_code = OUTPUT_LIMIT_CODE
-                self.error_message = OUTPUT_LIMIT_MESSAGE
+            failure = INCOMPLETE_FAILURES.get(self.finish_reason)
+            if failure is not None:
+                self.error_code, self.error_message = failure
         error = source.get("error")
         if not isinstance(error, Mapping) and self.last_event == "error":
             error = source

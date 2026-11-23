@@ -37,6 +37,8 @@ from service.chat.service.completions import (
 )
 from service.chat.service.probe import list_upstream_models, probe_personal_connection
 from service.chat.service.providers import (
+    CHAT_OUTPUT_TOKEN_PARAMETER,
+    chat_output_token_parameter,
     preset_provider_labels,
     preset_providers,
     uses_vendor_capability_registry,
@@ -2053,9 +2055,18 @@ def _codex_provider(
                     .limits.get(MAX_OUTPUT_LIMIT_KEY)
                 )
             if maximum is not None and config.get(OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY) is not False:
-                budget_key = "max_tokens" if chat_completions else MAX_OUTPUT_TOKENS_KEY
-                requested = _optional_int(payload.get(budget_key))
-                request[budget_key] = min(requested, maximum) if requested else maximum
+                budget_key = (
+                    chat_output_token_parameter(base_url)
+                    if chat_completions
+                    else MAX_OUTPUT_TOKENS_KEY
+                )
+                requested = _optional_int(payload.get(budget_key)) or maximum
+                if chat_completions and budget_key != CHAT_OUTPUT_TOKEN_PARAMETER:
+                    converted_budget = (
+                        _optional_int(request.pop(CHAT_OUTPUT_TOKEN_PARAMETER, None)) or maximum
+                    )
+                    requested = min(requested, converted_budget)
+                request[budget_key] = min(requested, maximum)
             return request
 
         def renewal_intent() -> object:

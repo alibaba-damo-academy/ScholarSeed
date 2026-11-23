@@ -6163,6 +6163,21 @@ def test_output_limit_failure_is_recoverable() -> None:
         )
 
 
+def test_content_filter_incomplete_is_terminal() -> None:
+    for message in (
+        "Incomplete response returned, reason: content_filter",
+        "stream disconnected before completion: Incomplete response returned, reason: content_filter",
+    ):
+        failure = provider_failure({"message": message})
+        check(
+            "content filtering is terminal and safely classified",
+            failure.code == "CONTENT_SAFETY_BLOCKED"
+            and failure.diagnostic_code == "content_safety_blocked"
+            and failure.retryability is RuntimeRetryability.TERMINAL
+            and failure.message == "The request did not pass content safety review.",
+        )
+
+
 def test_subscription_capability_rejection_is_terminal() -> None:
     code = "subscription_sharing_unsupported_capability"
     privateMessage = "private upstream detail https://secret.example/token?access=credential"
@@ -7477,6 +7492,7 @@ def main() -> int:
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()
     test_output_limit_failure_is_recoverable()
+    test_content_filter_incomplete_is_terminal()
     test_subscription_capability_rejection_is_terminal()
     test_provider_http_authentication()
     print(f"\nPASS={PASS} FAIL={FAIL}")

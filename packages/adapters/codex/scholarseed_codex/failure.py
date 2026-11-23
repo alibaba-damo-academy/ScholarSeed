@@ -132,6 +132,7 @@ _TERMINAL_CODES = (
     | _SUBSCRIPTION_CAPABILITY_CODES
 )
 _CODE_BY_MESSAGE = {
+    "incomplete response returned, reason: content_filter": CONTENT_SAFETY_BLOCKED,
     "incomplete response returned, reason: max_output_tokens": "max_output_tokens",
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
     PROVIDER_CONTENT_POLICY_MESSAGE.casefold(): CONTENT_SAFETY_BLOCKED,
