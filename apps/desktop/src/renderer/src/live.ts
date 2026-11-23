@@ -810,6 +810,13 @@ export function onEvent(
     case 'context_compacted':
       patchThread(threadId, (thread) => ({
         conversation: projectContextCompaction(thread.conversation, event),
+        ...(event.data.phase === 'started'
+          ? {
+              running: true,
+              status: 'running' as const,
+              turnOutcomes: turnOutcomes(thread, event.turn_id, 'running'),
+            }
+          : {}),
       }))
       return
     case 'turn_completed':
