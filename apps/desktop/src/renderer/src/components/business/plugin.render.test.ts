@@ -1180,6 +1180,22 @@ test(
     const detail = page.getByTestId('review-native-detail').getByTestId('literature-review-card')
     await expect(detail).toBeVisible()
     await expect(detail.getByText('1. 问题与评估设置', { exact: true })).toBeVisible()
+    const descriptions = detail.locator('blockquote')
+    const citations = descriptions.first()
+    await expect(citations).not.toContainText('\\cite{')
+    await expect(citations).toContainText('界定上下文长度与信息位置。')
+    await expect(citations).toContainText('保留 $x^2$。')
+    await expect(citations).toContainText('missing-key（来源不可用）')
+    await expect(citations).toContainText('样例：无可打开来源（来源不可用）')
+    await expect(descriptions.nth(1)).toHaveText('比较位置敏感性及改进方法。')
+    const inlineSource = citations.getByRole('button', { name: '样例：上下文评测方法' })
+    await expect(inlineSource).toHaveCount(2)
+    const numberedSource = citations.getByRole('button', { name: '7. 样例：长上下文信息利用' })
+    await expect(numberedSource).toHaveText('7')
+    await inlineSource.first().press('Enter')
+    await expect(page.getByTestId('review-web-target')).toHaveText(
+      'https://example.org/review-paper'
+    )
     await expect(page.getByRole('radio')).toHaveCount(0)
     await expect(page.getByRole('checkbox')).toHaveCount(0)
     const evidence = detail.getByRole('table', { name: '文献引用情况' })
@@ -1190,7 +1206,7 @@ test(
     const fulltext = evidence.getByRole('row', { name: /样例：长上下文信息利用/ })
     const abstract = evidence.getByRole('row', { name: /样例：上下文评测方法/ })
     await expect(
-      fulltext.getByRole('button', { name: '样例：长上下文信息利用', exact: true })
+      fulltext.getByRole('button', { name: '7. 样例：长上下文信息利用', exact: true })
     ).toBeVisible()
     await expect(fulltext.getByText('全文引用', { exact: true })).toBeVisible()
     await expect(abstract.getByText('摘要引用', { exact: true })).toBeVisible()
@@ -1211,7 +1227,7 @@ test(
     const libraryRequest = page.waitForRequest(
       (request) => new URL(request.url()).pathname === '/api/v1/literatures/review-test-item'
     )
-    await fulltext.getByRole('button', { name: '样例：长上下文信息利用' }).click()
+    await numberedSource.click()
     await libraryRequest
     await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')

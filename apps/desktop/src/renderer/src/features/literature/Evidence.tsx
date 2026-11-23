@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { Fragment, type ReactElement, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { TriangleAlert, Link } from 'lucide-react'
 
@@ -21,6 +21,90 @@ import {
 import type { ReviewReference } from '../../contracts/literature'
 import { reviewCitationTitle, reviewEvidenceReason } from './projection'
 
+const REVIEW_CITATION =
+  /(?<!\\)\\cite[pt]?\{([ \t]*[^{}\s,\\]+(?:[ \t]*,[ \t]*[^{}\s,\\]+)*[ \t]*)\}/g
+
+function ReviewReferenceButton({
+  entry,
+  openSource,
+  inline = false,
+}: {
+  entry: ReviewReference
+  openSource: (key: string) => Promise<void>
+  inline?: boolean
+}): ReactElement {
+  const { t } = useTranslation('literature')
+  const { toast } = useToast()
+  const title = reviewCitationTitle(entry.citation)
+  return (
+    <Button
+      unstyled
+      className={
+        inline
+          ? 'max-w-full whitespace-normal text-left text-[var(--vds-link)] hover:underline focus-visible:[box-shadow:var(--vds-focus-brand)]'
+          : 'inline-flex w-full min-w-0 items-center gap-[var(--vds-space-2)] text-left hover:underline focus-visible:[box-shadow:var(--vds-focus-brand)]'
+      }
+      title={title}
+      aria-label={title}
+      onClick={() =>
+        void openSource(entry.citation_key).catch(() =>
+          toast({ title: t('review.referenceOpenFailed'), tone: 'error' })
+        )
+      }
+    >
+      {inline ? (
+        (entry.citation.number ?? title)
+      ) : (
+        <>
+          <Link
+            aria-hidden="true"
+            size={14}
+            className="shrink-0 text-[var(--vds-text-secondary)]"
+          />
+          <span className="min-w-0 truncate">{title}</span>
+        </>
+      )}
+    </Button>
+  )
+}
+
+export function ReviewInlineCitations({
+  text,
+  entries,
+  openSource,
+}: {
+  text: string
+  entries: ReviewReference[]
+  openSource: (key: string) => Promise<void>
+}): ReactNode {
+  const { t } = useTranslation('literature')
+  return text.split(REVIEW_CITATION).map((part, index) => {
+    if (index % 2 === 0) return part
+    return (
+      <Fragment key={index}>
+        [
+        {part.split(',').map((value, keyIndex) => {
+          const key = value.trim()
+          const entry = entries.find((row) => row.citation_key === key)
+          return (
+            <Fragment key={keyIndex}>
+              {keyIndex > 0 && ', '}
+              {entry?.target ? (
+                <ReviewReferenceButton entry={entry} openSource={openSource} inline />
+              ) : (
+                t('review.referenceUnavailable', {
+                  reference: (entry && reviewCitationTitle(entry.citation)) || key,
+                })
+              )}
+            </Fragment>
+          )
+        })}
+        ]
+      </Fragment>
+    )
+  })
+}
+
 export function ReviewEvidenceTable({
   entries,
   openSource,
@@ -29,7 +113,6 @@ export function ReviewEvidenceTable({
   openSource: (key: string) => Promise<void>
 }): ReactElement {
   const { t } = useTranslation('literature')
-  const { toast } = useToast()
   return (
     <Card
       padding="none"
@@ -47,7 +130,8 @@ export function ReviewEvidenceTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {entries.map(({ citation, citation_key, evidence, target }) => {
+          {entries.map((entry) => {
+            const { citation, citation_key, evidence, target } = entry
             const title = reviewCitationTitle(citation)
             const reason = evidence && reviewEvidenceReason(evidence, t)
             const extracted =
@@ -58,23 +142,7 @@ export function ReviewEvidenceTable({
               <TableRow key={citation_key}>
                 <TableCell className="overflow-hidden align-top">
                   {target ? (
-                    <Button
-                      unstyled
-                      className="inline-flex w-full min-w-0 items-center gap-[var(--vds-space-2)] text-left hover:underline focus-visible:[box-shadow:var(--vds-focus-brand)]"
-                      title={title}
-                      onClick={() =>
-                        void openSource(citation_key).catch(() =>
-                          toast({ title: t('review.referenceOpenFailed'), tone: 'error' })
-                        )
-                      }
-                    >
-                      <Link
-                        aria-hidden="true"
-                        size={14}
-                        className="shrink-0 text-[var(--vds-text-secondary)]"
-                      />
-                      <span className="min-w-0 truncate">{title}</span>
-                    </Button>
+                    <ReviewReferenceButton entry={entry} openSource={openSource} />
                   ) : (
                     <span className="block truncate" title={title}>
                       {title}

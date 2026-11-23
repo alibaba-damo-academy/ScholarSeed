@@ -605,15 +605,42 @@ function ReviewFixture(): React.JSX.Element {
   const tab = app.state.tabs.find((candidate) => candidate.literatureReview)
   const data = {
     ...reviewScenario.data,
+    sections: reviewScenario.data.sections.map((section, index) =>
+      index === 0
+        ? {
+            ...section,
+            description:
+              section.description +
+              String.raw` 代表工作 \cite{sample-1}，对照 \cite{sample-0, sample-1, no-target, missing-key}。保留 $x^2$。`,
+          }
+        : section
+    ),
     references: {
       ...reviewScenario.data.references,
-      rows: reviewScenario.data.references.rows.map((row, index) => ({
-        ...row,
-        target:
-          index === 0
-            ? { kind: 'library', item_id: 'review-test-item' }
-            : { kind: 'web', url: 'https://example.org/review-paper' },
-      })),
+      cited_count: 3,
+      rows: [
+        ...reviewScenario.data.references.rows.map((row, index) => ({
+          ...row,
+          citation: { ...row.citation, number: index === 0 ? 7 : null },
+          target:
+            index === 0
+              ? { kind: 'library', item_id: 'review-test-item' }
+              : { kind: 'web', url: 'https://example.org/review-paper' },
+        })),
+        {
+          citation_key: 'no-target',
+          paper_id: null,
+          citation: {
+            number: null,
+            title: '样例：无可打开来源',
+            authors: '',
+            year: null,
+            venue: '',
+          },
+          evidence: null,
+          target: null,
+        },
+      ],
     },
   }
   return (
