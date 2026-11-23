@@ -4536,6 +4536,13 @@ export const readSessionFile = (sessionId: string, path: string): Promise<FileCo
     `/api/serve/sessions/${encodeURIComponent(sessionId)}/files/content?path=${encodeURIComponent(path)}`
   )
 
+export async function resolveChatFileLink(sessionId: string, path: string): Promise<string> {
+  const result = await getJson<{ path: string }>(
+    `/api/serve/sessions/${encodeURIComponent(sessionId)}/files/chat-link?${new URLSearchParams({ path })}`
+  )
+  return result?.path ?? path
+}
+
 /** Read a file only through its durable session-artifact identity. */
 export const readSessionArtifact = (
   sessionId: string,

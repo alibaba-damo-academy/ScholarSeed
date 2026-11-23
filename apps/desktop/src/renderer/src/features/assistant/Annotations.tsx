@@ -761,7 +761,13 @@ export function AnnotatedAnswer({
                 <SessionFileLink
                   sessionId={thread.sessionId!}
                   path={path}
-                  onOpen={() => act.openFilePreview({ sessionId: thread.sessionId!, path })}
+                  onOpen={() =>
+                    act.openFilePreview({
+                      sessionId: thread.sessionId!,
+                      path,
+                      resolveChatLink: true,
+                    })
+                  }
                 >
                   {children}
                 </SessionFileLink>
