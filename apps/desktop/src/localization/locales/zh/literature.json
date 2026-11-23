@@ -794,6 +794,7 @@
     "referenceBasis": "引用方式",
     "referenceDetails": "引用依据说明",
     "referenceOpenFailed": "暂时无法打开这篇文献",
+    "referenceUnavailable": "{{reference}}（来源不可用）",
     "fulltextReference": "全文引用",
     "abstractReference": "摘要引用",
     "citedMaterials_other": "共引用 {{count}} 篇论文",

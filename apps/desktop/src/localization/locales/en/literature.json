@@ -817,6 +817,7 @@
     "referenceBasis": "Citation method",
     "referenceDetails": "Citation basis details",
     "referenceOpenFailed": "Could not open this reference",
+    "referenceUnavailable": "{{reference}} (source unavailable)",
     "fulltextReference": "Full-text citation",
     "abstractReference": "Abstract citation",
     "citedMaterials_one": "{{count}} paper cited",
