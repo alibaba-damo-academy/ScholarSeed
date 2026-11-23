@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { attentionRequest, matchingAttentionAnchors, sessionNeedsAttention } from './attention.ts'
+import type { AttentionItem } from '../../attention.ts'
+import { attentionRequest, matchingAttentionAnchors, sessionNeedsAttention, visibleAttentionIds } from './attention.ts'
 
 test('attention depends on unread reminders rather than task business status', () => {
   assert.equal(sessionNeedsAttention(0), false)
@@ -57,4 +58,89 @@ test('blocked recovery targets only its session recovery surface, not partial ou
   assert.deepEqual(matchingAttentionAnchors(anchors, {
     sessionId: 'session', kind: 'recovery', incidentId: 'unknown',
   }), [])
+})
+
+function completed(id: string, fields: Partial<AttentionItem> = {}): AttentionItem {
+  return {
+    id,
+    session_id: 'session',
+    item_id: id,
+    turn_id: id,
+    request_id: null,
+    kind: 'completed',
+    source_seq: 1,
+    revision: 1,
+    created_at: 1,
+    title: '',
+    body: '',
+    ...fields,
+  }
+}
+
+test('a visibility inspection reads its DOM snapshot and indexes each lookup field once', () => {
+  const reminders = Array.from({ length: 400 }, (_, index) => completed(String(index)))
+  let scans = 0
+  let itemReads = 0
+  let visibleId = '399'
+  const anchors = reminders.map(({ id }) => ({
+    get messageItemId() {
+      itemReads++
+      return id
+    },
+    visible: () => id === visibleId,
+  }))
+  const inspect = (sessionId: string, lastSeq: number) =>
+    visibleAttentionIds(
+      { sessionId, lastSeq },
+      reminders,
+      () => {
+        scans++
+        return anchors
+      },
+      (anchor) => anchor.visible()
+    )
+
+  assert.deepEqual(inspect('other', 1), [])
+  assert.deepEqual(inspect('session', 0), [])
+  assert.equal(scans, 0)
+  assert.deepEqual(inspect('session', 1), ['399'])
+  assert.equal(scans, 1)
+  assert.equal(itemReads, 400)
+
+  visibleId = '0'
+  assert.deepEqual(inspect('session', 1), ['0'])
+  assert.equal(scans, 2)
+  assert.equal(itemReads, 800)
+})
+
+test('batched reads honor anchor priority, document order, visibility and recovery sequence', () => {
+  const reminders = [
+    completed('hidden', { turn_id: 'turn' }),
+    completed('fallback', { item_id: null, turn_id: 'turn' }),
+    completed('duplicate'),
+    completed('failed', { kind: 'failed', item_id: 'agent', turn_id: 'turn' }),
+    completed('pending', { request_id: 'held', turn_id: 'turn' }),
+    completed('missing', { request_id: 'absent', item_id: 'agent' }),
+    completed('recovery', { anchor_kind: 'recovery', incident_id: 'current', source_seq: 2 }),
+    completed('stale', { anchor_kind: 'recovery', incident_id: 'older', source_seq: 2 }),
+    completed('future', { item_id: 'agent', source_seq: 3 }),
+    completed('foreign', { session_id: 'other', item_id: 'agent' }),
+  ]
+  const anchors = [
+    { messageTurnId: 'turn', messageKind: 'agent', messageItemId: 'hidden', visible: false },
+    { messageTurnId: 'turn', messageKind: 'agent', messageItemId: 'agent', visible: true },
+    { messageTurnId: 'turn', messageKind: 'error', visible: false },
+    { messageItemId: 'duplicate', visible: false },
+    { messageItemId: 'duplicate', visible: true },
+    { interactionRequestId: 'held', visible: true },
+    { recoverySessionId: 'session', recoveryIncidentId: 'current', visible: true },
+    { recoverySessionId: 'session', recoveryIncidentId: 'older', visible: true },
+  ]
+  const ids = visibleAttentionIds(
+    { sessionId: 'session', lastSeq: 1, recoveryIncidentId: 'current', recoverySourceSeq: 2 },
+    reminders,
+    () => anchors,
+    (anchor) => anchor.visible
+  )
+  assert.deepEqual(ids, ['fallback', 'duplicate', 'pending', 'recovery'])
 })
