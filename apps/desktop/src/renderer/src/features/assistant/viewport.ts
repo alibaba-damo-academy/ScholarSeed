@@ -1,5 +1,6 @@
 const TURN_ANCHORS = '[data-message-turn-id], [data-turn-id]'
 const TURN_ANCHOR_ATTRIBUTES = ['data-message-turn-id', 'data-turn-id']
+const MAX_CONCURRENT_SOURCE_REQUESTS = 2
 
 function hasTurnAnchor(node: Node): boolean {
   return (
@@ -24,10 +25,17 @@ export function createTurnSourceViewport() {
   const targets = new Map<Element, { turnId: string; visible: boolean }>()
   const visibleCounts = new Map<string, number>()
   const subscribers = new Map<string, Set<() => void>>()
+  let inFlight = 0
   let observer: IntersectionObserver | undefined
 
-  const notify = (turnId: string): void => {
-    subscribers.get(turnId)?.forEach((listener) => listener())
+  const dispatchVisible = (): void => {
+    // The current viewport is the queue: leaving it drops any unsent demand.
+    for (const turnId of visibleCounts.keys()) {
+      for (const start of subscribers.get(turnId) ?? []) {
+        if (inFlight >= MAX_CONCURRENT_SOURCE_REQUESTS) return
+        start()
+      }
+    }
   }
   const count = (turnId: string, change: number): void => {
     const total = (visibleCounts.get(turnId) ?? 0) + change
@@ -62,21 +70,42 @@ export function createTurnSourceViewport() {
   }
 
   return {
-    isVisible: (turnId: string): boolean => visibleCounts.has(turnId),
-    subscribe(turnId: string, listener: () => void): () => void {
+    watch(turnId: string, load: (signal: AbortSignal) => Promise<void>) {
+      let stale = true
+      let request: AbortController | undefined
+      const settled = (): void => {
+        request = undefined
+        inFlight--
+        dispatchVisible()
+      }
+      const start = (): void => {
+        if (!stale || request) return
+        stale = false
+        request = new AbortController()
+        inFlight++
+        void load(request.signal).then(settled, settled)
+      }
       const listeners = subscribers.get(turnId) ?? new Set()
       subscribers.set(turnId, listeners)
-      listeners.add(listener)
-      return () => {
-        listeners.delete(listener)
-        if (!listeners.size) subscribers.delete(turnId)
+      listeners.add(start)
+      if (visibleCounts.has(turnId)) dispatchVisible()
+      return {
+        invalidate() {
+          stale = true
+          request?.abort()
+          if (visibleCounts.has(turnId)) dispatchVisible()
+        },
+        dispose() {
+          listeners.delete(start)
+          if (!listeners.size) subscribers.delete(turnId)
+          request?.abort()
+        },
       }
     },
     observe(root: Element | null, column: Element): () => void {
       const current = new IntersectionObserver(
         (entries) => {
           if (observer !== current) return
-          const changed = new Set<string>()
           for (const entry of entries) {
             const target = targets.get(entry.target)
             if (!target) continue
@@ -87,9 +116,8 @@ export function createTurnSourceViewport() {
             if (target.visible === visible) continue
             target.visible = visible
             count(target.turnId, visible ? 1 : -1)
-            changed.add(target.turnId)
           }
-          changed.forEach(notify)
+          dispatchVisible()
         },
         // A target touching the boundary can intersect without any visible pixels.
         { root, threshold: [0, Number.EPSILON] }

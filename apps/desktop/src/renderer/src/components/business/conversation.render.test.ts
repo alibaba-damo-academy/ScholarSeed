@@ -10,6 +10,25 @@ import { ANSWER_SOURCES_CHANGED_EVENT } from '../../contracts/citations.ts'
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const FIXTURE = '/components/business/conversation.render.fixture.html'
 
+function turnSourceResult(turnId: string) {
+  return {
+    answer_id: turnId,
+    markdown: '',
+    sources: [
+      {
+        kind: 'project',
+        number: 1,
+        source_kind: 'resource',
+        project_id: 'fixture',
+        path: 'resources/source.txt',
+        url: 'resources/source.txt',
+        citation_urls: [],
+        title: `Source of ${turnId}`,
+      },
+    ],
+  }
+}
+
 test('turn sources follow the conversation viewport, refresh when visible, and cancel on exit', async (context) => {
   const fixture = await renderFixture(ROOT, {
     launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
@@ -39,24 +58,7 @@ test('turn sources follow the conversation viewport, refresh when visible, and c
       await pending.promise
       return
     }
-    await route.fulfill({
-      json: {
-        answer_id: turnId,
-        markdown: '',
-        sources: [
-          {
-            kind: 'project',
-            number: 1,
-            source_kind: 'resource',
-            project_id: 'fixture',
-            path: 'resources/source.txt',
-            url: 'resources/source.txt',
-            citation_urls: [],
-            title: `Source of ${turnId}`,
-          },
-        ],
-      },
-    })
+    await route.fulfill({ json: turnSourceResult(turnId) })
   })
   const calls = (turnId: string): number => requests.get(turnId) ?? 0
   const invalidate = () =>
@@ -103,10 +105,72 @@ test('turn sources follow the conversation viewport, refresh when visible, and c
     holdOldTurn = true
     await invalidate()
     await expect.poll(() => calls('turn-0')).toBe(3)
-    await page.getByRole('button', { name: '退出来源会话' }).click()
+    await invalidate()
     await expect(page.locator('body')).toHaveAttribute('data-old-turn-request-aborted', '3')
+    await expect.poll(() => calls('turn-0')).toBe(4)
+    await page.getByRole('button', { name: '退出来源会话' }).click()
+    await expect(page.locator('body')).toHaveAttribute('data-old-turn-request-aborted', '4')
   } finally {
     pending.resolve()
+  }
+})
+
+test('turn sources bound concurrent reads and discard offscreen turns awaiting a slot', async (context) => {
+  const fixture = await renderFixture(ROOT, {
+    launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+  })
+  context.after(() => fixture.close())
+  const page = await fixture.page(context)
+  await page.setViewportSize({ width: 1400, height: 1800 })
+  const release = Promise.withResolvers<void>()
+  const requested: string[] = []
+  await page.route('**/api/assistant/sessions/*/turns/turn-*/sources', async (route) => {
+    const turnId = new URL(route.request().url()).pathname.split('/').at(-2)!
+    requested.push(turnId)
+    await release.promise
+    await route.fulfill({ json: turnSourceResult(turnId) })
+  })
+  const visit = async (index: number) => {
+    await page.getByTestId('turn-navigation-entry').nth(index).press('Enter')
+    const question = page
+      .getByTestId('conversation-content')
+      .getByText(`公开问题 ${index}`, { exact: true })
+    await expect(question).toBeInViewport()
+  }
+  try {
+    await page.goto(new URL(`${FIXTURE}?turnSourceViewport`, fixture.url).href)
+    await page.getByRole('button', { name: '来源历史' }).click()
+    await expect.poll(() => requested.length).toBeGreaterThanOrEqual(2)
+    const initial = requested.slice()
+    await visit(10)
+    await visit(0)
+    assert.equal(requested.length, 2)
+    assert.deepEqual(requested, initial)
+    assert.equal(requested.includes('turn-10'), false)
+
+    release.resolve()
+    const cardSources = page.locator(
+      '[data-message-item-id="card-only-turn"] + [data-answer-source-list]'
+    )
+    await expect(cardSources).toBeVisible()
+    assert.equal(requested.includes('turn-10'), false)
+    await visit(10)
+    const middleSources = page.locator(
+      '[data-message-item-id="agent-10"] [data-answer-source-list]'
+    )
+    await expect(middleSources).toBeVisible()
+    assert.equal(requested.filter((id) => id === 'turn-10').length, 1)
+
+    // Returning to a turn whose read was in flight when it left reuses its completed result.
+    const tail = initial[0]
+    const tailIndex = Number(tail.slice('turn-'.length))
+    await visit(tailIndex)
+    await expect(
+      page.locator(`[data-message-item-id="agent-${tailIndex}"] [data-answer-source-list]`)
+    ).toBeVisible()
+    assert.equal(requested.filter((id) => id === tail).length, 1)
+  } finally {
+    release.resolve()
   }
 })
 

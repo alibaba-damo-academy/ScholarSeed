@@ -48,40 +48,23 @@ export function TurnCitationSources({
   const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof turnCitationSources>>>()
   const [failed, setFailed] = useState(false)
   useEffect(() => {
-    let stale = true
-    let request: AbortController | undefined
     setSnapshot(undefined)
     setFailed(false)
-    const refresh = (): void => {
-      if (!stale || !viewport.isVisible(turnId)) return
-      const controller = new AbortController()
-      request = controller
-      stale = false
-      void turnCitationSources(sessionId, turnId, controller.signal)
-        .then((value) => {
-          if (controller.signal.aborted) return
+    const subscription = viewport.watch(turnId, async (signal) => {
+      try {
+        const value = await turnCitationSources(sessionId, turnId, signal)
+        if (!signal.aborted) {
           setSnapshot(value)
           setFailed(false)
-        })
-        .catch(() => {
-          if (!controller.signal.aborted) setFailed(true)
-        })
-        .finally(() => {
-          if (request === controller) request = undefined
-        })
-    }
-    const invalidate = (): void => {
-      request?.abort()
-      stale = true
-      refresh()
-    }
-    const unsubscribe = viewport.subscribe(turnId, refresh)
-    refresh()
-    window.addEventListener(ANSWER_SOURCES_CHANGED_EVENT, invalidate)
+        }
+      } catch {
+        if (!signal.aborted) setFailed(true)
+      }
+    })
+    window.addEventListener(ANSWER_SOURCES_CHANGED_EVENT, subscription.invalidate)
     return () => {
-      request?.abort()
-      unsubscribe()
-      window.removeEventListener(ANSWER_SOURCES_CHANGED_EVENT, invalidate)
+      subscription.dispose()
+      window.removeEventListener(ANSWER_SOURCES_CHANGED_EVENT, subscription.invalidate)
     }
   }, [sessionId, turnId, textVersion, viewport])
   const reveal = useCitationReveal()
