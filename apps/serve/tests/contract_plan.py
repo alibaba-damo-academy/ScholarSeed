@@ -628,7 +628,11 @@ class PlanContract(unittest.TestCase):
             finally:
                 await stream.aclose()
 
-        replayed = asyncio.run(resumed())
+        with patch("service.chat.service.events.SSE_REPLAY_PAGE_SIZE", 1):
+            replayed = asyncio.run(resumed())
+        self.assertEqual(
+            [event["seq"] for event in replayed], [row.product_seq for row in rows[6:]]
+        )
         self.assertEqual(replayed[-1]["data"]["resolved_tool_ids"], ["bad-structure"])
         self.assertEqual(self.events.replay(SESSION), tuple(rows))
         for changes in (
