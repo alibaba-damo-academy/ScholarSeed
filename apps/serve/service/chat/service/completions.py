@@ -75,6 +75,7 @@ from service.inference.reasoning import (
     strip_thinking,
     thinking_parameters,
 )
+from service.inference.release import client_release_headers
 from service.inference.source import (
     SOURCE_UNAVAILABLE,
     ContentSource,
@@ -1673,6 +1674,7 @@ class CompletionBridge:
             # The native client owns turn-state lifetime and auth-owner resets.
             # Forward only this request's opaque routing values; never pool them.
             headers.update(_native_headers(request_headers, NATIVE_REQUEST_HEADERS))
+        headers.update(client_release_headers(endpoint, self._source_endpoints))
         captured_turn_id = call.diagnostic.turn_id
         call.diagnostic.protect(headers)
 

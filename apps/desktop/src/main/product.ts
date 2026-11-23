@@ -30,6 +30,8 @@ export interface DesktopProductConfig {
   updateChannel: UpdateChannel
   updateBaseUrl: string
   buildNumber: string
+  clientReleaseChannel?: 'dev' | UpdateChannel
+  clientReleaseProduction?: boolean
   expectedTeamId: string
   expectedWindowsPublisher: string
   updatePackageKeys?: Readonly<Record<string, string>>
@@ -403,6 +405,14 @@ export function parseDesktopProductConfig(
     updateChannel: oneOf(source.update_channel, UPDATE_CHANNELS, 'update_channel'),
     updateBaseUrl: normalizeUpdateBaseUrl(source.update_base_url, releaseLane),
     buildNumber,
+    clientReleaseChannel:
+      source.client_release_channel === 'dev' ||
+      source.client_release_channel === 'preview' ||
+      source.client_release_channel === 'release'
+        ? source.client_release_channel
+        : undefined,
+    clientReleaseProduction:
+      releaseLane === DISTRIBUTION_RELEASE_LANE && source.client_release_production === true,
     expectedTeamId,
     expectedWindowsPublisher,
     updatePackageKeys: parsePackageKeys(source.update_package_keys),

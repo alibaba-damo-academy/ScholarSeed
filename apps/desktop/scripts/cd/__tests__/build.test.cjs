@@ -1720,6 +1720,8 @@ test('frozen distribution product policy is product-scoped and HTTPS-only', () =
   assert.equal(runInNewContext(appIdExpression, { args: { platform: 'darwin' }, product, PACKAGE }), 'com.scholarseed.desktop')
   assert.equal(product.release_lane, 'distribution')
   assert.equal(product.update_channel, 'release')
+  assert.equal(product.client_release_channel, 'release')
+  assert.equal(product.client_release_production, false)
   // app.getVersion() carries only the SemVer, so the build stamp must travel here.
   assert.equal(product.build_number, '202608271200')
   assert.equal(product.update_base_url, 'https://updates.example.test')
