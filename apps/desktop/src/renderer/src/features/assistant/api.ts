@@ -1229,7 +1229,8 @@ export async function getAssistantInvocation(
 
 export async function turnCitationSources(
   sessionId: string,
-  turnId: string
+  turnId: string,
+  signal?: AbortSignal
 ): Promise<{
   sources: AnswerSource[]
   markdown: string
@@ -1237,7 +1238,7 @@ export async function turnCitationSources(
 }> {
   const response = await fetch(
     `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/sources`,
-    { credentials: 'include' }
+    { credentials: 'include', signal }
   )
   if (!response.ok) throw new Error('citation_sources_unavailable')
   return response.json()

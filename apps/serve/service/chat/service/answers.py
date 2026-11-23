@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from itertools import batched
 
 from service.chat.constants import (
     PRODUCT_EVENT_MESSAGE_DELTA,
@@ -20,6 +21,7 @@ from service.platform.context import (
 )
 
 FINAL_ANSWER_PHASE = "final_answer"
+ITEM_REVISION_BATCH_SIZE = 8
 
 # Selectable turn message identifiers. Frontend renders these as "any kind" of
 # annotatable message. Legacy "answer:{seq}" is kept for backwards compatibility;
@@ -81,6 +83,18 @@ class ProductAnswerSource:
         if source_product_seq is None:
             return None
         return self._by_seq(session_id, answer_id, source_product_seq)
+
+    def item_revisions(self, session_id: str, item_ids: Sequence[str]) -> dict[str, str]:
+        """Share block reads across a bounded group of candidate item histories."""
+        revisions: dict[str, str] = {}
+        for batch in batched(dict.fromkeys(item_ids), ITEM_REVISION_BATCH_SIZE):
+            for item_id, events in self._events.items_events(
+                session_id, vendor_item_ids=batch
+            ).items():
+                markdown = self._reconstruct_markdown(events)
+                if markdown:
+                    revisions[item_id] = self._revision(markdown)
+        return revisions
 
     # -- Legacy answer:{seq} lookup, unchanged semantics --
 

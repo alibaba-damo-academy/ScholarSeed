@@ -19,6 +19,7 @@ import { answerProjectSource } from './sources'
 import { useWorkspaceController } from '../workbench/workspace'
 import { webSearchSiteIconUrl, webSourcePreview } from '../resources/api'
 import { sha256Text } from './anchors'
+import type { TurnSourceViewport } from './viewport'
 import {
   citationPreviewUrl,
   citationSources,
@@ -32,41 +33,57 @@ const EMPTY_CITATION_SOURCES: CitationResolution[] = []
 export function TurnCitationSources({
   sessionId,
   turnId,
-  text,
+  textVersion,
   coverage,
+  viewport,
 }: {
   sessionId: string
   turnId: string
-  text: string
+  textVersion: string
   coverage?: AnswerCoverage
+  viewport: TurnSourceViewport
 }): React.JSX.Element | null {
   const { state, act } = useApp()
   const openWebSource = React.useContext(WebNavigationContext)
   const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof turnCitationSources>>>()
   const [failed, setFailed] = useState(false)
   useEffect(() => {
-    let generation = 0
-    let active = true
+    let stale = true
+    let request: AbortController | undefined
     setSnapshot(undefined)
+    setFailed(false)
     const refresh = (): void => {
-      const requested = ++generation
-      void turnCitationSources(sessionId, turnId)
+      if (!stale || !viewport.isVisible(turnId)) return
+      const controller = new AbortController()
+      request = controller
+      stale = false
+      void turnCitationSources(sessionId, turnId, controller.signal)
         .then((value) => {
-          if (!active || generation !== requested) return
+          if (controller.signal.aborted) return
           setSnapshot(value)
           setFailed(false)
         })
         .catch(() => {
-          if (active && generation === requested) setFailed(true)
+          if (!controller.signal.aborted) setFailed(true)
+        })
+        .finally(() => {
+          if (request === controller) request = undefined
         })
     }
-    refresh()
-    window.addEventListener(ANSWER_SOURCES_CHANGED_EVENT, refresh)
-    return () => {
-      active = false
-      window.removeEventListener(ANSWER_SOURCES_CHANGED_EVENT, refresh)
+    const invalidate = (): void => {
+      request?.abort()
+      stale = true
+      refresh()
     }
-  }, [sessionId, turnId, text])
+    const unsubscribe = viewport.subscribe(turnId, refresh)
+    refresh()
+    window.addEventListener(ANSWER_SOURCES_CHANGED_EVENT, invalidate)
+    return () => {
+      request?.abort()
+      unsubscribe()
+      window.removeEventListener(ANSWER_SOURCES_CHANGED_EVENT, invalidate)
+    }
+  }, [sessionId, turnId, textVersion, viewport])
   const reveal = useCitationReveal()
   const loadSources = useCallback(async () => {
     if (failed || !snapshot) throw new Error('citation_sources_unavailable')

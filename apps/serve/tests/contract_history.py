@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -29,11 +30,16 @@ from service.assistant.service.context import AssistantService
 from service.chat.active import RUNTIME_ID
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.api.history import register_history_routes
-from service.chat.constants import PRODUCT_EVENT_USER_MESSAGE
+from service.chat.constants import (
+    PRODUCT_EVENT_MESSAGE_DELTA,
+    PRODUCT_EVENT_PLAN_SNAPSHOT,
+    PRODUCT_EVENT_USER_MESSAGE,
+)
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.composition import LiveSessionService
 from service.chat.service.context import SessionContextProvider
+from service.chat.service.events import EventService
 from service.chat.service.history import HistoryError, HistoryService
 from service.cli.bridge import main
 from service.platform.activity import Activities, ActivityDomain
@@ -145,6 +151,37 @@ class HistoryContract(unittest.TestCase):
             payload={"text": text, "client_turn_id": message_id},
             idempotency_key=message_id,
         )
+
+    def test_compact_history_keeps_message_boundaries_and_metadata_across_pages(self) -> None:
+        delta = PRODUCT_EVENT_MESSAGE_DELTA
+        events = (
+            ("a", delta, {"delta": "one"}),
+            ("a", delta, {"delta": "two"}),
+            ("a", delta, {"delta": "three"}),
+            ("a", delta, {"delta": "four", "phase": "commentary"}),
+            ("a", PRODUCT_EVENT_PLAN_SNAPSHOT, {"items": []}),
+            ("a", delta, {"delta": "five", "phase": "commentary"}),
+            ("b", delta, {"delta": "six", "phase": "final_answer"}),
+            ("b", delta, {"delta": "seven", "phase": "final_answer"}),
+            ("b", delta, {"delta": "eight", "phase": "final_answer"}),
+        )
+        for index, (item, kind, payload) in enumerate(events):
+            self.events.append(
+                session_id=CALLER,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=CALLER,
+                vendor_turn_id="turn",
+                vendor_item_id=item,
+                kind=kind,
+                payload=payload,
+                idempotency_key=f"compact-{index}",
+            )
+        service = EventService({}, self.events, logging.getLogger(__name__))
+        with patch("service.chat.service.events.MAXIMUM_REPLAY_LIMIT", 2):
+            full = service.activity_snapshot(CALLER)
+            compact = service.activity_snapshot(CALLER, compact_activity=True)
+        self.assertEqual([event["data"] for event in full], [payload for _, _, payload in events])
+        self.assertEqual(compact, [full[i] for i in (0, 2, 3, 4, 5, 6, 8)])
 
     def test_context_is_reference_not_truncated_transcript(self) -> None:
         self.assertIn("scholarseed_bridge", self.context.model_context)

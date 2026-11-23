@@ -31,6 +31,7 @@ from service.assistant.service.context import (
 )
 from service.chat.active import RUNTIME_ID
 from service.chat.constants import (
+    PRODUCT_EVENT_ANSWER_SOURCES,
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_USER_MESSAGE,
@@ -155,6 +156,60 @@ class AssistantAnnotationContract(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["sources"][0]["url"], "https://example.org")
         self.assertEqual(client.get(path.replace(SESSION_ID, "other-session")).status_code, 404)
+
+    def test_turn_sources_keep_only_matching_item_revisions_in_record_order(self) -> None:
+        events = ProductEventStore(self.database)
+
+        def append(kind, item_id, key, payload):
+            return events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=VENDOR_THREAD_ID,
+                vendor_turn_id=VENDOR_TURN_ID,
+                vendor_item_id=item_id,
+                kind=kind,
+                payload=payload,
+                idempotency_key=key,
+            )
+
+        items = (("second", "Second answer"), ("first", "First answer"))
+        for item_id, markdown in reversed(items):
+            append(
+                PRODUCT_EVENT_MESSAGE_DELTA,
+                item_id,
+                f"delta-{item_id}",
+                {"phase": "final_answer", "delta": markdown},
+            )
+        for item_id, markdown in items:
+            for old in (True, False):
+                append(
+                    PRODUCT_EVENT_ANSWER_SOURCES,
+                    item_id,
+                    f"sources-{item_id}-{old}",
+                    {
+                        "answer_revision": text_revision("stale" if old else markdown),
+                        "sources": [
+                            {"kind": "search", "url": f"https://example.org/{item_id}-{old}"}
+                        ],
+                    },
+                )
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = AssistantService(self.store)
+        app.state.product_events = events
+        app.state.answer_source = ProductAnswerSource(events)
+        register_assistant_routes(app)
+        response = TestClient(app).get(
+            f"/api/assistant/sessions/{SESSION_ID}/turns/{VENDOR_TURN_ID}/sources"
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["markdown"], "First answer\n\nSecond answer")
+        self.assertEqual(
+            [(source["url"], source["number"]) for source in body["sources"]],
+            [("https://example.org/second-False", 1), ("https://example.org/first-False", 2)],
+        )
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="assistant-annotations-")

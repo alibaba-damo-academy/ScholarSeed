@@ -548,15 +548,23 @@ def register_assistant_routes(app: FastAPI) -> None:
             (source["kind"], source.get("url") or source.get("handle")) for source in sources
         }
         phases.mark("projection")
+        item_ids = tuple(
+            dict.fromkeys(
+                record.vendor_item_id
+                for record in records
+                if record.kind == PRODUCT_EVENT_ANSWER_SOURCES and record.vendor_item_id
+            )
+        )
+        item_revisions = (
+            request.app.state.answer_source.item_revisions(session_id, item_ids) if item_ids else {}
+        )
         item_lookups = 0
         for record in records:
             if record.kind != PRODUCT_EVENT_ANSWER_SOURCES or not record.vendor_item_id:
                 continue
             item_lookups += 1
-            native = request.app.state.answer_source.answer(
-                session_id=session_id, answer_id=f"item:{record.vendor_item_id}"
-            )
-            if native is None or native.revision != record.payload.get("answer_revision"):
+            revision = item_revisions.get(record.vendor_item_id)
+            if revision is None or revision != record.payload.get("answer_revision"):
                 continue
             for source in record.payload.get("sources", []):
                 identity = (source["kind"], source.get("url") or source.get("handle"))
@@ -571,6 +579,7 @@ def register_assistant_routes(app: FastAPI) -> None:
                 )
         phases.mark("item_revisions")
         phases.count("item_lookups", item_lookups)
+        phases.count("item_ids", len(item_ids))
         receipts = [source for source in sources if source["kind"] == RECEIPT_SOURCE_KIND]
         if receipts:
             groups = request.app.state.assistant_citations.source_group_ids(answer)

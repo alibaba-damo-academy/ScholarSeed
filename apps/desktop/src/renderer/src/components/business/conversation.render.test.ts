@@ -5,9 +5,110 @@ import { chromium, expect } from '@playwright/test'
 import { renderFixture } from '../../../../test-helpers/render.ts'
 import { WORKSPACE_WINDOW_MINIMUM, WORKSPACE_WINDOW_SIZE } from '../../../../window.ts'
 import { SKILLS_PATH } from '../../../../skills.ts'
+import { ANSWER_SOURCES_CHANGED_EVENT } from '../../contracts/citations.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const FIXTURE = '/components/business/conversation.render.fixture.html'
+
+test('turn sources follow the conversation viewport, refresh when visible, and cancel on exit', async (context) => {
+  const fixture = await renderFixture(ROOT, {
+    launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+  })
+  context.after(() => fixture.close())
+  const page = await fixture.page(context)
+  const requests = new Map<string, number>()
+  let holdOldTurn = false
+  const pending = Promise.withResolvers<void>()
+  await page.addInitScript(() => {
+    const fetchRequest = window.fetch
+    let oldTurnCalls = 0
+    window.fetch = (input, init) => {
+      if (String(input).endsWith('/turns/turn-0/sources')) {
+        const call = ++oldTurnCalls
+        init?.signal?.addEventListener('abort', () => {
+          document.body.dataset.oldTurnRequestAborted = String(call)
+        })
+      }
+      return fetchRequest(input, init)
+    }
+  })
+  await page.route('**/api/assistant/sessions/*/turns/*/sources', async (route) => {
+    const turnId = new URL(route.request().url()).pathname.split('/').at(-2)!
+    requests.set(turnId, (requests.get(turnId) ?? 0) + 1)
+    if (holdOldTurn && turnId === 'turn-0') {
+      await pending.promise
+      return
+    }
+    await route.fulfill({
+      json: {
+        answer_id: turnId,
+        markdown: '',
+        sources: [
+          {
+            kind: 'project',
+            number: 1,
+            source_kind: 'resource',
+            project_id: 'fixture',
+            path: 'resources/source.txt',
+            url: 'resources/source.txt',
+            citation_urls: [],
+            title: `Source of ${turnId}`,
+          },
+        ],
+      },
+    })
+  })
+  const calls = (turnId: string): number => requests.get(turnId) ?? 0
+  const invalidate = () =>
+    page.evaluate((event) => window.dispatchEvent(new Event(event)), ANSWER_SOURCES_CHANGED_EVENT)
+  try {
+    await page.goto(new URL(`${FIXTURE}?turnSourceViewport`, fixture.url).href)
+    await page.getByRole('button', { name: '来源历史' }).click()
+    const navigation = page.getByTestId('turn-navigation')
+    const content = page.getByTestId('conversation-content')
+    const oldTurn = content.getByText('公开问题 0', { exact: true })
+    const lastTurn = content.getByText('公开问题 19', { exact: true })
+    const lastAnswer = page.locator('[data-message-item-id="agent-19"]')
+    const lastSources = lastAnswer.locator('[data-answer-source-list]')
+    await expect(lastSources).toBeVisible()
+    await expect(oldTurn).not.toBeInViewport()
+    assert.equal(calls('turn-0'), 0)
+    const answerBottom = await lastAnswer
+      .getByText(/^公开历史 19/)
+      .evaluate((node) => node.getBoundingClientRect().bottom)
+    const sourceTop = await lastSources.evaluate((node) => node.getBoundingClientRect().top)
+    const copyTop = await lastAnswer
+      .getByRole('button', { name: '复制消息' })
+      .evaluate((node) => node.getBoundingClientRect().top)
+    assert.ok(answerBottom <= sourceTop && sourceTop < copyTop)
+
+    await navigation.getByRole('button').first().press('Enter')
+    await expect(oldTurn).toBeInViewport()
+    await expect.poll(() => calls('turn-0')).toBe(1)
+    const oldFooter = page.locator(
+      '[data-message-item-id="card-only-turn"] + [data-answer-source-list]'
+    )
+    await expect(oldFooter).toBeInViewport()
+
+    const previousLast = calls('turn-19')
+    await navigation.getByRole('button').last().press('Enter')
+    await expect(oldTurn).not.toBeInViewport()
+    await expect(lastTurn).toBeInViewport()
+    await invalidate()
+    await expect.poll(() => calls('turn-19')).toBe(previousLast + 1)
+    assert.equal(calls('turn-0'), 1)
+
+    await navigation.getByRole('button').first().press('Enter')
+    await expect.poll(() => calls('turn-0')).toBe(2)
+    holdOldTurn = true
+    await invalidate()
+    await expect.poll(() => calls('turn-0')).toBe(3)
+    await page.getByRole('button', { name: '退出来源会话' }).click()
+    await expect(page.locator('body')).toHaveAttribute('data-old-turn-request-aborted', '3')
+  } finally {
+    pending.resolve()
+  }
+})
 
 test('runtime notice is hidden only after its own failure card enters the rendered stream', async (context) => {
   const fixture = await renderFixture(ROOT, {

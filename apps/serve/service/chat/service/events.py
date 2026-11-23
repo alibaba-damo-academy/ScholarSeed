@@ -139,15 +139,22 @@ class EventService:
 
         return self._events.portable_history(session_id)
 
-    def _records(self, session_id: str, after_seq: int = 0) -> Iterator[ProductEventRecord]:
+    def _records(
+        self, session_id: str, *, kinds: tuple[str, ...] | None = None
+    ) -> Iterator[ProductEventRecord]:
+        after_seq = 0
         while True:
-            page = self._events.replay(session_id, after_seq=after_seq, limit=MAXIMUM_REPLAY_LIMIT)
+            page = self._events.replay(
+                session_id, after_seq=after_seq, limit=MAXIMUM_REPLAY_LIMIT, kinds=kinds
+            )
             yield from page
             if len(page) < MAXIMUM_REPLAY_LIMIT:
                 return
             after_seq = page[-1].product_seq
 
-    def activity_snapshot(self, session_id: str) -> list[dict[str, Any]]:
+    def activity_snapshot(
+        self, session_id: str, *, compact_activity: bool = False
+    ) -> list[dict[str, Any]]:
         """Return the ordered transcript timeline anchors and technical activity.
 
         Final assistant text remains owned by the authoritative Codex history.
@@ -158,13 +165,40 @@ class EventService:
 
         snapshot: list[dict[str, Any]] = []
         projection = PlanToolProjection()
+        previous_anchor = None
+        has_tail = False
         for original in self._records(session_id):
             record = projection.project(original)
-            if record.kind in HISTORY_ACTIVITY_EVENT_KINDS and not (
+            if record.kind not in HISTORY_ACTIVITY_EVENT_KINDS or (
                 record.kind == PRODUCT_EVENT_DISPLAY_CARD
                 and record.payload.get("type") in RETIRED_DISPLAY_CARD_TYPES
             ):
-                snapshot.append(LiveSession.event_envelope(record))
+                continue
+            event = LiveSession.event_envelope(record)
+            anchor = None
+            if (
+                compact_activity
+                and record.kind == PRODUCT_EVENT_MESSAGE_DELTA
+                and record.vendor_turn_id
+                and record.vendor_item_id
+            ):
+                # Cumulative updates can share an anchor only while all non-text
+                # metadata matches. Retain the real first and last envelopes.
+                anchor = (
+                    record.runtime_id,
+                    record.vendor_thread_id,
+                    record.schema_version,
+                    record.vendor_turn_id,
+                    record.vendor_item_id,
+                    {key: value for key, value in event["data"].items() if key != "delta"},
+                )
+            same_anchor = anchor is not None and anchor == previous_anchor
+            if same_anchor and has_tail:
+                snapshot[-1] = event
+            else:
+                snapshot.append(event)
+            previous_anchor = anchor
+            has_tail = same_anchor
         return snapshot
 
     def turn_activity_snapshot(self, session_id: str) -> list[dict[str, Any]]:
@@ -176,19 +210,7 @@ class EventService:
         the renderer infer identities from transcript order.
         """
 
-        records: list[ProductEventRecord] = []
-        last_sequence = 0
-        while True:
-            page = self._events.replay(
-                session_id,
-                after_seq=last_sequence,
-                limit=MAXIMUM_REPLAY_LIMIT,
-            )
-            records.extend(page)
-            if not page or len(page) < MAXIMUM_REPLAY_LIMIT:
-                break
-            last_sequence = page[-1].product_seq
-
+        records = list(self._records(session_id))
         admitted_at: dict[str, float] = {}
         bound_client_ids: dict[str, str] = {}
         for record in records:
@@ -259,6 +281,7 @@ class EventService:
         turns: list[dict[str, Any]],
         *,
         phases: RequestPhases | None = None,
+        compact_activity: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Restore product-owned references and return the activity used by this transcript.
 
@@ -391,7 +414,7 @@ class EventService:
             )
         if phases is not None:
             phases.mark("user_metadata")
-        activity = self.activity_snapshot(session_id)
+        activity = self.activity_snapshot(session_id, compact_activity=compact_activity)
         if phases is not None:
             phases.mark("activity")
         message_models: dict[tuple[str, str], dict[str, str]] = {}
@@ -416,31 +439,17 @@ class EventService:
     def _user_message_snapshot(self, session_id: str) -> list[tuple[ProductEventRecord, float]]:
         latest: dict[str, tuple[ProductEventRecord, float]] = {}
         order: list[str] = []
-        last_sequence = 0
-        while True:
-            page = self._events.replay(
-                session_id,
-                after_seq=last_sequence,
-                limit=MAXIMUM_REPLAY_LIMIT,
+        for record in self._records(session_id, kinds=(PRODUCT_EVENT_USER_MESSAGE,)):
+            client_turn_id = str(
+                record.payload.get("client_turn_id")
+                or record.vendor_item_id
+                or record.vendor_turn_id
+                or record.product_seq
             )
-            for record in page:
-                if record.kind != PRODUCT_EVENT_USER_MESSAGE:
-                    continue
-                client_turn_id = str(
-                    record.payload.get("client_turn_id")
-                    or record.vendor_item_id
-                    or record.vendor_turn_id
-                    or record.product_seq
-                )
-                if client_turn_id not in latest:
-                    order.append(client_turn_id)
-                sent_at = (
-                    latest[client_turn_id][1] if client_turn_id in latest else record.created_at
-                )
-                latest[client_turn_id] = (record, sent_at)
-            if not page or len(page) < MAXIMUM_REPLAY_LIMIT:
-                break
-            last_sequence = page[-1].product_seq
+            if client_turn_id not in latest:
+                order.append(client_turn_id)
+            sent_at = latest[client_turn_id][1] if client_turn_id in latest else record.created_at
+            latest[client_turn_id] = (record, sent_at)
         return [latest[client_turn_id] for client_turn_id in order]
 
     @staticmethod

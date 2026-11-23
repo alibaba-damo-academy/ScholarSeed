@@ -986,6 +986,7 @@ class ProductEventStore:
         after_seq: int = 0,
         vendor_turn_id: str | None = None,
         vendor_item_id: str | None = None,
+        vendor_item_ids: frozenset[str] | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """Merge both physical forms, retaining every logical sequence exactly once."""
         clauses = ["product_seq > ?"]
@@ -998,6 +999,9 @@ class ProductEventStore:
             if value is not None:
                 clauses.append(f"{column} = ?")
                 values.append(value)
+        if vendor_item_ids is not None:
+            clauses.append("vendor_item_id IN (SELECT value FROM json_each(?))")
+            values.append(json.dumps(sorted(vendor_item_ids)))
         if kinds is not None:
             if not kinds:
                 return
@@ -1029,6 +1033,7 @@ class ProductEventStore:
                         for row in stored
                         if (vendor_turn_id is None or row["vendor_turn_id"] == vendor_turn_id)
                         and (vendor_item_id is None or row["vendor_item_id"] == vendor_item_id)
+                        and (vendor_item_ids is None or row["vendor_item_id"] in vendor_item_ids)
                     )
                     if session_id is None:
                         yield from ordinary
@@ -1505,9 +1510,18 @@ class ProductEventStore:
         """Read both turn identities in the caller's transaction snapshot."""
         if not kinds:
             return ()
+        # User messages can match a payload client identity without a native turn binding.
+        single_turn = (
+            client_turn_id
+            if PRODUCT_EVENT_USER_MESSAGE not in kinds
+            and (vendor_turn_id is None or vendor_turn_id == client_turn_id)
+            else None
+        )
         with (
             self._snapshot(connection) as current,
-            closing(self._rows(current, session_id=session_id, kinds=kinds)) as rows,
+            closing(
+                self._rows(current, session_id=session_id, kinds=kinds, vendor_turn_id=single_turn)
+            ) as rows,
         ):
             return tuple(
                 self._record(row)
@@ -1561,13 +1575,20 @@ class ProductEventStore:
         return len(slots), size
 
     def replay(
-        self, session_id: str, *, after_seq: int = 0, limit: int = MAXIMUM_REPLAY_LIMIT
+        self,
+        session_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int = MAXIMUM_REPLAY_LIMIT,
+        kinds: Sequence[str] | None = None,
     ) -> tuple[ProductEventRecord, ...]:
         bounded_limit = min(MAXIMUM_REPLAY_LIMIT, max(MINIMUM_REPLAY_LIMIT, int(limit)))
         with (
             self._snapshot() as connection,
             closing(
-                self._rows(connection, session_id=session_id, after_seq=max(0, int(after_seq)))
+                self._rows(
+                    connection, session_id=session_id, after_seq=max(0, int(after_seq)), kinds=kinds
+                )
             ) as rows,
         ):
             return tuple(self._record(row) for row in islice(rows, bounded_limit))
@@ -1646,6 +1667,35 @@ class ProductEventStore:
             ) as rows,
         ):
             return tuple(self._record(row) for row in islice(rows, MAXIMUM_REPLAY_LIMIT))
+
+    def items_events(
+        self, session_id: str, *, vendor_item_ids: Sequence[str]
+    ) -> dict[str, tuple[ProductEventRecord, ...]]:
+        """Read item histories from one snapshot with the same per-item bound."""
+        selected = frozenset(item for item in vendor_item_ids if item)
+        if not selected:
+            return {}
+        if len(selected) == 1:
+            item = next(iter(selected))
+            return {item: self.item_events(session_id, vendor_item_id=item)}
+
+        records: dict[str, list[ProductEventRecord]] = {item: [] for item in selected}
+        remaining = len(records)
+        with (
+            self._snapshot() as connection,
+            closing(
+                self._rows(connection, session_id=session_id, vendor_item_ids=selected)
+            ) as rows,
+        ):
+            for row in rows:
+                history = records[row["vendor_item_id"]]
+                if len(history) < MAXIMUM_REPLAY_LIMIT:
+                    history.append(self._record(row))
+                    if len(history) == MAXIMUM_REPLAY_LIMIT:
+                        remaining -= 1
+                        if not remaining:
+                            break
+        return {item: tuple(history) for item, history in records.items()}
 
     def turn_completed(
         self,
@@ -2259,16 +2309,17 @@ class ProductEventStore:
     def history_payload(self, session_id: str) -> list[dict[str, Any]]:
         users: dict[str, dict[str, Any]] = {}
         sequence = 0
-        while page := self.replay(session_id, after_seq=sequence):
+        while page := self.replay(
+            session_id, after_seq=sequence, kinds=(PRODUCT_EVENT_USER_MESSAGE,)
+        ):
             sequence = page[-1].product_seq
             for record in page:
-                if record.kind == PRODUCT_EVENT_USER_MESSAGE:
-                    key = record.vendor_item_id or str(
-                        record.payload.get("client_turn_id")
-                        or record.vendor_turn_id
-                        or record.product_seq
-                    )
-                    users[key] = record.payload
+                key = record.vendor_item_id or str(
+                    record.payload.get("client_turn_id")
+                    or record.vendor_turn_id
+                    or record.product_seq
+                )
+                users[key] = record.payload
         return [
             {
                 "kind": (

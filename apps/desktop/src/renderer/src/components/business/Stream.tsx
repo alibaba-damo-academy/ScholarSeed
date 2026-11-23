@@ -194,6 +194,7 @@ import { isImageAttachment } from '../../features/assistant/utils'
 import { AnnotatedAnswer } from '../../features/assistant/Annotations'
 import { loadAnswerImage } from '../../features/assistant/pictures'
 import { TurnCitationSources } from '../../features/assistant/Citations'
+import { createTurnSourceViewport } from '../../features/assistant/viewport'
 import {
   ARTIFACT_DESCRIPTION_CLASS,
   ARTIFACT_ICON_CLASS,
@@ -581,6 +582,24 @@ export function Stream({
   const [navigationGutter, setNavigationGutter] = useState(0)
   const [hoveredNavigationIndex, setHoveredNavigationIndex] = useState<number | null>(null)
   const columnRef = useRef<HTMLDivElement>(null)
+  const sourceViewport = useMemo(createTurnSourceViewport, [thread.id, thread.sessionId])
+  useEffect(() => {
+    const root = streamRef.current
+    const column = columnRef.current
+    if (root && column) return sourceViewport.observe(home ? null : root, column)
+  }, [home, sourceViewport])
+  const answerTextVersions = useMemo(() => {
+    const turns = new Map<string, string[]>()
+    for (const item of conv) {
+      if (item.kind !== 'agent' || !item.turnId) continue
+      const fragments = turns.get(item.turnId) ?? []
+      fragments.push(item.text)
+      turns.set(item.turnId, fragments)
+    }
+    return new Map(
+      Array.from(turns, ([turnId, fragments]) => [turnId, JSON.stringify(fragments)] as const)
+    )
+  }, [conv])
   const focusSpacerRef = useRef<HTMLDivElement>(null)
   const focusBoundsRef = useRef<(() => DOMRect | null) | null>(null)
   const focusedSessionRef = useRef<string | null>(null)
@@ -774,11 +793,8 @@ export function Stream({
       <TurnCitationSources
         sessionId={thread.sessionId}
         turnId={turnId}
-        text={JSON.stringify(
-          currentConv.flatMap((item) =>
-            item.turnId === turnId && item.kind === 'agent' ? [item.text] : []
-          )
-        )}
+        viewport={sourceViewport}
+        textVersion={answerTextVersions.get(turnId) ?? '[]'}
       />
     ) : null
   const sessionRef = useRef(thread.sessionId)

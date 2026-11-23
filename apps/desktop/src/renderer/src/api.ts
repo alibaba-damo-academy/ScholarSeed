@@ -1274,7 +1274,7 @@ export interface HistoryResult {
   todo_turn_id: string | null
   /** Persisted, source-attributed session artifact snapshot. */
   artifacts: SessionArtifact[]
-  /** Ordered message anchors plus durable activity used to rebuild the transcript timeline. */
+  /** Timeline anchors and durable activity. Adjacent cumulative text snapshots may be coalesced. */
   activity_events: ProductEvent[]
   /** Durable turn clock and terminal truth, projected from product events. */
   turn_activity: TurnActivitySnapshot[]
@@ -1297,7 +1297,7 @@ export async function getHistoryWithTodos(
   caller?: HistoryCaller
 ): Promise<HistoryResult | null> {
   try {
-    const r = await apiFetch(`/api/serve/history/${sid}`, {
+    const r = await apiFetch(`/api/serve/history/${encodeURIComponent(sid)}?compact_activity=true`, {
       timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
       historyCaller: caller,
     })

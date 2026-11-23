@@ -188,6 +188,7 @@ class _Events:
         turns: list[dict[str, object]],
         *,
         phases: object,
+        compact_activity: bool,
     ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         return turns, []
 

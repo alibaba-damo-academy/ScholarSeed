@@ -1044,10 +1044,14 @@ def mount_session_routes(
         return {"entries": entries, "next_cursor": payload.get("next_cursor")}
 
     @app.get("/api/serve/history/{session_id}", dependencies=session_guard)
-    def history(session_id: str, request: Request) -> dict[str, Any]:
+    def history(
+        session_id: str, request: Request, compact_activity: bool = False
+    ) -> dict[str, Any]:
         phases = requestPhases(request.scope, expose_request_id=True)
         payload = sessions.history(session_id, phases=phases)
-        turns, activity = events.transcript_snapshot(session_id, payload["turns"], phases=phases)
+        turns, activity = events.transcript_snapshot(
+            session_id, payload["turns"], phases=phases, compact_activity=compact_activity
+        )
         payload["turns"] = turns
         payload["activity_events"] = activity
         payload["turn_activity"] = events.turn_activity_snapshot(session_id)

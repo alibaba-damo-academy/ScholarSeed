@@ -614,7 +614,7 @@ class PlanContract(unittest.TestCase):
         service = EventService({}, self.events, logging.getLogger(__name__))
         with patch.object(service, "activity_snapshot", wraps=service.activity_snapshot) as read:
             turns, snapshot = service.transcript_snapshot(SESSION, [])
-        read.assert_called_once_with(SESSION)
+        read.assert_called_once_with(SESSION, compact_activity=False)
         self.assertEqual(turns, [])
         resolved = {
             event["data"]["tool_id"]: event["data"].get("resolved_tool_ids")
