@@ -397,6 +397,25 @@ class PendingTurnSettlement:
     created_at: float
     recovery_blocked: bool = False
 
+    def resource_finalizing(
+        self, record: SessionCatalogRecord | None, *, live_terminal_turn_id: str = ""
+    ) -> bool:
+        """A known product completion still owns the project's resource settlement."""
+
+        return (
+            not self.recovery_blocked
+            and self.event.kind is RuntimeEventKind.TURN_COMPLETED
+            and record is not None
+            and record.project_path is not None
+            and (
+                self.native_turn_id == live_terminal_turn_id
+                or (
+                    record.last_turn_id == self.native_turn_id
+                    and record.status is SessionStatus.COMPLETED
+                )
+            )
+        )
+
 
 @dataclass(frozen=True)
 class SessionPrincipal:

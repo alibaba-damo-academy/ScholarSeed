@@ -244,10 +244,11 @@ def test_event_translation() -> None:
 def test_plan_projection(_catalog: AsyncMock) -> None:
     print("== Codex plan configuration and events ==")
 
-    async def native_config() -> dict:
+    async def native_config(*, native_plan_enabled: bool = True) -> dict:
         session = CodexRuntimeSession(
             OpenSessionRequest(
                 product_session_id="native-plan-session",
+                native_plan_enabled=native_plan_enabled,
                 cwd=ROOT,
                 model=ModelIntent(
                     transport=ModelTransport(
@@ -262,6 +263,10 @@ def test_plan_projection(_catalog: AsyncMock) -> None:
     check(
         "native sessions enable upstream plan tool",
         asyncio.run(native_config()).get("tools.update_plan.enabled") is True,
+    )
+    check(
+        "host can disable the native tool at thread creation",
+        asyncio.run(native_config(native_plan_enabled=False)).get("tools.update_plan.enabled") is False,
     )
     check(
         "native sessions enable structured input in default mode",
@@ -5314,6 +5319,7 @@ def test_resumed_dynamic_tool_declaration_is_preserved() -> None:
         binding=binding,
         cwd=ROOT,
         service_tools=(bridge_tool,),
+        native_plan_enabled=False,
         model=ModelIntent(
             transport=ModelTransport(
                 endpoint="https://model.example.test/v1", supports_websockets=True
@@ -5322,6 +5328,7 @@ def test_resumed_dynamic_tool_declaration_is_preserved() -> None:
     )
     restored = provider()._open_request(request)
     assert restored.service_tools == (bridge_tool,)
+    assert restored.native_plan_enabled is False
 
 
 def test_resumed_skill_policy_cannot_be_relaxed() -> None:

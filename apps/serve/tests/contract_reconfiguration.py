@@ -813,7 +813,11 @@ class ModelAdmissionContracts(unittest.IsolatedAsyncioTestCase):
         self.service._activities = self.activities
         self.service._settings = self.settings
         self.record = SimpleNamespace(archived=False)
-        self.service._access = SimpleNamespace(require=Mock(), get=Mock(return_value=self.record))
+        self.service._access = SimpleNamespace(
+            require=Mock(),
+            get=Mock(return_value=self.record),
+            pending_turn_settlement=Mock(return_value=None),
+        )
         self.service._sessions = {}
         self.service._runtime = SimpleNamespace(
             reconfiguration=self.manager,

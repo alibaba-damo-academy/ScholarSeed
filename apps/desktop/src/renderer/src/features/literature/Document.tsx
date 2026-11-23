@@ -14,7 +14,7 @@ import {
   TableRow,
 } from '../../components/ui'
 import type { LiteratureReview } from '../../contracts/literature'
-import { ReviewEvidenceTable } from './Evidence'
+import { ReviewEvidenceTable, ReviewInlineCitations } from './Evidence'
 import {
   REVIEW_FORMAT_LABELS,
   REVIEW_VERDICTS,
@@ -119,7 +119,11 @@ export function ReviewDocument({
                     {section.description && (
                       <blockquote className="m-0 rounded-[var(--vds-radius-4)] bg-[var(--vds-bg-gray-default-transparent)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] leading-[var(--vds-literature-review-text-line-height)] text-[var(--vds-text-secondary)]">
                         <p className="m-0 border-s-2 border-[var(--vds-border-default)] ps-[var(--vds-space-3)]">
-                          {section.description}
+                          <ReviewInlineCitations
+                            text={section.description}
+                            entries={references.rows}
+                            openSource={openSource}
+                          />
                         </p>
                       </blockquote>
                     )}

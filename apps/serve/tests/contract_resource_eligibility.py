@@ -239,11 +239,11 @@ class EligibilityContract(unittest.IsolatedAsyncioTestCase):
         await self.hint(pdf)
         await self.hint(self.target)
         with patch.object(
-            self.versions, "capture_agent", wraps=self.versions.capture_agent
+            self.content, "capture_from_space", wraps=self.content.capture_from_space
         ) as capture:
             result = await self.finish()
         self.assertEqual(self.captured_paths(result), [self.path])
-        self.assertNotIn("resources/source.pdf", [call.args[1] for call in capture.call_args_list])
+        self.assertNotIn("resources/source.pdf", [call.args[2] for call in capture.call_args_list])
         saved = self.versions.seal(self.project.id, "resources/source.pdf", VersionOrigin.USER)
         self.assertFalse(saved.unchanged)
         self.assertEqual(len(self.versions.history(self.project.id, "resources/source.pdf")), 2)
@@ -257,14 +257,14 @@ class EligibilityContract(unittest.IsolatedAsyncioTestCase):
         pdf = self.resources / "source.pdf"
         pdf.write_bytes(b"%PDF-1.4\ninitial\n")
         self.supervisor.scan_project(self.project.id)
-        capture = self.content.capture_stable
+        capture = self.content.capture_from_space
 
-        def capture_readable(project_id, path, maximum, target):
+        def capture_readable(scope, project_id, path, maximum, target):
             if path == "resources/source.pdf":
                 raise ContentError("read_failed")
-            return capture(project_id, path, maximum, target)
+            return capture(scope, project_id, path, maximum, target)
 
-        with patch.object(self.content, "capture_stable", side_effect=capture_readable):
+        with patch.object(self.content, "capture_from_space", side_effect=capture_readable):
             await self.begin()
             self.target.write_text("agent\n", encoding="utf-8")
             await self.hint(self.target)
@@ -372,7 +372,9 @@ class EligibilityContract(unittest.IsolatedAsyncioTestCase):
         new = self.resources / "failed.md"
         new.write_text("unarchived\n", encoding="utf-8")
         await self.hint(new, "create")
-        with patch.object(self.content, "capture_stable", side_effect=ContentError("read_failed")):
+        with patch.object(
+            self.content, "capture_from_space", side_effect=ContentError("read_failed")
+        ):
             with self.assertRaisesRegex(ContentError, "read_failed"):
                 await self.finish()
         unrelated = self.resources / "external.md"
@@ -460,7 +462,7 @@ class EligibilityContract(unittest.IsolatedAsyncioTestCase):
         self.target.write_text("once\n", encoding="utf-8")
         await self.hint(self.target)
         with patch.object(
-            self.content, "capture_stable", wraps=self.content.capture_stable
+            self.content, "capture_from_space", wraps=self.content.capture_from_space
         ) as capture:
             result = await self.finish()
         self.assertTrue(result.review_ids)
@@ -646,7 +648,9 @@ class EligibilityContract(unittest.IsolatedAsyncioTestCase):
     async def test_read_failure_is_not_a_tombstone_or_silent_success(self) -> None:
         await self.begin()
         await self.hint(self.target)
-        with patch.object(self.content, "capture_stable", side_effect=ContentError("read_failed")):
+        with patch.object(
+            self.content, "capture_from_space", side_effect=ContentError("read_failed")
+        ):
             with self.assertRaisesRegex(ContentError, "read_failed"):
                 await self.finish()
         self.assertEqual(len(self.versions.history(self.project.id, self.path)), 1)

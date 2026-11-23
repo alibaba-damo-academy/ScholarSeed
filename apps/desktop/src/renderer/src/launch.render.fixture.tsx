@@ -7,6 +7,8 @@ import { ToastProvider } from './components/ui'
 import { StoreProvider, useApp, type SessionSurface, type Store } from './store'
 import { Composer } from './components/business/Composer'
 import { AiPanel } from './features/assistant/AiPanel'
+import { assistantFeature } from './features/assistant/feature'
+import { DisplayCardProvider } from './components/business/Cards'
 import { ConversationControls, Stream } from './components/business/Stream'
 import { InteractionPolicyProvider } from './components/business/Interactions'
 import { fileRecovery } from './features/assistant/recovery'
@@ -17,6 +19,7 @@ import { projectBackendAvailability } from './runtime'
 import { useLiveSession } from './live'
 
 const localization = createLocalization('zh', resources, { report: () => undefined })
+const displayCards = new Map(assistantFeature().displayCards?.map((card) => [card.type, card]))
 let store: Store
 let hideComposer: () => void
 let setComposerSurface: (surface: SessionSurface) => void
@@ -51,7 +54,11 @@ function Fixture(): React.JSX.Element {
     <AiPanel embedded />
   ) : visible ? (
     <>
-      {Reflect.get(window, 'streamFixture') === true && <Stream home />}
+      {Reflect.get(window, 'streamFixture') === true && (
+        <DisplayCardProvider cards={displayCards}>
+          <Stream home />
+        </DisplayCardProvider>
+      )}
       <ConversationControls externalConfirmation={Reflect.get(window, 'hilDockFixture') !== true}>
         <Composer
           home

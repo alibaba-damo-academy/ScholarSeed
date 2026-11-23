@@ -466,10 +466,11 @@ def create_chat_app(
     session_service.bind_turn_confirmation(turn_service.confirm_queued_unknown)
     session_service.bind_queue_cancellation(turn_service.cancel_pending_locked)
     session_service.bind_settlement_resume(turn_service.resume_pending_settlement)
-    event_service = EventService(sessions, event_store, _log)
+    event_service = EventService(sessions, event_store, _log, activities=activity_registry)
     feedback_service = FeedbackService()
 
     app.state.session_catalog = access_store
+    app.state.resume_resource_finalization = turn_service.resume_resource_finalization
     app.state.product_events = event_store
     app.state.session_artifacts = artifact_store
     app.state.artifact_service = artifact_service

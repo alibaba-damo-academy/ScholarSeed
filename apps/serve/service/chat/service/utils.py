@@ -1,4 +1,4 @@
-"""Scoped diagnostics for product session service operations."""
+"""Shared helpers for product session service operations."""
 
 import logging
 import os
@@ -16,11 +16,27 @@ from service.chat.persistence.artifacts import (
     SessionArtifactRecord,
     current_artifact_records,
 )
+from service.chat.persistence.catalog import PendingTurnSettlement, SessionCatalogRecord
+from service.chat.runtime.live import LiveSession
 from service.paths import PROJECT_SESSION_OUTPUT_DIRNAME, SESSION_OUTPUT_DIRNAME
 from service.platform.content import ArtifactContentKind
 from service.platform.files import resolve_child
 
 RESUME_TIMING_LOGGER = logging.getLogger(__name__).getChild("open_timing")
+
+
+def is_resource_finalizing(
+    live: LiveSession | None,
+    record: SessionCatalogRecord | None,
+    pending: PendingTurnSettlement | None,
+) -> bool:
+    return (
+        live is not None
+        and pending is not None
+        and pending.resource_finalizing(
+            record, live_terminal_turn_id=live.resource_finalizing_turn_id
+        )
+    )
 
 
 def artifact_directory(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from service.chat.runtime.content import MessageSnapshots
 from service.chat.runtime.live import LiveSession
 from service.chat.runtime.projection import execution_batch_id
 from service.chat.service.events import SSE_HEARTBEAT_FRAME, EventService
+from service.platform.activity import Activities, ActivityDomain
 
 SESSION_ID = "runtime-transport-session"
 RUNTIME_ID = "codex"
@@ -28,6 +30,7 @@ REPLAY_PAGE_SIZE = 2
 REPLAY_EVENT_COUNT = 3
 HEARTBEAT_TEST_SECONDS = 0.001
 SUBSCRIBER_TEST_CAPACITY = 3
+REPLAY_WORKER_TIMEOUT_SECONDS = 2
 
 
 class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
@@ -110,7 +113,7 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
             )
         service = EventService({}, self.events, self.logger)
         with patch(
-            "service.chat.service.events.MAXIMUM_REPLAY_LIMIT",
+            "service.chat.service.events.SSE_REPLAY_PAGE_SIZE",
             REPLAY_PAGE_SIZE,
         ):
             stream = service.open(SESSION_ID, 0)
@@ -120,6 +123,48 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
                 await stream.aclose()
         self.assertEqual(len(frames), REPLAY_EVENT_COUNT)
         self.assertIn('"seq":3', frames[-1])
+
+    async def test_disconnect_waits_for_inflight_replay_and_releases_subscriber(self) -> None:
+        loop = asyncio.get_running_loop()
+        activities = Activities()
+        live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())
+        service = EventService({SESSION_ID: live}, self.events, self.logger, activities=activities)  # type: ignore[dict-item]
+        first = self.append_product_event("before-reconnect")
+        stream = service.open(SESSION_ID, first.product_seq)
+        entered = asyncio.Event()
+        released = threading.Event()
+
+        def replay(*args, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            if not released.wait(REPLAY_WORKER_TIMEOUT_SECONDS):
+                raise TimeoutError("SSE replay page was not released")
+            return original_replay(*args, **kwargs)
+
+        original_replay = self.events.replay
+        with patch.object(self.events, "replay", side_effect=replay) as observed_replay:
+            receiving = asyncio.create_task(anext(stream))
+            try:
+                await asyncio.wait_for(entered.wait(), REPLAY_WORKER_TIMEOUT_SECONDS)
+                self.assertEqual(len(live.subscribers), 1)
+                generation = activities.begin()
+                cancellation_observed = loop.create_future()
+                receiving.cancel()
+                loop.call_soon(cancellation_observed.set_result, None)
+                await cancellation_observed
+                self.assertFalse(receiving.done())
+                self.assertEqual(activities.snapshot().counts, {ActivityDomain.REQUEST.value: 1})
+                self.assertFalse(activities.seal(generation))
+                released.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await receiving
+                self.assertEqual(live.subscribers, [])
+                self.assertTrue(activities.seal(generation))
+                observed_replay.assert_called_once()
+            finally:
+                released.set()
+                receiving.cancel()
+                await asyncio.gather(receiving, return_exceptions=True)
+                await stream.aclose()
 
     async def test_idle_live_stream_emits_a_valid_sse_heartbeat(self) -> None:
         live = SimpleNamespace(subscribers=[], lifecycle_lock=asyncio.Lock())

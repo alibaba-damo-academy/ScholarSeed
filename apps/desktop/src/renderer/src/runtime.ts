@@ -184,7 +184,13 @@ export function projectSessionState(
   data: Extract<AspEnvelope, { type: 'session_state' }>['data']
 ): Pick<
   Thread,
-  'runtimeId' | 'running' | 'status' | 'activeTurnId' | 'recoveryBlocked' | 'recoveryPending'
+  | 'runtimeId'
+  | 'running'
+  | 'status'
+  | 'activeTurnId'
+  | 'recoveryBlocked'
+  | 'recoveryPending'
+  | 'resourceFinalizing'
 > {
   let status: SessionStatus = 'dormant'
   if (data.state === 'starting' || data.state === 'running') status = 'running'
@@ -193,6 +199,10 @@ export function projectSessionState(
   else if (data.state === 'interrupted') status = 'abandon'
   else if (data.state === 'closed') status = 'done'
   if (data.recovery_blocked) status = 'failed'
+  const resourceFinalizing =
+    data.recovery_blocked === true || data.recovery_pending === false
+      ? false
+      : data.resource_finalizing
   return {
     runtimeId: data.runtime_id,
     activeTurnId: data.recovery_blocked ? null : (data.active_turn_id ?? null),
@@ -200,7 +210,23 @@ export function projectSessionState(
     status,
     ...(data.recovery_blocked !== undefined ? { recoveryBlocked: data.recovery_blocked } : {}),
     ...(data.recovery_pending !== undefined ? { recoveryPending: data.recovery_pending } : {}),
+    ...(resourceFinalizing !== undefined ? { resourceFinalizing } : {}),
   }
+}
+
+export function isResourceFinalizing(
+  thread: Pick<
+    Thread,
+    'sessionId' | 'running' | 'recoveryPending' | 'resourceFinalizing' | 'recoveryBlocked'
+  >
+): boolean {
+  return Boolean(
+    thread.sessionId &&
+    !thread.running &&
+    thread.recoveryPending === true &&
+    thread.resourceFinalizing === true &&
+    !thread.recoveryBlocked
+  )
 }
 
 export function canOfferTurnRecovery(
@@ -272,11 +298,17 @@ export function hasCurrentTurnCapabilityFailure(thread: Pick<Thread, 'conversati
 
 export function projectRecoveryCheck(
   result: RecoveryCheckResponse
-): Pick<Thread, 'recoveryBlocked' | 'recoveryPending' | 'running' | 'status'> {
+): Pick<
+  Thread,
+  'recoveryBlocked' | 'recoveryPending' | 'resourceFinalizing' | 'running' | 'status'
+> {
   const hasActiveTurn = result.activity_active === true
   return {
     recoveryBlocked: result.recovery_blocked,
     recoveryPending: result.recovery_pending,
+    ...(!result.recovery_pending || result.recovery_blocked || hasActiveTurn
+      ? { resourceFinalizing: false }
+      : {}),
     running: hasActiveTurn,
     status: hasActiveTurn ? 'running' : 'done',
   }

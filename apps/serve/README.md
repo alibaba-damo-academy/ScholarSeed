@@ -5,8 +5,8 @@ FastAPI backend and product composition root. The distribution is `scholarseed`,
 
 ## On-demand product plans / 按需产品计划
 
-Ordinary sessions retain the native lightweight plan tool and artifact delivery;
-they do not register the structured product `update_plan`. The optional
+Ordinary sessions expose the Bridge and artifact delivery with native planning disabled.
+Users can request progress tracking, and an active Skill can explicitly require it. The
 `plan/enable` Bridge operation requires a declared user or workflow need. It
 persists selection without creating steps, authorizing work or starting clocks.
 Until enabled, execution and contract discovery reject the other plan operations;
@@ -21,7 +21,7 @@ without a new database or schema migration. Product retrieval, PDF and artifact
 operations remain independent. The literature-review execution workflow enables
 its tracker through the shared product plan guide, not by merely loading a Skill.
 
-普通会话保留原生轻量计划和产物交付，不默认注册结构化产品 `update_plan`。
+普通会话提供 Bridge 和产物交付，原生轻量计划默认关闭。用户可明确要求跟踪进度，生效的 Skill 也可明确要求维护执行计划。
 只有明确的用户或工作流需求才通过 `plan/enable` 启用；该操作只持久保存选择，
 不创建步骤、不授权工作、不开始计时。未启用时，其他计划操作及其完整契约发现均被拒绝，
 发现只提供启用契约。启用本身不是安全授权。本轮通过 Bridge 使用，下一回合才通过

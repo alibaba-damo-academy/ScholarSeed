@@ -144,6 +144,7 @@ from service.chat.persistence.catalog import (
     QueuedMessageState,
     SessionBindingConflictError,
     SessionCatalogStore,
+    SessionOutputPolicy,
     SessionPrincipal,
     SessionStatus,
     UncertaintyKind,
@@ -175,6 +176,7 @@ from service.chat.runtime.projection import (
     ArtifactPublishError,
     readiness_payload,
 )
+from service.chat.runtime.reconfiguration import PREPARATION_INSTANCE_CHANGED, PreparationError
 from service.chat.runtime.secrets import _launch_secret_contract
 from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL, SESSION_SERVICE_TOOLS
 from service.chat.service.artifacts import ArtifactService
@@ -204,6 +206,7 @@ from service.platform.bridge import ComponentInvocation, PlanEnable, PluginInsta
 from service.platform.citations import CITATION_SCHEME
 from service.platform.content import ArtifactScopeKind, RootKind
 from service.platform.files import FILE_ACCESS_DENIED, FILE_ACCESS_FAILED, read_file_raw
+from service.platform.resources import ResourceTurnContext, ReviewCaptureResult
 from service.platform.toolchain import CompilerResources
 from service.platform.vocabulary import BRIDGE_SESSION_HEADER, BRIDGE_TOKEN_HEADER
 from service.settings.capabilities import apply_capability, bundled_registry
@@ -3111,6 +3114,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.opened), 1)
         request = provider.opened[0]
         self.assertEqual(request.service_tools, SESSION_SERVICE_TOOLS)
+        self.assertFalse(request.native_plan_enabled)
         self.assertTrue(
             any(
                 entry.text == "Preserve this research question" for entry in request.initial_history
@@ -5698,6 +5702,149 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.live.terminated = True
         await self.live.finish_turn_settlement("closed-turn", RuntimeTurnOutcome.FAILED)
         self.assertEqual(self.events.replay(PRODUCT_SESSION_ID)[-1].payload["state"], "closed")
+
+    async def test_project_terminal_queues_followup_until_resource_commit_succeeds(self) -> None:
+        self.live.relocate(
+            cwd=self.workdir, project_path=self.workdir, output_root=self.output_root
+        )
+        self.catalog.relocate(
+            PRODUCT_SESSION_ID,
+            OWNER,
+            runtime_workdir=str(self.workdir),
+            project_path=str(self.workdir),
+            output_root=str(self.output_root),
+        )
+        capture_started, release_capture = asyncio.Event(), asyncio.Event()
+        release_active = asyncio.Event()
+        first_turn, next_turn = "resource-first", "resource-followup"
+        attempts = []
+
+        async def finish(_session_id, turn_id, _outcome):
+            attempts.append(turn_id)
+            if attempts == [first_turn]:
+                capture_started.set()
+                await release_capture.wait()
+                raise OSError("resource publication failed")
+            return ReviewCaptureResult()
+
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(return_value=ResourceTurnContext()),
+            finish_turn=AsyncMock(side_effect=finish),
+        )
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        turns = TurnService(
+            service._sessions, self.logger, activities=Activities(), deliveries=deliveries
+        )
+        stale_instance_id = Activities().instance_id
+
+        async def assert_stale_instance_rejected() -> None:
+            with self.assertRaises(PreparationError) as failure:
+                async with service.turn_admission(
+                    PRODUCT_SESSION_ID,
+                    OWNER,
+                    actor_id=OWNER.user_id,
+                    model_id=self.live.model_id,
+                    service_instance_id=stale_instance_id,
+                ):
+                    self.fail("admitted a turn bound to an old service instance")
+            self.assertEqual(str(failure.exception), PREPARATION_INSTANCE_CHANGED)
+
+        def assert_resource_finalizing(expected: bool) -> None:
+            status = service.status([PRODUCT_SESSION_ID], OWNER, {})["sessions"][0]
+            _, snapshot = service._snapshot_data(self.live)
+            self.assertIs(status["resource_finalizing"], expected)
+            self.assertIs(snapshot["resource_finalizing"], expected)
+            self.assertIs(service.history(PRODUCT_SESSION_ID)["resource_finalizing"], expected)
+
+        await assert_stale_instance_rejected()
+        with patch.object(
+            self.runtime_session, "submit", wraps=self.runtime_session.submit
+        ) as submit:
+            try:
+                receipt, status = await turns.post(
+                    PRODUCT_SESSION_ID,
+                    {
+                        "client_user_message_id": first_turn,
+                        "input": [{"type": "text", "text": "First"}],
+                    },
+                    side=False,
+                )
+                self.assertEqual(status, 202, receipt)
+                await asyncio.wait_for(capture_started.wait(), 2)
+                first_task = self.live.current_task
+                self.assertIsNotNone(first_task)
+                terminal = self.events.latest_kind(PRODUCT_SESSION_ID, PRODUCT_EVENT_TURN_COMPLETED)
+                self.assertTrue(terminal.payload["resource_finalizing"])
+                assert_resource_finalizing(True)
+                with patch.object(service, "model_admission", side_effect=AssertionError):
+                    await assert_stale_instance_rejected()
+                    async with service.turn_admission(
+                        PRODUCT_SESSION_ID,
+                        OWNER,
+                        actor_id=OWNER.user_id,
+                        model_id=self.live.model_id,
+                        service_instance_id=None,
+                    ):
+                        queued, status = await turns.post(
+                            PRODUCT_SESSION_ID,
+                            {
+                                "client_user_message_id": next_turn,
+                                "input": [{"type": "text", "text": "Next"}],
+                            },
+                            side=False,
+                        )
+                self.assertEqual(status, 202, queued)
+                self.assertEqual(
+                    self.catalog.queued_message(PRODUCT_SESSION_ID, next_turn).state,
+                    QueuedMessageState.QUEUED,
+                )
+                self.assertEqual(deliveries.begin_turn.await_count, 1)
+                self.assertEqual(submit.await_count, 1)
+                release_capture.set()
+                await asyncio.wait_for(first_task, 2)
+                pending = self.catalog.pending_turn_settlement(PRODUCT_SESSION_ID)
+                self.assertTrue(pending.recovery_blocked)
+                assert_resource_finalizing(False)
+                await turns._drain_next(self.live)
+                self.assertEqual(attempts, [first_turn])
+                self.assertEqual(submit.await_count, 1)
+                read_pending = self.catalog.pending_turn_settlement
+                pending_reads: list[int] = []
+
+                def read_pending_off_loop(session_id):
+                    pending_reads.append(threading.get_ident())
+                    return read_pending(session_id)
+
+                with patch.object(
+                    self.catalog, "pending_turn_settlement", side_effect=read_pending_off_loop
+                ):
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, next_turn)
+                    self.assertIsNone(self.live.current_task)
+                    active = asyncio.create_task(release_active.wait())
+                    self.live.current_task = active
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                    await turns.resume_resource_finalization(PRODUCT_SESSION_ID, first_turn)
+                    self.assertIs(self.live.current_task, active)
+                    self.assertEqual(len(pending_reads), 2)
+                    self.assertNotIn(threading.get_ident(), pending_reads)
+                self.assertEqual(attempts, [first_turn])
+                release_active.set()
+                await asyncio.wait_for(active, 2)
+                async with asyncio.timeout(2):
+                    while (
+                        self.catalog.queued_message(PRODUCT_SESSION_ID, next_turn).state
+                        is not QueuedMessageState.COMPLETED
+                    ):
+                        await asyncio.sleep(0.01)
+                self.assertEqual(attempts, [first_turn, first_turn, next_turn])
+                self.assertEqual(submit.await_count, 2)
+            finally:
+                release_capture.set()
+                release_active.set()
+                if self.live.current_task is not None:
+                    self.live.current_task.cancel()
+                    await asyncio.gather(self.live.current_task, return_exceptions=True)
 
     async def test_online_settlement_accepts_queue_without_starting_next_turn(self) -> None:
         inspected = asyncio.Event()
@@ -8470,6 +8617,60 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                         read(PRODUCT_SESSION_ID, path)
                     self.assertEqual(raised.exception.status_code, 400)
 
+    async def test_chat_file_link_uses_only_its_bound_output_directory(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        session_id = "managed-file-link"
+        self.catalog.allocate(
+            session_id,
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            runtime_workdir=str(self.workdir),
+            project_path=str(self.workdir),
+            output_root=str(self.workdir),
+            title="研究 验收",
+            output_policy=SessionOutputPolicy.MANAGED,
+        )
+        self.assertEqual(service.resolve_chat_file_link(session_id, "proof.lean"), "proof.lean")
+        output_dir = self.catalog.prepare_output(session_id, self.workdir)
+        assert output_dir is not None
+        output = Path(output_dir)
+        nested = output / "work" / "direct-task"
+        nested.mkdir(parents=True)
+        (output / "proof.lean").write_text("proof", encoding="utf-8")
+        (nested / "problem.lean").write_text("problem", encoding="utf-8")
+        sibling = output.with_name("another-session")
+        sibling.mkdir()
+        (sibling / "other.lean").write_text("other", encoding="utf-8")
+
+        for link, expected in (
+            ("proof.lean", b"proof"),
+            ("work/direct-task/problem.lean", b"problem"),
+        ):
+            canonical = (output / link).relative_to(self.workdir).as_posix()
+            with self.subTest(link=link):
+                self.assertEqual(service.resolve_chat_file_link(session_id, link), canonical)
+                self.assertEqual(service.resolve_chat_file_link(session_id, canonical), canonical)
+                self.assertEqual(service.file_raw(session_id, canonical)[0], expected)
+                with self.assertRaises(HTTPException) as raised:
+                    service.file_raw(session_id, link)
+                self.assertEqual(raised.exception.status_code, 404)
+
+        (self.workdir / "proof.lean").write_text("original", encoding="utf-8")
+        self.assertEqual(service.resolve_chat_file_link(session_id, "proof.lean"), "proof.lean")
+        for path in (
+            "other.lean",
+            "../another-session/other.lean",
+            "C:proof.lean",
+            "work\\proof.lean",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(service.resolve_chat_file_link(session_id, path), path)
+
+        if os.name != "nt":
+            (output / "other.lean").symlink_to(sibling / "other.lean")
+            self.assertEqual(service.resolve_chat_file_link(session_id, "other.lean"), "other.lean")
+
     async def test_project_cwd_context_reads_latest_title_without_output_path(self) -> None:
         self.live.relocate(cwd=self.workdir, project_path=self.workdir, output_root=self.workdir)
         driver = self.live.runtime_driver
@@ -9547,6 +9748,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resume_request.permission.mode, mode)
                 self.assertEqual(resume_request.permission.deny_read_roots, ())
                 self.assertEqual(resume_request.skill_roots, SERVICE_SKILL_ROOTS)
+                self.assertFalse(resume_request.native_plan_enabled)
                 self.assertEqual(resume_request.artifact_directives, ())
                 self.assertIsNotNone(resume_request.secret_port)
                 self.assertEqual(

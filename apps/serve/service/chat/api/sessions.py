@@ -577,6 +577,10 @@ def mount_session_routes(
     def session_file_content(session_id: str, path: str = Query(...)) -> dict[str, Any]:
         return sessions.file_content(session_id, path)
 
+    @app.get("/api/serve/sessions/{session_id}/files/chat-link", dependencies=session_guard)
+    def session_chat_file_link(session_id: str, path: str = Query(...)) -> dict[str, str]:
+        return {"path": sessions.resolve_chat_file_link(session_id, path)}
+
     @app.get("/api/serve/sessions/{session_id}/files/raw", dependencies=session_guard)
     def session_file_raw(session_id: str, path: str = Query(...)) -> Response:
         content, media_type = sessions.file_raw(session_id, path)

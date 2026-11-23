@@ -12,9 +12,9 @@ import {
   sameSessionCatalog,
   sessionSummaryNeedsCatalog,
 } from './catalog.ts'
-import type { AspEnvelope, SessionStatusSnapshot } from './api.ts'
+import type { AspEnvelope, ServeSession, SessionStatusSnapshot } from './api.ts'
 import type { Thread } from './model.ts'
-import { projectSessionState, recoveryCheckIsCurrent } from './runtime.ts'
+import { catalogRunStateIsCurrent, projectSessionState, recoveryCheckIsCurrent } from './runtime.ts'
 import { projectContextCompaction } from './transcript.ts'
 import { activityRows, hasVisibleTurnProgress, workingIndicatorVisible } from './activity.ts'
 
@@ -91,14 +91,8 @@ test('native compaction establishes active turn progress before any answer or to
   )
 })
 
-test('live recovery incidents supply the identity used to reject a superseded check', () => {
-  let current: Thread = {
-    id: 'thread',
-    title: 'Task',
-    sessionId: 'session',
-    conversation: [],
-    lastSeq: 0,
-  }
+function liveSessionStateProjector(initial: Thread) {
+  let current = initial
   const branch = block(liveSource, "case 'session_state': {", "case 'session_title_updated':")
   const apply = runInNewContext(
     ts.transpileModule(`(event) => { switch (event.type) { ${branch} } }`, {
@@ -110,12 +104,28 @@ test('live recovery incidents supply the identity used to reject a superseded ch
       patchThread: (_id: string, update: (thread: Thread) => Partial<Thread>) => {
         current = { ...current, ...update(current) }
       },
+      turnTimings: (thread: Thread) => thread.turnTimings,
+      productEventTime: () => 0,
       set: () => {},
       refreshMeta: { current: () => {} },
     }
   ) as (
     event: Pick<Extract<AspEnvelope, { type: 'session_state' }>, 'type' | 'data' | 'seq'>
   ) => void
+  return (event: Parameters<typeof apply>[0]): Thread => {
+    apply(event)
+    return current
+  }
+}
+
+test('live recovery incidents supply the identity used to reject a superseded check', () => {
+  const apply = liveSessionStateProjector({
+    id: 'thread',
+    title: 'Task',
+    sessionId: 'session',
+    conversation: [],
+    lastSeq: 0,
+  })
   const blocked = {
     state: 'failed',
     runtime_id: 'codex',
@@ -123,14 +133,56 @@ test('live recovery incidents supply the identity used to reject a superseded ch
     recovery_pending: true,
     incident_id: 'incident-1',
   } as const
-  apply({ type: 'session_state', seq: 10, data: blocked })
-  const requested = current
+  const requested = apply({ type: 'session_state', seq: 10, data: blocked })
   assert.equal(requested.recoveryIncidentId, 'incident-1')
   assert.equal(requested.recoverySourceSeq, 10)
-  apply({ type: 'session_state', seq: 12, data: { ...blocked, incident_id: 'incident-2' } })
+  const current = apply({
+    type: 'session_state',
+    seq: 12,
+    data: { ...blocked, incident_id: 'incident-2' },
+  })
   assert.equal(current.recoveryIncidentId, 'incident-2')
   assert.equal(current.recoverySourceSeq, 12)
   assert.equal(recoveryCheckIsCurrent(current, requested), false)
+})
+
+test('a new active turn supersedes settlement while blocked recovery remains pending', () => {
+  const thread: Thread = {
+    id: 'thread',
+    title: 'Task',
+    sessionId: 'session',
+    conversation: [],
+    lastSeq: 20,
+    activeTurnId: 'completed-turn',
+    recoveryPending: true,
+    resourceFinalizing: true,
+  }
+  const active = {
+    type: 'session_state',
+    seq: 21,
+    data: { state: 'running', runtime_id: 'codex', active_turn_id: 'next-turn' },
+  } as const
+  const next = liveSessionStateProjector(thread)(active)
+  assert.equal(next.running, true)
+  assert.equal(next.activeTurnId, 'next-turn')
+  assert.equal(next.recoveryPending, false)
+  assert.equal(next.resourceFinalizing, false)
+
+  for (const data of [
+    { ...active.data, active_turn_id: undefined },
+    { ...active.data, active_turn_id: 'completed-turn' },
+    { ...active.data, recovery_pending: true },
+  ]) {
+    const unchanged = liveSessionStateProjector(thread)({ ...active, data })
+    assert.equal(unchanged.recoveryPending, true)
+    assert.equal(unchanged.resourceFinalizing, true)
+  }
+  const blocked = liveSessionStateProjector(thread)({
+    ...active,
+    data: { ...active.data, recovery_blocked: true },
+  })
+  assert.equal(blocked.recoveryPending, true)
+  assert.equal(blocked.resourceFinalizing, false)
 })
 
 test('shared notifications forward subjects without changing legacy record reset delivery', () => {
@@ -775,7 +827,7 @@ test('all catalog refresh entry points share one request and one dirty follow-up
   assert.equal(harness.calls(), 2)
 })
 
-test('authoritative catalog titles replace stale background titles before status patches', () => {
+function catalogThreadReconciler() {
   const source = block(
     liveSource,
     'function reconcileThreadRuntime(',
@@ -783,11 +835,11 @@ test('authoritative catalog titles replace stale background titles before status
   )
   const context = {
     openedSessionTitle,
-    catalogRunStateIsCurrent: () => true,
+    catalogRunStateIsCurrent,
     reconcileThreadRuntime: undefined as unknown as (
-      threads: unknown,
-      sessions: unknown
-    ) => Record<string, { title: string; title_fallback: unknown }>,
+      threads: Record<string, Thread>,
+      sessions: (Partial<ServeSession> & Pick<ServeSession, 'session_id'>)[]
+    ) => Record<string, Thread>,
   }
   runInNewContext(
     ts.transpileModule(`${source}; globalThis.reconcileThreadRuntime = reconcileThreadRuntime`, {
@@ -795,11 +847,17 @@ test('authoritative catalog titles replace stale background titles before status
     }).outputText,
     context
   )
-  const result = context.reconcileThreadRuntime(
+  return context.reconcileThreadRuntime
+}
+
+test('authoritative catalog titles replace stale background titles before status patches', () => {
+  const result = catalogThreadReconciler()(
     {
       background: {
         id: 'background',
         sessionId: 'background',
+        lastSeq: 0,
+        conversation: [],
         title: 'New task',
         title_fallback: 'new_session',
       },
@@ -808,6 +866,41 @@ test('authoritative catalog titles replace stale background titles before status
   )
   assert.equal(result.background.title, 'Authoritative title')
   assert.equal(result.background.title_fallback, null)
+})
+
+test('only current sequenced catalog state can clear pending resource settlement', () => {
+  const reconcile = catalogThreadReconciler()
+  const thread: Thread = {
+    id: 'thread',
+    sessionId: 'session',
+    title: 'Task',
+    conversation: [],
+    lastSeq: 20,
+    status: 'done',
+    running: false,
+    recoveryPending: true,
+    recoveryBlocked: false,
+    resourceFinalizing: true,
+  }
+  const settled = { session_id: 'session', recovery_pending: false, resource_finalizing: false }
+  for (const snapshot of [settled, { ...settled, last_seq: 19 }]) {
+    const next = reconcile({ thread }, [snapshot]).thread
+    assert.equal(next.recoveryPending, true)
+    assert.equal(next.resourceFinalizing, true)
+    assert.equal(next.lastSeq, 20)
+  }
+
+  const completed = reconcile({ thread }, [{ ...settled, last_seq: 21 }]).thread
+  assert.equal(completed.recoveryPending, false)
+  assert.equal(completed.resourceFinalizing, false)
+  assert.equal(completed.lastSeq, 20)
+
+  const blocked = reconcile({ thread }, [
+    { session_id: 'session', last_seq: 21, recovery_pending: true, recovery_blocked: true },
+  ]).thread
+  assert.equal(blocked.recoveryPending, true)
+  assert.equal(blocked.recoveryBlocked, true)
+  assert.equal(blocked.resourceFinalizing, false)
 })
 
 test('summary invalidation preserves status delivery and catalog catch-up for reset, removal and rename', () => {

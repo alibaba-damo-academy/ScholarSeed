@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator, Iterator
 from typing import Any, Mapping
 
@@ -67,9 +68,11 @@ from service.chat.persistence.events import (
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.live import LiveSession
 from service.chat.service.plan import PlanToolProjection
+from service.platform.activity import Activities
 from service.platform.context import ASSISTANT_CONTEXT_MARKER
 from service.platform.sse import SSE_HEARTBEAT_FRAME, sse_encode
 
+SSE_REPLAY_PAGE_SIZE = 2_048
 HISTORY_ACTIVITY_EVENT_KINDS = frozenset(
     {
         PRODUCT_EVENT_ANSWER_SOURCES,
@@ -124,10 +127,13 @@ class EventService:
         sessions: dict[str, LiveSession],
         events: ProductEventStore,
         logger: Any,
+        *,
+        activities: Activities | None = None,
     ) -> None:
         self._sessions = sessions
         self._events = events
         self._logger = logger
+        self._activities = activities if activities is not None else Activities()
 
     def portable_history(self, session_id: str) -> tuple[Any, ...]:
         """Return the durable provider-neutral messages owned by product events."""
@@ -423,6 +429,33 @@ class EventService:
             str(turn.get("kind") or "") == "text" and str(turn.get("role") or "") == "user"
         )
 
+    def _sse_page(
+        self, session_id: str, *, after_seq: int, from_seq: int, projection: PlanToolProjection
+    ) -> tuple[int, int, list[tuple[int, str]]]:
+        page = self._events.replay(session_id, after_seq=after_seq, limit=SSE_REPLAY_PAGE_SIZE)
+        frames = []
+        for original in page:
+            record = projection.project(original)
+            if record.product_seq > from_seq:
+                frames.append((record.product_seq, sse_encode(LiveSession.event_envelope(record))))
+        return (page[-1].product_seq if page else after_seq), len(page), frames
+
+    async def _sse_pages(
+        self, session_id: str, *, after_seq: int, from_seq: int, projection: PlanToolProjection
+    ) -> AsyncGenerator[tuple[int, list[tuple[int, str]]], None]:
+        while True:
+            after_seq, scanned, frames = await self._activities.finish_observed_thread(
+                self._sse_page,
+                session_id,
+                after_seq=after_seq,
+                from_seq=from_seq,
+                projection=projection,
+            )
+            if scanned:
+                yield scanned, frames
+            if scanned < SSE_REPLAY_PAGE_SIZE:
+                return
+
     async def open(self, session_id: str, from_seq: int) -> AsyncGenerator[str, None]:
         live = self._sessions.get(session_id)
         queue: asyncio.Queue[dict[str, Any]] | None = None
@@ -438,29 +471,40 @@ class EventService:
                 "from_seq": int(from_seq or 0),
             },
         )
-        last = max(0, int(from_seq or 0))
+        from_seq = last = max(0, int(from_seq or 0))
         projection = PlanToolProjection()
         try:
-            self._logger.debug(
+            started = time.monotonic()
+            self._logger.info(
+                "%s session_id=%s from_seq=%s started_at=%.3f",
                 SSE_REPLAY_STARTED_EVENT,
-                extra={"session_id": session_id, "from_seq": last},
+                session_id,
+                from_seq,
+                time.time(),
             )
+            scanned = 0
             replayed = 0
-            for original in self._records(session_id):
-                record = projection.project(original)
-                if record.product_seq > last:
-                    envelope = LiveSession.event_envelope(record)
-                    yield sse_encode(envelope)
-                    last = record.product_seq
+            # The plan projection needs the prefix even when the client is at the head.
+            async for count, frames in self._sse_pages(
+                session_id, after_seq=0, from_seq=from_seq, projection=projection
+            ):
+                if live is not None and queue not in live.subscribers:
+                    return
+                scanned += count
+                for last, frame in frames:
+                    yield frame
                     replayed += 1
-            self._logger.debug(
+            self._logger.info(
+                "%s session_id=%s from_seq=%s last_seq=%s scanned=%s replayed=%s "
+                "elapsed_ms=%.3f finished_at=%.3f",
                 SSE_REPLAY_FINISHED_EVENT,
-                extra={
-                    "session_id": session_id,
-                    "from_seq": int(from_seq or 0),
-                    "last_seq": last,
-                    "replayed": replayed,
-                },
+                session_id,
+                from_seq,
+                last,
+                scanned,
+                replayed,
+                (time.monotonic() - started) * 1_000,
+                time.time(),
             )
             while True:
                 if queue is None:
@@ -475,11 +519,14 @@ class EventService:
                 # Notifications are wakeups, never the sequence source. Product
                 # writers outside the agent loop can commit between live events.
                 delivered = False
-                for original in self._records(session_id, after_seq=last):
-                    record = projection.project(original)
-                    yield sse_encode(LiveSession.event_envelope(record))
-                    last = record.product_seq
-                    delivered = True
+                async for _, frames in self._sse_pages(
+                    session_id, after_seq=last, from_seq=last, projection=projection
+                ):
+                    if live is not None and queue not in live.subscribers:
+                        return
+                    for last, frame in frames:
+                        yield frame
+                        delivered = True
                 if not delivered:
                     yield SSE_HEARTBEAT_FRAME
         finally:

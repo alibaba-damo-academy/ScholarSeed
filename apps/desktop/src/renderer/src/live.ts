@@ -360,7 +360,17 @@ export function onEvent(
     case 'session_state': {
       const runtimeState = projectSessionState(event.data)
       const status = runtimeState.status ?? 'dormant'
+      const runningTurnId = event.data.state === 'running' ? runtimeState.activeTurnId : null
       patchThread(threadId, (thread) => ({
+        // A new native turn supersedes the previous healthy resource settlement.
+        ...(thread.resourceFinalizing &&
+        !thread.recoveryBlocked &&
+        runningTurnId &&
+        runningTurnId !== thread.activeTurnId &&
+        !runtimeState.recoveryPending &&
+        !runtimeState.resourceFinalizing
+          ? { recoveryPending: false, resourceFinalizing: false }
+          : {}),
         ...runtimeState,
         recoveryIncidentId: event.data.recovery_blocked ? (event.data.incident_id ?? null) : null,
         recoverySourceSeq: event.data.recovery_blocked ? event.seq : 0,
@@ -826,6 +836,8 @@ export function onEvent(
         running: false,
         interrupting: false,
         status: 'done',
+        ...(event.data.resource_finalizing === true ? { recoveryPending: true } : {}),
+        resourceFinalizing: event.data.resource_finalizing === true,
         turnOutcomes: turnOutcomes(thread, event.turn_id, 'completed'),
         turnTimings: turnTimings(thread, event.turn_id, productEventTime(event.ts), true),
         conversation: placeFinalAssistantLast(
@@ -1003,10 +1015,20 @@ function reconcileThreadRuntime(
     const session = byId.get(thread.sessionId ?? thread.id)
     if (!session) continue
     const stateCurrent = catalogRunStateIsCurrent(session, thread)
+    const settlementCurrent =
+      stateCurrent &&
+      (session.last_seq !== undefined || !(thread.recoveryPending || thread.resourceFinalizing))
+    const recoveryBlocked = settlementCurrent
+      ? session.recovery_blocked === true
+      : thread.recoveryBlocked
+    const resourceFinalizing =
+      session.recovery_pending === false || session.recovery_blocked === true
+        ? false
+        : session.resource_finalizing
     const running = stateCurrent ? session.running === true : thread.running
     const status: SessionStatus = !stateCurrent
       ? (thread.status ?? (thread.running ? 'running' : 'done'))
-      : session.recovery_blocked
+      : recoveryBlocked
         ? 'failed'
         : session.waiting
           ? 'waiting'
@@ -1024,17 +1046,19 @@ function reconcileThreadRuntime(
       ...thread,
       ...openedSessionTitle(session),
       running,
-      recoveryBlocked: stateCurrent ? session.recovery_blocked === true : thread.recoveryBlocked,
-      recoveryIncidentId: stateCurrent
+      recoveryBlocked,
+      recoveryIncidentId: settlementCurrent
         ? (session.recovery_incident_id ?? null)
         : thread.recoveryIncidentId,
-      recoverySourceSeq: stateCurrent
+      recoverySourceSeq: settlementCurrent
         ? (session.recovery_source_seq ?? 0)
         : thread.recoverySourceSeq,
-      recoveryPending:
-        stateCurrent && (!thread.recoveryPending || session.last_seq !== undefined)
-          ? (session.recovery_pending ?? thread.recoveryPending)
-          : thread.recoveryPending,
+      recoveryPending: settlementCurrent
+        ? (session.recovery_pending ?? thread.recoveryPending)
+        : thread.recoveryPending,
+      resourceFinalizing: settlementCurrent
+        ? (resourceFinalizing ?? thread.resourceFinalizing)
+        : thread.resourceFinalizing,
       status,
       workdir: session.runtime_workdir || session.workdir || thread.workdir,
       projectPath:
@@ -1445,6 +1469,7 @@ export function useLiveSession(): void {
               recoveryIncidentId: history.recovery_incident_id ?? null,
               recoverySourceSeq: history.recovery_source_seq ?? 0,
               recoveryPending: history.recovery_pending === true,
+              resourceFinalizing: history.resource_finalizing === true,
             }))
           }
           reportFailure(classifySessionResumeFailure(opened), history?.recovery_blocked === true)
@@ -1565,6 +1590,7 @@ export function useLiveSession(): void {
             recoveryIncidentId: opened.recovery_incident_id ?? null,
             recoverySourceSeq: opened.recovery_source_seq ?? 0,
             recoveryPending: opened.recovery_pending === true,
+            resourceFinalizing: opened.resource_finalizing === true,
             interrupting: Boolean(opened.interrupting),
             queuedMessages: mergeQueuedOutbox(
               sessionId,
