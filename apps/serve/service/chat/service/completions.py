@@ -669,6 +669,7 @@ class CompletionBridge:
         on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
         on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
         on_tool_outputs: Callable[[str, str, set[str]], None] | None = None,
+        manual_skill_turn: Callable[[str, str], bool] | None = None,
         auto_route: Callable[[str, str], AutoRoute | None] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         content_source: Callable[[str, str], ContentSource | None] | None = None,
@@ -681,6 +682,7 @@ class CompletionBridge:
         self._on_diagnostic = on_diagnostic
         self._on_sources = on_sources
         self._on_tool_outputs = on_tool_outputs
+        self._manual_skill_turn = manual_skill_turn
         self._auto_route = auto_route
         self._turn_ids = turn_ids
         self._content_source = content_source
@@ -1440,9 +1442,13 @@ class CompletionBridge:
             if self._auto_route and call.diagnostic.turn_id
             else None
         )
-        if upstream.approval_model_ref and payload.get("model") == upstream.approval_model_ref:
+        approval = upstream.approval_model_ref and payload.get("model") == upstream.approval_model_ref
+        if approval:
             route = None
-        if route:
+        elif route or (
+            self._manual_skill_turn
+            and self._manual_skill_turn(upstream.session_id, call.diagnostic.turn_id)
+        ):
             payload = project_guidance(payload, route)
         call.diagnostic.converted_input_items = converted_items
         if not upstream.allow_tools:

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from service.chat.prompts.skills import manual_skill_instructions
 from service.identity.service.account_token import CONV_MESSAGE_ID_HEADER, CONV_TURN_ID_HEADER
 from service.inference.guides import GUIDES, documents
 from service.settings.catalog import DEEPRD_GATEWAY_BASE_URL, GATEWAY_MODEL_CATALOG
@@ -273,32 +274,46 @@ def guide_inventory(text):
     return "".join(kept)
 
 
-def project_guidance(payload, route):
-    items = []
+def project_guidance(payload, route: AutoRoute | None):
+    # A resumed native thread can replay developer messages from an earlier mode.
+    # Apply this turn's policy to privileged text only, leaving user history intact.
+    manual = manual_skill_instructions()
+    has_manual = False
+
+    def project_text(text):
+        nonlocal has_manual
+        if route is None:
+            has_manual |= manual in text
+            return text
+        return guide_inventory(text.replace(manual, ""))
+
+    payload = dict(payload)
+    if isinstance(payload.get("instructions"), str):
+        payload["instructions"] = project_text(payload["instructions"])
     source = payload.get("input")
     if isinstance(source, str):
-        if not route.guidance:
-            return payload
         source = [{"role": "user", "content": source}]
     if not isinstance(source, list):
         return payload
+    items = []
     for item in source:
-        if (
-            isinstance(item, dict)
-            and item.get("role") == "developer"
-            and isinstance(item.get("content"), list)
-        ):
-            parts = [
-                dict(part, text=guide_inventory(part["text"]))
-                if isinstance(part, dict) and isinstance(part.get("text"), str)
-                else part
-                for part in item["content"]
-            ]
-            items.append(dict(item, content=parts))
-        else:
-            items.append(item)
-    if route.guidance:
+        projected = item
+        if isinstance(item, dict) and item.get("role") in ("system", "developer"):
+            content = item.get("content")
+            if isinstance(content, str):
+                projected = dict(item, content=project_text(content))
+            elif isinstance(content, list):
+                parts = [
+                    dict(part, text=project_text(part["text"]))
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    else part
+                    for part in content
+                ]
+                projected = dict(item, content=parts)
+        items.append(projected)
+    guidance = route.guidance if route else ("" if has_manual else manual)
+    if guidance:
         items.insert(
-            0, {"role": "developer", "content": [{"type": "input_text", "text": route.guidance}]}
+            0, {"role": "developer", "content": [{"type": "input_text", "text": guidance}]}
         )
     return dict(payload, input=items)

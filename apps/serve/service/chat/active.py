@@ -19,16 +19,10 @@ import json
 import re
 from pathlib import Path
 
+from service.chat.prompts.skills import manual_skill_instructions
 from service.chat.service.adapters import registrations, resolve_runtime_id
 
-# 书深产品的会话指令资产, 由本模块注入当前 runtime。
-# baseInstructions.md 维护替换 runtime 内置基础指令的完整基础指令 (base_instructions);
-# developerInstructions.md 维护叠加在其上的产品附加开发者指令 (developer_instructions)。
-# 两者按产品职责维护, 算法 config.toml 更新按章节审查而非整份覆盖:
-# baseInstructions.md 保留独立执行基础, developerInstructions.md 保留产品边界和入口;
-# Request Type Gate 参考上游 developer_instructions, 科研细则由
-# academic-research-guidance skill 按需加载, 产品细则由
-# scholarseed-product-operations skill 按需加载。
+# Shared runtime instructions and the discovery rules used outside Auto routing.
 BASE_PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "baseInstructions.md"
 DEVELOPER_PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "developerInstructions.md"
 TEXT_ENCODING = "utf-8"
@@ -101,11 +95,8 @@ def developer_instructions(
     prompt = DEVELOPER_PROMPT_FILE.read_text(encoding=TEXT_ENCODING)
     if not prompt.strip():
         raise ValueError(f"ScholarSeed developer instructions are empty: {DEVELOPER_PROMPT_FILE}")
-    if auto:
-        # Auto selects these two guide sources before the model request.
-        start = prompt.index("## Request Type Gate")
-        end = prompt.index("Use supported product operations;", start)
-        prompt = prompt[:start] + prompt[end:]
+    if not auto:
+        prompt += "\n" + manual_skill_instructions() + "\n"
     if output_directory:
         prompt += OUTPUT_DIRECTORY_INSTRUCTIONS.format(path=json.dumps(output_directory))
     if project_context:

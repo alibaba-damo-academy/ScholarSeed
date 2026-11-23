@@ -314,6 +314,10 @@ def create_chat_app(
         route = live.auto_route if live is not None else None
         return route if route and route.turn == turn else None
 
+    def manual_skill_turn(session_id: str, turn: str) -> bool:
+        live = sessions.get(session_id)
+        return bool(turn and live and live.active_product_turn_id == turn and live.auto_route is None)
+
     completion_bridge = CompletionBridge(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),
         on_model=observe_model,
@@ -322,6 +326,7 @@ def create_chat_app(
         on_tool_outputs=observe_tool_outputs,
         turn_ids=session_turn_id,
         auto_route=auto_route,
+        manual_skill_turn=manual_skill_turn,
         content_source=content_source,
         source_endpoints=(DEEPRD_GATEWAY_BASE_URL,),
         retryable_tool_endpoints={
