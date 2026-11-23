@@ -662,6 +662,7 @@ export type ConvItem = TurnOwned &
             | 'connection'
             | 'overloaded'
             | 'content_policy'
+            | 'output_limit'
             | 'unknown'
           fallback: 'frame' | 'runtime' | 'raw'
           authentication?: 'account' | 'model'

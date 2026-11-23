@@ -6148,6 +6148,21 @@ def test_durable_thread_unsubscribes() -> None:
     asyncio.run(run())
 
 
+def test_output_limit_failure_is_recoverable() -> None:
+    for error in (
+        {"message": "Incomplete response returned, reason: max_output_tokens"},
+        {"code": "max_output_tokens", "message": "private provider detail"},
+    ):
+        failure = provider_failure(error)
+        check(
+            "output cap is recoverable and identified",
+            failure.code == "max_output_tokens"
+            and failure.diagnostic_code == "max_output_tokens"
+            and failure.retryability is RuntimeRetryability.USER_RETRYABLE
+            and failure.message == "The model response reached its output token limit.",
+        )
+
+
 def test_subscription_capability_rejection_is_terminal() -> None:
     code = "subscription_sharing_unsupported_capability"
     privateMessage = "private upstream detail https://secret.example/token?access=credential"
@@ -7461,6 +7476,7 @@ def main() -> int:
     test_codex_idle_timeout_preserves_failure_semantics()
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()
+    test_output_limit_failure_is_recoverable()
     test_subscription_capability_rejection_is_terminal()
     test_provider_http_authentication()
     print(f"\nPASS={PASS} FAIL={FAIL}")

@@ -16,6 +16,7 @@ export type ProviderFailureKind =
   | 'connection'
   | 'overloaded'
   | 'content_policy'
+  | 'output_limit'
 
 const QUOTA_FAILURE =
   /(?:insufficient|exceeded).*(?:balance|quota|credit)|(?:balance|quota|credit).*(?:insufficient|exceeded)|余额|额度/i
@@ -30,6 +31,7 @@ const GATEWAY_CREDENTIAL_REQUIRED_CODE = 'gateway_credential_required'
 export const SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE =
   'subscription_sharing_unsupported_capability'
 const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  'output_limit',
   'unavailable',
   'overloaded',
   'rate_limit',
@@ -38,6 +40,7 @@ const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
   'unknown',
 ])
 const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>>> = {
+  max_output_tokens: 'output_limit',
   [SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE]: 'capability',
   subscription_sharing_usage_limit_exceeded: 'subscription_limit',
   content_safety_blocked: 'content_policy',
@@ -97,6 +100,10 @@ function fallbackKind(message: string): ProviderFailureKind | undefined {
 }
 
 const FAILURE_TEXT = {
+  output_limit: {
+    messageKey: 'failure.outputLimit.message',
+    actionKey: 'failure.outputLimit.action',
+  },
   capability: { messageKey: 'failure.capability.message', actionKey: 'failure.capability.action' },
   subscription_limit: {
     messageKey: 'failure.subscriptionLimit.message',
@@ -257,6 +264,7 @@ export function formatTurnFailure(
 // Compatibility identities for error cards already projected by older renderer versions.
 // These strings are never used to generate new UI messages.
 const LEGACY_FAILURE_MESSAGES = {
+  output_limit: '',
   capability: SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE,
   subscription_limit: '',
   content_policy: '',

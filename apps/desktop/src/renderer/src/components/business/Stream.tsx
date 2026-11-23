@@ -7864,7 +7864,9 @@ function ErrorCard({
               >
                 {continueUnknown
                   ? t('stream.continuePending')
-                  : item.failure?.kind === 'connection' || item.failure?.kind === 'unknown'
+                  : item.failure?.kind === 'connection' ||
+                      item.failure?.kind === 'unknown' ||
+                      item.failure?.kind === 'output_limit'
                     ? t('stream.continueInterrupted')
                     : conversation('failure.retry')}
               </Button>

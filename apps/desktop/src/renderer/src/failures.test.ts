@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+test('output limit keeps its cause and supports continuation', () => {
+  const failure = describeTurnFailure({ code: 'max_output_tokens', retryable: true })
+  assert.equal(failure.failure?.kind, 'output_limit')
+  assert.equal(isRecoverableTurnFailure(failure), true)
+})
+
 import {
   authenticationRecoveryAction,
   describeTurnFailure,

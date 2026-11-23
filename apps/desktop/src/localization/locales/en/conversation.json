@@ -309,6 +309,10 @@
     "title": "Answer generation failed",
     "frame": "The model service returned an unrecognized error.",
     "runtime": "The request did not reach Codex Runtime.",
+    "outputLimit": {
+      "message": "This response reached the model's output token limit.",
+      "action": "Generated content, your question and context have been retained. Continue the task to generate the remaining content, or switch models."
+    },
     "quota": {
       "message": "Model rate limit reached",
       "action": "Try again later or switch models."

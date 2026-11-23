@@ -84,6 +84,9 @@ ERROR_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 METADATA_PATTERN = re.compile(r"[a-zA-Z0-9_.:/+\-]+")
 RESPONSE_TERMINALS = frozenset(("response.completed", "response.failed", "response.incomplete"))
 RESPONSE_FAILED = "response.failed"
+RESPONSE_INCOMPLETE = "response.incomplete"
+OUTPUT_LIMIT_CODE = "max_output_tokens"
+OUTPUT_LIMIT_MESSAGE = "The model response reached its output token limit."
 RESPONSE_OUTPUT_ITEM_DONE = "response.output_item.done"
 SSE_DATA = b"data:"
 SSE_EVENT = b"event:"
@@ -111,6 +114,7 @@ class StreamEnd(str, Enum):
     BRIDGE_ERROR = "bridge_error"
     NOT_STARTED = "not_started"
     PROVIDER_ERROR = "provider_error"
+    INCOMPLETE = "incomplete"
 
 
 @dataclass
@@ -594,6 +598,12 @@ class StreamObservation:
                 self.text_delta_characters += len(delta)
             elif self.last_event == REASONING_TEXT_DELTA_EVENT:
                 self.reasoning_delta_characters += len(delta)
+        incomplete = source.get("incomplete_details")
+        if self.last_event == RESPONSE_INCOMPLETE and isinstance(incomplete, Mapping):
+            self.finish_reason = metadata_token(incomplete.get("reason"))
+            if self.finish_reason == OUTPUT_LIMIT_CODE:
+                self.error_code = OUTPUT_LIMIT_CODE
+                self.error_message = OUTPUT_LIMIT_MESSAGE
         error = source.get("error")
         if not isinstance(error, Mapping) and self.last_event == "error":
             error = source
