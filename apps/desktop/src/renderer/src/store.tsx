@@ -53,7 +53,9 @@ import { flushSync } from 'react-dom'
 import type { AccountSettingsPage, BrowserSettingsSection, MainView } from '../../navigation'
 import { NavigationRecoveryContext, WebNavigationContext } from './contracts/navigation'
 import { openWebPage, webPageErrorKey } from './app/links'
-import { HOME_LOCATION, NAVIGATION_DIAGNOSTIC_PREFIX } from '../../navigation'
+import { NAVIGATION_DIAGNOSTIC_PREFIX } from '../../navigation'
+import { StartupTaskRecovery } from './startup'
+import { prepareStartupSession, projectResumedSession } from './resume'
 import {
   captureNavigationLocation,
   resolveNavigationLocation,
@@ -634,6 +636,7 @@ export interface AppState {
   workspaceLoadState: WorkspaceLoadState
   projectsLoaded: boolean
   navigationRestored: boolean
+  startupTaskRecovery: 'waiting' | 'presenting' | 'skipped' | null
   /** First-turn admission before a durable session exists. */
   turnLaunch: TurnLaunch | null
   collapsedSessionIds: Record<string, boolean>
@@ -944,6 +947,7 @@ const INITIAL: AppState = {
   workspaceLoadState: 'loading',
   projectsLoaded: false,
   navigationRestored: false,
+  startupTaskRecovery: null,
   turnLaunch: null,
   collapsedSessionIds: {},
   resourceRevision: 0,
@@ -1194,6 +1198,7 @@ function activateSession(current: AppState, node: SessionNode, surface: SessionS
     [node.id]: knownThread
       ? {
           ...knownThread,
+          startupHistoryLoaded: false,
           resumeState: 'pending' as const,
           resumeMessage: { key: 'resume.codex' as const },
         }
@@ -1363,6 +1368,9 @@ export interface Actions extends AssistantIngress {
   /** 统一项目切换：解绑跨项目前台会话，不终止后台任务。 */
   selectProject: (projectId: string) => void
   returnHome: () => void
+  skipStartupTaskRecovery: () => void
+  dismissStartupTaskRecovery: () => void
+  startupTaskReadable: (sessionId: string) => void
   openProjectCenter: (options?: { overview?: boolean }) => void
   toggleSessionChildren: (id: string) => void
   /**
@@ -1720,9 +1728,16 @@ export function StoreProvider({
   const { t: assistantText } = useTranslation('assistant')
   const { t: literatureText } = useTranslation('literature')
   const preferenceWriter = useRef<PreferenceWriter | null>(null)
+  const startupTaskSessionId = recoverHome ? null : INITIAL_PREFERENCES.lastLocation?.sessionId
+  const startupTask = useRef<{
+    attempt: StartupTaskRecovery
+    presenting: boolean
+    keepView: boolean
+  } | null>(null)
   const [state, updateState] = useState<AppState>(() => ({
     ...INITIAL,
     navigationRestored: recoverHome,
+    startupTaskRecovery: startupTaskSessionId ? 'waiting' : null,
     aiPanel: {
       ...INITIAL.aiPanel,
       contextPickerSource: assistantSources[0]?.id ?? '',
@@ -1756,7 +1771,23 @@ export function StoreProvider({
       const projected = preferenceWriter.current?.isFrozen()
         ? preserveFrozenPreferences(current, next)
         : projectLayoutTransition(current, next)
-      return observeNavigation(current, followCanvasSession(current, projected), cause)
+      const nextState = followCanvasSession(current, projected)
+      const navigatedDuringRecovery =
+        !current.navigationRestored &&
+        current.startupTaskRecovery !== null &&
+        cause?.action !== 'restore' &&
+        (current.mainView !== nextState.mainView ||
+          current.activeSession !== nextState.activeSession ||
+          current.activeTab !== nextState.activeTab ||
+          current.homeSelectedProjectId !== nextState.homeSelectedProjectId ||
+          current.accountSettingsPage !== nextState.accountSettingsPage ||
+          current.browserSettingsSection !== nextState.browserSettingsSection ||
+          current.draftGeneration !== nextState.draftGeneration)
+      return observeNavigation(
+        current,
+        navigatedDuringRecovery ? { ...nextState, navigationRestored: true } : nextState,
+        cause
+      )
     })
   }, [])
   const observedNavigation = useRef(
@@ -1860,19 +1891,45 @@ export function StoreProvider({
   const navigationRequest = useRef(0)
   const navigationRestoreStarted = useRef(false)
   const navigationRecoveryEpoch = useRef(0)
-  const beginNavigation = useCallback((action: NavigationAction): NavigationCause => {
-    const current = stateRef.current
-    const cause = {
-      action,
-      request: ++navigationRequest.current,
-      startedGeneration: current.navigationObservation?.generation ?? 0,
-    }
-    console.info(
-      NAVIGATION_DIAGNOSTIC_PREFIX,
-      navigationDiagnostic(navigationAttempt(current, cause), 'started')
-    )
-    return cause
-  }, [])
+  const cancelStartupTask = useCallback(
+    (keepView: boolean): void => {
+      const recovery = stateRef.current.startupTaskRecovery
+      if (recovery !== 'waiting' && recovery !== 'presenting') return
+      const candidate = startupTask.current
+      if (candidate) {
+        candidate.keepView = keepView
+        candidate.attempt.finish('skipped')
+      } else {
+        navigationRestoreStarted.current = true
+        setState((current) => ({
+          ...current,
+          navigationRestored: true,
+          startupTaskRecovery: 'skipped',
+        }))
+      }
+    },
+    [setState]
+  )
+  useLayoutEffect(() => {
+    if (state.navigationRestored) cancelStartupTask(true)
+  }, [cancelStartupTask, state.navigationRestored])
+  const beginNavigation = useCallback(
+    (action: NavigationAction): NavigationCause => {
+      if (action !== 'restore') cancelStartupTask(false)
+      const current = stateRef.current
+      const cause = {
+        action,
+        request: ++navigationRequest.current,
+        startedGeneration: current.navigationObservation?.generation ?? 0,
+      }
+      console.info(
+        NAVIGATION_DIAGNOSTIC_PREFIX,
+        navigationDiagnostic(navigationAttempt(current, cause), 'started')
+      )
+      return cause
+    },
+    [cancelStartupTask]
+  )
   const rejectNavigation = useCallback((cause: NavigationCause): void => {
     console.info(
       NAVIGATION_DIAGNOSTIC_PREFIX,
@@ -2374,9 +2431,12 @@ export function StoreProvider({
   useEffect(
     () =>
       composerDraft.current!.subscribe(() => {
-        if (!draftChangingScope.current) rememberSessionDraft()
+        if (!draftChangingScope.current) {
+          if (stateRef.current.startupTaskRecovery === 'waiting') cancelStartupTask(true)
+          rememberSessionDraft()
+        }
       }),
-    [rememberSessionDraft]
+    [cancelStartupTask, rememberSessionDraft]
   )
   useEffect(() => {
     const save = (): void => rememberSessionDraft()
@@ -3255,6 +3315,7 @@ export function StoreProvider({
         }
       },
       openSession: (id, focus, intent = 'assistant') => {
+        cancelStartupTask(false)
         const previous = stateRef.current.activeSession
         const switching = previous !== id || stateRef.current.threads[id]?.readOnly
         if (switching) rememberSessionDraft(true)
@@ -3318,6 +3379,7 @@ export function StoreProvider({
                 ...current.threads,
                 [id]: {
                   ...current.threads[id],
+                  startupHistoryLoaded: false,
                   readOnly: false,
                   resumeState: 'pending' as const,
                   resumeMessage: { key: 'resume.codex' as const },
@@ -3364,6 +3426,7 @@ export function StoreProvider({
       },
       openPanelSession: (node, focus) => {
         if (node.container || node.openable === false) return
+        cancelStartupTask(false)
         if (stateRef.current.activeSession !== node.id) {
           rememberSessionDraft(true)
           composerDraft.current!.set('')
@@ -3390,6 +3453,7 @@ export function StoreProvider({
       },
       returnHome: () => {
         if (preferenceWriter.current!.isFrozen()) return
+        cancelStartupTask(true)
         rememberSessionDraft(true)
         navigationRecoveryEpoch.current += 1
         navigationRestoreStarted.current = true
@@ -3407,6 +3471,18 @@ export function StoreProvider({
           { action: 'workbench' }
         )
       },
+      skipStartupTaskRecovery: () => cancelStartupTask(false),
+      dismissStartupTaskRecovery: () =>
+        setState((current) =>
+          current.startupTaskRecovery === 'skipped'
+            ? { ...current, startupTaskRecovery: null }
+            : current
+        ),
+      startupTaskReadable: (sessionId) => {
+        if (sessionId !== stateRef.current.activeSession) return
+        const candidate = startupTask.current
+        if (candidate?.presenting) candidate.attempt.finish('restored')
+      },
       openProjectCenter: (options) => {
         const current = stateRef.current
         const projectId = rememberedProjectId.current
@@ -3423,6 +3499,7 @@ export function StoreProvider({
         actRef.current.openWorkbenchView('home')
       },
       selectProject: (projectId) => {
+        cancelStartupTask(false)
         if (stateRef.current.homeSelectedProjectId !== projectId) {
           rememberSessionDraft(true)
           composerDraft.current!.set('')
@@ -3574,6 +3651,7 @@ export function StoreProvider({
       captureSettingsSurface: () => settingsSurface.current!.capture(),
       openSettings: (accountSettingsPage, browserSection) => {
         if (!availabilityPolicy.settingsAvailable(accountSettingsPage)) return
+        if (accountSettingsPage) cancelStartupTask(false)
         const settings = settingsSurface.current!.project({
           accountSettingsPage,
           browserSettingsSection: browserSection,
@@ -3604,6 +3682,7 @@ export function StoreProvider({
       },
       openWorkbenchView: (view, options) => {
         if (!availabilityPolicy.routeAvailable(view)) return
+        cancelStartupTask(false)
         rememberSessionDraft(true)
         setState(
           (current) => {
@@ -6135,6 +6214,7 @@ export function StoreProvider({
         )
       },
       startPanelDraft: (seed = {}) => {
+        cancelStartupTask(false)
         rememberSessionDraft(true)
         composerDraft.current!.reset(seed.composerText ?? '')
         setState((current) => {
@@ -6922,6 +7002,7 @@ export function StoreProvider({
           )
         )
           throw new Error('draft_model_unavailable')
+        cancelStartupTask(false)
         rememberSessionDraft(true)
         composerDraft.current!.reset(seed.composerText ?? '')
         setState((current) => {
@@ -7005,6 +7086,7 @@ export function StoreProvider({
     [
       assistantSources,
       beginNavigation,
+      cancelStartupTask,
       literatureText,
       persistAssistantContext,
       draftKey,
@@ -7027,6 +7109,172 @@ export function StoreProvider({
 
   useEffect(() => {
     if (
+      !startupTaskSessionId ||
+      navigationRestoreStarted.current ||
+      state.navigationRestored ||
+      state.workspaceLoadState !== 'ready' ||
+      !state.projectsLoaded
+    )
+      return
+    const saved = INITIAL_PREFERENCES.lastLocation!
+    const navigation = beginNavigation('restore')
+    const host = window.scholarseed
+    const serviceInstanceId = state.serviceInstanceId
+    let token: string | null = null
+    navigationRestoreStarted.current = true
+    const attempt = new StartupTaskRecovery((outcome) => {
+      const restored = outcome === 'restored'
+      if (!restored && candidate.presenting && !candidate.keepView) {
+        actRef.current.returnHome()
+      }
+      startupTask.current = null
+      setState((current) => ({
+        ...current,
+        ...(!restored && candidate.presenting && current.activeSession === startupTaskSessionId
+          ? { activeSession: null }
+          : {}),
+        navigationRestored: true,
+        startupTaskRecovery: restored ? null : 'skipped',
+      }))
+      if (token)
+        void host
+          ?.finishTaskRecovery?.(token, restored ? 'restored' : 'skipped')
+          .catch(console.error)
+      console.info('[startup-task-recovery]', outcome)
+    })
+    const candidate = { attempt, presenting: false, keepView: false }
+    startupTask.current = candidate
+
+    void (async () => {
+      if (host?.getTaskRecoveryStatus && host.beginTaskRecovery && host.finishTaskRecovery) {
+        const status = await host.getTaskRecoveryStatus(startupTaskSessionId)
+        if (!attempt.current) return
+        if (status !== 'eligible') {
+          attempt.finish('skipped')
+          return
+        }
+        token = await host.beginTaskRecovery(startupTaskSessionId)
+        if (!attempt.current) {
+          if (token) await host.finishTaskRecovery(token, 'skipped')
+          return
+        }
+        if (!token) {
+          attempt.finish('skipped')
+          return
+        }
+      }
+      const snapshot = stateRef.current
+      if (
+        (saved.projectId && !snapshot.projects.some((project) => project.id === saved.projectId)) ||
+        (saved.sessionProjectId &&
+          !snapshot.projects.some((project) => project.id === saved.sessionProjectId))
+      ) {
+        attempt.finish('failed')
+        return
+      }
+      const existing = findSessionNode(snapshot.sessions, startupTaskSessionId)
+      const metadata = existing
+        ? null
+        : await readNavigationSession(startupTaskSessionId, attempt.signal)
+      if (!attempt.current) return
+      const node: SessionNode | null =
+        existing ??
+        (metadata && 'session_id' in metadata && metadata.session_id === startupTaskSessionId
+          ? {
+              id: metadata.session_id,
+              title: metadata.title ?? metadata.session_id,
+              title_fallback: sessionTitleFallback(metadata.title_fallback),
+              workdir: metadata.runtime_workdir,
+              projectPath: metadata.project_path ?? null,
+              runtimeId: metadata.runtime_id,
+              status: metadata.running ? 'running' : 'dormant',
+              tone: 'experience',
+              openable: true,
+            }
+          : null)
+      const location = resolveNavigationLocation(saved, snapshot.projects, () => node ?? undefined)
+      if (!node || location.sessionId !== startupTaskSessionId) {
+        attempt.finish('failed')
+        return
+      }
+      const opened = await prepareStartupSession(startupTaskSessionId, attempt.signal)
+      if (!attempt.current) return
+      if (!opened || stateRef.current.serviceInstanceId !== serviceInstanceId) {
+        attempt.finish('failed')
+        return
+      }
+      if (stateRef.current.navigationRestored) {
+        attempt.finish('skipped')
+        return
+      }
+      const view = location.view === 'home' ? 'conversation' : location.view
+      const fixed = fixedTabForView(view) ?? OVERVIEW_TAB
+      const tab =
+        (location.target?.kind === 'tab'
+          ? restoredWorkbenchTab(location.target.id, [], location.projectId)
+          : null) ?? fixed
+      const thread = activateSession(stateRef.current, node, 'workbench').threads[node.id]
+      const resumed = {
+        ...projectResumedSession(thread, {
+          ...opened,
+          serviceInstanceId,
+          acknowledgeQueue: false,
+          timestamp: Date.now(),
+        }),
+        startupHistoryLoaded: true,
+      }
+      if (!attempt.current) return
+      rememberSessionDraft(true)
+      composerDraft.current!.set(
+        sessionDrafts.current!.get(composerDraftKey(node.id, null)!)?.text ?? ''
+      )
+      flushSync(() => {
+        setState((current) => {
+          if (!attempt.current || current.navigationRestored) return current
+          const next = activateSession(current, node, 'workbench')
+          return {
+            ...next,
+            startupTaskRecovery: 'presenting',
+            mainView: view,
+            homeSelectedProjectId: location.projectId,
+            tabs: openWorkbenchTab(next.tabs, view, tab),
+            activeTab: tab.id,
+            aiPanel: { ...next.aiPanel, open: true, cover: location.aiPanelCover },
+            threads: { ...next.threads, [node.id]: resumed },
+          }
+        }, navigation)
+      })
+      candidate.presenting = stateRef.current.startupTaskRecovery === 'presenting'
+    })().catch((error: unknown) => {
+      if (!attempt.current) return
+      console.error('Startup task recovery failed', error)
+      attempt.finish('failed')
+    })
+  }, [
+    beginNavigation,
+    rememberSessionDraft,
+    setState,
+    startupTaskSessionId,
+    state.navigationRestored,
+    state.projectsLoaded,
+    state.serviceInstanceId,
+    state.workspaceLoadState,
+  ])
+
+  useEffect(
+    () => () => {
+      const candidate = startupTask.current
+      if (candidate) {
+        candidate.keepView = true
+        candidate.attempt.finish('skipped')
+      }
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (
+      startupTaskSessionId ||
       navigationRestoreStarted.current ||
       state.navigationRestored ||
       state.workspaceLoadState !== 'ready' ||
@@ -7039,42 +7287,21 @@ export function StoreProvider({
     const currentRestore = (): boolean => active && epoch === navigationRecoveryEpoch.current
     const navigation = beginNavigation('restore')
     void (async () => {
-      const saved = recoverHome ? HOME_LOCATION : INITIAL_PREFERENCES.lastLocation
-      let snapshot = stateRef.current
+      const status = await window.scholarseed?.getTaskRecoveryStatus?.(null)
+      if (!currentRestore()) return
+      if (status === 'home') {
+        setState((current) => ({
+          ...current,
+          navigationRestored: true,
+          startupTaskRecovery: 'skipped',
+        }))
+        return
+      }
+      const saved = INITIAL_PREFERENCES.lastLocation
+      const snapshot = stateRef.current
       if (!saved) {
         setState((current) => ({ ...current, navigationRestored: true }))
         return
-      }
-      const projectAvailable =
-        !saved.projectId || snapshot.projects.some((project) => project.id === saved.projectId)
-      const sessionProjectAvailable =
-        !saved.sessionProjectId ||
-        snapshot.projects.some((project) => project.id === saved.sessionProjectId)
-      if (
-        projectAvailable &&
-        sessionProjectAvailable &&
-        saved.sessionId &&
-        !findSessionNode(snapshot.sessions, saved.sessionId)
-      ) {
-        const opened = await readNavigationSession(saved.sessionId)
-        if (!currentRestore()) return
-        if (opened && 'session_id' in opened && opened.session_id) {
-          const node: SessionNode = {
-            id: opened.session_id,
-            title: opened.title ?? opened.session_id,
-            title_fallback: sessionTitleFallback(opened.title_fallback),
-            workdir: opened.runtime_workdir,
-            projectPath: opened.project_path ?? null,
-            runtimeId: opened.runtime_id,
-            status: opened.running ? 'running' : 'dormant',
-            tone: 'experience',
-            openable: true,
-          }
-          snapshot = { ...snapshot, sessions: upsertSessionNode(snapshot.sessions, node) }
-        } else {
-          actRef.current.returnHome()
-          return
-        }
       }
       const location = resolveNavigationLocation(saved, snapshot.projects, (id) =>
         findSessionNode(snapshot.sessions, id)
@@ -7128,7 +7355,7 @@ export function StoreProvider({
       })
       setState((current) => {
         if (!currentRestore()) return current
-        let next: AppState = {
+        const next: AppState = {
           ...current,
           mainView: navigationView,
           homeSelectedProjectId: location.projectId,
@@ -7143,10 +7370,6 @@ export function StoreProvider({
                 : null,
           },
         }
-        const node = location.sessionId
-          ? findSessionNode(snapshot.sessions, location.sessionId)
-          : undefined
-        if (node) next = activateSession(next, node, 'workbench')
         return {
           ...next,
           navigationRestored: true,
@@ -7164,8 +7387,8 @@ export function StoreProvider({
     }
   }, [
     beginNavigation,
-    recoverHome,
     setState,
+    startupTaskSessionId,
     state.navigationRestored,
     state.workspaceLoadState,
     state.projectsLoaded,
@@ -7202,6 +7425,46 @@ export function StoreProvider({
     state.aiPanel.cover,
   ])
 
+  const manuallyOpenedSession =
+    state.navigationRestored &&
+    activeThread(state).resumeState === 'ready' &&
+    !activeThread(state).startupHistoryLoaded
+      ? state.activeSession
+      : null
+  useEffect(() => {
+    const host = window.scholarseed
+    if (
+      !manuallyOpenedSession ||
+      !host?.getTaskRecoveryStatus ||
+      !host.clearTaskRecoveryOnManualOpen
+    )
+      return
+    let current = true
+    void (async () => {
+      const status = await host.getTaskRecoveryStatus?.(manuallyOpenedSession)
+      if (!current || status !== 'home') return
+      const snapshot = stateRef.current
+      if (snapshot.activeSession !== manuallyOpenedSession) return
+      const projectId = snapshot.homeSelectedProjectId ?? assistantProject(snapshot).projectId
+      const location = captureNavigationLocation(
+        snapshot,
+        projectId,
+        documentWorkspaces.forProject(projectId).getSnapshot()
+      )
+      const confirmed = await preferenceWriter.current!.submitConfirmed(
+        { lastLocation: location },
+        PREFERENCE_SUBMISSION_SOURCE.navigation
+      )
+      if (current && confirmed && stateRef.current.activeSession === manuallyOpenedSession) {
+        await host.clearTaskRecoveryOnManualOpen?.(manuallyOpenedSession)
+        actRef.current.dismissStartupTaskRecovery()
+      }
+    })().catch(console.error)
+    return () => {
+      current = false
+    }
+  }, [manuallyOpenedSession])
+
   useEffect(() => {
     let active = true
     listLiteratureSearches()
@@ -7218,7 +7481,9 @@ export function StoreProvider({
     void actRef.current.reloadLiterature()
   }, [state.homeSelectedProjectId])
 
+  const presentingStartupTask = state.startupTaskRecovery === 'presenting'
   useEffect(() => {
+    if (presentingStartupTask) return
     assistantContextCandidateSeq.current += 1
     if (state.activeSession) {
       setState((current) => ({
@@ -7252,7 +7517,7 @@ export function StoreProvider({
         ...sessionDrafts.current!.get(draftKey(current) ?? '')?.context,
       },
     }))
-  }, [state.activeSession, assistantProject(state).projectPath, draftKey])
+  }, [state.activeSession, assistantProject(state).projectPath, draftKey, presentingStartupTask])
 
   useEffect(() => window.scholarseed.onPluginNavigation?.(() => act.openSettings('skills')), [act])
 

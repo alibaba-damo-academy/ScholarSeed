@@ -62,7 +62,6 @@ import {
   hilRequestedRunState,
 } from './hil'
 import type {
-  Cognitive,
   ConvItem,
   ModelRun,
   SessionArtifact,
@@ -73,6 +72,7 @@ import type {
 import { artifactBelongsToResources, RELEASED_PLAN_SOURCE } from './model'
 import { queuedMessageFromPayload, upsertQueuedMessage } from './queue'
 import { mergeQueuedOutbox, releaseQueuedOutbox } from './outbox'
+import { projectResumedSession, reportSessionResume } from './resume'
 import { useApp } from './store'
 import { projectPlanSnapshots } from './todo'
 import {
@@ -89,7 +89,6 @@ import {
   projectHistorySnapshot,
   projectToolCompletion,
   normalizeToolName,
-  snapshotTurnActivity,
   projectNativeActivityEvent,
   projectPaperSearchEvent,
   projectReviewReadyEvent,
@@ -113,7 +112,6 @@ import {
   reportTransportState,
   reportTurnUnknown,
   reportTurnReconciled,
-  sessionResumeStatusItem,
   SESSION_RESUME_REQUEST_EVENT,
   shouldRetrySessionResume,
   projectResumeRunState,
@@ -257,27 +255,6 @@ function reportLegacyRuntimeNotice(
         ? [...thread.conversation.slice(0, -1), notice]
         : insertTurnRuntimeItem(thread.conversation, notice),
   }
-}
-
-function reportSessionResume(
-  thread: Thread,
-  sessionId: string,
-  text: Extract<ConvItem, { kind: 'status' }>['text'],
-  tone: Cognitive,
-  actionable = false,
-  replaceOnly = false
-): ThreadUpdate {
-  const notice = sessionResumeStatusItem(sessionId, text, tone, actionable)
-  const incidentId = notice.incidentId
-  const index = thread.conversation.findIndex(
-    (item) => item.kind === 'status' && item.incidentId === incidentId
-  )
-  if (index < 0) {
-    return replaceOnly ? {} : { conversation: insertTurnRuntimeItem(thread.conversation, notice) }
-  }
-  const conversation = [...thread.conversation]
-  conversation[index] = notice
-  return { conversation }
 }
 
 function appendDelta(
@@ -1083,6 +1060,7 @@ export function useLiveSession(): void {
   const detachers = useRef<Record<string, () => void>>({})
   const liveIndex = useRef<Record<string, number | null>>({})
   const refreshMetaRef = useRef<() => void>(() => undefined)
+  const refreshStatusRef = useRef<() => void>(() => undefined)
   const resumeAttempts = useRef<Map<string, number>>(new Map())
   const resumeRetryTimers = useRef<Record<string, number>>({})
   const resumeDeferredRetries = useRef<Set<string>>(new Set())
@@ -1198,6 +1176,7 @@ export function useLiveSession(): void {
       if (
         !stateRef.current.workbenchReady ||
         stateRef.current.runtimeQuiescing ||
+        stateRef.current.startupTaskRecovery === 'presenting' ||
         (getSnapshot().modelSelectionSessions[threadId]?.pending ?? 0) > 0
       )
         return
@@ -1299,6 +1278,7 @@ export function useLiveSession(): void {
           startupSnapshot().phase === STARTUP_PHASE.ready &&
           snapshot.backendReady &&
           !snapshot.runtimeQuiescing &&
+          snapshot.startupTaskRecovery !== 'presenting' &&
           !resumeUnknownModels.current.has(threadId) &&
           snapshot.workbenchReady &&
           snapshot.serviceInstanceId === instance &&
@@ -1439,6 +1419,7 @@ export function useLiveSession(): void {
         ) {
           attach(Math.max(cached.lastSeq ?? 0, bodySequences.current.get(sessionId) ?? 0))
           patchThread(threadId, { resumeState: 'ready', resumeMessage: undefined })
+          if (cached.startupHistoryLoaded) refreshStatusRef.current()
           return
         }
         if (await waitForReconfiguration()) return
@@ -1524,101 +1505,17 @@ export function useLiveSession(): void {
           window.clearTimeout(resumeRetryTimers.current[threadId])
           delete resumeRetryTimers.current[threadId]
         }
-        const {
-          todos,
-          todo_turn_id: historyTodoTurnId,
-          artifacts,
-          turn_activity: turnActivity,
-        } = history
-        const durableTurnActivity = snapshotTurnActivity(turnActivity)
         const fromSeq = opened.last_seq ?? 0
-        patchThread(threadId, (thread) => {
-          const artifactSnapshot = opened.artifacts ?? artifacts
-          const conversation = projectHistorySnapshot(
-            {
-              ...history,
-              artifacts: artifactSnapshot,
-            },
-            thread.conversation
-          )
-          const recovered = reportSessionResume(
-            { ...thread, conversation },
-            sessionId,
-            { key: 'resume.reconnected' },
-            'experience',
-            false,
-            true
-          )
-          const base = {
-            ...thread,
-            ...openedSessionTitle(opened),
-            conversation: recovered.conversation ?? conversation,
-            todos: opened.todos ?? todos,
-            todoTurnId: opened.todo_turn_id !== undefined ? opened.todo_turn_id : historyTodoTurnId,
-            planSnapshots: projectPlanSnapshots(history.activity_events, thread.planSnapshots),
-            turnOutcomes:
-              opened.last_turn_id && opened.last_turn_status
-                ? {
-                    ...thread.turnOutcomes,
-                    ...durableTurnActivity.turnOutcomes,
-                    [opened.last_turn_id]: recoveredTurnOutcome(opened.last_turn_status),
-                  }
-                : {
-                    ...thread.turnOutcomes,
-                    ...durableTurnActivity.turnOutcomes,
-                  },
-            turnTimings: {
-              ...thread.turnTimings,
-              ...durableTurnActivity.turnTimings,
-            },
-            artifacts: artifactSnapshot,
-            workdir: opened.runtime_workdir || opened.workdir || thread.workdir,
-            projectPath:
-              opened.project_path !== undefined
-                ? opened.project_path
-                : (thread.projectPath ?? null),
-            runtimeId: opened.runtime_id,
-            runtime: opened.runtime,
-            readiness: opened.readiness,
-            capabilities: opened.capabilities,
-            lastSeq: fromSeq,
-            resumeState: 'ready' as const,
-            resumeServiceInstanceId: instance ?? undefined,
-            resumeMessage: undefined,
-            running: Boolean(opened.running),
-            recoveryBlocked: opened.recovery_blocked === true,
-            recoveryIncidentId: opened.recovery_incident_id ?? null,
-            recoverySourceSeq: opened.recovery_source_seq ?? 0,
-            recoveryPending: opened.recovery_pending === true,
-            resourceFinalizing: opened.resource_finalizing === true,
-            interrupting: Boolean(opened.interrupting),
-            queuedMessages: mergeQueuedOutbox(
-              sessionId,
-              (queuedMessages ?? []).map(queuedMessageFromPayload),
-              stateRef.current.workbenchReady,
-              thread.queuedMessages ?? []
-            ),
-            status: opened.running
-              ? ('running' as const)
-              : opened.last_turn_status === 'failed'
-                ? ('failed' as const)
-                : opened.last_turn_status === 'interrupted'
-                  ? ('abandon' as const)
-                  : ('done' as const),
-          }
-          return {
-            ...base,
-            ...projectSessionRecovery(base, {
-              sessionId,
-              running: Boolean(opened.running),
-              activeTurnId: opened.active_turn_id,
-              unknownOutcome: opened.unknown_outcome,
-              pendingHil: opened.pending_hil ?? [],
-              uncertainOperations: opened.uncertain_operations,
-              timestamp: Date.now(),
-            }),
-          }
-        })
+        patchThread(threadId, (thread) =>
+          projectResumedSession(thread, {
+            opened,
+            history,
+            queuedMessages,
+            serviceInstanceId: instance,
+            acknowledgeQueue: stateRef.current.workbenchReady,
+            timestamp: Date.now(),
+          })
+        )
 
         bodySequences.current.set(sessionId, fromSeq)
         attach(fromSeq)
@@ -1626,7 +1523,7 @@ export function useLiveSession(): void {
           sequence: fromSeq,
           running: Boolean(opened.running),
           queuedCount: queuedMessages.length,
-          planCount: (opened.todos ?? todos).length,
+          planCount: (opened.todos ?? history.todos).length,
           previousSequence: stateRef.current.threads[threadId]?.lastSeq,
         })
       } catch (error) {
@@ -2055,8 +1952,12 @@ export function useLiveSession(): void {
     summarySequences.current.clear()
     const refresh = new DirtyRefresh(
       async (signal) => {
-        const threads = Object.values(stateRef.current.threads).filter(
-          (thread) => thread.sessionId && !thread.readOnly
+        const snapshot = stateRef.current
+        const threads = Object.values(snapshot.threads).filter(
+          (thread) =>
+            thread.sessionId &&
+            !thread.readOnly &&
+            !(snapshot.startupTaskRecovery === 'presenting' && thread.startupHistoryLoaded)
         )
         const sessionIds = threads.map((thread) => thread.sessionId!)
         const snapshots = await loadSessionStatus(
@@ -2088,10 +1989,26 @@ export function useLiveSession(): void {
           const entry = Object.entries(stateRef.current.threads).find(
             ([, thread]) => thread.sessionId === snapshot.session_id
           )
-          if (!entry || entry[0] === stateRef.current.activeSession) continue
+          if (!entry) continue
           const threadId = entry[0]
+          const active = threadId === stateRef.current.activeSession
+          if (
+            active &&
+            (!entry[1].startupHistoryLoaded ||
+              stateRef.current.startupTaskRecovery === 'presenting')
+          )
+            continue
           patchThread(threadId, (thread) => {
             if (snapshot.summary_seq < (thread.lastSeq ?? 0)) return thread
+            const queuedMessages = mergeQueuedOutbox(
+              snapshot.session_id,
+              snapshot.queued_messages.map(queuedMessageFromPayload),
+              stateRef.current.workbenchReady,
+              thread.queuedMessages ?? []
+            )
+            // An active transcript owns its runtime state through SSE. Refresh the queue
+            // separately because the startup history can commit before the queue is read.
+            if (active) return { queuedMessages }
             const projected = reconcileThreadRuntime({ [threadId]: thread }, [
               { ...snapshot, last_seq: snapshot.summary_seq },
             ])[threadId]
@@ -2107,12 +2024,7 @@ export function useLiveSession(): void {
                 timestamp: Date.now(),
               }),
               interrupting: Boolean(snapshot.interrupting),
-              queuedMessages: mergeQueuedOutbox(
-                snapshot.session_id,
-                snapshot.queued_messages.map(queuedMessageFromPayload),
-                stateRef.current.workbenchReady,
-                thread.queuedMessages ?? []
-              ),
+              queuedMessages,
               turnOutcomes:
                 snapshot.last_turn_id && snapshot.last_turn_status
                   ? {
@@ -2156,8 +2068,10 @@ export function useLiveSession(): void {
       expireJoinedPapers(libraryStatusCache.invalidate(reset, changes))
       act.invalidateLiterature()
     })
+    refreshStatusRef.current = () => refresh.invalidate()
     refresh.invalidate()
     return () => {
+      refreshStatusRef.current = () => undefined
       refresh.stop()
       unsubscribe()
       resources()
@@ -2175,7 +2089,13 @@ export function useLiveSession(): void {
   ])
 
   useEffect(() => {
-    if (!state.backendReady || !state.workbenchReady || state.runtimeQuiescing) return
+    if (
+      !state.backendReady ||
+      !state.workbenchReady ||
+      state.runtimeQuiescing ||
+      state.startupTaskRecovery === 'presenting'
+    )
+      return
     const targets = new Set<string>()
     if (state.activeSession && !state.threads[state.activeSession]?.readOnly)
       targets.add(state.activeSession)
@@ -2233,6 +2153,7 @@ export function useLiveSession(): void {
     state.activeSession,
     state.backendReady,
     state.runtimeQuiescing,
+    state.startupTaskRecovery,
     state.modelSelectionSessions,
     state.serviceInstanceId,
     state.workbenchReady,

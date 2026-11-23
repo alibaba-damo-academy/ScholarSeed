@@ -4,6 +4,11 @@
     "returnHome": "Back to Project Center",
     "skipToContent": "Skip to main content"
   },
+  "taskRecovery": {
+    "restoring": "Reopening your previous task…",
+    "skip": "Skip recovery",
+    "skipped": "Previous task recovery skipped. You can reopen it from the task list."
+  },
   "errorBoundary": {
     "title": "Something went wrong on this page",
     "description": "ScholarSeed could not finish rendering the page, but your projects and local files remain safe.",

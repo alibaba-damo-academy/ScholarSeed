@@ -756,12 +756,13 @@ export interface NavigationSession {
 
 /** Navigation restores catalog metadata; only an explicit session action opens a runtime. */
 export async function readNavigationSession(
-  sessionId: string
+  sessionId: string,
+  signal?: AbortSignal
 ): Promise<NavigationSession | OpenErrorResp> {
   try {
     const response = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sessionId)}/navigation`,
-      { cache: 'no-store', timeoutMs: RESUME_REQUEST_TIMEOUT_MS }
+      { cache: 'no-store', timeoutMs: RESUME_REQUEST_TIMEOUT_MS, signal }
     )
     if (!response.ok) {
       const failure = await serviceErrorDetail(response)
@@ -774,6 +775,7 @@ export async function readNavigationSession(
       }
     }
     const value: unknown = await response.json()
+    signal?.throwIfAborted()
     if (
       !isRecord(value) ||
       value.session_id !== sessionId ||
@@ -820,6 +822,7 @@ export async function openSession(
         ? AbortSignal.any([opts.signal, AbortSignal.timeout(RESUME_REQUEST_TIMEOUT_MS)])
         : AbortSignal.timeout(RESUME_REQUEST_TIMEOUT_MS),
     })
+    opts.signal?.throwIfAborted()
     if (!r.ok) {
       if (r.status === 401) {
         window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
@@ -840,7 +843,9 @@ export async function openSession(
         ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}),
       }
     }
-    return parseOpenSessionResponse(await r.json())
+    const result = await r.json()
+    opts.signal?.throwIfAborted()
+    return parseOpenSessionResponse(result)
   } catch (e) {
     const failure = describeRequestFailure(e)
     const error = failure.message
@@ -1287,9 +1292,15 @@ export interface TurnActivitySnapshot {
  * 传输/HTTP 失败返回 null: 空历史与「历史取不到」不能混为一谈, 否则恢复会把有内容的会话
  * 渲染成空白对话。
  */
-export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | null> {
+export async function getHistoryWithTodos(
+  sid: string,
+  signal?: AbortSignal
+): Promise<HistoryResult | null> {
   try {
-    const r = await apiFetch(`/api/serve/history/${sid}`, { timeoutMs: RESUME_REQUEST_TIMEOUT_MS })
+    const r = await apiFetch(`/api/serve/history/${encodeURIComponent(sid)}`, {
+      timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
+      signal,
+    })
     if (!r.ok) return null
     const data = (await r.json()) as {
       turns?: HistoryTurn[]
@@ -1304,6 +1315,8 @@ export async function getHistoryWithTodos(sid: string): Promise<HistoryResult | 
       activity_events?: ProductEvent[]
       turn_activity?: TurnActivitySnapshot[]
     }
+    signal?.throwIfAborted()
+    if (signal && !Array.isArray(data.turns)) return null
     return {
       turns: data.turns ?? [],
       recovery_blocked: data.recovery_blocked === true,
@@ -1759,11 +1772,17 @@ export interface QueuedMessageReconcileResponse {
   error?: string
 }
 
-export async function listQueuedMessages(sid: string): Promise<QueuedMessagePayload[] | null> {
+export async function listQueuedMessages(
+  sid: string,
+  signal?: AbortSignal
+): Promise<QueuedMessagePayload[] | null> {
   try {
-    const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/queue`)
+    const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/queue`, {
+      signal,
+    })
     if (!response.ok) return null
     const payload = (await response.json()) as { messages?: QueuedMessagePayload[] }
+    signal?.throwIfAborted()
     return Array.isArray(payload.messages) ? payload.messages : null
   } catch {
     return null

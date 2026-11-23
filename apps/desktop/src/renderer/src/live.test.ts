@@ -943,6 +943,7 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
       stateRef: { current: state },
       metadataSessions: { current: [background] },
       summarySequences: { current: new Map() },
+      refreshStatusRef: { current: () => undefined },
       sessionSummaryNeedsCatalog,
       useEffect: (callback: () => unknown) => callback(),
       pollMetadata: () => {
@@ -1051,16 +1052,6 @@ test('visible home refreshes the catalog before a background running event is kn
   assert.match(
     refresh,
     /sessionCatalogNeedsRefresh\(state.sessions, state.activeSession, state.threads\)/
-  )
-})
-
-test('resuming a terminal conversation preserves the durable failed or interrupted outcome', () => {
-  const resumed = block(liveSource, 'const base = {', '...projectSessionRecovery(base,')
-  assert.match(resumed, /opened\.last_turn_status === 'failed'/)
-  assert.match(resumed, /opened\.last_turn_status === 'interrupted'/)
-  assert.doesNotMatch(
-    resumed,
-    /status: opened\.running \? \('running' as const\) : \('done' as const\)/
   )
 })
 

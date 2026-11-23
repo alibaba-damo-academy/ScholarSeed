@@ -6035,6 +6035,13 @@ declare module 'i18next' {
             "detail": "正在执行的任务将停止。书深会先保存待写入的设置并关闭后台进程，再允许安装器替换程序。项目和历史记录将保留。",
             "confirm": "退出并安装"
         },
+        "taskRecovery": {
+            "title": "书深任务恢复",
+            "message": "书深在打开上次任务时无响应。",
+            "detail": "你可以回到首页，再从任务列表打开该任务。正在运行的后台任务会继续执行。",
+            "reopen": "重新打开到首页",
+            "wait": "继续等待"
+        },
         "updateRecovery": {
             "title": "书深更新恢复",
             "message": "更新保护进程已全部异常退出。请先保存工作，重启电脑后重新打开书深尝试恢复。现有数据已保留，此提示不会自动重启电脑。"
@@ -7721,6 +7728,11 @@ declare module 'i18next' {
             "projects": "首页",
             "returnHome": "返回项目中心",
             "skipToContent": "跳转到主要内容"
+        },
+        "taskRecovery": {
+            "restoring": "正在恢复上次的任务…",
+            "skip": "跳过恢复",
+            "skipped": "已跳过上次任务的恢复，可从任务列表重新打开。"
         },
         "errorBoundary": {
             "title": "页面遇到了一些问题",

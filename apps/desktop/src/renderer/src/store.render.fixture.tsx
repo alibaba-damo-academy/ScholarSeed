@@ -67,6 +67,7 @@ const probe = {
   panel: () => flushSync(() => store.act.openPanel('context_added')),
   project: (projectId: string) => flushSync(() => store.act.selectProject(projectId)),
   returnHome: () => store.act.returnHome(),
+  openSettings: () => store.act.openSettings('preferences'),
   center: () => flushSync(() => store.act.openProjectCenter()),
   view: (view: Parameters<Store['act']['openWorkbenchView']>[0]) =>
     flushSync(() => store.act.openWorkbenchView(view)),

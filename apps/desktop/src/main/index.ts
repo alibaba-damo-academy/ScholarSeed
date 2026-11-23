@@ -114,6 +114,9 @@ import { PreferenceDiagnostics, parsePreferenceSubmission } from '../preference-
 import { PreferenceQuiescence, PREFERENCE_SHUTDOWN_CHANNEL } from '../quiescence.ts'
 import {
   LOGIN_WINDOW_CHANNEL,
+  TASK_RECOVERY_CHANNEL,
+  TASK_RECOVERY_OUTCOME,
+  TASK_RECOVERY_STATUS,
   WINDOW_CLOSE_REQUEST_CHANNEL,
   WINDOW_CLOSE_REPLY_CHANNEL,
   WINDOW_FULLSCREEN_CHANNEL,
@@ -125,6 +128,7 @@ import {
   createWorkspaceWindowOptions,
   WINDOWS_PLATFORM,
 } from './window'
+import { TaskRecovery, installTaskRecoveryFallback, isRecoverySessionId } from './task-recovery'
 import {
   BROWSER_DOWNLOAD_NOTICE_CHANNEL,
   BROWSER_FIND_CHANNEL,
@@ -602,6 +606,7 @@ const startupState = new StartupState((snapshot) => sendToMainWindow(STARTUP_CHA
 let backendManaged = false
 let mainRendererOrigin: string | null = null
 let mainRendererNavigationEpoch = 0
+let taskRecoveryOwner: TaskRecovery | undefined
 let appQuitting = false
 let startupFailureReports = 0
 let startupAdmissionResolved = process.platform !== MACOS_PLATFORM || !app.isPackaged
@@ -698,6 +703,24 @@ function isMainWindowSender(
   const win = aliveMainWindow()
   if (!win || sender !== win.webContents) return false
   return senderFrame === undefined || senderFrame === win.webContents.mainFrame
+}
+
+function taskRecovery(): TaskRecovery {
+  return (taskRecoveryOwner ??= new TaskRecovery(desktopStorage().userData, logTaskRecovery))
+}
+
+function logTaskRecovery(message: string): void {
+  logWindowLifecycle(`[task-recovery] ${message}\n`)
+}
+
+function isTaskRecoverySender(event: Electron.IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame
+  return (
+    !appQuitting &&
+    !!frame &&
+    isMainWindowSender(event.sender, frame) &&
+    URL.parse(frame.url)?.origin === mainRendererOrigin
+  )
 }
 
 function logWindowLifecycle(line: string): void {
@@ -3266,6 +3289,25 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     if (!isMainWindowSender(event.sender) || typeof visible !== 'boolean') return
     setLoginWindowVisible?.(visible)
   })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.status, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || (sessionId !== null && !isRecoverySessionId(sessionId)))
+      return TASK_RECOVERY_STATUS.home
+    return taskRecovery().status(sessionId)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.begin, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || !isRecoverySessionId(sessionId)) return null
+    return taskRecovery().begin(sessionId)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.finish, (event, token: unknown, outcome: unknown) => {
+    if (!isTaskRecoverySender(event) || typeof token !== 'string') return false
+    if (outcome !== TASK_RECOVERY_OUTCOME.restored && outcome !== TASK_RECOVERY_OUTCOME.skipped)
+      return false
+    return taskRecovery().finish(token, outcome)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.manualOpen, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || !isRecoverySessionId(sessionId)) return false
+    return taskRecovery().manualOpened(sessionId)
+  })
 
   ipcMain.handle(UPDATE_HEALTH_CHANNEL, async (event) => {
     const { currentBackend, isCurrent } = workbenchObservation(event)
@@ -4576,6 +4618,25 @@ async function createWindow(
   if (!headless) windowController.ensureTray(browserWindow)
   const windowCurrent = (): boolean =>
     aliveMainWindow() === browserWindow && startupState.snapshot().generation === generation
+  installTaskRecoveryFallback(browserWindow, taskRecovery(), {
+    canPresent: () => windowCurrent() && windowPresentationAllowed(),
+    prompt: async (signal) => {
+      const t = mainLocalization().getFixedT(null, 'native')
+      const result = await dialog.showMessageBox(browserWindow, {
+        type: 'warning',
+        title: t('taskRecovery.title'),
+        message: t('taskRecovery.message'),
+        detail: t('taskRecovery.detail'),
+        buttons: [t('taskRecovery.reopen'), t('taskRecovery.wait')],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+        signal,
+      })
+      return result.response === 0
+    },
+    log: logTaskRecovery,
+  })
   const windowHiding = createWindowHiding(
     browserWindow,
     () => !appQuitting && !headless && !preferenceQuiescence.isPreparing(),

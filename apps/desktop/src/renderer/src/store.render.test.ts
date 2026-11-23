@@ -1180,13 +1180,26 @@ for (const scenario of [
     outcome: 'failure',
     route: '/api/serve/sessions/restore-session/navigation',
   },
+  {
+    target: 'session',
+    outcome: 'success',
+    intervention: 'settings',
+    route: '/api/serve/sessions/restore-session/navigation',
+  },
+  {
+    target: 'session',
+    outcome: 'success',
+    intervention: 'typing',
+    route: '/api/serve/sessions/restore-session/navigation',
+  },
   { target: 'document', outcome: 'missing', route: '/api/workbench/open' },
   { target: 'document', outcome: 'failure', route: '/api/workbench/open' },
   { target: 'tab', outcome: 'failure', route: '/api/literature/searches' },
 ]) {
-  const { outcome, target } = scenario
+  const { outcome, target, intervention = 'return home' } = scenario
+  const expectedSettings = intervention === 'settings' ? 'preferences' : null
   test(
-    `return home persists and rejects a late ${target} restoration ${outcome}`,
+    `${intervention} persists and rejects a late ${target} restoration ${outcome}`,
     { timeout: 60_000 },
     async () => {
       let release!: () => void
@@ -1207,7 +1220,12 @@ for (const scenario of [
             })
           })
           await arrived
-          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').returnHome())
+          await page.evaluate((intervention) => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            if (intervention === 'settings') probe.openSettings()
+            else if (intervention === 'typing') probe.draft('New startup draft')
+            else probe.returnHome()
+          }, intervention)
           await expect
             .poll(() =>
               page.evaluate(() => Reflect.get(window, 'preferenceProbe').disk.lastLocation)
@@ -1217,7 +1235,7 @@ for (const scenario of [
               projectId: null,
               sessionId: null,
               sessionProjectId: null,
-              settingsPage: null,
+              settingsPage: expectedSettings,
               browserSettingsSection: null,
               aiPanelOpen: false,
               aiPanelCover: false,
@@ -1237,6 +1255,9 @@ for (const scenario of [
               view: probe.state.mainView,
               session: probe.state.activeSession,
               restored: probe.state.navigationRestored,
+              recovery: probe.state.startupTaskRecovery,
+              settings: probe.state.accountSettingsPage,
+              draft: probe.draft(),
               load: probe.state.workspaceLoadState,
               location: probe.disk.lastLocation,
             }
@@ -1244,8 +1265,14 @@ for (const scenario of [
           assert.equal(state.view, 'home')
           assert.equal(state.session, null)
           assert.equal(state.restored, true)
+          assert.equal(state.recovery, target === 'session' ? 'skipped' : null)
+          assert.equal(state.settings, expectedSettings)
+          assert.equal(state.draft, intervention === 'typing' ? 'New startup draft' : '')
           assert.equal(state.load, 'ready')
           assert.equal(state.location.view, 'home')
+          if (target === 'session') {
+            assert.equal(await page.evaluate(() => Reflect.get(window, 'restoreReadAborted')), true)
+          }
         },
         async (page) => {
           await page.addInitScript(
@@ -1273,12 +1300,17 @@ for (const scenario of [
                 })
               )
               const original = window.fetch
-              window.fetch = async (...args) => {
-                const response = await original(...args)
-                if (String(args[0]).includes(route)) {
+              window.fetch = async (input, init) => {
+                if (String(input).includes(route)) {
+                  init?.signal?.addEventListener('abort', () => {
+                    Reflect.set(window, 'restoreReadAborted', true)
+                  })
+                  // Deliver a late response even after cancellation to exercise the navigation fence.
+                  const response = await original(input, { ...init, signal: undefined })
                   Reflect.set(window, 'restoreResponseReceived', true)
+                  return response
                 }
-                return response
+                return original(input, init)
               }
             },
             { target, route: scenario.route }

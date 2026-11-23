@@ -10,7 +10,7 @@ import type {
   BrowserHistoryApprovalResponseRequest,
   BrowserHistoryApprovalResponseReply,
 } from '../../approval'
-import type { WindowCloseRequest, WindowCloseReply } from '../../window'
+import type { TaskRecoveryBridge, WindowCloseRequest, WindowCloseReply } from '../../window'
 import type { PdfeNativeBridge } from '../../pdfe'
 import type { TrayNavigation, TrayReply } from '../../tray'
 import type { PreferenceLanguage, RendererPreferences } from '../../preferences'
@@ -66,7 +66,7 @@ import type { StartupSnapshot } from '../../startup'
 import type { NotificationBridge } from '../../notifications'
 
 declare global {
-  interface ScholarSeedBridge {
+  interface ScholarSeedBridge extends Partial<TaskRecoveryBridge> {
     settingsPortal?: PortalBridge
     updatePortal?: PortalBridge
     conversationPortal?: FloatingPortalBridge

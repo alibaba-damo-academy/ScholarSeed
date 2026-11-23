@@ -28,6 +28,8 @@ import {
   sessionChildCount,
   restoreSessionParent,
   readNavigationSession,
+  getHistoryWithTodos,
+  listQueuedMessages,
   confirmUnknownTurn,
   checkSessionRecovery,
   requestFailureFeedback,
@@ -1078,6 +1080,42 @@ test('preparation and first open preserve caller cancellation alongside their de
           )
       if (opening) assert.equal('session_id' in (await pending)!, false)
       else await assert.rejects(pending, { name: 'AbortError' })
+      assert.equal(requestSignal?.aborted, true)
+    }
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('startup history and queue reads propagate caller cancellation through the response body', async () => {
+  const previousFetch = globalThis.fetch
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  try {
+    for (const read of [
+      (signal: AbortSignal) => getHistoryWithTodos('saved', signal),
+      (signal: AbortSignal) => listQueuedMessages('saved', signal),
+    ]) {
+      const controller = new AbortController()
+      let requestSignal: AbortSignal | undefined
+      globalThis.fetch = async (_input, init) => {
+        requestSignal = init?.signal ?? undefined
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => {
+            controller.abort()
+            return { turns: [], messages: [] }
+          },
+        } as Response
+      }
+      assert.equal(await read(controller.signal), null)
       assert.equal(requestSignal?.aborted, true)
     }
   } finally {

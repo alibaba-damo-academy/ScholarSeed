@@ -556,7 +556,7 @@ export function Stream({
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
-  const { state, set, patchThread, getSnapshot } = useApp()
+  const { state, set, patchThread, getSnapshot, act } = useApp()
   const thread = activeThread(state)
   const [recoveryChecking, setRecoveryChecking] = useState(false)
   const [failedRecovery, setFailedRecovery] = useState<RecoveryCheckIdentity | null>(null)
@@ -595,6 +595,7 @@ export function Stream({
   // Turn 终态事件是停止工作态的唯一依据。中途 assistant 文本之后仍可能继续执行
   // 不需要单独展示的活动（例如 web_fetch），因此不能根据最后一条文本隐藏运行标签。
   const busy = thread.running === true || thread.status === 'running' || thread.status === 'waiting'
+  const startupHistoryBusy = useRef<string | null>(null)
   const admitting =
     state.turnLaunch !== null || hasQueuedMessageAwaitingRuntime(thread.queuedMessages ?? [])
   const cardArtifacts = useCardArtifacts(conv)
@@ -1113,7 +1114,37 @@ export function Stream({
 
   useEffect(() => {
     const sessionId = thread.sessionId
-    if (!sessionId || busy) return () => undefined
+    if (
+      home ||
+      !sessionId ||
+      !thread.startupHistoryLoaded ||
+      state.startupTaskRecovery !== 'presenting'
+    )
+      return
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        if (streamRef.current?.clientHeight && columnRef.current?.checkVisibility()) {
+          act.startupTaskReadable(sessionId)
+        }
+      })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [
+    act.startupTaskReadable,
+    home,
+    state.startupTaskRecovery,
+    thread.sessionId,
+    thread.startupHistoryLoaded,
+  ])
+
+  useEffect(() => {
+    const sessionId = thread.sessionId
+    if (!sessionId) return
+    if (busy) {
+      startupHistoryBusy.current = sessionId
+      return
+    }
+    if (thread.startupHistoryLoaded && startupHistoryBusy.current !== sessionId) return
     let current = true
     void getHistoryWithTodos(sessionId).then((history) => {
       if (!current || sessionRef.current !== sessionId || !history) return
@@ -1129,7 +1160,7 @@ export function Stream({
     return () => {
       current = false
     }
-  }, [busy, patchThread, thread.id, thread.sessionId])
+  }, [busy, patchThread, thread.id, thread.sessionId, thread.startupHistoryLoaded])
 
   const rewindPrompt = async (anchor: number): Promise<string | null> => {
     const sessionId = thread.sessionId

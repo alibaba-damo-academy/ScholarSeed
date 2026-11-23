@@ -974,6 +974,8 @@ export interface Thread {
   /** UI-visible activation state while the native runtime and durable history resume. */
   resumeState?: 'pending' | 'ready' | 'failed'
   resumeServiceInstanceId?: string
+  /** The startup projection already includes the durable transcript. */
+  startupHistoryLoaded?: boolean
   recoveryBlocked?: boolean
   recoveryIncidentId?: string | null
   recoverySourceSeq?: number
