@@ -26,7 +26,7 @@ export function createTurnSourceViewport() {
   const visibleCounts = new Map<string, number>()
   const subscribers = new Map<string, Set<() => void>>()
   let inFlight = 0
-  let observer: IntersectionObserver | undefined
+  let stopObserving: (() => void) | undefined
 
   const dispatchVisible = (): void => {
     // The current viewport is the queue: leaving it drops any unsent demand.
@@ -83,7 +83,12 @@ export function createTurnSourceViewport() {
         stale = false
         request = new AbortController()
         inFlight++
-        void load(request.signal).then(settled, settled)
+        try {
+          void load(request.signal).then(settled, settled)
+        } catch {
+          // Settle after dispatch, just like a rejected promise.
+          queueMicrotask(settled)
+        }
       }
       const listeners = subscribers.get(turnId) ?? new Set()
       subscribers.set(turnId, listeners)
@@ -103,9 +108,10 @@ export function createTurnSourceViewport() {
       }
     },
     observe(root: Element | null, column: Element): () => void {
+      stopObserving?.()
       const current = new IntersectionObserver(
         (entries) => {
-          if (observer !== current) return
+          if (stopObserving !== stop) return
           for (const entry of entries) {
             const target = targets.get(entry.target)
             if (!target) continue
@@ -122,23 +128,25 @@ export function createTurnSourceViewport() {
         // A target touching the boundary can intersect without any visible pixels.
         { root, threshold: [0, Number.EPSILON] }
       )
-      observer = current
       const changes = new MutationObserver((records) => {
-        if (observer === current && records.some(changesTurnAnchors)) update(column, current)
+        if (stopObserving === stop && records.some(changesTurnAnchors)) update(column, current)
       })
+      const stop = (): void => {
+        if (stopObserving !== stop) return
+        stopObserving = undefined
+        changes.disconnect()
+        current.disconnect()
+        targets.clear()
+        visibleCounts.clear()
+      }
+      stopObserving = stop
       changes.observe(column, {
         subtree: true,
         childList: true,
         attributeFilter: TURN_ANCHOR_ATTRIBUTES,
       })
       update(column, current)
-      return () => {
-        changes.disconnect()
-        current.disconnect()
-        observer = undefined
-        targets.clear()
-        visibleCounts.clear()
-      }
+      return stop
     },
   }
 }

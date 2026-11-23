@@ -69,6 +69,7 @@ from service.identity.utils import (  # noqa: E402
     OWNERSHIP_AXIS_STATE,
 )
 from service.platform.activity import Activities  # noqa: E402
+from service.platform.latency import RequestPhases  # noqa: E402
 from service.workbench.domain.model import WorkbenchFormatPolicy  # noqa: E402
 
 PASS = 0
@@ -180,11 +181,11 @@ class _Events:
 
     @staticmethod
     def history_snapshot(
-        _session_id: str,
+        session_id: str,
         turns: list[dict[str, object]],
         *,
-        phases: object,
-        compact_activity: bool,
+        phases: RequestPhases | None = None,
+        compact_activity: bool = False,
     ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
         return turns, [], []
 

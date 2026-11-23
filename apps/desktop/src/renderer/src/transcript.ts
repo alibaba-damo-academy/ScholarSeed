@@ -2077,11 +2077,13 @@ export function snapshotTurnActivity(
   return { turnOutcomes, turnTimings }
 }
 
+// The cold-history runner sets this User Timing mark in the renderer with --profile-history.
 const HISTORY_PROFILE_MARK = 'scholarseed.history.profile'
-const pendingHistoryCommits = new WeakMap<ConvItem[], { caller: string; projectedAt: number }>()
+let pendingHistoryCommits: WeakMap<ConvItem[], { caller: string; projectedAt: number }> | undefined
 
 /** The Stream layout effect observes a committed projection by its exact conversation identity. */
 export function recordHistoryCommit(items: ConvItem[]): void {
+  if (!pendingHistoryCommits) return
   const projection = pendingHistoryCommits.get(items)
   if (!projection) return
   pendingHistoryCommits.delete(items)
@@ -2133,6 +2135,7 @@ export function projectHistorySnapshot(
       end: projectedAt,
       detail: { caller },
     })
+    pendingHistoryCommits ??= new WeakMap()
     pendingHistoryCommits.set(projected, { caller, projectedAt })
   }
   return projected

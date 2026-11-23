@@ -32,6 +32,12 @@ const STARTUP_TIMEOUT_MS = 30_000
 const HEALTH_INTERVAL_MS = 500
 const DEFAULT_ALERT_MS = 800
 const DEFAULT_TIMEOUT_MS = 120_000
+// Leave room under the macOS Unix socket path limit for the fixture home and Serve bridge.
+const TEMP_PARENT_BYTE_LIMIT = 35
+const MAX_SCROLL_ATTEMPTS = 100
+const SCROLL_DELTA_Y_PX = -12_000
+const SCROLL_SETTLE_MS = 100
+const SCROLL_LOCATOR_TIMEOUT_MS = 5_000
 const HEALTH_ROUTE = '/api/healthz/backend'
 const RENDERER_PATH = '/'
 const LOOPBACK = '127.0.0.1'
@@ -161,7 +167,8 @@ function ownsListener(pid, port) {
   }
 }
 
-function launch(executable, arguments_, options, logPath, onLine = () => {}) {
+function launch(executable, arguments_, options, logPath, evidence, onLine = () => {}) {
+  evidence.signal.throwIfAborted()
   const child = spawn(executable, arguments_, { ...options, stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise((resolve) => {
     child.once('error', (error) => resolve({ error: error.message }))
@@ -169,8 +176,13 @@ function launch(executable, arguments_, options, logPath, onLine = () => {}) {
   })
   for (const stream of [child.stdout, child.stderr]) {
     createInterface({ input: stream }).on('line', (line) => {
-      appendFileSync(logPath, `${line}\n`)
-      onLine(line)
+      if (evidence.signal.aborted) return
+      try {
+        appendFileSync(logPath, `${line}\n`)
+        onLine(line)
+      } catch (error) {
+        evidence.abort(error)
+      }
     })
   }
   return { child, exited, identity: child.pid ? processIdentity(child.pid) : '' }
@@ -186,10 +198,12 @@ async function stop(owned) {
   return Promise.race([exited, delay(3_000, { error: 'Process did not exit' }, { ref: false })])
 }
 
-async function waitFor(probe, timeoutMs, label) {
+async function waitFor(signal, probe, timeoutMs, label) {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
+    signal.throwIfAborted()
     const result = await probe()
+    signal.throwIfAborted()
     if (result) return result
     await delay(100)
   }
@@ -305,7 +319,8 @@ function rendererDiagnostic(line, sessionId, emit) {
 
 async function copyFixture(fixture) {
   const temp = await realpath(tmpdir())
-  const root = await mkdtemp(join(temp.length < 35 ? temp : await realpath('/tmp'), 'ss-cold-'))
+  const parent = Buffer.byteLength(temp) < TEMP_PARENT_BYTE_LIMIT ? temp : await realpath('/tmp')
+  const root = await mkdtemp(join(parent, 'ss-cold-'))
   const paths = {
     root,
     home: join(root, 'home'),
@@ -333,10 +348,15 @@ async function run(options, fixture, artifact) {
   const records = []
   const active = new Map()
   const sampling = []
+  const evidence = new AbortController()
   const emit = (event, data = {}) => {
     const row = { ...data, observedAt: Date.now(), event }
     records.push(row)
-    appendFileSync(join(artifact, 'timeline.jsonl'), `${JSON.stringify(row)}\n`)
+    try {
+      appendFileSync(join(artifact, 'timeline.jsonl'), `${JSON.stringify(row)}\n`)
+    } catch (error) {
+      evidence.abort(error)
+    }
   }
   const product = JSON.parse(
     await readFile(join(options.desktop, 'resources', 'product.json'), 'utf8')
@@ -401,11 +421,16 @@ async function run(options, fixture, artifact) {
   let rendererSourcesBeforeHeartbeat = null
   let rendererObservationComplete = false
   let exitFailed = false
-  const stopOnInterrupt = () => {
-    emit('interrupted')
+  let runFailure
+  const stopChildren = () => {
     desktop?.child.kill('SIGTERM')
     serve?.child.kill('SIGTERM')
   }
+  const stopOnInterrupt = () => {
+    emit('interrupted')
+    stopChildren()
+  }
+  evidence.signal.addEventListener('abort', stopChildren, { once: true })
   process.once('SIGTERM', stopOnInterrupt)
   process.once('SIGINT', stopOnInterrupt)
   const triggerSample = (reason, detail) => {
@@ -447,13 +472,17 @@ async function run(options, fixture, artifact) {
         sampleFile,
       ],
       {},
-      join(artifact, 'sample.log')
+      join(artifact, 'sample.log'),
+      evidence
     )
     sampling.push(
-      sampler.exited.then((outcome) => {
-        const bytes = statSync(sampleFile, { throwIfNoEntry: false })?.size ?? 0
-        emit('sample_finished', { pid: serve.child.pid, ...outcome, bytes })
-      })
+      sampler.exited
+        .then((outcome) => {
+          const bytes = statSync(sampleFile, { throwIfNoEntry: false })?.size ?? 0
+          emit('sample_finished', { pid: serve.child.pid, ...outcome, bytes })
+          if (outcome.error) throw new Error(`Could not start Serve sample: ${outcome.error}`)
+        })
+        .catch((error) => evidence.abort(error))
     )
   }
   try {
@@ -477,6 +506,7 @@ async function run(options, fixture, artifact) {
       ],
       { cwd: fixture.workspace, env },
       join(artifact, 'serve.log'),
+      evidence,
       (line) => {
         const replay = line.match(/sse\.replay_(started|finished)\s+session_id=([\w-]+)\s+(.*)/)
         if (replay?.[2] === fixture.sessionId) {
@@ -537,6 +567,7 @@ async function run(options, fixture, artifact) {
       }
     )
     const health = await waitFor(
+      evidence.signal,
       async () => {
         if (serve.child.exitCode !== null || serve.child.signalCode !== null)
           throw new Error('Owned Serve exited before it was ready')
@@ -578,7 +609,7 @@ async function run(options, fixture, artifact) {
         }
         await delay(HEALTH_INTERVAL_MS)
       }
-    })()
+    })().catch((error) => evidence.abort(error))
     desktopStartedAt = Date.now()
     desktop = launch(
       options.electron,
@@ -590,11 +621,13 @@ async function run(options, fixture, artifact) {
       ],
       { cwd: options.desktop, env: { ...env, SCHOLARSEED_SERVE_URL: origin } },
       join(artifact, 'desktop.log'),
+      evidence,
       (line) => rendererDiagnostic(line, fixture.sessionId, emit)
     )
     emit('desktop_started', { pid: desktop.child.pid, at: desktopStartedAt })
     if (options.profileHistory) stopMemory = sampleHistoryMemory(serve.child, desktop.child, emit)
     browser = await waitFor(
+      evidence.signal,
       async () => {
         if (!ownsListener(desktop.child.pid, cdpPort)) return null
         try {
@@ -607,6 +640,7 @@ async function run(options, fixture, artifact) {
       'owned Electron CDP'
     )
     const page = await waitFor(
+      evidence.signal,
       () =>
         browser
           .contexts()
@@ -648,6 +682,7 @@ async function run(options, fixture, artifact) {
       if (hasGuide) await skipGuide.click({ timeout: remaining() })
       await homeTask.click({ timeout: remaining() })
       await waitFor(
+        evidence.signal,
         async () => {
           try {
             const preferences = JSON.parse(
@@ -703,7 +738,7 @@ async function run(options, fixture, artifact) {
     await Promise.all([captureFirstScreen, dismissLanding])
     if (!options.prepare) {
       try {
-        await waitFor(firstHeartbeat, remaining(), 'first session SSE heartbeat')
+        await waitFor(evidence.signal, firstHeartbeat, remaining(), 'first session SSE heartbeat')
       } catch (error) {
         emit('heartbeat_unobserved', { reason: error.message })
       }
@@ -717,10 +752,10 @@ async function run(options, fixture, artifact) {
     if (options.oldTurn && !options.prepare) {
       const stream = page.locator('.conversation-stream')
       emit('older_turn_scroll_started', { turnId: options.oldTurn })
-      await stream.hover({ timeout: Math.min(5000, remaining()) })
+      await stream.hover({ timeout: Math.min(SCROLL_LOCATOR_TIMEOUT_MS, remaining()) })
       const oldTurn = stream.locator(`[data-message-turn-id="${options.oldTurn}"]`).first()
       // Scroll using native wheel input to exercise the production viewport observer.
-      for (let count = 0; count < 100; count++) {
+      for (let count = 0; count < MAX_SCROLL_ATTEMPTS; count++) {
         const viewport = await stream.boundingBox()
         const row = await oldTurn.boundingBox()
         if (
@@ -730,10 +765,10 @@ async function run(options, fixture, artifact) {
           row.y + row.height <= viewport.y + viewport.height
         )
           break
-        await page.mouse.wheel(0, -12000)
-        await delay(100)
+        await page.mouse.wheel(0, SCROLL_DELTA_Y_PX)
+        await delay(SCROLL_SETTLE_MS)
       }
-      await oldTurn.waitFor({ state: 'visible', timeout: 5000 })
+      await oldTurn.waitFor({ state: 'visible', timeout: SCROLL_LOCATOR_TIMEOUT_MS })
       const viewport = await stream.boundingBox()
       const row = await oldTurn.boundingBox()
       if (
@@ -780,11 +815,12 @@ async function run(options, fixture, artifact) {
       }
     }
   } catch (error) {
-    emit('run_failed', { message: error.message })
-    throw error
+    runFailure = evidence.signal.reason ?? error
+    emit('run_failed', { message: runFailure.message })
   } finally {
     healthStopped = true
-    if (stopMemory) memory = await stopMemory(firstInteraction?.visibleAt)
+    if (stopMemory)
+      memory = await stopMemory(firstInteraction?.visibleAt).catch((error) => evidence.abort(error))
     if (options.profileHistory && productPage && !productPage.isClosed())
       projectionPhases = await boundedProfileRead(rendererHistoryPhases(productPage)).catch(
         () => []
@@ -799,6 +835,11 @@ async function run(options, fixture, artifact) {
     exitFailed = Boolean(desktopExit?.error || serveExit?.error)
     process.removeListener('SIGINT', stopOnInterrupt)
     process.removeListener('SIGTERM', stopOnInterrupt)
+    evidence.signal.removeEventListener('abort', stopChildren)
+    if (!runFailure && evidence.signal.aborted) {
+      runFailure = evidence.signal.reason
+      emit('run_failed', { message: runFailure.message })
+    }
     const counts = Object.fromEntries(
       ['history', 'sources', 'session-sse'].map((kind) => [
         kind,
@@ -814,22 +855,12 @@ async function run(options, fixture, artifact) {
     const fromStart = (at) =>
       at === null || desktopStartedAt === null ? null : Math.round(at - desktopStartedAt)
     const open = records.find((row) => row.event === 'sse_attempt' && row.stage === 'live')
-    const sourcesBeforeHeartbeat =
-      heartbeatAt === null
-        ? null
-        : sources.filter((row) => {
-            return (
-              Number.isFinite(row.record.started_at) && row.record.started_at * 1000 <= heartbeatAt
-            )
-          }).length
-    const sourcesAtObservationEnd =
-      observationEndedAt === null
-        ? null
-        : sources.filter(
-            (row) =>
-              Number.isFinite(row.record.started_at) &&
-              row.record.started_at * 1000 <= observationEndedAt
-          ).length
+    const countSourcesStartedBy = (cutoffMs) => {
+      if (cutoffMs === null) return null
+      return sources.filter(
+        ({ record }) => Number.isFinite(record.started_at) && record.started_at * 1000 <= cutoffMs
+      ).length
+    }
     const observerArmed = records.find((row) => row.event === 'renderer_observer_attached')
     rendererObservationComplete = Boolean(
       observerArmed &&
@@ -850,18 +881,15 @@ async function run(options, fixture, artifact) {
               row.kind === 'sources' &&
               row.startedAt <= heartbeatAt
           ).length
+    let outcome
+    if (options.prepare)
+      outcome = prepared && visibleAt !== null ? 'profile_prepared' : 'prepare_failed'
+    else if (heartbeatAt !== null) outcome = 'heartbeat_observed'
+    else outcome = visibleAt !== null ? 'history_observed' : 'history_unobserved'
     const report = {
       revision: options.revision,
       rendererSha256,
-      outcome: options.prepare
-        ? prepared && visibleAt !== null
-          ? 'profile_prepared'
-          : 'prepare_failed'
-        : heartbeatAt !== null
-          ? 'heartbeat_observed'
-          : visibleAt !== null
-            ? 'history_observed'
-            : 'history_unobserved',
+      outcome,
       desktopStartedAt,
       historyVisibleMs: fromStart(visibleAt),
       ...(options.profileHistory
@@ -903,8 +931,8 @@ async function run(options, fixture, artifact) {
       firstHeartbeatMs: fromStart(heartbeatAt),
       rendererObservationComplete,
       rendererSourcesBeforeHeartbeat,
-      serveSourcesWithHeadersBeforeHeartbeat: sourcesBeforeHeartbeat,
-      serveSourcesWithHeadersAtObservationEnd: sourcesAtObservationEnd,
+      serveSourcesWithHeadersBeforeHeartbeat: countSourcesStartedBy(heartbeatAt),
+      serveSourcesWithHeadersAtObservationEnd: countSourcesStartedBy(observationEndedAt),
       counts,
       backendSources: sources.length,
       healthMaxMs: Math.max(
@@ -930,14 +958,16 @@ async function run(options, fixture, artifact) {
     }
     await writeFile(join(artifact, 'summary.json'), `${JSON.stringify(report, null, 2)}\n`, {
       mode: 0o600,
-    })
+    }).catch((error) => evidence.abort(error))
   }
+  if (runFailure) throw runFailure
+  evidence.signal.throwIfAborted()
   if (exitFailed) throw new Error('Owned Desktop or Serve process did not exit')
   if (
     options.profileHistory &&
     (!firstInteraction ||
       (options.checkOldSources &&
-        oldSourceTimings(records, options.oldTurn)?.serveHeadersMs == null) ||
+        !Number.isFinite(oldSourceTimings(records, options.oldTurn)?.serveHeadersMs)) ||
       !memory?.rendererPeakKiB ||
       !memory.processPeaks.some((row) => row.role === 'serve') ||
       !projectionPhases?.some(
