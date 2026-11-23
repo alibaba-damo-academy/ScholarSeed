@@ -118,6 +118,52 @@ ASSISTANT_HISTORY_INCOMPLETE = "assistant_context_history_incomplete"
 ASSISTANT_HISTORY_INCOMPLETE_TEXT = "上下文历史投影不完整，请重新发送该问题。"
 
 
+class _TurnClocks:
+    """Accumulate turn clocks in sequence order and resolve late user bindings at the end."""
+
+    def __init__(self) -> None:
+        self._admitted: dict[str, float] = {}
+        self._bound: dict[str, str] = {}
+        self._first: dict[str, float] = {}
+        self._turns: dict[str, dict[str, Any]] = {}
+
+    def observe(self, record: ProductEventRecord) -> None:
+        turn_id = str(record.vendor_turn_id or "").strip()
+        if record.kind == PRODUCT_EVENT_USER_MESSAGE:
+            client_id = str(record.payload.get("client_turn_id") or "").strip()
+            if client_id:
+                self._admitted[client_id] = min(
+                    self._admitted.get(client_id, record.created_at), record.created_at
+                )
+            if record.payload.get("binding") != USER_MESSAGE_BINDING_BOUND:
+                return
+            if client_id and record.vendor_turn_id:
+                self._bound[record.vendor_turn_id] = client_id
+        if not turn_id:
+            return
+
+        turn = self._turns.get(turn_id)
+        if turn is None:
+            turn = {"turn_id": turn_id, "started_at": record.created_at}
+            self._turns[turn_id] = turn
+            self._first[turn_id] = record.created_at
+        else:
+            turn["started_at"] = min(turn["started_at"], record.created_at)
+        outcome = TURN_OUTCOME_BY_EVENT_KIND.get(record.kind)
+        if outcome is not None:
+            turn["completed_at"] = record.created_at
+            turn["outcome"] = outcome
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        for turn_id, turn in self._turns.items():
+            admitted = self._admitted.get(self._bound.get(turn_id, turn_id))
+            if admitted is not None:
+                # The first eligible event caps the product admission time. Without
+                # an admission, the earliest observed timestamp remains authoritative.
+                turn["started_at"] = min(self._first[turn_id], admitted)
+        return sorted(self._turns.values(), key=lambda row: (row["started_at"], row["turn_id"]))
+
+
 class EventService:
     """Replay committed events, then stream events published after commit."""
 
@@ -163,11 +209,18 @@ class EventService:
         replaying or duplicating their text.
         """
 
+        return self._activity_snapshot(session_id, compact_activity=compact_activity)
+
+    def _activity_snapshot(
+        self, session_id: str, *, compact_activity: bool, clocks: _TurnClocks | None = None
+    ) -> list[dict[str, Any]]:
         snapshot: list[dict[str, Any]] = []
         projection = PlanToolProjection()
         previous_anchor = None
         has_tail = False
         for original in self._records(session_id):
+            if clocks is not None:
+                clocks.observe(original)
             record = projection.project(original)
             if record.kind not in HISTORY_ACTIVITY_EVENT_KINDS or (
                 record.kind == PRODUCT_EVENT_DISPLAY_CARD
@@ -210,60 +263,10 @@ class EventService:
         the renderer infer identities from transcript order.
         """
 
-        records = list(self._records(session_id))
-        admitted_at: dict[str, float] = {}
-        bound_client_ids: dict[str, str] = {}
-        for record in records:
-            if record.kind != PRODUCT_EVENT_USER_MESSAGE:
-                continue
-            client_turn_id = str(record.payload.get("client_turn_id") or "").strip()
-            if not client_turn_id:
-                continue
-            admitted_at[client_turn_id] = min(
-                admitted_at.get(client_turn_id, record.created_at),
-                record.created_at,
-            )
-            if (
-                str(record.payload.get("binding") or "") == USER_MESSAGE_BINDING_BOUND
-                and record.vendor_turn_id
-            ):
-                bound_client_ids[record.vendor_turn_id] = client_turn_id
-
-        snapshots: dict[str, dict[str, Any]] = {}
-        for record in records:
-            turn_id = str(record.vendor_turn_id or "").strip()
-            if not turn_id:
-                continue
-            if (
-                record.kind == PRODUCT_EVENT_USER_MESSAGE
-                and str(record.payload.get("binding") or "") != USER_MESSAGE_BINDING_BOUND
-            ):
-                continue
-            snapshot = snapshots.setdefault(
-                turn_id,
-                {
-                    "turn_id": turn_id,
-                    "started_at": record.created_at,
-                },
-            )
-            bound_client_id = bound_client_ids.get(turn_id)
-            if bound_client_id is None and turn_id in admitted_at:
-                bound_client_id = turn_id
-            start = (
-                admitted_at.get(bound_client_id, record.created_at)
-                if bound_client_id is not None
-                else record.created_at
-            )
-            snapshot["started_at"] = min(float(snapshot["started_at"]), start)
-            outcome = TURN_OUTCOME_BY_EVENT_KIND.get(record.kind)
-            if outcome is not None:
-                snapshot["completed_at"] = record.created_at
-                snapshot["outcome"] = outcome
-
-        return sorted(
-            snapshots.values(),
-            key=lambda snapshot: (float(snapshot["started_at"]), str(snapshot["turn_id"])),
-        )
+        clocks = _TurnClocks()
+        for record in self._records(session_id):
+            clocks.observe(record)
+        return clocks.snapshot()
 
     def decorate_history(
         self,
@@ -283,6 +286,19 @@ class EventService:
         phases: RequestPhases | None = None,
         compact_activity: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        decorated, activity, _timing = self.history_snapshot(
+            session_id, turns, phases=phases, compact_activity=compact_activity
+        )
+        return decorated, activity
+
+    def history_snapshot(
+        self,
+        session_id: str,
+        turns: list[dict[str, Any]],
+        *,
+        phases: RequestPhases | None = None,
+        compact_activity: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """Restore product-owned references and return the activity used by this transcript.
 
         Codex history owns message text and ordering, while uploads and Skill
@@ -414,9 +430,12 @@ class EventService:
             )
         if phases is not None:
             phases.mark("user_metadata")
-        activity = self.activity_snapshot(session_id, compact_activity=compact_activity)
+        clocks = _TurnClocks()
+        activity = self._activity_snapshot(
+            session_id, compact_activity=compact_activity, clocks=clocks
+        )
         if phases is not None:
-            phases.mark("activity")
+            phases.mark("activity_and_timing")
         message_models: dict[tuple[str, str], dict[str, str]] = {}
         for event in activity:
             if event["type"] != PRODUCT_EVENT_MESSAGE_DELTA:
@@ -434,7 +453,10 @@ class EventService:
                 row[MODEL_RUN_FIELD] = message_models[identity]
         if phases is not None:
             phases.mark("model_provenance")
-        return decorated, activity
+        timing = clocks.snapshot()
+        if phases is not None:
+            phases.mark("turn_activity")
+        return decorated, activity, timing
 
     def _user_message_snapshot(self, session_id: str) -> list[tuple[ProductEventRecord, float]]:
         latest: dict[str, tuple[ProductEventRecord, float]] = {}

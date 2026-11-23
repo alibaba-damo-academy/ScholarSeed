@@ -179,18 +179,14 @@ class _Events:
         return ()
 
     @staticmethod
-    def turn_activity_snapshot(_session_id: str) -> list[dict[str, object]]:
-        return []
-
-    @staticmethod
-    def transcript_snapshot(
+    def history_snapshot(
         _session_id: str,
         turns: list[dict[str, object]],
         *,
         phases: object,
         compact_activity: bool,
-    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        return turns, []
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+        return turns, [], []
 
     async def open(self, _session_id: str, _from_seq: int):
         # 空循环让本函数成为 async generator, 又不必用恒假条件。

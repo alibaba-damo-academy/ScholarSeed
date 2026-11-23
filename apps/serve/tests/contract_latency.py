@@ -426,6 +426,65 @@ class LatencyContract(unittest.IsolatedAsyncioTestCase):
                 logging.getLogger(LOGGER_NAME).warning("monitor disabled")
         self.assertEqual(len(records.records), 1)
 
+    async def test_persistent_stall_samples_distinct_stacks_once_and_bounds_volume(self):
+        monitor = LoopMonitor()
+        monitor.heartbeat = monitor.watchdogWake = 100.0
+        monitor.stopped.set()
+        stack_a = (("worker.py", "work", 10),)
+        stack_b = (("worker.py", "work", 20),)
+        with (
+            patch("service.platform.latency.time.perf_counter") as clock,
+            patch.object(
+                monitor, "_stack", side_effect=[stack_a, stack_a, stack_b, stack_a, stack_b]
+            ),
+            self.assertLogs(LOGGER_NAME, level=logging.WARNING) as logs,
+        ):
+            samples = []
+            for quarter in range(1, 162):
+                clock.return_value = 100 + quarter / 4
+                result = monitor._observe()
+                if result is not None:
+                    samples.append(result)
+            monitor._beat()
+            clock.return_value += 3
+            next_episode = monitor._observe()
+        self.assertEqual([row["sample_index"] for row in samples], [1, 2, 3, 4])
+        self.assertEqual(
+            [row["event"] for row in samples], ["loop_stall"] + ["loop_stall_sample"] * 3
+        )
+        self.assertEqual([row.get("stack_sample_index") for row in samples], [None, 1, None, 1])
+        self.assertNotIn("stack", samples[1])
+        self.assertEqual(
+            samples[2]["stack"], [{"file": "worker.py", "function": "work", "line": 20}]
+        )
+        recovery = json.loads(logs.records[0].getMessage())
+        self.assertTrue(all(row["loop_stall_id"] == recovery["loop_stall_id"] for row in samples))
+        self.assertEqual(recovery["watchdog_max_gap_ms"], 250)
+        self.assertEqual((recovery["sample_count"], recovery["distinct_stack_count"]), (4, 2))
+        self.assertIsNotNone(next_episode)
+        self.assertNotEqual(next_episode["loop_stall_id"], recovery["loop_stall_id"])
+        self.assertIn("stack", next_episode)
+
+    async def test_unobserved_interval_counts_wake_gap_in_either_resume_order(self):
+        for watchdog_first in (True, False):
+            with self.subTest(watchdog_first=watchdog_first):
+                monitor = LoopMonitor()
+                monitor.heartbeat = monitor.watchdogWake = 100.0
+                monitor.stopped.set()
+                with (
+                    patch("service.platform.latency.time.perf_counter", return_value=140.0),
+                    self.assertLogs(LOGGER_NAME, level=logging.WARNING) as logs,
+                ):
+                    if watchdog_first:
+                        sample = monitor._observe()
+                        self.assertEqual(sample["sample_index"], 1)
+                        self.assertEqual(sample["watchdog_gap_ms"], 40_000)
+                        self.assertIsNone(monitor._observe())
+                    monitor._beat()
+                recovery = json.loads(logs.records[0].getMessage())
+                self.assertEqual(recovery["sample_count"], int(watchdog_first))
+                self.assertEqual(recovery["watchdog_max_gap_ms"], 40_000)
+
 
 if __name__ == "__main__":
     unittest.main()

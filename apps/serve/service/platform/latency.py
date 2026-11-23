@@ -8,6 +8,7 @@ import logging
 import sys
 import threading
 import time
+from bisect import bisect_right
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -36,6 +37,7 @@ EXPOSE_HEADERS = b"access-control-expose-headers"
 TIMING_ORIGIN_HEADER = b"timing-allow-origin"
 LOOP_THREAD_NAME = "http-loop-monitor"
 LOOP_STACK_LIMIT = 12
+LOOP_STACK_RESAMPLE_SECONDS = (2.0, 10.0, 30.0)
 LOOP_JOIN_POLL_SECONDS = 0.01
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -58,12 +60,20 @@ class LoopMonitor:
         self.lastEpisode: str | None = None
         self.lastStallAt: float | None = None
         self.lastLagMs = 0.0
+        self.watchdogWake = 0.0
+        self.maxWakeGap = 0.0
+        self.sampleStage = -1
+        self.sampleCount = 0
+        self.stackSamples: dict[tuple[tuple[str, str, int], ...], int] = {}
 
     async def __aenter__(self) -> LoopMonitor:
         if logger.isEnabledFor(logging.DEBUG):
             self.stopped.clear()
+            self._reset_episode()
+            self.maxWakeGap = 0.0
             self.loopThread = threading.get_ident()
             self.heartbeat = time.perf_counter()
+            self.watchdogWake = self.heartbeat
             self.heartbeatAt = time.time()
             self.thread = threading.Thread(target=self._watch, name=LOOP_THREAD_NAME, daemon=True)
             self.thread.start()
@@ -90,9 +100,9 @@ class LoopMonitor:
         self.timer = asyncio.get_running_loop().call_later(self.interval, self._beat)
 
     def _beat(self) -> None:
-        now = time.perf_counter()
         recovered = None
         with self.lock:
+            now = time.perf_counter()
             lag = max(0.0, now - self.heartbeat - self.interval)
             if lag >= self.threshold:
                 self.lastEpisode = self.episode or uuid4().hex
@@ -102,8 +112,16 @@ class LoopMonitor:
                     "event": "loop_recovered",
                     **self._state(),
                     "recovered_at": time.time(),
+                    "sample_count": self.sampleCount,
+                    "distinct_stack_count": len(self.stackSamples),
+                    "watchdog_max_gap_ms": round(
+                        max(self.maxWakeGap, now - max(self.heartbeat, self.watchdogWake))
+                        * MILLISECONDS_PER_SECOND,
+                        3,
+                    ),
                 }
-            self.episode = None
+                self._reset_episode()
+            self.maxWakeGap = 0.0
             self.heartbeat = now
             self.heartbeatAt = time.time()
         if recovered is not None:
@@ -118,37 +136,69 @@ class LoopMonitor:
             "process_loop_lag_ms": round(self.lastLagMs, 3),
         }
 
+    def _reset_episode(self) -> None:
+        self.episode = None
+        self.sampleStage = -1
+        self.sampleCount = 0
+        self.stackSamples.clear()
+
     def _watch(self) -> None:
         while not self.stopped.wait(self.interval):
-            with self.lock:
-                lag = time.perf_counter() - self.heartbeat - self.interval
-                if lag < self.threshold or self.episode is not None:
-                    continue
+            payload = self._observe()
+            if payload is not None:
+                logger.warning(json.dumps(payload, separators=(",", ":")))
+
+    def _observe(self) -> dict[str, Any] | None:
+        with self.lock:
+            now = time.perf_counter()
+            gap = now - self.watchdogWake
+            # Count only the part of this wake interval since the last loop beat.
+            self.maxWakeGap = max(self.maxWakeGap, now - max(self.watchdogWake, self.heartbeat))
+            self.watchdogWake = now
+            lag = now - self.heartbeat - self.interval
+            if lag < self.threshold:
+                return None
+            stage = bisect_right(LOOP_STACK_RESAMPLE_SECONDS, lag)
+            if stage <= self.sampleStage:
+                return None
+            self.sampleStage = stage
+            first = self.episode is None
+            if first:
                 self.episode = uuid4().hex
                 self.lastEpisode = self.episode
                 self.lastStallAt = self.heartbeatAt
-                self.lastLagMs = lag * MILLISECONDS_PER_SECOND
-                payload = {
-                    "event": "loop_stall",
-                    **self._state(),
-                    "detected_at": time.time(),
-                }
-            stack: list[dict[str, str | int]] = []
-            frame = sys._current_frames().get(self.loopThread)
-            try:
-                while frame is not None and len(stack) < LOOP_STACK_LIMIT:
-                    stack.append(
-                        {
-                            "file": Path(frame.f_code.co_filename).name,
-                            "function": frame.f_code.co_name,
-                            "line": frame.f_lineno,
-                        }
-                    )
-                    frame = frame.f_back
-            finally:
-                del frame
-            payload["stack"] = stack
-            logger.warning(json.dumps(payload, separators=(",", ":")))
+            self.lastLagMs = lag * MILLISECONDS_PER_SECOND
+            self.sampleCount += 1
+            payload = {
+                "event": "loop_stall" if first else "loop_stall_sample",
+                **self._state(),
+                "detected_at": time.time(),
+                "sample_index": self.sampleCount,
+                "watchdog_gap_ms": round(gap * MILLISECONDS_PER_SECOND, 3),
+            }
+            stack = self._stack()
+            original = self.stackSamples.setdefault(stack, self.sampleCount)
+            if original == self.sampleCount:
+                payload["stack"] = [
+                    {"file": file, "function": function, "line": line}
+                    for file, function, line in stack
+                ]
+            else:
+                payload["stack_sample_index"] = original
+            return payload
+
+    def _stack(self) -> tuple[tuple[str, str, int], ...]:
+        stack: list[tuple[str, str, int]] = []
+        frame = sys._current_frames().get(self.loopThread)
+        try:
+            while frame is not None and len(stack) < LOOP_STACK_LIMIT:
+                stack.append(
+                    (Path(frame.f_code.co_filename).name, frame.f_code.co_name, frame.f_lineno)
+                )
+                frame = frame.f_back
+        finally:
+            del frame
+        return tuple(stack)
 
 
 class LatencyEvent(StrEnum):
