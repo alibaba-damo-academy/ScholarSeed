@@ -7,6 +7,7 @@ from service.platform.vocabulary import ARTIFACT_PATH_CHARS, BRIDGE_ROUTE_PREFIX
 SKILL_MANIFEST_NAME = "SKILL.md"
 PACKAGE_MANIFEST = ".scholarseed-package.json"
 SKILL_CAPABILITY = "skill"
+SKILL_SEARCH_OPERATION = "search"
 SKILL_ADMISSION_OPERATION = "admit"
 SKILL_ADMISSION_ROUTE = BRIDGE_ROUTE_PREFIX + "skill/admit"
 SKILL_MANAGEMENT_ROUTE = BRIDGE_ROUTE_PREFIX + "skill/"
@@ -27,7 +28,10 @@ class SkillRequest(BaseModel):
 
 
 class SkillSearch(SkillRequest):
-    query: str = Field(default="", max_length=SKILL_QUERY_MAX)
+    query: str = Field(
+        max_length=SKILL_QUERY_MAX,
+        description="Search terms. Use an empty string only for intentional marketplace browsing.",
+    )
     cursor: str = Field(default="", max_length=SKILL_CURSOR_MAX)
     locale: str = Field(default="zh", pattern=r"^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$")
 
@@ -69,7 +73,7 @@ class SkillUpdate(SkillLocalMutation):
 
 
 SKILL_MANAGEMENT_REQUESTS: dict[str, type[BaseModel]] = {
-    "search": SkillSearch,
+    SKILL_SEARCH_OPERATION: SkillSearch,
     "detail": SkillDetail,
     "list": SkillRequest,
     "document": SkillLocal,
