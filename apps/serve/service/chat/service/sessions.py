@@ -12,12 +12,12 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager, closing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum, StrEnum
 from functools import partial
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 from scholarseed_runtime.contract import (
@@ -211,9 +211,11 @@ from service.identity.service.skill_credentials import (
 from service.identity.utils import LOCAL_USER_ID
 from service.inference.source import ContentSource
 from service.paths import (
+    PROJECT_SESSION_OUTPUT_DIRNAME,
     SESSION_ATTACHMENT_DIRNAME,
     SESSION_OUTPUT_DIRNAME,
     SESSION_RUNTIME_DIR,
+    managed_output_directory,
     session_attachment_root,
 )
 from service.platform.activity import (
@@ -234,6 +236,7 @@ from service.platform.files import (
     read_file_raw,
     resolve_child,
 )
+from service.platform.storage import open_directory
 from service.platform.vocabulary import (
     COMPONENT_ANSWER_CAPABILITY,
 )
@@ -3336,6 +3339,43 @@ class SessionService:
         if local_file is not None:
             return read_file_raw(local_file.parent, local_file.name)
         return read_file_raw(*self._session_file_path(session_id, path))
+
+    def resolve_chat_file_link(self, session_id: str, path: str) -> str:
+        """Resolve one missing chat link against its session's persisted output binding."""
+        relative = PurePosixPath(path)
+        parts = relative.parts
+        # generate by onesec-code-guardian skill
+        if (
+            not parts
+            or relative.is_absolute()
+            or ".." in parts
+            or any(character in path for character in "\\:\x00")
+            or parts[0] == PROJECT_SESSION_OUTPUT_DIRNAME
+        ):
+            return path
+        record = self._access.get(session_id)
+        if record is None or not record.managed_output_path:
+            return path
+        root = self._session_root(session_id)
+        if record.project_path != str(root) or record.runtime_workdir != str(root):
+            return path
+        try:
+            resolve_child(root, path).stat()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return path
+        else:
+            return path
+        try:
+            with managed_output_directory(root, record.managed_output_path, record.title) as bound:
+                resolved = PurePosixPath(bound) / relative
+                with closing(open_directory(root, resolved.parts[:-1])) as directory:
+                    os.close(directory.open_regular(resolved.name))
+        except (OSError, ValueError):
+            return path
+        self._logger.info("session_chat_file_link_resolved session_id=%s", session_id)
+        return resolved.as_posix()
 
     def _session_file_path(self, session_id: str, path: str) -> tuple[Path, str]:
         root = self._session_root(session_id)

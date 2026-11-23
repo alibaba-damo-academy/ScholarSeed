@@ -144,6 +144,7 @@ from service.chat.persistence.catalog import (
     QueuedMessageState,
     SessionBindingConflictError,
     SessionCatalogStore,
+    SessionOutputPolicy,
     SessionPrincipal,
     SessionStatus,
     UncertaintyKind,
@@ -8596,6 +8597,60 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(HTTPException) as raised:
                         read(PRODUCT_SESSION_ID, path)
                     self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_chat_file_link_uses_only_its_bound_output_directory(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        session_id = "managed-file-link"
+        self.catalog.allocate(
+            session_id,
+            OWNER,
+            runtime_id=RUNTIME_ID,
+            runtime_workdir=str(self.workdir),
+            project_path=str(self.workdir),
+            output_root=str(self.workdir),
+            title="研究 验收",
+            output_policy=SessionOutputPolicy.MANAGED,
+        )
+        self.assertEqual(service.resolve_chat_file_link(session_id, "proof.lean"), "proof.lean")
+        output_dir = self.catalog.prepare_output(session_id, self.workdir)
+        assert output_dir is not None
+        output = Path(output_dir)
+        nested = output / "work" / "direct-task"
+        nested.mkdir(parents=True)
+        (output / "proof.lean").write_text("proof", encoding="utf-8")
+        (nested / "problem.lean").write_text("problem", encoding="utf-8")
+        sibling = output.with_name("another-session")
+        sibling.mkdir()
+        (sibling / "other.lean").write_text("other", encoding="utf-8")
+
+        for link, expected in (
+            ("proof.lean", b"proof"),
+            ("work/direct-task/problem.lean", b"problem"),
+        ):
+            canonical = (output / link).relative_to(self.workdir).as_posix()
+            with self.subTest(link=link):
+                self.assertEqual(service.resolve_chat_file_link(session_id, link), canonical)
+                self.assertEqual(service.resolve_chat_file_link(session_id, canonical), canonical)
+                self.assertEqual(service.file_raw(session_id, canonical)[0], expected)
+                with self.assertRaises(HTTPException) as raised:
+                    service.file_raw(session_id, link)
+                self.assertEqual(raised.exception.status_code, 404)
+
+        (self.workdir / "proof.lean").write_text("original", encoding="utf-8")
+        self.assertEqual(service.resolve_chat_file_link(session_id, "proof.lean"), "proof.lean")
+        for path in (
+            "other.lean",
+            "../another-session/other.lean",
+            "C:proof.lean",
+            "work\\proof.lean",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(service.resolve_chat_file_link(session_id, path), path)
+
+        if os.name != "nt":
+            (output / "other.lean").symlink_to(sibling / "other.lean")
+            self.assertEqual(service.resolve_chat_file_link(session_id, "other.lean"), "other.lean")
 
     async def test_project_cwd_context_reads_latest_title_without_output_path(self) -> None:
         self.live.relocate(cwd=self.workdir, project_path=self.workdir, output_root=self.workdir)
