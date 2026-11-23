@@ -426,27 +426,30 @@ class ResourceDeliveryService:
                     ).hexdigest(),
                     context_chars=len(context.model_context),
                 )
-        finished_at = perf_counter()
-        _timing_log.info(
-            "resources.versions.baseline.timing %s",
-            json.dumps(
-                {
-                    "project_id": project_id,
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "candidate_count": len(eligible_paths),
-                    "baseline_count": len(baselines),
-                    "writer_wait_ms": round(
-                        (writer_acquired - started_at) * MILLISECONDS_PER_SECOND, 3
-                    ),
-                    "scan_ms": round((capture_started - scan_started) * MILLISECONDS_PER_SECOND, 3),
-                    "capture_ms": round(
-                        (capture_finished - capture_started) * MILLISECONDS_PER_SECOND, 3
-                    ),
-                    "total_ms": round((finished_at - started_at) * MILLISECONDS_PER_SECOND, 3),
-                }
-            ),
-        )
+        if _timing_log.isEnabledFor(logging.INFO):
+            finished_at = perf_counter()
+            _timing_log.info(
+                "resources.versions.baseline.timing %s",
+                json.dumps(
+                    {
+                        "project_id": project_id,
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "candidate_count": len(eligible_paths),
+                        "baseline_count": len(baselines),
+                        "writer_wait_ms": round(
+                            (writer_acquired - started_at) * MILLISECONDS_PER_SECOND, 3
+                        ),
+                        "scan_ms": round(
+                            (capture_started - scan_started) * MILLISECONDS_PER_SECOND, 3
+                        ),
+                        "capture_ms": round(
+                            (capture_finished - capture_started) * MILLISECONDS_PER_SECOND, 3
+                        ),
+                        "total_ms": round((finished_at - started_at) * MILLISECONDS_PER_SECOND, 3),
+                    }
+                ),
+            )
         return context
 
     def _finish(
@@ -481,42 +484,43 @@ class ResourceDeliveryService:
                     raise
             return result
         finally:
-            finished = perf_counter()
-            writer_wait = (
-                finished if writer_acquired is None else writer_acquired
-            ) - writer_started
-            parts_seconds = {
-                "worker_wait_seconds": worker_started - submitted_at,
-                "writer_wait_seconds": writer_wait,
-                "scan_seconds": timing.scan_seconds,
-                "snapshot_seconds": timing.snapshot_seconds,
-            }
-            total_seconds = finished - submitted_at
-            parts_seconds["other_seconds"] = total_seconds - sum(
-                value for value in parts_seconds.values() if value is not None
-            )
-            parts_seconds["total_seconds"] = total_seconds
-            durations = {
-                f"{name.removesuffix('_seconds')}_ms": (
-                    round(value * MILLISECONDS_PER_SECOND, 3) if value is not None else None
+            if _timing_log.isEnabledFor(logging.INFO):
+                finished = perf_counter()
+                writer_wait = (
+                    finished if writer_acquired is None else writer_acquired
+                ) - writer_started
+                parts_seconds = {
+                    "worker_wait_seconds": worker_started - submitted_at,
+                    "writer_wait_seconds": writer_wait,
+                    "scan_seconds": timing.scan_seconds,
+                    "snapshot_seconds": timing.snapshot_seconds,
+                }
+                total_seconds = finished - submitted_at
+                parts_seconds["other_seconds"] = total_seconds - sum(
+                    value for value in parts_seconds.values() if value is not None
                 )
-                for name, value in parts_seconds.items()
-            }
-            details = {
-                "project_id": project_id,
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "outcome": outcome.value,
-                "candidate_count": timing.candidate_count,
-                "compared_count": timing.compared_count,
-                "compared_bytes": timing.compared_bytes,
-                "unchanged_count": timing.unchanged_count,
-                "snapshot_count": timing.snapshot_count,
-                "snapshot_bytes": timing.snapshot_bytes,
-                "review_file_count": len(result.file_ids) if result is not None else None,
-                **durations,
-            }
-            _timing_log.info("resources.versions.delivery.timing %s", json.dumps(details))
+                parts_seconds["total_seconds"] = total_seconds
+                durations = {
+                    f"{name.removesuffix('_seconds')}_ms": (
+                        round(value * MILLISECONDS_PER_SECOND, 3) if value is not None else None
+                    )
+                    for name, value in parts_seconds.items()
+                }
+                details = {
+                    "project_id": project_id,
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "outcome": outcome.value,
+                    "candidate_count": timing.candidate_count,
+                    "compared_count": timing.compared_count,
+                    "compared_bytes": timing.compared_bytes,
+                    "unchanged_count": timing.unchanged_count,
+                    "snapshot_count": timing.snapshot_count,
+                    "snapshot_bytes": timing.snapshot_bytes,
+                    "review_file_count": len(result.file_ids) if result is not None else None,
+                    **durations,
+                }
+                _timing_log.info("resources.versions.delivery.timing %s", json.dumps(details))
 
     def _finish_locked(
         self,

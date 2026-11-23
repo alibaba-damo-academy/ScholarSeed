@@ -166,6 +166,26 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             sum(timing[key] for key in phase_keys), timing["total_ms"], delta=0.01
         )
 
+    async def test_disabled_info_skips_resource_timing_serialization(self) -> None:
+        logger = "service.resources.service.delivery"
+        with (
+            self.assertNoLogs(logger, level="WARNING"),
+            patch(f"{logger}.json", wraps=json) as serializer,
+        ):
+            await self.begin()
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        timing_payloads = [
+            call.args[0]
+            for call in serializer.dumps.call_args_list
+            if isinstance(call.args[0], dict) and "total_ms" in call.args[0]
+        ]
+        self.assertEqual(timing_payloads, [])
+        self.assertEqual(result.paths, ("resources/notes.md",))
+        self.assertEqual(
+            self.deliveries._store(self.project.id).turn_state("session", "turn"), "completed"
+        )
+
     async def assert_external_edit_finalized(self, expected: bytes) -> None:
         result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
         self.assertEqual(result.file_ids, ())
