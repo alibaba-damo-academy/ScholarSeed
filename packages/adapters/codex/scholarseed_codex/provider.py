@@ -433,6 +433,7 @@ class CodexRuntimeProvider:
             base_instructions=request.base_instructions,
             developer_instructions=request.developer_instructions,
             service_tools=request.service_tools,
+            native_plan_enabled=request.native_plan_enabled,
             skill_roots=request.skill_roots,
             skill_configurations=request.skill_configurations,
             skill_policy=(

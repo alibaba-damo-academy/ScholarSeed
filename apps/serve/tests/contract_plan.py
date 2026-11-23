@@ -1236,12 +1236,13 @@ class PlanContract(unittest.TestCase):
             )
         return live
 
-    def test_ordinary_session_keeps_native_plan_and_artifact_delivery(self):
+    def test_plan_opt_in_preserves_artifact_delivery(self):
         self.assertFalse(self.plans.enabled())
         tools = session_service_tools(product_plan=self.plans.enabled())
         names = frozenset(tool.name for tool in tools)
         self.assertEqual(names, {"scholarseed_bridge", "publish_artifacts"})
-        self.assertTrue(session_thread_config(frozenset(), names)["tools.update_plan.enabled"])
+        config = session_thread_config(frozenset(), names, native_plan_enabled=False)
+        self.assertFalse(config["tools.update_plan.enabled"])
         self.plans.native(
             [{"content": "Check result", "status": "in_progress"}],
             runtime_id="codex",

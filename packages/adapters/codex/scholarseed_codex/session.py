@@ -1054,6 +1054,7 @@ class CodexRuntimeSession:
         config = session_thread_config(
             self._enabled_capabilities,
             frozenset(tool.name for tool in self._request.service_tools),
+            native_plan_enabled=self._request.native_plan_enabled,
         )
         if not native_web_search_supported(intent):
             config[CODEX_WEB_SEARCH_MODE_KEY] = CODEX_WEB_SEARCH_DISABLED_MODE
