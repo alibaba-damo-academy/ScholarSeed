@@ -132,17 +132,49 @@ export function projectContextCompaction(
   event: Extract<ProductEvent, { type: 'context_compacted' }>
 ): ConvItem[] {
   if (items.some((item) => item.kind === 'status' && item.eventSeq === event.seq)) return items
-  return insertTurnRuntimeItem(items, {
+  const index = event.item_id
+    ? items.findIndex(
+        (item) =>
+          item.kind === 'status' &&
+          item.compactionPhase !== undefined &&
+          item.turnId === event.turn_id &&
+          item.itemId === event.item_id
+      )
+    : -1
+  const existing = items[index]
+  if (existing && (existing.eventSeq ?? -1) > event.seq) return items
+  const notice: ConvItem = {
     kind: 'status',
     text: event.data.message || {
-      key: event.data.phase === 'completed' ? 'context.compacted' : 'context.compacting',
+      key:
+        event.data.phase === 'completed'
+          ? 'context.compacted'
+          : event.data.phase === 'failed'
+            ? 'context.compactionIncomplete'
+            : 'context.compacting',
     },
     tone: event.data.phase === 'failed' ? 'tension' : 'inference',
+    compactionPhase: event.data.phase,
     turnId: event.turn_id,
     itemId: event.item_id,
     eventSeq: event.seq,
     retainOnHistoryRefresh: true,
-  })
+  }
+  if (index < 0) return insertTurnRuntimeItem(items, notice)
+  const next = [...items]
+  next[index] = notice
+  return next
+}
+
+function settleCompactionNotice(item: ConvItem): ConvItem {
+  return item.kind === 'status' && item.compactionPhase === 'started'
+    ? {
+        ...item,
+        compactionPhase: 'failed',
+        text: { key: 'context.compactionIncomplete' },
+        tone: 'tension',
+      }
+    : item
 }
 
 export function projectArtifactFailure(
@@ -640,6 +672,7 @@ export function placeFinalAssistantLast(
     for (let index = 0; index < projected.length; index += 1) {
       const item = projected[index]
       if (item.turnId !== turnId) continue
+      projected[index] = settleCompactionNotice(item)
       lastOwnedIndex = index
       if (item.kind === 'agent') finalIndex = index
     }
@@ -1542,6 +1575,7 @@ export function settleInterruptedActivities(
       return { ...item, preview: { ...item.preview, status: previewStatus } }
     }
     if (item.turnId !== turnId) return item
+    if (item.kind === 'status') return settleCompactionNotice(item)
     if (item.kind !== 'tool' && item.kind !== 'native_activity') return item
     if (item.status !== 'running') return item
     if (item.kind === 'tool') return { ...item, status: 'cancelled', completedAt }

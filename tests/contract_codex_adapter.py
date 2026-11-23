@@ -6316,6 +6316,12 @@ def test_context_compaction_remains_native_after_truncation() -> None:
             {"turnId": "next-turn", "item": {"type": "contextCompaction", "id": "checkpoint"}},
             generation=1,
         )
+        check(
+            "native compaction start preserves phase and item identity",
+            emitter.emit.await_args.args[1] is CodexSessionEventKind.CONTEXT_COMPACTED
+            and emitter.emit.await_args.kwargs
+            == {"turn_id": "next-turn", "item_id": "checkpoint", "payload": {"phase": "started"}},
+        )
         await runtime.notification(
             "item/completed",
             {"turnId": "next-turn", "item": {"type": "contextCompaction", "id": "checkpoint"}},
@@ -6323,7 +6329,9 @@ def test_context_compaction_remains_native_after_truncation() -> None:
         )
         check(
             "native automatic compaction publishes its own checkpoint",
-            emitter.emit.await_args.args[1] is CodexSessionEventKind.CONTEXT_COMPACTED,
+            emitter.emit.await_args.args[1] is CodexSessionEventKind.CONTEXT_COMPACTED
+            and emitter.emit.await_args.kwargs
+            == {"turn_id": "next-turn", "item_id": "checkpoint", "payload": {"phase": "completed"}},
         )
 
     for reported_input in (1000, 29000, 1000000):

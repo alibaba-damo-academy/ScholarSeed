@@ -1449,6 +1449,13 @@ class CodexTurnRuntime:
         item_type = str(item.get("type") or "")
         item_id = str(item.get("id") or "")
         if item_type == CODEX_COMPACTION_ITEM:
+            await self._emitter.emit(
+                self._thread,
+                CodexSessionEventKind.CONTEXT_COMPACTED,
+                turn_id=turn_id,
+                item_id=item_id,
+                payload={"phase": "started"},
+            )
             return
         if item_id:
             self._router.bind_item(item_id, self._thread.thread_id)
@@ -1537,7 +1544,11 @@ class CodexTurnRuntime:
         item_id = str(item.get("id") or "")
         if item_type == CODEX_COMPACTION_ITEM:
             await self._emitter.emit(
-                self._thread, CodexSessionEventKind.CONTEXT_COMPACTED, turn_id=turn_id
+                self._thread,
+                CodexSessionEventKind.CONTEXT_COMPACTED,
+                turn_id=turn_id,
+                item_id=item_id,
+                payload={"phase": "completed"},
             )
             return
         if item_type == "reasoning":

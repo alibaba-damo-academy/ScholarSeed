@@ -393,7 +393,8 @@
   },
   "context": {
     "compacting": "Compacting context…",
-    "compacted": "Context compacted. Continuing execution."
+    "compacted": "Context compacted. Continuing execution.",
+    "compactionIncomplete": "Context compaction did not complete."
   },
   "artifactFailure": {
     "missing": "The file does not exist, so the artifact could not be displayed.",

@@ -3507,7 +3507,8 @@ declare module 'i18next' {
         },
         "context": {
             "compacting": "正在整理上下文…",
-            "compacted": "上下文已压缩，正在继续执行"
+            "compacted": "上下文已压缩，正在继续执行",
+            "compactionIncomplete": "上下文整理未完成。"
         },
         "artifactFailure": {
             "missing": "文件不存在，未能展示产物。",
