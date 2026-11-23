@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import logging
 import re
 from dataclasses import asdict
 from enum import Enum
@@ -40,6 +41,8 @@ from service.resources.service.delivery import ResourceDeliveryService
 from service.resources.service.history import ResourceVersionError, ResourceVersionService
 from service.resources.service.migration import ResourceReviewMigration
 from service.resources.service.recovery import ResourceRecoveryError, ResourceRecoveryService
+
+_log = logging.getLogger(__name__)
 
 RESOURCE_ADMISSION_ROUTE = "/api/serve/resources/version-admission"
 RESOURCE_CAPABILITY_ROUTE = "/api/resource/capability"
@@ -612,9 +615,23 @@ def register_version_routes(app: FastAPI) -> None:
             result = await _deliveries(request).retry_finalization(
                 project, session_id, turn_id, idempotency_key
             )
-            return {"file_ids": result.file_ids, "review_ids": result.review_ids}
         except (ContentError, ResourceVersionError, VersionStoreConflict) as exc:
             return _error(exc)
+        resume_settlement = getattr(request.app.state, "resume_resource_finalization", None)
+        if resume_settlement is not None:
+            try:
+                await resume_settlement(session_id, turn_id)
+            except Exception as exc:  # noqa: BLE001 - the archive receipt is already durable
+                _log.warning(
+                    "resource_finalization_resume_failed project_id=%s session_id=%s "
+                    "turn_id=%s failure_type=%s",
+                    project,
+                    session_id,
+                    turn_id,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+        return {"file_ids": result.file_ids, "review_ids": result.review_ids}
 
     @app.get(RESOURCE_CAPABILITY_ROUTE, response_model=None)
     async def resource_capability(  # type: ignore[unused-ignore]

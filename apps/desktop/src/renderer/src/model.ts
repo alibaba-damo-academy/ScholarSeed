@@ -974,6 +974,7 @@ export interface Thread {
   recoveryIncidentId?: string | null
   recoverySourceSeq?: number
   recoveryPending?: boolean
+  resourceFinalizing?: boolean
   resumeMessage?:
     | { key: 'resume.codex' | 'resume.agent' | 'resume.reconnect' | 'resume.runtimeSwitchBlocked' }
     | { key: 'resume.runtimeSwitch'; serviceInstanceId: string | null }

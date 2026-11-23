@@ -1,5 +1,6 @@
-import type { Thread } from '../../model'
-import type { ComposerSubmission } from '../../components/business/submission'
+import type { Thread } from '../../model.ts'
+import type { ComposerSubmission } from '../../components/business/submission.ts'
+import { isResourceFinalizing } from '../../runtime.ts'
 
 export const NEXT_STEPS_CARD = 'next-steps'
 const LIMITS = {
@@ -77,7 +78,7 @@ export function nextStepsAvailable(thread: Thread, cardId: string, turnId?: stri
     thread.status === 'waiting' ||
     thread.interrupting ||
     thread.terminated ||
-    thread.recoveryPending ||
+    (thread.recoveryPending && !isResourceFinalizing(thread)) ||
     thread.recoveryBlocked ||
     (thread.queuedMessages?.length ?? 0) > 0
   )

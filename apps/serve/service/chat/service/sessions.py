@@ -190,7 +190,12 @@ from service.chat.service.retry import (
 )
 from service.chat.service.search import SearchService
 from service.chat.service.settings import SettingsService
-from service.chat.service.utils import ResumeStage, artifact_directory, resume_stage
+from service.chat.service.utils import (
+    ResumeStage,
+    artifact_directory,
+    is_resource_finalizing,
+    resume_stage,
+)
 from service.chat.service.workspaces import SessionWorkspaceService
 from service.chat.utils import (
     SESSION_FORK_COPIED_FIELD,
@@ -203,6 +208,7 @@ from service.identity.service.skill_credentials import (
     CredentialAdmissionError,
     SkillCredentialService,
 )
+from service.identity.utils import LOCAL_USER_ID
 from service.inference.source import ContentSource
 from service.paths import (
     SESSION_ATTACHMENT_DIRNAME,
@@ -1792,6 +1798,7 @@ class SessionService:
             "uncertain_operations": live.ledger.uncertainty_snapshot(),
             "recovery_blocked": recovery_blocked,
             "recovery_pending": pending is not None,
+            "resource_finalizing": is_resource_finalizing(live, record, pending),
             **(
                 self._events.recovery_snapshot(live.id, pending.native_turn_id)
                 if recovery_blocked and pending
@@ -2208,6 +2215,7 @@ class SessionService:
             and not recovery_blocked,
             "recovery_blocked": recovery_blocked,
             "recovery_pending": pending is not None,
+            "resource_finalizing": is_resource_finalizing(live, record, pending),
             "unknown_outcome": (
                 live.ledger.has_unknown_outcome
                 if live is not None
@@ -3141,6 +3149,7 @@ class SessionService:
                 and (live is None or pending.recovery_blocked)
             ),
             "recovery_pending": pending is not None,
+            "resource_finalizing": is_resource_finalizing(live, record, pending),
             "todos": list(record.todos) if record is not None else [],
             **(
                 self._events.recovery_snapshot(session_id, pending.native_turn_id)
@@ -4126,6 +4135,24 @@ class SessionService:
             raise PreparationError(SESSION_ARCHIVED_ERROR)
         if self.model(session_id)["model_id"] != model_id:
             raise PreparationError(RECONFIGURATION_STALE)
+        live = self._sessions.get(session_id)
+        if (
+            live is not None
+            and actor_id in {LOCAL_USER_ID, live.user_id}
+            and (pending := self._access.pending_turn_settlement(session_id)) is not None
+            and is_resource_finalizing(live, self._access.get(session_id), pending)
+        ):
+            if service_instance_id not in {None, self._activities.instance_id}:
+                raise PreparationError(PREPARATION_INSTANCE_CHANGED)
+            try:
+                lease = self._activities.enter(ActivityDomain.TURN, root=True)
+            except MaintenanceActive:
+                raise PreparationError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN) from None
+            # The durable queue can accept input without activating or replacing the runtime.
+            # Its dispatcher prepares and authorizes the actual turn after settlement.
+            with lease:
+                yield
+            return
         async with self.model_admission(
             model_id,
             actor_id=actor_id,

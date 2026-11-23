@@ -626,10 +626,13 @@ class ResourceVersionSupervisor:
         )
         return eligible, initial_paths
 
-    def _inventory(self, project_id: str) -> _ResourceInventory:
-        entries = self._entries(project_id)
-        paths = tuple(entry.path for entry in entries)
-        return _ResourceInventory(entries, self._content.repository_roots(project_id, paths))
+    def _inventory(
+        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+    ) -> _ResourceInventory:
+        entries, repositories = self._content.scan_resource_inventory(
+            project_id, include_missing=include_missing
+        )
+        return _ResourceInventory(entries, repositories)
 
     def _scan_project(
         self, project_id: str, inventory: _ResourceInventory | None = None
@@ -781,13 +784,15 @@ class ResourceVersionSupervisor:
                 tuple(ResourceEntry(path=path, size=0) for path in include_missing),
             )
             return tuple(cached | set(additions))
-        entries = self._entries(project_id)
-        present = {entry.path for entry in entries}
+        inventory = self._inventory(project_id, include_missing=include_missing)
+        present = {entry.path for entry in inventory.entries}
         entries = (
-            *entries,
+            *inventory.entries,
             *(ResourceEntry(path=path, size=0) for path in include_missing if path not in present),
         )
-        eligible, _ignored, _oversized, _unsupported = self._eligible(project_id, entries)
+        eligible, _ignored, _oversized, _unsupported = self._eligible(
+            project_id, entries, repositories=inventory.repositories
+        )
         return eligible
 
     @contextmanager

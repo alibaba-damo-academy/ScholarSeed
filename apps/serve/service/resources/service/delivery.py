@@ -6,8 +6,9 @@ import hashlib
 import json
 import logging
 from contextlib import closing
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import PurePath
+from time import perf_counter
 
 from service.content.domain.model import ContentError
 from service.paths import PROJECT_DB_RELATIVE
@@ -41,7 +42,21 @@ CREATED_FILE_ID_PREFIX = "file-"
 IDENTIFIER_LENGTH = 32
 UTF8_ENCODING = "utf-8"
 TOOL_CALL_CHANGE_KIND = "tool_call"
+MILLISECONDS_PER_SECOND = 1000
 _log = logging.getLogger("scholarseed.resources.deliveries")
+_timing_log = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _FinalizationTiming:
+    scan_seconds: float | None = None
+    snapshot_seconds: float | None = None
+    candidate_count: int | None = None
+    compared_count: int | None = None
+    compared_bytes: int | None = None
+    unchanged_count: int | None = None
+    snapshot_count: int | None = None
+    snapshot_bytes: int | None = None
 
 
 def _identity(prefix: str, *parts: str) -> str:
@@ -184,7 +199,13 @@ class ResourceDeliveryService:
             if project_id is None:
                 return ReviewCaptureResult()
             return await self._activities.to_thread(
-                ActivityDomain.RESOURCE, self._finish, project_id, session_id, turn_id, outcome
+                ActivityDomain.RESOURCE,
+                self._finish,
+                project_id,
+                session_id,
+                turn_id,
+                outcome,
+                perf_counter(),
             )
 
     def finalizations(
@@ -375,21 +396,24 @@ class ResourceDeliveryService:
         return None
 
     def _begin(self, project_id: str, session_id: str, turn_id: str) -> ResourceTurnContext:
+        started_at = perf_counter()
         with self._versions.writer(project_id):
+            writer_acquired = perf_counter()
             store = self._store(project_id)
             if store.turn_state(session_id, turn_id) is not None:
                 return ResourceTurnContext(store.turn_model_context(session_id, turn_id))
+            scan_started = perf_counter()
             eligible_paths, initial_paths = self._supervisor.scan_turn_inventory(project_id)
-            self._versions.capture_turn_baselines(
+            capture_started = perf_counter()
+            baselines = self._versions.capture_turn_baselines(
                 project_id,
                 session_id,
                 turn_id,
                 eligible_paths,
                 initial_paths,
             )
-            context = ResourceTurnContext(
-                self._store(project_id).turn_model_context(session_id, turn_id)
-            )
+            capture_finished = perf_counter()
+            context = ResourceTurnContext(store.turn_model_context(session_id, turn_id))
             if context.model_context:
                 emit(
                     _log,
@@ -402,7 +426,31 @@ class ResourceDeliveryService:
                     ).hexdigest(),
                     context_chars=len(context.model_context),
                 )
-            return context
+        if _timing_log.isEnabledFor(logging.INFO):
+            finished_at = perf_counter()
+            _timing_log.info(
+                "resources.versions.baseline.timing %s",
+                json.dumps(
+                    {
+                        "project_id": project_id,
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "candidate_count": len(eligible_paths),
+                        "baseline_count": len(baselines),
+                        "writer_wait_ms": round(
+                            (writer_acquired - started_at) * MILLISECONDS_PER_SECOND, 3
+                        ),
+                        "scan_ms": round(
+                            (capture_started - scan_started) * MILLISECONDS_PER_SECOND, 3
+                        ),
+                        "capture_ms": round(
+                            (capture_finished - capture_started) * MILLISECONDS_PER_SECOND, 3
+                        ),
+                        "total_ms": round((finished_at - started_at) * MILLISECONDS_PER_SECOND, 3),
+                    }
+                ),
+            )
+        return context
 
     def _finish(
         self,
@@ -410,27 +458,77 @@ class ResourceDeliveryService:
         session_id: str,
         turn_id: str,
         outcome: TurnOutcome,
+        submitted_at: float | None = None,
     ) -> ReviewCaptureResult:
         if outcome is TurnOutcome.UNKNOWN:
             return ReviewCaptureResult()
-        with self._versions.writer(project_id):
-            store = self._store(project_id)
-            first_receipt = store.receive_terminal(session_id, turn_id, outcome)
-            try:
-                return self._finish_locked(project_id, session_id, turn_id, outcome, first_receipt)
-            except Exception as exc:
-                store.record_finalization_error(
-                    session_id, turn_id, getattr(exc, "code", type(exc).__name__)
+        worker_started = perf_counter()
+        submitted_at = worker_started if submitted_at is None else submitted_at
+        timing = _FinalizationTiming()
+        writer_acquired = None
+        result = None
+        writer_started = perf_counter()
+        try:
+            with self._versions.writer(project_id):
+                writer_acquired = perf_counter()
+                store = self._store(project_id)
+                first_receipt = store.receive_terminal(session_id, turn_id, outcome)
+                try:
+                    result = self._finish_locked(
+                        project_id, session_id, turn_id, first_receipt, timing
+                    )
+                except Exception as exc:
+                    store.record_finalization_error(
+                        session_id, turn_id, getattr(exc, "code", type(exc).__name__)
+                    )
+                    raise
+            return result
+        finally:
+            if _timing_log.isEnabledFor(logging.INFO):
+                finished = perf_counter()
+                writer_wait = (
+                    finished if writer_acquired is None else writer_acquired
+                ) - writer_started
+                parts_seconds = {
+                    "worker_wait_seconds": worker_started - submitted_at,
+                    "writer_wait_seconds": writer_wait,
+                    "scan_seconds": timing.scan_seconds,
+                    "snapshot_seconds": timing.snapshot_seconds,
+                }
+                total_seconds = finished - submitted_at
+                parts_seconds["other_seconds"] = total_seconds - sum(
+                    value for value in parts_seconds.values() if value is not None
                 )
-                raise
+                parts_seconds["total_seconds"] = total_seconds
+                durations = {
+                    f"{name.removesuffix('_seconds')}_ms": (
+                        round(value * MILLISECONDS_PER_SECOND, 3) if value is not None else None
+                    )
+                    for name, value in parts_seconds.items()
+                }
+                details = {
+                    "project_id": project_id,
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "outcome": outcome.value,
+                    "candidate_count": timing.candidate_count,
+                    "compared_count": timing.compared_count,
+                    "compared_bytes": timing.compared_bytes,
+                    "unchanged_count": timing.unchanged_count,
+                    "snapshot_count": timing.snapshot_count,
+                    "snapshot_bytes": timing.snapshot_bytes,
+                    "review_file_count": len(result.file_ids) if result is not None else None,
+                    **durations,
+                }
+                _timing_log.info("resources.versions.delivery.timing %s", json.dumps(details))
 
     def _finish_locked(
         self,
         project_id: str,
         session_id: str,
         turn_id: str,
-        outcome: TurnOutcome,
         first_receipt: bool,
+        timing: _FinalizationTiming,
     ) -> ReviewCaptureResult:
         store = self._store(project_id)
         existing = store.review_result(session_id, turn_id)
@@ -473,21 +571,44 @@ class ResourceDeliveryService:
         tool_calls = store.turn_tool_calls(session_id, turn_id)
         baseline_by_path = {item.path: item for item in baselines}
         initial_paths = store.turn_inventory(session_id, turn_id)
-        final_paths = self._supervisor.eligible_paths(
-            project_id, include_missing=tuple(baseline_by_path)
-        )
+        scan_started = perf_counter()
+        try:
+            final_paths = self._supervisor.eligible_paths(
+                project_id, include_missing=tuple(baseline_by_path)
+            )
+        finally:
+            timing.scan_seconds = perf_counter() - scan_started
+        timing.candidate_count = len(final_paths)
         final_snapshots: dict[str, tuple[StableContentCapture, str, ObjectDescriptor]] = {}
         removed: dict[str, TurnBaseline] = {}
-        paths = tuple(path for path in final_paths if self._versions.reviewable(path))
-        with closing(self._versions.capture_agent_files(project_id, paths)) as captures:
-            for path, capture in captures:
-                if not isinstance(capture, ContentError):
-                    final_snapshots[path] = capture
-                elif capture.code == "file_not_found":
-                    if path in baseline_by_path:
-                        removed[path] = baseline_by_path[path]
-                elif capture.code != "file_too_large":
-                    raise capture
+        compared_count = 0
+        compared_bytes = 0
+        snapshot_started = perf_counter()
+        try:
+            paths = tuple(path for path in final_paths if self._versions.reviewable(path))
+            with closing(
+                self._versions.capture_agent_files(project_id, paths, baseline_by_path)
+            ) as captures:
+                for path, capture in captures:
+                    if isinstance(capture, ContentError):
+                        if capture.code == "file_not_found":
+                            if path in baseline_by_path:
+                                removed[path] = baseline_by_path[path]
+                        elif capture.code != "file_too_large":
+                            raise capture
+                        continue
+                    stable, descriptor = capture
+                    compared_count += 1
+                    compared_bytes += stable.size
+                    if descriptor is not None:
+                        final_snapshots[path] = (stable, descriptor.object_id, descriptor)
+        finally:
+            timing.snapshot_seconds = perf_counter() - snapshot_started
+            timing.compared_count = compared_count
+            timing.compared_bytes = compared_bytes
+            timing.unchanged_count = compared_count - len(final_snapshots)
+            timing.snapshot_count = len(final_snapshots)
+            timing.snapshot_bytes = sum(stable.size for stable, _, _ in final_snapshots.values())
         additions = {
             path: snapshot
             for path, (snapshot, _object_id, _descriptor) in final_snapshots.items()
@@ -563,9 +684,6 @@ class ResourceDeliveryService:
                 )
                 continue
             assert baseline is not None
-            if stable.revision == baseline.revision and stable.mode_bits == baseline.mode_bits:
-                if change_kind != "move":
-                    continue
             prepared_snapshot, descriptor, annotation_descriptor = self._versions.prepare_agent(
                 project_id,
                 path,

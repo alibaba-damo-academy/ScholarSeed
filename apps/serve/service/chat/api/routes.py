@@ -470,6 +470,7 @@ def create_chat_app(
     feedback_service = FeedbackService()
 
     app.state.session_catalog = access_store
+    app.state.resume_resource_finalization = turn_service.resume_resource_finalization
     app.state.product_events = event_store
     app.state.session_artifacts = artifact_store
     app.state.artifact_service = artifact_service

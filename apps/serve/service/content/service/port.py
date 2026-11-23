@@ -331,7 +331,9 @@ class ProjectRegistry:
         finally:
             self._recovery_scope.reset(token)
 
-    def _reference(self, row: ProjectRow) -> ProjectRef:
+    def reference(self, row: ProjectRow) -> ProjectRef:
+        """Apply current availability gates to an already-read catalog row."""
+
         with self._blocked_lock:
             reason = self._blocked_projects.get(row.project_id)
             recovery = self._recovery_states.get(row.project_id)
@@ -400,7 +402,7 @@ class ProjectRegistry:
         resolved = self.seed_root(path)
         existing = self._catalog.project_by_root(resolved)
         if existing is not None:
-            result = self._reference(existing)
+            result = self.reference(existing)
             if operation_id is not None:
                 self._catalog.record_operation_effect(operation_id, asdict(result))
             return result
@@ -444,7 +446,7 @@ class ProjectRegistry:
         row = self._catalog.project_by_root(resolved)
         if row is None:
             raise ContentError("no_project_selected")
-        return self._reference(row)
+        return self.reference(row)
 
     def resolve(self, project_id: str | None, *, read_only: bool = False) -> ProjectRef:
         """project_id → 项目引用。None 或 CURRENT 取默认项目。"""
@@ -458,10 +460,10 @@ class ProjectRegistry:
             # 未登记的 id 明确拒绝而不是静默回落到当前工作区 —— 静默回落会让
             # 调用方以为自己操作的是另一个项目。
             raise ContentError("unknown_project")
-        return self._reference(row)
+        return self.reference(row)
 
     def projects(self) -> tuple[ProjectRef, ...]:
-        return tuple(self._reference(row) for row in self._catalog.projects())
+        return tuple(self.reference(row) for row in self._catalog.projects())
 
     def for_path(self, absolute: str) -> ProjectRef | None:
         """绝对路径 → 所属项目。取最长匹配的 `dir_root`, 支持项目嵌套。"""
@@ -477,7 +479,7 @@ class ProjectRegistry:
                 continue
             if best is None or len(row.dir_root) > len(best.dir_root):
                 best = row
-        return self._reference(best) if best is not None else None
+        return self.reference(best) if best is not None else None
 
     # ---- 变更 ----
 
@@ -1342,6 +1344,32 @@ class ContentService:
                 self._space(project_id), project_id, path, max_bytes, target
             )
 
+    @contextmanager
+    def capture_stable_batch(
+        self, project_id: str
+    ) -> Iterator[Callable[[str, int, BinaryIO], StableContentCapture]]:
+        """Reuse the catalog read connection, never a stale grant snapshot."""
+
+        if not project_id or project_id == ProjectRegistry.CURRENT:
+            yield lambda path, max_bytes, target: self.capture_stable(
+                project_id, path, max_bytes, target
+            )
+            return
+
+        with (
+            self._activities.enter(ActivityDomain.RESOURCE),
+            self._catalog.read_project_scope() as read_scope,
+        ):
+
+            def capture(path: str, max_bytes: int, target: BinaryIO) -> StableContentCapture:
+                row, external = read_scope(project_id)
+                if row is None:
+                    raise ContentError("unknown_project")
+                scope = self.project_space(self._registry.reference(row), external)
+                return self.capture_from_space(scope, project_id, path, max_bytes, target)
+
+            yield capture
+
     @staticmethod
     def capture_from_space(
         scope: space.ProjectSpace,
@@ -2013,6 +2041,26 @@ class ContentService:
         """Scan all resources once while exposing factual discovery events."""
 
         return enumeration.scan_files(self._resource_space(project_id), observer, paths=paths)
+
+    def scan_resource_inventory(
+        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+    ) -> tuple[tuple[ResourceEntry, ...], dict[str, str | None]]:
+        """Qualify each inventory entry once, including missing baseline paths."""
+
+        scope = self._resource_space(project_id)
+        lookup = repository.RepositoryLookup(scope)
+        repositories: dict[str, str | None] = {}
+
+        def observe(entry: ResourceEntry, target: Path) -> None:
+            repositories[entry.path] = lookup.for_scanned_file(entry.path, target)
+
+        entries = enumeration.scan_files(scope, observe_resolved=observe)
+        for path in include_missing:
+            if path not in repositories:
+                repositories[path] = lookup.for_path(path)
+        if not self._resource_scope_current(project_id, scope):
+            raise ContentError(ROOT_BUSY_ERROR)
+        return entries, repositories
 
     def resource_entries(
         self, project_id: str, paths: tuple[str, ...]
