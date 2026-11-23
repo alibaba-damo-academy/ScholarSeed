@@ -19,6 +19,14 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { chromium } from 'playwright'
+import {
+  boundedProfileRead,
+  enableHistoryProfile,
+  measureHistoryClick,
+  oldSourceTimings,
+  rendererHistoryPhases,
+  sampleHistoryMemory,
+} from './fixtures/profiling.mjs'
 
 const STARTUP_TIMEOUT_MS = 30_000
 const HEALTH_INTERVAL_MS = 500
@@ -207,7 +215,7 @@ function rendererPage(candidate) {
   return new URL(candidate.url()).pathname === RENDERER_PATH
 }
 
-function observeNetwork(cdp, fixture, emit) {
+function observeNetwork(cdp, fixture, emit, profileHistory) {
   const requests = new Map()
   let heartbeatAt = null
   cdp.on('Network.requestWillBeSent', (event) => {
@@ -231,6 +239,7 @@ function observeNetwork(cdp, fixture, emit) {
     const serverRequestId = Object.entries(event.response.headers).find(
       ([key]) => key.toLowerCase() === 'x-scholarseed-request-id'
     )?.[1]
+    request.serverRequestId = serverRequestId
     emit('renderer_headers', {
       requestId: event.requestId,
       kind: request.kind,
@@ -239,6 +248,16 @@ function observeNetwork(cdp, fixture, emit) {
       serverRequestId,
     })
   })
+  if (profileHistory)
+    cdp.on('Network.loadingFinished', (event) => {
+      const request = requests.get(event.requestId)
+      if (request?.kind === 'history')
+        emit('renderer_history_downloaded', {
+          serverRequestId: request.serverRequestId,
+          at: request.startedAt + (event.timestamp - request.startedTick) * 1000,
+          encodedBytes: event.encodedDataLength,
+        })
+    })
   cdp.on('Network.eventSourceMessageReceived', (event) => {
     const request = requests.get(event.requestId)
     if (request?.kind !== 'session-sse' || event.eventName !== 'heartbeat') return
@@ -374,6 +393,11 @@ async function run(options, fixture, artifact) {
   let heartbeatAt = null
   let observationEndedAt = null
   let prepared = false
+  let stopMemory
+  let memory
+  let firstInteraction
+  let projectionPhases
+  let productPage
   let rendererSourcesBeforeHeartbeat = null
   let rendererObservationComplete = false
   let exitFailed = false
@@ -569,6 +593,7 @@ async function run(options, fixture, artifact) {
       (line) => rendererDiagnostic(line, fixture.sessionId, emit)
     )
     emit('desktop_started', { pid: desktop.child.pid, at: desktopStartedAt })
+    if (options.profileHistory) stopMemory = sampleHistoryMemory(serve.child, desktop.child, emit)
     browser = await waitFor(
       async () => {
         if (!ownsListener(desktop.child.pid, cdpPort)) return null
@@ -591,7 +616,9 @@ async function run(options, fixture, artifact) {
       'normal product page'
     )
     const cdp = await page.context().newCDPSession(page)
-    const firstHeartbeat = observeNetwork(cdp, fixture, emit)
+    productPage = page
+    if (options.profileHistory) await boundedProfileRead(enableHistoryProfile(page))
+    const firstHeartbeat = observeNetwork(cdp, fixture, emit, options.profileHistory)
     await cdp.send('Network.enable')
     emit('renderer_observer_attached', { origin: new URL(page.url()).origin })
     const deadline = desktopStartedAt + options.timeoutMs
@@ -653,9 +680,27 @@ async function run(options, fixture, artifact) {
         { timeout: remaining() }
       )
       .then((handle) => handle.jsonValue())
-    ;[visibleAt] = await Promise.all([historyVisible, dismissLanding])
-    emit('history_visible', { elapsedMs: visibleAt - desktopStartedAt })
-    await page.screenshot({ path: join(artifact, 'history-visible.png'), timeout: 10_000 })
+    const captureFirstScreen = historyVisible.then(async (at) => {
+      visibleAt = at
+      emit('history_visible', { elapsedMs: visibleAt - desktopStartedAt })
+      if (options.profileHistory) {
+        firstInteraction = await measureHistoryClick(
+          page,
+          fixture.lastTurnId,
+          'firstClick',
+          remaining()
+        )
+        emit('first_history_interaction', firstInteraction)
+      }
+      await page.screenshot({
+        path: join(
+          artifact,
+          options.profileHistory ? 'history-after-first-click.png' : 'history-visible.png'
+        ),
+        timeout: 10_000,
+      })
+    })
+    await Promise.all([captureFirstScreen, dismissLanding])
     if (!options.prepare) {
       try {
         await waitFor(firstHeartbeat, remaining(), 'first session SSE heartbeat')
@@ -671,7 +716,8 @@ async function run(options, fixture, artifact) {
     })
     if (options.oldTurn && !options.prepare) {
       const stream = page.locator('.conversation-stream')
-      await stream.hover({ timeout: 5000 })
+      emit('older_turn_scroll_started', { turnId: options.oldTurn })
+      await stream.hover({ timeout: Math.min(5000, remaining()) })
       const oldTurn = stream.locator(`[data-message-turn-id="${options.oldTurn}"]`).first()
       // Scroll using native wheel input to exercise the production viewport observer.
       for (let count = 0; count < 100; count++) {
@@ -698,28 +744,54 @@ async function run(options, fixture, artifact) {
       ) {
         throw new Error(`Older turn ${options.oldTurn} did not enter the viewport`)
       }
+      const oldVisibleAt = Date.now()
       emit('older_turn_visible', { turnId: options.oldTurn })
       await page.screenshot({ path: join(artifact, 'older-turn.png'), timeout: 10_000 })
       if (options.checkOldSources) {
-        const answer = stream
-          .locator(`[data-message-turn-id="${options.oldTurn}"][data-message-kind="agent"]`)
-          .last()
-        const trigger = answer.locator('[data-answer-source-list]').getByRole('button').first()
-        await trigger.click({ timeout: 15_000 })
-        const panel = page.locator('[data-citation-source-panel]').last()
-        await panel
-          .locator('[data-citation-source-entry]')
-          .first()
-          .waitFor({ state: 'visible', timeout: 5000 })
-        emit('older_turn_sources_opened', { turnId: options.oldTurn })
+        if (options.profileHistory) {
+          const interaction = await measureHistoryClick(
+            page,
+            options.oldTurn,
+            'olderClick',
+            remaining()
+          )
+          emit('older_turn_sources_opened', {
+            turnId: options.oldTurn,
+            ...interaction,
+            elapsedSinceVisibleMs: interaction.visibleAt - oldVisibleAt,
+          })
+        } else {
+          const answer = stream
+            .locator(`[data-message-turn-id="${options.oldTurn}"][data-message-kind="agent"]`)
+            .last()
+          const trigger = answer.locator('[data-answer-source-list]').getByRole('button').first()
+          await trigger.click({ timeout: remaining() })
+          const panel = page.locator('[data-citation-source-panel]').last()
+          await panel
+            .locator('[data-citation-source-entry]')
+            .first()
+            .waitFor({ state: 'visible', timeout: remaining() })
+          emit('older_turn_sources_opened', {
+            turnId: options.oldTurn,
+            elapsedSinceVisibleMs: Date.now() - oldVisibleAt,
+          })
+        }
         await page.screenshot({ path: join(artifact, 'older-sources.png'), timeout: 10_000 })
       }
     }
+  } catch (error) {
+    emit('run_failed', { message: error.message })
+    throw error
   } finally {
     healthStopped = true
+    if (stopMemory) memory = await stopMemory(firstInteraction?.visibleAt)
+    if (options.profileHistory && productPage && !productPage.isClosed())
+      projectionPhases = await boundedProfileRead(rendererHistoryPhases(productPage)).catch(
+        () => []
+      )
     await healthTask
     await Promise.allSettled(sampling)
-    if (browser) await browser.close().catch(() => {})
+    if (browser) await boundedProfileRead(browser.close()).catch(() => {})
     const desktopExit = await stop(desktop)
     const serveExit = await stop(serve)
     emit('desktop_exit', desktopExit ?? {})
@@ -792,6 +864,41 @@ async function run(options, fixture, artifact) {
             : 'history_unobserved',
       desktopStartedAt,
       historyVisibleMs: fromStart(visibleAt),
+      ...(options.profileHistory
+        ? {
+            historyProfile: {
+              memory,
+              clientReads: records
+                .filter(
+                  (row) =>
+                    row.event === 'renderer_api_timing' && row.diagnosticEvent === 'body_decoded'
+                )
+                .map((row) => {
+                  const transfer = records.find(
+                    (event) =>
+                      event.event === 'renderer_history_downloaded' &&
+                      event.serverRequestId === row.server_request_id
+                  )
+                  return {
+                    caller: row.caller,
+                    responseReadAndDecodeMs: row.body_elapsed_ms,
+                    requestId: row.server_request_id,
+                    encodedBytes: transfer?.encodedBytes ?? null,
+                    decodedAt: row.timestamp_ms,
+                    downloadedAt: transfer?.at ?? null,
+                  }
+                }),
+              projectionPhases,
+              olderSource: oldSourceTimings(records, options.oldTurn),
+              failure: records.find((row) => row.event === 'run_failed')?.message ?? null,
+              firstClickAfterStartMs: fromStart(firstInteraction?.inputAt ?? null),
+              firstClickResponseAfterStartMs: fromStart(firstInteraction?.visibleAt ?? null),
+              firstClickResponseMs: firstInteraction
+                ? firstInteraction.visibleAt - firstInteraction.inputAt
+                : null,
+            },
+          }
+        : {}),
       onOpenMs: fromStart(open?.observedAt ?? null),
       firstHeartbeatMs: fromStart(heartbeatAt),
       rendererObservationComplete,
@@ -826,6 +933,27 @@ async function run(options, fixture, artifact) {
     })
   }
   if (exitFailed) throw new Error('Owned Desktop or Serve process did not exit')
+  if (
+    options.profileHistory &&
+    (!firstInteraction ||
+      (options.checkOldSources &&
+        oldSourceTimings(records, options.oldTurn)?.serveHeadersMs == null) ||
+      !memory?.rendererPeakKiB ||
+      !memory.processPeaks.some((row) => row.role === 'serve') ||
+      !projectionPhases?.some(
+        (row) => row.caller === 'transcript' && row.phase === 'projectionToCommit'
+      ) ||
+      !projectionPhases?.some((row) => row.caller === 'resume' && row.phase === 'projection') ||
+      !['transcript', 'resume'].every((caller) =>
+        records.some(
+          (row) =>
+            row.event === 'renderer_api_timing' &&
+            row.caller === caller &&
+            row.diagnosticEvent === 'body_decoded'
+        )
+      ))
+  )
+    throw new Error('Incomplete renderer history profile; inspect the timeline and summary')
   verifyGeneratedFixture(options.python, fixture)
   if (
     options.maxSources !== undefined &&
@@ -863,6 +991,7 @@ const { values } = parseArgs({
     ),
     prepare: { type: 'boolean' },
     'check-old-sources': { type: 'boolean' },
+    'profile-history': { type: 'boolean' },
     help: { type: 'boolean' },
   },
 })
@@ -877,6 +1006,7 @@ if (values.help) {
   --alert-ms N                    Health deadline for macOS thread sampling (default 800)
   --old-turn ID                   Scroll to this turn after the cold measurement
   --check-old-sources             Open and capture the old turn's source list
+  --profile-history               Measure projection, React commit, first source click and sampled RSS
   --max-sources-before-heartbeat N
                                    Fail if that many source requests are exceeded or the heartbeat is missing`)
   process.exit(0)
@@ -919,6 +1049,13 @@ if (
 )
   throw new Error('Invalid run limits')
 const fixture = await fixtureAt(values.fixture)
+if (
+  values['profile-history'] &&
+  (values.prepare || !fixture.lastTurnId || !fixture.workspaceSha256)
+)
+  throw new Error(
+    'History profiling requires a prepared generated fixture with a cited tail answer'
+  )
 if (
   fixture.lastTurnId !== undefined &&
   (typeof fixture.lastTurnId !== 'string' || !/^[\w-]+$/.test(fixture.lastTurnId))
@@ -967,6 +1104,7 @@ for (let round = 1; round <= (values.prepare ? 1 : rounds); round++) {
       oldTurn,
       maxSources,
       checkOldSources: values['check-old-sources'],
+      profileHistory: values['profile-history'],
     },
     fixture,
     join(values.output, label)

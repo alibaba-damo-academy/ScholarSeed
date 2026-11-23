@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 import unittest
 from copy import deepcopy
@@ -43,6 +44,7 @@ from service.chat.persistence.catalog import (
 )
 from service.chat.persistence.events import ProductEventStore
 from service.chat.service.answers import ProductAnswerSource
+from service.platform.activity import Activities
 from service.platform.context import (
     AssistantAnswer,
     AssistantContextBudget,
@@ -56,6 +58,8 @@ from service.platform.context import (
     ProjectContextPolicy,
     SearchScope,
 )
+from service.platform.http_activity import ServeApplication
+from service.platform.latency import LOGGER_NAME, REQUEST_ID_HEADER
 
 SESSION_ID = "answer-annotation-session"
 VENDOR_THREAD_ID = "answer-annotation-vendor-thread"
@@ -136,7 +140,7 @@ class AssistantAnnotationContract(unittest.TestCase):
 
     def test_turn_sources_projects_cards_and_rejects_other_sessions(self) -> None:
         events = ProductEventStore(self.database)
-        app = FastAPI()
+        app = ServeApplication(activities=Activities())
         app.state.auth_enabled = False
         app.state.session_catalog = self.catalog
         app.state.assistant = AssistantService(self.store)
@@ -152,9 +156,22 @@ class AssistantAnnotationContract(unittest.TestCase):
         register_assistant_routes(app)
         client = TestClient(app)
         path = f"/api/assistant/sessions/{SESSION_ID}/turns/{VENDOR_TURN_ID}/sources"
-        response = client.get(path)
+        with self.assertNoLogs("service.assistant.api.routes", level=logging.INFO):
+            response = client.get(path)
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn(REQUEST_ID_HEADER.decode(), response.headers)
         self.assertEqual(response.json()["sources"][0]["url"], "https://example.org")
+        with self.assertLogs("service", level=logging.DEBUG) as diagnostics:
+            observed = client.get(path, headers={"origin": "https://foreign.example"})
+        request_id = observed.headers[REQUEST_ID_HEADER.decode()]
+        rows = [
+            json.loads(row.getMessage()) for row in diagnostics.records if row.name == LOGGER_NAME
+        ]
+        self.assertTrue(
+            any(row["event"] == "headers" and row["request_id"] == request_id for row in rows)
+        )
+        self.assertNotIn("access-control-expose-headers", observed.headers)
+        self.assertNotIn("timing-allow-origin", observed.headers)
         self.assertEqual(client.get(path.replace(SESSION_ID, "other-session")).status_code, 404)
 
     def test_turn_sources_keep_only_matching_item_revisions_in_record_order(self) -> None:

@@ -520,7 +520,7 @@ def register_assistant_routes(app: FastAPI) -> None:
 
     @app.get(f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/turns/{{turn_id}}/sources")
     def turn_sources(session_id: str, turn_id: str, request: Request) -> dict:
-        phases = requestPhases(request.scope)
+        phases = requestPhases(request.scope, expose_request_id=logger.isEnabledFor(logging.DEBUG))
         _require_session(request, session_id)
         phases.mark("access")
         answer_id = f"{TURN_ANSWER_ID_PREFIX}{turn_id}"

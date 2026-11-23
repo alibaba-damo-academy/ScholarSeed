@@ -1463,7 +1463,7 @@ export function useLiveSession(): void {
           }
           if (history) {
             patchThread(threadId, (thread) => ({
-              conversation: projectHistorySnapshot(history, thread.conversation),
+              conversation: projectHistorySnapshot(history, thread.conversation, 'resume_fallback'),
               todos: history.todos,
               todoTurnId: history.todo_turn_id,
               planSnapshots: projectPlanSnapshots(history.activity_events),
@@ -1542,7 +1542,8 @@ export function useLiveSession(): void {
               ...history,
               artifacts: artifactSnapshot,
             },
-            thread.conversation
+            thread.conversation,
+            'resume'
           )
           const recovered = reportSessionResume(
             { ...thread, conversation },

@@ -2077,8 +2077,30 @@ export function snapshotTurnActivity(
   return { turnOutcomes, turnTimings }
 }
 
+const HISTORY_PROFILE_MARK = 'scholarseed.history.profile'
+const pendingHistoryCommits = new WeakMap<ConvItem[], { caller: string; projectedAt: number }>()
+
+/** The Stream layout effect observes a committed projection by its exact conversation identity. */
+export function recordHistoryCommit(items: ConvItem[]): void {
+  const projection = pendingHistoryCommits.get(items)
+  if (!projection) return
+  pendingHistoryCommits.delete(items)
+  performance.measure('scholarseed.history.projectionToCommit', {
+    start: projection.projectedAt,
+    detail: { caller: projection.caller },
+  })
+}
+
 /** Project one authoritative history response for both initial display and resume refresh. */
-export function projectHistorySnapshot(history: HistoryResult, current: ConvItem[]): ConvItem[] {
+export function projectHistorySnapshot(
+  history: HistoryResult,
+  current: ConvItem[],
+  caller?: 'transcript' | 'resume' | 'resume_fallback'
+): ConvItem[] {
+  const started =
+    caller && performance.getEntriesByName(HISTORY_PROFILE_MARK, 'mark').length
+      ? performance.now()
+      : undefined
   const completedTurnIds = history.turn_activity.flatMap((turn) =>
     turn.outcome === 'completed' ? [turn.turn_id] : []
   )
@@ -2100,8 +2122,18 @@ export function projectHistorySnapshot(history: HistoryResult, current: ConvItem
         : items,
     activities
   )
-  return placeFinalAssistantLast(
+  const projected = placeFinalAssistantLast(
     projectArtifactSnapshot(settled, history.artifacts),
     completedTurnIds
   )
+  if (caller && started !== undefined) {
+    const projectedAt = performance.now()
+    performance.measure('scholarseed.history.projection', {
+      start: started,
+      end: projectedAt,
+      detail: { caller },
+    })
+    pendingHistoryCommits.set(projected, { caller, projectedAt })
+  }
+  return projected
 }

@@ -194,6 +194,34 @@ class HistoryContract(unittest.TestCase):
         self.assertEqual([event["data"] for event in full], [payload for _, _, payload in events])
         self.assertEqual(compact, [full[i] for i in (0, 2, 3, 4, 5, 6, 8)])
 
+    def test_activity_and_clocks_share_a_boundary_when_a_terminal_event_arrives(self) -> None:
+        service = EventService({}, self.events, logging.getLogger(__name__))
+        replay = self.events.replay
+
+        def read_then_commit(session_id, **options):
+            page = replay(session_id, **options)
+            if options.get("kinds") is None and not page:
+                self.events.append(
+                    session_id=session_id,
+                    runtime_id=RUNTIME_ID,
+                    vendor_thread_id=session_id,
+                    vendor_turn_id="turn",
+                    vendor_item_id=None,
+                    kind=PRODUCT_EVENT_TURN_FAILED,
+                    payload={},
+                    idempotency_key="late-failure",
+                )
+            return page
+
+        with patch.object(self.events, "replay", side_effect=read_then_commit):
+            _, activity, clocks = service.history_snapshot(CALLER, [])
+        self.assertEqual((activity, clocks), ([], []))
+        _, activity, clocks = service.history_snapshot(CALLER, [])
+        self.assertEqual([event["type"] for event in activity], [PRODUCT_EVENT_TURN_FAILED])
+        self.assertEqual(
+            [(clock["turn_id"], clock["outcome"]) for clock in clocks], [("turn", "failed")]
+        )
+
     def test_late_binding_resolves_clocks_after_out_of_order_timestamps(self) -> None:
         events = (
             ("vendor", PRODUCT_EVENT_MESSAGE_DELTA, {"delta": "first"}, 120.0),

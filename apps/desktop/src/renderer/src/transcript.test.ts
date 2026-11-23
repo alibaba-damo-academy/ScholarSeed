@@ -22,6 +22,7 @@ import {
   projectArtifactFailure,
   projectHistory,
   projectHistorySnapshot,
+  recordHistoryCommit,
   projectTurnInterruption,
   projectHistoryWithRuntime,
   projectDisplayCardEvent,
@@ -41,6 +42,42 @@ import {
   upsertUserMessageEvent,
   upsertConversationArtifact,
 } from './transcript.ts'
+
+test('history profiling observes only the exact committed projection when enabled', () => {
+  const mark = 'scholarseed.history.profile'
+  const projection = 'scholarseed.history.projection'
+  const commit = 'scholarseed.history.projectionToCommit'
+  const history: HistoryResult = {
+    turns: [{ kind: 'user', text: 'Read the report', turn_id: 'one' }],
+    todos: [],
+    todo_turn_id: null,
+    artifacts: [],
+    activity_events: [],
+    turn_activity: [],
+  }
+  try {
+    const ordinary = projectHistorySnapshot(history, [], 'transcript')
+    recordHistoryCommit(ordinary)
+    assert.equal(performance.getEntriesByName(projection).length, 0)
+    assert.equal(performance.getEntriesByName(commit).length, 0)
+    performance.mark(mark)
+    const projected = projectHistorySnapshot(history, [], 'resume')
+    assert.deepEqual(projected, ordinary)
+    recordHistoryCommit([...projected])
+    assert.equal(performance.getEntriesByName(commit).length, 0)
+    recordHistoryCommit(projected)
+    recordHistoryCommit(projected)
+    for (const name of [projection, commit]) {
+      const entries = performance.getEntriesByName(name, 'measure') as PerformanceMeasure[]
+      assert.equal(entries.length, 1)
+      assert.equal(entries[0].detail.caller, 'resume')
+    }
+  } finally {
+    performance.clearMarks(mark)
+    performance.clearMeasures(projection)
+    performance.clearMeasures(commit)
+  }
+})
 
 test('failed history replay retains the causal reference when an old matching card already exists', () => {
   const event: ProductEvent = {

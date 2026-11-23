@@ -149,6 +149,7 @@ import {
   normalizeToolName,
   projectHistory,
   projectHistorySnapshot,
+  recordHistoryCommit,
   removeOptimisticUserMessage,
   resolveHilItem,
 } from '../../transcript'
@@ -565,6 +566,7 @@ export function Stream({
     state.activeSession === null && state.turnLaunch
       ? [state.turnLaunch.optimisticUserMessage]
       : thread.conversation
+  useLayoutEffect(() => recordHistoryCommit(conv), [conv])
   const hasSkillReferences = conv.some(
     (item) => item.kind === 'user' && item.refs?.some((reference) => reference.type === 'skill')
   )
@@ -1134,7 +1136,7 @@ export function Stream({
       patchThread(thread.id, (active) =>
         active.sessionId === sessionId
           ? {
-              conversation: projectHistorySnapshot(history, active.conversation),
+              conversation: projectHistorySnapshot(history, active.conversation, 'transcript'),
               planSnapshots: projectPlanSnapshots(history.activity_events, active.planSnapshots),
             }
           : {}
