@@ -20,6 +20,7 @@ import {
   projectAnswerSources,
   projectArtifactSnapshot,
   projectArtifactFailure,
+  projectContextCompaction,
   projectHistory,
   projectHistorySnapshot,
   projectTurnInterruption,
@@ -41,6 +42,49 @@ import {
   upsertUserMessageEvent,
   upsertConversationArtifact,
 } from './transcript.ts'
+
+test('compaction phases survive history reopen and replay without duplicates', () => {
+  const events = ['started', 'completed'].map((phase, index) => ({
+    v: 2,
+    seq: index + 2,
+    ts: index + 2,
+    session_id: 'session',
+    turn_id: 'turn',
+    item_id: 'compaction',
+    type: 'context_compacted',
+    data: { phase },
+  })) as Extract<ProductEvent, { type: 'context_compacted' }>[]
+  const history: HistoryResult = {
+    turns: [
+      { kind: 'user', text: 'Question', turn_id: 'turn', item_id: 'user' },
+      { kind: 'text', role: 'assistant', text: 'Answer', turn_id: 'turn', item_id: 'answer' },
+    ],
+    todos: [],
+    todo_turn_id: null,
+    activity_events: events,
+    turn_activity: [{ turn_id: 'turn', outcome: 'completed', started_at: 1 }],
+    artifacts: [],
+  }
+  const restored = projectHistorySnapshot(history, [])
+  const statuses = restored.filter((item) => item.kind === 'status')
+  assert.deepEqual(
+    statuses.map((item) => item.text),
+    [{ key: 'context.compacting' }, { key: 'context.compacted' }]
+  )
+  assert.deepEqual(
+    statuses.map((item) => item.eventSeq),
+    [2, 3]
+  )
+  assert.deepEqual(
+    projectHistorySnapshot(history, events.reduce<ConvItem[]>(projectContextCompaction, [])),
+    restored
+  )
+  assert.deepEqual(projectActivityEvents(restored, events), restored)
+  assert.deepEqual(projectHistorySnapshot(history, restored), restored)
+  // A history read begun before SSE arrived must not erase either phase.
+  assert.deepEqual(projectHistorySnapshot({ ...history, activity_events: [] }, restored), restored)
+  assert.equal(restored.at(-1)?.kind, 'agent')
+})
 
 test('failed history replay retains the causal reference when an old matching card already exists', () => {
   const event: ProductEvent = {

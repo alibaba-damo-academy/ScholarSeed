@@ -127,6 +127,24 @@ export function projectGenerationPreview(
   return next
 }
 
+export function projectContextCompaction(
+  items: ConvItem[],
+  event: Extract<ProductEvent, { type: 'context_compacted' }>
+): ConvItem[] {
+  if (items.some((item) => item.kind === 'status' && item.eventSeq === event.seq)) return items
+  return insertTurnRuntimeItem(items, {
+    kind: 'status',
+    text: event.data.message || {
+      key: event.data.phase === 'completed' ? 'context.compacted' : 'context.compacting',
+    },
+    tone: event.data.phase === 'failed' ? 'tension' : 'inference',
+    turnId: event.turn_id,
+    itemId: event.item_id,
+    eventSeq: event.seq,
+    retainOnHistoryRefresh: true,
+  })
+}
+
 export function projectArtifactFailure(
   items: ConvItem[],
   event: Extract<ProductEvent, { type: 'artifact_failed' }>
@@ -1627,6 +1645,7 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
   return ordered.reduce<ConvItem[]>(
     (conversation, event) => {
       if (event.type === 'generation_preview') return projectGenerationPreview(conversation, event)
+      if (event.type === 'context_compacted') return projectContextCompaction(conversation, event)
       if (event.type === 'hil_requested') {
         if (!event.data.request_id) return conversation
         const existing = conversation.find(
@@ -1924,6 +1943,14 @@ function isRuntimeTranscriptItem(item: ConvItem): boolean {
 
 function sameDurableAnchor(left: ConvItem, right: ConvItem): boolean {
   if (left.kind !== right.kind) return false
+  if (
+    left.kind === 'status' &&
+    right.kind === 'status' &&
+    left.eventSeq !== undefined &&
+    right.eventSeq !== undefined
+  ) {
+    return left.eventSeq === right.eventSeq && left.turnId === right.turnId
+  }
   if (left.kind === 'artifact' && right.kind === 'artifact') {
     return left.artifact.artifact_id === right.artifact.artifact_id
   }

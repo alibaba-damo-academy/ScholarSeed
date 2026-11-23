@@ -8088,6 +8088,24 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(all(event["turn_id"] == "turn-activity" for event in snapshot))
 
+    async def test_activity_snapshot_restores_runtime_compaction_phases(self) -> None:
+        for sequence, phase in enumerate(("started", "completed"), start=1):
+            await self.emit(
+                RuntimeEventKind.CONTEXT_COMPACTED,
+                sequence=sequence,
+                payload={"phase": phase},
+                item_id="compaction",
+            )
+        reopened = ProductEventStore(self.database)
+        snapshot = EventService({}, reopened, self.logger).activity_snapshot(PRODUCT_SESSION_ID)
+        compactions = [event for event in snapshot if event["type"] == "context_compacted"]
+        self.assertEqual(
+            [event["data"]["phase"] for event in compactions], ["started", "completed"]
+        )
+        self.assertEqual(len({event["seq"] for event in compactions}), 2)
+        self.assertTrue(all(event["turn_id"] == "turn-1" for event in compactions))
+        self.assertTrue(all(event["item_id"] == "compaction" for event in compactions))
+
     async def test_activity_snapshot_restores_interruption_identity_and_reason(self) -> None:
         records = []
         for index, payload in enumerate(

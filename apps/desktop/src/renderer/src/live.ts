@@ -83,6 +83,7 @@ import {
   projectArtifactSnapshot,
   projectAnswerSources,
   projectArtifactFailure,
+  projectContextCompaction,
   projectDisplayCardEvent,
   projectGenerationPreview,
   projectHistorySnapshot,
@@ -808,18 +809,7 @@ export function onEvent(
       return
     case 'context_compacted':
       patchThread(threadId, (thread) => ({
-        conversation: [
-          ...thread.conversation,
-          {
-            kind: 'status',
-            text: event.data.message || {
-              key: event.data.phase === 'completed' ? 'context.compacted' : 'context.compacting',
-            },
-            tone: event.data.phase === 'failed' ? 'tension' : 'inference',
-            turnId: event.turn_id,
-            itemId: event.item_id,
-          },
-        ],
+        conversation: projectContextCompaction(thread.conversation, event),
       }))
       return
     case 'turn_completed':
