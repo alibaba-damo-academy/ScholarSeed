@@ -3114,6 +3114,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.opened), 1)
         request = provider.opened[0]
         self.assertEqual(request.service_tools, SESSION_SERVICE_TOOLS)
+        self.assertFalse(request.native_plan_enabled)
         self.assertTrue(
             any(
                 entry.text == "Preserve this research question" for entry in request.initial_history
@@ -9729,6 +9730,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resume_request.permission.mode, mode)
                 self.assertEqual(resume_request.permission.deny_read_roots, ())
                 self.assertEqual(resume_request.skill_roots, SERVICE_SKILL_ROOTS)
+                self.assertFalse(resume_request.native_plan_enabled)
                 self.assertEqual(resume_request.artifact_directives, ())
                 self.assertIsNotNone(resume_request.secret_port)
                 self.assertEqual(

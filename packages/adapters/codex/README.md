@@ -11,18 +11,15 @@ An independent adapter for the official Codex App Server. It converts unified Ru
 
 ### Native planning / 原生计划
 
-Ordinary conversations keep the pinned Codex version's native `update_plan` enabled,
-including after work has started. Its native schema and description are unchanged;
-the model decides whether planning helps the task. Product base instructions do not
-add plan creation or state-maintenance requirements. A same-name service tool disables
-the native tool only for the existing opt-in structured-plan flow; generation-only
-requests continue to disable planning. Native plan snapshots do not activate that
-product flow or its `operation=get` continuation prompt.
+Open and resume requests can disable native `update_plan` with `native_plan_enabled=False`.
+ScholarSeed Serve uses this setting for its sessions and enables structured tracking
+through the product Bridge on explicit user or workflow demand. Other adapter callers
+retain the native default. A same-name service tool and generation-only mode also
+disable native planning.
 
-普通对话持续启用固定 Codex 版本的原生 `update_plan`，执行途中也可开始使用。
-沿用原生参数和说明，由模型判断计划是否有助于完成任务；产品基础提示不额外要求
-建计划或维护计划状态。仅已有的显式结构化计划流程通过同名服务工具替代原生工具；
-generation-only 仍禁用计划。原生计划快照不会激活产品计划流程或其 `operation=get` 续聊提示。
+创建或恢复会话时可通过 `native_plan_enabled=False` 关闭原生 `update_plan`。
+书深 Serve 使用此设置，用户或工作流明确要求时通过产品 Bridge 启用结构化跟踪。
+其他适配器调用方沿用原生默认值。同名服务工具及 generation-only 模式也会关闭原生计划。
 
 <a id="提供什么"></a>
 ## What It Provides

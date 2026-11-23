@@ -168,9 +168,13 @@ def optional_capabilities(
 def session_thread_config(
     capabilities: frozenset[RuntimeCapabilityName],
     service_tool_names: frozenset[str] = frozenset(),
+    *,
+    native_plan_enabled: bool = True,
 ) -> dict[str, RuntimeValue]:
     config: dict[str, RuntimeValue] = {
-        CODEX_PLAN_TOOL_ENABLED_CONFIG: CODEX_PLAN_TOOL_NAME not in service_tool_names,
+        CODEX_PLAN_TOOL_ENABLED_CONFIG: (
+            native_plan_enabled and CODEX_PLAN_TOOL_NAME not in service_tool_names
+        ),
         CODEX_USER_INPUT_ENABLED_CONFIG: True,
     }
     for capability in sorted(capabilities, key=lambda item: item.value):

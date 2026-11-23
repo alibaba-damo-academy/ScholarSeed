@@ -199,6 +199,7 @@ class OpenSessionRequest:
     execution_environment: Mapping[str, str] = field(default_factory=dict)
     #: One isolated generation: no tools, interactive callbacks or subsequent turns.
     generation_only: bool = False
+    native_plan_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -222,6 +223,7 @@ class ResumeSessionRequest:
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
     process_sharing_scope: str = field(default="", repr=False)
     execution_environment: Mapping[str, str] = field(default_factory=dict)
+    native_plan_enabled: bool = True
 
 
 @dataclass(frozen=True)
