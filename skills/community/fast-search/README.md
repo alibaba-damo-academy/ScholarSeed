@@ -2,11 +2,11 @@
 
 **English** · [简体中文](README_zh.md)
 
-Low-latency academic paper discovery for search bars. The independently installed `$web-search` Skill resolves candidate paper entities, then PaperHub runs one bounded keyword/title/reference graph and returns up to 20 papers in `metadata.json`.
+Low-latency academic paper discovery for search bars. The independently installed `$web-search` Skill resolves candidate paper entities, then PaperHub runs one bounded keyword/title/reference graph. A single-paper lookup returns only the verified target in `metadata.json` and the reply; topic or related-work searches return up to 20 papers.
 
-For a publisher/arXiv link, DOI or explicit title, the agent resolves a canonical `best_target` within the existing web batch and submits an exact PaperHub title query. Bounded metadata checks run in parallel for the input identifier and a few important papers already found. Independently verified papers may be returned even when PaperHub misses them. A verified single-paper target stays first in Tier 1; one real result is valid. If neither path verifies it, fail explicitly instead of presenting broadly related papers as success.
+For a publisher/arXiv link, DOI or explicit title, the agent resolves a canonical `best_target` within the existing web batch and submits an exact PaperHub title query. Bounded metadata checks run in parallel for the input identifier and a few important papers already found. Independently verified papers may be returned even when PaperHub misses them. A verified single-paper target is the sole Tier 1 result, even when the pool contains related papers. If neither path verifies it, fail explicitly instead of presenting broadly related papers as success.
 
-Tier 1 prioritizes an explicit input identifier, then the agent's best_target, then existing deterministic relevance scores. Ordinary topic-search ranking/tiering is unchanged. This adds no model round. Abstracts are used for relevance only inside the runner process and are not persisted in metadata, sessions, round traces or retrieval caches.
+For topic searches, Tier 1 prioritizes an explicit input identifier, then the agent's best_target, then existing deterministic relevance scores. Related-work searches use `best_target.required: false` and retain the topic-search list and tiering. This adds no model round. Abstracts are used for relevance only inside the runner process and are not persisted in metadata, sessions, round traces or retrieval caches.
 
 This directory provides the `fast-search` Veryfast workflow and deployment entry point, not long reports or registrations for other search Skills.
 
@@ -20,7 +20,7 @@ Commands below run **from this Skill's directory**, where tools/ and config/ are
 | Codex Skill | Personal discovery, interactive use, debugging | Invoke with $fast-search | New processes still pay startup, Skill loading and unrelated initialization costs |
 | Persistent App Server Worker | Search bars, backends, repeated queries | Reuses process/authentication and emits structured progress | Backend manages isolation, deadlines and process health |
 
-Both use the same SKILL.md, quick_search.py and metadata schema, with a normal target of 20 papers. Process reuse does not add search rounds or improve paper quality by itself.
+Both use the same SKILL.md, quick_search.py and metadata schema, with a normal target of 20 papers for topic searches and exactly one verified result for a single-paper lookup. Process reuse does not add search rounds or improve paper quality by itself.
 
 ## Option 1: manual Codex Skill installation
 

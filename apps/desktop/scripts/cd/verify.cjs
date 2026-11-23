@@ -19,7 +19,7 @@ const { executableDigest } = require('../shared/digest.cjs')
 const { verify: verifyWindowsSignature } = require('./windows-sign.cjs')
 const acceptance = require('./acceptance.cjs')
 const { verifyImage } = require('./dmg.cjs')
-const { assertCleanInstallation } = require('./registration.cjs')
+const { assertCleanInstallation, completeCiInstallation, recordCiInstallation } = require('./registration.cjs')
 const { runInstaller, engineEvidence, recordInstallerFailure } = require('./installation.cjs')
 const { inspectBrowser, verifyBrowser } = require('./browser.cjs')
 const { verifyMacOSTree } = require('../shared/macos.cjs')
@@ -946,15 +946,17 @@ async function retireVelopack(installed, frozen, environment, directory) {
 async function verifyVelopackInstaller(installer, frozen) {
   return acceptance.withVerificationMutex(async () => {
     if (frozen.platform !== 'win32' || frozen.updateEngine !== 'velopack') throw new Error('Velopack acceptance requires Windows')
-    assertCleanInstallation(frozen.appId)
+    assertCleanInstallation(frozen.appId, process.env, frozen.signingRequired)
     const directory = createPackageCheckDirectory(frozen)
     const installed = path.join(directory, 'app')
     const runtimeDirectory = createPackageCheckDirectory(frozen)
     let installedSuccessfully = false
+    let acceptanceFailed = false
     let evidence
     try {
       const environment = packageCheckEnvironment(runtimeDirectory)
       for (const name of ['APPDATA', 'LOCALAPPDATA']) fs.mkdirSync(environment[name], { recursive: true })
+      if (frozen.signingRequired) recordCiInstallation(frozen, directory)
       runInstaller(installer, ['--silent', '--installto', installed],
         { timeout: CHECK_TIMEOUT_MS, env: environment }, path.join(frozen.runDirectory, 'velopack-install.json'), 'Velopack', { nativeLog: true })
       installedSuccessfully = true
@@ -976,13 +978,34 @@ async function verifyVelopackInstaller(installer, frozen) {
         size: fs.statSync(installer).size, package_check: second, installed_check: evidence,
         signature_valid: frozen.signingRequired ? Boolean(verifyWindowsSignature(installer, frozen.product.config.expected_windows_publisher)) : false,
       }
+    } catch (error) {
+      acceptanceFailed = true
+      throw error
     } finally {
-      if (installedSuccessfully || fs.existsSync(path.join(installed, 'Update.exe'))) {
-        const retirement = await retireVelopack(installed, frozen, packageCheckEnvironment(runtimeDirectory), directory)
-        if (evidence) evidence.retirement = retirement
+      let retirementFailure
+      let installationRetired = false
+      try {
+        if (installedSuccessfully || fs.existsSync(path.join(installed, 'Update.exe'))) {
+          const retirement = await retireVelopack(installed, frozen, packageCheckEnvironment(runtimeDirectory), directory)
+          installationRetired = true
+          if (frozen.signingRequired) completeCiInstallation(frozen.appId)
+          if (evidence) evidence.retirement = retirement
+        }
+      } catch (error) {
+        if (!frozen.signingRequired) throw error
+        retirementFailure = error
+        const phase = installationRetired ? 'CI registration receipt completion' : 'Velopack retirement'
+        console.error(`[package] ${phase} failed: ${error.message}`)
       }
-      removeTemporary(runtimeDirectory)
-      removeTemporary(directory)
+      // Preserve an installation whose retirement failed. Once retired, the
+      // temporary directories can still be cleaned after a receipt failure.
+      if (!retirementFailure || installationRetired) {
+        const clean = frozen.signingRequired && (acceptanceFailed || retirementFailure)
+          ? bestEffortRemoveTemporary : removeTemporary
+        clean(runtimeDirectory)
+        clean(directory)
+      }
+      if (retirementFailure && !acceptanceFailed) throw retirementFailure
     }
   })
 }

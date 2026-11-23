@@ -146,7 +146,8 @@ export async function squirrelHelpersAbsent(
   processes: string,
   uid: number,
   executables: readonly string[],
-  canonicalize: (path: string) => Promise<string> = realpath
+  canonicalize: (path: string) => Promise<string> = realpath,
+  refuseUnboundHelpers = false
 ): Promise<boolean> {
   if (!processes.trim() || !executables.length || executables.some((path) => !isAbsolute(path)))
     return false
@@ -156,6 +157,7 @@ export async function squirrelHelpersAbsent(
     if (!match) return false
     if (![0, uid].includes(Number(match[1]))) continue
     const path = match[2]
+    if (refuseUnboundHelpers && basename(path) === SHIPIT_NAME) return false
     if (executables.includes(path)) return false
     if (!isAbsolute(path)) {
       if (basename(path) === SHIPIT_NAME) return false
@@ -193,7 +195,11 @@ export async function inspectSquirrelIdle(
   application: string,
   handoff: SquirrelHandoff | null,
   verifyReplacement?: (application: string) => Promise<void>,
-  cancelledPreparation = false
+  cancelledPreparation = false,
+  orphanedLaunch?: {
+    candidate: string
+    observedLaunch(source: string, target: string): boolean
+  }
 ): Promise<boolean> {
   if (process.platform !== 'darwin' || !process.getuid || !/^[A-Za-z0-9.-]+$/.test(bundle))
     return false
@@ -260,7 +266,8 @@ export async function inspectSquirrelIdle(
     }
     const helpersAbsent = async () => {
       const processes = await run('/bin/ps', ['-ww', '-axo', 'uid=,comm='], options)
-      return squirrelHelpersAbsent(processes.stdout, uid, executables)
+      // Without a bound candidate, a user/root ShipIt may belong to this update.
+      return squirrelHelpersAbsent(processes.stdout, uid, executables, realpath, handoff === null)
     }
     if (!(await helpersAbsent())) return false
     const replacement = captureDirectory(target)
@@ -269,40 +276,53 @@ export async function inspectSquirrelIdle(
     const replacementStable = () =>
       JSON.stringify(replacement) === JSON.stringify(captureDirectory(target)) &&
       JSON.stringify(contents) === JSON.stringify(captureDirectory(join(target, 'Contents')))
-    let failed: (() => Promise<boolean>) | undefined
+    let terminal: (() => boolean | Promise<boolean>) | undefined
     if (before.bytes) {
-      if (!native) return false
+      if (!native && !orphanedLaunch) return false
       const conversion = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], options)
       conversion.child.stdin?.end(before.bytes)
       const request = JSON.parse((await conversion).stdout)
+      const source = resolve(fileURLToPath(request.updateBundleURL))
       if (
         request.bundleIdentifier !== bundle ||
-        !sameSquirrelBinding(request.binding, native.binding) ||
+        !validSquirrelBinding(request.binding) ||
         !SHIPIT_REQUEST_FLAGS.every((key) => typeof request[key] === 'boolean') ||
-        (cancelledPreparation &&
-          (request.installationAuthorized || request.launchAfterInstallation)) ||
-        (request.installationAuthorized && !request.launchAfterInstallation) ||
-        resolve(fileURLToPath(request.targetBundleURL)) !== target ||
-        resolve(fileURLToPath(request.updateBundleURL)) !== native.source.path
+        resolve(fileURLToPath(request.targetBundleURL)) !== target
       )
         return false
-      // A superseding installation has its own identity. Keep the historical
-      // failure bound to the old target; never rebase that failure onto this app.
-      failed = async () =>
-        replacementStable() &&
-        (await readFailure(
-          request.updateBundleURL,
-          target,
-          native,
-          verifyReplacement ? replacement : undefined,
-          cancelledPreparation ? osConstants.errno.ECANCELED : undefined
-        )) &&
-        replacementStable()
-      if (!(await failed())) return false
+      if (native) {
+        if (
+          !sameSquirrelBinding(request.binding, native.binding) ||
+          source !== native.source.path ||
+          (cancelledPreparation &&
+            (request.installationAuthorized || request.launchAfterInstallation)) ||
+          (request.installationAuthorized && !request.launchAfterInstallation)
+        )
+          return false
+        // Keep the historical failure bound to the original target.
+        terminal = () =>
+          readFailure(
+            request.updateBundleURL,
+            target,
+            native,
+            verifyReplacement ? replacement : undefined,
+            cancelledPreparation ? osConstants.errno.ECANCELED : undefined
+          )
+      } else {
+        if (
+          !orphanedLaunch ||
+          !request.installationAuthorized ||
+          !request.launchAfterInstallation ||
+          request.binding.candidate !== orphanedLaunch.candidate
+        )
+          return false
+        terminal = () => orphanedLaunch.observedLaunch(source, target)
+      }
+      if (!replacementStable() || !(await terminal()) || !replacementStable()) return false
     }
     // Both branches retain native records. A failed request is terminal evidence,
     // not an invitation to replay installation or delete an unresolved request.
-    if (!(await helpersAbsent()) || (failed && !(await failed()))) return false
+    if (!(await helpersAbsent()) || (terminal && !(await terminal()))) return false
     const after = snapshot()
     return (
       before.identity === after.identity &&

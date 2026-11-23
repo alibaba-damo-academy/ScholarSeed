@@ -1815,6 +1815,27 @@ class VersionStore:
         finally:
             connection.close()
 
+    def pendings(self, file_ids: tuple[str, ...]) -> dict[str, PendingSnapshot]:
+        """Read the selected pending rows while the caller holds the project writer."""
+
+        if not file_ids or not self._database.exists():
+            return {}
+        self.ensure()
+        result: dict[str, PendingSnapshot] = {}
+        with transaction(self._database) as connection:
+            for offset in range(0, len(file_ids), SQLITE_BIND_BATCH_SIZE):
+                batch_ids = file_ids[offset : offset + SQLITE_BIND_BATCH_SIZE]
+                placeholders = ",".join("?" for _ in batch_ids)
+                rows = connection.execute(
+                    f"SELECT * FROM resources_pending WHERE file_id IN ({placeholders})",
+                    batch_ids,
+                )
+                for row in rows:
+                    snapshot = pending.from_row(row)
+                    if snapshot is not None:
+                        result[snapshot.file_id] = snapshot
+        return result
+
     def legacy_reviews(self) -> tuple[migration.LegacyReview, ...]:
         if not self._database.exists():
             return ()

@@ -549,12 +549,15 @@ async def verify():
     candidate = Path(os.environ["CANDIDATE"])
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://contract") as client:
-            async def finish(path, body):
-                response = await client.post(path, json=body)
+            async def finish(path, body=None, *, method="POST"):
+                response = await client.request(method, path, json=body)
                 assert response.status_code == 202, response.text
                 operation = response.json()["operation"]
                 for _ in range(200):
                     status = await client.get("/api/content/operations/" + operation)
+                    if status.status_code == 503:
+                        await asyncio.sleep(0.01)
+                        continue
                     assert status.status_code == 200, status.text
                     payload = status.json()
                     if payload["state"] not in ("queued", "running"):
@@ -599,6 +602,25 @@ async def verify():
                     probe.close()
                 retried = await finish("/api/content/projects/adopt", {"path": str(failed_root)})
                 assert retried["state"] == "succeeded", retried
+            children = candidate.parent / "removal-parent"
+            child = children / "registered-child"
+            child.mkdir(parents=True)
+            keep = child / "keep.txt"
+            keep.write_text("original", encoding="utf-8")
+            adopted_child = await finish("/api/content/projects/adopt", {"path": str(child)})
+            assert adopted_child["state"] == "succeeded", adopted_child
+            child_url = "/api/content/projects/" + adopted_child["result"]["id"]
+            archive = await client.post(child_url + "/archive", json={"archived": True})
+            assert archive.status_code == 200, archive.text
+            with app.state.activities.enter(ActivityDomain.TURN):
+                busy = await finish(child_url, method="DELETE")
+                assert busy["error"] == "content_directory_busy", busy
+                assert app.state.content.project(adopted_child["result"]["id"]).archived_at
+            removed = await finish(child_url, method="DELETE")
+            assert removed["state"] == "succeeded" and removed["result"]["files_kept"], removed
+            adopted_parent = await finish("/api/content/projects/adopt", {"path": str(children)})
+            assert adopted_parent["state"] == "succeeded", adopted_parent
+            assert keep.read_text(encoding="utf-8") == "original"
     logger.removeHandler(handler)
     output = diagnostics.getvalue()
     assert "queue_seconds=" in output and "total_seconds=" in output, output

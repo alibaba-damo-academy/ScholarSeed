@@ -252,6 +252,14 @@ class HostReconfiguration:
                             return
                         generation = self._activities.begin_if_idle()
                         if generation is None:
+                            activity = self._activities.snapshot()
+                            self._logger.info(
+                                "runtime_host_reconfiguration_idle_denied request_id=%s "
+                                "phase=%s counts=%s",
+                                request_id,
+                                activity.phase.value,
+                                activity.counts,
+                            )
                             operation.state = CommandState.REJECTED
                             operation.safe_error = RESOURCE_HOST_BUSY
                             return

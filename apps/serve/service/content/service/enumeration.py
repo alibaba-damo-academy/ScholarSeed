@@ -33,15 +33,19 @@ def _inside(target: Path, roots: tuple[Path, ...]) -> bool:
     return any(target == root or root in target.parents for root in roots)
 
 
+def entry_from_stat(path: str, file_stat: os.stat_result) -> ResourceEntry:
+    return ResourceEntry(path=path, size=file_stat.st_size, created_at=_created_at(file_stat))
+
+
 def _entry(
     space: ProjectSpace,
     target: Path,
     allowed_roots: tuple[Path, ...],
-) -> ResourceEntry | None:
+) -> tuple[ResourceEntry, Path] | None:
     try:
         resolved = target.resolve()
         file_stat = resolved.stat()
-        logical = space.relative(resolved)
+        logical = space.relative_resolved(resolved)
     except (ContentError, OSError):
         return None
     if (
@@ -53,11 +57,7 @@ def _entry(
         or not all(_scan_name(part) for part in PurePosixPath(logical).parts)
     ):
         return None
-    return ResourceEntry(
-        path=logical,
-        size=file_stat.st_size,
-        created_at=_created_at(file_stat),
-    )
+    return entry_from_stat(logical, file_stat), resolved
 
 
 def resource_scopes(space: ProjectSpace, paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -86,6 +86,7 @@ def scan_files(
     *,
     check: Callable[[], None] | None = None,
     paths: tuple[str, ...] | None = None,
+    observe_resolved: Callable[[ResourceEntry, Path], None] | None = None,
 ) -> tuple[ResourceEntry, ...]:
     """Enumerate every authorized logical resource file exactly once."""
 
@@ -103,17 +104,25 @@ def scan_files(
     )
     found: dict[str, ResourceEntry] = {}
     visited: set[tuple[int, int]] = set()
+
+    def discover(target: Path) -> None:
+        qualified = _entry(space, target, allowed_roots)
+        if qualified is None:
+            return
+        entry, resolved = qualified
+        discovered = entry.path not in found
+        found[entry.path] = entry
+        if observe_resolved is not None:
+            observe_resolved(entry, resolved)
+        if discovered and observer is not None:
+            observer(entry)
+
     for start in starts:
         if check is not None:
             check()
         if start.is_file():
             if _scan_name(start.name):
-                entry = _entry(space, start, allowed_roots)
-                if entry is not None:
-                    discovered = entry.path not in found
-                    found[entry.path] = entry
-                    if discovered and observer is not None:
-                        observer(entry)
+                discover(start)
             continue
         if not start.is_dir():
             continue
@@ -124,7 +133,7 @@ def scan_files(
             try:
                 resolved_current = current_path.resolve()
                 identity = resolved_current.stat()
-                logical_current = space.relative(resolved_current)
+                logical_current = space.relative_resolved(resolved_current)
             except (ContentError, OSError):
                 directories[:] = []
                 continue
@@ -140,12 +149,7 @@ def scan_files(
             for name in sorted(name for name in filenames if _scan_name(name)):
                 if check is not None:
                     check()
-                entry = _entry(space, current_path / name, allowed_roots)
-                if entry is not None:
-                    discovered = entry.path not in found
-                    found[entry.path] = entry
-                    if discovered and observer is not None:
-                        observer(entry)
+                discover(current_path / name)
     return tuple(found[path] for path in sorted(found))
 
 
@@ -161,8 +165,9 @@ def entries_for_paths(space: ProjectSpace, paths: tuple[str, ...]) -> tuple[Reso
             target = space.absolute(path)
         except ContentError:
             continue
-        entry = _entry(space, target, allowed_roots)
-        if entry is not None:
+        qualified = _entry(space, target, allowed_roots)
+        if qualified is not None:
+            entry, _ = qualified
             found[entry.path] = entry
     return tuple(found[path] for path in sorted(found))
 
@@ -180,4 +185,10 @@ def enumerate_files(
     return ResourcePage(entries=entries, next_cursor=next_cursor)
 
 
-__all__ = ["GITIGNORE_FILENAME", "entries_for_paths", "enumerate_files", "scan_files"]
+__all__ = [
+    "GITIGNORE_FILENAME",
+    "entries_for_paths",
+    "entry_from_stat",
+    "enumerate_files",
+    "scan_files",
+]

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import tempfile
 import threading
 import unittest
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import FastAPI
@@ -18,12 +21,13 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities, MaintenanceActive
-from service.platform.resources import TurnOutcome, VersionOrigin
+from service.platform.resources import PendingOrigin, TurnOutcome, VersionOrigin
 from service.resources.api.versions import register_version_routes
+from service.resources.persistence.objects import CasStore
 from service.resources.persistence.version import VersionStore
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
-from service.resources.service.history import ResourceVersionService
+from service.resources.service.history import AGENT_CAPTURE_WORKERS, ResourceVersionService
 from service.resources.service.migration import ResourceReviewMigration
 from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.recovery import ResourceRecoveryService
@@ -91,7 +95,14 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             )
         )
         app = FastAPI()
+        self.app = app
         app.state.resource_deliveries = self.deliveries
+        self.resumed_finalizations: list[tuple[str, str]] = []
+
+        async def resume(session_id: str, turn_id: str) -> None:
+            self.resumed_finalizations.append((session_id, turn_id))
+
+        app.state.resume_resource_finalization = resume
         register_version_routes(app)
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -112,6 +123,176 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             "session", turn, str(self.target), "update", generation="generation"
         )
 
+    async def test_unchanged_turn_records_resource_finalization_timings(self) -> None:
+        peer_contents = tuple(f"other-{index}\n".encode() for index in range(AGENT_CAPTURE_WORKERS))
+        for index, content in enumerate(peer_contents):
+            self.target.with_name(f"other-{index}.md").write_bytes(content)
+        await self.deliveries.begin_turn("session", "turn", self.project.root)
+        prefix = "resources.versions.delivery.timing "
+
+        with (
+            self.assertLogs("service.resources.service.delivery", level="INFO") as logs,
+            patch.object(
+                CasStore, "put_stream", autospec=True, side_effect=CasStore.put_stream
+            ) as put,
+            patch.object(CasStore, "verify", autospec=True, side_effect=CasStore.verify) as verify,
+            patch.object(CasStore, "spool", autospec=True, side_effect=CasStore.spool) as spool,
+        ):
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        put.assert_not_called()
+        verify.assert_not_called()
+        self.assertEqual(spool.call_count, AGENT_CAPTURE_WORKERS)
+        records = [record.getMessage() for record in logs.records]
+        timings = [
+            json.loads(record.removeprefix(prefix))
+            for record in records
+            if record.startswith(prefix)
+        ]
+        self.assertEqual(len(timings), 1)
+        timing = timings[0]
+        self.assertEqual(timing["session_id"], "session")
+        self.assertEqual(timing["turn_id"], "turn")
+        self.assertEqual(timing["compared_count"], 1 + len(peer_contents))
+        self.assertEqual(timing["compared_bytes"], len(b"initial\n") + sum(map(len, peer_contents)))
+        self.assertEqual(timing["unchanged_count"], 1 + len(peer_contents))
+        self.assertEqual(timing["snapshot_count"], 0)
+        self.assertEqual(timing["snapshot_bytes"], 0)
+        self.assertEqual(timing["review_file_count"], 0)
+        self.assertEqual(result.file_ids, ())
+        phase_keys = ("worker_wait_ms", "writer_wait_ms", "scan_ms", "snapshot_ms", "other_ms")
+        self.assertTrue(all(timing[key] >= 0 for key in phase_keys))
+        self.assertAlmostEqual(
+            sum(timing[key] for key in phase_keys), timing["total_ms"], delta=0.01
+        )
+
+    async def test_disabled_info_skips_resource_timing_serialization(self) -> None:
+        logger = "service.resources.service.delivery"
+        with (
+            self.assertNoLogs(logger, level="WARNING"),
+            patch(f"{logger}.json", wraps=json) as serializer,
+        ):
+            await self.begin()
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        timing_payloads = [
+            call.args[0]
+            for call in serializer.dumps.call_args_list
+            if isinstance(call.args[0], dict) and "total_ms" in call.args[0]
+        ]
+        self.assertEqual(timing_payloads, [])
+        self.assertEqual(result.paths, ("resources/notes.md",))
+        self.assertEqual(
+            self.deliveries._store(self.project.id).turn_state("session", "turn"), "completed"
+        )
+
+    async def assert_external_edit_finalized(self, expected: bytes) -> None:
+        result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+        self.assertEqual(result.file_ids, ())
+        store = self.deliveries._store(self.project.id)
+        path = "resources/notes.md"
+        working = store.capability_states((path,))[path]
+        self.assertEqual(working.working_revision, f"sha256:{sha256(expected).hexdigest()}")
+        pending = store.pending(working.file_id)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending.origin, PendingOrigin.EXTERNAL)
+        self.assertFalse(pending.needs_review)
+
+    async def test_unchanged_next_baseline_verifies_its_existing_object_once(self) -> None:
+        await self.deliveries.begin_turn("session", "first", self.project.root)
+        await self.deliveries.finish_turn("session", "first", TurnOutcome.COMPLETED)
+        with (
+            patch.object(
+                CasStore, "put_stream", autospec=True, side_effect=CasStore.put_stream
+            ) as put,
+            patch.object(CasStore, "verify", autospec=True, side_effect=CasStore.verify) as verify,
+        ):
+            await self.deliveries.begin_turn("session", "second", self.project.root)
+        put.assert_not_called()
+        verify.assert_called_once()
+        self.assertEqual(
+            verify.call_args.args[1], f"sha256:{sha256(self.target.read_bytes()).hexdigest()}"
+        )
+
+    async def test_same_size_external_edit_with_restored_mtime_is_captured(self) -> None:
+        await self.deliveries.begin_turn("session", "turn", self.project.root)
+        baseline = self.target.stat()
+        updated = b"updated\n"
+        self.target.write_bytes(updated)
+        os.utime(self.target, ns=(baseline.st_atime_ns, baseline.st_mtime_ns))
+        current = self.target.stat()
+        self.assertEqual(current.st_size, baseline.st_size)
+        self.assertEqual(current.st_mtime_ns, baseline.st_mtime_ns)
+        await self.assert_external_edit_finalized(updated)
+
+    async def test_atomic_replacement_with_same_size_and_mtime_is_captured(self) -> None:
+        await self.deliveries.begin_turn("session", "turn", self.project.root)
+        baseline = self.target.stat()
+        updated = b"swapped\n"
+        replacement = self.target.with_name("replacement.tmp")
+        replacement.write_bytes(updated)
+        os.utime(replacement, ns=(baseline.st_atime_ns, baseline.st_mtime_ns))
+        replacement.replace(self.target)
+        current = self.target.stat()
+        self.assertEqual(current.st_size, baseline.st_size)
+        self.assertEqual(current.st_mtime_ns, baseline.st_mtime_ns)
+        await self.assert_external_edit_finalized(updated)
+
+    async def test_next_turn_keeps_the_external_baseline_and_previous_terminal(self) -> None:
+        stage = self.enterContext(
+            patch.object(
+                VersionStore,
+                "stage_delivery",
+                autospec=True,
+                side_effect=VersionStore.stage_delivery,
+            )
+        )
+        await self.begin("first")
+        first_result = await self.deliveries.finish_turn("session", "first", TurnOutcome.COMPLETED)
+        terminal = self.target.read_bytes()
+        store = self.deliveries._store(self.project.id)
+        (first,) = stage.call_args.args[-1]
+        self.assertEqual(first.snapshot.revision, f"sha256:{sha256(terminal).hexdigest()}")
+
+        metadata = self.target.stat()
+        external = b"external bytes\n"
+        self.assertEqual(len(external), len(terminal))
+        replacement = self.target.with_name("outside.tmp")
+        replacement.write_bytes(external)
+        os.utime(replacement, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        replacement.replace(self.target)
+        self.assertEqual(self.target.stat().st_mtime_ns, metadata.st_mtime_ns)
+
+        await self.deliveries.begin_turn("session", "second", self.project.root)
+        await self.deliveries.bind_turn("session", "second", "second", "generation")
+        (baseline,) = store.turn_baselines("session", "second")
+        self.assertEqual(baseline.revision, f"sha256:{sha256(external).hexdigest()}")
+        updated = b"second agent edit\n"
+        self.target.write_bytes(updated)
+        await self.deliveries.record_change(
+            "session", "second", str(self.target), "update", generation="generation"
+        )
+        await self.deliveries.finish_turn("session", "second", TurnOutcome.COMPLETED)
+        (second,) = stage.call_args.args[-1]
+        self.assertEqual(second.baseline, baseline)
+        self.assertEqual(second.snapshot.revision, f"sha256:{sha256(updated).hexdigest()}")
+        self.assertEqual([call.args[2] for call in stage.call_args_list], ["first", "second"])
+        self.assertEqual(store.review_result("session", "first"), first_result)
+
+    def test_capture_batch_reads_the_current_mount_grant(self) -> None:
+        external = Path(self.temporary.name) / "outside"
+        external.mkdir()
+        (external / "note.md").write_bytes(b"external\n")
+        grant = self.content.authorize_root(self.project.id, str(external), "linked")
+        path = f"{grant.mount_path}/note.md"
+        with self.content.capture_stable_batch(self.project.id) as capture:
+            stream = BytesIO()
+            capture(path, 1024, stream)
+            self.assertEqual(stream.read(), b"external\n")
+            self.content.revoke_root(grant.root_id)
+            with self.assertRaises(ContentError):
+                capture(path, 1024, BytesIO())
+
     async def test_turn_scans_once_and_records_prior_presence_outside_version_policy(self) -> None:
         self.target.with_name("opaque.bin").write_bytes(b"unmanaged input")
         repository = self.target.parent / "repository"
@@ -119,12 +300,23 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         (repository / ".git").mkdir()
         (repository / "notes.md").write_bytes(b"git-managed input")
 
-        with patch.object(
-            self.content, "scan_resources", wraps=self.content.scan_resources
-        ) as scan:
+        with (
+            patch.object(
+                self.content, "scan_resource_inventory", wraps=self.content.scan_resource_inventory
+            ) as scan,
+            self.assertLogs("service.resources.service.delivery", level="INFO") as logs,
+        ):
             await self.deliveries.begin_turn("session", "turn", self.project.root)
 
         scan.assert_called_once()
+        prefix = "resources.versions.baseline.timing "
+        (timing,) = [
+            json.loads(record.getMessage().removeprefix(prefix))
+            for record in logs.records
+            if record.getMessage().startswith(prefix)
+        ]
+        self.assertEqual(timing["baseline_count"], 1)
+        self.assertTrue(all(timing[key] >= 0 for key in ("scan_ms", "capture_ms", "total_ms")))
         store = VersionStore(
             self.content.resolve(self.project.id, PROJECT_DB_RELATIVE), self.project.root
         )
@@ -134,19 +326,37 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         baselines = store.turn_baselines("session", "turn")
         self.assertEqual([baseline.path for baseline in baselines], ["resources/notes.md"])
 
+    async def test_finalization_captures_two_files_concurrently(self) -> None:
+        self.target.with_name("other.md").write_bytes(b"unchanged peer\n")
+        await self.begin()
+        barrier = threading.Barrier(2)
+        original = self.content.capture_from_space
+
+        def capture(*args, **kwargs):
+            barrier.wait(timeout=5)
+            return original(*args, **kwargs)
+
+        with patch.object(self.content, "capture_from_space", side_effect=capture) as captured:
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        self.assertEqual(captured.call_count, 2)
+        self.assertEqual(result.paths, ("resources/notes.md",))
+
     async def test_cancelled_finalization_remains_busy_until_snapshot_is_committed(self) -> None:
+        self.target.with_name("other.md").write_bytes(b"unchanged peer\n")
         await self.begin()
         gate = self.supervisor._activities
         entered, release = threading.Event(), threading.Event()
-        original = self.deliveries._finish
+        original = self.content.capture_from_space
 
-        def finish(*args):
-            entered.set()
-            if not release.wait(10):
-                raise TimeoutError("finalization thread was not released")
-            return original(*args)
+        def capture(scope, project_id, path, *args, **kwargs):
+            if path == "resources/notes.md":
+                entered.set()
+                if not release.wait(10):
+                    raise TimeoutError("finalization worker was not released")
+            return original(scope, project_id, path, *args, **kwargs)
 
-        with patch.object(self.deliveries, "_finish", side_effect=finish):
+        with patch.object(self.content, "capture_from_space", side_effect=capture):
             task = asyncio.create_task(
                 self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
             )
@@ -173,7 +383,9 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
 
     async def fail_capture(self, turn: str = "turn") -> None:
         await self.begin(turn)
-        with patch.object(self.content, "capture_stable", side_effect=ContentError("read_failed")):
+        with patch.object(
+            self.content, "capture_from_space", side_effect=ContentError("read_failed")
+        ):
             with self.assertRaises(ContentError):
                 await self.deliveries.finish_turn("session", turn, TurnOutcome.COMPLETED)
 
@@ -196,6 +408,7 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
             headers={"Idempotency-Key": "missing-snapshot"},
         )
         self.assertEqual(retry.status_code, 409)
+        self.assertEqual(self.resumed_finalizations, [])
         self.assertEqual(len(self.versions.history(self.project.id, "resources/notes.md")), 1)
         for params in (
             {**self.params, "session_id": "other"},
@@ -276,6 +489,7 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
                 headers={"Idempotency-Key": "retry-frozen-turn"},
             )
             self.assertEqual(retry.status_code, 200)
+        self.assertEqual(self.resumed_finalizations, [("session", "turn")] * 2)
         self.assertEqual(
             (await self.client.get(self.url, params=self.params)).json()["entries"], []
         )
@@ -287,6 +501,42 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         candidate = store.pending(history[0].file_id).review.candidate
         self.assertEqual(candidate.object_id, "sha256:" + sha256(b"terminal bytes\n").hexdigest())
         self.assertEqual(self.target.read_bytes(), b"later external bytes\n")
+
+    async def test_retry_returns_committed_receipt_when_resume_notification_fails(self) -> None:
+        await self.begin()
+        with patch.object(
+            VersionStore, "finalize_review", side_effect=RuntimeError("publish failed")
+        ):
+            with self.assertRaises(RuntimeError):
+                await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+        retry_url = self.url + "/turn/retry"
+        headers = {"Idempotency-Key": "retry-notification-failure"}
+        with (
+            patch.object(
+                self.app.state,
+                "resume_resource_finalization",
+                new=AsyncMock(side_effect=RuntimeError("resume unavailable")),
+            ) as notify,
+            self.assertLogs("service.resources.api.versions", level="WARNING") as logs,
+        ):
+            committed = await self.client.post(retry_url, params=self.params, headers=headers)
+
+        notify.assert_awaited_once_with("session", "turn")
+        self.assertEqual(committed.status_code, 200)
+        self.assertTrue(committed.json()["file_ids"])
+        (diagnostic,) = logs.records
+        self.assertEqual(
+            diagnostic.getMessage(),
+            f"resource_finalization_resume_failed project_id={self.project.id} "
+            "session_id=session turn_id=turn failure_type=RuntimeError",
+        )
+        self.assertIsNotNone(diagnostic.exc_info)
+        with patch.object(VersionStore, "finalize_review", side_effect=AssertionError) as publish:
+            repeated = await self.client.post(retry_url, params=self.params, headers=headers)
+        publish.assert_not_called()
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.json(), committed.json())
+        self.assertEqual(self.resumed_finalizations, [("session", "turn")])
 
     async def test_failed_archive_listing_has_stable_bounded_pagination(self) -> None:
         for turn in ("first", "second", "third"):

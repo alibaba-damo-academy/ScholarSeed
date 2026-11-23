@@ -30,7 +30,7 @@ from service.capabilities.service.ui import (
     read_declarative_catalog,
     resolve_ui,
 )
-from service.persistence.project import transaction
+from service.persistence.project import reader, transaction
 
 COMPONENT_PENDING = "pending"
 COMPONENT_RESOLVED = "resolved"
@@ -46,14 +46,14 @@ COMPONENT_COPY_SCHEMA = {
 SLOT_OCCUPIED = "occupied"
 SLOT_RESERVED = "reserved"
 logger = logging.getLogger(__name__)
-COMPONENT_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS component_revisions (fingerprint TEXT PRIMARY KEY, plugin TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS component_slots (slot TEXT PRIMARY KEY, plugin TEXT NOT NULL, component TEXT NOT NULL, fingerprint TEXT NOT NULL REFERENCES component_revisions(fingerprint))",
-    "CREATE TABLE IF NOT EXISTS component_bindings (binding TEXT PRIMARY KEY, plugin TEXT NOT NULL, component TEXT NOT NULL, fingerprint TEXT NOT NULL REFERENCES component_revisions(fingerprint), session_id TEXT NOT NULL, turn_id TEXT NOT NULL, user_id TEXT NOT NULL, data TEXT, state TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS component_unavailable (plugin TEXT PRIMARY KEY)",
-    "CREATE TABLE IF NOT EXISTS component_copies (binding TEXT PRIMARY KEY REFERENCES component_bindings(binding), revision INTEGER NOT NULL, content TEXT NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS system_ui (compatibility TEXT PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL)",
-)
+COMPONENT_SCHEMA = {
+    "component_revisions": "CREATE TABLE IF NOT EXISTS component_revisions (fingerprint TEXT PRIMARY KEY, plugin TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL)",
+    "component_slots": "CREATE TABLE IF NOT EXISTS component_slots (slot TEXT PRIMARY KEY, plugin TEXT NOT NULL, component TEXT NOT NULL, fingerprint TEXT NOT NULL REFERENCES component_revisions(fingerprint))",
+    "component_bindings": "CREATE TABLE IF NOT EXISTS component_bindings (binding TEXT PRIMARY KEY, plugin TEXT NOT NULL, component TEXT NOT NULL, fingerprint TEXT NOT NULL REFERENCES component_revisions(fingerprint), session_id TEXT NOT NULL, turn_id TEXT NOT NULL, user_id TEXT NOT NULL, data TEXT, state TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL)",
+    "component_unavailable": "CREATE TABLE IF NOT EXISTS component_unavailable (plugin TEXT PRIMARY KEY)",
+    "component_copies": "CREATE TABLE IF NOT EXISTS component_copies (binding TEXT PRIMARY KEY REFERENCES component_bindings(binding), revision INTEGER NOT NULL, content TEXT NOT NULL)",
+    "system_ui": "CREATE TABLE IF NOT EXISTS system_ui (compatibility TEXT PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL)",
+}
 
 
 class ComponentConflict(ValueError):
@@ -64,7 +64,7 @@ class ComponentConflict(ValueError):
 
 class ComponentRegistry:
     def answer_markdown(self, session_id: str, turn_id: str) -> tuple[str, ...]:
-        with self._database() as connection:
+        with self._read_database() as connection:
             rows = connection.execute(
                 "SELECT c.content FROM component_copies c JOIN component_bindings b "
                 "ON b.binding=c.binding AND b.revision=c.revision "
@@ -101,9 +101,35 @@ class ComponentRegistry:
             self._changing = False
 
     @contextmanager
+    def _read_database(self) -> Iterator[Any]:
+        if self.path.exists():
+            with reader(self.path) as connection:
+                connection.execute("BEGIN")
+                tables = {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(component_bindings)")
+                }
+                if set(COMPONENT_SCHEMA) <= tables and "content_revision" in columns:
+                    yield connection
+                    return
+        # Release the read snapshot before initializing a new or legacy registry.
+        # Current schemas never request a writer lock just to inspect claims/UI.
+        with self._database():
+            pass
+        with reader(self.path) as connection:
+            connection.execute("BEGIN")
+            yield connection
+
+    @contextmanager
     def _database(self) -> Iterator[Any]:
         with transaction(self.path, immediate=True) as connection:
-            for statement in COMPONENT_SCHEMA:
+            for statement in COMPONENT_SCHEMA.values():
                 connection.execute(statement)
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(component_bindings)")
@@ -174,7 +200,7 @@ class ComponentRegistry:
             return None
 
     def active_ui(self) -> dict[str, Any] | None:
-        with self._database() as connection:
+        with self._read_database() as connection:
             return self._available_ui(connection)
 
     def ui_status(self) -> dict[str, Any]:
@@ -311,7 +337,7 @@ class ComponentRegistry:
         self._blocked = False
 
     def enabled_snapshots(self) -> list[dict[str, Any]]:
-        with self._database() as connection:
+        with self._read_database() as connection:
             return [
                 self._revision(connection, row["fingerprint"])
                 for row in connection.execute(
@@ -320,7 +346,7 @@ class ComponentRegistry:
             ]
 
     def has_claim(self, plugin: str) -> bool:
-        with self._database() as connection:
+        with self._read_database() as connection:
             return (
                 connection.execute(
                     "SELECT slot FROM component_slots WHERE plugin=? LIMIT 1", (plugin,)
@@ -347,7 +373,7 @@ class ComponentRegistry:
         if not self._ready:
             raise ValueError("component_registry_unavailable")
         result = []
-        with self._database() as connection:
+        with self._read_database() as connection:
             for slot in dict.fromkeys(slots):
                 occupied = (
                     connection.execute(
@@ -366,7 +392,7 @@ class ComponentRegistry:
     def catalog(self, *, user_id: str) -> list[dict[str, Any]]:
         if self._changing or self._blocked:
             raise ValueError("component_registry_updating")
-        with self._database() as connection:
+        with self._read_database() as connection:
             rows = (
                 connection.execute(
                     "SELECT * FROM component_slots WHERE plugin NOT IN "
@@ -495,7 +521,7 @@ class ComponentRegistry:
         return json.loads(row["body"])
 
     def snapshot(self, reference: Mapping[str, Any], *, user_id: str) -> dict[str, Any]:
-        with self._database() as connection:
+        with self._read_database() as connection:
             row = self._binding(connection, reference, user_id)
             result = self._revision(connection, row["fingerprint"])
             result["interaction"] = {
@@ -510,7 +536,7 @@ class ComponentRegistry:
             return result
 
     def validate(self, reference: Mapping[str, Any], *, session_id: str, user_id: str) -> None:
-        with self._database() as connection:
+        with self._read_database() as connection:
             row = self._binding(connection, reference, user_id)
             if row["session_id"] != session_id:
                 raise ValueError("component_binding_invalid")
@@ -615,7 +641,7 @@ class ComponentRegistry:
             encoded = json.dumps(content, ensure_ascii=False, allow_nan=False)
             if not content["text"].strip():
                 raise ValueError("component_copy_invalid")
-        with self._database() as connection:
+        with self._read_database() if content is None else self._database() as connection:
             row = self._binding(connection, reference, user_id)
             if row["session_id"] != session_id:
                 raise ValueError("component_binding_invalid")

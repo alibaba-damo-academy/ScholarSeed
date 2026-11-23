@@ -190,7 +190,12 @@ from service.chat.service.retry import (
 )
 from service.chat.service.search import SearchService
 from service.chat.service.settings import SettingsService
-from service.chat.service.utils import ResumeStage, artifact_directory, resume_stage
+from service.chat.service.utils import (
+    ResumeStage,
+    artifact_directory,
+    is_resource_finalizing,
+    resume_stage,
+)
 from service.chat.service.workspaces import SessionWorkspaceService
 from service.chat.utils import (
     SESSION_FORK_COPIED_FIELD,
@@ -203,6 +208,7 @@ from service.identity.service.skill_credentials import (
     CredentialAdmissionError,
     SkillCredentialService,
 )
+from service.identity.utils import LOCAL_USER_ID
 from service.inference.source import ContentSource
 from service.paths import (
     SESSION_ATTACHMENT_DIRNAME,
@@ -256,6 +262,7 @@ SESSION_OPEN_TIMING_EVENT = "session_open_timing"
 # logger 才能保证埋点在生产日志里必达。
 SESSION_OPEN_TIMING_LOGGER = logging.getLogger(__name__).getChild("open_timing")
 SESSION_LIST_TIMING_LOGGER = logging.getLogger(__name__).getChild("list_timing")
+SESSION_FORK_LOGGER = logging.getLogger(__name__).getChild("fork")
 SESSION_LIST_TIMING_MILLISECONDS = 1000
 
 
@@ -545,6 +552,7 @@ class SessionService:
         self._fork_snapshots: (
             Callable[[str, str, Mapping[str, Any], sqlite3.Connection], str | None] | None
         ) = None
+        self._fork_display_card_types: frozenset[str] = frozenset()
         self._access = access
         self._events = events
         self._runtime = runtime
@@ -574,6 +582,9 @@ class SessionService:
         self, provider: Callable[[str, str, Mapping[str, Any], sqlite3.Connection], str | None]
     ) -> None:
         self._fork_snapshots = provider
+
+    def bind_fork_display_cards(self, *card_types: str) -> None:
+        self._fork_display_card_types = frozenset(card_types)
 
     def bind_deletion(self, callback: Callable[[SessionCatalogRecord], None]) -> None:
         self._deletion = callback
@@ -1101,32 +1112,44 @@ class SessionService:
         imported: bool,
     ) -> None:
         fork_snapshots = self._fork_snapshots
+        source_id = str(origin.payload["source_session_id"])
+        through_seq = int(origin.payload["source_product_seq"])
         with self._events.transaction() as connection:
-            self._events.inherit_history(
-                str(origin.payload["source_session_id"]),
+            inherited_cards = self._events.inherit_history(
+                source_id,
                 target,
-                int(origin.payload["source_product_seq"]),
+                through_seq,
                 copied_workdir=copied_workdir,
                 connection=connection,
                 inherit_snapshot=(
                     (
                         lambda payload, current: fork_snapshots(
-                            str(origin.payload["source_session_id"]), session_id, payload, current
+                            source_id, session_id, payload, current
                         )
                     )
                     if fork_snapshots is not None
                     else None
                 ),
                 snapshots_only=imported,
+                display_card_types=self._fork_display_card_types,
             )
             if not imported:
                 self._artifacts.inherit_history(
-                    str(origin.payload["source_session_id"]),
+                    source_id,
                     session_id,
-                    int(origin.payload["source_product_seq"]),
+                    through_seq,
                     copied_workdir=copied_workdir,
                     connection=connection,
                 )
+        if not imported:
+            SESSION_FORK_LOGGER.info(
+                "session_fork_history_imported source_session_id=%s session_id=%s "
+                "source_product_seq=%d display_cards=%d",
+                source_id,
+                session_id,
+                through_seq,
+                inherited_cards,
+            )
 
     async def _create(
         self,
@@ -1775,6 +1798,7 @@ class SessionService:
             "uncertain_operations": live.ledger.uncertainty_snapshot(),
             "recovery_blocked": recovery_blocked,
             "recovery_pending": pending is not None,
+            "resource_finalizing": is_resource_finalizing(live, record, pending),
             **(
                 self._events.recovery_snapshot(live.id, pending.native_turn_id)
                 if recovery_blocked and pending
@@ -2191,6 +2215,7 @@ class SessionService:
             and not recovery_blocked,
             "recovery_blocked": recovery_blocked,
             "recovery_pending": pending is not None,
+            "resource_finalizing": is_resource_finalizing(live, record, pending),
             "unknown_outcome": (
                 live.ledger.has_unknown_outcome
                 if live is not None
@@ -3124,6 +3149,7 @@ class SessionService:
                 and (live is None or pending.recovery_blocked)
             ),
             "recovery_pending": pending is not None,
+            "resource_finalizing": is_resource_finalizing(live, record, pending),
             "todos": list(record.todos) if record is not None else [],
             **(
                 self._events.recovery_snapshot(session_id, pending.native_turn_id)
@@ -4109,6 +4135,24 @@ class SessionService:
             raise PreparationError(SESSION_ARCHIVED_ERROR)
         if self.model(session_id)["model_id"] != model_id:
             raise PreparationError(RECONFIGURATION_STALE)
+        live = self._sessions.get(session_id)
+        if (
+            live is not None
+            and actor_id in {LOCAL_USER_ID, live.user_id}
+            and (pending := self._access.pending_turn_settlement(session_id)) is not None
+            and is_resource_finalizing(live, self._access.get(session_id), pending)
+        ):
+            if service_instance_id not in {None, self._activities.instance_id}:
+                raise PreparationError(PREPARATION_INSTANCE_CHANGED)
+            try:
+                lease = self._activities.enter(ActivityDomain.TURN, root=True)
+            except MaintenanceActive:
+                raise PreparationError(RESOURCE_HOST_CONFIGURATION_UNCERTAIN) from None
+            # The durable queue can accept input without activating or replacing the runtime.
+            # Its dispatcher prepares and authorizes the actual turn after settlement.
+            with lease:
+                yield
+            return
         async with self.model_admission(
             model_id,
             actor_id=actor_id,

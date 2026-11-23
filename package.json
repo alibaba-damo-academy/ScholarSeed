@@ -6,6 +6,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "ops": "node scripts/ops-cli.cjs",
+    "package:preflight": "node apps/desktop/scripts/cd/registration.cjs",
     "dev": "node scripts/ops-cli.cjs cd build local --target skills && node scripts/ops-cli.cjs dev",
     "package:dist": "node scripts/desktop.cjs package:dist",
     "package:check": "node scripts/desktop.cjs package:check",

@@ -460,6 +460,7 @@ class LiveSession:
         # ``ledger.active_turn_id`` 不是一回事 —— 后者是 vendor 轮 id，要等 Codex 的 turnStarted
         # 事件回来才落定，而这一轮的模型调用那时可能已经打出去了（会记到上一轮头上）。
         self.active_product_turn_id = ""
+        self.resource_finalizing_turn_id = ""
         self._model_bridge_failure: tuple[str, dict[str, Any]] | None = None
         self.active_assistant_snapshot_id = ""
         self.active_assistant_revision: int | None = None
@@ -2082,18 +2083,26 @@ class LiveSession:
                 idempotency_key=key,
             )
 
-    async def set_turn_settlement_blocked(self, event: RuntimeEvent, *, blocked: bool) -> None:
+    async def set_turn_settlement_blocked(
+        self,
+        event: RuntimeEvent,
+        *,
+        blocked: bool,
+        reason: str = PRODUCT_SETTLEMENT_ACTIVITY_UNAVAILABLE,
+    ) -> None:
         async with self.lifecycle_lock, self._publication_lock:
             if self.terminating or self.terminated:
                 return
             if self._publication_error is not None:
                 raise self._publication_error
-            record = await self._persistence.run(self._set_turn_settlement_blocked, event, blocked)
+            record = await self._persistence.run(
+                self._set_turn_settlement_blocked, event, blocked, reason
+            )
             if record is not None:
                 await self._deliver_committed(record)
 
     def _set_turn_settlement_blocked(
-        self, event: RuntimeEvent, blocked: bool
+        self, event: RuntimeEvent, blocked: bool, reason: str
     ) -> ProductEventRecord | None:
         with self._events.transaction() as connection:
             pending = self._catalog.pending_turn_settlement(self.id, connection=connection)
@@ -2115,9 +2124,10 @@ class LiveSession:
                     "runtime_id": self.runtime_id,
                     "recovery_pending": True,
                     "recovery_blocked": blocked,
+                    "resource_finalizing": False,
                     **(
                         {
-                            "reason": PRODUCT_SETTLEMENT_ACTIVITY_UNAVAILABLE,
+                            "reason": reason,
                             "incident_id": (
                                 f"{PRODUCT_RECOVERY_BLOCKED_KEY_PREFIX}:{event.event_id}:{transition_id}"
                             ),
@@ -2159,10 +2169,13 @@ class LiveSession:
                 return True
             if event.kind is RuntimeEventKind.TURN_COMPLETED:
                 await self.finalize_answer_model(event.native_turn_id, f"runtime:{event.event_id}")
+                if self.project_path is not None and not pending.recovery_blocked:
+                    self.resource_finalizing_turn_id = pending.native_turn_id
             await self.ledger.terminal(
                 event,
                 fallback_submission_id=self.last_submission_id,
                 finish_messages=self._message_snapshots.finish_turn,
+                resource_finalizing=self.resource_finalizing_turn_id == pending.native_turn_id,
             )
             return True
 
@@ -2186,6 +2199,7 @@ class LiveSession:
                 self._finish_turn_settlement, native_turn_id, state
             )
             if record is not None:
+                self.resource_finalizing_turn_id = ""
                 await self._deliver_committed(record)
 
     def _finish_turn_settlement(self, native_turn_id: str, state: str) -> ProductEventRecord | None:
@@ -2209,6 +2223,7 @@ class LiveSession:
                     "runtime_id": self.runtime_id,
                     "recovery_pending": False,
                     "recovery_blocked": False,
+                    "resource_finalizing": False,
                 },
                 idempotency_key=(
                     f"{PRODUCT_SETTLEMENT_FINISHED_KEY_PREFIX}:"

@@ -44,6 +44,7 @@ from service.content.domain.model import (
     ContentError,
     ContentReadPermissionError,
     resolve_root,
+    root_relative,
     visible,
 )
 from service.content.persistence.catalog import (
@@ -94,6 +95,7 @@ from service.platform.content import (
     ArtifactStorageLocation,
     AssetBinding,
     AssetKind,
+    AssetOrigin,
     AssetPage,
     ContentImportCancellation,
     ContentImportObserver,
@@ -121,6 +123,7 @@ from service.platform.content import (
     ResourceScanObserver,
     ResourceSearchResult,
     ResourceTreeChanges,
+    ResourceTreeObserver,
     RootKind,
     StableContentCapture,
     StableContentSnapshot,
@@ -328,7 +331,9 @@ class ProjectRegistry:
         finally:
             self._recovery_scope.reset(token)
 
-    def _reference(self, row: ProjectRow) -> ProjectRef:
+    def reference(self, row: ProjectRow) -> ProjectRef:
+        """Apply current availability gates to an already-read catalog row."""
+
         with self._blocked_lock:
             reason = self._blocked_projects.get(row.project_id)
             recovery = self._recovery_states.get(row.project_id)
@@ -397,7 +402,7 @@ class ProjectRegistry:
         resolved = self.seed_root(path)
         existing = self._catalog.project_by_root(resolved)
         if existing is not None:
-            result = self._reference(existing)
+            result = self.reference(existing)
             if operation_id is not None:
                 self._catalog.record_operation_effect(operation_id, asdict(result))
             return result
@@ -441,7 +446,7 @@ class ProjectRegistry:
         row = self._catalog.project_by_root(resolved)
         if row is None:
             raise ContentError("no_project_selected")
-        return self._reference(row)
+        return self.reference(row)
 
     def resolve(self, project_id: str | None, *, read_only: bool = False) -> ProjectRef:
         """project_id → 项目引用。None 或 CURRENT 取默认项目。"""
@@ -455,10 +460,10 @@ class ProjectRegistry:
             # 未登记的 id 明确拒绝而不是静默回落到当前工作区 —— 静默回落会让
             # 调用方以为自己操作的是另一个项目。
             raise ContentError("unknown_project")
-        return self._reference(row)
+        return self.reference(row)
 
     def projects(self) -> tuple[ProjectRef, ...]:
-        return tuple(self._reference(row) for row in self._catalog.projects())
+        return tuple(self.reference(row) for row in self._catalog.projects())
 
     def for_path(self, absolute: str) -> ProjectRef | None:
         """绝对路径 → 所属项目。取最长匹配的 `dir_root`, 支持项目嵌套。"""
@@ -474,7 +479,7 @@ class ProjectRegistry:
                 continue
             if best is None or len(row.dir_root) > len(best.dir_root):
                 best = row
-        return self._reference(best) if best is not None else None
+        return self.reference(best) if best is not None else None
 
     # ---- 变更 ----
 
@@ -771,12 +776,17 @@ class ContentService:
         一个还能写的窗口。重建的成本是一次索引查询。
         """
 
+        scope, _ = self._space_with_external_roots(project_id, read_only=read_only)
+        return scope
+
+    def _space_with_external_roots(
+        self, project_id: str | None, *, read_only: bool = False
+    ) -> tuple[space.ProjectSpace, tuple[ExternalRootRow, ...]]:
         project = self._registry.resolve(project_id, read_only=read_only)
         if not project.available:
             raise ContentError(ROOT_UNAVAILABLE_ERROR)
-        return self.project_space(
-            project, self._catalog.external_roots(project.id, read_only=read_only)
-        )
+        external = self._catalog.external_roots(project.id, read_only=read_only)
+        return self.project_space(project, external), external
 
     @staticmethod
     def project_space(
@@ -819,8 +829,13 @@ class ContentService:
 
     def _rooted_space(self, project_id: str) -> space.ProjectSpace:
         scope = self._space(project_id)
-        owned = roots.registered_roots(self.resolve(scope.project.id, PROJECT_DB_RELATIVE))
-        return space.ProjectSpace(scope.project, scope.mounts, owned_roots=owned)
+        return space.ProjectSpace(
+            scope.project, scope.mounts, owned_roots=self._registered_roots(scope)
+        )
+
+    @staticmethod
+    def _registered_roots(scope: space.ProjectSpace) -> dict[RootKind, str]:
+        return roots.registered_roots(str(scope.absolute(PROJECT_DB_RELATIVE)))
 
     def _resource_space(self, project_id: str) -> space.ProjectSpace:
         scope = self._rooted_space(project_id)
@@ -1328,6 +1343,32 @@ class ContentService:
             return self.capture_from_space(
                 self._space(project_id), project_id, path, max_bytes, target
             )
+
+    @contextmanager
+    def capture_stable_batch(
+        self, project_id: str
+    ) -> Iterator[Callable[[str, int, BinaryIO], StableContentCapture]]:
+        """Reuse the catalog read connection, never a stale grant snapshot."""
+
+        if not project_id or project_id == ProjectRegistry.CURRENT:
+            yield lambda path, max_bytes, target: self.capture_stable(
+                project_id, path, max_bytes, target
+            )
+            return
+
+        with (
+            self._activities.enter(ActivityDomain.RESOURCE),
+            self._catalog.read_project_scope() as read_scope,
+        ):
+
+            def capture(path: str, max_bytes: int, target: BinaryIO) -> StableContentCapture:
+                row, external = read_scope(project_id)
+                if row is None:
+                    raise ContentError("unknown_project")
+                scope = self.project_space(self._registry.reference(row), external)
+                return self.capture_from_space(scope, project_id, path, max_bytes, target)
+
+            yield capture
 
     @staticmethod
     def capture_from_space(
@@ -1901,17 +1942,48 @@ class ContentService:
         *,
         include_repositories: bool = False,
         track_parents: bool = False,
+        observe_entries: bool = False,
+        shallow: bool = False,
+        on_directory: ResourceTreeObserver | None = None,
+        check: Callable[[], None] | None = None,
     ) -> FlatResourceTree:
         """Use one local path space and revalidate mount authority within the read."""
 
         if not roots:
             return FlatResourceTree((), {})
         scope = self._resource_space(project_id)
+        ownable = tuple(scope.owned_roots.values()) + tuple(
+            root_relative(scope.project.layout, kind) for kind in OWNED_ROOT_KINDS
+        )
+        owned_prefixes = tuple(f"{path}{space.SEPARATOR}" for path in ownable)
 
         def check_mount(path: str) -> None:
             mount = scope.mount_for(path)
             if mount is not None and self._space(project_id).mount_for(path) != mount:
                 raise ContentError(ROOT_BUSY_ERROR)
+
+        def publish(nodes: tuple[AssetTree, ...], repositories: dict[str, str | None]) -> None:
+            assert on_directory is not None
+            linked_roots: tuple[ExternalRootRef, ...] = ()
+            if any(node.asset.origin is AssetOrigin.LINK for node in nodes):
+                current, external = self._space_with_external_roots(project_id)
+                if not self._resource_grants_match(scope, current):
+                    raise ContentError(ROOT_BUSY_ERROR)
+                # Local rows can alias an owned root. Also keep the claims check
+                # when a legacy mount occupies a path reserved for a future claim.
+                if (
+                    any(
+                        node.asset.origin is AssetOrigin.LOCAL
+                        or node.asset.path in ownable
+                        or node.asset.path.startswith(owned_prefixes)
+                        for node in nodes
+                    )
+                    and self._registered_roots(current) != scope.owned_roots
+                ):
+                    raise ContentError(ROOT_BUSY_ERROR)
+                # Project the grants from the same records used for authorization.
+                linked_roots = tuple(self._roots.reference(row) for row in external)
+            on_directory(nodes, repositories, linked_roots)
 
         result = tree.flat_tree(
             scope,
@@ -1919,6 +1991,10 @@ class ContentService:
             check_mount,
             include_repositories=include_repositories,
             track_parents=track_parents,
+            observe_entries=observe_entries,
+            shallow=shallow,
+            on_directory=publish if on_directory is not None else None,
+            check=check,
         )
         if not self._resource_scope_current(project_id, scope):
             raise ContentError(ROOT_BUSY_ERROR)
@@ -1934,12 +2010,18 @@ class ContentService:
         return result
 
     def _resource_scope_current(self, project_id: str, scope: space.ProjectSpace) -> bool:
-        current = self._resource_space(project_id)
+        current = self._space(project_id)
+        return (
+            self._resource_grants_match(scope, current)
+            and self._registered_roots(current) == scope.owned_roots
+        )
+
+    @staticmethod
+    def _resource_grants_match(scope: space.ProjectSpace, current: space.ProjectSpace) -> bool:
         return (
             current.root == scope.root
             and current.project.layout == scope.project.layout
             and current.mounts == scope.mounts
-            and current.owned_roots == scope.owned_roots
         )
 
     def enumerate_resources(self, project_id: str, cursor: str | None, limit: int) -> ResourcePage:
@@ -1959,6 +2041,26 @@ class ContentService:
         """Scan all resources once while exposing factual discovery events."""
 
         return enumeration.scan_files(self._resource_space(project_id), observer, paths=paths)
+
+    def scan_resource_inventory(
+        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+    ) -> tuple[tuple[ResourceEntry, ...], dict[str, str | None]]:
+        """Qualify each inventory entry once, including missing baseline paths."""
+
+        scope = self._resource_space(project_id)
+        lookup = repository.RepositoryLookup(scope)
+        repositories: dict[str, str | None] = {}
+
+        def observe(entry: ResourceEntry, target: Path) -> None:
+            repositories[entry.path] = lookup.for_scanned_file(entry.path, target)
+
+        entries = enumeration.scan_files(scope, observe_resolved=observe)
+        for path in include_missing:
+            if path not in repositories:
+                repositories[path] = lookup.for_path(path)
+        if not self._resource_scope_current(project_id, scope):
+            raise ContentError(ROOT_BUSY_ERROR)
+        return entries, repositories
 
     def resource_entries(
         self, project_id: str, paths: tuple[str, ...]

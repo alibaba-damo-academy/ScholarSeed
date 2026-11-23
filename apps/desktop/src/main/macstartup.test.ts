@@ -25,7 +25,7 @@ import {
   readSquirrelHandoff,
   type SquirrelHandoff,
 } from './squirrel.ts'
-import { captureRecord, TERMINAL_RECORD_LIMITS } from './terminal.ts'
+import { captureRecord, sameRecord, TERMINAL_RECORD_LIMITS } from './terminal.ts'
 import {
   inspectSquirrelStartup,
   inspectSquirrelIdle,
@@ -34,6 +34,7 @@ import {
   squirrelLaunchSuperseded,
 } from './squirrelstartup.ts'
 import { isNewerRelease } from './version.ts'
+import { parseDownloadInfo, UPDATE_PATH_PREFIX } from './release.ts'
 import { isPreviewUpdateChannel, type UpdateSnapshot } from '../updates.ts'
 import type * as Updater from './updater.ts'
 import type { DomainNative } from '../../native/domains.cjs'
@@ -62,6 +63,8 @@ function functions(file: string, names: readonly string[]): string {
 }
 
 const updaterCode = functions('./updater.ts', [
+  'packageDownloadUrl',
+  'confirmOrphanedRelease',
   'macStartupAdmission',
   'readAdmittedMacHandoff',
   'completeMacStartupAdmission',
@@ -170,7 +173,15 @@ async function records(context: test.TestContext) {
 function harness(home: string, recordPath: string, channel: string, platform = 'darwin') {
   const actions: string[] = []
   const failures: string[] = []
-  const config = { buildNumber: '202611030001', bundleId: 'fixture', channel }
+  const config = {
+    buildNumber: '202611030001',
+    bundleId: 'fixture',
+    channel,
+    baseUrl: 'https://update.example.test',
+    productId: 'fixture',
+    releaseLane: 'distribution',
+    expectedTeamId: 'A1B2C3D4E5',
+  }
   let selectedHome = home
   const app = {
     isPackaged: true,
@@ -191,6 +202,20 @@ function harness(home: string, recordPath: string, channel: string, platform = '
   >
   const updaterScope = {
     exports,
+    Buffer,
+    URL,
+    UPDATE_PATH_PREFIX,
+    parseDownloadInfo,
+    orphanedReleaseIdentities: new WeakMap(),
+    archType: () => 'darwin-arm64',
+    getJson: async (
+      _url: string,
+      _log: (message: string) => void,
+      _signal?: AbortSignal,
+      _redirect?: 'follow' | 'error'
+    ): Promise<unknown> => {
+      throw new Error('No authenticated release in this fixture')
+    },
     process: {
       platform,
       execPath: join(home, 'target.app/Contents/MacOS/App'),
@@ -201,6 +226,7 @@ function harness(home: string, recordPath: string, channel: string, platform = '
     readSquirrelHandoff,
     decodeSquirrelHandoff,
     captureRecord,
+    sameRecord,
     TERMINAL_RECORD_LIMITS,
     realpathSync: (path: string) => path,
     squirrelHandoffPath: () => recordPath,
@@ -577,7 +603,7 @@ test(
     }
     await assert.rejects(
       startup.updaterScope.exports.completeMacStartupAdmission(() => undefined, decision, observed),
-      /superseded recovery evidence/
+      /installed update recovery evidence/
     )
     assert.equal(existsSync(fixture.path), true)
     startup.updaterScope.verifySquirrelReplacement = async () => undefined
@@ -585,7 +611,7 @@ test(
     rmSync(restored.acknowledgement)
     await assert.rejects(
       startup.updaterScope.exports.completeMacStartupAdmission(() => undefined, decision, observed),
-      /superseded recovery evidence/
+      /installed update recovery evidence/
     )
     assert.equal(existsSync(fixture.path), true)
     writeFileSync(restored.acknowledgement, ack, { mode: 0o600 })
@@ -671,6 +697,89 @@ for (const channel of ['release', 'preview']) {
     }
   )
 }
+
+test(
+  'a relaunch resumes the same storage after an installed update fails before workbench readiness',
+  { skip: MACOS_CONTEXT_FIXTURE_SKIP },
+  async (context) => {
+    const { fixture, native, coordinator, identity, observed, startup } =
+      await sourceRecovery(context)
+    startup.config.buildNumber = observed.context.targetBuild
+    startup.updaterScope.app.getVersion = () => '0.3.2'
+    assert.equal((await startup.admit(observed.context)).admission, 'allow')
+    await startup.entry()
+    assert.ok(startup.actions.includes('failure-surface'))
+    assert.equal(existsSync(fixture.path), false)
+
+    const retry = harness(fixture.home, fixture.path, 'release')
+    retry.config.buildNumber = observed.context.targetBuild
+    retry.updaterScope.app.getVersion = () => '0.3.2'
+    const target = { ...identity, build: observed.context.targetBuild }
+    const retained = observeUpdateLaunch(native, coordinator, target)!
+    assert.equal(
+      Buffer.from(retained.context.admittedHandoff!, 'base64').toString(),
+      fixture.states.failed
+    )
+    const restored = restoreUpdateLaunch(native, coordinator, target, {}, retained)!
+    retry.scope.pendingUpdateLaunch = retained
+    retry.scope.completeUpdateLaunch = restored.complete
+    assert.equal((await retry.admit(retained.context)).admission, 'allow')
+    await retry.bootstrap()
+    assert.equal(await retry.health(), true)
+    assert.equal(observeUpdateLaunch(native, coordinator, target), null)
+  }
+)
+
+test(
+  'a context without a handoff requires a signed installed build and idle native updater',
+  { skip: MACOS_CONTEXT_FIXTURE_SKIP },
+  async (context) => {
+    const { fixture, observed, startup } = await sourceRecovery(context)
+    rmSync(fixture.path)
+    startup.updaterScope.inspectSquirrelIdle = async (
+      _cache,
+      _bundle,
+      application,
+      handoff,
+      verify
+    ) => {
+      assert.equal(handoff, null)
+      await verify!(application)
+      return true
+    }
+    assert.equal((await startup.admit(observed.context)).admission, 'exit')
+    startup.config.buildNumber = '202611030003'
+    assert.equal((await startup.admit(observed.context)).admission, 'exit')
+    startup.updaterScope.getJson = async (url, _log, _signal, redirect) => {
+      assert.equal(redirect, 'error')
+      assert.equal(
+        new URL(url).pathname,
+        `${UPDATE_PATH_PREFIX}/packages/${observed.context.candidate}/download`
+      )
+      return {
+        id: observed.context.candidate,
+        version: '0.3.2',
+        build_number: observed.context.targetBuild,
+        product_id: startup.config.productId,
+        bundle_id: startup.config.bundleId,
+        arch_type: 'darwin-arm64',
+        team_id: startup.config.expectedTeamId,
+        channel: startup.config.channel,
+        file_size: 1,
+        sha512: 'a'.repeat(128),
+        download_url: 'https://packages.example.test/unused',
+      }
+    }
+    assert.equal((await startup.admit(observed.context)).admission, 'exit')
+    startup.updaterScope.app.getVersion = () => '0.3.2'
+    assert.equal((await startup.admit(observed.context)).admission, 'superseded')
+    startup.config.buildNumber = observed.context.targetBuild
+    assert.equal((await startup.admit(observed.context)).admission, 'allow')
+    startup.updaterScope.inspectSquirrelIdle = async () => false
+    await assert.rejects(startup.bootstrap(), /evidence changed/)
+    assert.equal(startup.actions.includes('backend'), false)
+  }
+)
 
 test(
   'only the context-bound installed build reports startup, then verified completion after workbench health',

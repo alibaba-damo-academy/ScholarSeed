@@ -37,11 +37,19 @@ from __future__ import annotations
 import os
 import stat
 from collections import deque
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 
-from service.content.domain.model import OUTSIDE_GRANT_ERRORS, ContentError, root_relative, visible
+from service.content.domain.model import (
+    OUTSIDE_GRANT_ERRORS,
+    PATH_OUTSIDE_ROOT_ERROR,
+    ROOT_UNAVAILABLE_ERROR,
+    ContentError,
+    root_relative,
+    visible,
+)
+from service.content.service.enumeration import entry_from_stat
 from service.content.service.repository import RepositoryLookup
 from service.content.service.space import SEPARATOR, Mount, ProjectSpace
 from service.content.service.utils import DIRECTORY_PATH_INVALID
@@ -52,6 +60,7 @@ from service.platform.content import (
     AssetTree,
     FileAssetRef,
     FlatResourceTree,
+    ResourceEntry,
     ResourceTreeChanges,
     ResourceTreeGroup,
     RootKind,
@@ -232,6 +241,7 @@ def _child_node(
     origin: AssetOrigin,
     *,
     count_children: bool = True,
+    observations: dict[str, ResourceEntry | None] | None = None,
 ) -> AssetTree:
     """一个目录条目的节点。目录到了深度上限就不再下扫, 但要报出它有多少条目。
 
@@ -247,6 +257,21 @@ def _child_node(
         kind=AssetKind.DIR if is_dir else AssetKind.FILE,
         origin=origin,
     )
+    if observations is not None and "\\" not in row.name and not row.is_symlink():
+        if is_dir:
+            observations[relative] = None
+        else:
+            try:
+                observed = row.stat(follow_symlinks=False)
+            except (FileNotFoundError, PermissionError, NotADirectoryError):
+                observed = None
+            if observed is None:
+                return AssetTree(asset=asset)
+            if not stat.S_ISLNK(observed.st_mode):
+                observations[relative] = (
+                    entry_from_stat(relative, observed) if stat.S_ISREG(observed.st_mode) else None
+                )
+                return AssetTree(asset=asset, updated_at=observed.st_mtime)
     if not is_dir:
         return AssetTree(asset=asset, updated_at=_modified_at(row))
     target = Path(row.path)
@@ -319,6 +344,31 @@ def build_tree(
     return _scan(space, resolved, relative, max_depth, space.origin(relative), offset)
 
 
+@contextmanager
+def _flat_listing(
+    space: ProjectSpace, directory: Path, relative: str, origin: AssetOrigin, observe: bool
+) -> Iterator[tuple[list[os.DirEntry[str] | Mount], set[str], bool]]:
+    if observe:
+        try:
+            opened = space.open_directory(relative)
+        except OSError:
+            pass
+        except ContentError as error:
+            if error.code != DIRECTORY_PATH_INVALID:
+                raise
+        else:
+            with closing(opened):
+                try:
+                    listing, existing = _listing(space, opened.fileno(), relative, origin)
+                except OSError:
+                    pass
+                else:
+                    yield listing, existing, True
+                    return
+    listing, existing = _listing(space, directory, relative, origin)
+    yield listing, existing, False
+
+
 def flat_tree(
     space: ProjectSpace,
     roots: tuple[str, ...],
@@ -326,20 +376,42 @@ def flat_tree(
     *,
     include_repositories: bool = False,
     track_parents: bool = False,
+    observe_entries: bool = False,
+    shallow: bool = False,
+    on_directory: Callable[[tuple[AssetTree, ...], dict[str, str | None]], None] | None = None,
+    check: Callable[[], None] | None = None,
 ) -> FlatResourceTree:
-    """Return complete breadth-first metadata without paging or pre-counting children."""
+    """Return ordered resource rows without paging or pre-counting children."""
 
+    if shallow:
+        if len(roots) != 1:
+            raise ContentError(PATH_OUTSIDE_ROOT_ERROR)
+        start = roots[0]
+        mount = space.mount_for(start)
+        tail = start[len(mount.mount_path) :].strip(SEPARATOR) if mount is not None else start
+        if any(not visible(part) for part in tail.split(SEPARATOR) if part):
+            raise ContentError(PATH_OUTSIDE_ROOT_ERROR)
     pending = deque((root, False) for root in roots)
     visited: set[Path] = set()
     nodes: dict[str, AssetTree] = {}
     repositories: dict[str, str | None] = {}
+    observations: dict[str, ResourceEntry | None] = {}
     parents: list[str] | None = [] if track_parents and _supports_incremental(space) else None
     lookup = RepositoryLookup(space) if include_repositories else None
+    resource_root = root_relative(space.project.layout, RootKind.RESOURCES)
     # Mounted paths and Windows reparse points keep their separate resolution.
     reuse_directory_resolution = (
         lookup is not None and not space.mounts and os.name != WINDOWS_PLATFORM
     )
+    observe_local = (
+        (observe_entries or (shallow and track_parents))
+        and _supports_incremental(space)
+        and (shallow or roots == (resource_root,))
+    )
+    directory_asset: FileAssetRef | None = None
     while pending:
+        if check is not None:
+            check()
         path, classify_directory = pending.popleft()
         check_mount(path)
         # POSIX local children share the request's resolved project boundary.
@@ -381,41 +453,81 @@ def flat_tree(
             else:
                 parents = None
         origin = space.origin(relative)
-        listing, existing = _listing(space, directory, relative, origin)
-        for item in listing:
-            if isinstance(item, Mount):
-                check_mount(item.mount_path)
-                node = _mount_node(space, item, 1, item.name in existing, count_children=False)
-            else:
-                node = _child_node(
-                    space, item, _join(relative, item.name), 1, origin, count_children=False
-                )
-            entry_path = node.asset.path
-            nodes[entry_path] = node
-            descend = node.asset.kind is AssetKind.DIR and node.available
-            if parents is not None and (
-                isinstance(item, Mount)
-                or "\\" in item.name
-                or (not _is_plain_directory(item) if descend else not _ordinary_file(item))
-            ):
-                parents = None
-            defer_repository = (
-                reuse_directory_resolution
-                and descend
-                and not isinstance(item, Mount)
-                and "\\" not in entry_path
-                and _is_plain_directory(item)
+        if shallow:
+            directory_asset = FileAssetRef(
+                space.project.id, relative, directory.name, AssetKind.DIR, origin
             )
-            if lookup is not None:
-                repositories[entry_path] = (
-                    None
-                    if defer_repository
-                    else lookup.for_entry(entry_path, directory, item, origin)
+        # Legacy inspection maps targets back to the resource root and filters
+        # hidden ancestors. Retain it for ambiguous spellings and link targets.
+        observe_directory = (
+            observe_local
+            and path == relative
+            and (
+                not resource_root
+                or relative == resource_root
+                or relative.startswith(f"{resource_root}{SEPARATOR}")
+            )
+            and "\\" not in relative
+            and (not relative or all(visible(part) for part in relative.split(SEPARATOR)))
+        )
+        batch: list[AssetTree] | None = [] if on_directory is not None else None
+        with _flat_listing(space, directory, relative, origin, observe_directory) as scan:
+            listing, existing, pinned = scan
+            if shallow and not pinned:
+                parents = None
+            for item in listing:
+                if check is not None:
+                    check()
+                if isinstance(item, Mount):
+                    check_mount(item.mount_path)
+                    node = _mount_node(space, item, 1, item.name in existing, count_children=False)
+                else:
+                    node = _child_node(
+                        space,
+                        item,
+                        _join(relative, item.name),
+                        1,
+                        origin,
+                        count_children=False,
+                        observations=observations if pinned and observe_entries else None,
+                    )
+                entry_path = node.asset.path
+                nodes[entry_path] = node
+                if batch is not None:
+                    batch.append(node)
+                descend = node.asset.kind is AssetKind.DIR and node.available
+                if parents is not None and (
+                    isinstance(item, Mount)
+                    or "\\" in item.name
+                    or (not _is_plain_directory(item) if descend else not _ordinary_file(item))
+                ):
+                    parents = None
+                defer_repository = (
+                    not shallow
+                    and reuse_directory_resolution
+                    and descend
+                    and not isinstance(item, Mount)
+                    and "\\" not in entry_path
+                    and _is_plain_directory(item)
                 )
-            if descend:
-                pending.append((entry_path, defer_repository))
+                if lookup is not None:
+                    repositories[entry_path] = (
+                        None
+                        if defer_repository
+                        else lookup.for_entry(entry_path, directory, item, origin)
+                    )
+                if descend and not shallow:
+                    pending.append((entry_path, defer_repository))
+        if on_directory is not None and batch:
+            on_directory(tuple(batch), repositories)
+    if shallow and directory_asset is None:
+        raise ContentError(ROOT_UNAVAILABLE_ERROR)
     return FlatResourceTree(
-        tuple(nodes.values()), repositories, tuple(parents) if parents is not None else None
+        tuple(nodes.values()),
+        repositories,
+        tuple(parents) if parents is not None else None,
+        observations,
+        directory_asset,
     )
 
 

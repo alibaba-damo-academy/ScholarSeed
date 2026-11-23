@@ -49,6 +49,21 @@ test('launch record contains only bounded storage selection, never arbitrary env
   ])
     assert.throws(() => decodeUpdateLaunch(Buffer.from(JSON.stringify(value))))
 })
+
+test('retained handoff must use the exact encoding and match the launch candidate and build', () => {
+  const encode = (candidate: string, buildNumber: string) =>
+    Buffer.from(
+      JSON.stringify({ candidate, buildNumber, version: '0.3.2', at: 100, state: 'installing' })
+    ).toString('base64')
+  const admittedHandoff = encode(VALID.candidate, VALID.targetBuild)
+  const decode = (bytes: string) =>
+    decodeUpdateLaunch(Buffer.from(JSON.stringify({ ...VALID, admittedHandoff: bytes })))
+  assert.equal(decode(admittedHandoff).admittedHandoff, admittedHandoff)
+  assert.throws(() => decode(admittedHandoff + '!'), /encoding/)
+  assert.throws(() => decode(encode('other-candidate', VALID.targetBuild)), /differs/)
+  assert.throws(() => decode(encode(VALID.candidate, VALID.sourceBuild)), /differs/)
+})
+
 test('explicit profile is recognized in both Electron command line forms', () => {
   const profile = '/Users/test/中文 profile'
   assert.equal(explicitUpdateProfile(['ScholarSeed', `--user-data-dir=${profile}`]), profile)

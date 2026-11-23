@@ -49,6 +49,21 @@ try {
     Assert (-not (Test-CiOrphanPath $orphan 'C:\')) 'Volume root must be rejected'
     Assert (-not (Test-CiOrphanPath $orphan 'relative')) 'Relative root must be rejected'
     Assert (-not (Test-CiOrphanPath '\\server\share\app' $allowed)) 'UNC root must be rejected'
+    $velopack = Join-Path $allowed 'v-Ab0123\app'
+    $command = '"' + (Join-Path $velopack 'Update.exe') + '" --uninstall'
+    $key = $base.CreateSubKey($uninstallKey)
+    try {
+        $key.SetValue('InstallLocation', $velopack)
+        $key.SetValue('UninstallString', $command)
+        $key.SetValue('DisplayVersion', '0.3.2')
+    } finally { $key.Dispose() }
+    Assert (-not (Repair-CiVelopackRegistration $base $uninstallKey '' '0.3.2')) 'No receipt must remain read-only'
+    Assert (-not (Repair-CiVelopackRegistration $base $uninstallKey $velopack '0.4.0')) 'Different version must survive'
+    New-Item -ItemType Directory -Path $velopack -Force | Out-Null
+    Assert (-not (Repair-CiVelopackRegistration $base $uninstallKey $velopack '0.3.2')) 'Existing install must survive'
+    Remove-Item -LiteralPath $velopack
+    Assert (Repair-CiVelopackRegistration $base $uninstallKey $velopack '0.3.2') 'Matching orphan must be reclaimed'
+    Assert (-not (Repair-CiVelopackRegistration $base $uninstallKey $velopack '0.3.2')) 'Already absent must be idempotent'
     $target=Join-Path $TaskRoot 'junction-target'
     New-Item -ItemType Directory -Path $target | Out-Null
     $link=Join-Path $allowed 'linked-job'

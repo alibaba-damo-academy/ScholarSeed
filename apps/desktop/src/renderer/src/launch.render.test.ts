@@ -8,6 +8,7 @@ import { chromium, expect, type Page, type Request } from '@playwright/test'
 import { createServer } from 'vite'
 import { renderFixture } from '../../test-helpers/render.ts'
 import { PRODUCT_EVENT_SCHEMA_VERSION } from './api.ts'
+import type { ConvItem } from './model'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const SCREENSHOTS = path.resolve(ROOT, '../../../test-results')
@@ -2884,6 +2885,119 @@ async function restoreSession(page: Page): Promise<void> {
     .poll(() => page.evaluate(() => Reflect.get(window, 'launchProbe').state.aiPanel.contextState))
     .toBe('ready')
 }
+
+async function restoreFinalizingSession(
+  page: Page,
+  turnId: string,
+  serviceInstanceId: string | null,
+  conversation: ConvItem[] = []
+): Promise<void> {
+  await restoreSession(page)
+  await page.evaluate(
+    ({ session, turnId, serviceInstanceId, conversation }) => {
+      const probe = Reflect.get(window, 'launchProbe')
+      probe.patch({
+        serviceInstanceId,
+        threads: {
+          [session]: {
+            ...probe.state.threads[session],
+            activeTurnId: turnId,
+            conversation,
+            queuedMessages: [],
+            running: false,
+            status: 'done',
+            recoveryPending: true,
+            resourceFinalizing: true,
+            turnOutcomes: { [turnId]: 'completed' },
+          },
+        },
+      })
+    },
+    { session: SESSION, turnId, serviceInstanceId, conversation }
+  )
+}
+
+test('recommended follow-up queues during resource finalization', async (context) => {
+  const turnId = 'completed-turn'
+  const option = { label: 'Check citations', description: 'Verify the cited sources.' }
+  await fixture(
+    context,
+    async (page) => {
+      await restoreFinalizingSession(page, turnId, INSTANCE, [
+        {
+          kind: 'display_card',
+          turnId,
+          card: {
+            type: 'next-steps',
+            cardId: 'completed-turn-recommendation',
+            content: {
+              title: 'What would you like to do next?',
+              options: [option],
+              free_text_label: 'Other requests',
+              submit_label: 'Send',
+            },
+          },
+        },
+      ])
+      let preparations = 0
+      await page.route('**/api/serve/runtime/prepare**', (route) => {
+        preparations++
+        return route.fulfill({ status: 500 })
+      })
+      const turnsUrl = `**/api/serve/sessions/${SESSION}/turns`
+      await page.route(turnsUrl, (route) =>
+        route.fulfill({
+          status: 202,
+          json: {
+            ok: true,
+            accepted: true,
+            disposition: 'queued',
+            queued_message_id: route.request().postDataJSON().client_user_message_id,
+          },
+        })
+      )
+      const card = page.getByTestId('next-steps-card')
+      const choice = card.getByRole('button', { name: option.label, exact: true })
+      await expect(choice).toBeEnabled()
+      const [request] = await Promise.all([page.waitForRequest(turnsUrl), choice.click()])
+      assert.equal(request.method(), 'POST')
+      const body = request.postDataJSON()
+      assert.deepEqual(body.input, [
+        { type: 'text', text: `${option.label}\n${option.description}` },
+      ])
+      assert.equal(body.follow_up_mode, 'queue')
+      assert.equal(body.service_instance_id, INSTANCE)
+      assert.equal(body.expected_turn_id, turnId)
+      assert.equal(body.expected_model_id, 'model-b')
+      assert.ok(body.client_user_message_id)
+      await expect(card).toHaveCount(0)
+      assert.equal(preparations, 0)
+    },
+    async (page) => {
+      await page.addInitScript(() => Reflect.set(window, 'streamFixture', true))
+    }
+  )
+})
+
+test('missing service instance preserves the draft during resource finalization', async (context) => {
+  await fixture(context, async (page) => {
+    await restoreFinalizingSession(page, 'completed-turn', null)
+    let submissions = 0
+    await page.route('**/api/serve/sessions/*/turns', (route) => {
+      submissions++
+      return route.fulfill({ status: 500 })
+    })
+    const draft = 'Keep this follow-up draft'
+    const input = page.getByTestId('composer-input')
+    await input.fill(draft)
+    await page.getByTestId('composer-send').click()
+    await expect
+      .poll(() => page.evaluate(() => Reflect.get(window, 'launchProbe').state.foregroundError))
+      .toEqual({ ns: 'components', key: 'composer.runtimeNotReady' })
+    await expect(input).toHaveValue(draft)
+    assert.equal(submissions, 0)
+  })
+})
 
 async function settleStartup(page: Page): Promise<void> {
   await page.evaluate(

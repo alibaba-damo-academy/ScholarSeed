@@ -121,6 +121,7 @@ from service.chat.service.recovery import (
     recovery_key,
 )
 from service.chat.service.titles import SessionTitles
+from service.chat.service.utils import is_resource_finalizing
 from service.content.domain.model import ContentReadPermissionError
 from service.identity.service.skill_credentials import CredentialAdmissionError
 from service.paths import session_attachment_root
@@ -288,6 +289,10 @@ class TurnService:
         self._sessions = sessions
         self._activities = activities
         self._queue_waiters: dict[str, asyncio.Task[None]] = {}
+        self._resource_resume_callbacks: dict[
+            tuple[asyncio.Task[Any], str], Callable[[asyncio.Task[Any]], None]
+        ] = {}
+        self._resource_resume_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
         self._logger = logger
         self._prepare = prepare
@@ -317,15 +322,19 @@ class TurnService:
 
     async def aclose(self) -> None:
         self._closed = True
+        for (active, _turn_id), callback in self._resource_resume_callbacks.items():
+            active.remove_done_callback(callback)
+        self._resource_resume_callbacks.clear()
         if self._titles is not None:
             await self._titles.aclose()
         if self.recovery is not None:
             await self.recovery.aclose()
-        waiters = tuple(self._queue_waiters.values())
+        waiters = (*self._queue_waiters.values(), *self._resource_resume_tasks)
         for task in waiters:
             task.cancel()
         await asyncio.gather(*waiters, return_exceptions=True)
         self._queue_waiters.clear()
+        self._resource_resume_tasks.clear()
 
     async def _enqueue_recovery(
         self, live: LiveSession, checkpoint: RecoveryCheckpoint, generation: str
@@ -666,7 +675,9 @@ class TurnService:
                 )
                 if admission_error:
                     return {"ok": False, "error": admission_error}, HTTP_CONFLICT
-                if not live.running:
+                pending = live.catalog.pending_turn_settlement(live.id)
+                resource_finalizing = is_resource_finalizing(live, record, pending)
+                if not live.running and not resource_finalizing:
                     blockers = await live.previous_turn_blockers()
                     if blockers:
                         live.trace_resource("turn_admission_blocked", blockers=list(blockers))
@@ -675,6 +686,7 @@ class TurnService:
                 submission_mode = (
                     SubmissionMode.QUEUED
                     if live.running
+                    or resource_finalizing
                     or (live.catalog.queued_messages(live.id) and not unknown_turn_id)
                     else SubmissionMode.DIRECT
                 )
@@ -699,6 +711,14 @@ class TurnService:
                         await self._confirm_queued_unknown_locked(live, unknown_turn_id)
                         await live.ledger.confirm_unknown_turn(unknown_turn_id)
                     queued_message_id = str(payload["queued_message_id"])
+                    if resource_finalizing and pending is not None:
+                        self._logger.info(
+                            "turn_queued_during_resource_finalization session_id=%s "
+                            "submission_id=%s previous_turn_id=%s",
+                            live.id,
+                            queued_message_id,
+                            pending.client_turn_id,
+                        )
                     queued = live.catalog.queued_message(live.id, queued_message_id)
                     if (
                         follow_up_mode is FollowUpMode.STEER
@@ -762,7 +782,11 @@ class TurnService:
             return None
         if pending.event.kind is RuntimeEventKind.TURN_UNKNOWN:
             return TURN_OUTCOME_UNCONFIRMED
-        if allow_queue and live.running and not pending.recovery_blocked:
+        if (
+            allow_queue
+            and not pending.recovery_blocked
+            and (live.running or is_resource_finalizing(live, live.catalog.get(live.id), pending))
+        ):
             return None
         if live.pending_hil_snapshot():
             return PREVIOUS_TURN_PENDING_HIL
@@ -2412,6 +2436,7 @@ class TurnService:
         turn_input: TurnInput,
     ) -> TurnResult:
         should_drain = False
+        resource_finalization_failed = False
         runtime_result: RuntimeTurnResult | None = None
         interrupt_generation = live.interrupt_generation
 
@@ -2599,13 +2624,19 @@ class TurnService:
                 turn_input.client_user_message_id,
                 self._context_outcome(outcome),
             )
-            await self._finish_delivery(
+            delivery_committed = await self._finish_delivery(
                 live,
                 turn_input,
                 status,
                 runtime_outcome=outcome,
                 event_turn_id=result.turn_id,
             )
+            if not delivery_committed and settled is not None:
+                resource_finalization_failed = True
+                await live.set_turn_settlement_blocked(
+                    settled.event, blocked=True, reason=RESOURCE_DELIVERY_FAILED
+                )
+                return result
             await self._settle_queued_outcome(
                 live, turn_input.client_user_message_id, outcome, result.error
             )
@@ -2729,7 +2760,11 @@ class TurnService:
             live.active_skill_presentation = None
             live.clear_task_lease()
             live.current_task = None
-            if live.catalog.pending_turn_settlement(live.id) is not None and not live.terminated:
+            if (
+                not resource_finalization_failed
+                and live.catalog.pending_turn_settlement(live.id) is not None
+                and not live.terminated
+            ):
                 self.resume_pending_settlement(live)
             await live.release_product_turn(turn_input.client_user_message_id)
             if should_drain:
@@ -2890,23 +2925,103 @@ class TurnService:
         pending = live.catalog.pending_turn_settlement(live.id)
         if pending is None:
             return
-        live.active_product_turn_id = pending.client_turn_id
+        self._start_pending_settlement(live, pending.client_turn_id)
+
+    def _start_pending_settlement(
+        self,
+        live: LiveSession,
+        client_turn_id: str,
+        *,
+        pending: PendingTurnSettlement | None = None,
+    ) -> None:
         task = self._activities.spawn(
-            ActivityDomain.SETTLEMENT, lambda: self._recover_pending_settlement(live)
+            ActivityDomain.SETTLEMENT, lambda: self._recover_pending_settlement(live, pending)
         )
+        live.active_product_turn_id = client_turn_id
         live.current_task = task
 
-    async def _recover_pending_settlement(self, live: LiveSession) -> None:
+    async def resume_resource_finalization(self, session_id: str, client_turn_id: str) -> None:
+        """Resume the matching product turn once its resource retry committed."""
+
+        live = self._sessions.get(session_id)
+        if self._closed or live is None or live.closing:
+            return
+        async with live.lifecycle_lock:
+            active = live.current_task
+            if active is not None and (active, client_turn_id) in self._resource_resume_callbacks:
+                return
+            # The settlement commit also holds this lock when clearing the pending turn.
+            pending = await self._activities.to_thread(
+                ActivityDomain.SETTLEMENT, live.catalog.pending_turn_settlement, session_id
+            )
+            if (
+                pending is None
+                or pending.client_turn_id != client_turn_id
+                or self._closed
+                or live.closing
+                or self._sessions.get(session_id) is not live
+            ):
+                return
+            active = live.current_task
+            if active is not None and not active.done():
+                self._defer_resource_finalization_resume(live, client_turn_id, active)
+                return
+            self._start_pending_settlement(live, client_turn_id, pending=pending)
+
+    def _defer_resource_finalization_resume(
+        self, live: LiveSession, client_turn_id: str, active: asyncio.Task[Any]
+    ) -> None:
+        key = (active, client_turn_id)
+
+        def report_failure(error: Exception) -> None:
+            self._logger.warning(
+                "resource_finalization_deferred_resume_failed session_id=%s turn_id=%s failure_type=%s",
+                live.id,
+                client_turn_id,
+                type(error).__name__,
+                exc_info=error,
+            )
+
+        async def resume() -> None:
+            if self._sessions.get(live.id) is not live:
+                return
+            try:
+                await self.resume_resource_finalization(live.id, client_turn_id)
+            except Exception as exc:  # noqa: BLE001 - the resource archive is already durable
+                report_failure(exc)
+
+        def active_finished(_done: asyncio.Task[Any]) -> None:
+            self._resource_resume_callbacks.pop(key, None)
+            if self._closed or live.closing:
+                return
+            try:
+                task = self._activities.spawn(ActivityDomain.SETTLEMENT, resume)
+            except Exception as exc:  # noqa: BLE001 - the resource archive is already durable
+                report_failure(exc)
+                return
+            self._resource_resume_tasks.add(task)
+            task.add_done_callback(self._resource_resume_tasks.discard)
+
+        if key not in self._resource_resume_callbacks:
+            self._resource_resume_callbacks[key] = active_finished
+            active.add_done_callback(active_finished)
+
+    async def _recover_pending_settlement(
+        self, live: LiveSession, pending: PendingTurnSettlement | None
+    ) -> None:
         with self._activities.enter(ActivityDomain.SETTLEMENT) as activity:
             live.turn_activity = activity
             try:
-                await self._recover_settlement(live)
+                await self._recover_settlement(live, pending)
             finally:
                 if live.turn_activity is activity:
                     live.turn_activity = None
 
-    async def _recover_settlement(self, live: LiveSession) -> None:
-        pending = live.catalog.pending_turn_settlement(live.id)
+    async def _recover_settlement(
+        self, live: LiveSession, pending: PendingTurnSettlement | None = None
+    ) -> None:
+        if pending is None:
+            pending = live.catalog.pending_turn_settlement(live.id)
         if pending is None:
             return
         should_drain = False
@@ -2928,7 +3043,7 @@ class TurnService:
                         pending.client_turn_id,
                         self._context_outcome(outcome),
                     )
-                    await self._finish_delivery(
+                    delivery_committed = await self._finish_delivery(
                         live,
                         TurnInput((), pending.client_turn_id),
                         TurnStatus(
@@ -2937,6 +3052,11 @@ class TurnService:
                         runtime_outcome=outcome,
                         event_turn_id=pending.native_turn_id,
                     )
+                    if not delivery_committed:
+                        await live.set_turn_settlement_blocked(
+                            pending.event, blocked=True, reason=RESOURCE_DELIVERY_FAILED
+                        )
+                        return
                     await self._settle_queued_outcome(
                         live,
                         pending.client_turn_id,
@@ -3035,9 +3155,9 @@ class TurnService:
         *,
         runtime_outcome: RuntimeTurnOutcome | None = None,
         event_turn_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         if self._deliveries is None or live.project_path is None:
-            return
+            return True
         outcomes = {
             TurnStatus.COMPLETED: TurnOutcome.COMPLETED,
             TurnStatus.FAILED: TurnOutcome.FAILED,
@@ -3053,19 +3173,6 @@ class TurnService:
                     else outcomes.get(status, TurnOutcome.UNKNOWN)
                 ),
             )
-            if capture.batch_id and capture.project_id:
-                await live.publish(
-                    PRODUCT_EVENT_REVIEW_READY,
-                    {
-                        "batch_id": capture.batch_id,
-                        "project_id": capture.project_id,
-                        "paths": list(capture.paths),
-                        "file_ids": list(capture.file_ids),
-                        "review_ids": list(capture.review_ids),
-                    },
-                    turn_id=event_turn_id or turn_input.client_user_message_id,
-                    idempotency_key=f"review:{capture.batch_id}:ready",
-                )
         except Exception as exc:  # noqa: BLE001 - runtime terminal already occurred
             self._logger.error(
                 RESOURCE_DELIVERY_FAILED,
@@ -3076,6 +3183,34 @@ class TurnService:
                 },
                 exc_info=True,
             )
+            return False
+        if not capture.batch_id or not capture.project_id:
+            return True
+        try:
+            await live.publish(
+                PRODUCT_EVENT_REVIEW_READY,
+                {
+                    "batch_id": capture.batch_id,
+                    "project_id": capture.project_id,
+                    "paths": list(capture.paths),
+                    "file_ids": list(capture.file_ids),
+                    "review_ids": list(capture.review_ids),
+                },
+                turn_id=event_turn_id or turn_input.client_user_message_id,
+                idempotency_key=f"review:{capture.batch_id}:ready",
+            )
+        except Exception as exc:  # noqa: BLE001 - the resource archive is already durable
+            self._logger.error(
+                "resource_review_publication_failed",
+                extra={
+                    "session_id": live.id,
+                    "turn_id": turn_input.client_user_message_id,
+                    "batch_id": capture.batch_id,
+                    "failure_type": type(exc).__name__,
+                },
+                exc_info=True,
+            )
+        return True
 
     async def _drain_next(self, live: LiveSession) -> None:
         if self._closed or live.closing:

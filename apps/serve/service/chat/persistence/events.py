@@ -20,6 +20,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_ARTIFACT_CHANGED,
     PRODUCT_EVENT_ARTIFACT_DECLARED,
     PRODUCT_EVENT_ARTIFACT_PUBLISHED,
+    PRODUCT_EVENT_DISPLAY_CARD,
     PRODUCT_EVENT_FILE_CHANGED,
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_MESSAGE_QUEUED,
@@ -1833,11 +1834,13 @@ class ProductEventStore:
             Callable[[Mapping[str, Any], sqlite3.Connection], str | None] | None
         ) = None,
         snapshots_only: bool = False,
-    ) -> None:
+        display_card_types: frozenset[str] = frozenset(),
+    ) -> int:
+        inherited_cards = 0
         source = SessionCatalogStore(self._database).get(source_session_id)
         if source is None:
             if snapshots_only:
-                return
+                return inherited_cards
             raise SessionStateConflictError(SESSION_FORK_SOURCE_CHANGED)
         request = self.by_key(target.session_id, SESSION_FORK_KEY)
         source_workdir = Path(
@@ -1852,7 +1855,15 @@ class ProductEventStore:
                     record = self._record(row)
                     if record.product_seq > through_seq:
                         break
-                    if record.kind not in FORK_HISTORY_KINDS:
+                    if record.kind == PRODUCT_EVENT_DISPLAY_CARD:
+                        card_type = record.payload.get("type")
+                        if (
+                            snapshots_only
+                            or not isinstance(card_type, str)
+                            or card_type not in display_card_types
+                        ):
+                            continue
+                    elif record.kind not in FORK_HISTORY_KINDS:
                         continue
                     if record.kind == PRODUCT_EVENT_USER_MESSAGE:
                         if record.payload.get("binding") == USER_MESSAGE_BINDING_CANCELLED:
@@ -1902,6 +1913,14 @@ class ProductEventStore:
                         }
                     elif record.kind == PRODUCT_EVENT_TURN_COMPLETED:
                         payload = {"status": record.payload.get("status")}
+                    elif record.kind == PRODUCT_EVENT_DISPLAY_CARD:
+                        # Keep the saved result and its references without the source component binding.
+                        payload = {
+                            "card_id": record.payload["card_id"],
+                            "type": record.payload["type"],
+                            "content": record.payload["content"],
+                        }
+                        inherited_cards += 1
                     else:
                         payload = dict(record.payload)
                         if copied_workdir is not None and isinstance(payload.get("path"), str):
@@ -1924,7 +1943,7 @@ class ProductEventStore:
                     )
 
             if snapshots_only:
-                return
+                return inherited_cards
             self.append(
                 session_id=target.session_id,
                 runtime_id=target.runtime_id,
@@ -1942,6 +1961,7 @@ class ProductEventStore:
                 idempotency_key=SESSION_FORK_IMPORTED_KEY,
                 connection=current,
             )
+        return inherited_cards
 
     def fork_failed_turns(
         self, session_id: str, through_seq: int, *, connection: sqlite3.Connection | None = None

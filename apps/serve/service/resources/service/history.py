@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import ExitStack, contextmanager
+from contextvars import copy_context
 from difflib import unified_diff
 from hashlib import sha256
+from itertools import batched
 from pathlib import PurePosixPath
-from typing import Iterator
+from typing import BinaryIO, Generator, Iterator
 from unicodedata import category
 
 from service.content.domain.model import ContentError
@@ -80,6 +84,7 @@ REVIEW_SEAL_EVENTS = {
 VERSION_ALIAS_MAX_LENGTH = 80
 VERSION_ALIAS_ACTOR = "user"
 VERSION_HISTORY_ORDERS = frozenset({"newest", "oldest"})
+AGENT_CAPTURE_WORKERS = 4
 
 
 class ResourceVersionService:
@@ -1017,15 +1022,94 @@ class ResourceVersionService:
             None,
         )
 
-    def capture_agent(
+    def _capture_agent_file(
         self,
         project_id: str,
         path: str,
-    ) -> tuple[StableContentCapture, str, ObjectDescriptor]:
-        """Capture one exact Agent-produced generation into the streaming CAS path."""
+        baseline: TurnBaseline | None,
+        capture: Callable[[str, int, BinaryIO], StableContentCapture],
+        cas: CasStore,
+        spool: BinaryIO,
+    ) -> tuple[StableContentCapture, bool, ObjectDescriptor | None] | ContentError:
+        try:
+            stable = capture(path, VERSION_MAX_BYTES, spool)
+            if (
+                baseline is not None
+                and stable.revision == baseline.revision
+                and stable.mode_bits == baseline.mode_bits
+            ):
+                return stable, False, None
+            self._require_book_versions(project_id, path)
+            return stable, True, cas.verify_if_present(stable.revision)
+        except ContentError as error:
+            return error
 
-        self._require_book_versions(project_id, path)
-        return self._capture_object(project_id, path, self._cas(project_id))
+    def capture_agent_files(
+        self,
+        project_id: str,
+        paths: tuple[str, ...],
+        baselines: Mapping[str, TurnBaseline],
+    ) -> Generator[
+        tuple[str, tuple[StableContentCapture, ObjectDescriptor | None] | ContentError], None, None
+    ]:
+        """Compare final files concurrently; the caller's writer still owns CAS publication."""
+
+        if not paths:
+            return
+        cas = self._cas(project_id)
+        with ExitStack() as captures:
+            lanes = []
+            for _ in range(min(len(paths), AGENT_CAPTURE_WORKERS)):
+                executor = captures.enter_context(ThreadPoolExecutor(max_workers=1))
+                spool = captures.enter_context(cas.spool())
+                worker_context = copy_context()
+                worker_scope = ExitStack()
+                # SQLite readers and their activity scopes stay on the owning thread.
+                captures.callback(
+                    lambda executor=executor, context=worker_context, scope=worker_scope: executor.submit(
+                        context.run, scope.close
+                    ).result()
+                )
+                capture = executor.submit(
+                    worker_context.run,
+                    worker_scope.enter_context,
+                    self._content.capture_stable_batch(project_id),
+                ).result()
+                lanes.append((executor, worker_context, capture, spool))
+
+            for batch in batched(paths, len(lanes)):
+                batch_lanes = lanes[: len(batch)]
+                futures = []
+                try:
+                    for path, (executor, worker_context, capture, spool) in zip(
+                        batch, batch_lanes, strict=True
+                    ):
+                        futures.append(
+                            executor.submit(
+                                worker_context.run,
+                                self._capture_agent_file,
+                                project_id,
+                                path,
+                                baselines.get(path),
+                                capture,
+                                cas,
+                                spool,
+                            )
+                        )
+                    for path, (_, _, _, spool), future in zip(
+                        batch, batch_lanes, futures, strict=True
+                    ):
+                        result = future.result()
+                        if isinstance(result, ContentError):
+                            yield path, result
+                            continue
+                        stable, changed, descriptor = result
+                        if changed and descriptor is None:
+                            descriptor = self._publish_capture(cas, spool, stable)
+                        yield path, (stable, descriptor)
+                finally:
+                    # A failed capture must not close spools that other workers still use.
+                    wait(futures)
 
     def verify_object(self, project_id: str, object_id: str) -> ObjectDescriptor:
         """Resolve and verify one immutable object independently of its layout."""
@@ -1230,23 +1314,37 @@ class ResourceVersionService:
         eligible = {
             path for path in eligible_paths if repositories[path] is None and self.reviewable(path)
         }
-        with cas.writer():
+        with (
+            cas.writer(),
+            cas.spool() as spool,
+            self._content.capture_stable_batch(project_id) as capture_stable,
+        ):
             store = self._store(project_id)
             captured: list[tuple[TurnBaseline, ObjectDescriptor, ObjectDescriptor | None]] = []
+            managed_files = tuple(
+                managed
+                for managed in store.managed_files(include_deleted=True)
+                if managed.path in eligible
+            )
+            pending_by_file = store.pendings(tuple(managed.file_id for managed in managed_files))
             # A deleted identity may already exist on disk again. Eligibility and
             # stable capture below prove presence; historical head state cannot.
-            for managed in store.managed_files(include_deleted=True):
-                if managed.path not in eligible:
-                    continue
+            for managed in managed_files:
                 try:
-                    stable, object_id, descriptor = self._capture_object(
-                        project_id, managed.path, cas
+                    stable = capture_stable(managed.path, VERSION_MAX_BYTES, spool)
+                    descriptor = (
+                        cas.verify_if_present(stable.revision)
+                        if stable.revision == managed.object_id
+                        else None
                     )
+                    if descriptor is None:
+                        descriptor = self._publish_capture(cas, spool, stable)
+                    object_id = descriptor.object_id
                 except ContentError as exc:
                     if exc.code in ("file_not_found", "file_too_large"):
                         continue
                     raise
-                current_pending = store.pending(managed.file_id)
+                current_pending = pending_by_file.get(managed.file_id)
                 drifted = managed.object_id != object_id or managed.mode_bits != stable.mode_bits
                 if drifted and not (current_pending is not None and current_pending.needs_review):
                     store.accept_working(
@@ -1788,13 +1886,20 @@ class ResourceVersionService:
     ) -> tuple[StableContentCapture, str, ObjectDescriptor]:
         with cas.spool() as spool:
             stable = self._content.capture_stable(project_id, path, VERSION_MAX_BYTES, spool)
-            object_id = cas.put_stream(
-                spool,
-                raw_size_bytes=stable.size,
-                expected_object_id=stable.revision,
-                media_hint=stable.media_type,
-            )
-        return stable, object_id, cas.verify(object_id)
+            descriptor = self._publish_capture(cas, spool, stable)
+        return stable, descriptor.object_id, descriptor
+
+    @staticmethod
+    def _publish_capture(
+        cas: CasStore, spool: BinaryIO, stable: StableContentCapture
+    ) -> ObjectDescriptor:
+        object_id = cas.put_stream(
+            spool,
+            raw_size_bytes=stable.size,
+            expected_object_id=stable.revision,
+            media_hint=stable.media_type,
+        )
+        return cas.verify(object_id)
 
     def _capture_metadata(self, project_id: str, path: str) -> StableContentCapture:
         cas = self._cas(project_id)

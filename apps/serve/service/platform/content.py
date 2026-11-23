@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import AsyncIterator, BinaryIO, Callable, Protocol, runtime_checkable
@@ -520,13 +521,21 @@ class AssetTree:
     updated_at: float | None = None
 
 
+ResourceTreeObserver = Callable[
+    [tuple[AssetTree, ...], dict[str, str | None], tuple[ExternalRootRef, ...]], None
+]
+
+
 @dataclass(frozen=True)
 class FlatResourceTree:
-    """Complete resource nodes and optional Git ownership from the same read."""
+    """Complete resource nodes and optional observations from the same read."""
 
     nodes: tuple[AssetTree, ...]
     repositories: dict[str, str | None]
     incremental_parents: tuple[str, ...] | None = None
+    # A missing key requires inspection. None identifies a known non-file.
+    observed_entries: dict[str, ResourceEntry | None] = field(default_factory=dict)
+    directory: FileAssetRef | None = None
 
 
 @dataclass(frozen=True)
@@ -754,6 +763,12 @@ class ContentPort(Protocol):
         """Copy one stable generation into a caller-owned seekable stream."""
         ...
 
+    def capture_stable_batch(
+        self, project_id: str
+    ) -> AbstractContextManager[Callable[[str, int, BinaryIO], StableContentCapture]]:
+        """Reuse a reader while resolving current authorization on each capture."""
+        ...
+
     def publish_working_bytes(self, scope: ArtifactScope, path: str, content: bytes) -> bool:
         """Create an exact working file; return True only for identical existing bytes.
 
@@ -886,6 +901,10 @@ class ContentPort(Protocol):
         *,
         include_repositories: bool = False,
         track_parents: bool = False,
+        observe_entries: bool = False,
+        shallow: bool = False,
+        on_directory: ResourceTreeObserver | None = None,
+        check: Callable[[], None] | None = None,
     ) -> FlatResourceTree:
         """List all visible descendants under the requested authorized resource directories."""
         ...
@@ -904,6 +923,12 @@ class ContentPort(Protocol):
         paths: tuple[str, ...] | None = None,
     ) -> tuple[ResourceEntry, ...]:
         """Scan every resource once and report each newly discovered logical file."""
+        ...
+
+    def scan_resource_inventory(
+        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+    ) -> tuple[tuple[ResourceEntry, ...], dict[str, str | None]]:
+        """Enumerate resources and qualify their repository ownership in one pass."""
         ...
 
     def resource_entries(
@@ -1162,5 +1187,6 @@ __all__ = [
     "ResourceScanObserver",
     "ResourceTreeChanges",
     "ResourceTreeGroup",
+    "ResourceTreeObserver",
     "RootKind",
 ]

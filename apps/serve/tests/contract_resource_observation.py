@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Callable
 from unittest.mock import patch
 
+import httpx
+from fastapi import FastAPI
+
 from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service import identity
@@ -19,6 +22,7 @@ from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.platform.activity import Activities, MaintenanceActive
 from service.platform.notifications import Change, ChangeHub, ChangeTopic
+from service.resources.api.routes import register_resource_routes
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
 from service.resources.service.history import ResourceVersionService
@@ -280,6 +284,59 @@ class ObservationContract(unittest.IsolatedAsyncioTestCase):
         (self.resources / "new.md").write_text("discovered\n", encoding="utf-8")
         await eventually(lambda: bool(self.versions.history(self.project.id, "resources/new.md")))
         self.assertEqual(self.versions.history(self.project.id, "resources/new.md")[0].sequence, 1)
+
+    async def test_root_listing_starts_discovery_and_reuses_active_observation(self) -> None:
+        folder = self.resources / "nested"
+        folder.mkdir()
+        (folder / "listed.md").write_text("discover on root hydration\n", encoding="utf-8")
+        project = self.project.id
+        path = "resources/nested/listed.md"
+        app = FastAPI()
+        app.state.content = self.content
+        app.state.activities = self.supervisor._activities
+        app.state.resource_version_supervisor = self.supervisor
+        register_resource_routes(app)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+
+            async def listing(directory: str, *, versions: bool = True) -> dict:
+                response = await client.get(
+                    "/api/resource/list",
+                    params={"project": project, "directory": directory, "versions": versions},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                return response.json()
+
+            with patch.object(
+                self.supervisor, "schedule_scan", wraps=self.supervisor.schedule_scan
+            ) as schedule:
+                await listing("", versions=False)
+                self.assertEqual(
+                    (await listing("resources/nested"))["directory"], "resources/nested"
+                )
+                self.assertNotIn(project, self.supervisor._streams)
+                self.assertFalse(self.versions.history(project, path))
+                schedule.assert_not_called()
+
+                self.assertEqual((await listing(""))["directory"], "resources")
+                stream = self.supervisor._streams[project]
+                await eventually(lambda: project not in self.supervisor._tasks)
+                self.assertEqual(self.versions.history(project, path)[0].sequence, 1)
+                schedule.assert_any_call(project)
+                schedule.reset_mock()
+
+                await listing("")
+                await listing("resources/nested")
+                self.assertIs(self.supervisor._streams[project], stream)
+                schedule.assert_not_called()
+
+                stream.cancel()
+                await asyncio.gather(stream, return_exceptions=True)
+                await listing("")
+                self.assertIsNot(self.supervisor._streams[project], stream)
+                schedule.assert_any_call(project)
 
     async def test_background_initial_versions_invalidate_listing_once(self) -> None:
         for name in ("first.md", "second.md"):

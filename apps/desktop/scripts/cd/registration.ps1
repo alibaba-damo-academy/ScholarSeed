@@ -1,4 +1,8 @@
-param([Parameter(Mandatory=$true)][ValidatePattern('^[a-zA-Z0-9_.-]+$')][string]$AppId)
+param(
+    [Parameter(Mandatory=$true)][ValidatePattern('^[a-zA-Z0-9_.-]+$')][string]$AppId,
+    [string]$CiInstall,
+    [string]$CiVersion
+)
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'registration.psm1') -Force
 # Historical NSIS identity, shared with cmd/setup/legacy.go; never discover by display name.
@@ -18,6 +22,10 @@ foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win3
             $repaired = Repair-CiLegacyRegistration $base ('Software\' + $legacyId) ($uninstall + $legacyId) $env:SCHOLARSEED_CI_REGISTRATION_ROOT $scope
             if ($repaired) {
                 [Console]::Error.WriteLine('[installer-preflight] ' + (ConvertTo-Json -Compress -InputObject @{status='reclaimed';hive=$hive.ToString();view=$view.ToString();kind='nsis'}))
+            }
+            if ($hive -eq [Microsoft.Win32.RegistryHive]::CurrentUser -and
+                (Repair-CiVelopackRegistration $base ($uninstall + $AppId) $CiInstall $CiVersion)) {
+                [Console]::Error.WriteLine('[installer-preflight] ' + (ConvertTo-Json -Compress -InputObject @{status='reclaimed';hive=$hive.ToString();view=$view.ToString();kind='velopack'}))
             }
             foreach ($entry in $entries) {
                 $key = $base.OpenSubKey($entry.key, $false)
