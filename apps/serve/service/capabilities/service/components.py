@@ -20,6 +20,21 @@ from service.capabilities.service.descriptor import (
     RETIRED_COMPONENT_SLOTS,
     validate_component_value,
 )
+from service.capabilities.service.storage import (
+    COMPONENT_REVISION_INVALID,
+    UI_PACKAGE_SCHEMA,
+    UI_REVISION_INVALID,
+    UI_STORAGE_BATCH_SIZE,
+    encode_payload,
+    ensure_ui_storage,
+    migrate_ui_storage,
+    payload_digest,
+    read_active_ui,
+    read_component_revision,
+    reclaim_ui_storage,
+    retain_ui_package,
+    store_component_payload,
+)
 from service.capabilities.service.ui import (
     UI_CATALOG_UNAVAILABLE,
     UI_COMPATIBILITY,
@@ -36,7 +51,6 @@ COMPONENT_PENDING = "pending"
 COMPONENT_RESOLVED = "resolved"
 COMPONENT_OBJECT_SCHEMA = {"type": "object"}
 COMPONENT_PLUGIN_UNAVAILABLE = "component_plugin_unavailable"
-UI_REVISION_INVALID = "ui_revision_invalid"
 COMPONENT_COPY_SCHEMA = {
     "type": "object",
     "required": ["text"],
@@ -53,6 +67,7 @@ COMPONENT_SCHEMA = {
     "component_unavailable": "CREATE TABLE IF NOT EXISTS component_unavailable (plugin TEXT PRIMARY KEY)",
     "component_copies": "CREATE TABLE IF NOT EXISTS component_copies (binding TEXT PRIMARY KEY REFERENCES component_bindings(binding), revision INTEGER NOT NULL, content TEXT NOT NULL)",
     "system_ui": "CREATE TABLE IF NOT EXISTS system_ui (compatibility TEXT PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL)",
+    "component_ui_packages": UI_PACKAGE_SCHEMA,
 }
 
 
@@ -138,7 +153,20 @@ class ComponentRegistry:
                 connection.execute(
                     "ALTER TABLE component_bindings ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0"
                 )
+            ensure_ui_storage(connection)
             yield connection
+
+    def maintain_storage(self, *, batch_size: int = UI_STORAGE_BATCH_SIZE) -> bool:
+        """Migrate one batch under the caller's exclusive storage admission."""
+        if batch_size < 1:
+            raise ValueError("component storage batch size must be positive")
+        if not self.path.exists():
+            return False
+        with self._database() as connection:
+            pending = migrate_ui_storage(connection, batch_size)
+        if not pending:
+            reclaim_ui_storage(self.path)
+        return pending
 
     def check(self, snapshots: list[dict[str, Any]]) -> dict[str, tuple[str, str, str]]:
         slots: dict[str, tuple[str, str, str]] = {}
@@ -183,13 +211,12 @@ class ComponentRegistry:
 
     def _ui(self, connection: Any, compatibility: str = UI_COMPATIBILITY) -> dict[str, Any] | None:
         row = connection.execute(
-            "SELECT body,digest FROM system_ui WHERE compatibility=?", (compatibility,)
+            "SELECT body,digest,ui_fingerprint FROM system_ui WHERE compatibility=?",
+            (compatibility,),
         ).fetchone()
         if row is None:
             return None
-        if sha256(row["body"].encode()).hexdigest() != row["digest"]:
-            raise ValueError(UI_REVISION_INVALID)
-        return json.loads(row["body"])
+        return read_active_ui(connection, row)
 
     def _available_ui(self, connection: Any) -> dict[str, Any] | None:
         try:
@@ -287,10 +314,12 @@ class ComponentRegistry:
                         snapshot["fingerprint"] = "sha256:" + revision.hexdigest()
                 snapshots.append(resolve_ui(snapshot, ui))
             slots = self.check(snapshots)
-            body = json.dumps(ui, sort_keys=True, ensure_ascii=False, allow_nan=False)
+            fingerprint = retain_ui_package(connection, ui)
             connection.execute(
-                "INSERT INTO system_ui(compatibility,body,digest) VALUES(?,?,?) ON CONFLICT(compatibility) DO UPDATE SET body=excluded.body,digest=excluded.digest",
-                (ui["compatibility"], body, sha256(body.encode()).hexdigest()),
+                "INSERT INTO system_ui(compatibility,body,digest,ui_fingerprint) VALUES(?,'',?,?) "
+                "ON CONFLICT(compatibility) DO UPDATE SET body=excluded.body,digest=excluded.digest,"
+                "ui_fingerprint=excluded.ui_fingerprint",
+                (ui["compatibility"], payload_digest(encode_payload(ui)), fingerprint),
             )
             for snapshot in snapshots:
                 self._retain(connection, snapshot)
@@ -355,16 +384,19 @@ class ComponentRegistry:
             )
 
     def _retain(self, connection: Any, snapshot: dict[str, Any]) -> None:
-        body = json.dumps(snapshot, sort_keys=True, ensure_ascii=False, allow_nan=False)
-        digest = sha256(body.encode()).hexdigest()
+        digest = payload_digest(encode_payload(snapshot))
         previous = connection.execute(
             "SELECT digest FROM component_revisions WHERE fingerprint=?", (snapshot["fingerprint"],)
         ).fetchone()
-        if previous is not None and previous["digest"] != digest:
-            raise ValueError("component_revision_changed")
+        if previous is not None:
+            if previous["digest"] != digest:
+                raise ValueError("component_revision_changed")
+            return
+        body, ui_fingerprint = store_component_payload(connection, snapshot)
         connection.execute(
-            "INSERT OR IGNORE INTO component_revisions(fingerprint,plugin,body,digest) VALUES(?,?,?,?)",
-            (snapshot["fingerprint"], snapshot["descriptor"]["id"], body, digest),
+            "INSERT INTO component_revisions(fingerprint,plugin,body,digest,ui_fingerprint) "
+            "VALUES(?,?,?,?,?)",
+            (snapshot["fingerprint"], snapshot["descriptor"]["id"], body, digest, ui_fingerprint),
         )
 
     def preflight(self, slots: list[str]) -> dict[str, Any]:
@@ -514,11 +546,12 @@ class ComponentRegistry:
 
     def _revision(self, connection: Any, fingerprint: str) -> dict[str, Any]:
         row = connection.execute(
-            "SELECT body,digest FROM component_revisions WHERE fingerprint=?", (fingerprint,)
+            "SELECT body,digest,ui_fingerprint FROM component_revisions WHERE fingerprint=?",
+            (fingerprint,),
         ).fetchone()
-        if row is None or sha256(row["body"].encode()).hexdigest() != row["digest"]:
-            raise ValueError("component_revision_invalid")
-        return json.loads(row["body"])
+        if row is None:
+            raise ValueError(COMPONENT_REVISION_INVALID)
+        return read_component_revision(connection, row)
 
     def snapshot(self, reference: Mapping[str, Any], *, user_id: str) -> dict[str, Any]:
         with self._read_database() as connection:

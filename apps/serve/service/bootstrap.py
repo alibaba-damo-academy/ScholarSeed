@@ -12,8 +12,14 @@ import os
 import sqlite3
 import sys
 import time
-from collections.abc import Awaitable, Callable, Iterable
-from contextlib import AbstractContextManager, ExitStack, asynccontextmanager, contextmanager
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextlib import (
+    AbstractContextManager,
+    ExitStack,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import partial
@@ -510,9 +516,11 @@ def _storage_native(
     raise LeaseError("ERR_LEASE_UNSUPPORTED")
 
 
-def maintain_session_storage_offline() -> bool | None:
-    """Run one bounded batch under the normal cross-process directory authority."""
-    with session_storage_phase("directory_qualification"):
+@contextmanager
+def _offline_service_storage(
+    phase: Callable[[str], AbstractContextManager[object]],
+) -> Iterator[None]:
+    with phase("directory_qualification"):
         coordination_path = coordination_root()
         coordinator = str(coordination_path)
         native: (
@@ -524,17 +532,28 @@ def maintain_session_storage_offline() -> bool | None:
         native.release(pin)
         domains = Domains(native, coordinator, (str(SERVICE_DIR.absolute()),), maintenance=True)
     try:
-        with session_storage_phase("directory_occupancy"):
+        with phase("directory_occupancy"):
             domains.occupy()
         with domains.mutation():
-            with session_storage_phase("offline_probe"):
-                required = inspect_session_storage(SESSION_CATALOG_DB)
-            if required is not True:
-                return required
-            return maintain_session_storage(SESSION_CATALOG_DB)
+            yield
     finally:
-        with session_storage_phase("directory_release"):
+        with phase("directory_release"):
             domains.close()
+
+
+def maintain_session_storage_offline() -> bool | None:
+    """Run one bounded batch under the normal cross-process directory authority."""
+    with _offline_service_storage(session_storage_phase):
+        with session_storage_phase("offline_probe"):
+            required = inspect_session_storage(SESSION_CATALOG_DB)
+        if required is not True:
+            return required
+        return maintain_session_storage(SESSION_CATALOG_DB)
+
+
+def maintain_component_storage_offline() -> bool:
+    with _offline_service_storage(nullcontext):
+        return ComponentRegistry(SERVICE_COMPONENTS_DATABASE).maintain_storage()
 
 
 def _product_enabled(product: str, domain: str) -> bool:

@@ -3,14 +3,18 @@ from __future__ import annotations
 import base64
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 import zipfile
+from contextlib import closing
+from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
 from service.capabilities.service.candidates import Candidates
-from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.components import COMPONENT_SCHEMA, ComponentRegistry
 from service.capabilities.service.descriptor import (
     HOST_COMPONENT_FINGERPRINT,
     HOST_COMPONENT_PLUGIN,
@@ -128,6 +132,26 @@ def custom_payload():
 
 
 class UIDependencyContract(unittest.TestCase):
+    def test_component_revisions_share_one_stored_ui_package(self):
+        ui = read_ui(ui_payload())
+        self.registry.install_ui(ui)
+        candidates = Candidates(host_version="0.3.2", capabilities=(), components=self.registry)
+        report = candidates.check(custom_payload())
+        first = candidates.get(report["candidate"], report["sha256"]).snapshot
+        second = deepcopy(first)
+        second["source_fingerprint"] = "second-plugin-revision"
+        self.registry.publish([first])
+        self.registry.publish([second])
+        with self.registry._database() as connection:
+            revisions = connection.execute("SELECT body FROM component_revisions").fetchall()
+            active = connection.execute("SELECT body FROM system_ui").fetchone()
+            self.assertEqual(len(revisions), 2)
+            self.assertTrue(all("ui" not in json.loads(row["body"]) for row in revisions))
+            self.assertEqual(active["body"], "")
+            packages = connection.execute("SELECT body FROM component_ui_packages").fetchall()
+        self.assertEqual([json.loads(row["body"]) for row in packages], [ui])
+        self.assertEqual(self.registry.active_ui(), ui)
+
     def test_display_only_major_preserves_the_previous_immutable_ui(self):
         old = read_ui(ui_payload(compatibility="1.0"))
         self.registry.install_ui(old)
@@ -135,10 +159,78 @@ class UIDependencyContract(unittest.TestCase):
         self.registry.install_ui(current, initialize=True)
         self.assertEqual(self.registry.active_ui()["fingerprint"], current["fingerprint"])
         with self.registry._database() as connection:
-            previous = connection.execute(
-                "SELECT body FROM system_ui WHERE compatibility=?", ("1.0",)
+            self.assertEqual(self.registry._ui(connection, "1.0"), old)
+
+    def test_offline_maintenance_keeps_legacy_snapshot_identity_and_interaction(self):
+        ui = read_ui(ui_payload())
+        ui_body = json.dumps(ui, sort_keys=True, ensure_ascii=False)
+        legacy = {
+            "descriptor": {"id": "custom", "components": []},
+            "fingerprint": "legacy-revision",
+            "ui": ui,
+        }
+        body = json.dumps(legacy, sort_keys=True, ensure_ascii=False)
+        with closing(sqlite3.connect(self.registry.path)) as connection, connection:
+            connection.executescript(
+                "CREATE TABLE system_ui (compatibility TEXT PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL);"
+                "CREATE TABLE component_revisions (fingerprint TEXT PRIMARY KEY, plugin TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL, extra TEXT);"
+                "CREATE TABLE component_bindings (binding TEXT PRIMARY KEY, plugin TEXT NOT NULL, component TEXT NOT NULL, fingerprint TEXT NOT NULL REFERENCES component_revisions(fingerprint), session_id TEXT NOT NULL, turn_id TEXT NOT NULL, user_id TEXT NOT NULL, data TEXT, state TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL);"
+            )
+            for table in ("component_slots", "component_unavailable", "component_copies"):
+                connection.execute(COMPONENT_SCHEMA[table])
+            connection.execute(
+                "ALTER TABLE component_bindings ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute(
+                "INSERT INTO system_ui VALUES (?,?,?)",
+                (UI_COMPATIBILITY, ui_body, sha256(ui_body.encode()).hexdigest()),
+            )
+            connection.execute(
+                "INSERT INTO component_revisions VALUES (?,?,?,?,?)",
+                (legacy["fingerprint"], "custom", body, sha256(body.encode()).hexdigest(), "keep"),
+            )
+            connection.execute(
+                "INSERT INTO component_bindings (binding,plugin,component,fingerprint,session_id,"
+                "turn_id,user_id,data,state,revision,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "binding",
+                    "custom",
+                    "card",
+                    legacy["fingerprint"],
+                    "session",
+                    "turn",
+                    "user",
+                    '{"input": 1}',
+                    '{"draft": 2}',
+                    3,
+                    "pending",
+                ),
+            )
+        reference = {
+            "binding": "binding",
+            "plugin": "custom",
+            "component": "card",
+            "fingerprint": legacy["fingerprint"],
+        }
+        self.assertEqual(self.registry.active_ui(), ui)
+        before = self.registry.snapshot(reference, user_id="user")
+        self.assertTrue(self.registry.maintain_storage(batch_size=1))
+        self.assertEqual(self.registry.snapshot(reference, user_id="user"), before)
+        reopened = ComponentRegistry(self.registry.path)
+        self.assertFalse(reopened.maintain_storage(batch_size=1))
+        self.assertFalse(reopened.maintain_storage(batch_size=1))
+        self.assertEqual(reopened.snapshot(reference, user_id="user"), before)
+        self.assertEqual(reopened.active_ui(), ui)
+        with reopened._database() as connection:
+            revision = connection.execute(
+                "SELECT body,digest,extra FROM component_revisions"
             ).fetchone()
-        self.assertEqual(json.loads(previous["body"])["fingerprint"], old["fingerprint"])
+            self.assertNotIn("ui", json.loads(revision["body"]))
+            self.assertEqual(revision["digest"], sha256(body.encode()).hexdigest())
+            self.assertEqual(revision["extra"], "keep")
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM component_ui_packages").fetchone()[0], 1
+            )
 
     def test_declarative_and_sandbox_discovery_are_separate_budgeted_responses(self):
         declarative = {"schema": {"properties": {}}, "prompt": "registered"}
