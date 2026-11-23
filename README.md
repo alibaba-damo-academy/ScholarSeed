@@ -31,6 +31,7 @@
   <a href="#recipes">Recipes</a> ·
   <a href="#integrations">Integrations</a> ·
   <a href="#for-developers">For developers</a> ·
+  <a href="https://discord.gg/ayKyU5qhf">Discord</a> ·
   <a href="README_zh.md">中文</a>
 </p>
 
@@ -375,11 +376,19 @@ The AI invokes these operations following the Skill; ScholarSeed checks the curr
 
 ## Community & contributing
 
+Join the [ScholarSeed Discord community](https://discord.gg/ayKyU5qhf) to ask questions, share how you use ScholarSeed in your research, and discuss extensions with other users and builders.
+
+- **Get help** in `#help-and-feedback` with setup, everyday use, and research workflows.
+- **Share your work** in `#showcase`: reading methods, literature review workflows, and research examples.
+- **Build together** in `#skills-and-connectors`: discuss ideas for research Skills and connectors, and share what you are building.
+
+English and Chinese are both welcome. Start with `#start-here` for the community guide and rules.
+
 Scan the QR code to join the ScholarSeed community and discuss your experience and research questions.
 
 <img src="./assets/community-qr.png" alt="ScholarSeed community group QR code" width="280">
 
-- Report bugs and request features through [Issues](https://github.com/alibaba-damo-academy/ScholarSeed/issues). Include your operating system, application version, steps to reproduce, and expected behavior.
+- Report bugs and request features through [GitHub Issues](https://github.com/alibaba-damo-academy/ScholarSeed/issues), where they can be tracked. Include your operating system, application version, steps to reproduce, and expected behavior.
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for development and contribution instructions.
 - Built by Alibaba DAMO Academy, Decision Intelligence Lab.
 
