@@ -5742,6 +5742,9 @@ async function startDesktop(): Promise<void> {
   coordinationReclamation.run('startup')
   publishStorage(storageSelection)
   configureCredentialProvider(credentialProfile, storageSelection.sessionData)
+  logWindowLifecycle(
+    `[startup] application version=${clientVersion(app.getVersion(), resolveProductConfig(pushLog).buildNumber)}\n`
+  )
 
   function handleProtocolUrl(url: string): void {
     if (windowsNotifications?.activate(url)) return

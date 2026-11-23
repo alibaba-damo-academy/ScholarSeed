@@ -20,6 +20,7 @@ import type { BackendHandle } from './backend.ts'
 import { RUNTIME_ENTRIES, RUNTIME_COMPONENT_KINDS } from '../../runtime/components.cjs'
 import { RotatingFileLog } from './logfile.ts'
 import { isFirstRun, resolveStartupBudgetMs, writeStartupMarker } from './startupmarker.ts'
+import { STARTUP_BUILD_NUMBER } from './version.ts'
 
 const directory = mkdtempSync(join(tmpdir(), 'browser-startup-'))
 mkdirSync(join(directory, 'resources'))
@@ -36,7 +37,7 @@ const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (
       context.parentURL?.startsWith(sourceRoot) &&
-      context.parentURL.endsWith('.ts') &&
+      context.parentURL.split('?')[0].endsWith('.ts') &&
       specifier.startsWith('.') &&
       !extname(specifier)
     )
@@ -774,6 +775,44 @@ test(
     }
   }
 )
+
+for (const buildNumber of ['202611201636', '']) {
+  test(`startup diagnostics include ${buildNumber ? 'the configured build number' : 'the stable development build number'} before backend readiness`, async () => {
+    const originalManifest = readFileSync(manifestPath, 'utf8')
+    const originalPython = process.env.SCHOLARSEED_PYTHON
+    const logs: string[] = []
+    const lifecycle: string[] = []
+    try {
+      writeFileSync(
+        manifestPath,
+        JSON.stringify({ ...JSON.parse(originalManifest), build_number: buildNumber })
+      )
+      process.env.SCHOLARSEED_PYTHON = join(directory, 'missing-startup-python')
+      const isolated = await import(`./backend.ts?startup-build=${buildNumber || 'development'}`)
+      const handle = isolated.startBackend((line: string) => logs.push(line), {
+        port: 0,
+        lifecycleLog: (line: string) => lifecycle.push(line),
+      })
+      assert.equal(await handle.ready, false)
+      for (const sink of [logs, lifecycle]) {
+        const entries = sink
+          .filter((line) => line.startsWith('[backend-startup] '))
+          .map((line) => JSON.parse(line.slice('[backend-startup] '.length)))
+        assert.ok(entries.length > 0)
+        assert.equal(entries[0].event, 'started')
+        assert.ok(entries.some((entry) => entry.event === 'failed'))
+        for (const entry of entries) {
+          assert.equal(entry.version, '0.3.0')
+          assert.equal(entry.buildNumber, buildNumber || STARTUP_BUILD_NUMBER)
+        }
+      }
+    } finally {
+      writeFileSync(manifestPath, originalManifest)
+      if (originalPython === undefined) delete process.env.SCHOLARSEED_PYTHON
+      else process.env.SCHOLARSEED_PYTHON = originalPython
+    }
+  })
+}
 
 test('packaged Windows resolves versioned components and does not expand files in backend startup', async () => {
   const { app } = await import('electron')
