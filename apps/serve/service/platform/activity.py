@@ -689,6 +689,12 @@ class Activities:
     async def observe_thread(self, operation: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         return await asyncio.shield(self._thread(None, operation, *args, **kwargs))
 
+    async def finish_observed_thread(
+        self, operation: Callable[..., T], *args: Any, **kwargs: Any
+    ) -> T:
+        """Join a passive thread operation before delivering cancellation."""
+        return await self._finish_on_cancel(self._thread(None, operation, *args, **kwargs))
+
     async def finish(
         self, domain: ActivityDomain, operation: Callable[[], Coroutine[Any, Any, T]]
     ) -> T:
@@ -697,7 +703,10 @@ class Activities:
         Cancellation is delivered after completion, including repeated requests.
         Use for writes whose result must be reconciled before releasing a lock.
         """
-        future = self.spawn(domain, operation)
+        return await self._finish_on_cancel(self.spawn(domain, operation))
+
+    @staticmethod
+    async def _finish_on_cancel(future: asyncio.Future[T]) -> T:
         cancellation: asyncio.CancelledError | None = None
         while True:
             try:
