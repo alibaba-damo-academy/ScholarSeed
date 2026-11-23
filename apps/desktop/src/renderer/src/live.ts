@@ -1456,7 +1456,7 @@ export function useLiveSession(): void {
         }
         if (!opened || !('session_id' in opened) || !opened.session_id) {
           if (await waitForReconfiguration()) return
-          const history = await getHistoryWithTodos(sessionId)
+          const history = await getHistoryWithTodos(sessionId, 'resume_fallback')
           if (!current()) {
             diagnostic('superseded')
             return
@@ -1501,7 +1501,7 @@ export function useLiveSession(): void {
         }
 
         const [history, queuedMessages] = await Promise.all([
-          getHistoryWithTodos(sessionId),
+          getHistoryWithTodos(sessionId, 'resume'),
           listQueuedMessages(sessionId),
         ])
         if (!current()) {

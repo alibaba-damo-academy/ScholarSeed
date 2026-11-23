@@ -69,6 +69,7 @@ from service.chat.runtime.live import LiveSession
 from service.chat.service.plan import PlanToolProjection
 from service.platform.activity import Activities
 from service.platform.context import ASSISTANT_CONTEXT_MARKER
+from service.platform.latency import RequestPhases
 from service.platform.sse import SSE_HEARTBEAT_FRAME, sse_encode
 
 SSE_REPLAY_PAGE_SIZE = 2_048
@@ -247,7 +248,19 @@ class EventService:
         session_id: str,
         turns: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Restore product-owned references onto Codex-owned transcript rows.
+        """Restore product-owned references and model provenance onto history rows."""
+
+        decorated, _activity = self.transcript_snapshot(session_id, turns)
+        return decorated
+
+    def transcript_snapshot(
+        self,
+        session_id: str,
+        turns: list[dict[str, Any]],
+        *,
+        phases: RequestPhases | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Restore product-owned references and return the activity used by this transcript.
 
         Codex history owns message text and ordering, while uploads and Skill
         selections are ScholarSeed product metadata.  The durable ``user_message``
@@ -258,6 +271,8 @@ class EventService:
         decorated = [dict(turn) for turn in turns]
         claimed: set[int] = set()
         messages = self._user_message_snapshot(session_id)
+        if phases is not None:
+            phases.mark("user_events")
         turn_order = {
             str(record.vendor_turn_id or record.payload.get("client_turn_id") or ""): index
             for index, (record, _sent_at) in enumerate(messages)
@@ -374,8 +389,13 @@ class EventService:
                 ASSISTANT_HISTORY_INCOMPLETE,
                 extra={"session_id": session_id, "turn_id": str(row.get("turn_id") or "")},
             )
+        if phases is not None:
+            phases.mark("user_metadata")
+        activity = self.activity_snapshot(session_id)
+        if phases is not None:
+            phases.mark("activity")
         message_models: dict[tuple[str, str], dict[str, str]] = {}
-        for event in self.activity_snapshot(session_id):
+        for event in activity:
             if event["type"] != PRODUCT_EVENT_MESSAGE_DELTA:
                 continue
             run = ModelRun.restore(event["data"].get(MODEL_RUN_FIELD))
@@ -389,7 +409,9 @@ class EventService:
             identity = (str(row.get("turn_id") or ""), str(row.get("item_id") or ""))
             if identity in message_models:
                 row[MODEL_RUN_FIELD] = message_models[identity]
-        return decorated
+        if phases is not None:
+            phases.mark("model_provenance")
+        return decorated, activity
 
     def _user_message_snapshot(self, session_id: str) -> list[tuple[ProductEventRecord, float]]:
         latest: dict[str, tuple[ProductEventRecord, float]] = {}

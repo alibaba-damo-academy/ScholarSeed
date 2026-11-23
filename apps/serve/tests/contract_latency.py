@@ -20,13 +20,57 @@ from service.platform.http_activity import HttpActivityMiddleware, ServeApplicat
 from service.platform.latency import (
     DIAGNOSTIC_HEADER,
     LOGGER_NAME,
+    REQUEST_ID_HEADER,
     LoopMonitor,
     RequestLatency,
     requestLatency,
+    requestPhases,
 )
 
 
 class LatencyContract(unittest.IsolatedAsyncioTestCase):
+    async def test_history_shares_its_server_request_id_only_with_allowed_origins(self):
+        origin = b"http://127.0.0.1:9000"
+        scope = self.scope()
+        scope["headers"].append((b"origin", origin))
+        with self.assertLogs(LOGGER_NAME, level=logging.INFO) as records:
+            with RequestLatency(scope) as observation:
+                requestPhases(scope, expose_request_id=True)
+                response_id = (REQUEST_ID_HEADER, observation.requestId.encode("ascii"))
+                self.assertEqual(observation.timingHeaders([]), [response_id])
+                cors = [(b"access-control-allow-origin", origin)]
+                self.assertEqual(
+                    observation.timingHeaders(cors),
+                    [
+                        *cors,
+                        response_id,
+                        (b"access-control-expose-headers", REQUEST_ID_HEADER),
+                        (b"timing-allow-origin", origin),
+                    ],
+                )
+                observation.headers(200)
+        rows = [json.loads(record.getMessage()) for record in records.records]
+        self.assertEqual([row["event"] for row in rows], ["headers", "finished"])
+        self.assertTrue(all(row["request_id"] == observation.requestId for row in rows))
+
+    async def test_handler_timings_are_scoped_to_the_request_and_correlated_with_headers(self):
+        scope = self.scope()
+        with self.assertLogs(LOGGER_NAME, level=logging.DEBUG) as records:
+            with RequestLatency(scope) as first:
+                phases = requestPhases(scope)
+                phases.count("records", 3)
+                phases.mark("projection")
+                first.headers(200, [(b"content-length", b"42")])
+            with RequestLatency(self.scope()) as second:
+                second.headers(200)
+        rows = [json.loads(record.getMessage()) for record in records.records]
+        headers, other = [row for row in rows if row["event"] == "headers"]
+        self.assertEqual(headers["handler_counts"], {"records": 3})
+        self.assertEqual(headers["response_content_length"], 42)
+        self.assertGreaterEqual(headers["handler_phases_ms"]["projection"], 0)
+        self.assertLessEqual(headers["handler_started_ms"], headers["handler_last_mark_ms"])
+        self.assertNotIn("handler_counts", other)
+
     async def test_valid_correlations_retain_the_lifecycle_without_global_debug(self):
         scope = self.scope()
         scope["headers"].append((DIAGNOSTIC_HEADER, b"a" * 32))

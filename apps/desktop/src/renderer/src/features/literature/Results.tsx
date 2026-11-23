@@ -75,7 +75,7 @@ function ScopedLiteratureResultTab({
   useEffect(() => {
     if (conversation) return
     let active = true
-    void getHistoryWithTodos(session).then((snapshot) => {
+    void getHistoryWithTodos(session, 'literature').then((snapshot) => {
       if (active) setHistory(snapshot ? projectActivityEvents([], snapshot.activity_events) : [])
     })
     return () => {

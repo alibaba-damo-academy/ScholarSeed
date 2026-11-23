@@ -1113,7 +1113,7 @@ export function Stream({
     const sessionId = thread.sessionId
     if (!sessionId || busy) return () => undefined
     let current = true
-    void getHistoryWithTodos(sessionId).then((history) => {
+    void getHistoryWithTodos(sessionId, 'transcript').then((history) => {
       if (!current || sessionRef.current !== sessionId || !history) return
       patchThread(thread.id, (active) =>
         active.sessionId === sessionId

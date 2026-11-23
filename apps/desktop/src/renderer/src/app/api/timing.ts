@@ -1,5 +1,6 @@
 import {
   API_DIAGNOSTIC_HEADER,
+  API_REQUEST_ID_HEADER,
   HTTP_LATENCY_DIAGNOSTIC_PREFIX,
   SESSION_CATALOG_PATH,
   isRequestDiagnosticId,
@@ -8,7 +9,10 @@ import {
 import { captureCatalogResource, type CatalogResourceCapture } from './resources.ts'
 
 const ERROR_NAMES = new Set(['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'])
-const responseTimings = new WeakMap<Response, CatalogTiming>()
+export type HistoryCaller =
+  'transcript' | 'resume' | 'resume_fallback' | 'archive' | 'archived_task' | 'literature'
+const HISTORY_ROUTE = '/api/serve/history/{session_id}'
+const responseTimings = new WeakMap<Response, RequestTiming>()
 type TimingEvent =
   | 'fetch_started'
   | 'headers_received'
@@ -22,7 +26,8 @@ type TimingEvent =
 
 type TimingDetails = Record<string, unknown>
 
-class CatalogTiming {
+class RequestTiming {
+  private serverRequestId: string | null = null
   private readonly startedAt = performance.now()
   private headersAt: number | undefined
   private bodyAt: number | undefined
@@ -34,7 +39,8 @@ class CatalogTiming {
     readonly identifier: string,
     readonly timeoutMs: number | undefined,
     private readonly path: string,
-    private readonly url: string
+    private readonly url: string,
+    private readonly historyCaller?: HistoryCaller
   ) {}
 
   fetch(transport: () => Promise<Response>): Promise<Response> {
@@ -71,14 +77,16 @@ class CatalogTiming {
         layer: 'renderer',
         event,
         client_request_id: this.identifier,
-        route: SESSION_CATALOG_PATH,
+        route: this.historyCaller ? HISTORY_ROUTE : SESSION_CATALOG_PATH,
         method: 'GET',
         timestamp_ms: Date.now(),
         time_origin_ms: performance.timeOrigin,
         elapsed_ms: now - this.startedAt,
         timeout_ms: this.timeoutMs ?? null,
         status,
-        catalog: catalogDiagnosticContext(this.path),
+        ...(this.historyCaller
+          ? { caller: this.historyCaller, server_request_id: this.serverRequestId }
+          : { catalog: catalogDiagnosticContext(this.path) }),
         resource_capture_enabled: this.resourceAttempted ? this.resource !== undefined : null,
         ...(this.headersAt !== undefined ? { after_headers_ms: now - this.headersAt } : {}),
         ...(this.bodyAt !== undefined ? { body_elapsed_ms: now - this.bodyAt } : {}),
@@ -100,6 +108,7 @@ class CatalogTiming {
         event === 'resource_timing'
       if (
         !terminal &&
+        !(this.historyCaller && (event === 'fetch_started' || event === 'headers_received')) &&
         !(event === 'headers_received' && status !== null && (status < 200 || status >= 300))
       )
         return
@@ -109,26 +118,34 @@ class CatalogTiming {
   }
 
   headers(response: Response): void {
+    if (this.historyCaller) {
+      const id = response.headers.get(API_REQUEST_ID_HEADER)
+      if (isRequestDiagnosticId(id)) this.serverRequestId = id
+    }
     responseTimings.set(response, this)
     this.record('headers_received', response.status)
   }
 }
 
-export function startCatalogTiming(
+export function startRequestTiming(
   path: string,
   method: string,
   timeoutMs: number | undefined,
   headers: Headers,
-  url: string
-): CatalogTiming | undefined {
-  if (path.split('?')[0] !== SESSION_CATALOG_PATH || method !== 'GET') return undefined
+  url: string,
+  historyCaller?: HistoryCaller
+): RequestTiming | undefined {
+  if (method !== 'GET') return undefined
+  const pathname = path.split('?')[0]
+  const caller = /^\/api\/serve\/history\/[^/]+$/.test(pathname) ? historyCaller : undefined
+  if (!caller && pathname !== SESSION_CATALOG_PATH) return undefined
   try {
     const supplied = headers.get(API_DIAGNOSTIC_HEADER)
     const identifier = isRequestDiagnosticId(supplied)
       ? supplied
       : crypto.randomUUID().replaceAll('-', '')
-    headers.set(API_DIAGNOSTIC_HEADER, identifier)
-    const timing = new CatalogTiming(identifier, timeoutMs, path, url)
+    if (!caller) headers.set(API_DIAGNOSTIC_HEADER, identifier)
+    const timing = new RequestTiming(identifier, timeoutMs, path, url, caller)
     timing.record('fetch_started')
     return timing
   } catch {

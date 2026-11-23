@@ -26,10 +26,13 @@ SLOW_HEADERS_WARNING_SECONDS = 0.5
 MILLISECONDS_PER_SECOND = 1000
 UNMATCHED_ROUTE = "unmatched"
 DIAGNOSTIC_HEADER = b"x-scholarseed-diagnostic-id"
+REQUEST_ID_HEADER = b"x-scholarseed-request-id"
 DIAGNOSTIC_ID_LENGTH = 32
 DIAGNOSTIC_ID_ALPHABET = b"0123456789abcdef"
+MAX_CONTENT_LENGTH_DIGITS = len(str(sys.maxsize))
 ORIGIN_HEADER = b"origin"
 CORS_ORIGIN_HEADER = b"access-control-allow-origin"
+EXPOSE_HEADERS = b"access-control-expose-headers"
 TIMING_ORIGIN_HEADER = b"timing-allow-origin"
 LOOP_THREAD_NAME = "http-loop-monitor"
 LOOP_STACK_LIMIT = 12
@@ -155,6 +158,27 @@ class LatencyEvent(StrEnum):
     LOOP_LAG = "loop_lag"
 
 
+class RequestPhases:
+    """Record monotonic boundaries and counts under fixed, handler-owned names."""
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.started = time.perf_counter() if enabled else 0.0
+        self.last = self.started
+        self.durations: dict[str, float] = {}
+        self.counts: dict[str, int] = {}
+
+    def mark(self, name: str) -> None:
+        if self.enabled:
+            now = time.perf_counter()
+            self.durations[name] = round((now - self.last) * MILLISECONDS_PER_SECOND, 3)
+            self.last = now
+
+    def count(self, name: str, value: int) -> None:
+        if self.enabled:
+            self.counts[name] = value
+
+
 class RequestLatency:
     def __init__(
         self,
@@ -189,6 +213,9 @@ class RequestLatency:
         self.timer: asyncio.TimerHandle | None = None
         self.status: int | None = None
         self.headersMs: float | None = None
+        self.phases: RequestPhases | None = None
+        self.exposeRequestId = False
+        self.contentLength: int | None = None
         self.identityWaitMs: float | None = None
         self.identityRunMs: float | None = None
         self.identityQueuedAt: float | None = None
@@ -250,20 +277,31 @@ class RequestLatency:
             self.identityResumedMs = (time.perf_counter() - self.started) * MILLISECONDS_PER_SECOND
 
     def timingHeaders(self, headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+        shared_id = self.requestId if self.exposeRequestId else None
+        if shared_id is not None:
+            headers = [*headers, (REQUEST_ID_HEADER, shared_id.encode("ascii"))]
         origins = [value for name, value in self.scope.get("headers", []) if name == ORIGIN_HEADER]
-        if (
-            self.clientRequestId is not None
-            and len(origins) == 1
-            and origins[0] != b"*"
-            and (CORS_ORIGIN_HEADER, origins[0]) in headers
-            and not any(name == TIMING_ORIGIN_HEADER for name, _value in headers)
-        ):
-            return [*headers, (TIMING_ORIGIN_HEADER, origins[0])]
+        if len(origins) == 1 and origins[0] != b"*" and (CORS_ORIGIN_HEADER, origins[0]) in headers:
+            if shared_id is not None:
+                headers = [*headers, (EXPOSE_HEADERS, REQUEST_ID_HEADER)]
+            if (self.clientRequestId is not None or shared_id is not None) and not any(
+                name == TIMING_ORIGIN_HEADER for name, _value in headers
+            ):
+                headers = [*headers, (TIMING_ORIGIN_HEADER, origins[0])]
         return headers
 
-    def headers(self, status: int) -> None:
+    def headers(self, status: int, headers: list[tuple[bytes, bytes]] | None = None) -> None:
         if not self.enabled:
             return
+        if self.phases is not None and headers:
+            for name, value in headers:
+                if (
+                    name == b"content-length"
+                    and len(value) <= MAX_CONTENT_LENGTH_DIGITS
+                    and value.isdigit()
+                ):
+                    self.contentLength = int(value)
+                    break
         self.status = status
         self.headersMs = (time.perf_counter() - self.started) * MILLISECONDS_PER_SECOND
         self._sample()
@@ -304,7 +342,11 @@ class RequestLatency:
         level = (
             logging.WARNING
             if event is LatencyEvent.LOOP_LAG or slowHeaders or errorType
-            else logging.INFO if self.clientRequestId is not None else logging.DEBUG
+            else (
+                logging.INFO
+                if self.clientRequestId is not None or self.exposeRequestId
+                else logging.DEBUG
+            )
         )
         if not self.enabled or not logger.isEnabledFor(level) or self.limiter is None:
             return
@@ -354,9 +396,31 @@ class RequestLatency:
             "error_type": errorType,
             **(self.monitor.snapshot() if self.monitor is not None else {}),
         }
+        if self.phases is not None:
+            phases = self.phases
+            payload.update(
+                handler_started_ms=round(
+                    (phases.started - self.started) * MILLISECONDS_PER_SECOND, 3
+                ),
+                handler_last_mark_ms=round(
+                    (phases.last - self.started) * MILLISECONDS_PER_SECOND, 3
+                ),
+                handler_phases_ms=phases.durations.copy(),
+                handler_counts=phases.counts.copy(),
+                response_content_length=self.contentLength,
+            )
         logger.log(level, json.dumps(payload, separators=(",", ":")))
 
 
 def requestLatency(scope: Scope) -> RequestLatency | None:
     observation: Any = scope.get("state", {}).get(REQUEST_LATENCY_KEY)
     return observation if isinstance(observation, RequestLatency) else None
+
+
+def requestPhases(scope: Scope, *, expose_request_id: bool = False) -> RequestPhases:
+    observation = requestLatency(scope)
+    phases = RequestPhases(observation is not None and observation.enabled)
+    if observation is not None:
+        observation.phases = phases
+        observation.exposeRequestId = expose_request_id
+    return phases

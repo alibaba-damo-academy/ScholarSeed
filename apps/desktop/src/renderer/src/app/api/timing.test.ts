@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { apiFetch, LIVE_CATALOG_REQUEST } from './client.ts'
-import { API_DIAGNOSTIC_HEADER, HTTP_LATENCY_DIAGNOSTIC_PREFIX } from '../../../../requests.ts'
+import {
+  API_DIAGNOSTIC_HEADER,
+  API_REQUEST_ID_HEADER,
+  HTTP_LATENCY_DIAGNOSTIC_PREFIX,
+} from '../../../../requests.ts'
 import { flushApiDiagnostics } from './diagnostics.ts'
 import { readApiJson, reportCatalogFailure } from './timing.ts'
 import { resourceTimingDetails, RESOURCE_OBSERVATION_BUDGET_MS } from './resources.ts'
@@ -70,6 +74,44 @@ test('ordinary catalog requests correlate fetch and JSON without recording priva
     include_last_agent_reply: null,
     limit: null,
   })
+  assert.ok(!JSON.stringify(records).includes('private'))
+})
+
+test('overlapping history readers retain separate correlations and report the caller before headers', async (context) => {
+  const records = fixture(context, async (_, init) => {
+    assert.equal(new Headers(init?.headers).has(API_DIAGNOSTIC_HEADER), false)
+    return Response.json(
+      { turns: ['private-answer'] },
+      { headers: { [API_REQUEST_ID_HEADER]: CORRELATION } }
+    )
+  })
+  const path = '/api/serve/history/private-session'
+  const readers = ['transcript', 'resume'] as const
+  const requests = readers.map((historyCaller) => apiFetch(path, { historyCaller }))
+  assert.deepEqual(
+    records.map((record) => record.caller),
+    readers
+  )
+  const identifiers = records.map((record) => record.client_request_id)
+  assert.equal(new Set(identifiers).size, 2)
+  for (const response of await Promise.all(requests)) {
+    assert.deepEqual(await readApiJson(response), { turns: ['private-answer'] })
+  }
+  for (const [index, id] of identifiers.entries()) {
+    const rows = records.filter((record) => record.client_request_id === id)
+    assert.equal(rows[0].server_request_id, null)
+    assert.ok(rows.slice(1).every((row) => row.server_request_id === CORRELATION))
+    assert.deepEqual(
+      rows.map((record) => record.event),
+      ['fetch_started', 'headers_received', 'body_started', 'body_decoded']
+    )
+    assert.ok(
+      rows.every(
+        (record) =>
+          record.caller === readers[index] && record.route === '/api/serve/history/{session_id}'
+      )
+    )
+  }
   assert.ok(!JSON.stringify(records).includes('private'))
 })
 

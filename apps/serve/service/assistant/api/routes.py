@@ -121,6 +121,7 @@ from service.platform.context import (
     SelectionAnchor,
 )
 from service.platform.inference import ModelInvocationStatus
+from service.platform.latency import requestPhases
 from service.platform.workbench import REFERENCE_INVALID, parse_document_reference
 from service.resources.domain.model import IMPORT_CONFLICT, IMPORT_UNAVAILABLE, ResourceLocationRef
 
@@ -519,9 +520,13 @@ def register_assistant_routes(app: FastAPI) -> None:
 
     @app.get(f"{ASSISTANT_ROUTE_PREFIX}/sessions/{{session_id}}/turns/{{turn_id}}/sources")
     def turn_sources(session_id: str, turn_id: str, request: Request) -> dict:
+        phases = requestPhases(request.scope)
         _require_session(request, session_id)
+        phases.mark("access")
         answer_id = f"{TURN_ANSWER_ID_PREFIX}{turn_id}"
         answer = request.app.state.answer_source.answer(session_id=session_id, answer_id=answer_id)
+        phases.mark("answer")
+        phases.count("answer_found", int(answer is not None))
         if answer is None:
             return {"sources": [], "markdown": "", "answer_id": answer_id}
         records = request.app.state.product_events.turn_records(
@@ -535,14 +540,19 @@ def register_assistant_routes(app: FastAPI) -> None:
                 PRODUCT_EVENT_ANSWER_SOURCES,
             ),
         )
+        phases.mark("records")
+        phases.count("records", len(records))
         projection = project_answer_sources(answer.markdown, records)
         sources = projection["sources"]
         identities = {
             (source["kind"], source.get("url") or source.get("handle")) for source in sources
         }
+        phases.mark("projection")
+        item_lookups = 0
         for record in records:
             if record.kind != PRODUCT_EVENT_ANSWER_SOURCES or not record.vendor_item_id:
                 continue
+            item_lookups += 1
             native = request.app.state.answer_source.answer(
                 session_id=session_id, answer_id=f"item:{record.vendor_item_id}"
             )
@@ -559,11 +569,16 @@ def register_assistant_routes(app: FastAPI) -> None:
                         "number": len(sources) + 1,
                     }
                 )
+        phases.mark("item_revisions")
+        phases.count("item_lookups", item_lookups)
         receipts = [source for source in sources if source["kind"] == RECEIPT_SOURCE_KIND]
         if receipts:
             groups = request.app.state.assistant_citations.source_group_ids(answer)
             for source in receipts:
                 source["source_group_id"] = groups.get(source["handle"])
+        phases.mark("receipts")
+        phases.count("receipts", len(receipts))
+        phases.count("sources", len(sources))
         return {
             **projection,
             "markdown": answer.markdown,
