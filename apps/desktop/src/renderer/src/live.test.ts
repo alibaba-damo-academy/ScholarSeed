@@ -30,7 +30,13 @@ const apiSource = readFileSync(new URL('./api.ts', import.meta.url), 'utf8')
 const storeSource = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
 
 test('native compaction establishes active turn progress before any answer or tool event', () => {
-  let current: Thread = { id: 'thread', title: 'Task', conversation: [], lastSeq: 0 }
+  let current: Thread = {
+    id: 'thread',
+    title: 'Task',
+    sessionId: 'session',
+    conversation: [],
+    lastSeq: 0,
+  }
   const branch = block(liveSource, "case 'context_compacted':", "case 'turn_completed':")
   const apply = runInNewContext(
     ts.transpileModule(
