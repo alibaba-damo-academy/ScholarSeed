@@ -11,6 +11,41 @@ const source = fs.readFileSync(path.join(__dirname, '../verify.cjs'), 'utf8')
 const content = source.slice(source.indexOf('async function verifyContent('), source.indexOf('\n/** Static checks'))
 const hook = source.slice(source.indexOf('async function verify(builderContext)'), source.indexOf('\nmodule.exports = verify'))
 
+test('signed Velopack receipt failure preserves the primary failure and cleans retired sandboxes', async () => {
+  const mainError = new Error('installed application check failed')
+  const receiptError = new Error('registry readback failed')
+  for (const primaryFails of [true, false]) {
+    const removed = []
+    const diagnostics = []
+    const directories = ['/install', '/runtime']
+    const body = source.slice(source.indexOf('async function verifyVelopackInstaller('), source.indexOf('async function verify(builderContext)'))
+    const verifyInstaller = runInNewContext(`${body}\nverifyVelopackInstaller`, {
+      path, process, fs: { mkdirSync() {}, statSync: () => ({ size: 1 }) }, CHECK_TIMEOUT_MS: 1000,
+      acceptance: { withVerificationMutex: action => action() },
+      assertCleanInstallation() {},
+      createPackageCheckDirectory: () => directories.shift(),
+      packageCheckEnvironment: () => ({ APPDATA: '/roaming', LOCALAPPDATA: '/local' }),
+      recordCiInstallation() {}, runInstaller() {},
+      verifyApplication: async () => { if (primaryFails) throw mainError },
+      buildState: { hashFile: () => 'hash' }, verifyWindowsSignature: () => true,
+      runPackageCheck: async () => ({}), layout: () => ({}), verifyComponentContent: async () => ({}),
+      runtimeReuseEvidence: () => ({}), sha256: async () => 'hash', sha512: async () => 'hash',
+      retireVelopack: async () => ({ complete: true }),
+      completeCiInstallation: () => { throw receiptError },
+      removeTemporary: directory => removed.push(directory),
+      bestEffortRemoveTemporary: directory => removed.push(directory),
+      console: { error: message => diagnostics.push(message) },
+    })
+    await assert.rejects(verifyInstaller('/setup.exe', {
+      platform: 'win32', updateEngine: 'velopack', appId: 'scholarseed',
+      runDirectory: '/out', signingRequired: true, product: { config: {} },
+      launcher: { uninstaller: { file: 'Update.exe', sha256: 'hash' } },
+    }), error => error === (primaryFails ? mainError : receiptError))
+    assert.deepEqual(removed, ['/runtime', '/install'])
+    assert.ok(diagnostics.some(message => message.includes(receiptError.message)))
+  }
+})
+
 function fixture(platform = 'darwin', signingRequired = true, allowExecution = false) {
   const events = []
   const files = { bridgeChecks: [], closures: [], nativeDirectories: [] }

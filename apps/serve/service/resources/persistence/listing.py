@@ -8,10 +8,11 @@ from pathlib import Path, PurePosixPath
 from sqlite3 import Connection
 
 from service.paths import PROJECT_DB_RELATIVE
-from service.persistence.project import ProjectDatabasePath, transaction
+from service.persistence.project import ProjectDatabasePath, reader, transaction
 from service.platform.content import AssetKind, AssetOrigin, AssetTree, ContentPort, FileAssetRef
 
 LISTING_TABLE = "resources_listing"
+PATH_SEPARATOR = "/"
 CREATE_LISTING = f"""
 CREATE TABLE IF NOT EXISTS {LISTING_TABLE} (
     path TEXT PRIMARY KEY NOT NULL,
@@ -76,6 +77,39 @@ class ResourceListingCatalog:
             Path(self._content.resolve(project, "")),
         )
 
+    def sources(self, project: str) -> dict[str, str]:
+        """Read persisted provenance before a progressive scan, with no open transaction on return."""
+        database = self._database(project)
+        if not database.exists():
+            return {}
+        with reader(database) as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (LISTING_TABLE,)
+                ).fetchone()
+                is None
+            ):
+                return {}
+            return {
+                row["path"]: row["source"]
+                for row in connection.execute(
+                    f"SELECT path, source FROM {LISTING_TABLE} WHERE source IS NOT NULL"
+                )
+            }
+
+    @staticmethod
+    def project_entries(
+        nodes: tuple[AssetTree, ...], sources: dict[str, str]
+    ) -> tuple[ResourceListEntry, ...]:
+        entries = []
+        for node in nodes:
+            entry = _entry(node.asset, node.updated_at)
+            source = sources.get(entry.path)
+            entries.append(
+                replace(entry, source=source) if source and source != entry.source else entry
+            )
+        return tuple(entries)
+
     def record(
         self, project: str, assets: tuple[FileAssetRef, ...], source: ResourceSource
     ) -> None:
@@ -109,6 +143,45 @@ class ResourceListingCatalog:
                 row["path"]: ResourceListEntry(**dict(row))
                 for row in connection.execute(f"SELECT * FROM {LISTING_TABLE}")
             }
+            return self._synchronize(connection, nodes, existing)
+
+    def synchronize_directory(
+        self,
+        project: str,
+        directory: FileAssetRef,
+        nodes: tuple[AssetTree, ...],
+        *,
+        record_parent: bool,
+    ) -> tuple[ResourceListEntry, ...]:
+        """Synchronize only the observed direct children of one canonical directory."""
+        with transaction(self._database(project), immediate=True) as connection:
+            connection.execute(CREATE_LISTING)
+            if record_parent:
+                row = connection.execute(
+                    f"SELECT * FROM {LISTING_TABLE} WHERE path=?", (directory.path,)
+                ).fetchone()
+                previous = ResourceListEntry(**dict(row)) if row is not None else None
+                parent = _entry(directory)
+                if previous is not None and previous.source:
+                    parent = replace(parent, source=previous.source)
+                if parent != previous:
+                    connection.execute(UPSERT_LISTING, vars(parent))
+
+            if directory.path:
+                prefix = f"{directory.path}{PATH_SEPARATOR}"
+                # Adjacent binary prefix excludes sibling paths even on case-insensitive volumes.
+                limit = f"{directory.path}{chr(ord(PATH_SEPARATOR) + 1)}"
+                rows = connection.execute(
+                    f"SELECT * FROM {LISTING_TABLE} WHERE path>=? AND path<? "
+                    "AND instr(substr(path, length(?) + 1), ?) = 0",
+                    (prefix, limit, prefix, PATH_SEPARATOR),
+                )
+            else:
+                rows = connection.execute(
+                    f"SELECT * FROM {LISTING_TABLE} WHERE instr(path, ?) = 0",
+                    (PATH_SEPARATOR,),
+                )
+            existing = {row["path"]: ResourceListEntry(**dict(row)) for row in rows}
             return self._synchronize(connection, nodes, existing)
 
     def synchronize_changes(

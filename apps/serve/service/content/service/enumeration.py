@@ -33,6 +33,10 @@ def _inside(target: Path, roots: tuple[Path, ...]) -> bool:
     return any(target == root or root in target.parents for root in roots)
 
 
+def entry_from_stat(path: str, file_stat: os.stat_result) -> ResourceEntry:
+    return ResourceEntry(path=path, size=file_stat.st_size, created_at=_created_at(file_stat))
+
+
 def _entry(
     space: ProjectSpace,
     target: Path,
@@ -53,10 +57,7 @@ def _entry(
         or not all(_scan_name(part) for part in PurePosixPath(logical).parts)
     ):
         return None
-    return (
-        ResourceEntry(path=logical, size=file_stat.st_size, created_at=_created_at(file_stat)),
-        resolved,
-    )
+    return entry_from_stat(logical, file_stat), resolved
 
 
 def resource_scopes(space: ProjectSpace, paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -184,4 +185,10 @@ def enumerate_files(
     return ResourcePage(entries=entries, next_cursor=next_cursor)
 
 
-__all__ = ["GITIGNORE_FILENAME", "entries_for_paths", "enumerate_files", "scan_files"]
+__all__ = [
+    "GITIGNORE_FILENAME",
+    "entries_for_paths",
+    "entry_from_stat",
+    "enumerate_files",
+    "scan_files",
+]

@@ -32,6 +32,18 @@ def record():
     )
 
 
+def crowded_pool():
+    return [dict(record(), paper_id="123")] + [
+        {
+            "paper_id": str(1000 + index),
+            "title": f"Related research agents study {index}",
+            "year": 2026,
+            "found_by": ["keyword:research agents"],
+        }
+        for index in range(30)
+    ]
+
+
 def crossref(**updates):
     item = {
         "DOI": DOI,
@@ -251,6 +263,48 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(doc["papers"][0]["doi"], DOI)
         self.assertEqual(doc["papers"][0]["tier"], 1)
         self.assertEqual(len(appserver_quick._validate_result_papers(doc, URL)), 1)
+
+    def test_direct_lookup_keeps_only_verified_target_in_crowded_pool(self):
+        for query in (f"Find this paper: {TITLE}", URL):
+            for bounds in ({}, {"year_end": 2026}):
+                with self.subTest(query=query, bounds=bounds):
+                    doc = self.run_plan(query=query, papers=crowded_pool(), extra=bounds)
+                    self.assertEqual([paper["paper_id"] for paper in doc["papers"]], ["123"])
+                    summary = doc["search_summary"]
+                    self.assertEqual(summary["selected_count"], 1)
+                    self.assertEqual(summary["tier_budget"], [1, 0, 0])
+                    if bounds:
+                        self.assertEqual(summary["requested_count"], 1)
+                        self.assertIsNone(summary["shortfall_reason"])
+                    self.assertEqual(len(appserver_quick._validate_result_papers(doc, query)), 1)
+
+    def test_related_lookup_keeps_topic_quota_for_the_same_crowded_pool(self):
+        query = f"Find related research around {URL}"
+        doc = self.run_plan(
+            query=query,
+            papers=crowded_pool(),
+            extra={"best_target": {"title": TITLE, "required": False}},
+        )
+        self.assertEqual(len(doc["papers"]), 20)
+        self.assertEqual(doc["search_summary"]["selected_count"], 20)
+        self.assertEqual(doc["search_summary"]["tier_budget"], [4, 9, 7])
+        self.assertFalse(doc["search_summary"]["agent_best_target_required"])
+        self.assertEqual(
+            [sum(paper["tier"] == tier for paper in doc["papers"]) for tier in (1, 2, 3)],
+            [4, 9, 7],
+        )
+        self.assertEqual(len(appserver_quick._validate_result_papers(doc, query)), 20)
+
+    def test_worker_rejects_extra_papers_for_a_required_direct_target(self):
+        doc = {
+            "papers": [record(), {"title": "Another research agents paper"}],
+            "search_summary": {
+                "agent_best_target_title": TITLE,
+                "agent_best_target_required": True,
+            },
+        }
+        with self.assertRaises(appserver_quick.AppServerError):
+            appserver_quick._validate_result_papers(doc, URL)
 
     def test_unresolved_input_title_can_be_verified_inside_runner(self):
         doc = self.run_plan(title="")

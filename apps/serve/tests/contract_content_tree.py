@@ -16,14 +16,18 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE, ContentError
 from service.content.persistence.catalog import ContentCatalog
+from service.content.service import tree as content_tree
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.roots import OWNED_ROOT_CONFLICT
 from service.content.service.tree import DEFAULT_MAX_DEPTH, PAGE_SIZE
@@ -633,10 +637,69 @@ def test_file_update_time_projection() -> None:
     )
 
 
+def test_flat_tree_keeps_an_entry_when_its_metadata_is_unavailable() -> None:
+    if os.name != "posix":
+        return
+    with tempfile.TemporaryDirectory(prefix="ss-tree-stat-") as temporary:
+        root = Path(temporary)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        catalog = ContentCatalog(root / "content.sqlite3")
+        registry = ProjectRegistry(str(workspace), catalog)
+        content = ContentService(registry, catalog, activities=Activities())
+        project = content.create_project("Metadata")
+        resources = Path(project.root) / MANAGED_RESOURCES_ROOT_RELATIVE
+        (resources / "affected.md").touch()
+        (resources / "ordinary.md").touch()
+        original_listing = content_tree._listing
+
+        def inspect_with_error(error):
+            stat_calls = []
+
+            def inject_stat_error(scope, directory, relative, origin):
+                rows, existing = original_listing(scope, directory, relative, origin)
+                for index, row in enumerate(rows):
+                    if row.name == "affected.md":
+                        entry = Mock(wraps=row, name="affected.md")
+                        entry.name = row.name
+                        entry.stat.side_effect = error
+                        stat_calls.append(entry.stat)
+                        rows[index] = entry
+                return rows, existing
+
+            with patch.object(content_tree, "_listing", side_effect=inject_stat_error):
+                result = content.flat_resource_tree(
+                    project.id, (MANAGED_RESOURCES_ROOT_RELATIVE,), observe_entries=True
+                )
+            return result, stat_calls
+
+        for failure in (
+            PermissionError(errno.EACCES, "denied"),
+            NotADirectoryError(errno.ENOTDIR, "replaced"),
+        ):
+            result, stat_calls = inspect_with_error(failure)
+            check(
+                f"单条记录 {type(failure).__name__} 时保留行，其他文件照常读取",
+                [row.asset.name for row in result.nodes] == ["affected.md", "ordinary.md"]
+                and result.nodes[0].updated_at is None
+                and result.nodes[1].updated_at is not None,
+            )
+            stat_calls[0].assert_called_once_with(follow_symlinks=False)
+
+        unexpected = OSError(errno.EIO, "I/O failure")
+        try:
+            inspect_with_error(unexpected)
+        except OSError as error:
+            check("意外文件系统错误正常传播", error is unexpected)
+        else:
+            check("意外文件系统错误正常传播", False)
+
+
 def main() -> int:
     print("content tree paging contract (depth + single-level are both paging)")
     test_depth_limit_reports_how_much_it_skipped()
     test_file_update_time_projection()
+    test_flat_tree_keeps_an_entry_when_its_metadata_is_unavailable()
     test_subtree_continues_past_the_depth_limit()
     test_single_level_is_paged_not_truncated()
     test_mounts_are_not_lost_to_paging()

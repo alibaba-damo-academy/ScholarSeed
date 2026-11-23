@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from service.capabilities.service.components import ComponentRegistry
 from service.capabilities.service.ui import public_snapshot
+from service.persistence.project import transaction
 
 
 def snapshot(name="comparison", revision="one", slot="research.comparison"):
@@ -24,6 +25,55 @@ def snapshot(name="comparison", revision="one", slot="research.comparison"):
 
 
 class ComponentRegistryContract(unittest.TestCase):
+    def test_reads_observe_committed_state_while_an_independent_writer_is_active(self):
+        self.registry.publish([snapshot()])
+        reference = self.registry.resolve(
+            "research.comparison", session_id="session", turn_id="turn", user_id="user"
+        )
+        pending = snapshot("pending", "two", "research.pending")
+        reopened = ComponentRegistry(self.path)
+        with transaction(self.path, immediate=True) as writer:
+            self.registry._retain(writer, pending)
+            writer.execute(
+                "INSERT INTO component_slots(slot,plugin,component,fingerprint) VALUES(?,?,?,?)",
+                ("research.pending", "pending", "card", "two"),
+            )
+            for registry in (self.registry, reopened):
+                self.assertTrue(registry.has_claim("comparison"))
+                self.assertFalse(registry.has_claim("pending"))
+                self.assertIsNone(registry.active_ui())
+                self.assertEqual(len(registry.enabled_snapshots()), 1)
+                self.assertEqual(registry.answer_markdown("session", "turn"), ())
+                self.assertEqual(registry.snapshot(reference, user_id="user")["fingerprint"], "one")
+                registry.validate(reference, session_id="session", user_id="user")
+                self.assertIsNone(
+                    registry.copy_content(reference, session_id="session", user_id="user")[
+                        "content"
+                    ]
+                )
+            self.assertTrue(self.registry.preflight(["research.pending"])["slots"][0]["available"])
+            self.assertNotIn(
+                "pending", {row["plugin"] for row in self.registry.catalog(user_id="user")}
+            )
+            self.assertTrue(writer.in_transaction)
+        self.assertTrue(self.registry.has_claim("pending"))
+        self.assertTrue(reopened.has_claim("pending"))
+
+    def test_first_read_prepares_a_missing_registry_and_preserves_legacy_bindings(self):
+        self.assertFalse(self.registry.has_claim("comparison"))
+        self.registry.publish([snapshot()])
+        reference = self.registry.resolve(
+            "research.comparison", session_id="session", turn_id="turn", user_id="user"
+        )
+        self.registry.bind_data(reference, {"preserved": "legacy"})
+        with transaction(self.path, immediate=True) as connection:
+            connection.execute("ALTER TABLE component_bindings DROP COLUMN content_revision")
+        reopened = ComponentRegistry(self.path)
+        self.assertTrue(reopened.has_claim("comparison"))
+        restored = reopened.snapshot(reference, user_id="user")["interaction"]
+        self.assertEqual(restored["data"], {"preserved": "legacy"})
+        self.assertEqual(restored["content_revision"], 0)
+
     def test_large_copy_content_is_preserved_without_byte_truncation(self):
         self.registry.publish([snapshot()])
         reference = self.registry.resolve(

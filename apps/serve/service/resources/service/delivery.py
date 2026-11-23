@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import PurePath
 from time import perf_counter
@@ -580,23 +581,23 @@ class ResourceDeliveryService:
         compared_bytes = 0
         snapshot_started = perf_counter()
         try:
-            with self._versions.capture_agent_files(project_id) as capture:
-                for path in final_paths:
-                    if not self._versions.reviewable(path):
+            paths = tuple(path for path in final_paths if self._versions.reviewable(path))
+            with closing(
+                self._versions.capture_agent_files(project_id, paths, baseline_by_path)
+            ) as captures:
+                for path, capture in captures:
+                    if isinstance(capture, ContentError):
+                        if capture.code == "file_not_found":
+                            if path in baseline_by_path:
+                                removed[path] = baseline_by_path[path]
+                        elif capture.code != "file_too_large":
+                            raise capture
                         continue
-                    baseline = baseline_by_path.get(path)
-                    try:
-                        stable, descriptor = capture(path, baseline)
-                        compared_count += 1
-                        compared_bytes += stable.size
-                        if descriptor is not None:
-                            final_snapshots[path] = (stable, descriptor.object_id, descriptor)
-                    except ContentError as exc:
-                        if exc.code == "file_not_found":
-                            if baseline is not None:
-                                removed[path] = baseline
-                        elif exc.code != "file_too_large":
-                            raise
+                    stable, descriptor = capture
+                    compared_count += 1
+                    compared_bytes += stable.size
+                    if descriptor is not None:
+                        final_snapshots[path] = (stable, descriptor.object_id, descriptor)
         finally:
             timing.snapshot_seconds = perf_counter() - snapshot_started
             timing.compared_count = compared_count

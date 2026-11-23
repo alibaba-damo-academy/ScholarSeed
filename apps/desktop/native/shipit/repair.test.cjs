@@ -156,13 +156,43 @@ function fixture(context) {
 }
 
 contract('shipped repair library exposes no process-scope or fault-injection controls', (context) => {
-  assert.deepEqual(Object.getOwnPropertyNames(production), ['open'])
+  assert.deepEqual(Object.getOwnPropertyNames(production), ['open', 'observedLaunch'])
   assert.notEqual(fs.realpathSync(library), fs.realpathSync(fixtureLibrary))
   assert.notEqual(path.dirname(fs.realpathSync(library)), path.dirname(fs.realpathSync(fixtureLibrary)))
   const current = fixture(context)
   for (const extra of [{ processScope: [] }, { mappingDenials: 0 }]) {
     assert.throws(() => qualify({ ...current.config, ...extra }, production),
       (error) => error.code === 'ERR_TERMINAL_ARGUMENT')
+  }
+})
+
+contract('shipped observer recognizes only the matching launched cleanup record', (context) => {
+  const { config } = fixture(context)
+  const selection = { cleanup: config.cleanup, source: config.source, target: config.target }
+  const observe = (scope = selection) => production.observedLaunch(JSON.stringify(scope))
+  assert.equal(observe(), false)
+  const filename = path.join(config.cleanup, 'journal.plist')
+  const contents = fs.statSync(path.join(config.target, 'Contents'))
+  const identity = { dev: contents.dev, ino: contents.ino, uid: contents.uid }
+  const record = {
+    source: config.source,
+    originalTarget: config.target,
+    target: config.target,
+    targetIdentity: identity,
+    previous: config.target + '.previous',
+    previousIdentity: identity,
+    items: [],
+    launched: false,
+  }
+  for (const launched of [false, true]) {
+    execFileSync('/usr/bin/plutil', ['-convert', 'binary1', '-o', filename, '-'], {
+      input: JSON.stringify({ schema: '1', records: [{ ...record, launched }] }),
+    })
+    fs.chmodSync(filename, 0o600)
+    const before = fs.readFileSync(filename)
+    assert.equal(observe(), launched)
+    assert.equal(observe({ ...selection, source: config.source + '.other' }), false)
+    assert.deepEqual(fs.readFileSync(filename), before)
   }
 })
 

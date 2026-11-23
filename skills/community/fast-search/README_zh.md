@@ -3,13 +3,13 @@
 [English](README.md) · **简体中文**
 
 面向搜索栏场景的低延迟学术论文检索。它通过另行安装的 `$web-search` skill 解析潜在论文实体，
-再以 PaperHub 完成一次有界的关键词、题名和参考文献检索，最终返回最多 20 篇论文的
-`metadata.json`。直接查找出版社/arXiv 链接、DOI 或明确题名时，agent 在原有网页批次内解析规范题名
+再以 PaperHub 完成一次有界的关键词、题名和参考文献检索。查找指定单篇时，`metadata.json`
+和回复只交付核验后的目标论文；主题或相关研究检索返回最多 20 篇。直接查找出版社/arXiv 链接、DOI 或明确题名时，agent 在原有网页批次内解析规范题名
 `best_target` 并把它作为精确 PaperHub title 查询；并行核验输入链接/DOI 及原有网页批次中少量重要论文的元数据。
-PaperHub 未召回但可独立核实的论文也能返回；单篇目标保留为 Tier 1 首篇，一篇真实结果也有效。两条路径都无法核实才明确失败，
-不会用一组泛相关论文伪装成功。Tier 1 中依次优先用户查询的显式标识、agent 声明的
-`best_target` 和既有确定性相关性得分；普通主题检索不改变分层，单篇查找只为身份核实的目标保留首位。这一步不增加
-模型回合，普通主题检索的排序及分层规则不变。摘要只在单次 runner 进程内参与相关性
+PaperHub 未召回但可独立核实的论文也能返回；单篇目标是唯一的 Tier 1 结果，即使候选池里还有相关论文也不额外交付。两条路径都无法核实才明确失败，
+不会用一组泛相关论文伪装成功。主题检索的 Tier 1 中依次优先用户查询的显式标识、agent 声明的
+`best_target` 和既有确定性相关性得分；相关研究检索使用 `best_target.required: false`，保留主题检索的列表和分层。这一步不增加
+模型回合。摘要只在单次 runner 进程内参与相关性
 计算，不会写入 `metadata.json`、session、round trace 或检索缓存。
 本仓库只提供名为 `fast-search` 的 Veryfast 检索 Skill 及其部署入口，不生成长报告，
 也不会注册或覆盖其他检索 Skill。
@@ -25,7 +25,7 @@ PaperHub 未召回但可独立核实的论文也能返回；单篇目标保留�
 | 常驻 App Server Worker | 搜索栏、服务端集成、重复请求 | 复用 Codex 进程和鉴权，提供结构化进度事件，通常延迟更低、更稳定 | 需要后端托管 Worker、隔离输出目录并实现超时与进程健康管理 |
 
 两种方式使用同一个 `SKILL.md`、同一个 `quick_search.py` 和相同的
-`metadata.json` schema（默认返回 20 篇）。App Server 改变的是承载方式，不会自动增加检索轮次或提高
+`metadata.json` schema（主题检索默认返回 20 篇，指定单篇查找只返回核验后的 1 篇）。App Server 改变的是承载方式，不会自动增加检索轮次或提高
 论文质量。OpenAI 官方也把 App Server 定位为带 thread、turn 和流式事件的产品集成接口：
 [Codex App Server](https://developers.openai.com/codex/app-server/)。
 

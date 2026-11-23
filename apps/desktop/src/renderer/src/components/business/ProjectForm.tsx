@@ -92,7 +92,8 @@ export function ProjectForm({
   )
   const [error, setError] = React.useState<
     | {
-        messageKey: 'project.required' | 'project.createFailed' | 'project.saveFailed'
+        messageKey:
+          'project.required' | 'project.createFailed' | 'project.folderBusy' | 'project.saveFailed'
       }
     | { text: string }
     | null
@@ -137,7 +138,12 @@ export function ProjectForm({
         )
         if (result.kind === 'rejected') {
           attempt.current = null
-          if (!result.maintenance) setError({ messageKey: 'project.createFailed' })
+          if (!result.maintenance) {
+            setError({
+              messageKey:
+                result.code === 'ERR_LEASE_BUSY' ? 'project.folderBusy' : 'project.createFailed',
+            })
+          }
           return
         }
         if (result.kind === 'unknown') {
@@ -319,7 +325,10 @@ export function ProjectForm({
                     void window.scholarseed
                       .pickDir()
                       .then((selected) => {
-                        if (selected) setFolder(selected)
+                        if (selected) {
+                          setFolder(selected)
+                          setError(null)
+                        }
                       })
                       .catch(() => {
                         reportProjectCreation({

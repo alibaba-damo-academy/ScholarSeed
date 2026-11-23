@@ -27,7 +27,7 @@ from service.resources.persistence.objects import CasStore
 from service.resources.persistence.version import VersionStore
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService
-from service.resources.service.history import ResourceVersionService
+from service.resources.service.history import AGENT_CAPTURE_WORKERS, ResourceVersionService
 from service.resources.service.migration import ResourceReviewMigration
 from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.recovery import ResourceRecoveryService
@@ -124,7 +124,9 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_unchanged_turn_records_resource_finalization_timings(self) -> None:
-        self.target.with_name("other.md").write_bytes(b"other\n")
+        peer_contents = tuple(f"other-{index}\n".encode() for index in range(AGENT_CAPTURE_WORKERS))
+        for index, content in enumerate(peer_contents):
+            self.target.with_name(f"other-{index}.md").write_bytes(content)
         await self.deliveries.begin_turn("session", "turn", self.project.root)
         prefix = "resources.versions.delivery.timing "
 
@@ -140,7 +142,7 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
 
         put.assert_not_called()
         verify.assert_not_called()
-        spool.assert_called_once()
+        self.assertEqual(spool.call_count, AGENT_CAPTURE_WORKERS)
         records = [record.getMessage() for record in logs.records]
         timings = [
             json.loads(record.removeprefix(prefix))
@@ -151,9 +153,9 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         timing = timings[0]
         self.assertEqual(timing["session_id"], "session")
         self.assertEqual(timing["turn_id"], "turn")
-        self.assertEqual(timing["compared_count"], 2)
-        self.assertEqual(timing["compared_bytes"], len(b"initial\nother\n"))
-        self.assertEqual(timing["unchanged_count"], 2)
+        self.assertEqual(timing["compared_count"], 1 + len(peer_contents))
+        self.assertEqual(timing["compared_bytes"], len(b"initial\n") + sum(map(len, peer_contents)))
+        self.assertEqual(timing["unchanged_count"], 1 + len(peer_contents))
         self.assertEqual(timing["snapshot_count"], 0)
         self.assertEqual(timing["snapshot_bytes"], 0)
         self.assertEqual(timing["review_file_count"], 0)
@@ -304,19 +306,37 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         baselines = store.turn_baselines("session", "turn")
         self.assertEqual([baseline.path for baseline in baselines], ["resources/notes.md"])
 
+    async def test_finalization_captures_two_files_concurrently(self) -> None:
+        self.target.with_name("other.md").write_bytes(b"unchanged peer\n")
+        await self.begin()
+        barrier = threading.Barrier(2)
+        original = self.content.capture_from_space
+
+        def capture(*args, **kwargs):
+            barrier.wait(timeout=5)
+            return original(*args, **kwargs)
+
+        with patch.object(self.content, "capture_from_space", side_effect=capture) as captured:
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        self.assertEqual(captured.call_count, 2)
+        self.assertEqual(result.paths, ("resources/notes.md",))
+
     async def test_cancelled_finalization_remains_busy_until_snapshot_is_committed(self) -> None:
+        self.target.with_name("other.md").write_bytes(b"unchanged peer\n")
         await self.begin()
         gate = self.supervisor._activities
         entered, release = threading.Event(), threading.Event()
-        original = self.deliveries._finish
+        original = self.content.capture_from_space
 
-        def finish(*args):
-            entered.set()
-            if not release.wait(10):
-                raise TimeoutError("finalization thread was not released")
-            return original(*args)
+        def capture(scope, project_id, path, *args, **kwargs):
+            if path == "resources/notes.md":
+                entered.set()
+                if not release.wait(10):
+                    raise TimeoutError("finalization worker was not released")
+            return original(scope, project_id, path, *args, **kwargs)
 
-        with patch.object(self.deliveries, "_finish", side_effect=finish):
+        with patch.object(self.content, "capture_from_space", side_effect=capture):
             task = asyncio.create_task(
                 self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
             )

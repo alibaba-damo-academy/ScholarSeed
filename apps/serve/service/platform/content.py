@@ -521,13 +521,21 @@ class AssetTree:
     updated_at: float | None = None
 
 
+ResourceTreeObserver = Callable[
+    [tuple[AssetTree, ...], dict[str, str | None], tuple[ExternalRootRef, ...]], None
+]
+
+
 @dataclass(frozen=True)
 class FlatResourceTree:
-    """Complete resource nodes and optional Git ownership from the same read."""
+    """Complete resource nodes and optional observations from the same read."""
 
     nodes: tuple[AssetTree, ...]
     repositories: dict[str, str | None]
     incremental_parents: tuple[str, ...] | None = None
+    # A missing key requires inspection. None identifies a known non-file.
+    observed_entries: dict[str, ResourceEntry | None] = field(default_factory=dict)
+    directory: FileAssetRef | None = None
 
 
 @dataclass(frozen=True)
@@ -893,6 +901,10 @@ class ContentPort(Protocol):
         *,
         include_repositories: bool = False,
         track_parents: bool = False,
+        observe_entries: bool = False,
+        shallow: bool = False,
+        on_directory: ResourceTreeObserver | None = None,
+        check: Callable[[], None] | None = None,
     ) -> FlatResourceTree:
         """List all visible descendants under the requested authorized resource directories."""
         ...
@@ -1175,5 +1187,6 @@ __all__ = [
     "ResourceScanObserver",
     "ResourceTreeChanges",
     "ResourceTreeGroup",
+    "ResourceTreeObserver",
     "RootKind",
 ]

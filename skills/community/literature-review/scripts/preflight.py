@@ -40,7 +40,7 @@ import socket
 import subprocess
 import sys
 from urllib.parse import urlparse
-from platform_runtime import runtime_info, command_spec, discover_python, supports_python
+from platform_runtime import runtime_info, command_spec, discover_python, supports_python, same_interpreter, INTERPRETER_ABSOLUTE
 PROXY_PROBE_TIMEOUT_SECONDS = 30
 RUNTIME_SCOPE = 'runtime'
 FULL_SCOPE = 'full'
@@ -132,7 +132,7 @@ def check_python(rep: Report, workspace_python=None) -> None:
     v = sys.version_info
     explicit=workspace_python or os.environ.get('SCHOLARSEED_PYTHON')
     bound=(explicit is None or
-           bool(explicit and pathlib.Path(explicit).absolute()==pathlib.Path(sys.executable).absolute()))
+           bool(explicit and same_interpreter(explicit, sys.executable, mode=INTERPRETER_ABSOLUTE)))
     rep.add('runtime', 'bound product Python', supports_python(v) and bound, True,
             detail=f'{sys.executable}: {v.major}.{v.minor}.{v.micro}',
             hint='launch from ScholarSeed Desktop or Serve with its product Python')
@@ -565,7 +565,7 @@ def main() -> int:
                    and binding.get('version')==(_slr_paths.HOME/'VERSION').read_text().strip()
                    and binding.get('platform',sys.platform)==sys.platform
                    and binding.get('workspace',str(pathlib.Path(args.workspace).resolve()))==str(pathlib.Path(args.workspace).resolve())
-                   and pathlib.Path(bound['python']).absolute()==pathlib.Path(sys.executable).absolute())
+                   and same_interpreter(bound['python'], sys.executable, mode=INTERPRETER_ABSOLUTE))
             rep.add('runtime','workspace binding',valid,True,detail=str(binding_path),
                     hint='restore the bound skill, workspace path and Python')
             if valid:workspace_python=bound['python']

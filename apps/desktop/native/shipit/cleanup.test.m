@@ -109,6 +109,11 @@ int main(int argc, const char **argv) {
         assert(SSCleanupCommittedRequest(source, target));
         assert(SSCleanupReconcilesRollback(previous, target));
         assert(SSCleanupLaunchNeeded(source, target));
+        SSCleanupClose();
+        assert(SSCleanupOpenExistingDirectory(journal, &error));
+        assert(!SSCleanupObservedLaunch(source, target, &error));
+        SSCleanupClose();
+        assert(SSCleanupOpenDirectory(journal, &error));
         assert(SSCleanupMarkLaunched(source, target));
         SSCleanupClose();
         // Durable reopen represents termination after commit and before owned state clear.
@@ -123,6 +128,11 @@ int main(int argc, const char **argv) {
         assert(SSCleanupKnownRequest(SystemAlias(source)));
         assert(SSCleanupCommittedRequest(SystemAlias(source), SystemAlias(target)));
         assert(!SSCleanupLaunchNeeded(SystemAlias(source), SystemAlias(target)));
+        SSCleanupClose();
+        assert(SSCleanupOpenExistingDirectory(journal, &error));
+        assert(SSCleanupObservedLaunch(SystemAlias(source), SystemAlias(target), &error));
+        assert(!SSCleanupObservedLaunch(external, target, &error));
+        assert(!SSCleanupObservedLaunch(source, external, &error));
         SSCleanupClose();
         assert(SSCleanupOpenDirectory(journal, &error));
         assert(SSCleanupCommittedRequest(source, target));

@@ -262,6 +262,7 @@ SESSION_OPEN_TIMING_EVENT = "session_open_timing"
 # logger 才能保证埋点在生产日志里必达。
 SESSION_OPEN_TIMING_LOGGER = logging.getLogger(__name__).getChild("open_timing")
 SESSION_LIST_TIMING_LOGGER = logging.getLogger(__name__).getChild("list_timing")
+SESSION_FORK_LOGGER = logging.getLogger(__name__).getChild("fork")
 SESSION_LIST_TIMING_MILLISECONDS = 1000
 
 
@@ -551,6 +552,7 @@ class SessionService:
         self._fork_snapshots: (
             Callable[[str, str, Mapping[str, Any], sqlite3.Connection], str | None] | None
         ) = None
+        self._fork_display_card_types: frozenset[str] = frozenset()
         self._access = access
         self._events = events
         self._runtime = runtime
@@ -580,6 +582,9 @@ class SessionService:
         self, provider: Callable[[str, str, Mapping[str, Any], sqlite3.Connection], str | None]
     ) -> None:
         self._fork_snapshots = provider
+
+    def bind_fork_display_cards(self, *card_types: str) -> None:
+        self._fork_display_card_types = frozenset(card_types)
 
     def bind_deletion(self, callback: Callable[[SessionCatalogRecord], None]) -> None:
         self._deletion = callback
@@ -1107,32 +1112,44 @@ class SessionService:
         imported: bool,
     ) -> None:
         fork_snapshots = self._fork_snapshots
+        source_id = str(origin.payload["source_session_id"])
+        through_seq = int(origin.payload["source_product_seq"])
         with self._events.transaction() as connection:
-            self._events.inherit_history(
-                str(origin.payload["source_session_id"]),
+            inherited_cards = self._events.inherit_history(
+                source_id,
                 target,
-                int(origin.payload["source_product_seq"]),
+                through_seq,
                 copied_workdir=copied_workdir,
                 connection=connection,
                 inherit_snapshot=(
                     (
                         lambda payload, current: fork_snapshots(
-                            str(origin.payload["source_session_id"]), session_id, payload, current
+                            source_id, session_id, payload, current
                         )
                     )
                     if fork_snapshots is not None
                     else None
                 ),
                 snapshots_only=imported,
+                display_card_types=self._fork_display_card_types,
             )
             if not imported:
                 self._artifacts.inherit_history(
-                    str(origin.payload["source_session_id"]),
+                    source_id,
                     session_id,
-                    int(origin.payload["source_product_seq"]),
+                    through_seq,
                     copied_workdir=copied_workdir,
                     connection=connection,
                 )
+        if not imported:
+            SESSION_FORK_LOGGER.info(
+                "session_fork_history_imported source_session_id=%s session_id=%s "
+                "source_product_seq=%d display_cards=%d",
+                source_id,
+                session_id,
+                through_seq,
+                inherited_cards,
+            )
 
     async def _create(
         self,

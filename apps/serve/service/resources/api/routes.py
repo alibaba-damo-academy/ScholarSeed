@@ -12,26 +12,35 @@ harness, 而目录/所有权对齐并不要求 URL 也跟着改。URL 是对外�
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
+import logging
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import Event
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
 
 from service.content.domain.model import ROOT_BUSY_ERROR, ContentError
 from service.content.service.port import DEFAULT_MEDIA_TYPE, ContentService
 from service.content.service.tree import DEFAULT_MAX_DEPTH
-from service.platform.activity import ActivityDomain
+from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
 from service.platform.content import (
     AssetKind,
     AssetOrigin,
     AssetPage,
     AssetTree,
     ExternalRootRef,
+    ResourceEntry,
     RootKind,
 )
 from service.platform.excerpts import ExcerptSourceError
 from service.platform.resources import ResourceCapability
+from service.platform.sse import sse_encode
 from service.resources.api.schema import (
     ResourceExcerptsRequest,
     ResourceImportRequest,
@@ -68,13 +77,21 @@ from service.resources.service.importer import (
     WebImportItem,
     WebImportStatus,
 )
-from service.resources.service.listing import ResourceListing
+from service.resources.service.listing import ResourceListing, ResourceListingSnapshot
 from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.writer import ResourceWriterError
 
 #: 资料库路由前缀。
 RESOURCE_ROUTE_PREFIX = "/api/resource"
 RESOURCE_CANDIDATE_PAGE_SIZE = 200
+LISTING_STREAM_BATCH_SIZE = 128
+LISTING_STREAM_BUFFER_SIZE = 2
+LISTING_STREAM_STOP_POLL_SECONDS = 0.05
+LISTING_STREAM_MEDIA_TYPE = "text/event-stream"
+LISTING_STREAM_HEADERS = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+LISTING_STREAM_FAILED = "resource_listing_failed"
+LISTING_STREAM_UNAVAILABLE = "update_maintenance"
+_log = logging.getLogger(__name__)
 
 #: 请求不合法时的状态码 (与既有网关约定一致)。
 INVALID_REQUEST_STATUS = 400
@@ -401,10 +418,14 @@ def _resource_list_items(
     entries: tuple[ResourceListEntry, ...],
     repositories: dict[str, str | None],
     linked_roots: tuple[ExternalRootRef, ...],
+    *,
+    observed_entries: Mapping[str, ResourceEntry | None] | None = None,
 ) -> list[dict]:
     paths = tuple(entry.path for entry in entries)
     capabilities = (
-        supervisor.capability_states(project, paths, repositories=repositories)
+        supervisor.capability_states(
+            project, paths, repositories=repositories, observed_entries=observed_entries
+        )
         if supervisor is not None
         else {}
     )
@@ -436,29 +457,240 @@ def _resource_listing(
     supervisor: ResourceVersionSupervisor | None,
     *,
     incremental: bool = False,
+    directory: str | None = None,
 ) -> dict:
-    """Materialize the whole disk-backed list away from the HTTP event loop."""
+    """Materialize a complete list or one directory away from the HTTP event loop."""
 
-    entries, repositories, parents = ResourceListing(content).snapshot(
-        project, track_parents=incremental
+    listing = ResourceListing(content)
+    snapshot = (
+        listing.snapshot(project, track_parents=incremental)
+        if directory is None
+        else listing.directory(
+            project, directory, track_parents=incremental, observe_entries=supervisor is not None
+        )
     )
-    linked_roots = content.external_roots(project)
+    return _listing_payload(
+        project, supervisor, snapshot, content.external_roots(project), incremental=incremental
+    )
+
+
+def _linked_roots_payload(roots: tuple[ExternalRootRef, ...]) -> dict:
     return {
-        "items": _resource_list_items(project, supervisor, entries, repositories, linked_roots),
-        "linked_roots": {
-            root.root_id: {
-                "root_id": root.root_id,
-                "mount_path": root.mount_path,
-                "source_path": root.source_path,
-            }
-            for root in linked_roots
-        },
+        root.root_id: {
+            "root_id": root.root_id,
+            "mount_path": root.mount_path,
+            "source_path": root.source_path,
+        }
+        for root in roots
+    }
+
+
+def _listing_payload(
+    project: str,
+    supervisor: ResourceVersionSupervisor | None,
+    snapshot: ResourceListingSnapshot,
+    linked_roots: tuple[ExternalRootRef, ...],
+    *,
+    incremental: bool,
+) -> dict:
+    parents = snapshot.incremental_parents
+    return {
+        **({"directory": snapshot.directory} if snapshot.directory is not None else {}),
+        "items": _resource_list_items(
+            project,
+            supervisor,
+            snapshot.entries,
+            snapshot.repositories,
+            linked_roots,
+            observed_entries=snapshot.observed_entries,
+        ),
+        "linked_roots": _linked_roots_payload(linked_roots),
         **(
             {"incremental": {"parents": parents or (), "supported": parents is not None}}
             if incremental
             else {}
         ),
     }
+
+
+@dataclass(frozen=True)
+class _ListingFrame:
+    text: str
+    terminal: bool = False
+    linked_roots: tuple[ExternalRootRef, ...] = ()
+
+
+class _ListingStreamStopped(Exception):
+    pass
+
+
+class _ListingStream(StreamingResponse):
+    def __init__(self, frames: AsyncGenerator[str, None]) -> None:
+        super().__init__(
+            frames, media_type=LISTING_STREAM_MEDIA_TYPE, headers=LISTING_STREAM_HEADERS
+        )
+        self._frames = frames
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Close the generator even when the ASGI send fails while it is suspended.
+        async with aclosing(self._frames):
+            await super().__call__(scope, receive, send)
+
+
+async def _listing_stream_frames(
+    content: ContentService,
+    project: str,
+    supervisor: ResourceVersionSupervisor | None,
+    activities: Activities,
+    *,
+    candidate_completion: bool = False,
+) -> AsyncGenerator[str, None]:
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[_ListingFrame] = asyncio.Queue(LISTING_STREAM_BUFFER_SIZE)
+    stopped = Event()
+
+    def check() -> None:
+        if stopped.is_set():
+            raise _ListingStreamStopped
+
+    def enqueue(frame: _ListingFrame) -> None:
+        check()
+        future = asyncio.run_coroutine_threadsafe(queue.put(frame), loop)
+        try:
+            while True:
+                check()
+                try:
+                    future.result(timeout=LISTING_STREAM_STOP_POLL_SECONDS)
+                    return
+                except TimeoutError:
+                    continue
+        finally:
+            future.cancel()
+
+    def scan() -> _ListingFrame:
+        pending: list[dict] = []
+        published = False
+
+        def emit_frame(
+            kind: str, items: list[dict], linked_roots: tuple[ExternalRootRef, ...]
+        ) -> None:
+            enqueue(
+                _ListingFrame(
+                    sse_encode(
+                        {
+                            "type": kind,
+                            "items": items,
+                            "linked_roots": _linked_roots_payload(linked_roots),
+                        }
+                    ),
+                    linked_roots=linked_roots,
+                )
+            )
+
+        def emit(items: list[dict], linked_roots: tuple[ExternalRootRef, ...]) -> None:
+            nonlocal published
+            if not items:
+                return
+            emit_frame("batch", items, linked_roots)
+            published = True
+
+        def flush() -> None:
+            emit(pending, ())
+            pending.clear()
+
+        def publish(
+            entries: tuple[ResourceListEntry, ...],
+            repositories: dict[str, str | None],
+            linked_roots: tuple[ExternalRootRef, ...],
+        ) -> None:
+            items = _resource_list_items(project, None, entries, repositories, linked_roots)
+            if linked_roots:
+                flush()
+                emit(items, linked_roots)
+                return
+            pending.extend(items)
+            if not published or len(pending) >= LISTING_STREAM_BATCH_SIZE:
+                flush()
+
+        def complete_candidates(
+            entries: tuple[ResourceListEntry, ...],
+            repositories: dict[str, str | None],
+            linked_roots: tuple[ExternalRootRef, ...],
+        ) -> None:
+            emit_frame(
+                "candidates_complete",
+                _resource_list_items(project, None, entries, repositories, linked_roots),
+                linked_roots,
+            )
+
+        snapshot, roots = ResourceListing(content).progressive_snapshot(
+            project,
+            publish,
+            check,
+            flush=flush,
+            complete_candidates=complete_candidates if candidate_completion else None,
+        )
+        check()
+        body = _listing_payload(project, supervisor, snapshot, roots, incremental=True)
+        return _ListingFrame(
+            sse_encode({"type": "complete", **body}), terminal=True, linked_roots=roots
+        )
+
+    def failure(detail: str, status: int) -> _ListingFrame:
+        return _ListingFrame(
+            sse_encode({"type": "error", "detail": detail, "status": status}), terminal=True
+        )
+
+    def current_roots() -> tuple[ExternalRootRef, ...]:
+        with activities.enter(ActivityDomain.RESOURCE):
+            return content.external_roots(project)
+
+    async def produce() -> None:
+        try:
+            if supervisor is not None:
+                # Recovery is a prerequisite; activating the watcher here would
+                # schedule another traversal beside the requested search scan.
+                await activities.finish(
+                    ActivityDomain.RESOURCE, lambda: supervisor.prepare_project(project)
+                )
+            frame = await activities.to_thread(ActivityDomain.RESOURCE, scan)
+        except _ListingStreamStopped:
+            return
+        except ContentError as error:
+            frame = failure(error.code, _fail(error).status_code)
+        except MaintenanceActive:
+            frame = failure(LISTING_STREAM_UNAVAILABLE, 503)
+        except Exception:
+            _log.exception("Progressive project file listing failed")
+            frame = failure(LISTING_STREAM_FAILED, 500)
+        await queue.put(frame)
+
+    producer = asyncio.create_task(produce())
+    try:
+        while True:
+            frame = await queue.get()
+            if frame.linked_roots:
+                try:
+                    # Use the HTTP worker pool: traversal may occupy every
+                    # asyncio worker while waiting for this queue to drain.
+                    roots = await run_in_threadpool(current_roots)
+                except ContentError as error:
+                    frame = failure(error.code, _fail(error).status_code)
+                except MaintenanceActive:
+                    frame = failure(LISTING_STREAM_UNAVAILABLE, 503)
+                except Exception:
+                    _log.exception("Progressive project file listing grant recheck failed")
+                    frame = failure(LISTING_STREAM_FAILED, 500)
+                else:
+                    if roots != frame.linked_roots:
+                        frame = failure(ROOT_BUSY_ERROR, 409)
+            yield frame.text
+            if frame.terminal:
+                return
+    finally:
+        stopped.set()
+        producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
 
 
 def _resource_listing_changes(
@@ -482,13 +714,27 @@ def register_resource_routes(app: FastAPI) -> None:
 
     @app.get(f"{RESOURCE_ROUTE_PREFIX}/list")
     async def resource_list(
-        request: Request, project: str = Query(min_length=1), incremental: bool = False
+        request: Request,
+        project: str = Query(min_length=1),
+        incremental: bool = False,
+        directory: str | None = None,
+        versions: bool = True,
     ) -> dict:
         try:
             content = _content(request)
-            supervisor = getattr(request.app.state, "resource_version_supervisor", None)
+            supervisor = (
+                getattr(request.app.state, "resource_version_supervisor", None)
+                if directory is None or versions
+                else None
+            )
             if supervisor is not None:
-                await supervisor.activate_project(project)
+                if directory is None:
+                    await supervisor.activate_project(project)
+                elif directory == "":
+                    # First root hydration starts version observation and initial discovery.
+                    await supervisor.activate_project(project, rediscover=False)
+                else:
+                    await supervisor.prepare_project(project)
             return await request.app.state.activities.to_thread(
                 ActivityDomain.RESOURCE,
                 _resource_listing,
@@ -496,9 +742,26 @@ def register_resource_routes(app: FastAPI) -> None:
                 project,
                 supervisor,
                 incremental=incremental,
+                directory=directory,
             )
         except ContentError as exc:
             raise _fail(exc) from exc
+
+    @app.get(f"{RESOURCE_ROUTE_PREFIX}/list/search")
+    async def resource_listing_search(
+        request: Request, project: str = Query(min_length=1), candidate_completion: bool = False
+    ) -> StreamingResponse:
+        content = _content(request)
+        supervisor = getattr(request.app.state, "resource_version_supervisor", None)
+        return _ListingStream(
+            _listing_stream_frames(
+                content,
+                project,
+                supervisor,
+                request.app.state.activities,
+                candidate_completion=candidate_completion,
+            )
+        )
 
     @app.post(f"{RESOURCE_ROUTE_PREFIX}/list/changes")
     async def resource_list_changes(

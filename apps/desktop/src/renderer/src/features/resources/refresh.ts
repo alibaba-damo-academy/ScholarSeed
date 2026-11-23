@@ -1,8 +1,18 @@
 import type { FileEvent } from '../../contracts/content'
+import { RESOURCE_PATH_SEPARATOR, RESOURCE_ROOT_DIRECTORY } from './lifecycle.ts'
+import type { ResourceNode } from './state'
 
 export interface ResourceListingRefresh {
   request(paths?: readonly string[]): void
   dispose(): void
+}
+
+export const RESOURCE_LISTING_SCOPE_UNAVAILABLE = Symbol('resource listing scope unavailable')
+type ResourceListingRead<Result> = Result | null | typeof RESOURCE_LISTING_SCOPE_UNAVAILABLE
+const INVALID_SCOPE_STATUSES = new Set([400, 401, 403, 404, 410])
+
+export function isResourceListingBoundaryFailure(status: number, detail?: string): boolean {
+  return INVALID_SCOPE_STATUSES.has(status) || (status === 409 && detail !== 'root_busy')
 }
 
 export interface ResourceListingSnapshot<Item> {
@@ -11,6 +21,11 @@ export interface ResourceListingSnapshot<Item> {
     parents: string[]
     supported: boolean
   }
+}
+
+export interface ResourceListingDirectorySnapshot extends ResourceListingSnapshot<ResourceNode> {
+  directory: string
+  versionsLoaded: boolean
 }
 
 export interface ResourceListingChanges<Item> {
@@ -45,7 +60,49 @@ export function resourceListingEventPaths(
 }
 
 function listingParent(path: string): string {
-  return path.slice(0, Math.max(path.lastIndexOf('/'), 0))
+  return path.slice(0, Math.max(path.lastIndexOf(RESOURCE_PATH_SEPARATOR), 0))
+}
+
+export function resourceListingDirectories(
+  directories: ReadonlyMap<string, { snapshot: ResourceListingDirectorySnapshot | null }>,
+  expanded: Record<string, boolean>
+): string[] {
+  const visible = new Set([RESOURCE_ROOT_DIRECTORY])
+  for (const parent of visible) {
+    for (const entry of directories.get(parent)?.snapshot?.items ?? []) {
+      if (entry.kind === 'dir' && expanded[entry.path] === true) visible.add(entry.path)
+    }
+  }
+  return [...visible]
+}
+
+export function listingDirectoryNodes(
+  directories: ReadonlyMap<string, { snapshot: ResourceListingDirectorySnapshot | null }>,
+  visible: readonly string[]
+): ResourceNode[] {
+  const nodes = new Map<string, ResourceNode>()
+  for (const parent of visible) {
+    for (const entry of directories.get(parent)?.snapshot?.items ?? []) {
+      if (!nodes.has(entry.path)) nodes.set(entry.path, entry)
+    }
+  }
+  return [...nodes.values()]
+}
+
+export function resourceListingDirectoryEventPaths(
+  directory: string | undefined,
+  paths: readonly string[] | undefined
+): string[] | undefined {
+  if (
+    !paths ||
+    directory === undefined ||
+    paths.some(
+      (changed) =>
+        directory === changed || directory.startsWith(`${changed}${RESOURCE_PATH_SEPARATOR}`)
+    )
+  )
+    return undefined
+  return paths.filter((path) => listingParent(path) === directory)
 }
 
 export function applyResourceListingChanges<
@@ -107,20 +164,51 @@ export function applyResourceListingChanges<
 }
 
 export function createResourceListingRefresh<Result>(
-  read: () => Promise<Result | null>,
-  publish: (result: Result | null, refreshing: boolean) => void,
-  readDelta?: (snapshot: Result, paths: readonly string[]) => Promise<Result | null>
+  read: () => Promise<ResourceListingRead<Result>>,
+  publish: (result: Result | null, refreshing: boolean, invalidated?: boolean) => void,
+  readDelta?: (snapshot: Result, paths: readonly string[]) => Promise<Result | null>,
+  options?: {
+    deltaWhileIdle?: boolean
+    hydrate?: (snapshot: Result) => Promise<ResourceListingRead<Result>>
+  }
 ): ResourceListingRefresh {
   let active = true
   let running = false
   let pending: true | Set<string> | undefined
   let snapshot: Result | null = null
+  let revision = 0
+  let hydrating = false
+  let pendingHydration: { snapshot: Result; revision: number } | undefined
+
+  const hydrate = options?.hydrate
+  const drainHydration = async (): Promise<void> => {
+    if (!hydrate) return
+    while (active && pendingHydration) {
+      const job = pendingHydration
+      pendingHydration = undefined
+      if (job.revision !== revision || snapshot !== job.snapshot) continue
+      const result = await hydrate(job.snapshot).catch(() => null)
+      if (
+        active &&
+        job.revision === revision &&
+        snapshot === job.snapshot &&
+        result !== null &&
+        result !== snapshot
+      ) {
+        const invalidated = result === RESOURCE_LISTING_SCOPE_UNAVAILABLE
+        snapshot = invalidated ? null : result
+        publish(snapshot, false, invalidated)
+      }
+    }
+    hydrating = false
+  }
 
   const drain = async (): Promise<void> => {
     while (active && pending) {
       const next = pending
       pending = undefined
-      let result: Result | null
+      const readingRevision = revision
+      let result: ResourceListingRead<Result>
       if (readDelta && next !== true && snapshot !== null) {
         result = await readDelta(snapshot, [...next]).catch(() => null)
         if (result === null) {
@@ -133,8 +221,16 @@ export function createResourceListingRefresh<Result>(
         result = await read().catch(() => null)
       }
       // Show the available snapshot while newer changes are read in the background.
-      snapshot = result
-      if (active && (result !== null || !pending)) publish(result, Boolean(pending))
+      const invalidated = result === RESOURCE_LISTING_SCOPE_UNAVAILABLE
+      snapshot = result === RESOURCE_LISTING_SCOPE_UNAVAILABLE ? null : result
+      if (active && (result !== null || !pending)) publish(snapshot, Boolean(pending), invalidated)
+      if (active && hydrate && snapshot !== null && !pending) {
+        pendingHydration = { snapshot, revision: readingRevision }
+        if (!hydrating) {
+          hydrating = true
+          void drainHydration()
+        }
+      }
     }
     running = false
   }
@@ -142,7 +238,8 @@ export function createResourceListingRefresh<Result>(
   return {
     request(paths): void {
       if (!active) return
-      if (!paths?.length || !readDelta || !running) {
+      revision += 1
+      if (!paths?.length || !readDelta || (!running && !options?.deltaWhileIdle)) {
         pending = true
       } else if (pending !== true) {
         pending ??= new Set()

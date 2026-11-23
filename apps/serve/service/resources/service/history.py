@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import ExitStack, contextmanager
+from contextvars import copy_context
 from difflib import unified_diff
 from hashlib import sha256
+from itertools import batched
 from pathlib import PurePosixPath
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Generator, Iterator
 from unicodedata import category
 
 from service.content.domain.model import ContentError
@@ -81,6 +84,7 @@ REVIEW_SEAL_EVENTS = {
 VERSION_ALIAS_MAX_LENGTH = 80
 VERSION_ALIAS_ACTOR = "user"
 VERSION_HISTORY_ORDERS = frozenset({"newest", "oldest"})
+AGENT_CAPTURE_WORKERS = 4
 
 
 class ResourceVersionService:
@@ -1018,34 +1022,94 @@ class ResourceVersionService:
             None,
         )
 
-    @contextmanager
+    def _capture_agent_file(
+        self,
+        project_id: str,
+        path: str,
+        baseline: TurnBaseline | None,
+        capture: Callable[[str, int, BinaryIO], StableContentCapture],
+        cas: CasStore,
+        spool: BinaryIO,
+    ) -> tuple[StableContentCapture, bool, ObjectDescriptor | None] | ContentError:
+        try:
+            stable = capture(path, VERSION_MAX_BYTES, spool)
+            if (
+                baseline is not None
+                and stable.revision == baseline.revision
+                and stable.mode_bits == baseline.mode_bits
+            ):
+                return stable, False, None
+            self._require_book_versions(project_id, path)
+            return stable, True, cas.verify_if_present(stable.revision)
+        except ContentError as error:
+            return error
+
     def capture_agent_files(
-        self, project_id: str
-    ) -> Iterator[
-        Callable[[str, TurnBaseline | None], tuple[StableContentCapture, ObjectDescriptor | None]]
+        self,
+        project_id: str,
+        paths: tuple[str, ...],
+        baselines: Mapping[str, TurnBaseline],
+    ) -> Generator[
+        tuple[str, tuple[StableContentCapture, ObjectDescriptor | None] | ContentError], None, None
     ]:
-        """Compare a project's final files using one bounded spool under its writer."""
+        """Compare final files concurrently; the caller's writer still owns CAS publication."""
 
+        if not paths:
+            return
         cas = self._cas(project_id)
-        with (
-            cas.spool() as spool,
-            self._content.capture_stable_batch(project_id) as capture_stable,
-        ):
+        with ExitStack() as captures:
+            lanes = []
+            for _ in range(min(len(paths), AGENT_CAPTURE_WORKERS)):
+                executor = captures.enter_context(ThreadPoolExecutor(max_workers=1))
+                spool = captures.enter_context(cas.spool())
+                worker_context = copy_context()
+                worker_scope = ExitStack()
+                # SQLite readers and their activity scopes stay on the owning thread.
+                captures.callback(
+                    lambda executor=executor, context=worker_context, scope=worker_scope: executor.submit(
+                        context.run, scope.close
+                    ).result()
+                )
+                capture = executor.submit(
+                    worker_context.run,
+                    worker_scope.enter_context,
+                    self._content.capture_stable_batch(project_id),
+                ).result()
+                lanes.append((executor, worker_context, capture, spool))
 
-            def capture(
-                path: str, baseline: TurnBaseline | None
-            ) -> tuple[StableContentCapture, ObjectDescriptor | None]:
-                stable = capture_stable(path, VERSION_MAX_BYTES, spool)
-                if (
-                    baseline is not None
-                    and stable.revision == baseline.revision
-                    and stable.mode_bits == baseline.mode_bits
-                ):
-                    return stable, None
-                self._require_book_versions(project_id, path)
-                return stable, self._publish_capture(cas, spool, stable)
-
-            yield capture
+            for batch in batched(paths, len(lanes)):
+                batch_lanes = lanes[: len(batch)]
+                futures = []
+                try:
+                    for path, (executor, worker_context, capture, spool) in zip(
+                        batch, batch_lanes, strict=True
+                    ):
+                        futures.append(
+                            executor.submit(
+                                worker_context.run,
+                                self._capture_agent_file,
+                                project_id,
+                                path,
+                                baselines.get(path),
+                                capture,
+                                cas,
+                                spool,
+                            )
+                        )
+                    for path, (_, _, _, spool), future in zip(
+                        batch, batch_lanes, futures, strict=True
+                    ):
+                        result = future.result()
+                        if isinstance(result, ContentError):
+                            yield path, result
+                            continue
+                        stable, changed, descriptor = result
+                        if changed and descriptor is None:
+                            descriptor = self._publish_capture(cas, spool, stable)
+                        yield path, (stable, descriptor)
+                finally:
+                    # A failed capture must not close spools that other workers still use.
+                    wait(futures)
 
     def verify_object(self, project_id: str, object_id: str) -> ObjectDescriptor:
         """Resolve and verify one immutable object independently of its layout."""

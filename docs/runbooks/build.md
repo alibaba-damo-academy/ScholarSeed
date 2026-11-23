@@ -1333,6 +1333,11 @@ uninstall entries and historical NSIS GUID install/uninstall entries. It is read
 default; any entry blocks isolated installation. Access failures and invalid query
 results also fail.
 
+Windows signed distribution skips existing artifacts and claims before running
+`npm run package:preflight`. This command precedes any new claim, takes the same
+verification lock, and requires neither Desktop
+dependencies nor signing inputs. The check before Setup still runs under its own lock.
+
 CI may explicitly set `SCHOLARSEED_CI_REGISTRATION_ROOT` to allow automatic cleanup of
 complete historical NSIS registration pairs left by acceptance installs beneath that
 root, at `apps/desktop/release/{dev,preview,release}-win32-x86_64/native-install/app`.
@@ -1344,11 +1349,31 @@ empty setting disables automatic cleanup. Drive roots, UNC paths, relative paths
 inaccessible directories are not accepted. The distribution repository is responsible
 for providing a private CI root.
 
-`[installer-preflight]` outputs the cleanup status and hive/view/kind. Existing
-installations, Velopack registrations, and incomplete or unowned remnants continue to
-block acceptance and require separate handling. The code does not run an uninstaller or
-delete installation files, and does not bypass original-user/elevation migration
-protection. macOS does not run the Windows registry preflight.
+Signed distribution CI sets `SCHOLARSEED_CI_VELOPACK_ROOT` to the same private root as
+`--verification-root`. Before launching Setup, acceptance records its exact temporary
+sandbox and version in the ACL-protected `.installer-registration/<appId>.json` in that
+root. It removes the receipt after successful uninstall and a clean registry readback.
+On a later preflight, only an HKCU registration whose install location, uninstall
+command, and display version match the receipt is eligible. The install directory must
+be absent, its ancestors must be non-redirected, and no process may run from it.
+The script compares the complete entry again before non-recursive deletion and verifies
+the deletion afterward. An existing installation or a registration without a matching
+receipt blocks the build. The preflight never invokes the uninstaller or deletes app files.
+`[installer-preflight]` reports the cleanup status and hive/view/kind.
+For a matching receipt whose install directory or process remains, it also reports
+the exact sandbox path and why remediation was blocked. Have the runner owner
+inspect that sandbox and retire the CI installation under the original account
+before retrying.
+
+Windows 正式签名包先跳过已有产物或占位的任务，其余任务在申请新占位前执行
+`npm run package:preflight`，并在运行 Setup
+前持安装验收锁复查。只有显式配置 `SCHOLARSEED_CI_VELOPACK_ROOT` 的 CI 才会在
+私有验收根下写入 `.installer-registration/<appId>.json`。正常卸载且注册表回读干净后
+删除凭据。异常中断时，下次预检只清理安装路径、卸载命令及版本均与凭据匹配，
+且安装目录和相关进程均已消失的 HKCU 登记。普通安装、来源不明的登记和旧版 CI
+留下的无凭据登记继续触发阻断。预检不会启动卸载程序或删除应用文件。
+凭据匹配但目录或进程尚在时会报告对应沙箱路径与阻断原因，由 Runner 管理者核查后
+以原构建账号处理该 CI 安装，再重试。
 
 Focused check: `node --test apps/desktop/scripts/cd/__tests__/registration.test.cjs`, also
 registered in the build-contract aggregate entry point. Native Windows integration tests
