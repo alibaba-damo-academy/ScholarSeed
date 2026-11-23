@@ -68,14 +68,23 @@ export function ExecutionActivityStatus({
   icon,
   warning,
   role = 'status',
+  busy,
+  testId,
 }: {
   label: string
   icon: React.ReactNode
   warning?: string
   role?: 'status' | 'alert'
+  busy?: boolean
+  testId?: string
 }): React.JSX.Element {
   return (
-    <div role={role} className={cx(ACTIVITY_LINE_CLASS, 'my-[var(--vds-conversation-block-gap)]')}>
+    <div
+      role={role}
+      aria-busy={busy}
+      data-testid={testId}
+      className={cx(ACTIVITY_LINE_CLASS, 'my-[var(--vds-conversation-block-gap)]')}
+    >
       <ExecutionActivityIcon>{icon}</ExecutionActivityIcon>
       <span className="min-w-0">{label}</span>
       {warning && <ExecutionActivityWarning label={warning} />}

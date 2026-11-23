@@ -68,6 +68,7 @@ import {
   CircleX,
   X,
   Hammer,
+  ScrollText,
 } from 'lucide-react'
 import { streamingTextClassName } from '../../design/motion'
 import aiThinking from '../../assets/ai-thinking.gif'
@@ -210,6 +211,7 @@ import { SessionReference } from '../../features/assistant/SessionReference'
 import { WebSearchRecord } from './Retrieval'
 import {
   ToolExecution,
+  ExecutionActivityStatus,
   ExecutionBatch,
   ExecutionProcess,
   ExecutionStatus as ActivityStatusIcon,
@@ -7604,6 +7606,34 @@ function StatusLine({
   const { t: conversation } = useTranslation('conversation')
   const { state } = useApp()
   const userStopped = isUserStoppedStatus(item)
+  if (item.compactionPhase) {
+    const running = item.compactionPhase === 'started'
+    return (
+      <ExecutionActivityStatus
+        testId="context-compaction"
+        busy={running}
+        label={
+          typeof item.text === 'string' ? item.text : formatRuntimeStatus(item.text, conversation)
+        }
+        icon={
+          running ? (
+            <Spinner
+              aria-hidden="true"
+              size="sm"
+              className="!size-[var(--vds-icon-7)] motion-reduce:animate-none"
+            />
+          ) : item.compactionPhase === 'failed' ? (
+            <TriangleAlert
+              aria-hidden="true"
+              className="size-[var(--vds-icon-7)] text-[var(--vds-warning-text-primary)]"
+            />
+          ) : (
+            <ScrollText aria-hidden="true" className="size-[var(--vds-icon-7)]" />
+          )
+        }
+      />
+    )
+  }
   if (
     typeof item.displayMessage === 'object' &&
     item.displayMessage?.ns === 'components' &&

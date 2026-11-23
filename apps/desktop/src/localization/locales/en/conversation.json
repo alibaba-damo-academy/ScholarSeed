@@ -393,7 +393,7 @@
   },
   "context": {
     "compacting": "Compacting context…",
-    "compacted": "Context compacted. Continuing execution.",
+    "compacted": "Context automatically compacted",
     "compactionIncomplete": "Context compaction did not complete."
   },
   "artifactFailure": {

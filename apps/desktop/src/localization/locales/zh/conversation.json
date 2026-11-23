@@ -392,8 +392,8 @@
     "skill": "使用技能 {{name}}"
   },
   "context": {
-    "compacting": "正在整理上下文…",
-    "compacted": "上下文已压缩，正在继续执行",
+    "compacting": "正在压缩上下文…",
+    "compacted": "上下文已自动压缩",
     "compactionIncomplete": "上下文整理未完成。"
   },
   "artifactFailure": {
