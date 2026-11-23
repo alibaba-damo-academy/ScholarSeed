@@ -22,14 +22,20 @@ The artifact's `resolve-receipt.json` lists exactly the files shipped in the pac
 
 This directory stores the official Codex Runtime platform manifest bundled with Desktop. Artifacts are not committed to Git; builds download and verify them only from the fixed OSS HTTPS URLs in the manifest and do not access npm `latest`.
 
-The version is currently pinned to `0.165.0`, the npm stable version queried on 2026-10-29. The original packages for all three platforms have been compared with npm SHA-512 integrity values and passed size and SHA-256 checks after complete anonymous downloads from OSS. The Windows component is also bound to the measured file tree and canonical ZIP digest for `0.165.0-r1`; that ZIP was generated on macOS using the existing packaging recipe and does not demonstrate a native Windows build, component publication, or product acceptance.
-macOS and Windows are both pinned to `0.165.0`, which supports isolated text sampling for the current session.
+The version is currently pinned to `0.171.0`, the npm stable version queried on 2026-11-23. The original packages for all three platforms have been compared with npm SHA-512 integrity values and passed size and SHA-256 checks after complete anonymous downloads from OSS. The Windows component is also bound to the measured file tree and canonical ZIP digest for `0.171.0-r1`; that ZIP was generated on macOS using the existing packaging recipe and does not demonstrate a native Windows build, component publication, or product acceptance.
+macOS and Windows are both pinned to `0.171.0`, which supports isolated text sampling for the current session.
+
+This pin includes the upstream context-usage boundary fix: failed output remains in the native context estimate until usable sampling usage covers it. Automatic compaction stays in the Codex harness; the Adapter separately reports spending and does not add an output-error-specific compaction path. See the official [history implementation](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/context_manager/history.rs).
+
+The Windows binding was computed on macOS from the verified official archive and the canonical reproducible packaging recipe. Its predicted receipt bytes do not replace the official executable's Windows version probe; native Windows builds must execute that probe and match the bound tree and ZIP digests. The component ZIP has not been published or accepted as an installed Windows runtime.
+
+中文：当前三平台固定官方 0.171.0，包含失败输出的原生上下文估算边界修复；自动压缩由 Codex Harness 统一处理，适配层只负责消耗统计与事件投影。Windows 组件绑定来自已校验原包和可复现打包规则；macOS 静态生成的预期字节不替代 Windows 原生版本探测、安装或沙箱验收，组件 ZIP 尚未发布。
 When a platform entry does not specify a version, the manifest's top-level version is used; cache identity and version probing both use the selected platform's version.
 Windows upgrades also verify the complete official archive, the component content binding, and exact sandbox-version admission. macOS verification cannot be used to claim acceptance of the Windows native privilege helper or installed build.
 
-The Windows sandbox resource interface retains the version compatibility reviewed in the Adapter. The currently packaged native helper accepts only `0.165.0` from the frozen manifest; the Adapter's compatibility with older interface versions does not expand helper admission. The helper must match the signed component for the requested version; path, entrypoint digest, Owner-only repair, and DACL checks remain unchanged. See [Adapter compatibility notes](../../../packages/adapters/codex/README.md#windows-01650-沙箱适配) for the official source comparison and boundaries.
+The Windows sandbox resource interface retains the version compatibility reviewed in the Adapter. The currently packaged native helper accepts only `0.171.0` from the frozen manifest; the Adapter's compatibility with older interface versions does not expand helper admission. The helper must match the signed component for the requested version; path, entrypoint digest, Owner-only repair, and DACL checks remain unchanged. See [Adapter compatibility notes](../../../packages/adapters/codex/README.md#windows-01710-沙箱适配) for the official source comparison and boundaries.
 
-**gap**: Windows device testing, component publication, installation, and real model/tool turns have not yet been accepted. macOS arm64 / x64 have passed complete Runtime extraction and version probing; real Desktop model and tool turns have not yet been accepted.
+**gap**: Windows device testing, component publication, installation, and real model/tool turns have not yet been accepted. macOS arm64 / x64 have passed complete Runtime extraction and version probing; these checks do not establish Desktop model or tool acceptance, which requires separate real-product evidence.
 
 This changes build inputs; it does not install a client or migrate data. Do not let an older version directly open a user Home, SQLite database, or session file written by a newer version without compatibility verification. Real comparisons must use isolated directories; Windows packaging, component downloadability, and product flows still require separate acceptance.
 
@@ -53,18 +59,18 @@ First query the official stable version:
 npm view @openai/codex@latest version
 ```
 
-For the currently pinned version `0.165.0`, the download URLs are:
+For the currently pinned version `0.171.0`, the download URLs are:
 
 ```text
-https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-darwin-arm64.tgz
-https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-darwin-x64.tgz
-https://registry.npmjs.org/@openai/codex/-/codex-0.165.0-win32-x64.tgz
+https://registry.npmjs.org/@openai/codex/-/codex-0.171.0-darwin-arm64.tgz
+https://registry.npmjs.org/@openai/codex/-/codex-0.171.0-darwin-x64.tgz
+https://registry.npmjs.org/@openai/codex/-/codex-0.171.0-win32-x64.tgz
 ```
 
 You can also download directly:
 
 ```bash
-VERSION=0.165.0
+VERSION=0.171.0
 
 curl -fL --retry 3 \
   "https://registry.npmjs.org/@openai/codex/-/codex-${VERSION}-darwin-arm64.tgz" \
@@ -85,7 +91,7 @@ curl -fL --retry 3 \
 Read the official SHA-512 integrity values from npm metadata:
 
 ```bash
-VERSION=0.165.0
+VERSION=0.171.0
 npm view "@openai/codex@${VERSION}-darwin-arm64" dist.integrity
 npm view "@openai/codex@${VERSION}-darwin-x64" dist.integrity
 npm view "@openai/codex@${VERSION}-win32-x64" dist.integrity

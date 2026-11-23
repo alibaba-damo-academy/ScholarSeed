@@ -19,7 +19,7 @@ const { ensurePrivateDirectory } = require('../scripts/shared/build-state.cjs')
 
 const { artifact, bundledCodex, CACHE_VALIDATION, completeRuntime, publishRuntime, resolveVendoredCodex, stageVendoredCodex, verifyArchive } = require('./codex.cjs')
 
-const REVIEWED_CODEX_VERSION = '0.165.0'
+const REVIEWED_CODEX_VERSION = '0.171.0'
 
 test('Windows and macOS packaging preserve official prebuilt Codex without compiling', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../scripts/cd/build.cjs'), 'utf8')
@@ -423,11 +423,11 @@ test('persistent runtime survives checkout replacement and rejects changed bytes
   }
 })
 
-const REVIEWED_WINDOWS_CODEX_VERSION = '0.165.0'
+const REVIEWED_WINDOWS_CODEX_VERSION = '0.171.0'
 
 test('platform pins use the same reviewed Codex version', () => {
   const desktop = path.resolve(__dirname, '..')
-  assert.equal(artifact(desktop, 'darwin', 'arm64').version, '0.165.0')
-  assert.equal(artifact(desktop, 'darwin', 'x64').version, '0.165.0')
+  assert.equal(artifact(desktop, 'darwin', 'arm64').version, REVIEWED_CODEX_VERSION)
+  assert.equal(artifact(desktop, 'darwin', 'x64').version, REVIEWED_CODEX_VERSION)
   assert.equal(artifact(desktop, 'win32', 'x64').version, REVIEWED_WINDOWS_CODEX_VERSION)
 })

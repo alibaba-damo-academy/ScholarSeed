@@ -22,18 +22,12 @@ def _counts(value: object) -> dict[str, int] | None:
 class UsageAccounting:
     def __init__(self) -> None:
         self.total: dict[str, int] | None = dict.fromkeys(USAGE_FIELDS, 0)
-        self.context_tokens = 0
-        self.context_window = 0
 
     def resume(self) -> None:
         """The first resumed notification is a baseline, never new spending."""
         self.total = None
-        self.context_tokens = 0
 
     def observe(self, value: Mapping[str, object]) -> CodexUsage | None:
-        window = value.get("modelContextWindow")
-        if isinstance(window, int) and not isinstance(window, bool) and window > 0:
-            self.context_window = window
         if "total" not in value:
             counts = _counts(value.get("last"))
             if counts is None:
@@ -48,14 +42,9 @@ class UsageAccounting:
             counts = {name: counts[name] - previous[name] for name in USAGE_FIELDS}
             if not any(counts.values()):
                 return None
-        self.context_tokens = counts["inputTokens"] + counts["outputTokens"]
         return CodexUsage(
             input_tokens=counts["inputTokens"],
             output_tokens=counts["outputTokens"],
             cache_read_tokens=counts["cachedInputTokens"],
             cache_creation_tokens=counts["cacheWriteInputTokens"],
         )
-
-    @property
-    def context_full(self) -> bool:
-        return self.context_window > 0 and self.context_tokens >= self.context_window

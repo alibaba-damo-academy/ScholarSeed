@@ -18,9 +18,9 @@
       "archiveSha256": "5b2314c0ed3cca27dd4ab71b8555f638395eb4c19fd6ac60c55365a625f673b5"
     },
     "codex": {
-      "version": "0.165.0-r2",
-      "contentId": "a362cf5e14ebe09cad94e3934be6c0b35e1130b2e54fb1953fd324caaee8f6ad",
-      "archiveSha256": "279050629f11ec3000d7c68878de9f96303181f3c6f344f16fa8203ee89e8beb"
+      "version": "0.171.0-r1",
+      "contentId": "7a66dafac1ce05de6e2d4c5d71fe8e55ea6162e7b37dda23bed5a8efaf613b4d",
+      "archiveSha256": "1390142b2df161b42f9e10076ba45c2b65a660c84ba0ea2dfef244c348276748"
     },
     "electron": {
       "version": "44.3.0-r2",

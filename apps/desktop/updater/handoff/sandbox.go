@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	sandboxVersion        = "0.165.0"
+	sandboxVersion        = "0.171.0"
 	sandboxSecrets        = ".sandbox-secrets"
 	sandboxProduct        = ".scholarseed"
 	sandboxHomeName       = "codex"

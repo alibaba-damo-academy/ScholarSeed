@@ -92,7 +92,7 @@ from scholarseed_codex.provider import (
     provider,
 )
 from scholarseed_codex.router import AgentRoute, ThreadRouter
-from scholarseed_codex.rpc import JsonLineWriter
+from scholarseed_codex.rpc import JsonLineWriter, RpcSubmission
 from scholarseed_codex.session import CodexRuntimeSession, _same_process_configuration
 from scholarseed_codex.skill import session_skill_config, session_skill_inventory
 from scholarseed_codex.thread import CodexThreadSession
@@ -6179,14 +6179,9 @@ def test_incomplete_response_spending_uses_cumulative_deltas() -> None:
         "incomplete spending does not reuse the last successful response",
         actual.input_tokens == 29000 and actual.output_tokens == 8192,
     )
-    check(
-        "response context pressure uses the current response, not lifetime spending",
-        accounting.context_tokens == 37192 and accounting.context_full,
-    )
     check("duplicate usage notifications never double count", accounting.observe(failed) is None)
     accounting.resume()
     check("resumed lifetime counters only establish a baseline", accounting.observe(failed) is None)
-    check("resume never guesses context pressure from lifetime totals", not accounting.context_full)
     after_resume = accounting.observe({"total": {"inputTokens": 39000, "outputTokens": 11692}})
     check(
         "spending after resume excludes all restored lifetime usage",
@@ -6251,205 +6246,88 @@ def test_content_filter_incomplete_is_terminal() -> None:
         )
 
 
-def test_truncated_full_context_compacts_before_next_submission() -> None:
-    async def scenario(outcome: str) -> None:
+def test_context_compaction_remains_native_after_truncation() -> None:
+    async def scenario(reported_input: int) -> None:
         emitter = SimpleNamespace(emit=AsyncMock(), incident=AsyncMock())
-        finish = asyncio.Event()
-        request_log: list[str] = []
-        runtime = None
-
-        async def completed() -> None:
-            await finish.wait()
-            await runtime.notification(
-                "turn/completed", {"turn": {"id": "compact-turn", "status": outcome}}, generation=1
-            )
+        requests: list[str] = []
 
         async def request(method, params, **kwargs):
-            request_log.append(method)
-            if method == "thread/compact/start":
-                if kwargs.get("before_write") is not None:
-                    kwargs["before_write"]()
-                if outcome == "rejected":
-                    raise AppServerError("rejected", rpc_code=-32600)
-                await runtime.notification(
-                    "turn/started", {"turn": {"id": "compact-turn"}}, generation=1
-                )
-                return {}
-            if method == "turn/interrupt":
-                await runtime.notification(
-                    "turn/completed",
-                    {"turn": {"id": "compact-turn", "status": "interrupted"}},
-                    generation=1,
-                )
-                return {}
-            raise AssertionError(method)
+            requests.append(method)
+            kwargs["before_write"]()
+            runtime.turn_done.set_result({"id": "next-turn", "status": "completed"})
+            return {"turn": {"id": "next-turn"}}
 
         runtime = CodexTurnRuntime(
-            SimpleNamespace(thread_id="thread", attached_generation=1),
+            ThreadAttachment(
+                thread_id="thread",
+                request=CodexSessionOpenRequest(request_id="fixture", runtime_id="codex", cwd=ROOT),
+                listener=AsyncMock(),
+                model="model",
+                writable_roots=(),
+                attached_generation=1,
+            ),
             request=request,
             ensure_attached=AsyncMock(return_value=1),
             stale_requests=AsyncMock(),
             emitter=emitter,
             router=ThreadRouter(),
-            watcher=SimpleNamespace(abandon_turn=Mock()),
+            watcher=SimpleNamespace(begin_turn=AsyncMock(), abandon_turn=Mock()),
             diagnostic=Mock(),
             protocol_error=Mock(),
         )
         await runtime.notification(
             "thread/tokenUsage/updated",
             {
+                "turnId": "previous",
                 "tokenUsage": {
-                    "total": {"inputTokens": 29000, "outputTokens": 8192},
+                    "total": {"inputTokens": reported_input, "outputTokens": 8192},
                     "last": {"inputTokens": 8000, "outputTokens": 3000},
                     "modelContextWindow": 31129,
-                }
+                },
             },
             generation=1,
         )
         await runtime.notification(
             "error",
             {
+                "turnId": "previous",
                 "willRetry": False,
                 "error": {"message": "Incomplete response returned, reason: max_output_tokens"},
             },
             generation=1,
         )
-
-        def authorize() -> None:
-            if outcome == "stale":
-                raise AppServerError(TURN_ADMISSION_STALE, safe_error=TURN_ADMISSION_STALE)
-
-        operation = asyncio.create_task(
-            runtime._compact_output_limit_context(before_write=authorize)
+        check("truncated spending remains exact", runtime.usage.output_tokens == 8192)
+        result = await runtime._start(
+            TurnInput((InputItem(InputKind.TEXT, text="continue"),)), RpcSubmission(), Mock()
         )
-        await asyncio.sleep(0)
-        if outcome in ("rejected", "stale"):
-            try:
-                await operation
-                raise AssertionError("compaction rejection was hidden")
-            except AppServerError:
-                pass
-            check(
-                "unwritten or rejected compaction leaves no phantom active operation",
-                runtime._compaction_done is None
-                and runtime.turn_done is None
-                and not runtime.active_turn_id,
-            )
-            check(
-                "unwritten compaction retains recoverable context pressure",
-                runtime._output_limit_context_full,
-            )
-            return
         check(
-            "full truncated context starts official compaction once",
-            request_log == ["thread/compact/start"],
+            "next submission delegates context policy to the native turn for any reported spending",
+            requests == ["turn/start"] and result.status.value == "completed",
         )
-        check("compaction acknowledgement does not mean completion", not operation.done())
         check(
-            "native compaction retains active resource ownership",
-            runtime.active_turn_id == "compact-turn" and not runtime.turn_done.done(),
+            "spending and an output-limit reason do not synthesize compaction",
+            all(
+                call.args[1] is not CodexSessionEventKind.CONTEXT_COMPACTED
+                for call in emitter.emit.await_args_list
+            ),
+        )
+        await runtime.notification(
+            "item/started",
+            {"turnId": "next-turn", "item": {"type": "contextCompaction", "id": "checkpoint"}},
+            generation=1,
         )
         await runtime.notification(
             "item/completed",
-            {"turnId": "compact-turn", "item": {"type": "contextCompaction", "id": "compact-item"}},
+            {"turnId": "next-turn", "item": {"type": "contextCompaction", "id": "checkpoint"}},
             generation=1,
         )
         check(
-            "compaction item completion still waits for the native terminal", not operation.done()
-        )
-        await runtime.notification(
-            "turn/completed",
-            {"turn": {"id": "unrelated-old-turn", "status": "completed"}},
-            generation=1,
-        )
-        check("an unrelated terminal cannot complete native compaction", not operation.done())
-        if outcome == "exit":
-            await runtime.connection_lost(
-                RuntimeIncident(
-                    incident_id="compact-exit",
-                    scope=RuntimeIncidentScope.PROCESS,
-                    state=RuntimeIncidentState.DETECTED,
-                    kind=RuntimeIncidentKind.PROCESS_EXIT,
-                    strategy=RuntimeRecoveryStrategy.AUTO_RESTART,
-                    retryability=RuntimeRetryability.IN_PROGRESS,
-                    safe_error="agent_runtime_exit",
-                ),
-                1,
-            )
-            try:
-                await operation
-                raise AssertionError("process loss was hidden")
-            except AppServerError as error:
-                check(
-                    "process loss during compaction preserves the unsent task",
-                    error.submission_not_applied and not runtime.active_turn_id,
-                )
-        elif outcome == "cancel":
-            operation.cancel()
-            try:
-                await operation
-            except asyncio.CancelledError:
-                pass
-            check(
-                "cancelling submission interrupts compaction before releasing ownership",
-                request_log[-1] == "turn/interrupt" and not runtime.active_turn_id,
-            )
-        else:
-            finish.set()
-            await completed()
-            if outcome == "completed":
-                await operation
-                check(
-                    "successful compaction clears the pressure guard",
-                    not runtime._output_limit_context_full,
-                )
-            else:
-                try:
-                    await operation
-                    raise AssertionError("failed compaction allowed submission")
-                except AppServerError as error:
-                    check(
-                        "failed compaction retains the unsent user request",
-                        error.submission_not_applied,
-                    )
-                check(
-                    "failed compaction retains pressure for recovery",
-                    runtime._output_limit_context_full,
-                )
-        emitted = [call.args[1] for call in emitter.emit.await_args_list]
-        check(
-            "internal compaction never reports a completed user turn",
-            CodexSessionEventKind.TURN_COMPLETED not in emitted,
-        )
-        check(
-            "only successful native compaction publishes a checkpoint",
-            emitted.count(CodexSessionEventKind.CONTEXT_COMPACTED) == int(outcome == "completed"),
+            "native automatic compaction publishes its own checkpoint",
+            emitter.emit.await_args.args[1] is CodexSessionEventKind.CONTEXT_COMPACTED,
         )
 
-        if outcome == "completed":
-            runtime._output_limit_context_full = True
-            runtime._output_limit_configuration = ("different-model", None)
-            before = len(request_log)
-            await runtime._compact_output_limit_context()
-            check(
-                "changing model does not compact using the previous model's configuration",
-                len(request_log) == before and not runtime._output_limit_context_full,
-            )
-            await runtime.notification(
-                "item/completed",
-                {
-                    "turnId": "normal-turn",
-                    "item": {"type": "contextCompaction", "id": "automatic-checkpoint"},
-                },
-                generation=1,
-            )
-            check(
-                "native automatic compaction items are observable checkpoints",
-                emitter.emit.await_args.args[1] is CodexSessionEventKind.CONTEXT_COMPACTED,
-            )
-
-    for outcome in ("completed", "failed", "cancel", "exit", "rejected", "stale"):
-        asyncio.run(scenario(outcome))
+    for reported_input in (1000, 29000, 1000000):
+        asyncio.run(scenario(reported_input))
 
 
 def test_subscription_capability_rejection_is_terminal() -> None:
@@ -7768,7 +7646,7 @@ def main() -> int:
     test_output_limit_failure_is_recoverable()
     test_incomplete_response_spending_uses_cumulative_deltas()
     test_content_filter_incomplete_is_terminal()
-    test_truncated_full_context_compacts_before_next_submission()
+    test_context_compaction_remains_native_after_truncation()
     test_subscription_capability_rejection_is_terminal()
     test_provider_http_authentication()
     print(f"\nPASS={PASS} FAIL={FAIL}")
