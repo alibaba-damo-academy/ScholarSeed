@@ -67,14 +67,21 @@ async function physicalDestination(path) {
 async function fixtureAt(path) {
   const file = await realpath(path)
   const root = dirname(file)
-  const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
-  const allowed = [await realpath('/tmp'), resolve(repository, 'tmp')]
-  if (!allowed.some((directory) => contains(directory, root))) {
+  const repository = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
+  const checkoutTemp = join(repository, 'tmp')
+  const relocated = !contains(await realpath('/tmp'), root) && !contains(checkoutTemp, root)
+  if (
+    relocated &&
+    !(contains(checkoutTemp, path) && contains(await realpath(checkoutTemp), root))
+  ) {
     throw new Error(
-      'Use a dedicated fixture directory under the operating system temp directory or checkout tmp'
+      'Use a dedicated fixture directory under /tmp or pass its path through the checkout tmp directory'
     )
   }
   const data = JSON.parse(await readFile(file, 'utf8'))
+  // --prepare writes to the profile. Only generator-verified fixtures may use a relocated tmp.
+  if (relocated && !/^[0-9a-f]{64}$/.test(data.workspaceSha256 ?? ''))
+    throw new Error('A fixture in a relocated checkout tmp must be generated and verified')
   if (
     data.synthetic !== true ||
     !/^[\w-]+$/.test(data.sessionId) ||
@@ -262,16 +269,16 @@ function observeNetwork(cdp, fixture, emit, profileHistory) {
       serverRequestId,
     })
   })
-  if (profileHistory)
-    cdp.on('Network.loadingFinished', (event) => {
-      const request = requests.get(event.requestId)
-      if (request?.kind === 'history')
-        emit('renderer_history_downloaded', {
-          serverRequestId: request.serverRequestId,
-          at: request.startedAt + (event.timestamp - request.startedTick) * 1000,
-          encodedBytes: event.encodedDataLength,
-        })
-    })
+  cdp.on('Network.loadingFinished', (event) => {
+    const request = requests.get(event.requestId)
+    requests.delete(event.requestId)
+    if (profileHistory && request?.kind === 'history')
+      emit('renderer_history_downloaded', {
+        serverRequestId: request.serverRequestId,
+        at: request.startedAt + (event.timestamp - request.startedTick) * 1000,
+        encodedBytes: event.encodedDataLength,
+      })
+  })
   cdp.on('Network.eventSourceMessageReceived', (event) => {
     const request = requests.get(event.requestId)
     if (request?.kind !== 'session-sse' || event.eventName !== 'heartbeat') return
@@ -282,6 +289,7 @@ function observeNetwork(cdp, fixture, emit, profileHistory) {
   cdp.on('Network.loadingFailed', (event) => {
     const request = requests.get(event.requestId)
     if (!request) return
+    requests.delete(event.requestId)
     emit('renderer_request_failed', {
       requestId: event.requestId,
       kind: request.kind,
@@ -649,9 +657,12 @@ async function run(options, fixture, artifact) {
       STARTUP_TIMEOUT_MS,
       'normal product page'
     )
-    const cdp = await page.context().newCDPSession(page)
     productPage = page
-    if (options.profileHistory) await boundedProfileRead(enableHistoryProfile(page))
+    if (options.profileHistory) {
+      const at = await boundedProfileRead(enableHistoryProfile(page))
+      emit('renderer_profile_marked', { at })
+    }
+    const cdp = await page.context().newCDPSession(page)
     const firstHeartbeat = observeNetwork(cdp, fixture, emit, options.profileHistory)
     await cdp.send('Network.enable')
     emit('renderer_observer_attached', { origin: new URL(page.url()).origin })
@@ -754,29 +765,25 @@ async function run(options, fixture, artifact) {
       emit('older_turn_scroll_started', { turnId: options.oldTurn })
       await stream.hover({ timeout: Math.min(SCROLL_LOCATOR_TIMEOUT_MS, remaining()) })
       const oldTurn = stream.locator(`[data-message-turn-id="${options.oldTurn}"]`).first()
-      // Scroll using native wheel input to exercise the production viewport observer.
-      for (let count = 0; count < MAX_SCROLL_ATTEMPTS; count++) {
-        const viewport = await stream.boundingBox()
-        const row = await oldTurn.boundingBox()
-        if (
+      const intersectsViewport = async () => {
+        const [viewport, row] = await Promise.all([stream.boundingBox(), oldTurn.boundingBox()])
+        return (
           viewport &&
           row &&
-          row.y >= viewport.y &&
-          row.y + row.height <= viewport.y + viewport.height
+          viewport.height > 0 &&
+          row.height > 0 &&
+          row.y + row.height > viewport.y &&
+          row.y < viewport.y + viewport.height
         )
-          break
+      }
+      // Scroll using native wheel input to exercise the production viewport observer.
+      for (let count = 0; count < MAX_SCROLL_ATTEMPTS; count++) {
+        if (await intersectsViewport()) break
         await page.mouse.wheel(0, SCROLL_DELTA_Y_PX)
         await delay(SCROLL_SETTLE_MS)
       }
       await oldTurn.waitFor({ state: 'visible', timeout: SCROLL_LOCATOR_TIMEOUT_MS })
-      const viewport = await stream.boundingBox()
-      const row = await oldTurn.boundingBox()
-      if (
-        !viewport ||
-        !row ||
-        row.y + row.height <= viewport.y ||
-        row.y >= viewport.y + viewport.height
-      ) {
+      if (!(await intersectsViewport())) {
         throw new Error(`Older turn ${options.oldTurn} did not enter the viewport`)
       }
       const oldVisibleAt = Date.now()

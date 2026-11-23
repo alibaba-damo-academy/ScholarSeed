@@ -13,6 +13,10 @@ export const SESSION_CATALOG_PATH = '/api/serve/sessions'
 export const HISTORY_PATH_PREFIX = '/api/serve/history/'
 export const REQUEST_DIAGNOSTIC_ID_PATTERN = /^[a-f0-9]{32}$/
 
+export function compactHistoryPath(sessionId: string): string {
+  return `${HISTORY_PATH_PREFIX}${encodeURIComponent(sessionId)}?compact_activity=true`
+}
+
 export function isRequestDiagnosticId(value: unknown): value is string {
   return typeof value === 'string' && REQUEST_DIAGNOSTIC_ID_PATTERN.test(value)
 }

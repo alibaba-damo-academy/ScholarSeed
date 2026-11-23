@@ -427,25 +427,26 @@ test('command exit code survives history projection and durable activity replay'
   assert.equal(replayed[0].kind === 'tool' ? replayed[0].exitCode : undefined, 1)
 })
 
+const profilingHistory: HistoryResult = {
+  turns: [{ kind: 'user', text: 'Read the report', turn_id: 'one' }],
+  todos: [],
+  todo_turn_id: null,
+  artifacts: [],
+  activity_events: [],
+  turn_activity: [],
+}
+
 test('history profiling observes only the exact committed projection when enabled', () => {
   const mark = 'scholarseed.history.profile'
   const projection = 'scholarseed.history.projection'
   const commit = 'scholarseed.history.projectionToCommit'
-  const history: HistoryResult = {
-    turns: [{ kind: 'user', text: 'Read the report', turn_id: 'one' }],
-    todos: [],
-    todo_turn_id: null,
-    artifacts: [],
-    activity_events: [],
-    turn_activity: [],
-  }
   try {
-    const ordinary = projectHistorySnapshot(history, [], 'transcript')
+    const ordinary = projectHistorySnapshot(profilingHistory, [], 'transcript')
     recordHistoryCommit(ordinary)
     assert.equal(performance.getEntriesByName(projection).length, 0)
     assert.equal(performance.getEntriesByName(commit).length, 0)
     performance.mark(mark)
-    const projected = projectHistorySnapshot(history, [], 'resume')
+    const projected = projectHistorySnapshot(profilingHistory, [], 'resume')
     assert.deepEqual(projected, ordinary)
     recordHistoryCommit([...projected])
     assert.equal(performance.getEntriesByName(commit).length, 0)
@@ -462,6 +463,39 @@ test('history profiling observes only the exact committed projection when enable
     performance.clearMeasures(commit)
   }
 })
+
+for (const failingPhase of ['lookup', 'projection', 'projectionToCommit']) {
+  test(`history remains usable when User Timing fails during ${failingPhase}`, (context) => {
+    const expected = projectHistorySnapshot(profilingHistory, [])
+    const mark = 'scholarseed.history.profile'
+    performance.mark(mark)
+    context.after(() => {
+      performance.clearMarks(mark)
+      performance.clearMeasures('scholarseed.history.projection')
+      performance.clearMeasures('scholarseed.history.projectionToCommit')
+    })
+    let failures = 0
+    const unavailable = (): never => {
+      failures++
+      throw new Error('User Timing unavailable')
+    }
+    if (failingPhase === 'lookup') context.mock.method(performance, 'getEntriesByName', unavailable)
+    else {
+      const measure = performance.measure.bind(performance)
+      context.mock.method(
+        performance,
+        'measure',
+        (name: string, options: PerformanceMeasureOptions) =>
+          name === `scholarseed.history.${failingPhase}` ? unavailable() : measure(name, options)
+      )
+    }
+    const projected = projectHistorySnapshot(profilingHistory, [], 'transcript')
+    assert.deepEqual(projected, expected)
+    recordHistoryCommit(projected)
+    recordHistoryCommit(projected)
+    assert.equal(failures, 1)
+  })
+}
 
 test('a cancelled unsent user message survives the next history snapshot', () => {
   const cancelledEvent: Extract<ProductEvent, { type: 'user_message' }> = {

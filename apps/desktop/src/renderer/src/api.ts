@@ -19,7 +19,7 @@ import {
   MODEL_PROFILES_PATH,
   MODEL_PROVIDERS_PATH,
   SESSION_CATALOG_PATH,
-  HISTORY_PATH_PREFIX,
+  compactHistoryPath,
   REQUEST_TIMEOUT_ERROR_NAME,
   REQUEST_ABORT_ERROR_NAME,
 } from '../../requests.ts'
@@ -1295,11 +1295,10 @@ export interface TurnActivitySnapshot {
  */
 export async function getHistoryWithTodos(
   sid: string,
-  caller?: HistoryCaller
+  caller: HistoryCaller
 ): Promise<HistoryResult | null> {
   try {
-    const path = `${HISTORY_PATH_PREFIX}${encodeURIComponent(sid)}?compact_activity=true`
-    const r = await apiFetch(path, {
+    const r = await apiFetch(compactHistoryPath(sid), {
       timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
       historyCaller: caller,
     })

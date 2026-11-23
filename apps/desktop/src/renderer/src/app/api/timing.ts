@@ -107,13 +107,15 @@ class RequestTiming {
         event === 'catalog_ready' ||
         event === 'catalog_failed' ||
         event === 'resource_timing'
-      if (
-        !terminal &&
-        !(this.historyCaller && (event === 'fetch_started' || event === 'headers_received')) &&
-        !(event === 'headers_received' && status !== null && (status < 200 || status >= 300))
-      )
-        return
-      const stages = this.stages.splice(0)
+      const httpFailure =
+        event === 'headers_received' && status !== null && (status < 200 || status >= 300)
+      // Emit both milestones even if the history request or its body never settles.
+      const historyProgress =
+        this.historyCaller && (event === 'fetch_started' || event === 'headers_received')
+      if (!terminal && !httpFailure && !historyProgress) return
+      let stages = this.stages
+      if (!this.historyCaller) stages = this.stages.splice(0)
+      else if (historyProgress && !httpFailure) stages = [point]
       console.info(HTTP_LATENCY_DIAGNOSTIC_PREFIX, JSON.stringify({ ...point, stages }))
     } catch {}
   }
@@ -148,6 +150,9 @@ export function startRequestTiming(
     const identifier = isRequestDiagnosticId(supplied)
       ? supplied
       : crypto.randomUUID().replaceAll('-', '')
+    // Adding this header to a history GET would require a CORS preflight.
+    // Its generated ID joins renderer stages; before headers arrive there is
+    // no exact Serve match. After headers, use the exposed server_request_id.
     if (!caller) headers.set(API_DIAGNOSTIC_HEADER, identifier)
     const timing = new RequestTiming(identifier, timeoutMs, path, url, caller)
     timing.record('fetch_started')

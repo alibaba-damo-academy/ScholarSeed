@@ -24,7 +24,10 @@ export async function boundedProfileRead(read) {
 }
 
 export async function enableHistoryProfile(page) {
-  await page.evaluate((name) => performance.mark(name), PROFILE_MARK)
+  return page.evaluate(
+    (name) => performance.timeOrigin + performance.mark(name).startTime,
+    PROFILE_MARK
+  )
 }
 
 export function sampleHistoryMemory(serve, desktop, emit) {

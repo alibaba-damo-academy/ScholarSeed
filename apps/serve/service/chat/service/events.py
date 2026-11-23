@@ -275,21 +275,8 @@ class EventService:
     ) -> list[dict[str, Any]]:
         """Restore product-owned references and model provenance onto history rows."""
 
-        decorated, _activity = self.transcript_snapshot(session_id, turns)
+        decorated, _activity, _timing = self.history_snapshot(session_id, turns)
         return decorated
-
-    def transcript_snapshot(
-        self,
-        session_id: str,
-        turns: list[dict[str, Any]],
-        *,
-        phases: RequestPhases | None = None,
-        compact_activity: bool = False,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        decorated, activity, _timing = self.history_snapshot(
-            session_id, turns, phases=phases, compact_activity=compact_activity
-        )
-        return decorated, activity
 
     def history_snapshot(
         self,

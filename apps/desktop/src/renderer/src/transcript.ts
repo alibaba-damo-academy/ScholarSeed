@@ -2081,16 +2081,37 @@ export function snapshotTurnActivity(
 const HISTORY_PROFILE_MARK = 'scholarseed.history.profile'
 let pendingHistoryCommits: WeakMap<ConvItem[], { caller: string; projectedAt: number }> | undefined
 
+function historyProfileStart(): number | undefined {
+  try {
+    if (performance.getEntriesByName(HISTORY_PROFILE_MARK, 'mark').length) return performance.now()
+  } catch {
+    // History must also work in renderers without User Timing.
+  }
+  return undefined
+}
+
+function measureHistoryPhase(
+  phase: 'projection' | 'projectionToCommit',
+  caller: string,
+  start: number
+): number | undefined {
+  try {
+    const end = performance.now()
+    performance.measure(`scholarseed.history.${phase}`, { start, end, detail: { caller } })
+    return end
+  } catch {
+    // The profiling runner checks for missing samples after the conversation is rendered.
+    return undefined
+  }
+}
+
 /** The Stream layout effect observes a committed projection by its exact conversation identity. */
 export function recordHistoryCommit(items: ConvItem[]): void {
   if (!pendingHistoryCommits) return
   const projection = pendingHistoryCommits.get(items)
   if (!projection) return
   pendingHistoryCommits.delete(items)
-  performance.measure('scholarseed.history.projectionToCommit', {
-    start: projection.projectedAt,
-    detail: { caller: projection.caller },
-  })
+  measureHistoryPhase('projectionToCommit', projection.caller, projection.projectedAt)
 }
 
 /** Project one authoritative history response for both initial display and resume refresh. */
@@ -2099,10 +2120,7 @@ export function projectHistorySnapshot(
   current: ConvItem[],
   caller?: 'transcript' | 'resume' | 'resume_fallback'
 ): ConvItem[] {
-  const started =
-    caller && performance.getEntriesByName(HISTORY_PROFILE_MARK, 'mark').length
-      ? performance.now()
-      : undefined
+  const started = caller ? historyProfileStart() : undefined
   const completedTurnIds = history.turn_activity.flatMap((turn) =>
     turn.outcome === 'completed' ? [turn.turn_id] : []
   )
@@ -2129,14 +2147,11 @@ export function projectHistorySnapshot(
     completedTurnIds
   )
   if (caller && started !== undefined) {
-    const projectedAt = performance.now()
-    performance.measure('scholarseed.history.projection', {
-      start: started,
-      end: projectedAt,
-      detail: { caller },
-    })
-    pendingHistoryCommits ??= new WeakMap()
-    pendingHistoryCommits.set(projected, { caller, projectedAt })
+    const projectedAt = measureHistoryPhase('projection', caller, started)
+    if (projectedAt !== undefined) {
+      pendingHistoryCommits ??= new WeakMap()
+      pendingHistoryCommits.set(projected, { caller, projectedAt })
+    }
   }
   return projected
 }
