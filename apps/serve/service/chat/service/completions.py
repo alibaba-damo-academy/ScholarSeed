@@ -64,7 +64,7 @@ from service.chat.service.transport import (
     transport_diagnostics,
 )
 from service.identity.service.account_token import CONV_TURN_ID_HEADER
-from service.inference.auto import AutoRoute, project_guidance
+from service.inference.auto import AutoRoute, GuideDecision, project_guidance
 from service.inference.reasoning import (
     ThinkingParameters,
     apply_thinking,
@@ -670,7 +670,7 @@ class CompletionBridge:
         on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
         on_tool_outputs: Callable[[str, str, set[str]], None] | None = None,
         manual_skill_turn: Callable[[str, str], bool] | None = None,
-        auto_route: Callable[[str, str], AutoRoute | None] | None = None,
+        auto_route: Callable[[str, str], GuideDecision | None] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         content_source: Callable[[str, str], ContentSource | None] | None = None,
         source_endpoints: Sequence[str] = (),
@@ -1509,7 +1509,7 @@ class CompletionBridge:
                 chat_request,
                 outbound_names(upstream.reasoning_options, protocol.value, upstream.provider),
             )
-        elif route:
+        elif isinstance(route, AutoRoute):
             options = route.catalog_row.get("reasoning_options")
             resolution = thinking_parameters(
                 options, protocol.value, upstream.provider, effort=route.effort, thinking=None
@@ -1588,7 +1588,7 @@ class CompletionBridge:
             )
         chat_request["model"] = (
             route.catalog_row["model_name"]
-            if route
+            if isinstance(route, AutoRoute)
             else upstream.route_model(chat_request.get("model"))
         )
         call.diagnostic.routed_model = str(chat_request["model"])

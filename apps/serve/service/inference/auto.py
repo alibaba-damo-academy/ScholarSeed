@@ -1,4 +1,4 @@
-"""One joint Jev decision per Auto user message."""
+"""Choose bundled guides per signed-in user turn, and model and effort in Auto."""
 
 import asyncio
 import json
@@ -103,18 +103,25 @@ argument_criteria["qwen4-max@high"] += (
 
 
 @dataclass(frozen=True)
-class AutoRoute:
+class GuideDecision:
     turn: str
+    guidance: str
+
+
+@dataclass(frozen=True)
+class AutoRoute(GuideDecision):
     model: str
     effort: str
-    guidance: str
 
     @property
     def catalog_row(self):
         return next(row for row in GATEWAY_MODEL_CATALOG if row["key"] == self.model)
 
 
-async def decide(live, turn_input, accounts):
+async def decide(live, turn_input, accounts, *, auto=True):
+    token = accounts.current(live.user_id)
+    if not auto and not token:
+        return None
     turn = turn_input.client_user_message_id
     queued = live.catalog.queued_message(live.id, turn)
     text = "\n".join(i["text"] for i in queued.body["input"] if i.get("type") == "text")
@@ -141,13 +148,19 @@ async def decide(live, turn_input, accounts):
         latest_user=effective,
         attachments=attachments,
         recent=[] if effective != text[:6000] else recent,
-        allowed_choices=list(criteria),
         guide_policy="Direct text or unresolved paper reference: no guides. On a bare continuation "
         "preserve previous guides. Single-paper verification: evidence and retrieval, "
         "dispatch only for an explicit research handoff. Explicit guides off: no guides.",
     )
-    options = argument_criteria if argument_intent.search(effective) else criteria
-    token = accounts.current(live.user_id)
+    questions = dict(QUESTIONS)
+    if auto:
+        state["allowed_choices"] = list(criteria)
+        options = argument_criteria if argument_intent.search(effective) else criteria
+        questions["selection"] = {
+            "type": "choice",
+            "instructions": INSTRUCTIONS,
+            "criteria": options,
+        }
     answers, status = {}, "missing_account"
     start = time.monotonic()
     if token:
@@ -156,23 +169,20 @@ async def decide(live, turn_input, accounts):
             CONV_MESSAGE_ID_HEADER: live.id,
             CONV_TURN_ID_HEADER: turn,
         }
-        questions = {
-            "selection": {"type": "choice", "instructions": INSTRUCTIONS, "criteria": options},
-            **QUESTIONS,
-        }
         async with httpx.AsyncClient() as client:
             answers, _, status = await request(
                 client, headers, json.dumps(state, ensure_ascii=False), questions
             )
         if token != accounts.current(live.user_id):
             answers, status = {}, "account_changed"
-    choice = answers.get("selection")
-    choice = choice.get("choice") if isinstance(choice, dict) else None
-    if not isinstance(choice, str) or choice not in criteria:
-        choice = "deepseek-v4.1-flash@high"
-        if status == "accepted":
-            status = "invalid_choice"
-    model, effort = choice.split("@")
+    if auto:
+        choice = answers.get("selection")
+        choice = choice.get("choice") if isinstance(choice, dict) else None
+        if not isinstance(choice, str) or choice not in criteria:
+            choice = "deepseek-v4.1-flash@high"
+            if status == "accepted":
+                status = "invalid_choice"
+        model, effort = choice.split("@")
     labels = {}
     for key in QUESTIONS:
         answer = answers.get(key)
@@ -196,6 +206,15 @@ async def decide(live, turn_input, accounts):
                 labels[key] = True
             elif probability <= 1 - 0.8:
                 labels[key] = False
+    if not auto and (status != "accepted" or all(value is None for value in labels.values())):
+        logger.info(
+            "manual_guides_fallback session=%s turn=%s status=%s elapsed_ms=%.0f",
+            live.id,
+            turn,
+            status if status != "accepted" else "inconclusive",
+            (time.monotonic() - start) * 1000,
+        )
+        return None
     docs = await documents(labels, live.skill_identity_by_name)
     live.auto_history = [
         *recent,
@@ -204,23 +223,26 @@ async def decide(live, turn_input, accounts):
             "effective_task": effective[:2400],
             "attachments": attachments,
             "route": {
-                "model": model,
-                "effort": effort,
+                **({"model": model, "effort": effort} if auto else {}),
                 "selected_guides": [key for key in GUIDES if key in docs],
             },
         },
     ][-8:]
     logger.info(
-        "auto_route session=%s turn=%s model=%s effort=%s guides=%s status=%s elapsed_ms=%.0f",
+        "%s session=%s turn=%s model=%s effort=%s guides=%s status=%s elapsed_ms=%.0f",
+        "auto_route" if auto else "manual_guides",
         live.id,
         turn,
-        model,
-        effort,
+        model if auto else "manual",
+        effort if auto else "user_selected",
         list(docs),
         status,
         (time.monotonic() - start) * 1000,
     )
-    return AutoRoute(turn, model, effort, "\n\n".join(doc.block for doc in docs.values()))
+    guidance = "\n\n".join(doc.block for doc in docs.values())
+    if auto:
+        return AutoRoute(turn=turn, model=model, effort=effort, guidance=guidance)
+    return GuideDecision(turn, guidance)
 
 
 async def request(client, headers, state, questions):
@@ -274,7 +296,7 @@ def guide_inventory(text):
     return "".join(kept)
 
 
-def project_guidance(payload, route: AutoRoute | None):
+def project_guidance(payload, route: GuideDecision | None):
     # A resumed native thread can replay developer messages from an earlier mode.
     # Apply this turn's policy to privileged text only, leaving user history intact.
     manual = manual_skill_instructions()

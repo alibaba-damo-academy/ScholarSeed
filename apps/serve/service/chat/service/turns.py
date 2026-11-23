@@ -2510,11 +2510,9 @@ class TurnService:
 
         live.submission_retry_authorizer = authorize_retry
         try:
-            if (
-                self._auto_accounts is not None
-                and live.catalog.model_state(live.id).selected_model_id == "auto"
-            ):
-                route = await decide(live, turn_input, self._auto_accounts)
+            if self._auto_accounts is not None:
+                auto = live.catalog.model_state(live.id).selected_model_id == "auto"
+                route = await decide(live, turn_input, self._auto_accounts, auto=auto)
                 if intent() != original_intent or live.interrupt_generation != interrupt_generation:
                     raise RuntimeError(RECOVERY_STALE)
                 live.auto_route = route

@@ -67,7 +67,7 @@ from service.identity.utils import (
     OWNERSHIP_AXIS_STATE,
     resolve_ownership_axis,
 )
-from service.inference.auto import AutoRoute
+from service.inference.auto import GuideDecision
 from service.inference.source import ContentSource
 from service.paths import (
     SERVICE_BUNDLED_SKILLS_DIR,
@@ -309,7 +309,7 @@ def create_chat_app(
         live = sessions.get(session_id)
         return live.attachment_model_bridge_id() if live is not None else None
 
-    def auto_route(session_id: str, turn: str) -> AutoRoute | None:
+    def auto_route(session_id: str, turn: str) -> GuideDecision | None:
         live = sessions.get(session_id)
         route = live.auto_route if live is not None else None
         return route if route and route.turn == turn else None

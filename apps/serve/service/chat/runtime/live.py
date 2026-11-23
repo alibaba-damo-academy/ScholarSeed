@@ -259,7 +259,7 @@ from service.chat.service.sources import answer_sources
 from service.chat.service.tasks import ProductTaskLease, restore_task_binding
 from service.chat.utils import SESSION_FORK_COPIED_FIELD
 from service.content.domain.model import ContentError
-from service.inference.auto import AutoRoute
+from service.inference.auto import GuideDecision
 from service.inference.source import ContentSource, SourceReference
 from service.persistence.project import inspect_database
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
@@ -391,7 +391,7 @@ class LiveSession:
         self.project_path = project_path.expanduser().resolve() if project_path else None
         self.output_root = output_root.expanduser().resolve()
         self.auto_history: list[dict[str, Any]] = []
-        self.auto_route: AutoRoute | None = None
+        self.auto_route: GuideDecision | None = None
         self.model_id = model_id
         self.model_run: ModelRun | None = None
         self._running_model: ModelRun | None = None
