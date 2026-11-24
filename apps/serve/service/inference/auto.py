@@ -54,11 +54,11 @@ def guide_questions():
 
 criteria = {
     "deepseek-v4.1-flash@none": "Explicitly requested deepseek-v4.1-flash at none. 寒暄、简单问答、解释、总结当前对话 缺少会改变操作对象或交付目标的信息且上下文无法补足",
-    "deepseek-v4.1-flash@low": "Explicitly requested deepseek-v4.1-flash at low. 对已有材料翻译、摘要、润色、改格式或定向修改 查询外部事实、核对实时信息或单条出处 对项目、文件、画布、历史记录或导入资源执行操作 使用工作区数据按已定义规则分析、交付文件并复跑 其余可理解但尚未归类的对话",
+    "deepseek-v4.1-flash@low": "Explicitly requested deepseek-v4.1-flash at low. 对已有材料翻译、摘要、润色、改格式或定向修改 查询外部事实、核对实时信息或单条出处 对项目、文件、画布、历史记录或导入资源执行操作 直接执行给定算式、明确命令或既定步骤并报告输出（包括用 Python 做算术） 使用工作区数据按已定义规则分析、交付文件并复跑 其余可理解但尚未归类的对话",
     "deepseek-v4.1-flash@high": "Explicitly requested deepseek-v4.1-flash at high. 单篇论文核验，速度优先",
     "deepseek-v4.1-flash@max": "Explicitly requested deepseek-v4.1-flash at max.",
     "qwen4-max@low": "Explicitly requested qwen4-max at low.",
-    "qwen4-max@high": "Explicitly requested qwen4-max at high. 需要综合材料、权衡要求的长文起草或改写 多约束规划、方案比较、复杂数学或代码推理 跨来源对照、系统调研或多材料证据综合 修改或运行代码、排障，或执行需要验证的多步操作 定位单篇论文并实际核验正文或实验数据",
+    "qwen4-max@high": "Explicitly requested qwen4-max at high. 需要综合材料、权衡要求的长文起草或改写 多约束规划、方案比较、复杂数学或代码推理 跨来源对照、系统调研或多材料证据综合 需要设计算法、定位未知故障，或根据中间结果决定后续步骤的编程任务 定位单篇论文并实际核验正文或实验数据",
     "qwen4-max@xhigh": "Explicitly requested qwen4-max at xhigh. 单篇论文核验，明确要求质量优先",
 }
 criteria["deepseek-v4.1-flash@none"] += " Exclude code explanations; choose Flash low for those."
