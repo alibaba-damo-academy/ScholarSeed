@@ -469,6 +469,21 @@ test(
       })
     )
     const bound = await bindSquirrelRequest(directory, bundle, target, current)
+    await assert.rejects(
+      bindSquirrelRequest(directory, bundle, target, current, undefined, async (path) => {
+        assert.equal(path, bound.source.path)
+        throw new Error('attached ticket rejected')
+      }),
+      /attached ticket rejected/
+    )
+    const stateBeforeVerification = readFileSync(state)
+    await assert.rejects(
+      bindSquirrelRequest(directory, bundle, target, current, undefined, async () => {
+        await writeFile(state, '{}')
+      }),
+      /request changed during app verification/
+    )
+    await writeFile(state, stateBeforeVerification)
     const owner = join(dirname(state), 'CandidatePreparation')
     const prepared = join(directory, 'native-copy', 'Example.app')
     await mkdir(owner, { mode: 0o700 })
@@ -755,7 +770,7 @@ test(
   'native probe distinguishes terminal restoration from installation without admitting a live helper',
   { skip: process.platform !== 'darwin', timeout: 30_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'squirrel-probe-'))
+    const directory = realpathSync(await mkdtemp(join(tmpdir(), 'squirrel-probe-')))
     const owned: { helper?: ReturnType<typeof spawn> } = {}
     t.after(async () => {
       const helper = owned.helper

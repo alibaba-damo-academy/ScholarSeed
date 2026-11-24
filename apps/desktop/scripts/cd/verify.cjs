@@ -1055,6 +1055,7 @@ async function verify(builderContext) {
   }
   const application = JSON.parse(fs.readFileSync(path.join(frozen.runDirectory, 'app.json')))
   let archiveBudget = null
+  let updateZip = null
   const image = frozen.platform === 'darwin'
     ? await verifyImage(installer, application.path, frozen, async (mounted, context, runtimeCheck) => {
         const validated = await verifyApplication(mounted, context, runtimeCheck)
@@ -1067,6 +1068,25 @@ async function verify(builderContext) {
             const size = fs.statSync(archive).size
             assertSquirrelArchiveSize(size)
             archiveBudget = { size, ...await verifyApplicationArchive(archive) }
+            if (context.lane === 'distribution') {
+              const unpacked = path.join(directory, 'unpacked')
+              fs.mkdirSync(unpacked)
+              command(MACOS_DITTO, ['-x', '-k', archive, unpacked], {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
+              const exact = await verifyApplication(path.join(unpacked, `${context.productName}.app`), context, false)
+              if (!exact.signature_valid || !exact.trust?.stapled)
+                throw new Error('Final macOS update ZIP trust is incomplete')
+              const destination = path.join(path.dirname(installer), 'scholarseed-update.zip')
+              fs.renameSync(archive, destination)
+              updateZip = {
+                path: destination,
+                sha256: await sha256(destination),
+                sha512: await sha512(destination),
+                size,
+                archive_budget: archiveBudget,
+                signature_valid: true,
+                stapled: true,
+              }
+            }
           } finally {
             bestEffortRemoveTemporary(directory)
           }
@@ -1094,6 +1114,7 @@ async function verify(builderContext) {
     ? await verifyApplication(application.path, frozen, false)
     : checked)
   atomicJSON(path.join(frozen.runDirectory, 'installer.json'), evidence)
+  if (updateZip) atomicJSON(path.join(frozen.runDirectory, 'macos-update-zip.json'), updateZip)
   return []
 }
 

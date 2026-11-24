@@ -1,11 +1,11 @@
 import { reportApiFailure } from './diagnostics.ts'
 import { REQUEST_TIMEOUT_ERROR_NAME } from '../../../../requests.ts'
-import { startCatalogTiming } from './timing.ts'
+import { startRequestTiming, type HistoryCaller } from './timing.ts'
 
 export const apiBase = (): string => window.scholarseed?.getApiBase() ?? ''
 
 const CREDENTIALS: RequestCredentials = 'include'
-type ApiFetchInit = RequestInit & { timeoutMs?: number }
+type ApiFetchInit = RequestInit & { timeoutMs?: number; historyCaller?: HistoryCaller }
 const CATALOG_REQUEST_TIMEOUT_MS = 10_000
 export const LIVE_CATALOG_REQUEST = {
   cache: 'no-store',
@@ -15,9 +15,9 @@ export const LIVE_CATALOG_REQUEST = {
 export async function apiFetch(path: string, init?: ApiFetchInit): Promise<Response> {
   const startedAt = performance.now()
   const method = init?.method ?? 'GET'
-  let timing: ReturnType<typeof startCatalogTiming>
+  let timing: ReturnType<typeof startRequestTiming>
   try {
-    const { timeoutMs, ...rest } = init ?? {}
+    const { timeoutMs, historyCaller, ...rest } = init ?? {}
     const deadline = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)
     const signal = deadline
       ? rest.signal
@@ -26,7 +26,7 @@ export async function apiFetch(path: string, init?: ApiFetchInit): Promise<Respo
       : rest.signal
     const headers = new Headers(rest.headers)
     const url = apiBase() + path
-    timing = startCatalogTiming(path, method.toUpperCase(), timeoutMs, headers, url)
+    timing = startRequestTiming(path, method.toUpperCase(), timeoutMs, headers, url, historyCaller)
     const transport = () =>
       fetch(url, {
         credentials: CREDENTIALS,

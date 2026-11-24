@@ -14,6 +14,7 @@ from scholarseed_runtime.contract.incident import RuntimeRetryability
 CODEX_PROVIDER_FAILED = "codex_provider_failed"
 CONTENT_SAFETY_BLOCKED = "CONTENT_SAFETY_BLOCKED"
 PROVIDER_FAILURE_MESSAGE = "The model provider rejected the request."
+PROVIDER_OUTPUT_LIMIT_MESSAGE = "The model response reached its output token limit."
 PROVIDER_QUOTA_MESSAGE = "The model provider allocation quota is exhausted."
 PROVIDER_RATE_LIMIT_MESSAGE = "The model provider rate limit was reached."
 PROVIDER_AUTH_MESSAGE = "The model provider authentication failed."
@@ -131,6 +132,8 @@ _TERMINAL_CODES = (
     | _SUBSCRIPTION_CAPABILITY_CODES
 )
 _CODE_BY_MESSAGE = {
+    "incomplete response returned, reason: content_filter": CONTENT_SAFETY_BLOCKED,
+    "incomplete response returned, reason: max_output_tokens": "max_output_tokens",
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
     PROVIDER_CONTENT_POLICY_MESSAGE.casefold(): CONTENT_SAFETY_BLOCKED,
     "idle timeout waiting for sse": "timeout",
@@ -150,6 +153,7 @@ _CODE_BY_HTTP_STATUS: dict[int, str] = {
     **dict.fromkeys(_TRANSIENT_HTTP_STATUSES, "server_error"),
 }
 _SAFE_MESSAGES = {
+    "max_output_tokens": PROVIDER_OUTPUT_LIMIT_MESSAGE,
     **dict.fromkeys(_CONTENT_POLICY_CODES, PROVIDER_CONTENT_POLICY_MESSAGE),
     **dict.fromkeys(_QUOTA_CODES, PROVIDER_QUOTA_MESSAGE),
     **dict.fromkeys(_RATE_LIMIT_CODES, PROVIDER_RATE_LIMIT_MESSAGE),

@@ -7,7 +7,6 @@ const { isMachO, isSignable } = require('./macho.cjs')
 const verify = require('./verify.cjs')
 const { installApplication } = require('./engine.cjs')
 const { nativeSignatureGuard } = require('./seal.cjs')
-const { APPLICATION_LAYOUT, prepareBridgeApplication } = require('./layout.cjs')
 const shipit = require('../../native/shipit/artifact.cjs')
 
 const CONTEXT_ENV = 'SCHOLARSEED_BUILD_CONTEXT'
@@ -125,12 +124,11 @@ async function sign(builderContext) {
   }
   const app = applicationPath(builderContext, frozen)
   await shipit.install(app, frozen)
-  if (frozen.applicationLayout === APPLICATION_LAYOUT.directory) prepareBridgeApplication(app)
   // First prove every bundled runtime byte came from the frozen input. Signing
   // legitimately rewrites Mach-O metadata, so later gates compare the code seal.
   await verify(builderContext)
   if (verify.unsignedPackageCheck(frozen)) return
-  const native = nativeSignatureGuard(app, frozen.native, frozen.applicationLayout)
+  const native = nativeSignatureGuard(app, frozen.native)
   const ignore = filename => native.ignore(filename) || shouldIgnore(filename)
   if (!frozen.signingRequired) {
     const restore = await trackSignProgress(app, ignore)

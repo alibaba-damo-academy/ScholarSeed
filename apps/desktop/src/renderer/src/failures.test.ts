@@ -11,6 +11,12 @@ import { canContinueFailedTurn } from './runtime.ts'
 import { projectActivityEvents } from './transcript.ts'
 import type { ConvItem, Thread } from './model.ts'
 
+test('output limit keeps its cause and supports continuation', () => {
+  const failure = describeTurnFailure({ code: 'max_output_tokens', retryable: true })
+  assert.equal(failure.failure?.kind, 'output_limit')
+  assert.equal(isRecoverableTurnFailure(failure), true)
+})
+
 const authenticationEvent = {
   v: 2 as const,
   seq: 12,
@@ -101,6 +107,31 @@ test('ChatGPT subscription usage limits retain a dedicated terminal card despite
   assert.equal(failure.message, '')
   assert.equal(failure.runtimeAction, undefined)
   assert.equal(isRecoverableTurnFailure(failure), false)
+})
+
+test('content filtering replays as a terminal content-policy failure', () => {
+  for (const code of ['CONTENT_SAFETY_BLOCKED', 'content_filter']) {
+    const replayed = projectActivityEvents(
+      [],
+      [
+        {
+          ...authenticationEvent,
+          data: {
+            code,
+            message: 'The request did not pass content safety review.',
+            retryable: false,
+          },
+        },
+      ]
+    )
+    assert.equal(replayed.length, 1)
+    const failure = replayed[0]
+    assert.equal(failure.kind, 'error')
+    if (failure.kind !== 'error') throw new Error('Expected a provider failure')
+    assert.equal(failure.failure?.kind, 'content_policy')
+    assert.equal(failure.runtimeAction, undefined)
+    assert.equal(isRecoverableTurnFailure(failure), false)
+  }
 })
 
 test('original provider runtime failure replays as a recoverable unknown failure with its turn identity', () => {

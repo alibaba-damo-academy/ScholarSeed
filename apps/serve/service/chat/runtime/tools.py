@@ -14,7 +14,8 @@ import httpx
 from pydantic import ValidationError
 
 from scholarseed_runtime.contract import RuntimeServiceTool
-from service.chat.runtime.utils import request_file
+from service.capabilities.domain import SKILL_CAPABILITY, SKILL_SEARCH_OPERATION
+from service.chat.runtime.utils import inline_schema, request_file
 from service.chat.service.contracts import contract_query, describe_contract, operation_choices
 from service.platform.bridge import (
     ARTIFACT_BATCH_OPERATION,
@@ -66,7 +67,11 @@ BRIDGE_ENDPOINT_GUIDANCE = (
 
 
 def service_tool_schema() -> dict[str, Any]:
-    typed_inline_operations = ((CONTRACT_CAPABILITY, CONTRACT_DESCRIBE_OPERATION), SEARCH_RUN)
+    typed_inline_operations = (
+        (CONTRACT_CAPABILITY, CONTRACT_DESCRIBE_OPERATION),
+        SEARCH_RUN,
+        (SKILL_CAPABILITY, SKILL_SEARCH_OPERATION),
+    )
     operations_by_capability: dict[str, list[str]] = defaultdict(list)
     for capability, operation in BRIDGE_REQUESTS:
         if (capability, operation) not in typed_inline_operations:
@@ -98,9 +103,7 @@ def service_tool_schema() -> dict[str, Any]:
                 "properties": {
                     "capability": {"const": capability},
                     "operation": {"const": operation},
-                    "request": BRIDGE_REQUESTS[
-                        capability, operation
-                    ].request_type.model_json_schema(),
+                    "request": inline_schema(BRIDGE_REQUESTS[capability, operation].request_type),
                 },
             }
             for capability, operation in typed_inline_operations

@@ -63,12 +63,21 @@ PROBE_VALIDATION_STAGE = "validation"
 WINDOWS_SYSTEM_PATH_CAPACITY = 32768
 SANDBOX_DISCONNECTED = "disconnected"
 SANDBOX_RESOURCE_VERSIONS = frozenset(
-    {"0.159.0", "codex-cli 0.159.0", "0.163.0", "codex-cli 0.163.0", "0.165.0", "codex-cli 0.165.0"}
+    {
+        "0.159.0",
+        "codex-cli 0.159.0",
+        "0.163.0",
+        "codex-cli 0.163.0",
+        "0.165.0",
+        "codex-cli 0.165.0",
+        "0.171.0",
+        "codex-cli 0.171.0",
+    }
 )
 DIAGNOSTIC_UNKNOWN = "unknown"
 SANDBOX_USERS_GROUP = "CodexSandboxUsers"
 SANDBOX_RECOVERY_VERSIONS = frozenset(
-    {"0.163.0", "codex-cli 0.163.0", "0.165.0", "codex-cli 0.165.0"}
+    {"0.163.0", "codex-cli 0.163.0", "0.165.0", "codex-cli 0.165.0", "0.171.0", "codex-cli 0.171.0"}
 )
 LOGGER = logging.getLogger(f"{RESOURCE_LIFECYCLE_LOGGER}.sandbox")
 NativeRequest = Callable[[str, Any], Awaitable[dict[str, Any]]]

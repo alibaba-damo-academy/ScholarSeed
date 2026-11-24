@@ -115,6 +115,7 @@ import {
   openSession,
   readNavigationSession,
   registerLocalPaths,
+  resolveChatFileLink,
   revealSystemPath,
 } from './api'
 import type {
@@ -3179,23 +3180,42 @@ export function StoreProvider({
         const projectId = assistantProject(current).projectId
         const workspace = documentWorkspaces.forProject(projectId)
         const navigationView = mainViewForDocumentSource(source, current.mainView)
-        void workspace
-          .open(source, undefined, filePreview.title, undefined, filePreview.titleFallback)
-          .then((tabId) => {
-            workspace.setTabNavigationView(tabId, navigationView)
-            setState(
-              (latest) =>
-                assistantProject(latest).projectId === projectId
-                  ? {
-                      ...latest,
-                      activeTab: tabId,
-                      mainView: navigationView,
-                      aiPanel: { ...latest.aiPanel, cover: false },
-                    }
-                  : latest,
-              navigation
-            )
-          })
+        const open = (document: DocumentSource) =>
+          workspace.open(
+            document,
+            undefined,
+            filePreview.title,
+            undefined,
+            filePreview.titleFallback
+          )
+        const opened =
+          source.kind === 'session-file' && filePreview.resolveChatLink
+            ? resolveChatFileLink(source.sessionId, source.path).then((path) => {
+                if (
+                  navigation.request !== navigationRequest.current ||
+                  stateRef.current.activeSession !== current.activeSession ||
+                  assistantProject(stateRef.current).projectId !== projectId
+                )
+                  return
+                return open({ ...source, path })
+              })
+            : open(source)
+        void opened.then((tabId) => {
+          if (tabId === undefined) return
+          workspace.setTabNavigationView(tabId, navigationView)
+          setState(
+            (latest) =>
+              assistantProject(latest).projectId === projectId
+                ? {
+                    ...latest,
+                    activeTab: tabId,
+                    mainView: navigationView,
+                    aiPanel: { ...latest.aiPanel, cover: false },
+                  }
+                : latest,
+            navigation
+          )
+        })
         setState((latest) => ({
           ...latest,
           foregroundError: null,

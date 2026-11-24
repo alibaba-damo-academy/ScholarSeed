@@ -12,12 +12,12 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager, closing, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum, StrEnum
 from functools import partial
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 from scholarseed_runtime.contract import (
@@ -211,9 +211,11 @@ from service.identity.service.skill_credentials import (
 from service.identity.utils import LOCAL_USER_ID
 from service.inference.source import ContentSource
 from service.paths import (
+    PROJECT_SESSION_OUTPUT_DIRNAME,
     SESSION_ATTACHMENT_DIRNAME,
     SESSION_OUTPUT_DIRNAME,
     SESSION_RUNTIME_DIR,
+    managed_output_directory,
     session_attachment_root,
 )
 from service.platform.activity import (
@@ -234,6 +236,8 @@ from service.platform.files import (
     read_file_raw,
     resolve_child,
 )
+from service.platform.latency import RequestPhases
+from service.platform.storage import open_directory
 from service.platform.vocabulary import (
     COMPONENT_ANSWER_CAPABILITY,
 )
@@ -569,6 +573,7 @@ class SessionService:
         self._queue_cancellation: Callable[[str], Awaitable[None]] | None = None
         self._settlement_resume: Callable[[LiveSession], None] | None = None
         self._deletion: Callable[[SessionCatalogRecord], None] | None = None
+        self._card_deletion: tuple[Callable[[str], None], Callable[[str], None]] | None = None
         self._storage_check: Callable[[], None] | None = None
         self._task_documents: Callable[[str, str], tuple[dict, ...]] = lambda _session, _project: ()
 
@@ -588,6 +593,11 @@ class SessionService:
 
     def bind_deletion(self, callback: Callable[[SessionCatalogRecord], None]) -> None:
         self._deletion = callback
+
+    def bind_card_deletion(
+        self, prepare: Callable[[str], None], complete: Callable[[str], None]
+    ) -> None:
+        self._card_deletion = (prepare, complete)
 
     def bind_storage_check(self, callback: Callable[[], None]) -> None:
         self._storage_check = callback
@@ -2782,11 +2792,22 @@ class SessionService:
         if status != HTTP_OK:
             return {"ok": False, "error": SESSION_DELETE_STOP_FAILED}, status
         try:
+            if self._card_deletion is not None:
+                await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, self._card_deletion[0], session_id
+                )
             await self._activities.to_thread(ActivityDomain.RESOURCE, self._deletion, record)
         except Exception:
             self._logger.exception("session_deletion_failed session_id=%s", session_id)
             return {"ok": False, "error": SESSION_DELETION_FAILED}, HTTP_INTERNAL_ERROR
         self._access.release(session_id, principal)
+        if self._card_deletion is not None and self._access.get(session_id) is None:
+            try:
+                await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, self._card_deletion[1], session_id
+                )
+            except Exception:
+                self._logger.exception("session_card_cleanup_deferred session_id=%s", session_id)
         if self._storage_check is not None:
             self._storage_check()
         return {"ok": True, "session_id": session_id}, HTTP_OK
@@ -3132,18 +3153,29 @@ class SessionService:
             "output_root": assigned.output_root,
         }, HTTP_OK
 
-    def history(self, session_id: str) -> dict[str, Any]:
+    def history(self, session_id: str, *, phases: RequestPhases | None = None) -> dict[str, Any]:
         record = self._access.get(session_id)
         live = self._sessions.get(session_id)
+        if phases is not None:
+            phases.mark("catalog")
         if record is not None:
             if live is not None:
                 live.recover_publications()
             else:
                 self._runtime.recover_publications(session_id)
+        if phases is not None:
+            phases.mark("publication")
         detached = live is None or live.runtime_session is None
-        durable_history = self._events.history_payload(session_id) if detached else []
-        return {
-            "turns": (live.history() if live is not None and not detached else durable_history),
+        turns = (
+            live.history()
+            if live is not None and not detached
+            else self._events.history_payload(session_id)
+        )
+        if phases is not None:
+            phases.count("attached", int(not detached))
+            phases.mark("history_rows")
+        payload = {
+            "turns": turns,
             "recovery_blocked": bool(
                 (pending := self._access.pending_turn_settlement(session_id))
                 and (live is None or pending.recovery_blocked)
@@ -3158,12 +3190,17 @@ class SessionService:
             ),
             "todo_turn_id": record.todo_turn_id if record is not None else None,
             "todo_explanation": record.todo_explanation if record is not None else None,
-            "artifacts": (
-                artifact_snapshot_payload(self._artifacts.list_session(session_id))
-                if record is not None
-                else []
-            ),
         }
+        if phases is not None:
+            phases.mark("settlement")
+        payload["artifacts"] = (
+            artifact_snapshot_payload(self._artifacts.list_session(session_id))
+            if record is not None
+            else []
+        )
+        if phases is not None:
+            phases.mark("artifacts")
+        return payload
 
     def files(
         self, session_id: str, path: str = "", offset: int = 0, *, outputs_only: bool = False
@@ -3336,6 +3373,43 @@ class SessionService:
         if local_file is not None:
             return read_file_raw(local_file.parent, local_file.name)
         return read_file_raw(*self._session_file_path(session_id, path))
+
+    def resolve_chat_file_link(self, session_id: str, path: str) -> str:
+        """Resolve one missing chat link against its session's persisted output binding."""
+        relative = PurePosixPath(path)
+        parts = relative.parts
+        # generate by onesec-code-guardian skill
+        if (
+            not parts
+            or relative.is_absolute()
+            or ".." in parts
+            or any(character in path for character in "\\:\x00")
+            or parts[0] == PROJECT_SESSION_OUTPUT_DIRNAME
+        ):
+            return path
+        record = self._access.get(session_id)
+        if record is None or not record.managed_output_path:
+            return path
+        root = self._session_root(session_id)
+        if record.project_path != str(root) or record.runtime_workdir != str(root):
+            return path
+        try:
+            resolve_child(root, path).stat()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return path
+        else:
+            return path
+        try:
+            with managed_output_directory(root, record.managed_output_path, record.title) as bound:
+                resolved = PurePosixPath(bound) / relative
+                with closing(open_directory(root, resolved.parts[:-1])) as directory:
+                    os.close(directory.open_regular(resolved.name))
+        except (OSError, ValueError):
+            return path
+        self._logger.info("session_chat_file_link_resolved session_id=%s", session_id)
+        return resolved.as_posix()
 
     def _session_file_path(self, session_id: str, path: str) -> tuple[Path, str]:
         root = self._session_root(session_id)

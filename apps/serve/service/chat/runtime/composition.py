@@ -1870,6 +1870,7 @@ class LiveSessionService:
         permission = live.permission_intent(RuntimePermissionMode(mode))
         base = base_instructions()
         instructions = developer_instructions(
+            auto=model_state.selected_model_id == "auto",
             output_directory=(
                 ""
                 if live.project_path == live.runtime_workdir
@@ -1923,6 +1924,7 @@ class LiveSessionService:
                 base_instructions=base,
                 developer_instructions=instructions,
                 service_tools=service_tools,
+                native_plan_enabled=False,
                 skill_roots=SERVICE_SKILL_ROOTS,
                 skill_configurations=live.skill_configurations,
                 skill_policy=binding.skill_policy,
@@ -1965,6 +1967,7 @@ class LiveSessionService:
                 base_instructions=base,
                 developer_instructions=instructions,
                 service_tools=service_tools,
+                native_plan_enabled=False,
                 skill_roots=SERVICE_SKILL_ROOTS,
                 skill_configurations=live.skill_configurations,
                 skill_policy=binding.skill_policy if binding else SkillPolicy.INHERIT,
@@ -2435,6 +2438,7 @@ class LiveSessionService:
                     base_instructions=base_instructions,
                     developer_instructions=developer_instructions,
                     service_tools=(SERVICE_BRIDGE_TOOL,) if bridge_token else (),
+                    native_plan_enabled=False,
                     skill_roots=() if generation_only else SERVICE_SKILL_ROOTS,
                     skill_policy=SkillPolicy.DENY if ephemeral else SkillPolicy.INHERIT,
                     skill_configurations=skill_configurations,

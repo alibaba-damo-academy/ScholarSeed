@@ -49,6 +49,7 @@ import {
   startAssistantInvocation,
   startAssistantSelectionAction,
   startAssistantTranslation,
+  turnCitationSources,
   updateAnswerAnnotation,
 } from './api.ts'
 
@@ -260,6 +261,30 @@ function installBrowser(fetcher: typeof fetch): () => void {
     globalThis.fetch = originalFetch
   }
 }
+
+test('turn citation sources use the authenticated turn route and allow cancellation', async () => {
+  const controller = new AbortController()
+  const restore = installBrowser((input, options) => {
+    assert.equal(
+      String(input),
+      'http://service.test/api/assistant/sessions/a%2Fb/turns/t%2F1/sources'
+    )
+    assert.equal(options?.credentials, 'include')
+    assert.equal(options?.signal, controller.signal)
+    return new Promise((_resolve, reject) => {
+      controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
+        once: true,
+      })
+    })
+  })
+  try {
+    const pending = turnCitationSources('a/b', 't/1', controller.signal)
+    controller.abort()
+    await assert.rejects(pending, { name: 'AbortError' })
+  } finally {
+    restore()
+  }
+})
 
 test('artifact library links are session-scoped and failed queries never become empty success', async () => {
   let requested = ''

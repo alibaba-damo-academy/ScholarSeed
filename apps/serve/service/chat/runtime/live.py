@@ -259,6 +259,7 @@ from service.chat.service.sources import answer_sources
 from service.chat.service.tasks import ProductTaskLease, restore_task_binding
 from service.chat.utils import SESSION_FORK_COPIED_FIELD
 from service.content.domain.model import ContentError
+from service.inference.auto import GuideDecision, bounded_task
 from service.inference.source import ContentSource, SourceReference
 from service.persistence.project import inspect_database
 from service.platform.activity import Activities, ActivityDomain, ActivityLease
@@ -389,6 +390,9 @@ class LiveSession:
         self.runtime_workdir = runtime_workdir.expanduser().resolve()
         self.project_path = project_path.expanduser().resolve() if project_path else None
         self.output_root = output_root.expanduser().resolve()
+        self.auto_history: list[dict[str, Any]] = []
+        self.retained_guide_decisions: dict[str, tuple[tuple, GuideDecision | None]] = {}
+        self.auto_route: GuideDecision | None = None
         self.model_id = model_id
         self.model_run: ModelRun | None = None
         self._running_model: ModelRun | None = None
@@ -1064,6 +1068,13 @@ class LiveSession:
             )
         )
 
+    def remember_guide_decision(self, decision: GuideDecision | None) -> None:
+        if decision and decision.context:
+            self.auto_history = [
+                *(row for row in self.auto_history if row.get("turn") != decision.turn),
+                decision.context,
+            ][-8:]
+
     async def steer_runtime(self, turn_input: TurnInput, expected_turn_id: str) -> str:
         session = self.runtime_session
         if session is None:
@@ -1072,24 +1083,28 @@ class LiveSession:
         # 模型调用要记到它头上，而不是记到之前那一轮。
         previous_product_turn_id = self.active_product_turn_id
         self.active_product_turn_id = turn_input.client_user_message_id
-        receipt = await session.steer(
-            SteerRequest(
-                command_id=turn_input.client_user_message_id,
-                items=tuple(
-                    {
-                        "kind": item.kind.value,
-                        "text": item.text,
-                        "path": str(item.path) if item.path is not None else "",
-                        "name": item.name,
-                    }
-                    for item in turn_input.items
-                ),
-                expected_turn_id=expected_turn_id,
+        try:
+            receipt = await session.steer(
+                SteerRequest(
+                    command_id=turn_input.client_user_message_id,
+                    items=tuple(
+                        {
+                            "kind": item.kind.value,
+                            "text": item.text,
+                            "path": str(item.path) if item.path is not None else "",
+                            "name": item.name,
+                        }
+                        for item in turn_input.items
+                    ),
+                    expected_turn_id=expected_turn_id,
+                )
             )
-        )
-        if receipt.state is not CommandState.ACCEPTED:
-            self.active_product_turn_id = previous_product_turn_id
-            raise RuntimeCommandError(receipt)
+            if receipt.state is not CommandState.ACCEPTED:
+                raise RuntimeCommandError(receipt)
+        except BaseException:
+            if self.active_product_turn_id == turn_input.client_user_message_id:
+                self.active_product_turn_id = previous_product_turn_id
+            raise
         return receipt.correlation_id or expected_turn_id
 
     async def on_runtime_observations(self, observations: tuple[RuntimeObservation, ...]) -> None:
@@ -2640,6 +2655,11 @@ class LiveSession:
             "binding": USER_MESSAGE_BINDING_BOUND,
             "origin": str(row.get("origin") or USER_MESSAGE_ORIGIN_TURN),
         }
+        context = next(
+            (entry for entry in self.auto_history if entry.get("turn") == client_turn_id), None
+        )
+        if context:
+            payload["guide_decision_context"] = context
         if row.get("assistant_snapshot_id"):
             payload["assistant_snapshot_id"] = str(row["assistant_snapshot_id"])
             payload["assistant_context_revision"] = row.get("assistant_context_revision")
@@ -3138,11 +3158,28 @@ class LiveSession:
         return canonical if registered is not None and registered[1] == InputKind.FILE else None
 
     def restore_local_input_paths(self, events: Iterable[ProductEventRecord]) -> None:
-        """Rehydrate sent local path references from the durable product event log."""
+        """Recover admitted message order, routing context and local file references."""
+        recent: dict[str, dict] = {}
 
         for event in events:
             if event.kind != PRODUCT_EVENT_USER_MESSAGE:
                 continue
+            turn = event.payload.get("client_turn_id")
+            if isinstance(turn, str) and turn:
+                context = event.payload.get("guide_decision_context")
+                if event.payload.get("binding") == USER_MESSAGE_BINDING_ADMITTED:
+                    recent.setdefault(turn, {})
+                    if len(recent) > 8:
+                        del recent[next(iter(recent))]
+                elif turn in recent and isinstance(context, dict) and context.get("turn") == turn:
+                    recent[turn] = context
+                elif turn in recent and event.payload.get("binding") == USER_MESSAGE_BINDING_BOUND:
+                    text = str(event.payload.get("text") or "")
+                    recent[turn] = {
+                        "turn": turn,
+                        "user": bounded_task(text, 1000),
+                        "effective_task": bounded_task(text, 2400),
+                    }
             references = event.payload.get("refs")
             if not isinstance(references, list):
                 continue
@@ -3167,6 +3204,8 @@ class LiveSession:
                 )
                 self._local_input_paths[reference_id] = (canonical, kind)
                 self._local_input_path_ids[canonical] = reference_id
+
+        self.auto_history = [row for row in recent.values() if row]
 
     async def enable_plan(self, command: PlanEnable, turn_id: str) -> None:
         async with self._projection_lock:

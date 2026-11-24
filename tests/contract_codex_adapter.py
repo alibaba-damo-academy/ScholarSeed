@@ -92,11 +92,12 @@ from scholarseed_codex.provider import (
     provider,
 )
 from scholarseed_codex.router import AgentRoute, ThreadRouter
-from scholarseed_codex.rpc import JsonLineWriter
+from scholarseed_codex.rpc import JsonLineWriter, RpcSubmission
 from scholarseed_codex.session import CodexRuntimeSession, _same_process_configuration
 from scholarseed_codex.skill import session_skill_config, session_skill_inventory
 from scholarseed_codex.thread import CodexThreadSession
 from scholarseed_codex.turn import CodexTurnRuntime
+from scholarseed_codex.usage import UsageAccounting
 from scholarseed_codex.watch import WorkspaceWatch
 from scholarseed_runtime.contract import (
     MODEL_CATALOG_UNAVAILABLE,
@@ -243,10 +244,11 @@ def test_event_translation() -> None:
 def test_plan_projection(_catalog: AsyncMock) -> None:
     print("== Codex plan configuration and events ==")
 
-    async def native_config() -> dict:
+    async def native_config(*, native_plan_enabled: bool = True) -> dict:
         session = CodexRuntimeSession(
             OpenSessionRequest(
                 product_session_id="native-plan-session",
+                native_plan_enabled=native_plan_enabled,
                 cwd=ROOT,
                 model=ModelIntent(
                     transport=ModelTransport(
@@ -261,6 +263,10 @@ def test_plan_projection(_catalog: AsyncMock) -> None:
     check(
         "native sessions enable upstream plan tool",
         asyncio.run(native_config()).get("tools.update_plan.enabled") is True,
+    )
+    check(
+        "host can disable the native tool at thread creation",
+        asyncio.run(native_config(native_plan_enabled=False)).get("tools.update_plan.enabled") is False,
     )
     check(
         "native sessions enable structured input in default mode",
@@ -5313,6 +5319,7 @@ def test_resumed_dynamic_tool_declaration_is_preserved() -> None:
         binding=binding,
         cwd=ROOT,
         service_tools=(bridge_tool,),
+        native_plan_enabled=False,
         model=ModelIntent(
             transport=ModelTransport(
                 endpoint="https://model.example.test/v1", supports_websockets=True
@@ -5321,6 +5328,7 @@ def test_resumed_dynamic_tool_declaration_is_preserved() -> None:
     )
     restored = provider()._open_request(request)
     assert restored.service_tools == (bridge_tool,)
+    assert restored.native_plan_enabled is False
 
 
 def test_resumed_skill_policy_cannot_be_relaxed() -> None:
@@ -6146,6 +6154,195 @@ def test_durable_thread_unsubscribes() -> None:
         check("durable close removes local attachment", not host._threads)
 
     asyncio.run(run())
+
+
+def test_output_limit_failure_is_recoverable() -> None:
+    for error in (
+        {"message": "Incomplete response returned, reason: max_output_tokens"},
+        {"code": "max_output_tokens", "message": "private provider detail"},
+    ):
+        failure = provider_failure(error)
+        check(
+            "output cap is recoverable and identified",
+            failure.code == "max_output_tokens"
+            and failure.diagnostic_code == "max_output_tokens"
+            and failure.retryability is RuntimeRetryability.USER_RETRYABLE
+            and failure.message == "The model response reached its output token limit.",
+        )
+
+
+def test_incomplete_response_spending_uses_cumulative_deltas() -> None:
+    accounting = UsageAccounting()
+    last = {"inputTokens": 8000, "outputTokens": 3000}
+    first = {"last": last, "total": last, "modelContextWindow": 31129}
+    assert accounting.observe(first).output_tokens == 3000
+    failed = {
+        "last": last,
+        "total": {"inputTokens": 37000, "outputTokens": 11192},
+        "modelContextWindow": 31129,
+    }
+    actual = accounting.observe(failed)
+    check(
+        "incomplete spending does not reuse the last successful response",
+        actual.input_tokens == 29000 and actual.output_tokens == 8192,
+    )
+    check("duplicate usage notifications never double count", accounting.observe(failed) is None)
+    accounting.resume()
+    check("resumed lifetime counters only establish a baseline", accounting.observe(failed) is None)
+    after_resume = accounting.observe({"total": {"inputTokens": 39000, "outputTokens": 11692}})
+    check(
+        "spending after resume excludes all restored lifetime usage",
+        after_resume.input_tokens == 2000 and after_resume.output_tokens == 500,
+    )
+    for invalid in (True, -1, "123", 1.5):
+        check(
+            "invalid counters cannot replace the trusted baseline",
+            accounting.observe({"total": {"inputTokens": invalid}}) is None,
+        )
+    check(
+        "a native cumulative reset establishes a new baseline",
+        accounting.observe({"total": {"inputTokens": 10, "outputTokens": 1}}) is None,
+    )
+    check(
+        "spending after a reset is never negative",
+        accounting.observe({"total": {"inputTokens": 20, "outputTokens": 3}}).output_tokens == 2,
+    )
+    check(
+        "older notifications without cumulative counters retain native last usage",
+        UsageAccounting().observe({"last": {"inputTokens": 100, "outputTokens": 5}}).output_tokens
+        == 5,
+    )
+
+    async def notification() -> None:
+        emitter = SimpleNamespace(emit=AsyncMock(), incident=AsyncMock())
+        runtime = CodexTurnRuntime(
+            SimpleNamespace(thread_id="thread", attached_generation=1),
+            request=AsyncMock(),
+            ensure_attached=AsyncMock(return_value=1),
+            stale_requests=AsyncMock(),
+            emitter=emitter,
+            router=ThreadRouter(),
+            watcher=SimpleNamespace(),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        for value in (first, failed):
+            await runtime.notification(
+                "thread/tokenUsage/updated", {"tokenUsage": value}, generation=1
+            )
+        check(
+            "native incomplete-response notification publishes fresh spending",
+            runtime.usage.input_tokens == 29000 and runtime.usage.output_tokens == 8192,
+        )
+
+    asyncio.run(notification())
+
+
+def test_content_filter_incomplete_is_terminal() -> None:
+    for message in (
+        "Incomplete response returned, reason: content_filter",
+        "stream disconnected before completion: Incomplete response returned, reason: content_filter",
+    ):
+        failure = provider_failure({"message": message})
+        check(
+            "content filtering is terminal and safely classified",
+            failure.code == "CONTENT_SAFETY_BLOCKED"
+            and failure.diagnostic_code == "content_safety_blocked"
+            and failure.retryability is RuntimeRetryability.TERMINAL
+            and failure.message == "The request did not pass content safety review.",
+        )
+
+
+def test_context_compaction_remains_native_after_truncation() -> None:
+    async def scenario(reported_input: int) -> None:
+        emitter = SimpleNamespace(emit=AsyncMock(), incident=AsyncMock())
+        requests: list[str] = []
+
+        async def request(method, params, **kwargs):
+            requests.append(method)
+            kwargs["before_write"]()
+            runtime.turn_done.set_result({"id": "next-turn", "status": "completed"})
+            return {"turn": {"id": "next-turn"}}
+
+        runtime = CodexTurnRuntime(
+            ThreadAttachment(
+                thread_id="thread",
+                request=CodexSessionOpenRequest(request_id="fixture", runtime_id="codex", cwd=ROOT),
+                listener=AsyncMock(),
+                model="model",
+                writable_roots=(),
+                attached_generation=1,
+            ),
+            request=request,
+            ensure_attached=AsyncMock(return_value=1),
+            stale_requests=AsyncMock(),
+            emitter=emitter,
+            router=ThreadRouter(),
+            watcher=SimpleNamespace(begin_turn=AsyncMock(), abandon_turn=Mock()),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        await runtime.notification(
+            "thread/tokenUsage/updated",
+            {
+                "turnId": "previous",
+                "tokenUsage": {
+                    "total": {"inputTokens": reported_input, "outputTokens": 8192},
+                    "last": {"inputTokens": 8000, "outputTokens": 3000},
+                    "modelContextWindow": 31129,
+                },
+            },
+            generation=1,
+        )
+        await runtime.notification(
+            "error",
+            {
+                "turnId": "previous",
+                "willRetry": False,
+                "error": {"message": "Incomplete response returned, reason: max_output_tokens"},
+            },
+            generation=1,
+        )
+        check("truncated spending remains exact", runtime.usage.output_tokens == 8192)
+        result = await runtime._start(
+            TurnInput((InputItem(InputKind.TEXT, text="continue"),)), RpcSubmission(), Mock()
+        )
+        check(
+            "next submission delegates context policy to the native turn for any reported spending",
+            requests == ["turn/start"] and result.status.value == "completed",
+        )
+        check(
+            "spending and an output-limit reason do not synthesize compaction",
+            all(
+                call.args[1] is not CodexSessionEventKind.CONTEXT_COMPACTED
+                for call in emitter.emit.await_args_list
+            ),
+        )
+        await runtime.notification(
+            "item/started",
+            {"turnId": "next-turn", "item": {"type": "contextCompaction", "id": "checkpoint"}},
+            generation=1,
+        )
+        check(
+            "native compaction start preserves phase and item identity",
+            emitter.emit.await_args.args[1] is CodexSessionEventKind.CONTEXT_COMPACTED
+            and emitter.emit.await_args.kwargs
+            == {"turn_id": "next-turn", "item_id": "checkpoint", "payload": {"phase": "started"}},
+        )
+        await runtime.notification(
+            "item/completed",
+            {"turnId": "next-turn", "item": {"type": "contextCompaction", "id": "checkpoint"}},
+            generation=1,
+        )
+        check(
+            "native automatic compaction publishes its own checkpoint",
+            emitter.emit.await_args.args[1] is CodexSessionEventKind.CONTEXT_COMPACTED
+            and emitter.emit.await_args.kwargs
+            == {"turn_id": "next-turn", "item_id": "checkpoint", "payload": {"phase": "completed"}},
+        )
+
+    for reported_input in (1000, 29000, 1000000):
+        asyncio.run(scenario(reported_input))
 
 
 def test_subscription_capability_rejection_is_terminal() -> None:
@@ -7461,6 +7658,10 @@ def main() -> int:
     test_codex_idle_timeout_preserves_failure_semantics()
     test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     test_codex_retry_exhaustion_preserves_provider_status()
+    test_output_limit_failure_is_recoverable()
+    test_incomplete_response_spending_uses_cumulative_deltas()
+    test_content_filter_incomplete_is_terminal()
+    test_context_compaction_remains_native_after_truncation()
     test_subscription_capability_rejection_is_terminal()
     test_provider_http_authentication()
     print(f"\nPASS={PASS} FAIL={FAIL}")

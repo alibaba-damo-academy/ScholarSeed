@@ -142,6 +142,64 @@ class ProductEventContract(unittest.TestCase):
             self.assertEqual(restored[0]["sent_at"], 10.0)
             self.assertEqual(service.decorate_history(SESSION_ID, restored), restored)
 
+    def test_scoped_turn_and_item_reads_preserve_mixed_storage_and_bindings(self) -> None:
+        def append(key, turn, item, kind, payload):
+            return self.events.append(
+                session_id=SESSION_ID,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=VENDOR_THREAD_ID,
+                vendor_turn_id=turn,
+                vendor_item_id=item,
+                kind=kind,
+                payload=payload,
+                idempotency_key=key,
+            )
+
+        legacy = append("ordinary", "native-turn", "shared-item", "legacy", {"delta": "old"})
+        with self.events.transaction() as connection:
+            connection.execute(
+                "UPDATE product_event SET kind=? WHERE event_id=?",
+                (PRODUCT_EVENT_MESSAGE_DELTA, legacy.event_id),
+            )
+        legacy = replace(legacy, kind=PRODUCT_EVENT_MESSAGE_DELTA)
+        admitted = append(
+            "admitted", None, "user", PRODUCT_EVENT_USER_MESSAGE, {"client_turn_id": "client-turn"}
+        )
+        client_event = append(
+            "client", "client-turn", "other-item", PRODUCT_EVENT_MESSAGE_DELTA, {"delta": "client"}
+        )
+        latest = append(
+            "native", "native-turn", "shared-item", PRODUCT_EVENT_MESSAGE_DELTA, {"delta": "new"}
+        )
+        append("outside", "other-turn", "another-item", PRODUCT_EVENT_MESSAGE_DELTA, {})
+
+        deltas = (PRODUCT_EVENT_MESSAGE_DELTA,)
+        for native_turn in (None, "native-turn"):
+            self.assertEqual(
+                self.events.turn_records(SESSION_ID, "native-turn", native_turn, kinds=deltas),
+                (legacy, latest),
+            )
+        for physical_form in ("journal", "inline"):
+            with self.subTest(physical_form=physical_form):
+                if physical_form == "inline":
+                    self._inline_events()
+                self.assertEqual(
+                    self.events.turn_records(
+                        SESSION_ID,
+                        "client-turn",
+                        "native-turn",
+                        kinds=(*deltas, PRODUCT_EVENT_USER_MESSAGE),
+                    ),
+                    (legacy, admitted, client_event, latest),
+                )
+        with patch.object(event_storage, "MAXIMUM_REPLAY_LIMIT", 1):
+            self.assertEqual(
+                self.events.items_events(
+                    SESSION_ID, vendor_item_ids=("shared-item", "other-item", "shared-item", "gone")
+                ),
+                {"shared-item": (legacy,), "other-item": (client_event,), "gone": ()},
+            )
+
     def test_rejected_history_is_filtered_only_for_model_and_survives_reopen(self) -> None:
         for index, code in enumerate(
             (

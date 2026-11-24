@@ -550,6 +550,7 @@ def test_execution_catalog_keeps_builtin_and_dashscope_approval_distinct() -> No
             )
         )
         for key, endpoint in (
+            ("auto", GATEWAY_BASE_URL),
             (GATEWAY_MODEL_KEY, GATEWAY_BASE_URL),
             (personal_model_key(profile["id"], GATEWAY_MODEL_KEY), preset["base_url"]),
             (DEFAULT_GATEWAY_MODEL_KEY, GATEWAY_BASE_URL),
@@ -559,6 +560,18 @@ def test_execution_catalog_keeps_builtin_and_dashscope_approval_distinct() -> No
             entries = {entry.model_ref: entry for entry in intent.catalog_models}
             selected_entry = entries[intent.model_ref]
             upstream = next(item for item in bridge._upstreams.values() if item.session_id == key)
+            declared = spec.config.get("max_output_tokens")
+            if key == "auto":
+                check("Auto retains the Flash output declaration", declared == 393216)
+            budget_key = (
+                "max_tokens"
+                if upstream.wire_protocol.value == "chat_completions"
+                else "max_output_tokens"
+            )
+            check(
+                "execution requests use the selected model output declaration",
+                upstream.request_policy({"model": intent.model_ref}).get(budget_key) == declared,
+            )
             check(
                 "selection keeps its own upstream endpoint", upstream.endpoint.startswith(endpoint)
             )
@@ -576,7 +589,11 @@ def test_execution_catalog_keeps_builtin_and_dashscope_approval_distinct() -> No
                 intent.approval_model_ref
                 == selected_entry.approval_model_ref
                 == upstream.approval_model_ref
-                == ("qwen3-next-80b-a3b-thinking" if endpoint == GATEWAY_BASE_URL else ""),
+                == (
+                    "qwen3-next-80b-a3b-thinking"
+                    if endpoint == GATEWAY_BASE_URL and key != "auto"
+                    else ""
+                ),
             )
             check(
                 "Qwen Max retains its declared multimodal inputs",

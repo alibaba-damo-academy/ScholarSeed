@@ -67,6 +67,7 @@ from service.identity.utils import (
     OWNERSHIP_AXIS_STATE,
     resolve_ownership_axis,
 )
+from service.inference.auto import GuideDecision
 from service.inference.source import ContentSource
 from service.paths import (
     SERVICE_BUNDLED_SKILLS_DIR,
@@ -308,6 +309,15 @@ def create_chat_app(
         live = sessions.get(session_id)
         return live.attachment_model_bridge_id() if live is not None else None
 
+    def auto_route(session_id: str, turn: str) -> GuideDecision | None:
+        live = sessions.get(session_id)
+        route = live.auto_route if live is not None else None
+        return route if route and route.turn == turn else None
+
+    def manual_skill_turn(session_id: str, turn: str) -> bool:
+        live = sessions.get(session_id)
+        return bool(turn and live and live.active_product_turn_id == turn and live.auto_route is None)
+
     completion_bridge = CompletionBridge(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),
         on_model=observe_model,
@@ -315,6 +325,8 @@ def create_chat_app(
         on_sources=observe_sources,
         on_tool_outputs=observe_tool_outputs,
         turn_ids=session_turn_id,
+        auto_route=auto_route,
+        manual_skill_turn=manual_skill_turn,
         content_source=content_source,
         source_endpoints=(DEEPRD_GATEWAY_BASE_URL,),
         retryable_tool_endpoints={
@@ -451,6 +463,7 @@ def create_chat_app(
         _log,
         activities=activities,
         prepare=session_service.prepare_turn,
+        auto_accounts=account_tokens,
         deliveries=resource_deliveries,
         catalog=access_store,
         events=event_store,
@@ -466,7 +479,7 @@ def create_chat_app(
     session_service.bind_turn_confirmation(turn_service.confirm_queued_unknown)
     session_service.bind_queue_cancellation(turn_service.cancel_pending_locked)
     session_service.bind_settlement_resume(turn_service.resume_pending_settlement)
-    event_service = EventService(sessions, event_store, _log)
+    event_service = EventService(sessions, event_store, _log, activities=activity_registry)
     feedback_service = FeedbackService()
 
     app.state.session_catalog = access_store

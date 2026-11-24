@@ -85,6 +85,7 @@ export interface HandoffDependencies {
   log: (line: string) => void
   accountBaseUrl: () => Promise<string>
   deviceFields: () => { device_id: string; device_label: string }
+  clientReleaseFields?: (base: string) => Record<string, string> | undefined
   adoptTokens: (token: string, refreshToken: string, isCurrent: () => boolean) => Promise<boolean>
   publish: (snapshot: DesktopAuthSnapshot) => void
   revealWindow: (reason: string) => boolean
@@ -598,6 +599,7 @@ export class DesktopHandoff {
             code,
             state,
             ...this.deps.deviceFields(),
+            ...this.deps.clientReleaseFields?.(base),
             ...(loopback
               ? { redirect_port: loopback.receiver.port, code_verifier: loopback.verifier }
               : {}),
