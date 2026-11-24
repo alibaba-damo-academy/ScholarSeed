@@ -160,22 +160,35 @@ export class TaskRecovery {
 interface RecoveryFallback {
   canPresent(): boolean
   prompt(signal: AbortSignal): Promise<boolean>
+  reopen(): Promise<void>
   log(message: string): void
 }
 
 export function installTaskRecoveryFallback(
   window: BrowserWindow,
   recovery: TaskRecovery,
-  { canPresent, prompt, log }: RecoveryFallback
-): void {
+  { canPresent, prompt, reopen, log }: RecoveryFallback
+): () => void {
   const contents = window.webContents
   let dialog: AbortController | null = null
   let watchdog: ReturnType<typeof setTimeout> | null = null
   let offered = false
+  let waitingForRendererExit = false
+  let reopenJob: ReturnType<typeof setImmediate> | null = null
 
   const clearWatchdog = (): void => {
     if (watchdog) clearTimeout(watchdog)
     watchdog = null
+  }
+
+  const scheduleReopen = (): void => {
+    // Give Electron's renderer-exit handlers the rest of this turn to retire the old document.
+    reopenJob = setImmediate(() => {
+      reopenJob = null
+      if (!canPresent()) return
+      log('reopening the renderer at home')
+      void reopen().catch((error: unknown) => log(`native recovery failed: ${String(error)}`))
+    })
   }
 
   const offer = async (watchdogExpired = false): Promise<void> => {
@@ -188,13 +201,17 @@ export function installTaskRecoveryFallback(
     try {
       if (watchdogExpired) log('renderer did not settle before the recovery watchdog')
       const confirmed = await prompt(controller.signal)
+      dialog = null
       if (!confirmed || controller.signal.aborted || !canPresent() || !recovery.reopenHome(token))
         return
-      // Electron's paired crash and reload starts a fresh renderer in the same window.
-      if (!contents.isCrashed()) contents.forcefullyCrashRenderer()
-      contents.reload()
-      log('reopening the renderer at home')
+      if (contents.isCrashed()) {
+        scheduleReopen()
+      } else {
+        waitingForRendererExit = true
+        contents.forcefullyCrashRenderer()
+      }
     } catch (error) {
+      waitingForRendererExit = false
       log(`native recovery failed: ${String(error)}`)
     } finally {
       dialog = null
@@ -217,6 +234,9 @@ export function installTaskRecoveryFallback(
 
   const retire = (): void => {
     clearWatchdog()
+    waitingForRendererExit = false
+    if (reopenJob) clearImmediate(reopenJob)
+    reopenJob = null
     dialog?.abort()
     const token = recovery.pendingToken()
     if (token) recovery.reopenHome(token)
@@ -226,8 +246,15 @@ export function installTaskRecoveryFallback(
     unsubscribe()
     retire()
   })
-  contents.on('render-process-gone', () => void offer())
   contents.on('did-start-navigation', (details) => {
     if (details.isMainFrame && !details.isSameDocument) retire()
   })
+  return () => {
+    if (!waitingForRendererExit) {
+      void offer()
+      return
+    }
+    waitingForRendererExit = false
+    scheduleReopen()
+  }
 }

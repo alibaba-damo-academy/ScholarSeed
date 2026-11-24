@@ -691,7 +691,7 @@ function aliveMainWindow(): BrowserWindow | null {
 
 function sendToMainWindow(channel: string, ...args: unknown[]): boolean {
   const win = aliveMainWindow()
-  if (!win) return false
+  if (!win || win.webContents.isCrashed()) return false
   win.webContents.send(channel, ...args)
   return true
 }
@@ -4618,8 +4618,9 @@ async function createWindow(
   if (!headless) windowController.ensureTray(browserWindow)
   const windowCurrent = (): boolean =>
     aliveMainWindow() === browserWindow && startupState.snapshot().generation === generation
-  installTaskRecoveryFallback(browserWindow, taskRecovery(), {
+  const recoverRendererExit = installTaskRecoveryFallback(browserWindow, taskRecovery(), {
     canPresent: () => windowCurrent() && windowPresentationAllowed(),
+    reopen: () => browserWindow.loadURL(rendererUrl),
     prompt: async (signal) => {
       const t = mainLocalization().getFixedT(null, 'native')
       const result = await dialog.showMessageBox(browserWindow, {
@@ -4766,6 +4767,7 @@ async function createWindow(
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     workbenchHealth.invalidate()
+    recoverRendererExit()
     pushLog(
       `[shell] renderer process gone reason=${details.reason} exit-code=${details.exitCode}\n`
     )

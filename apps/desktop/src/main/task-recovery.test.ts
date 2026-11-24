@@ -107,16 +107,10 @@ function nativeWindow(recovery: TaskRecovery) {
     isCrashed: () => crashed,
     forcefullyCrashRenderer: () => {
       actions.push('crash')
-      crashed = true
-      webContents.emit('render-process-gone')
-    },
-    reload: () => {
-      actions.push(recovery.status(null))
-      webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
     },
   })
   const window = Object.assign(new EventEmitter(), { webContents })
-  installTaskRecoveryFallback(window as unknown as BrowserWindow, recovery, {
+  const onRendererExit = installTaskRecoveryFallback(window as unknown as BrowserWindow, recovery, {
     canPresent: () => true,
     prompt: (signal) => {
       prompts.push(signal)
@@ -124,12 +118,26 @@ function nativeWindow(recovery: TaskRecovery) {
         reply = resolve
       })
     },
+    reopen: async () => {
+      actions.push(recovery.status(null))
+      webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
+    },
     log: () => {},
   })
-  return { window, webContents, prompts, actions, respond: (value: boolean) => reply(value) }
+  return {
+    window,
+    webContents,
+    prompts,
+    actions,
+    respond: (value: boolean) => reply(value),
+    rendererExited: () => {
+      crashed = true
+      onRendererExit()
+    },
+  }
 }
 
-test('native recovery only offers one prompt and sets home before crashing the renderer', async (context) => {
+test('native recovery sets home and waits for the old renderer to exit before reopening', async (context) => {
   const { launch } = fixture(context)
   const recovery = launch()
   const native = nativeWindow(recovery)
@@ -141,9 +149,29 @@ test('native recovery only offers one prompt and sets home before crashing the r
   assert.equal(native.prompts.length, 1)
   native.respond(true)
   await Promise.resolve()
+  assert.deepEqual(native.actions, ['crash'])
+  assert.equal(native.prompts[0].aborted, false)
+  assert.equal(recovery.status(null), 'home')
+  native.rendererExited()
+  assert.deepEqual(native.actions, ['crash'])
+  await new Promise<void>((resolve) => setImmediate(resolve))
   assert.deepEqual(native.actions, ['crash', 'home'])
   assert.equal(native.prompts.length, 1)
   assert.equal(launch().status('old-task'), 'home')
+})
+
+test('native recovery reopens a renderer that already exited without crashing it again', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(recovery.begin('old-task'))
+  native.rendererExited()
+  assert.equal(native.prompts.length, 1)
+  native.respond(true)
+  await Promise.resolve()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['home'])
+  assert.equal(native.prompts[0].aborted, false)
 })
 
 test('the watchdog offers recovery once without a Chromium hang signal', async (context) => {
@@ -159,7 +187,7 @@ test('the watchdog offers recovery once without a Chromium hang signal', async (
   native.respond(false)
   await Promise.resolve()
   native.window.emit('unresponsive')
-  native.webContents.emit('render-process-gone')
+  native.rendererExited()
   assert.equal(native.prompts.length, 1)
   assert.deepEqual(native.actions, [])
 })

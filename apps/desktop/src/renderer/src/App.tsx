@@ -1015,7 +1015,7 @@ function AppMain({
     state.mainView === 'home'
   const workspaceVisible =
     workspaceReady || homeAvailable || state.startupTaskRecovery === 'presenting'
-  const stopRecoveryForInput =
+  const stopRecoveryForComposition =
     state.startupTaskRecovery === 'waiting' ? act.skipStartupTaskRecovery : undefined
   const recoveryAlertClass =
     window.scholarseed?.platform === 'darwin'
@@ -1047,8 +1047,7 @@ function AppMain({
 
   return (
     <div
-      onInputCapture={stopRecoveryForInput}
-      onCompositionStartCapture={stopRecoveryForInput}
+      onCompositionStart={stopRecoveryForComposition}
       className={`vds-app-shell h-[var(--vds-app-shell-viewport-height)] min-h-[var(--vds-app-shell-viewport-height)] flex flex-col relative overflow-hidden bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] has-[.vds-workbench]:before:hidden before:fixed before:inset-x-0 before:top-0 before:z-[var(--vds-app-shell-drag-region-z-index)] before:h-[var(--vds-app-shell-drag-region-height)] before:content-[''] before:[-webkit-app-region:drag]${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
     >
       {/* PRD 2.1.1: no full-width titlebar — the sidebar owns the window row
