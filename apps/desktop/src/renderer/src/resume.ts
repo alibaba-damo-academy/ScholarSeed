@@ -1,14 +1,7 @@
-import {
-  getHistoryWithTodos,
-  listQueuedMessages,
-  openSession,
-  type HistoryResult,
-  type OpenResp,
-  type QueuedMessagePayload,
-} from './api.ts'
+import { getHistoryWithTodos, openSession, type HistoryResult, type OpenResp } from './api.ts'
+import type { HistoryProjectionCaller } from './app/api/timing.ts'
 import type { Cognitive, ConvItem, SessionStatus, Thread } from './model'
 import { mergeQueuedOutbox } from './outbox.ts'
-import { queuedMessageFromPayload } from './queue.ts'
 import { projectSessionRecovery, recoveredTurnOutcome, sessionResumeStatusItem } from './runtime.ts'
 import { openedSessionTitle } from './session.ts'
 import { projectPlanSnapshots } from './todo.ts'
@@ -21,7 +14,6 @@ import {
 interface SessionResumeSnapshot {
   opened: OpenResp
   history: HistoryResult
-  queuedMessages: QueuedMessagePayload[] | null
 }
 
 /** Prepare startup history without attaching a product stream or activating a view. */
@@ -47,18 +39,9 @@ export async function prepareStartupSession(
     }
   }
 
-  // Read history after open captures the cursor. The queue can finish independently.
-  const queue = new AbortController()
-  let queuedMessages: QueuedMessagePayload[] | null = null
-  void listQueuedMessages(sessionId, AbortSignal.any([signal, queue.signal])).then((messages) => {
-    queuedMessages = messages
-  })
-  try {
-    const history = await getHistoryWithTodos(sessionId, 'startup_resume', signal)
-    return history && !signal.aborted ? { opened, history, queuedMessages } : null
-  } finally {
-    queue.abort()
-  }
+  // Read history after open captures the cursor. The live status refresh owns the sequenced queue.
+  const history = await getHistoryWithTodos(sessionId, 'startup_resume', signal)
+  return history && !signal.aborted ? { opened, history } : null
 }
 
 export function reportSessionResume(
@@ -94,16 +77,13 @@ export function projectResumedSession(
   {
     opened,
     history,
-    queuedMessages,
     serviceInstanceId,
-    acknowledgeQueue,
     timestamp,
     caller = 'startup_resume',
   }: SessionResumeSnapshot & {
     serviceInstanceId: string | null
-    acknowledgeQueue: boolean
     timestamp: number
-    caller?: 'startup_resume' | 'resume'
+    caller?: Extract<HistoryProjectionCaller, 'startup_resume' | 'resume'>
   }
 ): Thread {
   const sessionId = opened.session_id
@@ -160,9 +140,9 @@ export function projectResumedSession(
     interrupting: Boolean(opened.interrupting),
     queuedMessages: mergeQueuedOutbox(
       sessionId,
-      queuedMessages?.map(queuedMessageFromPayload) ?? thread.queuedMessages ?? [],
-      acknowledgeQueue && queuedMessages !== null,
-      thread.queuedMessages ?? []
+      thread.queuedMessages ?? [],
+      false,
+      thread.queuedMessages
     ),
     status: resumedSessionStatus(opened),
   }

@@ -55,11 +55,11 @@ export async function loadStartupWindow(
   const timer = setTimeout(expire, STARTUP_BUDGET_STEADY_MS)
   try {
     await waitForStartupWindow(signal, async () => {
-      const navigation = new Promise<void>((resolve) => resolve(load(signal)))
+      const navigation = load(signal).then(() => {
+        if (performance.now() >= expiresAt) expire()
+      })
       await Promise.all([navigation, painted])
     })
-    if (performance.now() >= expiresAt) expire()
-    signal.throwIfAborted()
   } catch (error) {
     deadline.abort(error)
     throw error

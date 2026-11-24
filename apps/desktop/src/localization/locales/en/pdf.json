@@ -48,6 +48,8 @@
     "cancelRestored": "Generation cancelled. Previous reading restored.",
     "configure": "Configure model",
     "retry": "Retry",
+    "checkSubmission": "Check status",
+    "checkSubmissionFailed": "The reading status is still unconfirmed. You can check again later.",
     "explain": "Explain",
     "translate": "Translate",
     "figure": "Explain figure",

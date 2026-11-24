@@ -47,6 +47,12 @@ export class PdfAiRequestError extends Error {
   }
 }
 
+export class PdfAiUnconfirmedSubmission extends PdfAiRequestError {
+  constructor(readonly attemptId: string) {
+    super({ code: PDF_AI_TASK_UNRESOLVED, diagnostic: '' })
+  }
+}
+
 function pdfAiClientRejection(status: number | undefined): boolean {
   return status !== undefined && status >= 400 && status < 500
 }
@@ -93,26 +99,18 @@ export async function pdfAiApi<T>(path: string, body?: unknown, signal?: AbortSi
   return payload as T
 }
 
+function firstString(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === 'string') ?? ''
+}
+
 /** HTTP details, live tasks and restored tasks retain error identity independently of language. */
 export function pdfAiFailure(value: unknown): PdfAiFailure | undefined {
   if (typeof value === 'string') return value ? { diagnostic: value } : undefined
   if (!value || typeof value !== 'object') return undefined
   const source = value as Record<string, unknown>
-  const code =
-    typeof source.error_code === 'string' && source.error_code
-      ? source.error_code
-      : typeof source.code === 'string'
-        ? source.code
-        : ''
-  const detail =
-    typeof source.error_detail === 'string'
-      ? source.error_detail
-      : typeof source.diagnostic === 'string'
-        ? source.diagnostic
-        : typeof source.message === 'string'
-          ? source.message
-          : ''
-  const legacy = typeof source.error === 'string' ? source.error : ''
+  const code = firstString(source.error_code) || firstString(source.code)
+  const detail = firstString(source.error_detail, source.diagnostic, source.message)
+  const legacy = firstString(source.error)
   const diagnostic = detail || (legacy && legacy !== code ? legacy : '')
   return code || diagnostic ? { ...(code ? { code } : {}), diagnostic } : undefined
 }
@@ -227,7 +225,7 @@ export async function submitPdfAiReceipt<T extends PdfAiTaskReceipt>(
   } catch (cause) {
     signal.throwIfAborted()
     if (cause === deadline.reason) {
-      throw new PdfAiRequestError({ code: PDF_AI_TASK_UNRESOLVED, diagnostic: '' })
+      throw new PdfAiUnconfirmedSubmission(request.client_attempt_id)
     }
     throw cause
   }
@@ -266,5 +264,5 @@ async function submitPdfAiAttempt<T extends PdfAiTaskReceipt>(
       }
     }
   }
-  throw new PdfAiRequestError({ code: PDF_AI_TASK_UNRESOLVED, diagnostic: '' })
+  throw new PdfAiUnconfirmedSubmission(request.client_attempt_id)
 }

@@ -498,6 +498,7 @@ test('attached session stream keeps applying events across model selection', () 
     refreshMetaRef: { current: () => undefined },
     act: { invalidateResources: () => undefined },
     bodySequences: { current: new Map() },
+    acceptedQueueSequences: { current: new Map() },
   }
   for (const name of ['streamCurrent', 'current', 'attach']) {
     if (!declarations[name]) continue
@@ -949,6 +950,8 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
       metadataSessions: { current: [background] },
       getSnapshot: () => state,
       summarySequences: { current: new Map() },
+      acceptedQueueSequences: { current: new Map() },
+      bodySequences: { current: new Map() },
       refreshStatusRef: { current: () => undefined },
       sessionSummaryNeedsCatalog,
       useEffect: (callback: () => unknown) => callback(),
@@ -956,6 +959,8 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
         catalogReads++
       },
       patchThread: (id: string, update: (thread: { sessionId: string }) => unknown) => {
+        // StrictMode replays the projection without committing its first invocation.
+        update(state.threads.background)
         update(state.threads.background)
         patched.push(id)
       },
@@ -1015,6 +1020,36 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
   notify(false, [{ topic: 'projects', subject: 'project' }])
   notify(true, [])
   assert.equal(catalogReads, 5)
+})
+
+test('a terminal queue event releases its outbox once even without a thread to patch', () => {
+  for (const withThread of [true, false]) {
+    const thread: Thread | undefined = withThread
+      ? { id: 'thread', sessionId: 'session', title: 'Task', conversation: [], lastSeq: 0 }
+      : undefined
+    const acknowledgements: string[] = []
+    const branch = block(liveSource, "case 'message_removed':", "case 'subagent_spawned':")
+    const apply = runInNewContext(`(event) => { switch (event.type) { ${branch} } }`, {
+      threadId: 'thread',
+      threadAtReceipt: thread,
+      acceptedQueueSequence: undefined,
+      acknowledgeOutbox: true,
+      releaseQueuedOutbox: (_session: string, id: string) => acknowledgements.push(id),
+      refreshAssistantContext: () => {},
+      patchThread: (_id: string, update: (current: Thread) => Partial<Thread>) => {
+        if (!thread) return
+        update(thread)
+        update(thread)
+      },
+    }) as (event: unknown) => void
+    apply({
+      type: 'message_removed',
+      seq: 1,
+      session_id: 'session',
+      data: { queued_message_id: 'message' },
+    })
+    assert.deepEqual(acknowledgements, ['message'])
+  }
 })
 
 test('shutdown prevents a new catalog request', async () => {

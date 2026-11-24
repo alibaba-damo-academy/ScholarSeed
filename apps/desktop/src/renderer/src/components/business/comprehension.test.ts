@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { pdfAiFailure } from '../../app/api/pdf.ts'
 import { generateReading, observeReading, readReading, ReadingError } from './comprehension.ts'
 
 function install(fetch: typeof globalThis.fetch): () => void {
@@ -13,6 +14,23 @@ function install(fetch: typeof globalThis.fetch): () => void {
     globalThis.fetch = oldFetch
   }
 }
+test('reading failure keeps code and details in their protocol priority', () => {
+  assert.deepEqual(
+    pdfAiFailure({
+      error_code: 'primary_code',
+      code: 'fallback_code',
+      error_detail: 'primary details',
+      diagnostic: 'secondary details',
+      message: 'fallback details',
+    }),
+    { code: 'primary_code', diagnostic: 'primary details' }
+  )
+  assert.deepEqual(
+    pdfAiFailure({ error_code: '', code: 'fallback_code', error_detail: '', error: 'legacy' }),
+    { code: 'fallback_code', diagnostic: 'legacy' }
+  )
+})
+
 test('reading discovery is read-only and binds the requested attachment and version', async () => {
   const restore = install(async (url, init) => {
     const parsed = new URL(String(url))

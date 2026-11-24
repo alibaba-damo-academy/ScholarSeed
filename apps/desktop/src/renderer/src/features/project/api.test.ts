@@ -2,12 +2,82 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  createProject,
+  listProjectFiles,
   listExternalRoots,
   revokeRoot,
   selectExternalRootProject,
   listProjects,
   loadWorkspaceRoot,
 } from './api.ts'
+import { CONTENT_OPERATION_UNKNOWN, CONTENT_TREE_READ_TIMEOUT_MS } from '../../app/api/content.ts'
+import { flushApiDiagnostics } from '../../app/api/diagnostics.ts'
+
+test('project file search bounds the traversal separately from each directory page', async (context) => {
+  const deadlines = new Map<AbortSignal, number>()
+  const requests: Array<[string | null, string | null, AbortSignal | null | undefined]> = []
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} })
+  context.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'window', descriptor)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  context.mock.method(AbortSignal, 'timeout', (duration: number) => {
+    const signal = new AbortController().signal
+    deadlines.set(signal, duration)
+    return signal
+  })
+  context.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    const query = new URL(url, 'http://serve.test').searchParams
+    const path = query.get('path')
+    requests.push([path, query.get('offset'), init?.signal])
+    return Response.json({
+      root: '/fixture',
+      nodes: path
+        ? [{ kind: 'file', path: 'folder/note.md' }]
+        : [{ kind: 'dir', path: 'folder', available: true }],
+      total: 1,
+      offset: 0,
+    })
+  })
+  const nodes = await listProjectFiles('project', new AbortController().signal)
+  assert.deepEqual(
+    nodes?.map(({ path }) => path),
+    ['folder/note.md']
+  )
+  assert.deepEqual(
+    requests.map(([path, offset]) => [path, offset]),
+    [
+      ['', '0'],
+      ['folder', '0'],
+    ]
+  )
+  assert.equal(new Set(requests.map(([, , signal]) => signal)).size, 2)
+  const [budget, ...pageBudgets] = deadlines.values()
+  assert.ok(budget > CONTENT_TREE_READ_TIMEOUT_MS && Number.isFinite(budget))
+  assert.deepEqual(pageBudgets, [CONTENT_TREE_READ_TIMEOUT_MS, CONTENT_TREE_READ_TIMEOUT_MS])
+})
+
+test('a project write whose response was lost keeps unknown outcome without replaying', async (context) => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} })
+  context.after(() => {
+    flushApiDiagnostics()
+    if (descriptor) Object.defineProperty(globalThis, 'window', descriptor)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  let writes = 0
+  context.mock.method(globalThis, 'fetch', async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') writes += 1
+    throw new TypeError('Connection closed after the write was processed')
+  })
+  assert.deepEqual(await createProject('new'), {
+    ok: false,
+    error: CONTENT_OPERATION_UNKNOWN,
+    project: undefined,
+  })
+  assert.equal(writes, 1)
+})
 
 test('owned project listings bypass browser cache locks while workspace root keeps the default request cache', async () => {
   const previousFetch = globalThis.fetch

@@ -1,9 +1,15 @@
 import { apiFetch } from '../../api.ts'
-import { PDF_AI_PREFIX, readPdfAiTask, submitPdfAiReceipt } from '../../app/api/pdf.ts'
+import {
+  PDF_AI_PREFIX,
+  queryPdfAiTask,
+  readPdfAiTask,
+  submitPdfAiReceipt,
+} from '../../app/api/pdf.ts'
 import { sseData } from '../../sse.ts'
 import type { ReadingState, ReadingTask, ReadingTiming } from '../../contracts/literature'
 
 const PREFIX = `${PDF_AI_PREFIX}/tasks`
+const NEVER_ABORT = new AbortController().signal
 export const readingBusy = (task?: ReadingTask | null): boolean =>
   task?.status === 'pending' || task?.status === 'running'
 export class ReadingError extends Error {
@@ -57,7 +63,7 @@ export function generateReading(
   modelKey: string,
   language: 'zh' | 'en',
   serviceInstanceId?: string | null,
-  signal = new AbortController().signal
+  signal = NEVER_ABORT
 ): Promise<ReadingTask> {
   const request = {
     literature_id: literatureId,
@@ -73,12 +79,17 @@ export function generateReading(
   }
   return submitPdfAiReceipt<ReadingTask>(request, signal)
 }
-export function cancelReading(
-  taskId: string,
-  signal = new AbortController().signal
-): Promise<ReadingTask> {
+export function cancelReading(taskId: string, signal = NEVER_ABORT): Promise<ReadingTask> {
   return readPdfAiTask(`${PREFIX}/${encodeURIComponent(taskId)}/cancel`, {}, signal)
 }
+export function checkReading(
+  attemptId: string,
+  signal: AbortSignal,
+  serviceInstanceId?: string | null
+): Promise<ReadingTask> {
+  return queryPdfAiTask<ReadingTask>(attemptId, signal, serviceInstanceId ?? undefined)
+}
+
 export async function observeReading(
   taskId: string,
   signal: AbortSignal,

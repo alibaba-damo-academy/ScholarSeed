@@ -21,6 +21,7 @@ import type { ContentErrorCode, ExternalRootRef, ProjectRef } from '../../contra
 const FAILURE_CODES = {
   networkError: 'network_error',
 } as const
+const PROJECT_FILE_SEARCH_TIMEOUT_MS = 60_000
 
 /** 项目列表 + 当前项目 + 生效工作区根。 */
 export interface ProjectListing {
@@ -109,7 +110,10 @@ export async function listProjectFiles(
   project: string,
   cancellation: AbortSignal
 ): Promise<ProjectTreeNode[] | null> {
-  const signal = AbortSignal.any([cancellation, AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)])
+  const signal = AbortSignal.any([
+    cancellation,
+    AbortSignal.timeout(PROJECT_FILE_SEARCH_TIMEOUT_MS),
+  ])
   const directories = ['']
   const visited = new Set<string>()
   const files = new Map<string, ProjectTreeNode>()
@@ -119,7 +123,11 @@ export async function listProjectFiles(
     visited.add(directory)
     let offset = 0
     while (!signal.aborted) {
-      const page = await readProjectTree(project, directory, offset, signal)
+      const pageSignal = AbortSignal.any([
+        signal,
+        AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS),
+      ])
+      const page = await readProjectTree(project, directory, offset, pageSignal)
       if (!page || signal.aborted) return null
       for (const node of page.nodes) {
         if (node.kind === 'file') files.set(node.path, node)
@@ -222,6 +230,7 @@ async function sendJson(
     }
     return { ok: true, payload }
   } catch (error) {
+    // A transport error can arrive after the server applied the write.
     if (timeoutMs !== undefined) return { ok: false, error: CONTENT_OPERATION_UNKNOWN }
     return { ok: false, error: error instanceof Error ? error.message : FAILURE_CODES.networkError }
   }

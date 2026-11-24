@@ -40,7 +40,7 @@ export function finishResourceTreeReload(
   previous?: ResourceState
 ): ResourceState {
   if (previous && resourceTreeChangedDuringReload(resource, previous)) {
-    return { ...resource, loadState: 'ready' }
+    return { ...resource, loadState: 'ready', treeRefreshFailed: false }
   }
   if (!result) {
     return {

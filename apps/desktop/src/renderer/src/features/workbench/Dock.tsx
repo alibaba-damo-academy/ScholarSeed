@@ -791,6 +791,14 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
   const drag = useDocumentDrag()
   const project = selectedProject(appState)?.id ?? ''
   const dockRef = useRef<HTMLDivElement>(null)
+  const pendingSaveState = state.pendingClose
+    ? state.sessions[state.pendingClose.sessionId]?.saveState
+    : undefined
+  const closeWithOverwrite = pendingSaveState === 'conflict'
+  const closeAfterSaveCheck = pendingSaveState === 'unconfirmed'
+  let saveCloseLabel: string = t('dock.saveClose')
+  if (closeWithOverwrite) saveCloseLabel = t('dock.overwriteClose')
+  else if (closeAfterSaveCheck) saveCloseLabel = t('dock.checkSave')
 
   useEffect(() => {
     workspace.setAutoSave(appState.autoSave)
@@ -925,9 +933,7 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
           <AlertDialogHeader>
             <AlertDialogTitle>{t('dock.closeTitle')}</AlertDialogTitle>
             <AlertDialogDescription>
-              {state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'unconfirmed'
-                ? t('dock.saveUnconfirmed')
-                : t('dock.closeDescription')}
+              {closeAfterSaveCheck ? t('dock.saveUnconfirmed') : t('dock.closeDescription')}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -948,20 +954,10 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
             <Button
               variant="primary"
               data-testid="document-close-save"
-              disabled={state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'saving'}
-              onClick={() =>
-                void workspace.resolveClose(
-                  state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'conflict'
-                    ? 'overwrite'
-                    : 'save'
-                )
-              }
+              disabled={pendingSaveState === 'saving'}
+              onClick={() => void workspace.resolveClose(closeWithOverwrite ? 'overwrite' : 'save')}
             >
-              {state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'conflict'
-                ? t('dock.overwriteClose')
-                : state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'unconfirmed'
-                  ? t('dock.checkSave')
-                  : t('dock.saveClose')}
+              {saveCloseLabel}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

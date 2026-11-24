@@ -276,6 +276,105 @@ test(
       }
     )
 
+    await context.test(
+      'checks only the original unconfirmed reading without resubmitting',
+      async () => {
+        const { page, start, submissions, errors } = await fixture()
+        const statusReads: Route[] = []
+        try {
+          await page.route(`${ORIGIN}${TASKS}/*`, (route) => {
+            if (route.request().method() !== 'GET') return route.fallback()
+            statusReads.push(route)
+          })
+          await start.click()
+          await expect.poll(() => submissions.length).toBe(1)
+          const attempt = submissions[0].request().postDataJSON().client_attempt_id as string
+          const missing = { status: 404, json: { detail: { code: 'pdf_ai_task_missing' } } }
+          await submissions[0].fulfill({ status: 502, json: {} })
+          await expect.poll(() => statusReads.length).toBe(1)
+          await statusReads[0].fulfill(missing)
+          const check = page.getByRole('button', { name: /检查状态$/ })
+          await expect(check).toBeEnabled()
+          await expect(start).toBeDisabled()
+          await expect(page.getByText(SAVED.modules.summary.text, { exact: true })).toBeVisible()
+
+          await check.click()
+          await expect.poll(() => statusReads.length).toBe(2)
+          await expect(check).toBeDisabled()
+          await statusReads[1].fulfill(missing)
+          await expect(check).toBeEnabled()
+          await expect(start).toBeDisabled()
+
+          await check.click()
+          await expect.poll(() => statusReads.length).toBe(3)
+          await statusReads[2].fulfill({
+            json: { task_id: attempt, status: 'completed', result: SAVED },
+          })
+          await expect(check).toHaveCount(0)
+          await expect(start).toBeEnabled()
+
+          await page.route('**/ai/state?**', (route) =>
+            route.fulfill({
+              json: {
+                revision: 'revision',
+                attachment_id: 'paper',
+                results: { summary: SAVED },
+                task: { task_id: attempt, status: 'unknown' },
+              },
+            })
+          )
+          await page.reload()
+          await expect(check).toBeEnabled()
+          await expect(start).toBeDisabled()
+          await expect(page.getByText(SAVED.modules.summary.text, { exact: true })).toBeVisible()
+          await check.click()
+          await expect.poll(() => statusReads.length).toBe(4)
+
+          const otherText = 'The other paper has a saved reading'
+          const otherReading = {
+            ...SAVED,
+            modules: { summary: { ...SAVED.modules.summary, text: otherText } },
+          }
+          await page.route('**/api/literature/other/ai/state?**', (route) =>
+            route.fulfill({
+              json: {
+                revision: 'revision',
+                attachment_id: 'other',
+                results: { summary: otherReading },
+                task: null,
+              },
+            })
+          )
+          await page.evaluate(() => Reflect.get(window, 'renderReading')('other'))
+          await expect(page.getByText(otherText, { exact: true })).toBeVisible()
+          await statusReads[3]
+            .fulfill({ json: { task_id: attempt, status: 'completed', result: SAVED } })
+            .catch(() => undefined)
+          await expect(page.getByText(SAVED.modules.summary.text, { exact: true })).toHaveCount(0)
+          await expect(page.getByText(otherText, { exact: true })).toBeVisible()
+
+          await page.evaluate(() => Reflect.get(window, 'renderReading')('paper'))
+          await expect(check).toBeEnabled()
+          await expect(page.getByText(SAVED.modules.summary.text, { exact: true })).toBeVisible()
+          await check.click()
+          await expect.poll(() => statusReads.length).toBe(5)
+          await statusReads[4].fulfill({
+            json: { task_id: attempt, status: 'completed', result: SAVED },
+          })
+          await expect(check).toHaveCount(0)
+          await expect(start).toBeEnabled()
+          assert.equal(submissions.length, 1)
+          for (const request of statusReads) {
+            assert.equal(request.request().method(), 'GET')
+            assert.equal(new URL(request.request().url()).pathname, `${TASKS}/${attempt}`)
+          }
+          assert.deepEqual(errors, [])
+        } finally {
+          await page.close()
+        }
+      }
+    )
+
     async function verifyChatFailure(page: Page): Promise<void> {
       await page.evaluate(() => {
         Reflect.set(window, 'chatMode', 'pending')

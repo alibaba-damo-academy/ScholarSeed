@@ -39,12 +39,6 @@ function useTestRequests(context: TestContext, fetch: typeof globalThis.fetch): 
   })
 }
 
-function waitForAbort(signal: AbortSignal): Promise<Response> {
-  return new Promise((_resolve, reject) =>
-    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
-  )
-}
-
 test('startup reports the denied session root and stops before reading history or the queue', async (context) => {
   const runtimeRoot = '/fixture/session workspace'
   const requests: string[] = []
@@ -82,7 +76,6 @@ for (const [running, lastTurnStatus, expectedStatus] of [
       timeout: 2_000,
     },
     async (context) => {
-      let queueSignal: AbortSignal | undefined
       const requests: string[] = []
       useTestRequests(context, async (input, init) => {
         const url = String(input)
@@ -91,27 +84,19 @@ for (const [running, lastTurnStatus, expectedStatus] of [
           assert.deepEqual(JSON.parse(String(init?.body)), { resume_session_id: SESSION_ID })
           return Response.json({ ...OPENED, running, last_turn_status: lastTurnStatus })
         }
-        if (url.endsWith('/queue')) {
-          queueSignal = init!.signal!
-          return waitForAbort(queueSignal)
-        }
         return Response.json(HISTORY)
       })
       const controller = new AbortController()
       const snapshot = await prepareStartupSession(SESSION_ID, controller.signal)
       assert.ok(snapshot)
-      assert.equal(snapshot.queuedMessages, null)
-      assert.equal(queueSignal?.aborted, true)
       assert.equal(controller.signal.aborted, false)
       assert.deepEqual(requests, [
         '/api/serve/sessions/open',
-        `/api/serve/sessions/${SESSION_ID}/queue`,
         `/api/serve/history/${SESSION_ID}?compact_activity=true`,
       ])
       const restored = projectResumedSession(INITIAL_THREAD, {
         ...snapshot,
         serviceInstanceId: 'instance',
-        acknowledgeQueue: false,
         timestamp: 1,
       })
       assert.equal(restored.resumeState, 'ready')
@@ -127,45 +112,37 @@ for (const [running, lastTurnStatus, expectedStatus] of [
 }
 
 test(
-  'a clear startup history failure releases an outstanding queue read',
+  'a clear startup history failure starts no background queue read',
   {
     timeout: 2_000,
   },
   async (context) => {
-    let queueAborted = false
-    useTestRequests(context, async (input, init) => {
+    const paths: string[] = []
+    useTestRequests(context, async (input) => {
       const url = String(input)
+      paths.push(url)
       if (url.endsWith('/open')) return Response.json({ ...OPENED, last_turn_status: 'completed' })
-      if (url.endsWith('/queue')) {
-        const signal = init!.signal!
-        signal.addEventListener(
-          'abort',
-          () => {
-            queueAborted = true
-          },
-          { once: true }
-        )
-        return waitForAbort(signal)
-      }
       return new Response(null, { status: 503 })
     })
     assert.equal(await prepareStartupSession(SESSION_ID, new AbortController().signal), null)
-    assert.equal(queueAborted, true)
+    assert.deepEqual(paths, [
+      '/api/serve/sessions/open',
+      `/api/serve/history/${SESSION_ID}?compact_activity=true`,
+    ])
   }
 )
 
-test('canceling startup invalidates history and queue body reads even if the transport returns late', async (context) => {
+test('canceling startup invalidates the history body even if the transport returns late', async (context) => {
   const controller = new AbortController()
   const signals: AbortSignal[] = []
   useTestRequests(context, async (input, init) => {
     const url = String(input)
     if (url.endsWith('/open')) return Response.json({ ...OPENED, last_turn_status: 'completed' })
     signals.push(init!.signal!)
-    if (url.endsWith('/queue')) return waitForAbort(init!.signal!)
     controller.abort()
     return Response.json(HISTORY)
   })
   assert.equal(await prepareStartupSession(SESSION_ID, controller.signal), null)
-  assert.equal(signals.length, 2)
+  assert.equal(signals.length, 1)
   assert.ok(signals.every((signal) => signal.aborted))
 })

@@ -1110,6 +1110,34 @@ class ResumeIOContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reopened["session_id"], self.session_id)
         self.assertEqual(len(self.runtime.opens), 2)
 
+    async def test_cancelled_open_keeps_cancelled_error_when_cleanup_fails(self) -> None:
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                entered = asyncio.get_running_loop().create_future()
+
+                async def blocked_activate(live):
+                    entered.set_result(live.id)
+                    await asyncio.Event().wait()
+
+                with (
+                    patch.object(_Live, "activate", blocked_activate),
+                    patch.object(_Live, "aclose", side_effect=OSError("close failed")),
+                ):
+                    opening = asyncio.create_task(
+                        self.resume()
+                        if existing
+                        else self.service.open({}, self.owner, actor_id=self.owner.user_id)
+                    )
+                    session_id = await asyncio.wait_for(entered, RESUME_WORKER_WAIT_SECONDS)
+                    opening.cancel("client disconnected")
+                    with self.assertRaisesRegex(asyncio.CancelledError, "client disconnected"):
+                        await opening
+                    self.assertTrue(self.sessions[session_id].closing)
+                    _, status = await self.service.open(
+                        {"resume_session_id": session_id}, self.owner, actor_id=self.owner.user_id
+                    )
+                    self.assertEqual(status, 409)
+
     async def test_failed_cleanup_retains_owner_and_blocks_duplicate_runtime(self) -> None:
         with (
             patch.object(_Live, "activate", side_effect=RuntimeError("activation failed")),

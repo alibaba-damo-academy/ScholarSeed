@@ -1321,7 +1321,7 @@ class SessionService:
             published = True
         except asyncio.CancelledError:
             if live is not None:
-                await self._discard_failed_open(session_id, live)
+                await self._discard_cancelled_open(session_id, live)
             raise
         except SessionModelUnavailableError as exc:
             if live is not None:
@@ -1346,6 +1346,20 @@ class SessionService:
             if fork_origin is not None and allocated is not None and not published:
                 self._access.set_archived(session_id, principal, True)
         return await self._snapshot(live, readiness=readiness), HTTP_OK
+
+    async def _discard_cancelled_open(self, session_id: str, live: LiveSession) -> None:
+        try:
+            await self._discard_failed_open(session_id, live)
+        except asyncio.CancelledError:
+            # The cleanup has settled. The caller re-raises its original cancellation.
+            if live.terminating:
+                self._logger.warning(
+                    "Cancelled session close interrupted session_id=%s", session_id, exc_info=True
+                )
+        except Exception:
+            self._logger.warning(
+                "Cancelled session close failed session_id=%s", session_id, exc_info=True
+            )
 
     async def _discard_failed_open(self, session_id: str, live: LiveSession) -> None:
         async def close() -> None:
@@ -1576,7 +1590,7 @@ class SessionService:
             self._sessions[session_id] = live
         except asyncio.CancelledError:
             if live is not None:
-                await self._discard_failed_open(session_id, live)
+                await self._discard_cancelled_open(session_id, live)
             raise
         except Exception as exc:
             if isinstance(exc, SessionModelUnavailableError) and live is None:

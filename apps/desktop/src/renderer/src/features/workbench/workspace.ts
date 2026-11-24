@@ -442,6 +442,16 @@ export function tabIdsForClose(
   return [...tabIds]
 }
 
+function saveStateAfterEdit(
+  current: DocumentSaveState,
+  unconfirmed: boolean,
+  dirty: boolean
+): DocumentSaveState {
+  if (current === 'saving') return current
+  if (unconfirmed) return 'unconfirmed'
+  return dirty ? 'dirty' : 'clean'
+}
+
 export function hasDirtyProjectPath(
   sessions: readonly DocumentSession[],
   project: string | null,
@@ -1226,14 +1236,7 @@ export class DocumentWorkspace {
           selection: contentChanged
             ? this.invalidateSelection(session.selection)
             : session.selection,
-          saveState:
-            session.saveState === 'saving'
-              ? 'saving'
-              : unconfirmed
-                ? 'unconfirmed'
-                : dirty
-                  ? 'dirty'
-                  : 'clean',
+          saveState: saveStateAfterEdit(session.saveState, unconfirmed, dirty),
         },
       },
     })
@@ -1271,14 +1274,7 @@ export class DocumentWorkspace {
           dirty: unconfirmed || dirty,
           changeVersion: dirty ? session.changeVersion + 1 : session.changeVersion,
           selection: dirty ? this.invalidateSelection(session.selection) : session.selection,
-          saveState:
-            session.saveState === 'saving'
-              ? 'saving'
-              : unconfirmed
-                ? 'unconfirmed'
-                : dirty
-                  ? 'dirty'
-                  : 'clean',
+          saveState: saveStateAfterEdit(session.saveState, unconfirmed, dirty),
         },
       },
     })
@@ -2278,18 +2274,16 @@ export class DocumentWorkspace {
             : session.documentId
         relocated.push({ sessionId: id, documentId: nextDocumentId })
         this.retireDocumentSave(id)
+        let saveState = session.saveState
+        if (saveState === 'saving' || saveState === 'unconfirmed')
+          saveState = session.dirty ? 'dirty' : 'clean'
         return [
           id,
           {
             ...session,
             documentId: nextDocumentId,
             source: nextSource,
-            saveState:
-              session.saveState === 'saving' || session.saveState === 'unconfirmed'
-                ? session.dirty
-                  ? 'dirty'
-                  : 'clean'
-                : session.saveState,
+            saveState,
             title: session.source.path === previousPath && title ? title : session.title,
             // Version capability is path-bound even when the document keeps a stable
             // asset identity. Keeping the old projection makes a renamed pending file

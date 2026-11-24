@@ -113,29 +113,34 @@ function useLoadingDirectories(): [ReadonlySet<string>, (path: string, loading: 
 
 interface DirectoryRefresh {
   signal: AbortSignal
-  include(read: Promise<ProjectTreePage | null>): Promise<{
+  include(
+    read: Promise<ProjectTreePage | null>,
+    cancellation: AbortSignal
+  ): Promise<{
     page: ProjectTreePage | null
     failed: boolean
   }>
 }
 
 export function createDirectoryRefresh(): DirectoryRefresh {
-  const reads: Array<Promise<ProjectTreePage | null>> = []
+  const reads: Array<Promise<{ page: ProjectTreePage | null; cancellation: AbortSignal }>> = []
   let deadline: AbortSignal | undefined
   let complete: Promise<boolean> | undefined
   return {
     get signal() {
       return (deadline ??= AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS))
     },
-    include(read) {
-      reads.push(read)
+    include(read, cancellation) {
+      reads.push(read.then((page) => ({ page, cancellation })))
       // All mounted directories register in the same commit before a new tree can be shown.
       complete ??= Promise.resolve()
         .then(() => Promise.all(reads))
-        .then((results) => results.every((page) => page !== null))
+        .then((results) =>
+          results.every(({ page, cancellation }) => page !== null || cancellation.aborted)
+        )
       return Promise.all([read, complete]).then(([page, ready]) => ({
-        page: ready ? page : null,
-        failed: page === null,
+        page: ready && !cancellation.aborted ? page : null,
+        failed: page === null && !cancellation.aborted,
       }))
     },
   }
@@ -216,9 +221,10 @@ export function Directory({
     setMoreError(false)
     const settle = (value: ProjectTreePage | null, failed = value === null): void => {
       if (generation.current !== requestGeneration) return
-      failedRefresh.current = failed && sharedRefresh !== undefined
+      const unavailable = failed || (!value && !pageRef.current)
+      failedRefresh.current = unavailable && sharedRefresh !== undefined
       if (value) setSnapshot({ identity, page: value })
-      setReadFailed(failed)
+      setReadFailed(unavailable)
       setLoading(false)
       onLoadingChange?.(path, false)
     }
@@ -235,7 +241,9 @@ export function Directory({
     }
     const reading = refresh().catch(() => null)
     if (sharedRefresh)
-      void sharedRefresh.include(reading).then(({ page, failed }) => settle(page, failed))
+      void sharedRefresh
+        .include(reading, controller.signal)
+        .then(({ page, failed }) => settle(page, failed))
     else void reading.then(settle)
     return () => {
       generation.current += 1

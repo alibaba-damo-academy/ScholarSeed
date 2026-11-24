@@ -43,6 +43,40 @@ test('first window loading waits for both the main document and first paint', as
   }
 })
 
+test('an on-time first paint stays valid when the caller resumes past its deadline', async (context) => {
+  let now = 0
+  context.mock.method(performance, 'now', () => now)
+  const window = new EventEmitter()
+  const loaded = loadStartupWindow(
+    window as unknown as BrowserWindow,
+    new AbortController().signal,
+    async () => {},
+    () => {}
+  )
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  now = STARTUP_BUDGET_STEADY_MS - 1
+  window.emit('ready-to-show')
+  now = STARTUP_BUDGET_STEADY_MS + 1
+  await loaded
+})
+
+test('late navigation still expires when the deadline timer has not run', async (context) => {
+  let now = 0
+  context.mock.method(performance, 'now', () => now)
+  const window = new EventEmitter()
+  const navigation = deferred<void>()
+  const loaded = loadStartupWindow(
+    window as unknown as BrowserWindow,
+    new AbortController().signal,
+    () => navigation.promise,
+    () => {}
+  )
+  window.emit('ready-to-show')
+  now = STARTUP_BUDGET_STEADY_MS + 1
+  navigation.resolve()
+  await assert.rejects(loaded, /Main window navigation did not load and paint/)
+})
+
 test('hung main document and missing first paint each exhaust the same deadline', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   for (const paintedBeforeDeadline of [true, false]) {

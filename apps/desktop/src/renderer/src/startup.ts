@@ -25,11 +25,16 @@ export class StartupTaskRecovery {
     return !this.signal.aborted && this.now() < this.deadline
   }
 
+  dispose(): void {
+    if (this.signal.aborted) return
+    clearTimeout(this.timer)
+    this.controller.abort()
+  }
+
   finish(outcome: StartupTaskRecoveryOutcome): void {
     if (this.signal.aborted) return
     const result = outcome === 'restored' && !this.current ? 'timeout' : outcome
-    clearTimeout(this.timer)
-    this.controller.abort()
+    this.dispose()
     this.settled(result)
   }
 }

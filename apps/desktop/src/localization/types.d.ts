@@ -6544,6 +6544,8 @@ declare module 'i18next' {
             "cancelRestored": "已取消生成，已恢复上次解读。",
             "configure": "配置模型",
             "retry": "重试",
+            "checkSubmission": "检查状态",
+            "checkSubmissionFailed": "仍无法确认本次解读的状态，可以稍后再查。",
             "explain": "解释",
             "translate": "翻译",
             "figure": "图表解释",

@@ -1417,21 +1417,22 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
-        app = FastAPI()
         self.activities = Activities()
+        self.client = self.analysis_client(self.activities)
+        self.addAsyncCleanup(self.client.aclose)
+
+    def analysis_client(self, activities: Activities) -> httpx.AsyncClient:
+        app = FastAPI()
         register_analysis_routes(
             app,
-            activities=self.activities,
+            activities=activities,
             actions=self.actions,
             tasks=self.tasks,
             models=self.models,
             pdf=self.pdf,
             indexes=self.indexes,
         )
-        self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        )
-        self.addAsyncCleanup(self.client.aclose)
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
     async def invoke(self, **kwargs):
         item = record(kwargs["client_attempt_id"], self.outputs.pop(0))
@@ -2053,6 +2054,21 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replay.json()["task_id"], "first")
         self.assertEqual(replay.json()["status"], "completed")
         self.assertEqual(self.actions.invoke_compiled.await_count, 1)
+        restarted = Activities()
+        async with self.analysis_client(restarted) as reopened:
+            receipt = await reopened.get(
+                "/api/literature/ai/tasks/second",
+                params={"service_instance_id": restarted.instance_id},
+            )
+            self.assertEqual(receipt.status_code, 200)
+            self.assertEqual(receipt.json()["task_id"], "second")
+            self.assertEqual(receipt.json()["status"], "completed")
+            retry = await reopened.post(
+                "/api/literature/ai/tasks",
+                json={**duplicate, "service_instance_id": restarted.instance_id},
+            )
+            self.assertEqual(retry.json()["task_id"], "first")
+            self.assertEqual(retry.json()["status"], "completed")
         state = (await self.client.get("/api/literature/paper/ai/state")).json()
         self.assertIn("summary", state["results"])
         self.assertIsNone(state["task"])

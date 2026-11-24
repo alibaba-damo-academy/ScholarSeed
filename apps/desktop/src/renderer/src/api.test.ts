@@ -1716,6 +1716,18 @@ test('model profile requests preserve auth events and raw HTTP diagnostics witho
       code: 'http_failure',
       status: 400,
     })
+    for (const body of ['{', 'null', '[]']) {
+      globalThis.fetch = async () => new Response(body)
+      const receipt = await createSubscriptionProfile()
+      assert.equal(receipt.ok, false, body)
+    }
+    globalThis.fetch = async () => new Response('<html>', { status: 502 })
+    assert.deepEqual(await createSubscriptionProfile(), {
+      ok: false,
+      error: '',
+      code: 'http_failure',
+      status: 502,
+    })
     globalThis.fetch = async () => {
       throw new Error('network unavailable')
     }

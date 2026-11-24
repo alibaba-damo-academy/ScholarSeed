@@ -106,13 +106,15 @@ test('an earlier refresh cannot take away a page or expansion loaded during the 
     root: '/project',
   })
   const replacement = { nodes: [first], total: 2, root: '/project' }
-  const refreshing = beginResourceTreeReload(ready)
+  const failed = finishResourceTreeReload(beginResourceTreeReload(ready), null)
+  assert.equal(failed.treeRefreshFailed, true)
+  const refreshing = beginResourceTreeReload(failed)
   for (const current of [
     { ...refreshing, tree: [first, second] },
     { ...refreshing, expanded: { folder: true } },
   ]) {
-    const finished = finishResourceTreeReload(current, replacement, ready)
-    assert.deepEqual(finished, { ...current, loadState: 'ready' })
+    const finished = finishResourceTreeReload(current, replacement, failed)
+    assert.deepEqual(finished, { ...current, loadState: 'ready', treeRefreshFailed: false })
   }
 })
 

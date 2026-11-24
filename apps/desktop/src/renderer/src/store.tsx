@@ -1738,6 +1738,29 @@ type ManualRecoveryMarker = Pick<
   'skippedSessionId' | 'needsManualAcknowledgement'
 >
 
+interface RecoveryMarkerState {
+  manualRecovery: ManualRecoveryMarker | null
+  markerClaimPending: boolean
+  locallySkippedSession: string | null
+}
+
+const INITIAL_RECOVERY_MARKER: RecoveryMarkerState = {
+  manualRecovery: null,
+  markerClaimPending: false,
+  locallySkippedSession: null,
+}
+
+// Unattributed navigation and composer scope changes also revoke automatic recovery.
+const STARTUP_NAVIGATION_FIELDS = [
+  'mainView',
+  'activeSession',
+  'activeTab',
+  'homeSelectedProjectId',
+  'accountSettingsPage',
+  'browserSettingsSection',
+  'draftGeneration',
+] as const satisfies readonly (keyof AppState)[]
+
 function manualRecoveryMarker({
   skippedSessionId,
   needsManualAcknowledgement,
@@ -1769,25 +1792,41 @@ export function StoreProvider({
   const startupViewRecovery = Boolean(startupLocation && !startupTaskSessionId)
   const startupSearchesLoaded = useRef(false)
   const initialTaskRecovery = useRef<Promise<TaskRecoverySnapshot> | null>(null)
-  const [manualRecovery, setManualRecovery] = useState<ManualRecoveryMarker | null>(null)
-  const markerClaimPending = useRef(false)
+  const [recoveryMarker, setRecoveryMarker] = useState(INITIAL_RECOVERY_MARKER)
+  const recoveryMarkerRef = useRef(INITIAL_RECOVERY_MARKER)
+  const { manualRecovery, markerClaimPending, locallySkippedSession } = recoveryMarker
   const preparedTaskToken = useRef<string | null>(null)
   const settlingTaskToken = useRef<string | null>(null)
-  const locallySkippedSession = useRef<string | null>(null)
-  const canRestoreScopeSession = useCallback(
-    (sessionId: string): boolean => {
-      if (locallySkippedSession.current === sessionId) return false
-      if (!manualRecovery) return !window.scholarseed?.getTaskRecoveryStatus
+  const updateRecoveryMarker = useCallback((patch: Partial<RecoveryMarkerState>): void => {
+    const current = recoveryMarkerRef.current
+    const next = { ...current, ...patch }
+    if (
+      next.markerClaimPending === current.markerClaimPending &&
+      next.locallySkippedSession === current.locallySkippedSession &&
+      next.manualRecovery === current.manualRecovery
+    )
+      return
+    // Event handlers and completed IPC calls observe ownership before React commits.
+    recoveryMarkerRef.current = next
+    setRecoveryMarker(next)
+  }, [])
+  const scopeRecoveryPredicate = useCallback(() => {
+    const { manualRecovery, locallySkippedSession } = recoveryMarkerRef.current
+    const hosted = Boolean(window.scholarseed?.getTaskRecoveryStatus)
+    return (sessionId: string): boolean => {
+      if (locallySkippedSession === sessionId) return false
+      if (!manualRecovery) return !hosted
       return manualRecovery.skippedSessionId
         ? manualRecovery.skippedSessionId !== sessionId
         : !manualRecovery.needsManualAcknowledgement
-    },
-    [manualRecovery]
-  )
+    }
+  }, [])
   const startupTask = useRef<{
     attempt: StartupTaskRecovery
     presenting: boolean
     keepView: boolean
+    task?: boolean
+    disposed?: boolean
   } | null>(null)
   const [state, updateState] = useState<AppState>(() => ({
     ...INITIAL,
@@ -1832,13 +1871,7 @@ export function StoreProvider({
         !current.navigationRestored &&
         current.startupTaskRecovery !== null &&
         cause?.action !== 'restore' &&
-        (current.mainView !== nextState.mainView ||
-          current.activeSession !== nextState.activeSession ||
-          current.activeTab !== nextState.activeTab ||
-          current.homeSelectedProjectId !== nextState.homeSelectedProjectId ||
-          current.accountSettingsPage !== nextState.accountSettingsPage ||
-          current.browserSettingsSection !== nextState.browserSettingsSection ||
-          current.draftGeneration !== nextState.draftGeneration)
+        STARTUP_NAVIGATION_FIELDS.some((field) => current[field] !== nextState[field])
       return observeNavigation(
         current,
         navigatedDuringRecovery ? { ...nextState, navigationRestored: true } : nextState,
@@ -1950,15 +1983,17 @@ export function StoreProvider({
   const refreshTaskMarker = useCallback(async (): Promise<void> => {
     const snapshot = await window.scholarseed?.getTaskRecoveryStatus?.(savedTaskSessionId)
     if (snapshot) {
-      markerClaimPending.current = false
-      setManualRecovery(manualRecoveryMarker(snapshot))
+      updateRecoveryMarker({
+        markerClaimPending: false,
+        manualRecovery: manualRecoveryMarker(snapshot),
+      })
     }
-  }, [savedTaskSessionId])
+  }, [savedTaskSessionId, updateRecoveryMarker])
   const finishTaskMarker = useCallback(
     (token: string, outcome: TaskRecoveryOutcome): void => {
       if (settlingTaskToken.current === token) return
       settlingTaskToken.current = token
-      markerClaimPending.current = true
+      updateRecoveryMarker({ markerClaimPending: true })
       void (async () => {
         const written = await window.scholarseed
           ?.finishTaskRecovery?.(token, outcome)
@@ -1970,20 +2005,23 @@ export function StoreProvider({
           await refreshTaskMarker()
           return
         }
-        markerClaimPending.current = false
-        setManualRecovery({
-          skippedSessionId: outcome === TASK_RECOVERY_OUTCOME.skipped ? savedTaskSessionId : null,
-          needsManualAcknowledgement: false,
+        updateRecoveryMarker({
+          markerClaimPending: false,
+          manualRecovery: {
+            skippedSessionId: outcome === TASK_RECOVERY_OUTCOME.skipped ? savedTaskSessionId : null,
+            needsManualAcknowledgement: false,
+          },
         })
       })().catch(console.error)
     },
-    [refreshTaskMarker, savedTaskSessionId]
+    [refreshTaskMarker, savedTaskSessionId, updateRecoveryMarker]
   )
   const cancelStartupTask = useCallback(
     (keepView: boolean): void => {
       const recovery = stateRef.current.startupTaskRecovery
       if (recovery !== 'waiting' && recovery !== 'presenting') return
-      if (startupTaskSessionId) locallySkippedSession.current = startupTaskSessionId
+      if (startupTaskSessionId)
+        updateRecoveryMarker({ locallySkippedSession: startupTaskSessionId })
       const candidate = startupTask.current
       if (candidate) {
         candidate.keepView = keepView
@@ -1999,7 +2037,7 @@ export function StoreProvider({
         }))
       }
     },
-    [finishTaskMarker, setState, startupTaskSessionId]
+    [finishTaskMarker, setState, startupTaskSessionId, updateRecoveryMarker]
   )
   useLayoutEffect(() => {
     if (state.navigationRestored) cancelStartupTask(true)
@@ -3610,6 +3648,7 @@ export function StoreProvider({
       },
       selectProject: (projectId) => {
         cancelStartupTask(false)
+        const canRestoreScopeSession = scopeRecoveryPredicate()
         if (stateRef.current.homeSelectedProjectId !== projectId) {
           rememberSessionDraft(true)
           composerDraft.current!.set('')
@@ -3798,6 +3837,7 @@ export function StoreProvider({
       openWorkbenchView: (view, options) => {
         if (!availabilityPolicy.routeAvailable(view)) return
         cancelStartupTask(false)
+        const canRestoreScopeSession = scopeRecoveryPredicate()
         rememberSessionDraft(true)
         setState(
           (current) => {
@@ -7226,7 +7266,7 @@ export function StoreProvider({
       assistantSources,
       beginNavigation,
       cancelStartupTask,
-      canRestoreScopeSession,
+      scopeRecoveryPredicate,
       literatureText,
       persistAssistantContext,
       draftKey,
@@ -7258,18 +7298,21 @@ export function StoreProvider({
         if (!current) return
         if (snapshot.preparedToken) {
           preparedTaskToken.current = snapshot.preparedToken
-          if (recoverHome || locallySkippedSession.current === savedTaskSessionId) {
+          if (
+            recoverHome ||
+            recoveryMarkerRef.current.locallySkippedSession === savedTaskSessionId
+          ) {
             finishTaskMarker(snapshot.preparedToken, TASK_RECOVERY_OUTCOME.skipped)
             return
           }
         }
-        setManualRecovery(manualRecoveryMarker(snapshot))
+        updateRecoveryMarker({ manualRecovery: manualRecoveryMarker(snapshot) })
       })
       .catch(console.error)
     return () => {
       current = false
     }
-  }, [finishTaskMarker, recoverHome, savedTaskSessionId])
+  }, [finishTaskMarker, recoverHome, savedTaskSessionId, updateRecoveryMarker])
 
   useEffect(() => {
     if (
@@ -7285,24 +7328,38 @@ export function StoreProvider({
     const host = window.scholarseed
     const serviceInstanceId = state.serviceInstanceId
     let token: string | null = null
+    let previousThread: Thread | undefined
+    let presentedThread: Thread | undefined
     navigationRestoreStarted.current = true
     const attempt = new StartupTaskRecovery((outcome) => {
       const restored = outcome === 'restored'
+      const revertPresentation = !restored && candidate.presenting
+      const provisional = presentedThread
+      const previous = previousThread
       if (!restored && (token || outcome !== 'skipped')) {
-        locallySkippedSession.current = startupTaskSessionId
+        updateRecoveryMarker({ locallySkippedSession: startupTaskSessionId })
       }
-      if (!restored && candidate.presenting && !candidate.keepView) {
+      if (revertPresentation && !candidate.keepView) {
         actRef.current.returnHome()
       }
       startupTask.current = null
-      setState((current) => ({
-        ...current,
-        ...(!restored && candidate.presenting && current.activeSession === startupTaskSessionId
-          ? { activeSession: null }
-          : {}),
-        navigationRestored: true,
-        startupTaskRecovery: restored ? null : 'skipped',
-      }))
+      setState((current) => {
+        let threads = current.threads
+        if (revertPresentation && provisional && threads[startupTaskSessionId] === provisional) {
+          threads = { ...threads }
+          if (previous) threads[startupTaskSessionId] = previous
+          else delete threads[startupTaskSessionId]
+        }
+        return {
+          ...current,
+          threads,
+          ...(revertPresentation && current.activeSession === startupTaskSessionId
+            ? { activeSession: null }
+            : {}),
+          navigationRestored: true,
+          startupTaskRecovery: restored ? null : 'skipped',
+        }
+      })
       const markerToken = token ?? (!restored ? preparedTaskToken.current : null)
       if (markerToken)
         finishTaskMarker(
@@ -7311,7 +7368,7 @@ export function StoreProvider({
         )
       console.info('[startup-task-recovery]', outcome)
     })
-    const candidate = { attempt, presenting: false, keepView: false }
+    const candidate = { attempt, presenting: false, keepView: false, task: true, disposed: false }
     startupTask.current = candidate
 
     void (async () => {
@@ -7323,14 +7380,15 @@ export function StoreProvider({
           return
         }
         // Keep the known marker for continuity, but do not acknowledge it during a claim.
-        markerClaimPending.current = true
+        updateRecoveryMarker({ markerClaimPending: true })
         try {
           token = await host.beginTaskRecovery(startupTaskSessionId)
         } finally {
-          if (!token && !preparedTaskToken.current) void refreshTaskMarker().catch(console.error)
+          if (!candidate.disposed && !token && !preparedTaskToken.current)
+            void refreshTaskMarker().catch(console.error)
         }
         if (!attempt.current) {
-          if (token) finishTaskMarker(token, TASK_RECOVERY_OUTCOME.skipped)
+          if (token && !candidate.disposed) finishTaskMarker(token, TASK_RECOVERY_OUTCOME.skipped)
           return
         }
         if (!token) {
@@ -7393,7 +7451,6 @@ export function StoreProvider({
         ...projectResumedSession(thread, {
           ...opened,
           serviceInstanceId,
-          acknowledgeQueue: false,
           timestamp: Date.now(),
         }),
         startupHistoryLoaded: true,
@@ -7403,6 +7460,8 @@ export function StoreProvider({
       composerDraft.current!.set(
         sessionDrafts.current!.get(composerDraftKey(node.id, null)!)?.text ?? ''
       )
+      previousThread = stateRef.current.threads[node.id]
+      presentedThread = resumed
       flushSync(() => {
         setState((current) => {
           if (!attempt.current || current.navigationRestored) return current
@@ -7436,14 +7495,17 @@ export function StoreProvider({
     state.projectsLoaded,
     state.serviceInstanceId,
     state.workspaceLoadState,
+    updateRecoveryMarker,
   ])
 
   useEffect(
     () => () => {
       const candidate = startupTask.current
-      if (candidate) {
-        candidate.keepView = true
-        candidate.attempt.finish('skipped')
+      if (candidate?.task) {
+        startupTask.current = null
+        navigationRestoreStarted.current = false
+        candidate.disposed = true
+        candidate.attempt.dispose()
       }
     },
     []
@@ -7619,8 +7681,13 @@ export function StoreProvider({
       attempt.finish('failed')
     })
     return () => {
-      attempt.finish('skipped')
       active = false
+      if (startupTask.current?.attempt === attempt) {
+        startupTask.current = null
+        if (epoch === navigationRecoveryEpoch.current && !stateRef.current.navigationRestored)
+          navigationRestoreStarted.current = false
+      }
+      attempt.dispose()
     }
   }, [
     beginNavigation,
@@ -7673,8 +7740,8 @@ export function StoreProvider({
     state.activeSession === state.explicitSessionSelection &&
     currentThread.resumeState === 'ready' &&
     !currentThread.startupHistoryLoaded &&
-    !markerClaimPending.current &&
-    (acknowledgeOwner || locallySkippedSession.current === state.activeSession)
+    !markerClaimPending &&
+    (acknowledgeOwner || locallySkippedSession === state.activeSession)
       ? state.activeSession
       : null
   useEffect(() => {
@@ -7682,7 +7749,7 @@ export function StoreProvider({
     if (!manuallyOpenedSession) return
     if (!acknowledgeOwner) {
       if (manualRecovery !== null || !host?.getTaskRecoveryStatus) {
-        locallySkippedSession.current = null
+        updateRecoveryMarker({ locallySkippedSession: null })
         actRef.current.dismissStartupTaskRecovery()
       }
       return
@@ -7705,32 +7772,32 @@ export function StoreProvider({
       if (
         !current ||
         !confirmed ||
-        markerClaimPending.current ||
+        recoveryMarkerRef.current.markerClaimPending ||
         stateRef.current.activeSession !== manuallyOpenedSession ||
         stateRef.current.explicitSessionSelection !== manuallyOpenedSession
       )
         return
       if (!(await host.clearTaskRecoveryOnManualOpen?.(manuallyOpenedSession))) return
-      if (locallySkippedSession.current === manuallyOpenedSession) {
-        locallySkippedSession.current = null
-      }
-      setManualRecovery(
-        (previous) =>
-          previous && {
-            ...previous,
-            needsManualAcknowledgement: false,
-            skippedSessionId:
-              previous.skippedSessionId === manuallyOpenedSession
-                ? null
-                : previous.skippedSessionId,
-          }
-      )
+      const previous = recoveryMarkerRef.current
+      updateRecoveryMarker({
+        locallySkippedSession:
+          previous.locallySkippedSession === manuallyOpenedSession
+            ? null
+            : previous.locallySkippedSession,
+        manualRecovery: previous.manualRecovery && {
+          needsManualAcknowledgement: false,
+          skippedSessionId:
+            previous.manualRecovery.skippedSessionId === manuallyOpenedSession
+              ? null
+              : previous.manualRecovery.skippedSessionId,
+        },
+      })
       actRef.current.dismissStartupTaskRecovery()
     })().catch(console.error)
     return () => {
       current = false
     }
-  }, [acknowledgeOwner, manualRecovery, manuallyOpenedSession])
+  }, [acknowledgeOwner, manualRecovery, manuallyOpenedSession, updateRecoveryMarker])
 
   const reloadSearchesInLiterature =
     startupTabNeedsLookup &&

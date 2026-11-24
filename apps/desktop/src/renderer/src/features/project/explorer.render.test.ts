@@ -53,6 +53,96 @@ async function settleRender(page: Page): Promise<void> {
   )
 }
 
+for (const departure of ['unmount', 'failed-peer'] as const) {
+  test(
+    'coordinated directory refresh preserves active results and retry after ' + departure,
+    { timeout: 60_000 },
+    async () => {
+      const server = await servers.create({
+        cacheKey: 'explorer',
+        configFile: false,
+        root: ROOT,
+        plugins: [react()],
+        server: { host: '127.0.0.1', port: 0 },
+      })
+      await server.listen()
+      const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL })
+      try {
+        const page = await browser.newPage()
+        const candidatePending = Promise.withResolvers<void>()
+        let refreshing = false
+        let retry = false
+        await page.route(TREE, async (route) => {
+          const directory = new URL(route.request().url()).searchParams.get('path')
+          if (departure === 'unmount' && refreshing && directory === 'candidate') {
+            candidatePending.resolve()
+            return
+          }
+          if (
+            departure === 'failed-peer' &&
+            ((!refreshing && directory === 'candidate') ||
+              (refreshing && !retry && directory === 'peer'))
+          ) {
+            await route.fulfill({ status: 503, json: {} })
+            return
+          }
+          const entries = directory
+            ? [{ path: directory + (refreshing ? '/new.md' : '/old.md'), kind: 'file' }]
+            : [
+                { path: 'candidate', kind: 'dir' },
+                { path: 'peer', kind: 'dir' },
+              ]
+          await route.fulfill({
+            json: {
+              root: '/fixture',
+              nodes: entries.map((node) => ({ ...node, name: node.path, available: true })),
+              total: entries.length,
+              offset: 0,
+            },
+          })
+        })
+        await page.goto(
+          new URL('/features/project/explorer.render.fixture.html', server.resolvedUrls!.local[0])
+            .href
+        )
+        const toggle = page.getByTestId('explorer-select-candidate')
+        const candidateError = page.getByTestId('explorer-directory-error-candidate')
+        await toggle.click()
+        await page.getByTestId('explorer-select-peer').click()
+        await expect(page.getByTestId('explorer-node-peer/old.md')).toBeVisible()
+        if (departure === 'unmount') {
+          await expect(page.getByTestId('explorer-node-candidate/old.md')).toBeVisible()
+        } else {
+          await expect(candidateError).toBeVisible()
+        }
+
+        refreshing = true
+        await page.getByTestId('fixture-refresh').click()
+        if (departure === 'unmount') {
+          await candidatePending.promise
+          await expect(page.getByTestId('explorer-node-peer/old.md')).toBeVisible()
+          await toggle.click()
+          await expect(page.getByTestId('explorer-node-peer/new.md')).toBeVisible()
+          await expect(candidateError).toHaveCount(0)
+        } else {
+          await expect(page.getByTestId('explorer-directory-error-peer')).toBeVisible()
+          await expect(candidateError).toBeVisible()
+          await expect(page.getByTestId('explorer-node-candidate/new.md')).toHaveCount(0)
+          await expect(page.getByTestId('explorer-node-peer/old.md')).toBeVisible()
+          retry = true
+          await page.getByTestId('explorer-directory-retry-candidate').click()
+          await expect(page.getByTestId('explorer-node-candidate/new.md')).toBeVisible()
+          await expect(page.getByTestId('explorer-node-peer/new.md')).toBeVisible()
+          await expect(candidateError).toHaveCount(0)
+        }
+      } finally {
+        await browser.close()
+        await server.close()
+      }
+    }
+  )
+}
+
 test('Directory moves both folders and files through native drag and drop', async () => {
   const server = await servers.create({
     cacheKey: 'explorer',

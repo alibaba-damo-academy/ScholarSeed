@@ -184,7 +184,19 @@ async def exercise_cleanup(case: str) -> None:
         else:
             failures.append(str(error))
 
+    async def drain_timeout(deadline):
+        assert deadline == state.shutdown.deadline
+        try:
+            async with asyncio.timeout_at(asyncio.get_running_loop().time()):
+                await asyncio.Event().wait()
+        except TimeoutError as error:
+            raise TimeoutError("session operation drain timed out") from error
+
     with ExitStack() as patches:
+        if case == "session-drain-timeout":
+            patches.enter_context(
+                patch.object(state.session_service, "stop_session_operations", drain_timeout)
+            )
         patches.enter_context(patch.object(state.runtime_service, "start", start))
         patches.enter_context(patch.object(FeedbackService, "close", feedback_close))
         patches.enter_context(
@@ -200,7 +212,7 @@ async def exercise_cleanup(case: str) -> None:
             patches.enter_context(patch.object(owner, method, wrap(name, getattr(owner, method))))
         try:
             async with app.router.lifespan_context(app):
-                if case == "multiple-close":
+                if case in {"multiple-close", "session-drain-timeout"}:
                     raise ValueError("body failed")
         except BaseException as error:
             collect(error)
@@ -220,6 +232,7 @@ async def exercise_cleanup(case: str) -> None:
         "cancel-close": {"close cancelled"},
         "dependency-close": {"first close failed", "second close failed"},
         "session-close": {"session close failed"},
+        "session-drain-timeout": {"session operation drain timed out", "body failed"},
     }[case]
     assert set(failures) == expected, failures
     if case == "dependency-close":
@@ -361,6 +374,9 @@ class LifecycleContract(unittest.TestCase):
 
     def test_dependency_close_failures_are_all_reported_in_reverse_order(self):
         self.run_case("dependency-close")
+
+    def test_expired_session_drain_does_not_skip_other_owners(self):
+        self.run_case("session-drain-timeout")
 
     def test_only_successfully_closed_sessions_are_removed(self):
         self.run_case("session-close")

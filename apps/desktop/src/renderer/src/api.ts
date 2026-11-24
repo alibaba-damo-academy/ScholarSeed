@@ -3818,21 +3818,20 @@ export async function profileRequest<T>(
       window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
       return { ok: false, error: '', code: 'authentication_required', status: r.status }
     }
-    // An incomplete personal profile receipt cannot confirm a write.
-    const payload = (
-      r.ok && timeoutMs !== undefined ? await r.json() : await r.json().catch(() => ({}))
-    ) as Record<string, unknown>
+    const payload: unknown = r.ok ? await r.json() : await r.json().catch(() => null)
     if (!r.ok) {
+      const rawDetail = isRecord(payload) ? payload.detail : undefined
       // 保存校验失败回结构化 detail（含失败模型与上游原文）; 其余错误仍是不带结构的字符串。
-      const detail = asFailureDetail(payload.detail)
+      const detail = asFailureDetail(rawDetail)
       return {
         ok: false,
-        error: detail ? detail.upstream || '' : String(payload.detail || ''),
+        error: detail ? detail.upstream || '' : String(rawDetail || ''),
         code: 'http_failure',
         status: r.status,
         ...(detail ? { detail } : {}),
       }
     }
+    if (!isRecord(payload)) return { ok: false, error: '', code: 'network_failure' }
     return { ok: true, data: payload as T }
   } catch (cause) {
     return {

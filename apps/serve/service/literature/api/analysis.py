@@ -183,7 +183,6 @@ def register_analysis_routes(
     )
     running: dict[tuple[str, str], asyncio.Task] = {}
     states: dict[tuple[str, str], dict] = {}
-    joined: dict[tuple[str, str], tuple[str, str]] = {}
     slots: dict[tuple[str, str, str, str], AnalysisSlot] = {}
     active_invocations: dict[tuple[str, str], set[str]] = {}
 
@@ -203,16 +202,24 @@ def register_analysis_routes(
                 409, {"code": AnalysisErrorCode.SERVICE_INSTANCE_CHANGED.value, "diagnostic": ""}
             )
 
+    def joined_attempt(owner: str, attempt_id: str) -> tuple[str, str] | None:
+        if (owner, attempt_id) in states:
+            return None
+        return results.joined_attempt(owner, attempt_id)
+
     def canonical_task(owner: str, task_id: str) -> str:
-        alias = joined.get((owner, task_id))
+        alias = joined_attempt(owner, task_id)
         return alias[0] if alias else task_id
 
-    def snapshot(owner: str, task_id: str) -> dict:
+    def snapshot(owner: str, task_id: str, *, accepted_join: bool = False) -> dict:
         key = (owner, task_id)
         if key in states:
             return states[key]
         record = tasks.get_attempt(task_id, owner)
         if record is None or not record.source_id:
+            if accepted_join:
+                # The shared execution might have stopped before persisting its own receipt.
+                return {"task_id": task_id, "status": ModelInvocationStatus.UNKNOWN.value}
             raise HTTPException(
                 404, {"code": AnalysisErrorCode.TASK_MISSING.value, "diagnostic": ""}
             )
@@ -233,18 +240,14 @@ def register_analysis_routes(
         }
 
     def attempt_snapshot(owner: str, attempt_id: str) -> dict:
-        alias = joined.get((owner, attempt_id))
+        alias = joined_attempt(owner, attempt_id)
         if alias:
-            task_id, model_key = alias
-            return {**snapshot(owner, task_id), "task_id": attempt_id, "model_key": model_key}
+            return {**joined_snapshot(owner, alias), "task_id": attempt_id}
         return snapshot(owner, attempt_id)
 
-    def submission_snapshot(owner: str, attempt_id: str) -> dict:
-        alias = joined.get((owner, attempt_id))
-        if alias:
-            task_id, model_key = alias
-            return {**snapshot(owner, task_id), "model_key": model_key}
-        return snapshot(owner, attempt_id)
+    def joined_snapshot(owner: str, alias: tuple[str, str]) -> dict:
+        task_id, model_key = alias
+        return {**snapshot(owner, task_id, accepted_join=True), "model_key": model_key}
 
     def source_reader(principal: str):
         reader = read_citation
@@ -1396,8 +1399,8 @@ def register_analysis_routes(
         owner = request_user_id(request)
         principal = request_owner_id(request)
         key = (owner, payload.client_attempt_id)
-        if key in joined:
-            return submission_snapshot(owner, key[1])
+        if alias := joined_attempt(owner, key[1]):
+            return joined_snapshot(owner, alias)
         if key in states or tasks.get_attempt(key[1], owner):
             return snapshot(owner, key[1])
         submitted_at = time.monotonic()
@@ -1420,8 +1423,8 @@ def register_analysis_routes(
         slot = slots.get(operation)
         if slot is not None and payload.kind is ActionKind.INTERPRETATION:
             states.pop(key, None)
-            joined[key] = (slot.task_id, slot.model_key)
-            return submission_snapshot(owner, key[1])
+            alias = results.remember_joined_attempt(owner, key[1], slot.task_id, slot.model_key)
+            return joined_snapshot(owner, alias)
         if slot is not None and payload.kind not in QUEUED_ACTIONS:
             states.pop(key, None)
             raise HTTPException(
@@ -1569,8 +1572,9 @@ def register_analysis_routes(
     @app.post(f"{PREFIX}/tasks/{{task_id}}/cancel")
     async def cancel(task_id: str, request: Request) -> dict:
         owner = request_user_id(request)
-        canonical = canonical_task(owner, task_id)
-        state = snapshot(owner, canonical)
+        alias = joined_attempt(owner, task_id)
+        canonical = alias[0] if alias else task_id
+        state = snapshot(owner, canonical, accepted_join=alias is not None)
         key = (owner, canonical)
         if state["status"] in ("pending", "running"):
             states[key] = {"task_id": canonical, "status": "cancelled"}

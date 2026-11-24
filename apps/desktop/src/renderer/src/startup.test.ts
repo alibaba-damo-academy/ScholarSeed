@@ -39,3 +39,15 @@ test('an overdue response cannot win while the timeout callback is waiting to ru
   attempt.finish('restored')
   assert.deepEqual(outcomes, ['timeout'])
 })
+
+test('disposing the owner aborts reads without settling recovery', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const outcomes: string[] = []
+  const attempt = new StartupTaskRecovery((outcome) => outcomes.push(outcome), Date.now)
+  attempt.dispose()
+  assert.equal(attempt.current, false)
+  assert.equal(attempt.signal.aborted, true)
+  attempt.finish('skipped')
+  t.mock.timers.tick(STARTUP_TASK_RECOVERY_MS)
+  assert.deepEqual(outcomes, [])
+})

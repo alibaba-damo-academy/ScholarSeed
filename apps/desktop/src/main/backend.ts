@@ -689,10 +689,17 @@ function healthTimer(timeoutMs: number, parent?: AbortSignal) {
   }
 }
 
-async function readHealth(url: string, signal: AbortSignal): Promise<{ ok?: boolean } | undefined> {
+async function readHealth(
+  url: string,
+  signal: AbortSignal,
+  deadline: number
+): Promise<{ ok?: boolean } | undefined> {
   const response = await fetch(url, { signal })
   signal.throwIfAborted()
-  if (response.ok) return (await response.json()) as { ok?: boolean }
+  if (response.ok) {
+    const health = (await response.json()) as { ok?: boolean }
+    return performance.now() < deadline ? health : undefined
+  }
   await response.body?.cancel()
 }
 
@@ -715,8 +722,8 @@ export async function waitForHealth(
     const probe = healthTimer(probeDeadline - startedAt, signal)
     attempt++
     try {
-      const health = await Promise.race([readHealth(url, probe.signal), probe.elapsed])
-      if (!probe.signal.aborted && performance.now() < probeDeadline && health?.ok) {
+      const health = await Promise.race([readHealth(url, probe.signal, probeDeadline), probe.elapsed])
+      if (!probe.signal.aborted && health?.ok) {
         const remote = validateBrowserFeatureReadiness(health, browserEnabled, mode)
         if (remote === null)
           log(

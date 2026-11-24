@@ -209,6 +209,32 @@ test('health retry sleeps only for the remaining budget and wakes on cancellatio
   assert.equal(fetch.mock.callCount(), 2)
 })
 
+test('an on-time health body stays valid when the caller resumes past its deadline', async (context) => {
+  let now = 0
+  let deliverBody!: (value: unknown) => void
+  context.mock.method(performance, 'now', () => now)
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async () =>
+      ({
+        ok: true,
+        json: () =>
+          new Promise((resolve) => {
+            deliverBody = resolve
+          }),
+      }) as Response
+  )
+  const ready = backend.waitForHealth('http://127.0.0.1', 100, () => {})
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  now = 99
+  deliverBody({ ok: true, features: { browser: false } })
+  queueMicrotask(() => {
+    now = 101
+  })
+  assert.equal(await ready, true)
+})
+
 test('health JSON that finishes after the deadline cannot mark the backend ready', async (context) => {
   let now = 0
   let deliverBody!: (value: unknown) => void

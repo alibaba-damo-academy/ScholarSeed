@@ -1459,6 +1459,53 @@ test(
 )
 
 test(
+  'skipping a startup task during presentation removes its provisional transcript',
+  { timeout: 60_000 },
+  async () =>
+    fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([
+            ['status', 'recovery-target'],
+            ['begin', 'recovery-target'],
+          ])
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryClaim')())
+        const snapshot = () =>
+          page.evaluate(() => {
+            const { state } = Reflect.get(window, 'preferenceProbe')
+            return [
+              state.startupTaskRecovery,
+              state.activeSession,
+              Boolean(state.threads['recovery-target']),
+            ]
+          })
+        await expect.poll(snapshot).toEqual(['presenting', 'recovery-target', true])
+        await page.evaluate(() => Reflect.get(window, 'preferenceProbe').skipStartupRecovery())
+        await expect.poll(snapshot).toEqual(['skipped', null, false])
+      },
+      async (page) => {
+        await installRecoveryBridge(
+          page,
+          {
+            status: 'eligible',
+            skippedSessionId: null,
+            needsManualAcknowledgement: false,
+          },
+          true
+        )
+        await page.route('**/api/serve/sessions/open', (route) =>
+          route.fulfill({ json: { session_id: 'recovery-target', running: false, last_seq: 3 } })
+        )
+        await page.route('**/api/serve/history/recovery-target?**', (route) =>
+          route.fulfill({ json: { turns: [] } })
+        )
+      }
+    )
+)
+
+test(
   'startup document body times out without opening a late document tab',
   { timeout: 60_000 },
   async () => {
@@ -1558,6 +1605,101 @@ test(
             requested.resolve()
             await release.promise
             await route.fulfill({ body: '# Old document' })
+          })
+        }
+      )
+    } finally {
+      release.resolve()
+    }
+  }
+)
+
+test(
+  'disposing a document restore when the workspace loses readiness does not settle navigation',
+  { timeout: 60_000 },
+  async () => {
+    const requested = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let reads = 0
+    try {
+      await fixture(
+        async (page) => {
+          const ready = (workspaceLoadState: 'loading' | 'ready') =>
+            page.evaluate(
+              (workspaceLoadState) =>
+                Reflect.get(window, 'preferenceProbe').patch({
+                  workspaceLoadState,
+                  projectsLoaded: true,
+                }),
+              workspaceLoadState
+            )
+          await ready('ready')
+          await requested.promise
+          await ready('loading')
+          await expect
+            .poll(() => page.evaluate(() => Reflect.get(window, 'firstRestoreAborted')))
+            .toBe(true)
+          const snapshot = () =>
+            page.evaluate(() => {
+              const probe = Reflect.get(window, 'preferenceProbe')
+              return [
+                probe.state.navigationRestored,
+                probe.state.startupTaskRecovery,
+                probe.documentTabs().length,
+              ]
+            })
+          await expect.poll(snapshot).toEqual([false, 'waiting', 0])
+          await ready('ready')
+          await expect.poll(snapshot).toEqual([true, null, 1])
+          release.resolve()
+          assert.equal(reads, 2)
+        },
+        async (page) => {
+          await page.addInitScript(() => {
+            localStorage.setItem(
+              'scholarseed.web.preferences',
+              JSON.stringify({
+                lastLocation: {
+                  view: 'resource',
+                  target: {
+                    kind: 'document',
+                    viewKind: 'edit',
+                    title: 'Saved Markdown',
+                    source: { kind: 'project', project: null, path: 'previous.md' },
+                  },
+                },
+              })
+            )
+            const fetch = window.fetch
+            let reads = 0
+            window.fetch = (input, init) => {
+              if (String(input).includes('/api/workbench/content?') && ++reads === 1) {
+                init?.signal?.addEventListener('abort', () =>
+                  Reflect.set(window, 'firstRestoreAborted', true)
+                )
+                return fetch(input, { ...init, signal: undefined })
+              }
+              return fetch(input, init)
+            }
+          })
+          await page.route('**/api/workbench/open?**', (route) =>
+            route.fulfill({
+              json: {
+                project_id: null,
+                viewer: 'markdown',
+                capabilities: { can_edit: true },
+                revision: 'revision',
+                media_type: 'text/markdown',
+                content_kind: 'text',
+              },
+            })
+          )
+          await page.route('**/api/workbench/content?**', async (route) => {
+            if (++reads === 1) {
+              requested.resolve()
+              await release.promise
+            }
+            await route.fulfill({ body: '# Saved document' })
           })
         }
       )
