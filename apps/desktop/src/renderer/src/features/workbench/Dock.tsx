@@ -302,7 +302,11 @@ function DocumentToolbar({
               label={uiText('save')}
               icon={<Save />}
               data-testid="document-save"
-              disabled={!session.dirty || session.saveState === 'saving'}
+              disabled={
+                !session.dirty ||
+                session.saveState === 'saving' ||
+                session.saveState === 'unconfirmed'
+              }
               onClick={() => void workspace.save(session.id)}
             />
             {showUnsavedIndicator(session.dirty, state.autoSave) && (
@@ -448,77 +452,98 @@ export function DocumentView({
           onPanelToggle={togglePanel}
         />
       )}
-      {session.saveState === 'conflict' && (
-        <Alert
-          action={
-            <div className="vds-version-actions">
-              <Button
-                size="sm"
-                variant="danger"
-                data-testid="document-conflict-overwrite"
-                onClick={() => void workspace.overwriteDisk(session.id)}
-              >
-                {t('dock.overwrite')}
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                data-testid="document-conflict-discard"
-                onClick={() => void workspace.discardMemory(session.id)}
-              >
-                {t('dock.discard')}
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                data-testid="document-conflict-copy"
-                onClick={() => void workspace.saveManagedCopy(session.id)}
-              >
-                {t('dock.saveAs')}
-              </Button>
-            </div>
-          }
-          data-testid="document-save-conflict"
-          description={t('dock.conflictDescription')}
-          layout="stacked"
-          title={t('dock.conflictTitle')}
-          tone="warning"
-        />
-      )}
       <div className="vds-document-view-body flex">
-        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-          {session.deleted ? (
-            <div className="vds-viewer-empty">{t('dock.deleted')}</div>
-          ) : viewer ? (
-            viewer.render({
-              active,
-              path: session.source.path,
-              documentSessionId: session.id,
-              tabId: tab.id,
-              viewKind: tab.viewKind,
-              modeControlHost,
-              toolbarActions: (
-                <>
-                  <DocumentToolbarActions session={session} />
-                  {isHtmlDocument(session) && <DocumentExternalOpen session={session} />}
-                  <DocumentVersionActions session={session} />
-                </>
-              ),
-              documentPanels: {
-                activePanelId: activePanel?.id ?? null,
-                context: panelContext,
-                panels: viewerPanels,
-                toggle: togglePanel,
-              },
-              contentKind: session.contentKind,
-            })
-          ) : (
-            <Pending
-              feature={t('viewer.unsupported')}
-              owner={t('unavailable.workspace')}
-              detail={session.viewer}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {session.saveState === 'unconfirmed' && (
+            <Alert
+              className="shrink-0"
+              tone="warning"
+              data-testid="document-save-unconfirmed"
+              description={t('dock.saveUnconfirmed')}
+              action={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="document-save-check"
+                  onClick={() => void workspace.save(session.id)}
+                >
+                  {t('dock.checkSave')}
+                </Button>
+              }
             />
           )}
+          {session.saveState === 'conflict' && (
+            <Alert
+              className="shrink-0"
+              action={
+                <div className="vds-version-actions">
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    data-testid="document-conflict-overwrite"
+                    onClick={() => void workspace.overwriteDisk(session.id)}
+                  >
+                    {t('dock.overwrite')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    data-testid="document-conflict-discard"
+                    onClick={() => void workspace.discardMemory(session.id)}
+                  >
+                    {t('dock.discard')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    data-testid="document-conflict-copy"
+                    onClick={() => void workspace.saveManagedCopy(session.id)}
+                  >
+                    {t('dock.saveAs')}
+                  </Button>
+                </div>
+              }
+              data-testid="document-save-conflict"
+              description={t('dock.conflictDescription')}
+              layout="stacked"
+              title={t('dock.conflictTitle')}
+              tone="warning"
+            />
+          )}
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+            {session.deleted ? (
+              <div className="vds-viewer-empty">{t('dock.deleted')}</div>
+            ) : viewer ? (
+              viewer.render({
+                active,
+                path: session.source.path,
+                documentSessionId: session.id,
+                tabId: tab.id,
+                viewKind: tab.viewKind,
+                modeControlHost,
+                toolbarActions: (
+                  <>
+                    <DocumentToolbarActions session={session} />
+                    {isHtmlDocument(session) && <DocumentExternalOpen session={session} />}
+                    <DocumentVersionActions session={session} />
+                  </>
+                ),
+                documentPanels: {
+                  activePanelId: activePanel?.id ?? null,
+                  context: panelContext,
+                  panels: viewerPanels,
+                  toggle: togglePanel,
+                },
+                contentKind: session.contentKind,
+              })
+            ) : (
+              <Pending
+                feature={t('viewer.unsupported')}
+                owner={t('unavailable.workspace')}
+                detail={session.viewer}
+              />
+            )}
+          </div>
         </div>
         {activePanel && activePanel.placement !== 'viewer' && (
           <DocumentPanelHost
@@ -899,7 +924,11 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
         <AlertDialogContent aria-label={t('dock.closeLabel')} data-testid="document-close-dialog">
           <AlertDialogHeader>
             <AlertDialogTitle>{t('dock.closeTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('dock.closeDescription')}</AlertDialogDescription>
+            <AlertDialogDescription>
+              {state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'unconfirmed'
+                ? t('dock.saveUnconfirmed')
+                : t('dock.closeDescription')}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <Button
@@ -919,6 +948,7 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
             <Button
               variant="primary"
               data-testid="document-close-save"
+              disabled={state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'saving'}
               onClick={() =>
                 void workspace.resolveClose(
                   state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'conflict'
@@ -929,7 +959,9 @@ export function DocumentDock({ hidden = false }: { hidden?: boolean }): React.JS
             >
               {state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'conflict'
                 ? t('dock.overwriteClose')
-                : t('dock.saveClose')}
+                : state.sessions[state.pendingClose?.sessionId ?? '']?.saveState === 'unconfirmed'
+                  ? t('dock.checkSave')
+                  : t('dock.saveClose')}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

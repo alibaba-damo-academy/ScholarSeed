@@ -32,6 +32,7 @@ import { fetchVersionCapability, type ResourceCapability } from '../../contracts
 const FAILURE_CODES = {
   networkError: 'network_error',
   unavailable: 'unavailable',
+  unconfirmed: 'unconfirmed',
   http: (status: number) => `http_${status}`,
 } as const
 
@@ -224,8 +225,10 @@ export function isMissingDocumentFailure(failure: DocumentLoadFailure): boolean 
   return failure.status === NOT_FOUND_STATUS
 }
 
+export const DOCUMENT_SAVE_TIMEOUT_MS = 15_000
 export type CommitResult =
-  { ok: true; revision: string } | { ok: false; error: 'conflict' | 'unavailable' | 'failed' }
+  | { ok: true; revision: string }
+  | { ok: false; error: 'conflict' | 'unavailable' | 'failed' | 'unconfirmed' }
 
 export type ManagedCopyResult =
   | { ok: true; project: string; path: string; revision: string }
@@ -610,7 +613,8 @@ export async function loadDocument(
 export async function commitDocument(
   source: DocumentSource,
   bytes: Uint8Array,
-  revision: string
+  revision: string,
+  signal: AbortSignal = AbortSignal.timeout(DOCUMENT_SAVE_TIMEOUT_MS)
 ): Promise<CommitResult> {
   if (source.kind === 'session-artifact' && source.memberPath)
     return { ok: false, error: FAILURE_CODES.unavailable }
@@ -622,6 +626,7 @@ export async function commitDocument(
     return { ok: false, error: 'unavailable' }
   }
   try {
+    signal.throwIfAborted()
     const target =
       source.kind === 'project'
         ? `/api/workbench/content?${paramsFor(source).toString()}`
@@ -634,32 +639,28 @@ export async function commitDocument(
         'If-Match': `"${revision}"`,
       },
       body: new Uint8Array(bytes),
+      signal,
     })
+    signal.throwIfAborted()
     if (response.status === 412) return { ok: false, error: 'conflict' }
     if (!response.ok) {
-      let detail = ''
-      try {
-        detail = await response.text()
-      } catch {
-        detail = ''
-      }
+      void response.body?.cancel().catch(() => undefined)
       console.warn('Document commit failed', {
         source: source.kind,
         path: source.path,
         status: response.status,
-        detail,
       })
-      return { ok: false, error: 'failed' }
+      return { ok: false, error: response.status >= 500 ? FAILURE_CODES.unconfirmed : 'failed' }
     }
     const next = response.headers.get('etag')?.replace(/^"|"$/g, '')
-    return next ? { ok: true, revision: next } : { ok: false, error: 'failed' }
+    return next ? { ok: true, revision: next } : { ok: false, error: FAILURE_CODES.unconfirmed }
   } catch (error) {
     console.warn('Document commit request failed', {
       source: source.kind,
       path: source.path,
       error,
     })
-    return { ok: false, error: 'failed' }
+    return { ok: false, error: FAILURE_CODES.unconfirmed }
   }
 }
 

@@ -144,6 +144,7 @@ class AnalysisErrorCode(str, Enum):
     TRANSLATION_ALIGNMENT_MISSING = "pdf_ai_translation_alignment_missing"
     TRANSLATION_SENTENCE_INCOMPLETE = "pdf_ai_translation_sentence_incomplete"
     TASK_MISSING = "pdf_ai_task_missing"
+    SERVICE_INSTANCE_CHANGED = "pdf_ai_service_instance_changed"
     PDF_INPUT_UNSUPPORTED = "pdf_ai_pdf_input_unsupported"
     IMAGE_INPUT_UNSUPPORTED = "pdf_ai_image_input_unsupported"
     MODEL_UNAVAILABLE = "pdf_ai_model_unavailable"
@@ -218,6 +219,10 @@ class AnalysisRequest(BaseModel):
         return json.dumps(
             [self.project_id, self.asset_id, "" if self.asset_id else self.path], ensure_ascii=False
         )
+
+
+class AnalysisSubmission(AnalysisRequest):
+    service_instance_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ReadingTiming(BaseModel):

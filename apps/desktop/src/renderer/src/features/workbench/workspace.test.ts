@@ -1007,6 +1007,150 @@ test('saveAll saves every dirty writable document and stops on the first failure
   assert.equal(workspace.getSnapshot().sessions[lastSession].dirty, true)
 })
 
+test('an unconfirmed save is verified through a read and preserves edits made after dispatch', async () => {
+  const base = loader()
+  const commits: string[] = []
+  let disk: { revision: string; bytes: Uint8Array } | undefined
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested) {
+      const opened = (await base.load(requested)) as LoadedDocument
+      return disk ? { ...opened, ...disk } : opened
+    },
+    async commit(_requested, bytes, revision) {
+      commits.push(revision)
+      disk = { bytes, revision: 'applied-revision' }
+      return { ok: false, error: 'unconfirmed' as const }
+    },
+  })
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  const session = () => workspace.getSnapshot().sessions[sessionId]
+  workspace.updateText(sessionId, '# Submitted draft')
+  assert.equal(await workspace.save(sessionId), false)
+  assert.equal(session().saveState, 'unconfirmed')
+  await workspace.observeExternal('current', source.path)
+  assert.equal(session().saveState, 'unconfirmed')
+  await workspace.reconcileProject('current')
+  assert.equal(session().saveState, 'unconfirmed')
+  workspace.updateText(sessionId, '# Later draft')
+  assert.equal(session().saveState, 'unconfirmed')
+  assert.equal(await workspace.save(sessionId), false)
+  assert.equal(commits.length, 1)
+  assert.equal(session().revision, 'applied-revision')
+  assert.equal(session().savedText, '# Submitted draft')
+  assert.equal(session().text, '# Later draft')
+  assert.equal(session().saveState, 'dirty')
+})
+
+test('an expired save delegate releases the document without dispatching any write', async (context) => {
+  const deadline = new AbortController()
+  const delegateEntered = Promise.withResolvers<void>()
+  const serialized = Promise.withResolvers<Uint8Array>()
+  context.mock.method(AbortSignal, 'timeout', () => deadline.signal)
+  let commits = 0
+  const workspace = new DocumentWorkspace({
+    ...loader(),
+    async commit() {
+      commits += 1
+      return { ok: true, revision: 'unexpected-commit' }
+    },
+  })
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.updateText(sessionId, '# Keep this draft')
+  workspace.registerSaveDelegate(sessionId, {
+    serialize: async (signal) => {
+      assert.equal(signal, deadline.signal)
+      delegateEntered.resolve()
+      return serialized.promise
+    },
+  })
+  const save = workspace.save(sessionId)
+  await delegateEntered.promise
+  deadline.abort()
+  assert.equal(await save, false)
+  serialized.resolve(new TextEncoder().encode('# Late data'))
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  const session = workspace.getSnapshot().sessions[sessionId]
+  assert.equal(session.saveState, 'error')
+  assert.equal(session.dirty, true)
+  assert.equal(session.text, '# Keep this draft')
+  assert.equal(commits, 0)
+})
+
+test('a save finishing after the user cancels a close keeps the document open', async () => {
+  const committing = Promise.withResolvers<void>()
+  const receipt = Promise.withResolvers<void>()
+  const workspace = new DocumentWorkspace({
+    ...loader(),
+    async commit() {
+      committing.resolve()
+      await receipt.promise
+      return { ok: true, revision: 'confirmed' }
+    },
+  })
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.updateText(sessionId, '# Keep the document open')
+  workspace.requestClose(tabId)
+  const closing = workspace.resolveClose('save')
+  await committing.promise
+  await workspace.resolveClose('cancel')
+  receipt.resolve()
+  await closing
+  assert.equal(workspace.getSnapshot().pendingClose, null)
+  assert.ok(workspace.getSnapshot().tabs[tabId])
+  assert.equal(workspace.getSnapshot().sessions[sessionId].savedText, '# Keep the document open')
+})
+
+test('an expired save check preserves the pending result and a later read can resolve it', async (context) => {
+  const controllers: AbortController[] = []
+  context.mock.method(AbortSignal, 'timeout', () => {
+    const controller = new AbortController()
+    controllers.push(controller)
+    return controller.signal
+  })
+  const base = loader()
+  const readEntered = Promise.withResolvers<void>()
+  const late = Promise.withResolvers<LoadedDocument>()
+  let disk: LoadedDocument | null = null
+  let waitForRead = false
+  let writes = 0
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested, signal) {
+      if (waitForRead) {
+        assert.equal(signal, controllers.at(-1)?.signal)
+        readEntered.resolve()
+        return late.promise
+      }
+      return disk ?? base.load(requested)
+    },
+    async commit(requested, bytes) {
+      writes += 1
+      disk = { ...((await base.load(requested)) as LoadedDocument), revision: 'on-disk', bytes }
+      return { ok: false, error: 'unconfirmed' }
+    },
+  })
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.updateText(sessionId, '# Applied once')
+  assert.equal(await workspace.save(sessionId), false)
+  waitForRead = true
+  const check = workspace.save(sessionId)
+  await readEntered.promise
+  controllers.at(-1)?.abort()
+  assert.equal(await check, false)
+  late.resolve(disk!)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(workspace.getSnapshot().sessions[sessionId].saveState, 'unconfirmed')
+  waitForRead = false
+  assert.equal(await workspace.save(sessionId), true)
+  assert.equal(workspace.getSnapshot().sessions[sessionId].revision, 'on-disk')
+  assert.equal(writes, 1)
+})
+
 test('disk save refreshes version state without claiming a new saved version', async () => {
   const base = loader()
   const pending = { ...managedVersioning, snapshot_state: 'pending' as const }
@@ -2575,7 +2719,7 @@ for (const failure of ['failed', 'conflict', 'throw'] as const) {
     assert.deepEqual(workspace.getSnapshot().pendingClose, { tabId, sessionId })
     assert.equal(
       workspace.getSnapshot().sessions[sessionId].saveState,
-      failure === 'conflict' ? 'conflict' : 'error'
+      failure === 'throw' ? 'unconfirmed' : failure === 'conflict' ? 'conflict' : 'error'
     )
   })
 }
@@ -2921,7 +3065,7 @@ test('concurrent saves for one document share a single CAS transaction', async (
   assert.equal(workspace.getSnapshot().sessions[sessionId].saveState, 'clean')
 })
 
-test('a newer change queues another save while the prior save refreshes version metadata', async () => {
+test('an outstanding version refresh does not delay a newer save receipt', async () => {
   let releaseVersioning!: () => void
   let markVersioningStarted!: () => void
   const versioningStarted = new Promise<void>((resolve) => {
@@ -2957,15 +3101,16 @@ test('a newer change queues another save while the prior save refreshes version 
   await versioningStarted
   workspace.updateText(sessionId, '# Second queued save\n')
   const second = workspace.save(sessionId)
-  releaseVersioning()
 
   assert.equal(await first, true)
   assert.equal(await second, true)
   assert.deepEqual(committed, ['# First queued save\n', '# Second queued save\n'])
   const session = workspace.getSnapshot().sessions[sessionId]
+  assert.equal(session.versioning, null)
   assert.equal(session.savedText, '# Second queued save\n')
   assert.equal(session.dirty, false)
   assert.equal(session.saveState, 'clean')
+  releaseVersioning()
 })
 
 test('the resolved project identity from open is retained for later saves', async () => {
@@ -3425,6 +3570,59 @@ const restoredFile = (overrides: Partial<RestoredProjectFile> = {}): RestoredPro
   path: source.path,
   state: 'present',
   ...overrides,
+})
+
+test('an external restore retires an unconfirmed save and permits overwrite at the new path', async () => {
+  const checking = Promise.withResolvers<void>()
+  const lateOldRead = Promise.withResolvers<LoadedDocument>()
+  const base = loader()
+  const movedPath = 'notes/relocated.md'
+  const writes: { path: string; revision: string }[] = []
+  let holdOldRead = false
+  let sentBytes = new Uint8Array()
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested) {
+      if (requested.path === source.path && holdOldRead) {
+        checking.resolve()
+        return lateOldRead.promise
+      }
+      const loaded = (await base.load(requested)) as LoadedDocument
+      return requested.path === movedPath ? { ...loaded, revision: 'restored-revision' } : loaded
+    },
+    async commit(requested, bytes, revision) {
+      writes.push({ path: requested.path, revision })
+      if (requested.path === movedPath) return { ok: true, revision: 'overwritten-revision' }
+      sentBytes = new Uint8Array(bytes)
+      return { ok: false, error: 'unconfirmed' }
+    },
+  })
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.updateText(sessionId, '# Draft across restore')
+  assert.equal(await workspace.save(sessionId), false)
+  holdOldRead = true
+  const checkingOldSave = workspace.save(sessionId)
+  await checking.promise
+  assert.deepEqual(
+    (await workspace.reconcileRestoredFiles('current', [restoredFile({ path: movedPath })]))
+      .conflicted,
+    ['file-notes']
+  )
+  assert.equal(workspace.getSnapshot().sessions[sessionId].saveState, 'conflict')
+  const overwrite = workspace.overwriteDisk(sessionId)
+  lateOldRead.resolve({
+    ...((await base.load(source)) as LoadedDocument),
+    bytes: sentBytes,
+    revision: 'late-old-revision',
+  })
+  assert.equal(await overwrite, true)
+  assert.equal(await checkingOldSave, false)
+  assert.equal(writes.length, 2)
+  assert.deepEqual(writes[1], { path: movedPath, revision: 'restored-revision' })
+  const session = workspace.getSnapshot().sessions[sessionId]
+  assert.equal(session.revision, 'overwritten-revision')
+  assert.equal(session.text, '# Draft across restore')
 })
 
 test('restore reconciliation reloads clean sessions without replacing their tabs or view state', async () => {

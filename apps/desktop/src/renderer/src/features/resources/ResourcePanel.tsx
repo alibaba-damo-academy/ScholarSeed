@@ -847,6 +847,8 @@ export function ResourcePanel(): React.JSX.Element {
               label={uiText('refresh')}
               title={uiText('refresh')}
               data-testid="resource-refresh"
+              aria-busy={resource.loadState === 'loading' || resource.loadState === 'refreshing'}
+              disabled={resource.loadState === 'loading' || resource.loadState === 'refreshing'}
               icon={<RotateCw size={14} strokeWidth={1.8} />}
               onClick={() => void act.reloadResourceTree()}
             />
@@ -920,10 +922,18 @@ export function ResourcePanel(): React.JSX.Element {
           </div>
         </div>
 
+        {resource.treeRefreshFailed && (
+          <Alert
+            tone="error"
+            description={t('panel.loadFailed')}
+            data-testid="resource-tree-refresh-failed"
+          />
+        )}
         <div
           className={`vds-tree min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[var(--vds-space-3)]${dropTarget === RESOURCE_ROOT_DIRECTORY ? " relative after:pointer-events-none after:absolute after:inset-0 after:z-[var(--vds-z-content)] after:rounded-[var(--vds-radius-4)] after:ring-2 after:ring-inset after:ring-[var(--vds-accent-light-border)] after:content-['']" : ''}`}
           data-drop-active={dropTarget === RESOURCE_ROOT_DIRECTORY ? 'true' : 'false'}
           data-testid="resource-tree-root"
+          aria-busy={resource.loadState === 'loading' || resource.loadState === 'refreshing'}
           onDragOver={(event) => {
             const source = dragSource || event.dataTransfer.getData(RESOURCE_DRAG_MIME)
             if (!source) return

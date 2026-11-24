@@ -56,7 +56,7 @@ test('an already loaded empty tree refreshes without returning to foreground loa
   assert.equal(complete.tree.length, 0)
 })
 
-test('failed background refresh retains the last successful snapshot and retries silently', () => {
+test('failed refresh keeps the complete snapshot and clears its error after retry', () => {
   const nodes: ResourceNode[] = [{ path: 'note.md', name: 'note.md', kind: 'file' }]
   const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, {
     nodes,
@@ -65,10 +65,16 @@ test('failed background refresh retains the last successful snapshot and retries
   })
   const failed = finishResourceTreeReload(beginResourceTreeReload(ready), null)
   assert.equal(failed.loadState, 'ready')
+  assert.equal(failed.treeRefreshFailed, true)
   assert.equal(failed.tree, nodes)
   assert.equal(failed.rootTotal, 1)
   assert.equal(failed.root, '/project')
   assert.equal(beginResourceTreeReload(failed).loadState, 'refreshing')
+  assert.equal(
+    finishResourceTreeReload(beginResourceTreeReload(failed), { nodes, total: 1, root: '/project' })
+      .treeRefreshFailed,
+    false
+  )
   assert.equal(beginResourceTreeReload(resourceStateForProjectSwitch(failed)).loadState, 'loading')
 })
 
@@ -89,6 +95,25 @@ test('background refresh publishes new data while preserving selection and expan
   assert.equal(complete.tree, nodes)
   assert.equal(complete.selected, ready.selected)
   assert.equal(complete.expanded, ready.expanded)
+})
+
+test('an earlier refresh cannot take away a page or expansion loaded during the refresh', () => {
+  const first: ResourceNode = { path: 'first.md', name: 'first.md', kind: 'file' }
+  const second: ResourceNode = { path: 'second.md', name: 'second.md', kind: 'file' }
+  const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, {
+    nodes: [first],
+    total: 2,
+    root: '/project',
+  })
+  const replacement = { nodes: [first], total: 2, root: '/project' }
+  const refreshing = beginResourceTreeReload(ready)
+  for (const current of [
+    { ...refreshing, tree: [first, second] },
+    { ...refreshing, expanded: { folder: true } },
+  ]) {
+    const finished = finishResourceTreeReload(current, replacement, ready)
+    assert.deepEqual(finished, { ...current, loadState: 'ready' })
+  }
 })
 
 const linkedRoot: ResourceLinkRoot = {

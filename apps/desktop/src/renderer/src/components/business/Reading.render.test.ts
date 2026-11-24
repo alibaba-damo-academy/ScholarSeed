@@ -415,15 +415,18 @@ test(
             await start.click()
             await expect.poll(() => submissions.length).toBe(1)
             if (cancel) await page.getByRole('button', { name: '取消', exact: true }).click()
+            const cancelledReceipt = cancel
+              ? null
+              : page.waitForEvent('requestfailed', {
+                  predicate: (request) => new URL(request.url()).pathname === TASKS,
+                })
             await page.evaluate('window.renderReading(null)')
             await expect(page.getByTestId('paper-reading')).toHaveCount(0)
-            const accepted = page.waitForResponse(
-              (response) => new URL(response.url()).pathname === TASKS
-            )
-            await submissions[0].fulfill({ json: { task_id: 'detached', status: 'running' } })
-            await accepted
-            if (cancel) await expect.poll(() => cancelled).toEqual(['detached'])
-            else {
+            if (cancel) {
+              await submissions[0].fulfill({ json: { task_id: 'detached', status: 'running' } })
+              await expect.poll(() => cancelled).toEqual(['detached'])
+            } else {
+              assert.match((await cancelledReceipt)?.failure()?.errorText || '', /ABORTED/)
               await page.evaluate(() => new Promise(requestAnimationFrame))
               assert.deepEqual(cancelled, [])
             }

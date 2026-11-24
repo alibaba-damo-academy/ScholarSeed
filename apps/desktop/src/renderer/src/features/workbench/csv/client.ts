@@ -16,7 +16,7 @@ export class CsvClient {
     receiveState?: (state: CsvState) => void
   ) {
     this.worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
-    this.queue = new CsvQueue(identity, (message) => this.send(message))
+    this.queue = new CsvQueue(identity, (message, signal) => this.send(message, signal))
     this.worker.onmessage = (event: MessageEvent<CsvResponse>) => {
       const response = event.data,
         pending = this.pending.get(response.requestId)
@@ -46,9 +46,18 @@ export class CsvClient {
     if (this.closed) return Promise.reject(new Error('csv_client_closed'))
     return this.queue.request(command, expectedVersion)
   }
-  private send(message: CsvRequest): Promise<CsvResponse> {
-    const requestId = message.requestId
-    return new Promise((resolve, reject) => {
+  readForSave(command: 'state' | 'serialize', signal?: AbortSignal): Promise<CsvResponse> {
+    if (this.closed) return Promise.reject(new Error('csv_client_closed'))
+    return this.queue.request({ command }, undefined, signal)
+  }
+  private send(message: CsvRequest, signal?: AbortSignal): Promise<CsvResponse> {
+    const { requestId } = message
+    const abort = (): void => {
+      this.pending.get(requestId)?.reject(signal?.reason)
+      this.pending.delete(requestId)
+    }
+    return new Promise<CsvResponse>((resolve, reject) => {
+      signal?.addEventListener('abort', abort, { once: true })
       this.pending.set(requestId, { resolve, reject })
       try {
         this.worker.postMessage(message)
@@ -56,7 +65,7 @@ export class CsvClient {
         this.pending.delete(requestId)
         reject(error instanceof Error ? error : new Error('csv_worker_failed'))
       }
-    })
+    }).finally(() => signal?.removeEventListener('abort', abort))
   }
   /** New window generation and returned version must also match current viewport before render. */
   current(response: CsvResponse): boolean {

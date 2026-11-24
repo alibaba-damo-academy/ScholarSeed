@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   ArrowDownToLine,
@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 
 import finderIcon from '../../assets/finder.svg'
+import { CONTENT_TREE_READ_TIMEOUT_MS } from '../../app/api/content'
 import { revealSystemPath } from '../../api'
 import { IMPORT_PICKER_TARGET } from '../../../../picker'
 import {
@@ -110,10 +111,42 @@ function useLoadingDirectories(): [ReadonlySet<string>, (path: string, loading: 
   return [paths, update]
 }
 
+interface DirectoryRefresh {
+  signal: AbortSignal
+  include(read: Promise<ProjectTreePage | null>): Promise<{
+    page: ProjectTreePage | null
+    failed: boolean
+  }>
+}
+
+export function createDirectoryRefresh(): DirectoryRefresh {
+  const reads: Array<Promise<ProjectTreePage | null>> = []
+  let deadline: AbortSignal | undefined
+  let complete: Promise<boolean> | undefined
+  return {
+    get signal() {
+      return (deadline ??= AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS))
+    },
+    include(read) {
+      reads.push(read)
+      // All mounted directories register in the same commit before a new tree can be shown.
+      complete ??= Promise.resolve()
+        .then(() => Promise.all(reads))
+        .then((results) => results.every((page) => page !== null))
+      return Promise.all([read, complete]).then(([page, ready]) => ({
+        page: ready ? page : null,
+        failed: page === null,
+      }))
+    },
+  }
+}
+
 export function Directory({
   project,
   path,
   revision,
+  revisionRefresh,
+  onRetryRefresh,
   expanded,
   selected,
   dragTarget,
@@ -129,6 +162,8 @@ export function Directory({
   project: string
   path: string
   revision: number
+  revisionRefresh?: DirectoryRefresh
+  onRetryRefresh?: () => void
   expanded: ReadonlySet<string>
   selected: string | null
   dragTarget: string | null
@@ -157,10 +192,21 @@ export function Directory({
   const [moreError, setMoreError] = useState(false)
   const [loadingDirectories, updateLoading] = useLoadingDirectories()
   const generation = useRef(0)
+  const previousRevision = useRef(revision)
+  const failedRefresh = useRef(false)
+  const directoryRead = useRef<AbortController | null>(null)
   const morePending = useRef(false)
   const directoryId = path || '/'
   useLayoutEffect(() => {
     const requestGeneration = ++generation.current
+    const controller = new AbortController()
+    directoryRead.current = controller
+    const sharedRefresh = previousRevision.current !== revision ? revisionRefresh : undefined
+    previousRevision.current = revision
+    const signal = AbortSignal.any([
+      controller.signal,
+      sharedRefresh?.signal ?? AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS),
+    ])
     const loadedCount = pageRef.current?.nodes.length ?? 0
     setLoading(true)
     setReadFailed(false)
@@ -168,39 +214,50 @@ export function Directory({
     morePending.current = false
     setMore(false)
     setMoreError(false)
-    const settle = (value: ProjectTreePage | null): void => {
+    const settle = (value: ProjectTreePage | null, failed = value === null): void => {
       if (generation.current !== requestGeneration) return
+      failedRefresh.current = failed && sharedRefresh !== undefined
       if (value) setSnapshot({ identity, page: value })
-      setReadFailed(value === null)
+      setReadFailed(failed)
       setLoading(false)
       onLoadingChange?.(path, false)
     }
     const refresh = async (): Promise<ProjectTreePage | null> => {
-      let replacement = await readProjectTree(project, path)
+      let replacement = await readProjectTree(project, path, 0, signal)
       if (!replacement || generation.current !== requestGeneration) return null
       // Replace the loaded range atomically, keeping existing rows mounted while reading.
       while (replacement.nodes.length < Math.min(loadedCount, replacement.total)) {
-        const next = await readProjectTree(project, path, replacement.nodes.length)
+        const next = await readProjectTree(project, path, replacement.nodes.length, signal)
         if (generation.current !== requestGeneration || !next || !next.nodes.length) return null
         replacement = { ...next, nodes: [...replacement.nodes, ...next.nodes] }
       }
       return replacement
     }
-    void refresh().then(settle, () => settle(null))
+    const reading = refresh().catch(() => null)
+    if (sharedRefresh)
+      void sharedRefresh.include(reading).then(({ page, failed }) => settle(page, failed))
+    else void reading.then(settle)
     return () => {
       generation.current += 1
+      controller.abort()
       morePending.current = false
       onLoadingChange?.(path, false)
     }
-  }, [identity, project, path, revision, retry, onLoadingChange])
+  }, [identity, project, path, revision, revisionRefresh, retry, onLoadingChange])
   const loadMore = async (): Promise<void> => {
-    if (!page || loading || morePending.current || page.nodes.length >= page.total) return
+    const controller = directoryRead.current
+    if (!controller || !page || loading || morePending.current || page.nodes.length >= page.total)
+      return
     const requestGeneration = generation.current
     morePending.current = true
     setMore(true)
     setMoreError(false)
     try {
-      const next = await readProjectTree(project, path, page.nodes.length)
+      const signal = AbortSignal.any([
+        controller.signal,
+        AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS),
+      ])
+      const next = await readProjectTree(project, path, page.nodes.length, signal)
       if (generation.current !== requestGeneration) return
       if (next) {
         setSnapshot((current) =>
@@ -232,7 +289,10 @@ export function Directory({
         <Button
           variant="ghost"
           data-testid={`explorer-directory-retry-${directoryId}`}
-          onClick={() => setRetry((value) => value + 1)}
+          onClick={() => {
+            if (failedRefresh.current && onRetryRefresh) onRetryRefresh()
+            else setRetry((value) => value + 1)
+          }}
         >
           {t('retry')}
         </Button>
@@ -351,6 +411,8 @@ export function Directory({
                 project={project}
                 path={node.path}
                 revision={revision}
+                revisionRefresh={revisionRefresh}
+                onRetryRefresh={onRetryRefresh}
                 expanded={expanded}
                 selected={selected}
                 dragTarget={dragTarget}
@@ -403,6 +465,8 @@ export function Explorer({
   const workspace = useWorkspaceController()
   const documents = useDocumentWorkspace()
   const [revision, setRevision] = useState(0)
+  const revisionRefresh = useMemo(createDirectoryRefresh, [projectId, revision])
+  const refreshDirectory = useCallback(() => setRevision((value) => value + 1), [])
   const [modeControlHost, setModeControlHost] = useState<HTMLDivElement | null>(null)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(
     () => explorerStates.get(stateKey)?.expanded ?? new Set()
@@ -775,7 +839,7 @@ export function Explorer({
       toast({ title: t('explorerFailed'), description: result.error, tone: 'error' })
       return
     }
-    await act.reloadResourceTree()
+    await act.reloadResourceTree(undefined, project.id)
     toast({ title: t('explorerImportedToLibrary'), tone: 'success' })
   }
   const selectMenu = (node: TreeNode, x: number, y: number): void => {
@@ -884,7 +948,7 @@ export function Explorer({
             id: 'explorer-refresh',
             label: t('explorerRefresh'),
             icon: <RotateCw />,
-            onClick: () => setRevision((value) => value + 1),
+            onClick: refreshDirectory,
           },
         ].map(({ id, label, icon, onClick }) => (
           <Tooltip key={id} content={label}>
@@ -897,6 +961,7 @@ export function Explorer({
               ref={id === 'explorer-search' ? searchButtonRef : undefined}
               aria-expanded={id === 'explorer-search' ? searchOpen : undefined}
               aria-controls={id === 'explorer-search' ? 'explorer-search-input' : undefined}
+              aria-busy={id === 'explorer-refresh' ? loadingDirectories.size > 0 : undefined}
               data-testid={id}
               onClick={onClick}
             />
@@ -1035,6 +1100,8 @@ export function Explorer({
               project={project.id}
               path=""
               revision={revision}
+              revisionRefresh={revisionRefresh}
+              onRetryRefresh={refreshDirectory}
               expanded={expanded}
               selected={breadcrumbPath}
               dragTarget={dragTarget}

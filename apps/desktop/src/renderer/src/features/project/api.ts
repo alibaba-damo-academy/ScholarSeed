@@ -10,6 +10,7 @@
 
 import {
   CONTENT_OPERATION_UNKNOWN,
+  CONTENT_TREE_READ_TIMEOUT_MS,
   PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
   resolveContentResponse,
 } from '../../app/api/content.ts'
@@ -95,19 +96,20 @@ export async function readProjectTree(
   project: string,
   path = '',
   offset = 0,
-  signal?: AbortSignal
+  signal = AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)
 ): Promise<ProjectTreePage | null> {
   const query = new URLSearchParams({ path, offset: String(offset) })
   return readJson<ProjectTreePage>(
     `/api/content/projects/${encodeURIComponent(project)}/tree?${query}`,
-    { signal }
+    { signal, cache: 'no-store' }
   )
 }
 
 export async function listProjectFiles(
   project: string,
-  signal: AbortSignal
+  cancellation: AbortSignal
 ): Promise<ProjectTreeNode[] | null> {
+  const signal = AbortSignal.any([cancellation, AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)])
   const directories = ['']
   const visited = new Set<string>()
   const files = new Map<string, ProjectTreeNode>()
@@ -186,7 +188,8 @@ async function readJson<T>(
   try {
     const response = await apiFetch(path, options)
     if (!response.ok) return null
-    return (await response.json()) as T
+    const result = (await response.json()) as T
+    return options?.signal?.aborted ? null : result
   } catch {
     return null
   }
@@ -344,6 +347,19 @@ export function selectExternalRootProject(projectId: string | null): void {
   })
 }
 
+function waitForRootRead<T>(result: Promise<T>, signal?: AbortSignal): Promise<T | null> {
+  if (!signal) return result
+  if (signal.aborted) return Promise.resolve(null)
+  let abort!: () => void
+  const cancelled = new Promise<null>((resolve) => {
+    abort = () => resolve(null)
+  })
+  signal.addEventListener('abort', abort, { once: true })
+  return Promise.race([result, cancelled]).finally(() => {
+    signal.removeEventListener('abort', abort)
+  })
+}
+
 function toRoot(payload: ExternalRootPayload): ExternalRootRef {
   return {
     rootId: payload.root_id,
@@ -362,10 +378,14 @@ function toRoot(payload: ExternalRootPayload): ExternalRootRef {
  * 同步放在这里而不是各调用点：撤销后必须立刻收回废纸篓/访达的权限，漏一个
  * 调用点就等于撤销在 OS 面没生效（`writableRoots` 是唯一来源，见 §6.9）。
  */
-export function listExternalRoots(projectId: string): Promise<ExternalRootListing | null> {
+export function listExternalRoots(
+  projectId: string,
+  signal?: AbortSignal
+): Promise<ExternalRootListing | null> {
+  if (signal?.aborted) return Promise.resolve(null)
   const synchronize = projectId === externalRootProject
   if (synchronize && externalRootSyncOperation?.projectId === projectId) {
-    return externalRootSyncOperation.promise
+    return waitForRootRead(externalRootSyncOperation.promise, signal)
   }
 
   const operation: ExternalRootSyncOperation = {
@@ -373,17 +393,19 @@ export function listExternalRoots(projectId: string): Promise<ExternalRootListin
     promise: Promise.resolve(null),
   }
   operation.promise = (async () => {
+    const deadline = AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)
     const query = projectId ? `?project=${encodeURIComponent(projectId)}` : ''
     const payload = await readJson<{ roots: ExternalRootPayload[]; writableRoots: string[] }>(
-      `/api/content/roots${query}`
+      `/api/content/roots${query}`,
+      { signal: deadline, cache: 'no-store' }
     )
-    if (!payload) return null
+    if (!payload || deadline.aborted) return null
     const listing = { roots: payload.roots.map(toRoot), writableRoots: payload.writableRoots }
     if (!synchronize) return listing
     if (projectId !== externalRootProject || externalRootSyncOperation !== operation) return null
-    const synchronized = await window.scholarseed.syncAuthorizedRoots(
-      'external',
-      payload.writableRoots
+    const synchronized = await waitForRootRead(
+      window.scholarseed.syncAuthorizedRoots('external', payload.writableRoots),
+      deadline
     )
     if (!synchronized || externalRootSyncOperation !== operation) return null
     return listing
@@ -393,7 +415,7 @@ export function listExternalRoots(projectId: string): Promise<ExternalRootListin
     if (externalRootSyncOperation === operation) externalRootSyncOperation = null
   }
   void operation.promise.then(clear, clear)
-  return operation.promise
+  return waitForRootRead(operation.promise, signal)
 }
 
 /** 授权一处项目外文件或目录，登记成项目内挂载点。

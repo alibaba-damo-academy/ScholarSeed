@@ -36,12 +36,17 @@ export function beginResourceTreeReload(resource: ResourceState): ResourceState 
 
 export function finishResourceTreeReload(
   resource: ResourceState,
-  result: (ResourceTreePage & { root: string }) | null
+  result: (ResourceTreePage & { root: string }) | null,
+  previous?: ResourceState
 ): ResourceState {
+  if (previous && resourceTreeChangedDuringReload(resource, previous)) {
+    return { ...resource, loadState: 'ready' }
+  }
   if (!result) {
     return {
       ...resource,
       loadState: resource.loadState === 'refreshing' ? 'ready' : 'error',
+      treeRefreshFailed: resource.loadState === 'refreshing',
     }
   }
   return {
@@ -50,7 +55,18 @@ export function finishResourceTreeReload(
     rootTotal: result.total,
     root: result.root,
     loadState: 'ready',
+    treeRefreshFailed: false,
   }
+}
+
+export function resourceTreeChangedDuringReload(
+  resource: ResourceState,
+  previous: ResourceState
+): boolean {
+  return (
+    resource.loadState === 'refreshing' &&
+    (resource.tree !== previous.tree || resource.expanded !== previous.expanded)
+  )
 }
 
 export interface MaterializedResourcePath {

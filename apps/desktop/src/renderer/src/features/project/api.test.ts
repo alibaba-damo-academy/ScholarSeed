@@ -196,6 +196,43 @@ test('concurrent callers for one project share the same authorization barrier', 
   assert.deepEqual(synchronized, [['/projects/project-shared', '/external/shared.txt']])
 })
 
+test('cancelling a tree waiter leaves shared external authorization to its owner', async (context) => {
+  const savedFetch = globalThis.fetch
+  const savedWindow = globalThis.window
+  let finish: ((response: Response) => void) | undefined
+  const response = new Promise<Response>((resolve) => {
+    finish = resolve
+  })
+  const synced: string[][] = []
+  Object.assign(globalThis, {
+    window: {
+      scholarseed: {
+        getApiBase: () => 'http://serve.test',
+        syncAuthorizedRoots: async (_scope: string, roots: string[]) => {
+          synced.push(roots)
+          return true
+        },
+      },
+    },
+    fetch: async () => response,
+  })
+  context.after(() => {
+    selectExternalRootProject(null)
+    globalThis.fetch = savedFetch
+    globalThis.window = savedWindow
+  })
+  selectExternalRootProject('tree-project')
+  const controller = new AbortController()
+  const tree = listExternalRoots('tree-project', controller.signal)
+  const shared = listExternalRoots('tree-project')
+  controller.abort()
+  assert.equal(await tree, null)
+  assert.deepEqual(synced, [[]])
+  finish?.(Response.json(payload('tree-project', '/external/tree.txt')))
+  assert.equal((await shared)?.roots[0]?.projectId, 'tree-project')
+  assert.deepEqual(synced, [[], ['/projects/tree-project', '/external/tree.txt']])
+})
+
 test('leaving a project fences its response even without another roots request', async () => {
   let finish: ((response: Response) => void) | undefined
   const response = new Promise<Response>((resolve) => {

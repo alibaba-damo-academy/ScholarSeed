@@ -2,12 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { ASSISTANT_TRANSLATION_TARGETS } from '../../../contracts/assistant.ts'
+import { pdfAiApi, PdfAiRequestError } from '../../../app/api/pdf.ts'
 import {
   invokeFigure,
   loadPdfVisualRegionImage,
-  pdfAiApi,
   pdfCitationSource,
-  PdfAiRequestError,
   pdfResponseLanguage,
   recoverPdfAiTask,
   submitPdfAiTask,
@@ -17,7 +16,7 @@ import {
   PDF_TRANSLATION_TARGETS,
 } from './analysis.ts'
 
-const request: PdfAiRequest = {
+const request: PdfAiRequest & { service_instance_id: string } = {
   literature_id: 'paper',
   project_id: '',
   revision: 'old',
@@ -29,6 +28,7 @@ const request: PdfAiRequest = {
   rect: [0.1, 0.2, 0.3, 0.4],
   client_action_id: 'action',
   client_attempt_id: 'attempt',
+  service_instance_id: 'original-service',
   instruction: '解释趋势',
   response_language: 'zh',
 }
@@ -361,6 +361,211 @@ test('missing submission retries only the identical attempt after querying', asy
   try {
     await submitPdfAiTask(request, new AbortController().signal, [0])
     assert.deepEqual(methods, ['POST', 'GET', 'POST'])
+  } finally {
+    restore()
+  }
+})
+
+test('stalled submission receipts time out during body reads and reconcile the original attempt', async (context) => {
+  const deadlines: { deadline: AbortController; milliseconds: number }[] = []
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    const deadline = new AbortController()
+    deadlines.push({ deadline, milliseconds })
+    return deadline.signal
+  })
+  const requests: string[] = []
+  const pending = { task_id: request.client_attempt_id, status: 'running' }
+  const restore = installFetch(async (url, init) => {
+    requests.push(`${init?.method ?? 'GET'} ${new URL(String(url)).pathname}`)
+    if (init?.method === 'POST') {
+      assert.deepEqual(JSON.parse(String(init.body)), request)
+      const budget = deadlines.at(-1)
+      assert.equal(budget?.milliseconds, 10_000, 'POST must have its own deadline')
+      const signal = init.signal
+      assert.ok(signal, 'POST must be abortable')
+      const accepted = new Response(null, { status: 202 })
+      accepted.text = async () => {
+        budget?.deadline.abort(new DOMException('deadline', 'TimeoutError'))
+        assert.equal(signal.aborted, true)
+        // Fetch body reads can report generic AbortError even for a timeout signal.
+        throw new DOMException('body interrupted', 'AbortError')
+      }
+      return accepted
+    }
+    return requests.length === 2
+      ? Response.json({ detail: { code: 'pdf_ai_task_missing' } }, { status: 404 })
+      : Response.json(pending)
+  })
+  try {
+    assert.deepEqual(await submitPdfAiTask(request, new AbortController().signal, [0, 0]), pending)
+    assert.deepEqual(requests, [
+      'POST /api/literature/ai/tasks',
+      'GET /api/literature/ai/tasks/attempt',
+      'POST /api/literature/ai/tasks',
+      'GET /api/literature/ai/tasks/attempt',
+    ])
+    assert.deepEqual(
+      deadlines.map(({ milliseconds }) => milliseconds),
+      [30_000, 10_000, 10_000, 10_000, 10_000]
+    )
+  } finally {
+    restore()
+  }
+})
+
+test('an explicit PDF submission rejection neither queries nor retries', async () => {
+  const methods: string[] = []
+  const restore = installFetch(async (_url, init) => {
+    methods.push(init?.method ?? 'GET')
+    return Response.json({ detail: { code: 'pdf_ai_source_invalid' } }, { status: 422 })
+  })
+  try {
+    await assert.rejects(
+      submitPdfAiTask(request, new AbortController().signal, [0]),
+      (cause) => cause instanceof PdfAiRequestError && cause.code === 'pdf_ai_source_invalid'
+    )
+    assert.deepEqual(methods, ['POST'])
+  } finally {
+    restore()
+  }
+})
+
+test('a rejected POST keeps its HTTP status when the error body reaches the deadline', async (context) => {
+  for (const status of [403, 422]) {
+    const requestDeadline = new AbortController()
+    context.mock.method(AbortSignal, 'timeout', (milliseconds: number) =>
+      milliseconds === 10_000 ? requestDeadline.signal : new AbortController().signal
+    )
+    const methods: string[] = []
+    const restore = installFetch(async (_url, init) => {
+      methods.push(init?.method ?? 'GET')
+      const response = new Response(null, { status })
+      response.text = async () => {
+        requestDeadline.abort(new DOMException('deadline', 'TimeoutError'))
+        throw new DOMException('body interrupted', 'AbortError')
+      }
+      return response
+    })
+    try {
+      await assert.rejects(
+        submitPdfAiTask(request, new AbortController().signal, [0]),
+        (cause) => cause instanceof PdfAiRequestError && cause.httpStatus === status
+      )
+      assert.deepEqual(methods, ['POST'])
+    } finally {
+      restore()
+      context.mock.restoreAll()
+    }
+  }
+})
+
+test('the full submission budget includes reconciliation and never cancels the admitted job', async (context) => {
+  const foreground = new AbortController()
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) =>
+    milliseconds === 30_000 ? foreground.signal : new AbortController().signal
+  )
+  const calls: string[] = []
+  const restore = installFetch(async (url, init) => {
+    calls.push(`${init?.method ?? 'GET'} ${new URL(String(url)).pathname}`)
+    if (calls.length === 1 || calls.length === 3) throw new TypeError('receipt connection lost')
+    if (calls.length === 2)
+      return Response.json({ detail: { code: 'pdf_ai_task_missing' } }, { status: 404 })
+    const stalled = new Response(null, { status: 200 })
+    stalled.text = async () => {
+      foreground.abort(new DOMException('total deadline', 'TimeoutError'))
+      assert.equal(init?.signal?.aborted, true)
+      throw new DOMException('body interrupted', 'AbortError')
+    }
+    return stalled
+  })
+  const user = new AbortController()
+  try {
+    await assert.rejects(
+      submitPdfAiTask(request, user.signal, [0, 0, 0]),
+      (cause) => cause instanceof PdfAiRequestError && cause.code === 'pdf_ai_task_unresolved'
+    )
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(user.signal.aborted, false)
+    assert.deepEqual(calls, [
+      'POST /api/literature/ai/tasks',
+      'GET /api/literature/ai/tasks/attempt',
+      'POST /api/literature/ai/tasks',
+      'GET /api/literature/ai/tasks/attempt',
+    ])
+  } finally {
+    restore()
+  }
+})
+
+test('unknown PDF submissions never cross a restart or replay without an observed service identity', async () => {
+  for (const state of ['changed-on-lookup', 'changed-on-replay', 'unobserved'] as const) {
+    const originalInstance = state === 'unobserved' ? undefined : request.service_instance_id
+    const methods: string[] = []
+    const restore = installFetch(async (url, init) => {
+      methods.push(init?.method ?? 'GET')
+      if (methods.length === 1) return new Response('{', { status: 202 })
+      if (methods.length === 2) {
+        assert.equal(
+          new URL(String(url)).searchParams.get('service_instance_id'),
+          originalInstance ?? null
+        )
+        if (state !== 'changed-on-lookup')
+          return Response.json({ detail: { code: 'pdf_ai_task_missing' } }, { status: 404 })
+      } else {
+        assert.equal(JSON.parse(String(init?.body)).service_instance_id, originalInstance)
+      }
+      return Response.json({ detail: { code: 'pdf_ai_service_instance_changed' } }, { status: 409 })
+    })
+    try {
+      await assert.rejects(
+        submitPdfAiTask(
+          { ...request, service_instance_id: originalInstance },
+          new AbortController().signal,
+          [0, 0]
+        ),
+        (cause) => cause instanceof PdfAiRequestError && cause.code === 'pdf_ai_task_unresolved'
+      )
+      assert.deepEqual(
+        methods,
+        state === 'changed-on-replay' ? ['POST', 'GET', 'POST'] : ['POST', 'GET']
+      )
+    } finally {
+      restore()
+    }
+  }
+})
+
+test('changing the PDF while submitting aborts the old receipt and only requests cancellation', async () => {
+  const controller = new AbortController()
+  const { promise: cancelRequested, resolve: cancellationStarted } = Promise.withResolvers<void>()
+  const calls: string[] = []
+  const restore = installFetch(async (url, init) => {
+    const method = init?.method ?? 'GET'
+    const path = new URL(String(url)).pathname
+    calls.push(`${method} ${path}`)
+    if (calls.length === 1) {
+      const response = new Response(null, { status: 202 })
+      response.text = async () => {
+        controller.abort()
+        assert.equal(init?.signal?.aborted, true)
+        // Even a successfully parsed receipt cannot publish after a document change.
+        return JSON.stringify({ task_id: request.client_attempt_id, status: 'running' })
+      }
+      return response
+    }
+    if (method === 'GET')
+      return Response.json({ task_id: request.client_attempt_id, status: 'running' })
+    cancellationStarted()
+    return Response.json({ task_id: request.client_attempt_id, status: 'cancelled' })
+  })
+  try {
+    await assert.rejects(submitPdfAiTask(request, controller.signal, [0]), { name: 'AbortError' })
+    await cancelRequested
+    assert.deepEqual(calls, [
+      'POST /api/literature/ai/tasks',
+      'GET /api/literature/ai/tasks/attempt',
+      'POST /api/literature/ai/tasks/attempt/cancel',
+    ])
   } finally {
     restore()
   }

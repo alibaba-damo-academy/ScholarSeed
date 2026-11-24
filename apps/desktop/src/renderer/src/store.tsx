@@ -12,6 +12,7 @@ import {
   type SelectionPrompts,
 } from '../../prompts'
 import { assistantFailureDetail } from './features/assistant/failure'
+import { CONTENT_TREE_READ_TIMEOUT_MS } from './app/api/content'
 import { sessionTitleFallback } from './session'
 import type { ArchivedTask, SessionTitleFallback } from './session'
 import { feedback, type ForegroundMessage } from './contracts/feedback'
@@ -311,6 +312,7 @@ import {
   finishResourceTreeReload,
   linkMountNameFromSource,
   materializeResourcePath,
+  resourceTreeChangedDuringReload,
   prepareResourceOpening,
   relocateExpandedResourcePaths,
   relocateResourcePath,
@@ -826,6 +828,7 @@ async function fetchPendingChildren(
   nodes: ResourceNode[],
   expanded: Record<string, boolean>,
   project: string | null,
+  signal: AbortSignal,
   previousTree?: ResourceNode[]
 ): Promise<ResourceChildrenPatch[] | null> {
   const paths = Object.entries(expanded)
@@ -844,11 +847,8 @@ async function fetchPendingChildren(
     let loaded = node.children?.length ?? 0
     let total = node.count ?? loaded
     while (loaded === 0 || loaded < Math.min(previousCount, total)) {
-      const page = await fetchResourceTree(project, path, loaded)
-      if (!page) {
-        if (previousTree) return null
-        break
-      }
+      const page = await fetchResourceTree(project, path, loaded, signal)
+      if (!page || (!page.nodes.length && page.total > loaded)) return null
       const mode = loaded === 0 ? 'replace' : 'append'
       patches.push([path, page.nodes, page.total, mode])
       tree = withResourceChildren(tree, path, page.nodes, page.total, mode)
@@ -2312,9 +2312,14 @@ export function StoreProvider({
   if (!settingsSurface.current)
     settingsSurface.current = new SettingsSurface(availabilityPolicy.browserEnabled)
   useLayoutEffect(() => {
+    const controller = new AbortController()
+    resourceProjectRead.current = controller
     resourceTreeReloadSeq.current += 1
     selectExternalRootProject(state.homeSelectedProjectId)
-    return () => selectExternalRootProject(null)
+    return () => {
+      controller.abort()
+      selectExternalRootProject(null)
+    }
   }, [state.homeSelectedProjectId])
 
   const switchEditorLanguage = useCallback(
@@ -2480,6 +2485,8 @@ export function StoreProvider({
   const resourceNameCommitRef = useRef(false)
   /** 资料树重拉的请求代次：导入终态刷新不能被更早发出的空树响应覆盖。 */
   const resourceTreeReloadSeq = useRef(0)
+  const resourceProjectRead = useRef<AbortController | null>(null)
+  const resourceTreeReload = useRef<AbortController | null>(null)
   /** 搜索连续点击时只允许最后一个目标补树并定位。 */
   const resourcePathRevealSeq = useRef(0)
   /** 文献库重拉的请求代次 (见 reloadLiterature: 丢弃过期响应)。 */
@@ -2934,19 +2941,28 @@ export function StoreProvider({
     []
   )
 
+  const resourceReadSignal = useCallback((cancellation?: AbortSignal): AbortSignal => {
+    const signals = [AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)]
+    if (resourceProjectRead.current) signals.push(resourceProjectRead.current.signal)
+    if (cancellation) signals.push(cancellation)
+    return AbortSignal.any(signals)
+  }, [])
+
   const revealResourceTreePath = useCallback(
     async (path: string, project: string | null): Promise<void> => {
       const generation = ++resourcePathRevealSeq.current
       const snapshot = stateRef.current
       const sourceProjectMatches = snapshot.homeSelectedProjectId === project
       const sourceTree = sourceProjectMatches ? snapshot.resource.tree : []
+      const signal = resourceReadSignal()
       const materialized = await materializeResourcePath(
         sourceTree,
         sourceProjectMatches ? snapshot.resource.rootTotal : 0,
         path,
-        async (directory, offset) => fetchResourceTree(project, directory || undefined, offset)
+        (directory, offset) => fetchResourceTree(project, directory || undefined, offset, signal)
       )
-      if (generation !== resourcePathRevealSeq.current) return
+      if (generation !== resourcePathRevealSeq.current || signal.aborted || !materialized.found)
+        return
       setState((current) => {
         if (
           current.homeSelectedProjectId !== project ||
@@ -2965,7 +2981,7 @@ export function StoreProvider({
         }
       })
     },
-    []
+    [resourceReadSignal]
   )
 
   const act = useMemo<Actions>(
@@ -4039,76 +4055,66 @@ export function StoreProvider({
       ) => {
         const project = projectId
         if (!project || project !== stateRef.current.homeSelectedProjectId) return false
-        resourceTreeReloadSeq.current += 1
-        const generation = resourceTreeReloadSeq.current
-        const previousTree = stateRef.current.resource.tree
-        setState((current) => ({
-          ...current,
-          resource: beginResourceTreeReload(current.resource),
-          resourceListingRevision: current.resourceListingRevision + (options?.treeOnly ? 0 : 1),
-        }))
-        let [result, roots] = await Promise.all([
-          fetchResourceTree(project),
-          listExternalRoots(project),
-        ])
-        if (
-          generation !== resourceTreeReloadSeq.current ||
-          project !== stateRef.current.homeSelectedProjectId
+        resourceTreeReload.current?.abort()
+        const operation = new AbortController()
+        resourceTreeReload.current = operation
+        const signal = resourceReadSignal(operation.signal)
+        const generation = ++resourceTreeReloadSeq.current
+        const previous = stateRef.current.resource
+        const previousTree = previous.tree
+        const ownsResult = (current: AppState): boolean =>
+          generation === resourceTreeReloadSeq.current && project === current.homeSelectedProjectId
+        setState((current) =>
+          ownsResult(current)
+            ? {
+                ...current,
+                resource: beginResourceTreeReload(current.resource),
+                resourceListingRevision:
+                  current.resourceListingRevision + (options?.treeOnly ? 0 : 1),
+              }
+            : current
         )
-          return false
-        if (!result || !roots) {
-          setState((current) => ({
-            ...current,
-            resource: finishResourceTreeReload(current.resource, null),
-          }))
-          actRef.current.noticeResource('error', { key: 'panel.loadFailed' })
-          return false
-        }
-        while (result.nodes.length < Math.min(previousTree.length, result.total)) {
-          const page = await fetchResourceTree(project, undefined, result.nodes.length)
-          if (
-            generation !== resourceTreeReloadSeq.current ||
-            project !== stateRef.current.homeSelectedProjectId
+        const finish = (result: Awaited<ReturnType<typeof fetchResourceTree>>): boolean => {
+          if (!ownsResult(stateRef.current)) return false
+          const complete = signal.aborted ? null : result
+          setState((current) =>
+            ownsResult(current)
+              ? {
+                  ...current,
+                  resource: finishResourceTreeReload(current.resource, complete, previous),
+                }
+              : current
           )
-            return false
-          if (!page || !page.nodes.length) {
-            setState((current) => ({
-              ...current,
-              resource: finishResourceTreeReload(current.resource, null),
-            }))
-            actRef.current.noticeResource('error', { key: 'panel.loadFailed' })
-            return false
+          return (
+            complete !== null &&
+            !resourceTreeChangedDuringReload(stateRef.current.resource, previous)
+          )
+        }
+        try {
+          let [result, roots] = await Promise.all([
+            fetchResourceTree(project, undefined, 0, signal),
+            listExternalRoots(project, signal).catch(() => null),
+          ])
+          if (!ownsResult(stateRef.current) || !result || !roots) return finish(null)
+          while (result.nodes.length < Math.min(previousTree.length, result.total)) {
+            const page = await fetchResourceTree(project, undefined, result.nodes.length, signal)
+            if (!ownsResult(stateRef.current) || !page?.nodes.length) return finish(null)
+            result = { ...result, nodes: [...result.nodes, ...page.nodes], total: page.total }
           }
-          result = { ...result, nodes: [...result.nodes, ...page.nodes], total: page.total }
+          // Rebuild already expanded subtrees on the new snapshot before publishing it.
+          const patches = await fetchPendingChildren(
+            result.nodes,
+            expandedOverride ?? stateRef.current.resource.expanded,
+            project,
+            signal,
+            previousTree
+          )
+          return finish(
+            patches ? { ...result, nodes: applyChildrenPatches(result.nodes, patches) } : null
+          )
+        } finally {
+          if (resourceTreeReload.current === operation) resourceTreeReload.current = null
         }
-        // 整树刷新只回浅层，用户已经展开的深层目录会在树里变空 —— 展开态还在、内容没了。
-        // 补丁必须在**刚拿回来的**浅树上算: setState 是异步的, 此时 stateRef 还是那棵
-        // 已经补全过的旧树, 照它判断会得出「都已投影完整」而一处也不补。
-        const patches = await fetchPendingChildren(
-          result.nodes,
-          expandedOverride ?? stateRef.current.resource.expanded,
-          project,
-          previousTree
-        )
-        if (
-          generation !== resourceTreeReloadSeq.current ||
-          project !== stateRef.current.homeSelectedProjectId
-        )
-          return false
-        if (!patches) {
-          setState((current) => ({
-            ...current,
-            resource: finishResourceTreeReload(current.resource, null),
-          }))
-          actRef.current.noticeResource('error', { key: 'panel.loadFailed' })
-          return false
-        }
-        const completed = { ...result, nodes: applyChildrenPatches(result.nodes, patches) }
-        setState((current) => ({
-          ...current,
-          resource: finishResourceTreeReload(current.resource, completed),
-        }))
-        return true
       },
       toggleResourceDir: async (path, loadTreeChildren = true) => {
         const open = !(stateRef.current.resource.expanded[path] ?? false)
@@ -4125,47 +4131,81 @@ export function StoreProvider({
       ensureResourceChildren: async (path) => {
         if (!path) return
         const { resource, homeSelectedProjectId } = stateRef.current
+        const generation = resourceTreeReloadSeq.current
+        const signal = resourceReadSignal()
+        const ownsResult = (current: AppState): boolean =>
+          generation === resourceTreeReloadSeq.current &&
+          current.homeSelectedProjectId === homeSelectedProjectId &&
+          findResourceNode(current.resource.tree, path) === findResourceNode(resource.tree, path)
         const patches = await fetchPendingChildren(
           resource.tree,
           { [path]: true },
-          homeSelectedProjectId
+          homeSelectedProjectId,
+          signal
         )
-        if (!patches?.length) return
-        setState((current) => ({
-          ...current,
-          resource: {
-            ...current.resource,
-            tree: applyChildrenPatches(current.resource.tree, patches),
-          },
-        }))
+        if (!ownsResult(stateRef.current)) return
+        if (!patches) actRef.current.noticeResource('error', { key: 'panel.loadFailed' })
+        else if (patches.length)
+          setState((current) =>
+            ownsResult(current)
+              ? {
+                  ...current,
+                  resource: {
+                    ...current.resource,
+                    tree: applyChildrenPatches(current.resource.tree, patches),
+                  },
+                }
+              : current
+          )
       },
       loadMoreResourceChildren: async (path) => {
         const { resource, homeSelectedProjectId } = stateRef.current
+        const generation = resourceTreeReloadSeq.current
         // 空 path = 树根那一层。根不是节点，已加载条数只能从树本身数。
-        const loaded = path
-          ? (findResourceNode(resource.tree, path)?.children?.length ?? 0)
-          : resource.tree.length
-        const result = await fetchResourceTree(homeSelectedProjectId, path || undefined, loaded)
-        if (!result?.nodes.length) return
-        setState((current) => ({
-          ...current,
-          resource: path
-            ? {
+        const loadedCount = (tree: ResourceNode[]): number =>
+          path ? (findResourceNode(tree, path)?.children?.length ?? 0) : tree.length
+        const loaded = loadedCount(resource.tree)
+        const ownsResult = (current: AppState): boolean =>
+          generation === resourceTreeReloadSeq.current &&
+          current.homeSelectedProjectId === homeSelectedProjectId &&
+          loadedCount(current.resource.tree) === loaded
+        const result = await fetchResourceTree(
+          homeSelectedProjectId,
+          path || undefined,
+          loaded,
+          resourceReadSignal()
+        )
+        setState((current) => {
+          if (!ownsResult(current)) return current
+          if (!result)
+            return {
+              ...current,
+              resource: {
                 ...current.resource,
-                tree: withResourceChildren(
-                  current.resource.tree,
-                  path,
-                  result.nodes,
-                  result.total,
-                  'append'
-                ),
-              }
-            : {
-                ...current.resource,
-                tree: [...current.resource.tree, ...result.nodes],
-                rootTotal: result.total,
+                notice: { tone: 'error', text: { key: 'panel.loadFailed' } },
               },
-        }))
+            }
+          if (!result.nodes.length) return current
+          return {
+            ...current,
+            resource: path
+              ? {
+                  ...current.resource,
+                  tree: withResourceChildren(
+                    current.resource.tree,
+                    path,
+                    result.nodes,
+                    result.total,
+                    'append'
+                  ),
+                }
+              : {
+                  ...current.resource,
+                  tree: [...current.resource.tree, ...result.nodes],
+                  rootTotal: result.total,
+                },
+          }
+        })
       },
       collapseAllResourceDirs: () =>
         setState((current) => ({
@@ -4183,12 +4223,13 @@ export function StoreProvider({
         const { selected } = snapshot.resource
         let tree = snapshot.resource.tree
         if (directory && !findResourceNode(tree, directory)) {
+          const signal = resourceReadSignal()
           const materialized = await materializeResourcePath(
             tree,
             snapshot.resource.rootTotal,
             directory,
             (parent, offset) =>
-              fetchResourceTree(snapshot.homeSelectedProjectId, parent || undefined, offset)
+              fetchResourceTree(snapshot.homeSelectedProjectId, parent || undefined, offset, signal)
           )
           if (snapshot.homeSelectedProjectId !== stateRef.current.homeSelectedProjectId) return
           if (!materialized.found) {
@@ -4400,7 +4441,7 @@ export function StoreProvider({
               draft.target,
               renamed.path
             )
-            await actRef.current.reloadResourceTree(relocatedExpanded)
+            await actRef.current.reloadResourceTree(relocatedExpanded, homeSelectedProjectId)
             await documentWorkspaces
               .forProject(homeSelectedProjectId)
               .relocateProjectPath(homeSelectedProjectId, draft.target, renamed.path, renamed.name)
@@ -4434,7 +4475,7 @@ export function StoreProvider({
             )
             return
           }
-          await actRef.current.reloadResourceTree()
+          await actRef.current.reloadResourceTree(undefined, homeSelectedProjectId)
           const createdPath = result.node?.path ?? null
           setState((current) => ({
             ...current,
@@ -4580,16 +4621,13 @@ export function StoreProvider({
         }
       },
       copyResourceNode: async (path) => {
-        const result = await mutateResourceNode(
-          'copy',
-          { path },
-          stateRef.current.homeSelectedProjectId
-        )
+        const { homeSelectedProjectId } = stateRef.current
+        const result = await mutateResourceNode('copy', { path }, homeSelectedProjectId)
         if (!result.ok) {
           actRef.current.noticeResource('error', resourceErrorMessage(result.error))
           return
         }
-        await actRef.current.reloadResourceTree()
+        await actRef.current.reloadResourceTree(undefined, homeSelectedProjectId)
         actRef.current.noticeResource('ok', {
           key: 'feedback.copied',
           name: result.node?.name ?? '',
@@ -4668,7 +4706,7 @@ export function StoreProvider({
         await documentWorkspaces
           .forProject(projectId)
           .relocateProjectPath(projectId, previousPath, path, name)
-        await actRef.current.reloadResourceTree()
+        await actRef.current.reloadResourceTree(undefined, projectId)
         return syncResourceContext((refs, submittedRefIds) =>
           transformResourceContextRefs(refs, submittedRefIds, previousPath, path, name, projectId)
         )
@@ -4760,7 +4798,7 @@ export function StoreProvider({
           .forProject(homeSelectedProjectId)
           .discardProjectPath(homeSelectedProjectId, target.path)
         const remainingExpanded = removeExpandedResourcePaths(resource.expanded, target.path)
-        await actRef.current.reloadResourceTree(remainingExpanded)
+        await actRef.current.reloadResourceTree(remainingExpanded, homeSelectedProjectId)
         const linkedSessionId = stateRef.current.aiPanel.sessionId
         if (linkedSessionId) void actRef.current.reloadArtifactLinks(linkedSessionId)
         setState((current) => ({
@@ -4852,7 +4890,7 @@ export function StoreProvider({
           .forProject(homeSelectedProjectId)
           .requestCloseProjectPath(homeSelectedProjectId, target.mountPath)
         const remainingExpanded = removeExpandedResourcePaths(resource.expanded, target.mountPath)
-        await actRef.current.reloadResourceTree(remainingExpanded)
+        await actRef.current.reloadResourceTree(remainingExpanded, homeSelectedProjectId)
         setState((current) => ({
           ...current,
           resource: {
@@ -4923,7 +4961,7 @@ export function StoreProvider({
         if (failure !== undefined) {
           // 未全部成功: 失败的那个源及其子关联保持原状 (后端按源逐个原子取代)。
           // 只刷新树反映真实状态并报错, 不乱关仍生效子关联名下的页签。
-          await actRef.current.reloadResourceTree()
+          await actRef.current.reloadResourceTree(undefined, homeSelectedProjectId)
           actRef.current.noticeResource('error', resourceErrorMessage(failure))
           return
         }
@@ -4952,7 +4990,7 @@ export function StoreProvider({
             refs
           )
         )
-        await actRef.current.reloadResourceTree(remainingExpanded)
+        await actRef.current.reloadResourceTree(remainingExpanded, homeSelectedProjectId)
         if (mountedPath) {
           actRef.current.selectResourceFile(mountedPath)
           void revealResourceTreePath(mountedPath, homeSelectedProjectId)
@@ -4974,11 +5012,12 @@ export function StoreProvider({
           resource: { ...current.resource, linkSupersedeConfirm: null },
         }))
         if (!target) return
+        const signal = resourceReadSignal()
         const opened = await prepareResourceOpening(
           resource,
           covered.map((child) => child.mountPath),
           async (directory, offset) =>
-            fetchResourceTree(homeSelectedProjectId, directory || undefined, offset)
+            fetchResourceTree(homeSelectedProjectId, directory || undefined, offset, signal)
         )
         const latest = stateRef.current
         if (
@@ -5055,7 +5094,7 @@ export function StoreProvider({
             ...relocateExpandedResourcePaths(resource.expanded, path, moved.path),
             ...(targetDir ? { [targetDir]: true } : {}),
           }
-          await actRef.current.reloadResourceTree(relocatedExpanded)
+          await actRef.current.reloadResourceTree(relocatedExpanded, homeSelectedProjectId)
           await documentWorkspaces
             .forProject(homeSelectedProjectId)
             .relocateProjectPath(homeSelectedProjectId, path, result.node.path, result.node.name)
@@ -5089,7 +5128,7 @@ export function StoreProvider({
           )
           return
         }
-        await actRef.current.reloadResourceTree()
+        await actRef.current.reloadResourceTree(undefined, homeSelectedProjectId)
         actRef.current.noticeResource('error', { key: 'feedback.movePathMissing' })
       },
       moveResourceToParent: async (path) => {
@@ -5198,7 +5237,7 @@ export function StoreProvider({
           ...current,
           resource: { ...current.resource, importDialog: null },
         }))
-        await actRef.current.reloadResourceTree()
+        await actRef.current.reloadResourceTree(undefined, result.projectId)
         if (action === 'replace') {
           await documentWorkspaces.forProject(result.projectId).reconcileProjectPaths(
             result.projectId,
@@ -7108,6 +7147,7 @@ export function StoreProvider({
       resourceI18n,
       rejectNavigation,
       revealResourceTreePath,
+      resourceReadSignal,
       runTranslation,
       showAnswerAnnotationMutationFailure,
       showAnswerAnnotationRemoveFailure,

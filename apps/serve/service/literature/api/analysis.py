@@ -33,6 +33,7 @@ from service.literature.service.analysis import (
     AnalysisError,
     AnalysisErrorCode,
     AnalysisRequest,
+    AnalysisSubmission,
     PreparedAnalysis,
     ReadingTiming,
     interpretation_input_limit,
@@ -182,6 +183,7 @@ def register_analysis_routes(
     )
     running: dict[tuple[str, str], asyncio.Task] = {}
     states: dict[tuple[str, str], dict] = {}
+    joined: dict[tuple[str, str], tuple[str, str]] = {}
     slots: dict[tuple[str, str, str, str], AnalysisSlot] = {}
     active_invocations: dict[tuple[str, str], set[str]] = {}
 
@@ -194,6 +196,16 @@ def register_analysis_routes(
             yield
 
     admission = [Depends(admit)]
+
+    def check_service_instance(expected: str | None) -> None:
+        if expected is not None and expected != activities.instance_id:
+            raise HTTPException(
+                409, {"code": AnalysisErrorCode.SERVICE_INSTANCE_CHANGED.value, "diagnostic": ""}
+            )
+
+    def canonical_task(owner: str, task_id: str) -> str:
+        alias = joined.get((owner, task_id))
+        return alias[0] if alias else task_id
 
     def snapshot(owner: str, task_id: str) -> dict:
         key = (owner, task_id)
@@ -219,6 +231,20 @@ def register_analysis_routes(
                 else None
             ),
         }
+
+    def attempt_snapshot(owner: str, attempt_id: str) -> dict:
+        alias = joined.get((owner, attempt_id))
+        if alias:
+            task_id, model_key = alias
+            return {**snapshot(owner, task_id), "task_id": attempt_id, "model_key": model_key}
+        return snapshot(owner, attempt_id)
+
+    def submission_snapshot(owner: str, attempt_id: str) -> dict:
+        alias = joined.get((owner, attempt_id))
+        if alias:
+            task_id, model_key = alias
+            return {**snapshot(owner, task_id), "model_key": model_key}
+        return snapshot(owner, attempt_id)
 
     def source_reader(principal: str):
         reader = read_citation
@@ -1357,7 +1383,8 @@ def register_analysis_routes(
         }
 
     @app.post(f"{PREFIX}/tasks", status_code=202, dependencies=admission)
-    async def submit(payload: AnalysisRequest, request: Request) -> dict:
+    async def submit(payload: AnalysisSubmission, request: Request) -> dict:
+        check_service_instance(payload.service_instance_id)
         if payload.kind is ActionKind.FIGURE:
             raise HTTPException(
                 422,
@@ -1369,6 +1396,8 @@ def register_analysis_routes(
         owner = request_user_id(request)
         principal = request_owner_id(request)
         key = (owner, payload.client_attempt_id)
+        if key in joined:
+            return submission_snapshot(owner, key[1])
         if key in states or tasks.get_attempt(key[1], owner):
             return snapshot(owner, key[1])
         submitted_at = time.monotonic()
@@ -1391,7 +1420,8 @@ def register_analysis_routes(
         slot = slots.get(operation)
         if slot is not None and payload.kind is ActionKind.INTERPRETATION:
             states.pop(key, None)
-            return {**snapshot(owner, slot.task_id), "model_key": slot.model_key}
+            joined[key] = (slot.task_id, slot.model_key)
+            return submission_snapshot(owner, key[1])
         if slot is not None and payload.kind not in QUEUED_ACTIONS:
             states.pop(key, None)
             raise HTTPException(
@@ -1474,17 +1504,20 @@ def register_analysis_routes(
         return {"accepted": True}
 
     @app.get(f"{PREFIX}/tasks/{{task_id}}")
-    async def get_task(task_id: str, request: Request) -> dict:
-        return snapshot(request_user_id(request), task_id)
+    async def get_task(
+        task_id: str, request: Request, service_instance_id: str | None = None
+    ) -> dict:
+        check_service_instance(service_instance_id)
+        return attempt_snapshot(request_user_id(request), task_id)
 
     @app.get(f"{PREFIX}/tasks/{{task_id}}/events")
     async def events(task_id: str, request: Request) -> StreamingResponse:
         owner = request_user_id(request)
-        snapshot(owner, task_id)
+        attempt_snapshot(owner, task_id)
 
         async def stream():
             while not await request.is_disconnected():
-                state = snapshot(owner, task_id)
+                state = attempt_snapshot(owner, task_id)
                 yield f"data: {json.dumps(state, ensure_ascii=False)}\n\n"
                 if state["status"] not in ("pending", "running"):
                     break
@@ -1499,6 +1532,7 @@ def register_analysis_routes(
     @app.post(f"{PREFIX}/tasks/{{task_id}}/timing", dependencies=admission)
     async def observe_timing(task_id: str, payload: ReadingTiming, request: Request) -> dict:
         owner = request_user_id(request)
+        task_id = canonical_task(owner, task_id)
         key = (owner, task_id)
         state = snapshot(owner, task_id)
         result = state.get("result")
@@ -1535,12 +1569,13 @@ def register_analysis_routes(
     @app.post(f"{PREFIX}/tasks/{{task_id}}/cancel")
     async def cancel(task_id: str, request: Request) -> dict:
         owner = request_user_id(request)
-        state = snapshot(owner, task_id)
-        key = (owner, task_id)
+        canonical = canonical_task(owner, task_id)
+        state = snapshot(owner, canonical)
+        key = (owner, canonical)
         if state["status"] in ("pending", "running"):
-            states[key] = {"task_id": task_id, "status": "cancelled"}
+            states[key] = {"task_id": canonical, "status": "cancelled"}
             worker = running.get(key)
-            record = tasks.get_attempt(task_id, owner)
+            record = tasks.get_attempt(canonical, owner)
             active_ids = set(active_invocations.get(key, ()))
             if not active_ids and record:
                 active_ids.add(record.invocation_id)
@@ -1553,7 +1588,7 @@ def register_analysis_routes(
                 # replacement can be submitted immediately without a 409 race.
                 with suppress(asyncio.CancelledError):
                     await worker
-        return snapshot(owner, task_id)
+        return attempt_snapshot(owner, task_id)
 
     @app.get("/api/literature/{literature_id}/ai/state")
     async def reading_state(

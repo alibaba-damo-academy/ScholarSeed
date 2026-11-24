@@ -131,6 +131,17 @@ test(
     try {
       const page = await browser.newPage()
       const errors: string[] = []
+      await page.addInitScript(() => {
+        const createTimeout = AbortSignal.timeout.bind(AbortSignal)
+        const deadlines: AbortController[] = []
+        Reflect.set(window, 'treeDeadlines', deadlines)
+        AbortSignal.timeout = (ms) => {
+          if (ms !== 15_000) return createTimeout(ms)
+          const controller = new AbortController()
+          deadlines.push(controller)
+          return controller.signal
+        }
+      })
       page.on('pageerror', (error) => {
         errors.push(error.message)
         process.stderr.write(`${error.stack}\n`)
@@ -158,7 +169,7 @@ test(
         }
         await reply(
           route,
-          prefix,
+          offset && prefix === 'retry-after-deadline' ? 'retry-after-deadline-next' : prefix,
           empty ? 0 : offset ? 1 : INITIAL_COUNT,
           empty ? 0 : INITIAL_COUNT + 1
         )
@@ -264,7 +275,48 @@ test(
       await reply(pending[refreshStart + 1].route, 'replacement-next', 1)
       await expect(page.getByTestId('explorer-node-replacement-next-0.md')).toBeVisible()
       await expect(page.locator('[data-testid^="explorer-node-"]')).toHaveCount(INITIAL_COUNT + 1)
+      const nestedRead = pending.length
+      await page.getByTestId('explorer-node-replacement-99.md').getByRole('button').first().click()
+      await expect.poll(() => pending.length).toBeGreaterThan(nestedRead)
+      await settleRender(page)
+      for (const { route } of pending.slice(nestedRead))
+        await reply(route, 'nested-before-refresh', 1, 1)
+      await expect(page.getByTestId('explorer-node-nested-before-refresh-0.md')).toBeVisible()
+      const deadlineCount = await page.evaluate(() => Reflect.get(window, 'treeDeadlines').length)
+      const timedRefresh = pending.length
+      await page.getByTestId('fixture-refresh').click()
+      await expect.poll(() => pending.length).toBe(timedRefresh + 2)
+      const readPath = (route: Route): string | null =>
+        new URL(route.request().url()).searchParams.get('path')
+      const first = pending.slice(timedRefresh).find(({ route }) => !readPath(route))
+      const child = pending.slice(timedRefresh).find(({ route }) => readPath(route))
+      assert(first && child)
+      await reply(child.route, 'nested-refresh-candidate', 1, 1)
+      await reply(first.route, 'expired-first', INITIAL_COUNT)
+      await expect.poll(() => pending.length).toBe(timedRefresh + 3)
+      await expect(page.getByTestId('explorer-node-nested-refresh-candidate-0.md')).toHaveCount(0)
+      assert.equal(
+        await page.evaluate(() => Reflect.get(window, 'treeDeadlines').length),
+        deadlineCount + 1
+      )
+      await page.evaluate(() =>
+        Reflect.get(window, 'treeDeadlines')
+          .at(-1)
+          .abort(new DOMException('deadline', 'TimeoutError'))
+      )
+      await expect(page.getByTestId('explorer-directory-error-/')).toBeVisible()
+      await expect(page.getByTestId('explorer-directory-error-replacement-99.md')).toHaveCount(0)
+      await expect(page.getByTestId('fixture-refresh')).toHaveAttribute('aria-busy', 'false')
+      await expect(page.getByTestId('explorer-node-replacement-next-0.md')).toBeVisible()
+      await expect(page.getByTestId('explorer-node-nested-before-refresh-0.md')).toBeVisible()
+      await expect(page.getByTestId('explorer-node-expired-first-0.md')).toHaveCount(0)
       hold = false
+      prefix = 'retry-after-deadline'
+      await page.getByTestId('explorer-directory-retry-/').click()
+      await expect(
+        page.getByTestId('explorer-node-retry-after-deadline-0.md').first()
+      ).toBeVisible()
+      await expect(page.getByTestId('explorer-directory-error-/')).toHaveCount(0)
       for (const action of ['refresh', 'project', 'path', 'mount']) {
         // Fence each scenario from a fresh directory; refresh now preserves loaded pagination.
         await page.getByTestId('fixture-mount').click()

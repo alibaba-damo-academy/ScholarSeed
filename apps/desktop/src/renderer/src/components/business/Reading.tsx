@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { RotateCw } from 'lucide-react'
 import sproutIcon from '../../assets/sprout.png'
 import { useApp } from '../../store'
+import { PDF_AI_TASK_UNRESOLVED } from '../../app/api/pdf.ts'
 import { Icon } from '../../icons'
 import { requestModelKey, selectableActionModelKey } from '../../catalog'
 import type {
@@ -90,6 +91,7 @@ export function Reading({
   const generation = useRef(0)
   const submitting = useRef(false)
   const submission = useRef<Promise<ReadingTask | null> | null>(null)
+  const submissionController = useRef<AbortController | null>(null)
   const publishedTask = useRef('')
   const readingStarted = useRef<number | null>(null)
   const measurements = useRef<ReadingTiming>({})
@@ -125,6 +127,8 @@ export function Reading({
   const savedSummary = asset?.modules?.summary
   const completeSummary = savedSummary?.organization === 'complete' ? savedSummary : undefined
   const failed = error || (task?.status === 'failed' ? task : null)
+  const failure = failed ? pdfAiCaughtFailure(failed) : null
+  const unconfirmed = failure?.code === PDF_AI_TASK_UNRESOLVED
   const fallbackOnly = savedSummary?.organization === 'fallback'
   const unfinished = !readingBusy(task) && !pending && Boolean(failed || fallbackOnly)
   const preview =
@@ -210,6 +214,13 @@ export function Reading({
       generation.current += 1
     }
   }, [literatureId, attachmentId, revision])
+  useEffect(
+    () => () => {
+      // An explicit pending cancellation still needs its accepted task ID.
+      if (!cancelling.current) submissionController.current?.abort()
+    },
+    [active, literatureId, attachmentId, revision]
+  )
   useEffect(() => {
     if (!active) return
     const controller = new AbortController()
@@ -269,12 +280,14 @@ export function Reading({
     return () => controller.abort()
   }, [observedTaskId, observing, reload, literatureId, attachmentId, revision])
   const run = async (): Promise<void> => {
-    if (busy || submitting.current || !data) return
+    if (busy || submitting.current || unconfirmed || !data) return
     if (!modelKey) {
       act.openSettings('models')
       return
     }
     const current = generation.current
+    const controller = new AbortController()
+    submissionController.current = controller
     const language = (i18n.resolvedLanguage || i18n.language).startsWith('en') ? 'en' : 'zh'
     cancelledTask.current = ''
     submitting.current = true
@@ -287,20 +300,30 @@ export function Reading({
     const request = (async () => {
       // The reading is already saved; finish releasing its remaining extraction
       // before replacing it with a new request using the selected model.
-      if (task?.reading_complete && readingBusy(task)) await cancelReading(task.task_id)
-      if (current !== generation.current) return null
-      return generateReading(literatureId, data.attachment_id, data.revision, modelKey, language)
+      if (task?.reading_complete && readingBusy(task))
+        await cancelReading(task.task_id, controller.signal)
+      if (current !== generation.current || controller.signal.aborted) return null
+      return generateReading(
+        literatureId,
+        data.attachment_id,
+        data.revision,
+        modelKey,
+        language,
+        state.serviceInstanceId,
+        controller.signal
+      )
     })()
     submission.current = request
     try {
       const next = await request
-      if (next && current === generation.current) {
+      if (next && current === generation.current && !controller.signal.aborted) {
         measuredTask.current = next.task_id
         publish(next)
       }
     } catch (cause) {
-      if (current === generation.current) setError(cause)
+      if (current === generation.current && !controller.signal.aborted) setError(cause)
     } finally {
+      if (submissionController.current === controller) submissionController.current = null
       if (current === generation.current) {
         submitting.current = false
         submission.current = null
@@ -363,7 +386,7 @@ export function Reading({
             variant="ghostIcon"
             size="sm"
             icon={<RotateCw size={16} />}
-            disabled={!summary || busy || loading || loadError}
+            disabled={!summary || busy || loading || loadError || unconfirmed}
             onClick={() => void run()}
           />
         </Tooltip>
@@ -418,11 +441,9 @@ export function Reading({
         )}
         {unfinished && (
           <div role="alert" className="space-y-[var(--vds-space-2)] p-[var(--vds-space-4)]">
-            <p>
-              {failed ? pdfAiFailureText(pdfAiCaughtFailure(failed), t) : t('reading.incomplete')}
-            </p>
+            <p>{failure ? pdfAiFailureText(failure, t) : t('reading.incomplete')}</p>
             {completeSummary && <p>{t('reading.previousPreserved')}</p>}
-            {!busy && (
+            {!busy && !unconfirmed && (
               <Button variant="outline" size="sm" onClick={() => void run()}>
                 {t('reading.retry')}
               </Button>

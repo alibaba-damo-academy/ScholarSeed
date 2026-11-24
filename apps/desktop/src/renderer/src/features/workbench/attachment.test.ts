@@ -4,9 +4,11 @@ import test from 'node:test'
 
 import {
   commitDocument,
+  DOCUMENT_SAVE_TIMEOUT_MS,
   isDocumentLoadFailure,
   isLocatedDocumentSource,
   loadDocument,
+  loadVersionCapability,
   loadPdfRecords,
   commitPdfRecords,
   subscribePdfRecords,
@@ -24,6 +26,78 @@ import type {
 } from '../../contracts/workbench.ts'
 import { sanitizeNavigationDocument } from '../../../../navigation.ts'
 import type { NotificationFrame } from '../../../../notifications.ts'
+
+test('a late document save receipt cannot confirm an expired write', async (context) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  context.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => 'http://test' } },
+  })
+  const deadline = new AbortController()
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    assert.equal(milliseconds, DOCUMENT_SAVE_TIMEOUT_MS)
+    return deadline.signal
+  })
+  const receipt = Promise.withResolvers<Response>()
+  let writes = 0
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: RequestInfo | URL, request?: RequestInit) => {
+      assert.equal(request?.method, 'PUT')
+      assert.equal(request?.signal, deadline.signal)
+      writes += 1
+      return receipt.promise
+    }
+  )
+  const saving = commitDocument({ kind: 'project', path: 'notes.md' }, new Uint8Array([42]), 'old')
+  deadline.abort(new DOMException('deadline', 'TimeoutError'))
+  receipt.resolve(new Response(null, { status: 204, headers: { ETag: '"late"' } }))
+  assert.deepEqual(await saving, { ok: false, error: 'unconfirmed' })
+  assert.equal(writes, 1)
+})
+
+test('the version capability JSON shares its read deadline and a late reply is ignored', async (context) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  context.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => 'http://test' } },
+  })
+  const deadline = new AbortController()
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    assert.equal(milliseconds, 10_000)
+    return deadline.signal
+  })
+  const decoderEntered = Promise.withResolvers<void>()
+  const body = Promise.withResolvers<object>()
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: RequestInfo | URL, request?: RequestInit) => {
+      assert.equal(request?.signal, deadline.signal)
+      return {
+        ok: true,
+        json: () => {
+          decoderEntered.resolve()
+          return body.promise
+        },
+      }
+    }
+  )
+  const loading = loadVersionCapability({ kind: 'project', path: 'notes.md' })
+  await decoderEntered.promise
+  deadline.abort()
+  body.resolve({ can_version: true })
+  assert.equal(await loading, null)
+})
 
 test('system reveal resolves the source of the selected document without opening the snapshot cache', async () => {
   const originalFetch = globalThis.fetch
