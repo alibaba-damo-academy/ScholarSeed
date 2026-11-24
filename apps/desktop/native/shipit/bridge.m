@@ -5,6 +5,9 @@
 #include <node_api.h>
 #include <pthread.h>
 #include <stdint.h>
+#if SS_DESKTOP_UPDATE_SUCCESSORS
+#import "successorbridge.h"
+#endif
 
 typedef NS_ENUM(NSUInteger, SSBridgeState) {
     SSBridgeObserved,
@@ -159,7 +162,7 @@ static NSDictionary *BridgeObserve(SSBridgeHolder *holder, NSError **error) {
         NSDictionary *after = observed ? InspectSelection(holder.config[@"selection"], pins, error) : nil;
         if (observed && [after isEqual:holder.selection]) {
             if (holder.orphan && [holder.config[@"park"] isEqual:@YES]) {
-                NSString *label = SSParkingLabel(observed[@"bundleIdentifier"]);
+                NSString *label = SSSuccessionStateLabel(observed[@"bundleIdentifier"], holder.config[@"state"]);
                 NSDictionary *job = label ? SSParkingJob(label, error) : nil;
                 if (!job || job.count || !SSParkingSystemAbsent(label, error)) {
                     if (!BridgeReleasePins(holder, pins, error)) return nil;
@@ -258,12 +261,14 @@ static napi_value BridgeRepairCall(napi_env environment, napi_callback_info info
         if (![value isKindOfClass:NSString.class]) return BridgeFail(environment, "ERR_TERMINAL_ARGUMENT", EINVAL);
         request[key] = [NSURL URLWithString:value];
       }
+      NSString *label = SSSuccessionStateLabel(request[@"bundleIdentifier"], holder.config[@"state"]);
+      if (!label) return BridgeFail(environment, "ERR_TERMINAL_ARGUMENT", EINVAL);
       BOOL repaired = holder.retirement ? SSPreparationRetirementRepair(source, target, holder.config[@"binding"], [NSURL fileURLWithPath:holder.config[@"state"]], holder.baseline,
         ^SSPreparationActivity { return SSParkingActivity(holder.config, holder.baseline, nil); },
-        ^BOOL(NSError **error) { return SSVerifyRetirementTrust(request, [request[@"bundleIdentifier"] stringByAppendingString:SSSuccessionHelperSuffix], error); }, &failure)
+        ^BOOL(NSError **error) { return SSVerifyRetirementTrust(request, label, error); }, &failure)
         : SSPreparationRepair(source, target, holder.config[@"binding"], [NSURL fileURLWithPath:holder.config[@"state"]], holder.baseline,
         ^SSPreparationActivity { return SSParkingActivity(holder.config, holder.baseline, nil); },
-        ^BOOL(NSError **error) { return SSVerifySuccessionTrust(request, [request[@"bundleIdentifier"] stringByAppendingString:SSSuccessionHelperSuffix], SSSuccessionRollbackKey, error); }, &failure);
+        ^BOOL(NSError **error) { return SSVerifySuccessionTrust(request, label, SSSuccessionRollbackKey, error); }, &failure);
       int uncertainty = SSPreparationUncertaintyCode();
       if (uncertainty) return BridgeFail(environment, "ERR_TERMINAL_RELEASE", BridgeUncertain(holder, uncertainty));
       if (!repaired || !BridgeObserve(holder, &failure)) return BridgeFail(environment, "ERR_TERMINAL_OBSERVATION", (int)failure.code ?: EIO);
@@ -381,6 +386,11 @@ static napi_value BridgeInitialize(napi_env environment, napi_value exports) {
     napi_property_descriptor methods[] = {
         {.utf8name = "open", .method = BridgeOpen, .attributes = napi_default},
         {.utf8name = "observedLaunch", .method = BridgeObservedLaunch, .attributes = napi_default},
+#if SS_DESKTOP_UPDATE_SUCCESSORS
+        {.utf8name = "prepareSuccessor", .method = SSPrepareSuccessor, .attributes = napi_default},
+        {.utf8name = "installSuccessor", .method = SSInstallSuccessor, .attributes = napi_default},
+        {.utf8name = "disposeSuccessor", .method = SSDisposeSuccessor, .attributes = napi_default},
+#endif
     };
     if (napi_define_properties(environment, exports, sizeof(methods) / sizeof(methods[0]), methods) != napi_ok) return BridgeFail(environment, "ERR_TERMINAL_NATIVE", EIO);
     return exports;

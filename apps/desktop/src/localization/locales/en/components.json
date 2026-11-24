@@ -1686,6 +1686,7 @@
     "autoDownload": "Download updates automatically",
     "autoDownloadHelp": "Download and prepare new versions in the background, then restart when you choose. Turn off to download manually.",
     "confirmRestartTitle": "Restart and update?",
+    "confirmRestartLatestReady": "When you confirm, the app will install the latest version that is ready.",
     "confirmRestartDetail": "Updating restarts the app and interrupts running tasks in all projects. After restarting, click Continue or send a new message to pick up where you left off. Existing results will be checked before continuing to avoid duplicate actions. We recommend waiting until tasks finish before updating.",
     "confirmRestart": "Restart and update anyway",
     "confirmRestartFailed": "Could not start the update. Please try again later.",

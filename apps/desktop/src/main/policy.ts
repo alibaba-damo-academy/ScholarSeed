@@ -1,6 +1,7 @@
 import { isAbsolute, join } from 'node:path'
 
 import type { DomainNative } from '../../native/domains.cjs'
+import { uncertainRecordWriteCode } from './journal.ts'
 import {
   POLICY_SCHEMA_VERSION,
   emptyPolicy,
@@ -41,12 +42,6 @@ function backoff(): void {
 
 function errorCode(error: unknown): string | undefined {
   return (error as { code?: string }).code
-}
-
-function uncertainRelease(error: unknown): boolean {
-  return ['ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE', 'ERR_LEASE_SYNC'].includes(
-    errorCode(error) ?? ''
-  )
 }
 
 /**
@@ -101,7 +96,7 @@ function createPolicyIo(home: string, native: DomainNative, coordinator: string)
         })
       })
     } catch (error) {
-      uncertain = uncertainRelease(error)
+      uncertain = uncertainRecordWriteCode(error) !== undefined
       if (uncertain) retainUncertainDirectoryOwnership(domains, locks, error)
       throw error
     } finally {

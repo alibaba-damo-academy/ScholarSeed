@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { retryMacCleanup } from './squirrelcleanup.ts'
 
 const request = {
@@ -8,6 +11,41 @@ const request = {
   application: '/Applications/Scholar Seed.app',
   bundle: 'com.scholarseed.desktop',
 }
+
+test('cleanup attributes each attempt and deferred retry to its own job', async (t) => {
+  const applicationSupport = await mkdtemp(join(tmpdir(), 'alternate-cleanup-'))
+  t.after(() => rm(applicationSupport, { recursive: true, force: true }))
+  const cleanup = join(applicationSupport, request.bundle + '.ShipIt.next', 'DeferredCleanup')
+  await mkdir(cleanup, { recursive: true })
+  await writeFile(join(cleanup, 'journal.plist'), '')
+  const primary = request.bundle + '.ShipIt'
+  const alternate = primary + '.next'
+  const calls: string[] = []
+  const logs: string[] = []
+  assert.equal(
+    await retryMacCleanup({ ...request, applicationSupport }, () => {}, {
+      execute: async (_, args) => {
+        calls.push(args[1])
+        return { code: args[1] === primary ? 0 : 75, stderr: '' }
+      },
+      delay: async () => {},
+      log: (line) => logs.push(line.trim()),
+    }),
+    false
+  )
+  assert.deepEqual(calls.sort(), [primary, alternate, alternate, alternate])
+  assert.deepEqual(
+    logs.sort(),
+    [
+      `[update-cleanup] event=attempt jobLabel=${primary} attempt=1 code=0`,
+      ...[1, 2, 3].map(
+        (attempt) =>
+          `[update-cleanup] event=attempt jobLabel=${alternate} attempt=${attempt} code=75`
+      ),
+      `[update-cleanup] event=retry-on-next-startup jobLabel=${alternate}`,
+    ].sort()
+  )
+})
 
 test('cleanup dispatches only the packaged native helper and never waits on startup', async () => {
   let finish!: (value: { code: number; stderr: string }) => void

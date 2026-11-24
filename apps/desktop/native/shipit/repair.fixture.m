@@ -5,6 +5,22 @@
 #include <node_api.h>
 #include <errno.h>
 #include <unistd.h>
+#import "successor.h"
+
+@interface SSFixtureSuccessor : NSObject <SSSuccessorFactory, SSSuccessor>
+@end
+@implementation SSFixtureSuccessor
++ (id<SSSuccessor>)ss_prepareSuccessor:(NSURL *)feed alternate:(BOOL)alternate completion:(void (^)(NSError *))completion {
+  if (!alternate) @throw [NSException exceptionWithName:NSInternalInconsistencyException reason:nil userInfo:nil];
+  return [self new];
+}
+- (BOOL)ss_installSuccessor:(NSError **)error { return NO; }
+- (void)ss_disposeSuccessor {}
+@end
+
+static Class FixtureClassFromString(NSString *name) {
+  return [name isEqualToString:@"SQRLUpdater"] ? SSFixtureSuccessor.class : NSClassFromString(name);
+}
 
 static NSArray<NSNumber *> *SSFixtureChildren;
 static pid_t SSFixtureDeniedMappingProcess;
@@ -43,12 +59,16 @@ static int FixturePidInfo(int process, int flavor, uint64_t argument, void *buff
 #define sysctl FixtureSysctl
 #define proc_pidinfo FixturePidInfo
 #define SSBridgeHolder SSRepairContractHolder
+#define SSSuccessorHandle SSFixtureSuccessorHandle
+#define NSClassFromString FixtureClassFromString
 #undef NAPI_MODULE
 #define NAPI_MODULE(modname, regfunc)
 #import "bridge.m"
 #undef sysctl
 #undef proc_pidinfo
 #undef SSBridgeHolder
+#undef SSSuccessorHandle
+#undef NSClassFromString
 #undef NAPI_MODULE
 
 static napi_value FixtureProcessScope(napi_env environment, napi_callback_info info) {

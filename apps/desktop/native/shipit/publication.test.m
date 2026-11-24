@@ -12,21 +12,28 @@
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <mach/mach_time.h>
 
 static int PublicationClose(int descriptor);
+static int PublicationOpenAt(int directory, const char *name, int flags, ...);
 static int PublicationSync(int descriptor);
 static ssize_t PublicationWrite(int descriptor, const void *bytes, size_t length);
+static char *PublicationRealpath(const char *path, char *resolved);
 #define close PublicationClose
+#define openat PublicationOpenAt
 #define fsync PublicationSync
 #define write PublicationWrite
+#define realpath PublicationRealpath
 #import "preparation.m"
 #undef close
+#undef openat
 #undef fsync
 #undef write
+#undef realpath
 
 typedef NS_ENUM(NSUInteger, PublicationFault) {
   PublicationChildClose,
@@ -35,13 +42,28 @@ typedef NS_ENUM(NSUInteger, PublicationFault) {
   PublicationFileSync,
   PublicationDirectorySync,
   PublicationWriteClose,
+  PublicationCandidateCapture,
+  PublicationCandidateOpen,
 };
 static PublicationFault Fault;
 static BOOL Armed, Fired, Counting;
 static NSUInteger Matches, MatchToFail, Passed;
 static NSDictionary *ClosingIdentity;
 static BOOL WriteFailed, SuppressWriteClose;
+static NSUInteger PriorDirectoryCount;
 
+static int PublicationOpenAt(int directory, const char *name, int flags, ...) {
+  if (Armed && !Fired && Fault == PublicationCandidateOpen && directory == SSPreparationFD &&
+      (flags & O_DIRECTORY) && !strncmp(name, SSPreparationPrefix.UTF8String, SSPreparationPrefix.length)) {
+    Fired = YES; errno = EMFILE; return -1;
+  }
+  if (!(flags & O_CREAT)) return openat(directory, name, flags);
+  va_list args;
+  va_start(args, flags);
+  int mode = va_arg(args, int);
+  va_end(args);
+  return openat(directory, name, flags, mode);
+}
 static int PublicationClose(int descriptor) {
   int saved = errno;
   struct stat info;
@@ -86,6 +108,77 @@ static NSData *Bytes(NSString *path) {
 }
 static NSDictionary *DiskJournal(NSString *path) {
   return [NSPropertyListSerialization propertyListWithData:Bytes(path) options:0 format:NULL error:NULL];
+}
+static NSSet *CandidateDirectories(NSString *store) {
+  NSArray *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:store error:NULL];
+  assert(names);
+  return [NSSet setWithArray:[names filteredArrayUsingPredicate:
+    [NSPredicate predicateWithFormat:@"SELF BEGINSWITH %@", SSPreparationPrefix]]];
+}
+static char *PublicationRealpath(const char *path, char *resolved) {
+  if (Armed && !Fired && Fault == PublicationCandidateCapture &&
+      !strcmp(path, SSPreparationObservedDirectory.fileSystemRepresentation) &&
+      CandidateDirectories(SSPreparationObservedDirectory).count > PriorDirectoryCount) {
+    Fired = YES; errno = ENOENT; return NULL;
+  }
+  return realpath(path, resolved);
+}
+static void CheckCandidatePublication(NSString *root, BOOL rebuild, PublicationFault fault) {
+  NSFileManager *manager = NSFileManager.defaultManager;
+  NSURL *source = FixtureBundle([root stringByAppendingPathComponent:@"source/New.app"]);
+  NSURL *target = FixtureBundle([root stringByAppendingPathComponent:@"target/Old.app"]);
+  NSString *store = [root stringByAppendingPathComponent:@"store"];
+  assert(mkdir(store.fileSystemRepresentation, S_IRWXU) == 0 && SSPreparationOpenDirectory(store, NULL));
+  NSString *sibling = [SSPreparationPrefix stringByAppendingString:NSUUID.UUID.UUIDString];
+  assert(mkdir([store stringByAppendingPathComponent:sibling].fileSystemRepresentation, S_IRWXU) == 0);
+  NSString *journal = [store stringByAppendingPathComponent:SSPreparationJournal];
+  NSDictionary *binding = FixtureBinding(@"d");
+  NSURL *candidate = nil;
+  NSData *oldJournal = nil;
+  if (rebuild) {
+    NSString *member = @"Contents/py.typed";
+    assert([[NSData data] writeToURL:[source URLByAppendingPathComponent:member] atomically:NO]);
+    candidate = SSPreparationCopy(source, target, binding, NULL);
+    assert(candidate && [manager removeItemAtURL:[candidate URLByAppendingPathComponent:member] error:NULL]);
+    assert(SSPreparationBeginOwnership(source, target, binding, candidate, NULL));
+    oldJournal = Bytes(journal);
+  }
+  NSSet *before = CandidateDirectories(store);
+  PriorDirectoryCount = before.count;
+  NSError *error = nil;
+  Fault = fault;
+  SuppressWriteClose = YES;
+  Armed = YES;
+  NSURL *result = rebuild ? SSPreparationRebuildCandidate(source, target, binding, candidate, &error)
+                          : SSPreparationCopy(source, target, binding, &error);
+  Armed = NO;
+  BOOL writeFault = fault == PublicationWriteClose;
+  int expectedCode = EIO;
+  if (fault == PublicationCandidateOpen) expectedCode = EMFILE;
+  if (fault == PublicationCandidateCapture) expectedCode = ENOENT;
+  if (writeFault) expectedCode = ENOSPC;
+  Check(!result && (writeFault ? WriteFailed : Fired) && [error.domain isEqual:NSPOSIXErrorDomain] &&
+        error.code == expectedCode, @"candidate publication propagates its first I/O error");
+  NSSet *after = CandidateDirectories(store);
+  if (fault == PublicationDirectorySync) {
+    NSDictionary *record = DiskJournal(journal)[@"record"];
+    NSDictionary *directory = (rebuild ? record[@"rebuild"] : record)[@"directory"];
+    NSString *path = directory[@"path"];
+    Check(path && ![before containsObject:path.lastPathComponent] && [Capture(path, NO) isEqual:directory] &&
+          [after isEqual:[before setByAddingObject:path.lastPathComponent]], @"an already published directory remains owned after sync failure");
+  } else {
+    Check([before isEqual:after], @"an unpublished candidate leaves no empty directory and all siblings survive");
+    Check(rebuild ? [Bytes(journal) isEqual:oldJournal] : ![manager fileExistsAtPath:journal],
+          @"a pre-publication failure leaves the previous journal unchanged");
+  }
+  if (fault == PublicationCandidateOpen || fault == PublicationCandidateCapture || writeFault) {
+    NSURL *retried = rebuild ? SSPreparationRebuildCandidate(source, target, binding, candidate, NULL)
+                             : SSPreparationCopy(source, target, binding, NULL);
+    Check(retried && [DiskJournal(journal)[@"record"][@"attempts"] isEqual:@1],
+          @"a failed unpublished attempt can be retried in the same process without spending a copy");
+  } else {
+    Check(SSPreparationUncertaintyCode() == EIO, @"a sync failure keeps the writer fenced");
+  }
 }
 static void LockHeld(NSString *store) {
   pid_t child = fork(); assert(child >= 0);
@@ -149,6 +242,9 @@ static void Exercise(NSString *root, PublicationFault fault) {
   NSData *before = Bytes(journal);
   Check(SSPreparationRecoverFailure(nextSource, nextTarget, nextBinding, &code, NULL) == SSPreparationFailureInvalid, @"fault removal cannot restore recovery qualification");
   Check(SSPreparationCopy(nextSource, nextTarget, nextBinding, NULL) == nil, @"fault removal cannot restart candidate copying");
+  NSError *rebuildError = nil;
+  Check(!SSPreparationRebuildCandidate(source, target, nil, candidate, &rebuildError) && rebuildError.code == EIO,
+        @"uncertain writer reports its original error before checking rebuild arguments");
   Check(!SSPreparationValidate(source, target, binding, candidate, NULL), @"uncertain qualification cannot validate");
   Check(!SSPreparationBeginOwnership(source, target, binding, candidate, NULL), @"uncertain qualification cannot begin ownership");
   Check(!SSPreparationAcceptOwnership(source, target, binding, candidate, NULL), @"uncertain qualification cannot accept ownership");
@@ -185,6 +281,20 @@ int main(int argc, const char **argv) {
     }
     assert(failures == 0);
     NSLog(@"[shipit-publication-fault] isolated fault cases passed=6");
+    for (NSNumber *rebuild in @[@NO, @YES]) {
+      for (NSNumber *fault in @[@(PublicationCandidateOpen), @(PublicationCandidateCapture), @(PublicationWriteClose),
+                                @(PublicationFileSync), @(PublicationDirectorySync)]) {
+        NSString *root = [@(argv[1]) stringByAppendingPathComponent:
+          [NSString stringWithFormat:@"candidate-%@-%@", rebuild, fault]];
+        pid_t child = fork(); assert(child >= 0);
+        if (child == 0) { CheckCandidatePublication(root, rebuild.boolValue, fault.unsignedIntegerValue); _exit(0); }
+        int status = 0; assert(waitpid(child, &status, 0) == child);
+        NSLog(@"[shipit-publication-fault] candidate rebuild=%@ fault=%@ status=%d", rebuild, fault, status);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) failures++;
+      }
+    }
+    assert(failures == 0);
+    NSLog(@"[shipit-publication-fault] initial and rebuild directory publication passed");
   }
   return 0;
 }

@@ -101,14 +101,15 @@ export function assertSquirrelArchiveSize(size: number): void {
 export function archiveApplicationArguments(
   source: string,
   archive: string,
-  compressionLevel: 1 | 6 = 1
+  compressionLevel: 1 | 6 = 1,
+  resourceMode: '--sequesterRsrc' | '--norsrc' = '--sequesterRsrc'
 ): string[] {
   return [
     '-c',
     '-k',
     '--zlibCompressionLevel',
     String(compressionLevel),
-    '--sequesterRsrc',
+    resourceMode,
     '--keepParent',
     source,
     archive,

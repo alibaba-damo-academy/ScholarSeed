@@ -187,6 +187,8 @@ export interface UpdateSnapshot {
   checkedAt?: number
   candidate?: LatestVersionMeta
   latestCandidate?: LatestVersionMeta
+  /** First ready candidate in an uninterrupted chain of native macOS promotions. */
+  readyOrigin?: string
   nextBackgroundPreparationAt?: number
   percent?: number
   receivedBytes?: number

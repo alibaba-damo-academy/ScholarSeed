@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   readRecord,
+  uncertainRecordWriteCode,
   writeJson,
   writeRecord,
   type RecordWriteEvent,
@@ -14,6 +15,13 @@ import * as fs from 'node:fs'
 import * as pathModule from 'node:path'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
+
+test('record writers recognize uncertain sync and release errors while terminal errors stay local to recovery', () => {
+  for (const code of ['ERR_LEASE_SYNC', 'ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'])
+    assert.equal(uncertainRecordWriteCode({ code }), code)
+  for (const error of [{ code: 'ERR_TERMINAL_RELEASE' }, { code: 'ERR_LEASE_BUSY' }, null])
+    assert.equal(uncertainRecordWriteCode(error), undefined)
+})
 
 test('qualified creation publishes exact bytes and preserves the prior record on refusal', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'qualified-record-'))

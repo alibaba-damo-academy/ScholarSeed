@@ -49,8 +49,60 @@ atomic, synchronized journal bind the source, target, candidate and private
 parent identities. A copying record and preparation attempt are persisted before
 copying starts. Only a completed copy becomes ready. Interrupted partial work is
 removed using recorded identities and no-follow descriptors, then copied again.
+New candidates stay in a private child directory of `CandidatePreparation`
+while the application waits for an explicit restart. A matched ready copy
+from the former temporary directory is rebuilt from the bound source in
+the private store. The final signature check still runs before replacement.
+When the candidate and installation are on different volumes, ShipIt retires
+the preparation record using the just-committed move and the installed bundle's identity.
+If initial preparation or a rebuild fails before the journal rename, ShipIt
+removes its newly created empty directory after checking its identity. Once the
+rename succeeds, the journal owns the directory even if its subsequent sync fails.
+
+新候选副本保存在 Application Support 下 `CandidatePreparation` 的私有子目录中。
+即使用户隔夜才点击重启，副本也位于系统临时目录清理范围之外。接手旧临时目录中的就绪副本时，
+助手会先核对身份，再从本次更新绑定的来源重新准备。替换应用前仍会再次验签。
+候选副本和安装位置在不同卷上时，ShipIt 会核对刚提交的移动记录和已安装应用的身份，再清除准备记录。
+首次准备或重建在日志重命名前失败时，ShipIt 核对身份并删除本次新建的空目录。
+重命名成功后，即使随后的目录同步失败，也会保留日志引用的目录。
+
 Ready reuse validates identities and never substitutes for final signature checks.
 Three preparation attempts are independent of the original installation counter.
+
+After an authorized restart, macOS may report that a sealed resource is missing
+from a private candidate whose bundle and Contents directories are still intact.
+Before moving the installed app, ShipIt records one rebuild attempt for that
+request and copies the candidate again from its bound source. The new copy goes
+through quarantine handling, ownership checks and full signature verification
+against the installed app's designated requirement. A successful check continues
+the same installation. A failed rebuild or verification enters the existing
+recovery path, which reopens the restored app under the user's restart grant.
+
+用户点击重启后，如果 macOS 验签发现私有候选副本缺少签名资源，ShipIt 会先在本次请求中记下重建次数，
+再从原请求绑定的来源复制一次。新副本通过完整验签后继续本次安装。复制或再次验签失败时，
+助手沿用原有恢复流程，确认旧版已恢复后自动打开旧版。
+
+### Checking for newer releases while a restart is pending
+
+Desktop continues checking the selected channel while a prepared update waits
+for restart. With automatic downloads enabled, it can prepare a newer release
+in the other of two native slots. Each slot has its own extracted source,
+ShipIt job, preparation journal and private copy. The first uses the original
+job label. The other appends `.next`. Background preparation requires a
+writable installation and never requests administrator interaction.
+
+The selected request in `squirrel.json` identifies the matching staged metadata
+in `ready.json` or `ready.next.json`. Desktop changes that selection under the
+handoff lock only after binding the newer native readiness receipt to the same
+installed app. If a download, copy or check fails, the earlier selection can
+still be installed. Restart claims the selected request before asynchronous
+authorization and shutdown. Only its ShipIt receives installation authorization.
+The selected helper performs the usual final signature check and recovery.
+
+等待重启期间，桌面端继续检查当前渠道。开启自动下载后，新版本在另一套 ShipIt
+目录和助手中静默准备。两个版本各自保留绑定来源、准备记录和私有副本。新版本取得
+原生就绪凭据后，客户端才在交接锁内切换。下载、复制、校验失败或需要管理员交互时，
+原版本仍可重启安装。点击确认会先锁定当时已就绪的版本，再执行在线授权、退出和最终验签。
 
 The small source-parent readiness acknowledgement is readable by the initiating
 user even when ShipIt runs privileged. It controls exit timing only: it cannot
@@ -90,6 +142,11 @@ local contracts; final signed-product restart timing and privileged recovery
 require the CI update acceptance described below. Windows does not consume the
 new native journal, notification or gate.
 
+The macOS build mounts a temporary writable disk image for the cross-volume
+preparation contract. The build fails if the second volume cannot be mounted.
+
+macOS 构建会挂载临时可写磁盘镜像来运行跨卷准备测试。无法挂载第二个卷时，构建会报错。
+
 Preparation, cleanup, timing, admission and binding contracts preserve stdout/stderr in their test logs and write a
 schema-1 `*-test.result.json` receipt with child PID, exit status, termination signal and
 spawn error (PID is null when unavailable). Failures include those fields even when stderr is empty. A signal,
@@ -111,7 +168,7 @@ a native assertion; missing kqueue code-signing or memory flags are not enough.
 Before an explicitly authorized human confirmation, freeze the reviewed sources,
 executable paths and SHA-256 inventory, and verify signatures. Run each approved
 artifact with new private fixtures; keep a denial as a failed attempt, without
-automatic replay. Then run the complete original helper build and all 13
+automatic replay. Then run the complete helper build and its native
 contracts, checking the newly compiled artifacts against that inventory. Human
 approval of exact test programs is not permission to change security policy,
 add broad exceptions, remove provenance, or switch launchers to evade a denial.
@@ -125,8 +182,8 @@ The pre-termination listener observes only the applications present at subscript
 signature validation. `admission.h` waits for transient reentry under one monotonic
 deadline. The preparation owner rechecks source, target, candidate and private-directory
 identities after verification. Reentry during verification waits and repeats only
-that verification, not candidate copying or the transaction. Without reentry the
-candidate signature is still checked only once. Rename, acquisition and
+that verification, not candidate copying or the transaction. An intact candidate
+passes a single final signature check when the target stays closed. Rename, acquisition and
 replacement are outside its retry/timeout boundary and retain their existing rollback
 semantics. The original final running-instance check remains. A rare reentry after
 rename records the actual target in the existing private preparation journal before
@@ -150,6 +207,22 @@ never resumes that installation. Other crashes before a terminal record or owner
 intent is persisted remain outside this terminal recovery protocol.
 An authorized failed installation publishes its bound failure before requesting an
 old-application launch through the same installed helper used for successful updates.
+Recovery uses the install request re-read after the old process exits, once its
+binding and controls match the prepared request. An ordinary quit leaves the
+initial preparation unauthorized and the application closed.
+
+用户点击重启后，ShipIt 在旧进程退出时重新读取并核对本次安装授权。安装失败且确认旧版已恢复时，
+ShipIt 先持久化失败结果，再请求 macOS 打开旧版。用户正常退出应用时，后台准备不会触发重开。
+
+`relaunch.test.m` drives ShipIt's two request reads with an isolated journal
+and an injected installation error. It observes dispatch to the old bundle's
+helper on failure, then exercises replay, ordinary quit, and a mismatched request.
+
+`sealed.test.m` removes a signed resource from an isolated candidate after readiness.
+It exercises the installer's full signature checks and records the running fixture
+app's bundle identity after installation or recovery. Replaying a terminal failure
+must leave the launch count at one.
+
 The existing NSWorkspace default schedules launches asynchronously, allowing the
 child and its transaction-owning parent to exit before Desktop admission. An exact
 already-running target needs no additional launch. Launch request acceptance is
@@ -253,6 +326,21 @@ alone are not terminal authority. Missing/legacy binding cannot use this pregran
 proof. Recovery does not automatically clear the user's retained update context or
 handoff. Both source helper and framework must contain this protocol; updating only
 the target does not retrofit a running old helper.
+
+After a failed installation, the restored application can show **Retry preparation**
+while the Desktop handoff still says `installing`. A manual retry checks the
+authorized native request and its bound failure acknowledgement against the restored
+bundle. Under the handoff lock it rechecks those files, the target identity and
+the absence of the update helpers. With fresh activation authorization, Desktop
+can then replace the old handoff with a new request. Squirrel preserves the source
+directory referenced by the native request during retry cleanup, so ShipIt can
+still verify the old failure acknowledgement. Installing the newly prepared
+update still requires an explicit restart.
+
+安装失败并恢复旧版后，桌面端的交接记录可能仍显示 `installing`。用户点击“重试准备”时，
+桌面端会核对原生安装请求、失败回执和恢复后的应用，并在持有交接锁时复核文件身份及更新助手的退出状态。
+取得新的更新授权后，桌面端才用新请求替换旧记录。重试时，Squirrel 清理缓存会保留原生请求指向的目录，
+以便 ShipIt 复核其中的失败回执。新副本准备好后，仍由用户点击重启来安装。
 
 `binding.test.m` checks actual NSData digests, real request serialization, immutable
 controls, private journal binding and bound terminal recovery. `grant.test.m` loads

@@ -1,15 +1,45 @@
 #import "preparation.h"
+#import "cleanup.h"
+#import "observation.h"
+#import "readiness.h"
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
 #include <assert.h>
+#include <dlfcn.h>
 
 static NSFileManager *Manager;
 static NSUInteger Passed;
 static NSString *Root, *CurrentStore;
 static NSMutableSet<NSString *> *OwnedParents;
+static struct stat SwapCleanupOwner;
+static NSString *SwapCleanupJournal;
+static NSString *CrashAfterRebuildSwitch;
+static struct stat RebuildStoreIdentity;
+static const int REBUILD_SWITCH_EXIT = 72;
+
+int fsync(int descriptor) {
+    int (*syncFile)(int) = dlsym(RTLD_NEXT, "fsync");
+    assert(syncFile);
+    struct stat current;
+    if (SwapCleanupJournal && fstat(descriptor, &current) == 0 &&
+        current.st_dev == SwapCleanupOwner.st_dev && current.st_ino == SwapCleanupOwner.st_ino) {
+        NSString *journal = SwapCleanupJournal; SwapCleanupJournal = nil;
+        NSData *copy = [NSData dataWithContentsOfFile:journal];
+        assert(copy && [copy writeToFile:[journal.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"foreign.plist"] atomically:NO]);
+        assert(renameat(descriptor, "foreign.plist", descriptor, "journal.plist") == 0);
+    }
+    int result = syncFile(descriptor);
+    if (result == 0 && CrashAfterRebuildSwitch && fstat(descriptor, &current) == 0 &&
+        current.st_dev == RebuildStoreIdentity.st_dev && current.st_ino == RebuildStoreIdentity.st_ino) {
+      NSData *data = [NSData dataWithContentsOfFile:CrashAfterRebuildSwitch];
+      NSDictionary *journal = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
+      if (journal[@"record"][@"rebuild"][@"candidate"]) _exit(REBUILD_SWITCH_EXIT);
+    }
+    return result;
+}
 static NSString *Directory(NSString *path) {
     assert([Manager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL]);
     return path;
@@ -54,9 +84,230 @@ static void Rewrite(NSString *store, NSDictionary *journal) {
     NSString *path = [store stringByAppendingPathComponent:@"journal.plist"];
     assert([data writeToFile:path atomically:YES]); assert(chmod(path.fileSystemRepresentation, 0600) == 0);
 }
+static void CheckRebuild(NSString *root, BOOL failCopy, BOOL interruptSwitch) {
+  NSString *store = Store(root);
+  NSURL *source = Bundle([root stringByAppendingPathComponent:@"request/New.app"]);
+  NSURL *target = Bundle([root stringByAppendingPathComponent:@"live/Old.app"]);
+  NSDictionary *binding = @{@"schema":@1, @"size":@1, @"candidate":@"version",
+    @"requestId":[@"a" stringByPaddingToLength:64 withString:@"a" startingAtIndex:0],
+    @"sha512":[@"b" stringByPaddingToLength:128 withString:@"b" startingAtIndex:0]};
+  NSURL *damaged = SSPreparationCopy(source, target, binding, NULL);
+  assert(damaged && SSReadinessPublishBound(source, target, binding, YES, 0, NULL));
+  assert(SSReadinessRemove(source, NULL)); // ShipIt consumes readiness before installation.
+  NSString *member = @"Contents/data";
+  assert([Manager removeItemAtPath:[damaged.path stringByAppendingPathComponent:member] error:NULL]);
+  Check(!SSPreparationRebuildCandidate(source, target, binding, damaged, NULL), @"a ready journal alone cannot initiate a rebuild");
+  if (interruptSwitch) {
+    SSPreparationClose();
+    pid_t child = fork(); assert(child >= 0);
+    if (!child) {
+      assert(SSPreparationOpenDirectory(store, NULL) && SSPreparationBeginOwnership(source, target, binding, damaged, NULL));
+      CrashAfterRebuildSwitch = [store stringByAppendingPathComponent:@"journal.plist"];
+      assert(stat(store.fileSystemRepresentation, &RebuildStoreIdentity) == 0);
+      SSPreparationRebuildCandidate(source, target, binding, damaged, NULL);
+      _exit(EXIT_FAILURE);
+    }
+    int status = 0; assert(waitpid(child, &status, 0) == child);
+    Check(WIFEXITED(status) && WEXITSTATUS(status) == REBUILD_SWITCH_EXIT && Exists(damaged),
+          @"process exited after the rebuilt candidate was committed and before the former copy was discarded");
+    assert(SSPreparationOpenDirectory(store, NULL));
+    NSDictionary *switched = Journal(store);
+    NSString *original = damaged.path.stringByDeletingLastPathComponent;
+    NSString *held = [original stringByAppendingString:@".held"];
+    assert([Manager moveItemAtPath:original toPath:held error:NULL]);
+    NSString *foreign = [Directory(original) stringByAppendingPathComponent:@"foreign"];
+    assert([@"preserve" writeToFile:foreign atomically:NO encoding:NSUTF8StringEncoding error:NULL]);
+    NSURL *committed = SSPreparationCopy(source, target, binding, NULL);
+    Check(committed && [committed.path isEqual:switched[@"record"][@"candidate"][@"path"]] &&
+          [Manager fileExistsAtPath:foreign] && [switched isEqual:Journal(store)],
+          @"reentry reuses the committed candidate without deleting a substituted former directory or its journal");
+    NSMutableDictionary *changed = Journal(store);
+    changed[@"record"][@"attempts"] = @2;
+    Rewrite(store, changed);
+    NSError *error = nil;
+    Check(!SSPreparationCopy(source, target, binding, &error) && error.code == ESTALE &&
+          [changed isEqual:Journal(store)] && [Manager fileExistsAtPath:foreign],
+          @"deferring cleanup requires an unchanged durable candidate journal");
+    Rewrite(store, switched);
+    assert([Manager removeItemAtPath:original error:NULL] && [Manager moveItemAtPath:held toPath:original error:NULL]);
+    NSURL *replacement = SSPreparationCopy(source, target, binding, NULL);
+    Check(replacement && !Exists(damaged) && [Manager fileExistsAtPath:[replacement.path stringByAppendingPathComponent:member]] &&
+          [Journal(store)[@"record"][@"rebuild"] isEqual:@{}], @"restart collects the former private copy and retains the new one and its spent budget");
+    [OwnedParents addObject:replacement.path.stringByDeletingLastPathComponent];
+    return;
+  }
+  assert(SSPreparationBeginOwnership(source, target, binding, damaged, NULL));
+  NSDictionary *prior = Journal(store);
+  NSMutableDictionary *other = [binding mutableCopy]; other[@"candidate"] = @"other";
+  Check(!SSPreparationRebuildCandidate(source, target, other, damaged, NULL), @"a different binding cannot rebuild");
+  assert(SSReadinessPublishBound(source, target, other, YES, 0, NULL));
+  Check(!SSPreparationRebuildCandidate(source, target, binding, damaged, NULL), @"a conflicting acknowledgement cannot rebuild");
+  assert(SSReadinessRemove(source, NULL));
+  assert(SSReadinessPublishBound(source, target, binding, NO, EIO, NULL));
+  Check(!SSPreparationRebuildCandidate(source, target, binding, damaged, NULL), @"a failed acknowledgement cannot rebuild");
+  assert(SSReadinessRemove(source, NULL));
+  for (NSURL *url in @[source, target, damaged, [damaged URLByAppendingPathComponent:@"Contents"], damaged.URLByDeletingLastPathComponent]) {
+    NSString *held = [url.path stringByAppendingString:@".held"];
+    assert([Manager moveItemAtPath:url.path toPath:held error:NULL]);
+    Bundle(url.path);
+    Check(!SSPreparationRebuildCandidate(source, target, binding, damaged, NULL) && [prior isEqual:Journal(store)],
+          @"substituted source, target, candidate, Contents or private directory preserves the old evidence");
+    assert([Manager removeItemAtURL:url error:NULL] && [Manager moveItemAtPath:held toPath:url.path error:NULL]);
+  }
+  NSString *sourceMember = [source.path stringByAppendingPathComponent:member];
+  if (failCopy) assert(chmod(sourceMember.fileSystemRepresentation, 0000) == 0);
+  NSString *previousDirectory = damaged.path.stringByDeletingLastPathComponent;
+  if (!failCopy) assert(chmod(previousDirectory.fileSystemRepresentation, 0500) == 0);
+  NSError *error = nil;
+  NSURL *replacement = SSPreparationRebuildCandidate(source, target, binding, damaged, &error);
+  if (failCopy) {
+    Check(!replacement && [error.domain isEqual:NSCocoaErrorDomain] && Exists(damaged) &&
+          [Journal(store)[@"record"][@"candidate"] isEqual:prior[@"record"][@"candidate"]],
+          @"a real unreadable source member fails the copy and preserves the old ready bundle");
+    NSString *partial = Journal(store)[@"record"][@"rebuild"][@"directory"][@"path"];
+    assert(partial);
+    NSDictionary *interrupted = Journal(store);
+    Check(!SSPreparationBeginOwnership(source, target, binding, damaged, NULL) &&
+          !SSPreparationAcceptOwnership(source, target, binding, damaged, &error) &&
+          error.code == ECANCELED && [interrupted isEqual:Journal(store)],
+          @"unfinished rebuild preserves ownership intent until failure recovery");
+    SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+    Check(!SSPreparationRebuildCandidate(source, target, binding, damaged, NULL), @"an interrupted ownership operation cannot spend another rebuild on restart");
+    NSInteger code = 0;
+    Check(SSPreparationRecoverFailure(source, target, binding, &code, NULL) == SSPreparationFailureRestored && code != 0,
+          @"reopened preparation proves the unchanged installed application after an interrupted or failed rebuild");
+    __block NSUInteger launches = 0;
+    for (NSUInteger replay = 0; replay < 2; replay++) {
+      assert(SSPreparationFinishFailure(source, target, binding, YES, ^BOOL { return NO; }, ^BOOL { launches++; return YES; }, NULL));
+      SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+    }
+    Check(launches == 1 && Exists(target) && SSReadinessFailedRequestBound(source, target, binding), @"authorized restoration launches once across replay");
+    assert(chmod(sourceMember.fileSystemRepresentation, 0600) == 0);
+    NSURL *next = Bundle([root stringByAppendingPathComponent:@"next/New.app"]);
+    NSURL *fresh = SSPreparationCopy(next, target, other, NULL);
+    Check(fresh && !Exists(damaged) && ![Manager fileExistsAtPath:partial], @"the next request collects both owned copies of the failed rebuild");
+    [OwnedParents addObject:fresh.path.stringByDeletingLastPathComponent];
+  } else {
+    Check(replacement && ![replacement isEqual:damaged] &&
+          [Journal(store)[@"record"][@"rebuild"][@"directory"][@"path"] isEqual:previousDirectory] &&
+          [[NSData dataWithContentsOfFile:[replacement.path stringByAppendingPathComponent:member]] isEqual:[NSData dataWithContentsOfFile:sourceMember]],
+          @"fresh bound copy restores the missing resource and remains usable while the previous directory is read-only");
+    assert(chmod(previousDirectory.fileSystemRepresentation, 0700) == 0);
+    [OwnedParents addObject:replacement.path.stringByDeletingLastPathComponent];
+    SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+    Check([SSPreparationCopy(source, target, binding, NULL) isEqual:replacement] && ![Manager fileExistsAtPath:previousDirectory],
+          @"restart retains the rebuilt candidate and collects the old directory once writable");
+    assert(SSPreparationBeginOwnership(source, target, binding, replacement, NULL));
+    assert([Manager removeItemAtPath:[replacement.path stringByAppendingPathComponent:member] error:NULL]);
+    Check(!SSPreparationRebuildCandidate(source, target, binding, replacement, &error) && error.code == ELOOP,
+          @"a second damaged candidate cannot spend another rebuild across process lifetimes");
+  }
+}
+static void CheckLegacyMigration(NSString *root, BOOL failCopy, BOOL removedDirectory) {
+    NSString *legacyStore = Store(Directory([root stringByAppendingPathComponent:@"legacy"]));
+    NSURL *source = Bundle([root stringByAppendingPathComponent:@"source.app"]);
+    NSURL *target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
+    NSString *marker = @"Contents/py.typed";
+    assert([[NSData data] writeToFile:[source.path stringByAppendingPathComponent:marker] atomically:NO]);
+    NSURL *legacyCandidate = Prepare(source, target, NULL); assert(legacyCandidate);
+    NSString *removed = removedDirectory ? legacyCandidate.path.stringByDeletingLastPathComponent : [legacyCandidate.path stringByAppendingPathComponent:marker];
+    assert([Manager removeItemAtPath:removed error:NULL]);
+    NSMutableDictionary *journal = Journal(legacyStore);
+    journal[@"record"][@"attempts"] = @3;
+    SSPreparationClose(); NSString *store = Store(root);
+    Rewrite(store, journal); SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+    NSString *sourceFile = [source.path stringByAppendingPathComponent:@"Contents/data"];
+    if (failCopy) assert(chmod(sourceFile.fileSystemRepresentation, 0000) == 0);
+    NSURL *candidate = Prepare(source, target, NULL);
+    if (failCopy) {
+        assert(!candidate && chmod(sourceFile.fileSystemRepresentation, 0600) == 0);
+        NSDictionary *partial = Journal(store)[@"record"];
+        SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+        NSError *error = nil;
+        Check(!Prepare(source, target, &error) && error.code == ELOOP &&
+              [partial[@"state"] isEqual:@"copying"] && [Manager fileExistsAtPath:partial[@"directory"][@"path"]],
+              @"failed migration of the final attempt cannot retry or discard its recorded directory");
+    } else {
+        Check(candidate && [candidate.path.stringByDeletingLastPathComponent.stringByDeletingLastPathComponent isEqual:store] &&
+              [Manager fileExistsAtPath:[candidate.path stringByAppendingPathComponent:marker]] && !Exists(legacyCandidate),
+              @"legacy ready copy is rebuilt with its sealed empty file in the durable store");
+    }
+    Check([Journal(store)[@"record"][@"attempts"] isEqual:@3] && Exists(source) && Exists(target),
+          @"migrating a legacy ready copy preserves its completed attempt number, source and target");
+}
+static void CheckCopiedRetirement(NSString *root, NSString *targetRoot, BOOL crossVolume) {
+    Store(root);
+    NSString *cleanup = Directory([root stringByAppendingPathComponent:@"cleanup"]);
+    assert(SSCleanupOpenDirectory(cleanup, NULL));
+    NSURL *source = Bundle([root stringByAppendingPathComponent:@"source/App.app"]);
+    NSURL *target = Bundle([targetRoot stringByAppendingPathComponent:@"live/App.app"]);
+    NSURL *previous = [NSURL fileURLWithPath:[targetRoot stringByAppendingPathComponent:@"previous.app"]];
+    NSURL *candidate = Prepare(source, target, NULL); assert(candidate);
+    struct stat from, to;
+    assert(stat(candidate.path.fileSystemRepresentation, &from) == 0 && stat(target.path.fileSystemRepresentation, &to) == 0);
+    assert((from.st_dev != to.st_dev) == crossVolume);
+    assert([Manager moveItemAtURL:target toURL:previous error:NULL]);
+    assert([Manager copyItemAtURL:candidate toURL:target error:NULL]);
+    Check(!SSPreparationRetire(source, target, NULL), @"a copied target alone cannot retire preparation");
+    if (crossVolume) {
+        NSURL *unavailable = [NSURL fileURLWithPath:[targetRoot stringByAppendingPathComponent:@"missing/App.app"]];
+        NSError *error = nil;
+        Check(!SSCleanupCommit(source, candidate, previous, target, unavailable, &error) && error.code == ENOENT &&
+              !SSCleanupKnowsRollback(previous, target) && ![Manager fileExistsAtPath:[cleanup stringByAppendingPathComponent:@"journal.plist"]],
+              @"unavailable original parent leaves the cross-volume cleanup commit unpublished");
+    }
+    assert(SSCleanupCommit(source, candidate, previous, target, target, NULL));
+    Check(!SSPreparationRetire(source, target, NULL), @"commit cannot retire a stage that still contains the candidate");
+    NSURL *parked = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"parked.app"]];
+    assert([Manager moveItemAtURL:candidate toURL:parked error:NULL]);
+    Check(!SSPreparationRetire(source, target, NULL), @"deleting the candidate does not change the earlier commit evidence");
+    NSURL *otherStage = [candidate.URLByDeletingLastPathComponent URLByAppendingPathComponent:@"Other.app"];
+    assert(SSCleanupCommit(source, otherStage, previous, target, target, NULL));
+    Check(!SSPreparationRetire(source, target, NULL), @"another stage's commit cannot retire the candidate");
+    assert(SSCleanupCommit(source, candidate, previous, target, target, NULL));
+    NSURL *held = [NSURL fileURLWithPath:[targetRoot stringByAppendingPathComponent:@"held.app"]];
+    assert([Manager moveItemAtURL:target toURL:held error:NULL]); Bundle(target.path);
+    Check(!SSPreparationRetire(source, target, NULL), @"replacing the committed target rejects copied retirement");
+    assert([Manager removeItemAtURL:target error:NULL] && [Manager moveItemAtURL:held toURL:target error:NULL]);
+    NSString *journal = [cleanup stringByAppendingPathComponent:@"journal.plist"];
+    NSData *bytes = [NSData dataWithContentsOfFile:journal]; assert(bytes && [bytes writeToFile:journal atomically:YES]);
+    Check(!SSPreparationRetire(source, target, NULL), @"a replaced cleanup journal cannot retire the candidate");
+    if (crossVolume) {
+        assert([Manager moveItemAtURL:parked toURL:candidate error:NULL] && [Manager removeItemAtURL:target error:NULL]);
+        assert([Manager moveItemAtURL:candidate toURL:target error:NULL]);
+        assert(stat(cleanup.fileSystemRepresentation, &SwapCleanupOwner) == 0); SwapCleanupJournal = journal;
+        assert(SSCleanupCommit(source, candidate, previous, target, target, NULL) && !SwapCleanupJournal);
+        Check(!SSPreparationRetire(source, target, NULL), @"a byte-identical journal substituted during commit cannot qualify as proof");
+    }
+    assert(SSCleanupCommit(source, candidate, previous, target, target, NULL));
+    if (crossVolume) {
+        NSDictionary *record = Journal(CurrentStore)[@"record"];
+        NSMutableDictionary *installed = [record[@"target"] mutableCopy];
+        struct stat bundle, contents;
+        assert(stat(target.fileSystemRepresentation, &bundle) == 0 &&
+               stat([target URLByAppendingPathComponent:@"Contents"].fileSystemRepresentation, &contents) == 0);
+        installed[@"item"] = SSObservationIdentity(bundle);
+        installed[@"contents"] = SSObservationIdentity(contents);
+        NSMutableDictionary *incomplete = [record[@"candidate"] mutableCopy];
+        assert(SSCleanupConfirmsCopiedCandidate(record[@"source"], incomplete, installed, installed[@"path"]));
+        [incomplete removeObjectForKey:@"contents"];
+        Check(!SSCleanupConfirmsCopiedCandidate(record[@"source"], incomplete, installed, installed[@"path"]),
+              @"cross-volume retirement requires the staged Contents identity");
+        [installed removeObjectForKey:@"contents"];
+        Check(!SSCleanupConfirmsCopiedCandidate(record[@"source"], record[@"candidate"], installed, installed[@"path"]),
+              @"cross-volume retirement requires the installed Contents identity");
+    }
+    Check(SSPreparationRetire(source, target, NULL) == crossVolume,
+          crossVolume ? @"committed cross-volume copy retires preparation" : @"same-volume retirement still requires the original inodes");
+    SSCleanupClose(); SSPreparationClose();
+}
 int main(int argc, const char **argv) {
     @autoreleasepool {
-        assert(argc == 2 && geteuid() != 0); Manager = NSFileManager.defaultManager;
+        if (argc != 3) {
+            NSLog(@"preparation-test requires a fixture directory and a writable directory on a second volume");
+            return EXIT_FAILURE;
+        }
+        assert(geteuid() != 0); Manager = NSFileManager.defaultManager;
         CFFileSecurityRef security = CFFileSecurityCreate(NULL);
         assert(security != NULL);
         Check(!SSPreparationFileSecurityMatches(security), @"missing ownership fields require normalization");
@@ -73,12 +324,23 @@ int main(int argc, const char **argv) {
         Check(!SSPreparationFileSecurityMatches(security), @"changed owner requires normalization");
         CFRelease(security);
         Root = @(argv[1]); Directory(Root); OwnedParents = [NSMutableSet set];
+        NSString *localRoot = Case(@"copied-target");
+        CheckCopiedRetirement(localRoot, localRoot, NO);
+        NSString *volumeRoot = Directory([@(argv[2]) stringByAppendingPathComponent:NSUUID.UUID.UUIDString]);
+        CheckCopiedRetirement(Case(@"cross-volume"), volumeRoot, YES);
+        NSString *aliasCase = Case(@"cross-volume-alias");
+        NSString *applications = Directory([volumeRoot stringByAppendingPathComponent:@"Applications"]);
+        NSString *alias = [aliasCase stringByAppendingPathComponent:@"Applications"];
+        assert(symlink(applications.fileSystemRepresentation, alias.fileSystemRepresentation) == 0);
+        CheckCopiedRetirement(aliasCase, alias, YES);
         NSString *root = Case(@"success"), *store = Store(root);
         NSURL *source = Bundle([root stringByAppendingPathComponent:@"source.app"]);
         NSURL *target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
         NSURL *candidate = Prepare(source, target, NULL);
         Check(candidate && Exists(source) && Exists(target) && Exists(candidate), @"copy preserves source and installed app");
         Check(![candidate.path isEqual:source.path] && ![candidate.path isEqual:target.path], @"candidate is independent");
+        Check([candidate.path.stringByDeletingLastPathComponent.stringByDeletingLastPathComponent isEqual:store],
+              @"candidate lives under the private preparation store");
         Check([candidate.lastPathComponent isEqual:source.lastPathComponent], @"candidate preserves bundle name for useUpdateBundleName");
         Check([Journal(store)[@"record"][@"attempts"] isEqual:@1], @"attempt charged before ready");
         SSPreparationClose(); Check(SSPreparationOpenDirectory(store, NULL), @"open durable ready record");
@@ -105,6 +367,36 @@ int main(int argc, const char **argv) {
         NSURL *second = Prepare(secondSource, target, NULL);
         Check(second && !Exists(candidate) && Exists(source) && Exists(target), @"different request discards only owned candidate");
         Check([Journal(store)[@"record"][@"attempts"] isEqual:@1], @"different request has independent retry budget");
+
+        CheckLegacyMigration(Case(@"legacy-ready"), NO, NO);
+        CheckLegacyMigration(Case(@"legacy-ready-removed"), NO, YES);
+        CheckLegacyMigration(Case(@"legacy-migration-failed"), YES, NO);
+        CheckRebuild(Case(@"rebuild"), NO, NO);
+        CheckRebuild(Case(@"failed-rebuild"), YES, NO);
+        CheckRebuild(Case(@"interrupted-rebuild"), NO, YES);
+
+        root = Case(@"durable-ready-removed"); store = Store(root);
+        source = Bundle([root stringByAppendingPathComponent:@"source.app"]);
+        target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
+        candidate = Prepare(source, target, NULL); assert(candidate);
+        NSMutableDictionary *exhausted = Journal(store);
+        exhausted[@"record"][@"attempts"] = @3;
+        Rewrite(store, exhausted); SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
+        assert([Manager removeItemAtPath:candidate.path.stringByDeletingLastPathComponent error:NULL]);
+        NSError *budgetError = nil;
+        Check(!Prepare(source, target, &budgetError) && budgetError.code == ELOOP && [Journal(store) isEqual:exhausted],
+              @"a missing durable ready copy cannot claim a legacy migration attempt");
+
+        root = Case(@"replaced-store"); store = Store(root);
+        source = Bundle([root stringByAppendingPathComponent:@"source.app"]);
+        target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
+        NSString *displacedStore = [store stringByAppendingString:@".held"];
+        assert([Manager moveItemAtPath:store toPath:displacedStore error:NULL]);
+        Directory(store);
+        NSError *storeError = nil;
+        Check(!Prepare(source, target, &storeError) && storeError.code == ESTALE &&
+              [Manager contentsOfDirectoryAtPath:store error:NULL].count == 0,
+              @"substituting the locked store cannot redirect candidate creation");
 
         root = Case(@"missing-after-reboot"); store = Store(root); source = Bundle([root stringByAppendingPathComponent:@"source.app"]); target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
         candidate = Prepare(source, target, NULL); assert(candidate);

@@ -1176,7 +1176,9 @@ test('update manual entry preserves release notes, download, failure and confirm
     await expect(page.getByTestId('update-actions')).toHaveText('download:render-update')
     await page.getByTestId('update-panel-action').click()
     await page.getByTestId('update-restart-confirm').click()
-    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update,install')
+    await expect(page.getByTestId('update-actions')).toHaveText(
+      'download:render-update,install:render-update'
+    )
     expect(
       await page.evaluate(async () => (await window.scholarseed.getUpdateState()).announcedKey)
     ).toBeDefined()
@@ -1226,12 +1228,120 @@ test('update popover restart confirmation survives real pointer clicks on portal
     await expect(page.getByTestId('update-actions')).toHaveText('')
     await panel.getByTestId('update-panel-action').click()
     await page.getByTestId('update-restart-confirm').dblclick()
-    await expect(page.getByTestId('update-actions')).toHaveText('install')
+    await expect(page.getByTestId('update-actions')).toHaveText('install:render-update')
+  }, '/components/update.render.fixture.html')
+})
+
+test('a ready update remains clickable during successor preparation and rejected actions show feedback', async () => {
+  await withFixture(async (page) => {
+    const requests: string[] = []
+    const finish = new Map<string, (value: { ok: boolean; cancelled?: boolean }) => void>()
+    let declineRestart: (() => void) | undefined
+    await page.exposeFunction('attemptRestart', async () => {
+      if (!declineRestart)
+        await new Promise<void>((resolve) => {
+          declineRestart = resolve
+        })
+      return { ok: false }
+    })
+    await page.exposeFunction('prepareSuccessor', (id: string) => {
+      requests.push(id)
+      return new Promise<{ ok: boolean }>((resolve) => finish.set(id, resolve))
+    })
+    await page.evaluate(async () => {
+      const { candidate } = await window.scholarseed.getUpdateState()
+      Object.assign(window.scholarseed, {
+        platform: 'darwin',
+        startUpdate: async (id: string) => {
+          const result = await Reflect.get(window, 'prepareSuccessor')(id)
+          document.querySelector('#update-actions')!.textContent = JSON.stringify(result)
+          return result
+        },
+        installUpdate: Reflect.get(window, 'attemptRestart'),
+      })
+      Reflect.get(window, 'updateFixture').publish({
+        phase: 'ready',
+        latestCandidate: { ...candidate, id: 'next', build_number: '2' },
+      })
+    })
+    await page.getByTestId('activity-update').click()
+    const latest = page.getByTestId('update-download-latest')
+    const restart = page.getByTestId('update-panel-action')
+    await latest.evaluate((button: HTMLButtonElement) => {
+      button.click()
+      button.click()
+    })
+    await expect(latest).toBeDisabled()
+    await expect(restart).toBeEnabled()
+    await expect.poll(() => requests).toEqual(['next'])
+    await restart.click()
+    await page.getByTestId('update-restart-confirm').click()
+    await expect.poll(() => typeof declineRestart).toBe('function')
+    await page.evaluate(() =>
+      Reflect.get(window, 'updateFixture').publish({ restartPending: true })
+    )
+    await expect(latest).toHaveCount(0)
+    await page.evaluate(() =>
+      Reflect.get(window, 'updateFixture').publish({ restartPending: false })
+    )
+    declineRestart!()
+    await expect(latest).toBeDisabled()
+    await page.evaluate(async () => {
+      const { latestCandidate } = await window.scholarseed.getUpdateState()
+      Reflect.get(window, 'updateFixture').publish({
+        latestCandidate: { ...latestCandidate, id: 'newer', build_number: '3' },
+      })
+    })
+    await latest.click()
+    await expect.poll(() => requests).toEqual(['next', 'newer'])
+    const preparationError = page.getByRole('alert').filter({ hasText: '无法准备更新' })
+    finish.get('next')!({ ok: false })
+    await expect(latest).toBeDisabled()
+    await expect(preparationError).toHaveCount(0)
+    finish.get('newer')!({ ok: false })
+    await expect(preparationError).toBeVisible()
+    await expect(latest).toBeEnabled()
+    await latest.click()
+    await expect.poll(() => requests.length).toBe(3)
+    finish.get('newer')!({ ok: false, cancelled: true })
+    await expect(latest).toBeEnabled()
+    await expect(preparationError).toHaveCount(0)
+    await latest.click()
+    await expect.poll(() => requests.length).toBe(4)
+    finish.get('newer')!({ ok: true })
+    await expect(page.getByTestId('update-actions')).toHaveText('{"ok":true}')
+    await expect(latest).toBeDisabled()
+    await latest.evaluate((button: HTMLButtonElement) => button.click())
+    await expect(restart).toBeEnabled()
+    expect(requests).toEqual(['next', 'newer', 'newer', 'newer'])
+    await restart.click()
+    await page.getByTestId('update-restart-confirm').click()
+    await expect(page.getByTestId('update-restart-confirmation').getByRole('alert')).toHaveText(
+      '未能发起更新，请稍后重试。'
+    )
+    await expect(page.getByTestId('update-restart-confirm')).toBeEnabled()
+    await page.getByTestId('update-restart-cancel').click()
+    await expect(latest).toBeDisabled()
+    const last = await page.evaluate(
+      async () => (await window.scholarseed.getUpdateState()).latestCandidate
+    )
+    await page.evaluate(() =>
+      Reflect.get(window, 'updateFixture').publish({ latestCandidate: undefined })
+    )
+    await expect(latest).toHaveCount(0)
+    await page.evaluate(
+      (candidate) => Reflect.get(window, 'updateFixture').publish({ latestCandidate: candidate }),
+      last
+    )
+    await expect(latest).toBeEnabled()
   }, '/components/update.render.fixture.html')
 })
 
 test('restart confirmation follows language, rejects stale releases and submits only once', async () => {
   await withFixture(async (page) => {
+    await page.evaluate(() => {
+      Object.assign(window.scholarseed, { platform: 'darwin' })
+    })
     const publish = async (next: Record<string, unknown>) =>
       page.evaluate((value) => {
         ;(
@@ -1243,6 +1353,14 @@ test('restart confirmation follows language, rejects stale releases and submits 
     await page.getByTestId('activity-update').click()
     await action.click()
     const confirmation = page.getByTestId('update-restart-confirmation')
+    await expect(confirmation).not.toContainText('确认时将安装已准备就绪的最新版本')
+    await page.evaluate(async () => {
+      const { candidate } = await window.scholarseed.getUpdateState()
+      Reflect.get(window, 'updateFixture').publish({
+        latestCandidate: { ...candidate!, id: 'promoted', build_number: '2' },
+      })
+    })
+    await expect(confirmation).toContainText('确认时将安装已准备就绪的最新版本')
     await expect(confirmation).toContainText('重启后可点击「继续」或发送新消息接着处理')
     await expect(confirmation).not.toContainText('确认中断后发送新消息')
     await page.evaluate(() => {
@@ -1251,10 +1369,23 @@ test('restart confirmation follows language, rejects stale releases and submits 
       ).updateFixture.language('en')
     })
     await expect(confirmation).toContainText('click Continue or send a new message')
+    await expect(confirmation).toContainText('the latest version that is ready')
     await expect(confirmation).not.toContainText('acknowledge the interruption')
     await page.setViewportSize({ width: 480, height: 720 })
     await expect(page.getByTestId('update-restart-cancel')).toBeInViewport()
     await expect(page.getByTestId('update-restart-confirm')).toBeInViewport()
+    // The confirmation read can observe a changed release before its broadcast reaches the panel.
+    await page.evaluate(() => {
+      const read = window.scholarseed.getUpdateState
+      window.scholarseed.getUpdateState = async () => {
+        window.scholarseed.getUpdateState = read
+        const snapshot = await read()
+        return { ...snapshot, candidate: { ...snapshot.candidate!, id: 'unrelated' } }
+      }
+    })
+    await page.getByTestId('update-restart-confirm').click()
+    await expect(confirmation).toBeVisible()
+    await expect(page.getByTestId('update-actions')).toHaveText('')
     await publish({ phase: 'available' })
     await expect(page.getByTestId('update-restart-confirm')).toBeDisabled()
     await expect(confirmation).toContainText('The update state has changed')
@@ -1263,11 +1394,24 @@ test('restart confirmation follows language, rejects stale releases and submits 
     await publish({ phase: 'ready' })
     await page.getByTestId('activity-update').click()
     await action.click()
+    await page.evaluate(async () => {
+      const { candidate } = await window.scholarseed.getUpdateState()
+      const fixture = (
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture
+      fixture.publish({
+        candidate: { ...candidate!, id: 'promoted', build_number: '2' },
+        readyOrigin: candidate!.id,
+        latestCandidate: undefined,
+      })
+    })
+    await expect(confirmation).toContainText('the latest version that is ready')
+    await expect(page.getByTestId('update-restart-confirm')).toBeEnabled()
     await page.getByTestId('update-restart-confirm').evaluate((button: HTMLButtonElement) => {
       button.click()
       button.click()
     })
-    await expect(page.getByTestId('update-actions')).toHaveText('install')
+    await expect(page.getByTestId('update-actions')).toHaveText('install:render-update')
   }, '/components/update.render.fixture.html')
 })
 

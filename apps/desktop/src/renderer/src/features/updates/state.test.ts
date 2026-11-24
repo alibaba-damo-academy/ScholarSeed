@@ -61,6 +61,8 @@ test('release notes select English at render time and fall back to original note
 test('installation requires explicit confirmation for the same ready candidate', async () => {
   const calls: string[] = []
   let current: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: CANDIDATE }
+  const replacement = { ...CANDIDATE, id: 'replacement', build_number: 'next' }
+  let promoteAtInstall = false
   const original = globalThis.window
   Object.assign(globalThis, {
     window: {
@@ -68,6 +70,10 @@ test('installation requires explicit confirmation for the same ready candidate',
         getUpdateState: async () => current,
         installUpdate: async (expectedId: string) => {
           assert.equal(expectedId, CANDIDATE.id)
+          if (promoteAtInstall) {
+            current = { ...current, candidate: replacement }
+            return { ok: false }
+          }
           calls.push('install')
           return { ok: true }
         },
@@ -84,13 +90,16 @@ test('installation requires explicit confirmation for the same ready candidate',
   })
   try {
     const key = updateCandidateKey(CANDIDATE)!
-    await runUpdateAction(current)
+    assert.equal(await runUpdateAction(current), 'candidate-changed')
+    assert.equal(await runUpdateAction(current, 'outdated-key'), 'candidate-changed')
     assert.deepEqual(calls, [])
     await runUpdateAction(current, key)
     assert.deepEqual(calls, ['install'])
     const previous = current
-    current = { ...current, candidate: { ...CANDIDATE, id: 'replacement', build_number: 'next' } }
-    await runUpdateAction(previous, key)
+    promoteAtInstall = true
+    assert.equal(await runUpdateAction(previous, key), 'candidate-changed')
+    assert.deepEqual(calls, ['install'])
+    assert.equal(await runUpdateAction(previous, key), 'candidate-changed')
     assert.deepEqual(calls, ['install'])
     current = { ...previous, phase: 'installing' }
     await runUpdateAction(previous, key)
@@ -105,6 +114,8 @@ test('installation requires explicit confirmation for the same ready candidate',
 
 test('ready retains its install action while explicit newer download binds the observed identity', async () => {
   const calls: string[] = []
+  const reported: unknown[] = []
+  const callbackError = new Error('Update panel action callback failed')
   const original = globalThis.window
   let current: UpdateSnapshot = {
     phase: 'ready',
@@ -114,6 +125,7 @@ test('ready retains its install action while explicit newer download binds the o
   }
   Object.assign(globalThis, {
     window: {
+      reportError: (error: unknown) => reported.push(error),
       scholarseed: {
         getUpdateState: async () => current,
         startUpdate: async (id: string) => {
@@ -125,6 +137,11 @@ test('ready retains its install action while explicit newer download binds the o
   })
   try {
     assert.equal(updateActionOf(current), 'install')
+    await runLatestUpdateAction(current, () => {
+      throw callbackError
+    })
+    assert.deepEqual(reported, [callbackError])
+    assert.deepEqual(calls, ['newest'])
     await runLatestUpdateAction(current)
     assert.deepEqual(calls, ['newest'])
     const previous = current
@@ -134,6 +151,39 @@ test('ready retains its install action while explicit newer download binds the o
     current = { ...current, phase: 'installing' }
     await runLatestUpdateAction(current)
     assert.deepEqual(calls, ['newest'])
+  } finally {
+    Object.assign(globalThis, { window: original })
+  }
+})
+
+test('latest-ready consent follows only completed promotions from the confirmed release', async () => {
+  const first: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: CANDIDATE }
+  const key = updateCandidateKey(CANDIDATE)!
+  const next = { ...CANDIDATE, id: 'promoted', build_number: '202611240900' }
+  let current = { ...first, latestCandidate: next }
+  const calls: string[] = []
+  const original = globalThis.window
+  Object.assign(globalThis, {
+    window: {
+      scholarseed: {
+        getUpdateState: async () => current,
+        installUpdate: async (confirmedId: string, latest: boolean) => {
+          assert.equal(latest, true)
+          calls.push(confirmedId)
+          return { ok: true }
+        },
+      },
+    },
+  })
+  try {
+    await runUpdateAction(first, key, true)
+    assert.deepEqual(calls, [CANDIDATE.id])
+    current = { ...current, candidate: next, readyOrigin: CANDIDATE.id }
+    await runUpdateAction(first, key, true)
+    assert.deepEqual(calls, [CANDIDATE.id, CANDIDATE.id])
+    current = { ...current, readyOrigin: undefined }
+    assert.equal(await runUpdateAction(first, key, true), 'candidate-changed')
+    assert.equal(calls.length, 2)
   } finally {
     Object.assign(globalThis, { window: original })
   }

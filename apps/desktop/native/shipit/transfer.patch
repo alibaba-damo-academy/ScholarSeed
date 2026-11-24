@@ -26,7 +26,37 @@
  				}]
  				flatten];
  		}]
-@@ -828,7 +831,9 @@
+@@ -678,21 +681,15 @@
+ ///
+ /// Sends each removed directory then completes, or errors, on an unspecified
+ /// thread.
+ - (RACSignal *)pruneUpdateDirectories {
+-	return [[[RACSignal
+-		defer:^{
+-			// If we already have updates downloaded we don't wanna prune them.
+-			if (self.state == SQRLUpdaterStateAwaitingRelaunch) return [RACSignal empty];
+-
+-			SQRLDirectoryManager *directoryManager = [[SQRLDirectoryManager alloc] initWithApplicationIdentifier:SQRLShipItLauncher.shipItJobLabel];
+-			return [directoryManager storageURL];
+-		}]
+-		flattenMap:^(NSURL *storageURL) {
+-			return [self removeUpdateDirectoriesInStorageURL:storageURL excludingURL:nil];
+-		}]
+-		setNameWithFormat:@"%@ -prunedUpdateDirectories", self];
+-}
+-
++  return [[RACSignal defer:^{
++    if (self.state == SQRLUpdaterStateAwaitingRelaunch) return [RACSignal empty];
++    // Legacy restorations need the failed source's bound acknowledgement
++    // until ShipIt admits its successor.
++    return [self pruneOrphanedUpdateDirectories];
++  }] setNameWithFormat:@"%@ -prunedUpdateDirectories", self];
++}
++
+ /// Lazily removes orphaned temporary directories upon subscription, always
+ /// preserving the directory currently referenced by ShipItState.plist so that
+ /// quitAndInstall remains safe to call mid-check.
+@@ -828,7 +825,9 @@
  			// app themselves.
  			BOOL useUpdateBundleName = [appBundle.sqrl_executableName isEqual:targetBundleURL.lastPathComponent.stringByDeletingPathExtension];
  
@@ -37,7 +67,7 @@
  			preparedRequest = request;
              NSError *error = nil;
              if (!SSReadinessRemove(request.updateBundleURL, &error)) return [RACSignal error:error];
-@@ -836,7 +841,7 @@
+@@ -836,7 +835,7 @@
  		}]
  		then:^{
  			return [SSSquirrelTiming(@"launch-helper", self.shipItLauncher, NO) then:^{
@@ -46,7 +76,7 @@
              }];
  		}])
  		sqrl_addTransactionWithName:NSLocalizedString(@"Preparing update", nil) description:NSLocalizedString(@"An update for %@ is being prepared. Interrupting the process could corrupt the application.", nil), NSRunningApplication.currentApplication.bundleIdentifier]
-@@ -846,10 +851,16 @@
+@@ -846,10 +845,16 @@
  - (RACSignal *)relaunchToInstallUpdate {
  	return [[[[[[[[SQRLShipItRequest
  		readUsingURL:self.shipItStateURL]

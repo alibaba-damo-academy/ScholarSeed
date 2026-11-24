@@ -132,6 +132,16 @@ function command(executable, args, options = {}) {
   return execFileSync(executable, args, { encoding: 'utf8', ...options }).trim()
 }
 
+function publishedZipArguments(application, archive) {
+  // ditto can add an AppleDouble entry for every ordinary file. Preserve that
+  // representation for bundles carrying resource forks or extended-attribute code signatures.
+  const metadataMember = command('/usr/bin/find', [
+    '-P', application, '(', '-xattrname', 'com.apple.ResourceFork', '-o',
+    '-xattrname', 'com.apple.cs.CodeDirectory', ')', '-print', '-quit',
+  ], { timeout: MACOS_ARCHIVE_TIMEOUT_MS })
+  return archiveApplicationArguments(application, archive, 6, metadataMember ? '--sequesterRsrc' : '--norsrc')
+}
+
 // Forward only structured timing fields; raw child diagnostics remain in the file.
 function nativeStageRecords(child, label) {
   const records = []
@@ -1010,8 +1020,7 @@ async function verifyVelopackInstaller(installer, frozen) {
   })
 }
 
-async function createMeasuredApplicationArchive(mounted, archive, compressionLevel) {
-  const args = archiveApplicationArguments(mounted, archive, compressionLevel)
+async function createMeasuredApplicationArchive(archive, args) {
   command(MACOS_DITTO, args, {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
   const size = fs.statSync(archive).size
   assertSquirrelArchiveSize(size)
@@ -1072,11 +1081,11 @@ async function verify(builderContext) {
           const directory = fs.mkdtempSync(path.join(context.runDirectory, 'update-archive-'))
           const archive = path.join(directory, 'application.zip')
           try {
-            // Older clients recreate this archive from the DMG at the default compression level.
-            dmgArchiveBudget = await createMeasuredApplicationArchive(mounted, archive)
+            // Measure the exact archive produced by a DMG-only client.
+            dmgArchiveBudget = await createMeasuredApplicationArchive(archive, archiveApplicationArguments(mounted, archive))
             if (context.lane === 'distribution') {
               fs.unlinkSync(archive)
-              const zipBudget = await createMeasuredApplicationArchive(mounted, archive, 6)
+              const zipBudget = await createMeasuredApplicationArchive(archive, publishedZipArguments(mounted, archive))
               const unpacked = path.join(directory, 'unpacked')
               fs.mkdirSync(unpacked)
               command(MACOS_DITTO, ['-x', '-k', archive, unpacked], {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
@@ -1138,6 +1147,7 @@ module.exports.RUNTIME_PROBE_SCRIPT = RUNTIME_PROBE_SCRIPT
 module.exports.sha256 = sha256
 module.exports.sha512 = sha512
 module.exports.verifyApplication = verifyApplication
+module.exports.publishedZipArguments = publishedZipArguments
 module.exports.unsignedPackageCheck = unsignedPackageCheck
 module.exports.runPackageCheck = runPackageCheck
 module.exports.packageCheckEnvironment = packageCheckEnvironment

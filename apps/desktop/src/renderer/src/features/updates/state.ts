@@ -33,21 +33,44 @@ const STORAGE_EXHAUSTED = /(?:^|[\s:])ENOSPC(?=[:,\s]|$)|\bNo space left on devi
 const listeners = new Set<Listener>()
 let snapshot: UpdateSnapshot | null = null
 let detach: (() => void) | null = null
+interface LatestUpdateAttempt {
+  readyId: string
+  latestId: string
+  result: 'pending' | 'prepared' | UpdateFailure
+}
+let latestAttempt: LatestUpdateAttempt | null = null
+
+function matchesLatestAttempt(state: UpdateSnapshot | null, attempt: LatestUpdateAttempt) {
+  if (state?.phase !== 'ready' || state.candidate?.id !== attempt.readyId) return false
+  // The main process can withdraw an oversized successor before its failure reply arrives.
+  return state.latestCandidate
+    ? state.latestCandidate.id === attempt.latestId
+    : attempt.result !== 'prepared'
+}
 
 function emit(): void {
   for (const listener of listeners) listener()
 }
 
+function acceptSnapshot(next: UpdateSnapshot): void {
+  snapshot = next
+  if (latestAttempt && !matchesLatestAttempt(next, latestAttempt)) latestAttempt = null
+  emit()
+}
+
 function attach(): () => void {
-  // 先拉一次当前值再挂订阅：主进程只在状态变化时广播，光等广播会一直停在 null。
+  let awaitingInitial = true
+  const unsubscribe = window.scholarseed.onUpdateState((next) => {
+    awaitingInitial = false
+    acceptSnapshot(next)
+  })
   void window.scholarseed.getUpdateState().then((next) => {
-    snapshot = next
-    emit()
+    if (awaitingInitial) acceptSnapshot(next)
   })
-  return window.scholarseed.onUpdateState((next) => {
-    snapshot = next
-    emit()
-  })
+  return () => {
+    awaitingInitial = false
+    unsubscribe()
+  }
 }
 
 function subscribe(listener: Listener): () => void {
@@ -69,6 +92,17 @@ function readSnapshot(): UpdateSnapshot | null {
 /** 权威更新状态；主进程还没回答过时是 null，界面按「未检查」渲染。 */
 export function useUpdateState(): UpdateSnapshot | null {
   return useSyncExternalStore(subscribe, readSnapshot, readSnapshot)
+}
+
+function readLatestAttempt() {
+  return latestAttempt
+}
+
+export function useLatestUpdateAttempt(state: UpdateSnapshot | null) {
+  const attempt = useSyncExternalStore(subscribe, readLatestAttempt, readLatestAttempt)
+  return attempt && updateActionOf(state) === 'install' && matchesLatestAttempt(state, attempt)
+    ? attempt
+    : null
 }
 
 /** 当前相位下用户能发起的那一个动作。 */
@@ -123,6 +157,18 @@ export function updateRestartLabelKey(
   return platform === 'darwin' ? 'update.restartUpdate' : nonMacLabelKey
 }
 
+export function matchesRestartConfirmation(
+  requested: UpdateSnapshot | null,
+  current: UpdateSnapshot | null,
+  followNativePromotion: boolean
+): boolean {
+  const confirmed = requested?.candidate
+  const ready = current?.candidate
+  if (updateActionOf(current) !== 'install' || !confirmed || !ready) return false
+  if (confirmed.id === ready.id) return updateCandidateKey(confirmed) === updateCandidateKey(ready)
+  return followNativePromotion && current?.readyOrigin === (requested?.readyOrigin ?? confirmed.id)
+}
+
 /**
  * 发起当前相位对应的那一个动作。
  *
@@ -130,8 +176,9 @@ export function updateRestartLabelKey(
  */
 export async function runUpdateAction(
   state: UpdateSnapshot | null,
-  confirmedCandidateKey?: string
-): Promise<void> {
+  confirmedCandidateKey?: string,
+  followNativePromotion = false
+): Promise<'candidate-changed' | void> {
   const action = updateActionOf(state)
   const id = state?.candidate?.id
   if (action === 'repair') {
@@ -139,28 +186,75 @@ export async function runUpdateAction(
     if (!result.ok && !result.cancelled) throw new Error('Update repair could not start')
   } else if (action === 'download' && id) await window.scholarseed.startUpdate(id)
   else if (action === 'install') {
-    if (!confirmedCandidateKey || confirmedCandidateKey !== updateCandidateKey(state?.candidate))
-      return
-    const current = await window.scholarseed.getUpdateState()
     if (
-      updateActionOf(current) !== 'install' ||
-      current.candidate?.id !== id ||
-      updateCandidateKey(current.candidate) !== confirmedCandidateKey
+      !id ||
+      !confirmedCandidateKey ||
+      confirmedCandidateKey !== updateCandidateKey(state?.candidate)
     )
-      return
-    await window.scholarseed.installUpdate(id!)
+      return 'candidate-changed'
+    const current = await window.scholarseed.getUpdateState()
+    if (!current.candidate || !matchesRestartConfirmation(state, current, followNativePromotion))
+      return 'candidate-changed'
+    const confirmedId = followNativePromotion ? (current.readyOrigin ?? current.candidate.id) : id
+    const result = await window.scholarseed.installUpdate(confirmedId, followNativePromotion)
+    if (!result.ok) {
+      const after = await window.scholarseed.getUpdateState()
+      if (after.candidate?.id !== current.candidate.id) return 'candidate-changed'
+      if (
+        updateActionOf(after) === 'install' &&
+        (!updateFailureOf(after) ||
+          (after.error === current.error && after.errorFallback === current.errorFallback))
+      )
+        throw new Error('Update restart could not start')
+    }
   } else if (action === 'check') await window.scholarseed.checkUpdate()
 }
 
-export async function runLatestUpdateAction(state: UpdateSnapshot | null): Promise<void> {
-  if (!state?.latestCandidate || updateActionOf(state) !== 'install') return
-  const current = await window.scholarseed.getUpdateState()
+export async function runLatestUpdateAction(
+  state: UpdateSnapshot | null,
+  onAction?: () => void
+): Promise<void> {
+  if (!state?.candidate || !state.latestCandidate || updateActionOf(state) !== 'install') return
   if (
-    updateActionOf(current) !== 'install' ||
-    current.latestCandidate?.id !== state.latestCandidate.id
+    latestAttempt &&
+    matchesLatestAttempt(state, latestAttempt) &&
+    typeof latestAttempt.result === 'string'
   )
     return
-  await window.scholarseed.startUpdate(state.latestCandidate.id)
+  const attempt: LatestUpdateAttempt = {
+    readyId: state.candidate.id,
+    latestId: state.latestCandidate.id,
+    result: 'pending',
+  }
+  latestAttempt = attempt
+  emit()
+  try {
+    onAction?.()
+  } catch (error) {
+    window.reportError(error)
+  }
+  let result: 'prepared' | UpdateFailure | undefined
+  try {
+    const current = await window.scholarseed.getUpdateState()
+    if (
+      latestAttempt === attempt &&
+      updateActionOf(current) === 'install' &&
+      current.candidate?.id === attempt.readyId &&
+      current.latestCandidate?.id === attempt.latestId
+    ) {
+      const response = await window.scholarseed.startUpdate(attempt.latestId)
+      if (response.ok) result = 'prepared'
+      else if (!response.cancelled)
+        result = { origin: 'preparation', fallback: response.errorFallback, rolledBack: false }
+    }
+  } catch {
+    result = { origin: 'preparation', rolledBack: false }
+  }
+  // Only the current pair can publish its reply after a promotion, restart, or replacement.
+  if (latestAttempt !== attempt) return
+  const settled = result ? { ...attempt, result } : null
+  latestAttempt = settled && matchesLatestAttempt(snapshot ?? state, settled) ? settled : null
+  emit()
 }
 
 /** 更新入口是否该常驻：从发现新版本到更新完成前一直保留（PRD 第 2 条）。 */

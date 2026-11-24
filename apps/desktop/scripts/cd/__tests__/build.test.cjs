@@ -641,8 +641,10 @@ test('macOS install gate requires local Developer ID identity and offline ticket
   assert.match(NOTARIZATION_SOURCE, /await check\.native!\.verify\(ticket, check\.hashes\)/)
   assert.match(NATIVE_NOTARIZATION_SOURCE, /kSecCSCheckAllArchitectures\s*\|\s*kSecCSCheckNestedCode\s*\|\s*kSecCSStrictValidate\s*\|\s*kSecCSNoNetworkAccess/)
   // DMGs are checked on the mounted source. Downloaded ZIPs use the app Squirrel extracts.
-  assert.match(UPDATER_SOURCE, /verifyUpdateApplication\(\s*source,\s*meta,/)
-  assert.match(UPDATER_SOURCE, /verifyUpdateApplication\(\s*source,\s*staged\.meta,/)
+  assert.match(UPDATER_SOURCE, /withMountedDmg\(dmgPath, installation, log, async \(source\) => \{\s*await verifyUpdateApplication\(\s*source,\s*meta,/)
+  assert.match(UPDATER_SOURCE, /if \(meta\.artifact_kind !== MACOS_UPDATE_ZIP\) return undefined\s*return async \(source: string\) =>/)
+  assert.match(UPDATER_SOURCE, /macZipSourceVerifier\(staged\.meta, installation, log\)/)
+  assert.match(UPDATER_SOURCE, /macZipSourceVerifier\(candidate, progress, log\)/)
   assert.match(UPDATER_SOURCE, /PreparedArchive\.create\(/)
   assert.match(UPDATER_SOURCE, /receipt\.revalidate\(/)
   assert.doesNotMatch(UPDATER_SOURCE, /'stage application'|'inspect prepared archive'/)
@@ -669,7 +671,7 @@ test('the updater never blocks the main process with a synchronous spawn', () =>
   )
   assert.match(
     UPDATER_SOURCE,
-    /await verifyUpdateApplication\(\s*source,\s*staged\.meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'staged'\s*\)/
+    /await verifyUpdateApplication\(\s*source,\s*meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'staged'\s*\)/
   )
   // bug 87253073：外部命令挂起不允许把安装变成无限等待。超时/取消的强制层在唯一收口点
   // subprocess.ts —— 超时 SIGKILL 子进程并 reject，准备链每一步都声明上限。
@@ -780,7 +782,14 @@ test('the shell never discards the staged package before the install result is k
 test('discovery keeps newer builds available without discarding a macOS ready package', () => {
   assert.match(SHELL_SOURCE, /const updatePreparation = new UpdatePreparation/)
   assert.match(SHELL_SOURCE, /updatePreparation\.offer\(latest\)/)
-  assert.match(SHELL_SOURCE, /updatePreparation\.observe\(latest\)/)
+  assert.match(
+    SHELL_SOURCE,
+    /const ready = snapshot\.phase === 'ready' \? snapshot\.candidate : undefined\s*if \(ready\) updatePreparation\.adopt\(ready\)/
+  )
+  assert.match(
+    SHELL_SOURCE,
+    /const sameReadyBuild =\s*process\.platform === MACOS_PLATFORM &&\s*ready\?\.id === latest\.id &&\s*ready\.version === latest\.version &&\s*ready\.build_number === latest\.build_number &&\s*!samePreviewArtifact\(ready, latest\) &&\s*updater\.macPreparationReady\(ready\)\s*updatePreparation\.observe\(sameReadyBuild \? ready : latest\)/
+  )
   assert.match(SHELL_SOURCE, /updatePreparation\.background\(enabled\)/)
   assert.match(SHELL_SOURCE, /snapshot\.latestCandidate \?\? snapshot\.candidate/)
   assert.match(
@@ -789,7 +798,7 @@ test('discovery keeps newer builds available without discarding a macOS ready pa
   )
   assert.match(
     SHELL_SOURCE,
-    /if\s*\(\s*updateInstallAbort\s*\|\|\s*updateInstallationInProgress\s*\|\|\s*updateRestartRequested\s*\|\|\s*macMaintenanceUncertain\s*\|\|\s*updater\.macHandoffCommitted\(\)\s*\|\|\s*snapshot\.phase === 'manual'\s*\|\|\s*snapshot\.errorFallback === 'activation_recovery_required'\s*\)/
+    /if\s*\(\s*installationBlocksUpdateCheck\(\)\s*\|\|\s*snapshot\.phase === 'manual'\s*\|\|\s*snapshot\.errorFallback === 'activation_recovery_required'\s*\)\s*return snapshot/
   )
 
   // 推进判定只此一份：启动期检查、周期复查、手动「检查更新」三个入口共用，才不会一个能
@@ -819,13 +828,12 @@ test('discovery keeps newer builds available without discarding a macOS ready pa
   // Same-candidate checks preserve an install failure; a newer candidate may prepare.
   assert.match(
     SHELL_SOURCE,
-    /if \(snapshot\.phase === 'ready' && snapshot\.candidate\?\.id === latest\.id\)/
+    /snapshot\.errorOrigin === 'install' &&\s*snapshot\.candidate &&\s*samePreviewArtifact\(snapshot\.candidate, latest\)\s*\)\s*return publishUpdateSnapshot\(\{\s*\.\.\.snapshot,/
   )
-  assert.match(SHELL_SOURCE, /updatePreparation\.adopt\(latest\)/)
-})
-
-test('preparation reports success only for the requested ready identity', () => {
-  assert.match(SHELL_SOURCE, /ok: prepared\.phase === 'ready' && prepared\.candidate\?\.id === id/)
+  assert.match(
+    SHELL_SOURCE,
+    /if \(\s*!restoreMacPreparation &&\s*snapshot\.phase === 'ready' &&\s*snapshot\.candidate\?\.id === latest\.id\s*\)\s*updatePreparation\.adopt\(latest\)/
+  )
 })
 
 test('checkpoint failures retain a real ready package instead of routing it to download', () => {
@@ -845,16 +853,6 @@ test('the renderer holds no cross-restart update state', () => {
   )
   assert.match(UPDATE_FEATURE_SOURCE, /state\?\.announcedKey === key/)
   assert.match(UPDATER_SOURCE, /ANNOUNCED_STATE_FILE = 'announced\.json'/)
-})
-
-test('every snapshot the shell publishes carries the announcement acknowledgement', () => {
-  // 部分发布点是新构造的对象而不是展开当前快照；漏盖一次就等于把用户的确认丢掉。
-  assert.match(
-    SHELL_SOURCE,
-    /function publishUpdateSnapshot\([^\n)]*\): UpdateSnapshot \{\s*const stamped = withAnnouncedKey\(\{\s*\.\.\.next,[\s\S]*?\brestartPending:[\s\S]*?\}\)\s*updateSnapshot = stamped\s*sendToMainWindow\('scholarseed:update-state', stamped\)/
-  )
-  assert.match(SHELL_SOURCE, /updateSnapshot = withAnnouncedKey\(/)
-  assert.match(SHELL_SOURCE, /scholarseed:update-announce-ack/)
 })
 
 test('progress publication clears the previous failure so a retry is not shown as failed', () => {

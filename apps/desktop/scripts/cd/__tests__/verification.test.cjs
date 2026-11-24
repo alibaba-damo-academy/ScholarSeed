@@ -14,7 +14,7 @@ const source = fs.readFileSync(path.join(__dirname, '../verify.cjs'), 'utf8')
 const content = source.slice(source.indexOf('async function verifyContent('), source.indexOf('\n/** Static checks'))
 const hook = source.slice(source.indexOf('async function verify(builderContext)'), source.indexOf('\nmodule.exports = verify'))
 
-for (const scenario of ['distribution', 'local', 'oversized legacy ZIP']) {
+for (const scenario of ['distribution', 'resource fork', 'local', 'oversized legacy ZIP']) {
   test(`macOS installer hook measures its update archives: ${scenario}`, {skip: process.platform !== 'darwin'}, async t => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-update-compression-'))
     t.after(() => removeTemporary(directory))
@@ -22,6 +22,8 @@ for (const scenario of ['distribution', 'local', 'oversized legacy ZIP']) {
     const installer = path.join(directory, 'ScholarSeed.dmg')
     fs.mkdirSync(app)
     fs.writeFileSync(path.join(app, 'payload'), Buffer.alloc(128 * 1024, 'abc'))
+    const hasFork = scenario === 'resource fork'
+    if (hasFork) fs.writeFileSync(path.join(app, 'payload', '..namedfork', 'rsrc'), 'fork')
     fs.writeFileSync(installer, 'fixture')
     fs.writeFileSync(path.join(directory, 'app.json'), JSON.stringify({path: app}))
     const lane = scenario === 'local' ? 'local' : 'distribution'
@@ -44,12 +46,12 @@ for (const scenario of ['distribution', 'local', 'oversized legacy ZIP']) {
       } : nativeRequire(name),
       runCommand(executable, args) {
         if (executable === 'hdiutil') return
-        execFileSync(executable, args)
-        if (args[0] !== '-c') return
+        const result = execFileSync(executable, args, {encoding: 'utf8'}).trim()
+        if (args[0] !== '-c') return result
         const level = Number(args[args.indexOf('--zlibCompressionLevel') + 1])
         const archive = args.at(-1)
         if (scenario === 'oversized legacy ZIP' && level === 1) fs.truncateSync(archive, 1024 ** 3)
-        packed.push({level, size: fs.statSync(archive).size})
+        packed.push({level, resourceMode: args.find(arg => ['--norsrc', '--sequesterRsrc'].includes(arg)), size: fs.statSync(archive).size})
       },
     })
     const verifying = verify({artifactPaths: [installer]})
@@ -68,6 +70,7 @@ for (const scenario of ['distribution', 'local', 'oversized legacy ZIP']) {
       return
     }
     assert.deepEqual(packed.map(x => x.level), [1, 6])
+    assert.deepEqual(packed.map(x => x.resourceMode), ['--sequesterRsrc', hasFork ? '--sequesterRsrc' : '--norsrc'])
     assert.equal(read('installer.json').installed_check.update_archive.size, packed[0].size)
     const zip = read('macos-update-zip.json')
     const bytes = fs.readFileSync(path.join(directory, 'scholarseed-update.zip'))

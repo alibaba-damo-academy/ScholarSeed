@@ -3,17 +3,27 @@ import { isNewerRelease } from './version.ts'
 import { samePreviewArtifact } from './preview.ts'
 
 function advancesArtifact(current: LatestVersionMeta, candidate: LatestVersionMeta): boolean {
-  if (current.id === candidate.id && current.version === candidate.version &&
-      current.build_number === candidate.build_number)
+  if (
+    current.id === candidate.id &&
+    current.version === candidate.version &&
+    current.build_number === candidate.build_number
+  )
     return !samePreviewArtifact(current, candidate)
-  return isNewerRelease(
-    { version: current.version, buildNumber: current.build_number },
-    { version: candidate.version, buildNumber: candidate.build_number }
-  ) === true
+  return (
+    isNewerRelease(
+      { version: current.version, buildNumber: current.build_number },
+      { version: candidate.version, buildNumber: candidate.build_number }
+    ) === true
+  )
 }
 
 function archiveLimitKey(candidate: LatestVersionMeta): string {
-  return JSON.stringify([candidate.id, candidate.artifact_kind ?? null, candidate.file_size, candidate.sha512])
+  return JSON.stringify([
+    candidate.id,
+    candidate.artifact_kind ?? null,
+    candidate.file_size,
+    candidate.sha512,
+  ])
 }
 
 const MINUTE_MS = 60_000
@@ -203,7 +213,8 @@ export class UpdatePreparation {
       if (state.admission && validAdmission(state.admission)) {
         admission = {
           ...state.admission,
-          archiveLimitArtifact: state.admission.archiveLimitArtifact ??
+          archiveLimitArtifact:
+            state.admission.archiveLimitArtifact ??
             (state.admission.archiveLimitCandidate === state.desiredRelease.id
               ? archiveLimitKey(state.desiredRelease)
               : undefined),
@@ -278,8 +289,9 @@ export class UpdatePreparation {
     this.observed = candidate
     if (this.policy) {
       const pending =
-        (this.desired && samePreviewArtifact(this.desired, candidate) &&
-          (this.completed === candidate.id || this.worker))
+        this.desired &&
+        samePreviewArtifact(this.desired, candidate) &&
+        (this.completed === candidate.id || this.worker)
           ? this.admission.pending
           : {
               candidate,
@@ -315,8 +327,11 @@ export class UpdatePreparation {
     if (this.worker) return { reason: PREPARATION_REASONS.running }
     if (!this.observed) return { reason: PREPARATION_REASONS.absent }
     if (this.isArchiveLimited(this.observed)) return { reason: PREPARATION_REASONS.archiveLimit }
-    if (this.completed === this.observed.id && this.desired &&
-        samePreviewArtifact(this.desired, this.observed))
+    if (
+      this.completed === this.observed.id &&
+      this.desired &&
+      samePreviewArtifact(this.desired, this.observed)
+    )
       return { reason: PREPARATION_REASONS.ready }
     let decision: PreparationDecision = { reason: PREPARATION_REASONS.eligible, at: this.now() }
     if (this.policy) {
@@ -404,8 +419,10 @@ export class UpdatePreparation {
               lastSuccess: { candidateId: candidate.id, at: this.now() },
               retry: { at: 0, failures: 0 },
               recovery: { at: 0, interruptions: 0 },
-              pending: admission.pending && samePreviewArtifact(admission.pending.candidate, candidate)
-                ? null : admission.pending,
+              pending:
+                admission.pending && samePreviewArtifact(admission.pending.candidate, candidate)
+                  ? null
+                  : admission.pending,
             }
           : outcome === 'archive-limit'
             ? {
@@ -578,7 +595,33 @@ export class UpdatePreparation {
   }
 
   /** Pin the prepared release synchronously when the user requests restart. */
-  claim(candidate: LatestVersionMeta): boolean {
+  claim(candidate: LatestVersionMeta, liveReceipt?: () => boolean): boolean {
+    if (liveReceipt && !liveReceipt()) return false
+    if (this.worker && liveReceipt) {
+      // Native preparation can keep the ready candidate available while a
+      // newer generation runs. Only the caller holding its live receipt can
+      // cancel that generation and pin the exact candidate synchronously.
+      if (this.committed || this.stopped || !this.desired) return false
+      const generation = this.generation + 1
+      let pending = this.admission.pending
+      // Keep the cancelled successor pending unless a newer release is already waiting.
+      if (!pending && this.desired.id !== candidate.id) {
+        pending = {
+          candidate: this.desired,
+          since: this.admission.inFlight?.startedAt ?? this.now(),
+        }
+      }
+      const admission = { ...this.admission, inFlight: null, pending }
+      if (!this.checkpoint(candidate, generation, candidate.id, admission)) return false
+      this.generation = generation
+      this.desired = candidate
+      this.completed = candidate.id
+      this.committed = true
+      this.terminal = null
+      this.paused = false
+      this.controller?.abort()
+      return true
+    }
     this.adopt(candidate)
     if (this.policy) this.paused = false
     else this.resume()
@@ -651,6 +694,7 @@ export class UpdatePreparation {
       !this.stopped &&
       !this.paused &&
       this.desired &&
+      this.completed !== this.desired.id &&
       !this.committed &&
       this.generation !== this.invalidatedGeneration
     ) {
