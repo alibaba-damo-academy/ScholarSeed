@@ -11,7 +11,7 @@ const TIMESTAMP_UNAVAILABLE = 'The timestamp service is not available.'
 
 async function sign(options) {
   const frozen = frozenContext()
-  const native = nativeSignatureGuard(options.app, frozen.native, frozen.applicationLayout)
+  const native = nativeSignatureGuard(options.app, frozen.native)
   const baseIgnore = signableIgnore(options.ignore)
   const signing = { ...options, ignore: filename => native.ignore(filename) || baseIgnore(filename) }
   for (let attempt = 0; ; attempt++) {

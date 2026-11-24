@@ -20,13 +20,82 @@ from service.platform.http_activity import HttpActivityMiddleware, ServeApplicat
 from service.platform.latency import (
     DIAGNOSTIC_HEADER,
     LOGGER_NAME,
+    REQUEST_ID_HEADER,
     LoopMonitor,
     RequestLatency,
     requestLatency,
+    requestPhases,
 )
 
 
 class LatencyContract(unittest.IsolatedAsyncioTestCase):
+    async def test_history_shares_its_server_request_id_only_with_allowed_origins(self):
+        origin = b"http://127.0.0.1:9000"
+        scope = self.scope()
+        scope["headers"].append((b"origin", origin))
+        with self.assertLogs(LOGGER_NAME, level=logging.INFO) as records:
+            with RequestLatency(scope) as observation:
+                requestPhases(scope, expose_request_id=True)
+                response_id = (REQUEST_ID_HEADER, observation.requestId.encode("ascii"))
+                self.assertEqual(observation.timingHeaders([]), [response_id])
+                cors = [(b"access-control-allow-origin", origin)]
+                self.assertEqual(
+                    observation.timingHeaders(cors),
+                    [
+                        *cors,
+                        response_id,
+                        (b"access-control-expose-headers", REQUEST_ID_HEADER),
+                        (b"timing-allow-origin", origin),
+                    ],
+                )
+                observation.headers(200)
+        rows = [json.loads(record.getMessage()) for record in records.records]
+        self.assertEqual([row["event"] for row in rows], ["headers", "finished"])
+        self.assertTrue(all(row["request_id"] == observation.requestId for row in rows))
+
+    async def test_history_merges_cors_exposed_headers_for_an_allowed_origin(self):
+        scope = self.scope()
+        origin = b"http://127.0.0.1:9000"
+        scope["headers"].append((b"origin", origin))
+        expose = b"access-control-expose-headers"
+        cors = (b"access-control-allow-origin", origin)
+        with RequestLatency(scope) as observation:
+            requestPhases(scope, expose_request_id=True)
+            response_id = (REQUEST_ID_HEADER, observation.requestId.encode("ascii"))
+            for existing, expected in (
+                ([(expose, b"ETag, X-Revision")], b"ETag, X-Revision, " + REQUEST_ID_HEADER),
+                (
+                    [
+                        (expose, b"ETag, X-ScholarSeed-Request-Id"),
+                        (expose.upper(), b"etag,  X-Revision"),
+                    ],
+                    b"ETag, X-ScholarSeed-Request-Id, X-Revision",
+                ),
+                ([(expose, b"*")], b"*, " + REQUEST_ID_HEADER),
+            ):
+                with self.subTest(existing=existing):
+                    headers = observation.timingHeaders([cors, *existing])
+                    self.assertEqual([v for k, v in headers if k.lower() == expose], [expected])
+                    self.assertEqual(observation.timingHeaders(existing), [*existing, response_id])
+
+    async def test_handler_timings_are_scoped_to_the_request_and_correlated_with_headers(self):
+        scope = self.scope()
+        with self.assertLogs(LOGGER_NAME, level=logging.DEBUG) as records:
+            with RequestLatency(scope) as first:
+                phases = requestPhases(scope)
+                phases.count("records", 3)
+                phases.mark("projection")
+                first.headers(200, [(b"content-length", b"42")])
+            with RequestLatency(self.scope()) as second:
+                second.headers(200)
+        rows = [json.loads(record.getMessage()) for record in records.records]
+        headers, other = [row for row in rows if row["event"] == "headers"]
+        self.assertEqual(headers["handler_counts"], {"records": 3})
+        self.assertEqual(headers["response_content_length"], 42)
+        self.assertGreaterEqual(headers["handler_phases_ms"]["projection"], 0)
+        self.assertLessEqual(headers["handler_started_ms"], headers["handler_last_mark_ms"])
+        self.assertNotIn("handler_counts", other)
+
     async def test_valid_correlations_retain_the_lifecycle_without_global_debug(self):
         scope = self.scope()
         scope["headers"].append((DIAGNOSTIC_HEADER, b"a" * 32))
@@ -381,6 +450,65 @@ class LatencyContract(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(monitor.thread)
                 logging.getLogger(LOGGER_NAME).warning("monitor disabled")
         self.assertEqual(len(records.records), 1)
+
+    async def test_persistent_stall_samples_distinct_stacks_once_and_bounds_volume(self):
+        monitor = LoopMonitor()
+        monitor.heartbeat = monitor.watchdogWake = 100.0
+        monitor.stopped.set()
+        stack_a = (("worker.py", "work", 10),)
+        stack_b = (("worker.py", "work", 20),)
+        with (
+            patch("service.platform.latency.time.perf_counter") as clock,
+            patch.object(
+                monitor, "_stack", side_effect=[stack_a, stack_a, stack_b, stack_a, stack_b]
+            ),
+            self.assertLogs(LOGGER_NAME, level=logging.WARNING) as logs,
+        ):
+            samples = []
+            for quarter in range(1, 162):
+                clock.return_value = 100 + quarter / 4
+                result = monitor._observe()
+                if result is not None:
+                    samples.append(result)
+            monitor._beat()
+            clock.return_value += 3
+            next_episode = monitor._observe()
+        self.assertEqual([row["sample_index"] for row in samples], [1, 2, 3, 4])
+        self.assertEqual(
+            [row["event"] for row in samples], ["loop_stall"] + ["loop_stall_sample"] * 3
+        )
+        self.assertEqual([row.get("stack_sample_index") for row in samples], [None, 1, None, 1])
+        self.assertNotIn("stack", samples[1])
+        self.assertEqual(
+            samples[2]["stack"], [{"file": "worker.py", "function": "work", "line": 20}]
+        )
+        recovery = json.loads(logs.records[0].getMessage())
+        self.assertTrue(all(row["loop_stall_id"] == recovery["loop_stall_id"] for row in samples))
+        self.assertEqual(recovery["watchdog_max_gap_ms"], 250)
+        self.assertEqual((recovery["sample_count"], recovery["distinct_stack_count"]), (4, 2))
+        self.assertIsNotNone(next_episode)
+        self.assertNotEqual(next_episode["loop_stall_id"], recovery["loop_stall_id"])
+        self.assertIn("stack", next_episode)
+
+    async def test_unobserved_interval_counts_wake_gap_in_either_resume_order(self):
+        for watchdog_first in (True, False):
+            with self.subTest(watchdog_first=watchdog_first):
+                monitor = LoopMonitor()
+                monitor.heartbeat = monitor.watchdogWake = 100.0
+                monitor.stopped.set()
+                with (
+                    patch("service.platform.latency.time.perf_counter", return_value=140.0),
+                    self.assertLogs(LOGGER_NAME, level=logging.WARNING) as logs,
+                ):
+                    if watchdog_first:
+                        sample = monitor._observe()
+                        self.assertEqual(sample["sample_index"], 1)
+                        self.assertEqual(sample["watchdog_gap_ms"], 40_000)
+                        self.assertIsNone(monitor._observe())
+                    monitor._beat()
+                recovery = json.loads(logs.records[0].getMessage())
+                self.assertEqual(recovery["sample_count"], int(watchdog_first))
+                self.assertEqual(recovery["watchdog_max_gap_ms"], 40_000)
 
 
 if __name__ == "__main__":

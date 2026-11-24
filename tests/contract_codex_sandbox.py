@@ -945,7 +945,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private path", diagnostic)
 
     async def test_private_recovery_failure_blocks_native_execution(self) -> None:
-        for version in ("0.163.0", "0.165.0", "codex-cli 0.165.0"):
+        for version in ("0.163.0", "0.165.0", "codex-cli 0.165.0", "0.171.0", "codex-cli 0.171.0"):
             for failure, expected in (
                 (PermissionError("private detail"), SANDBOX_SETUP_ERROR),
                 (SandboxRecoveryError(SANDBOX_POLICY_ERROR), SANDBOX_POLICY_ERROR),
@@ -991,7 +991,15 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("private detail", str(raised.exception))
 
     async def test_unreviewed_recovery_keeps_existing_native_startup(self) -> None:
-        for version in ("0.159.0", "0.164.0", "0.166.0", "0.165.0-r1", "0.165.0\n"):
+        for version in (
+            "0.159.0",
+            "0.164.0",
+            "0.166.0",
+            "0.165.0-r1",
+            "0.165.0\n",
+            "0.171.0-r1",
+            "0.171.0\n",
+        ):
             recovery = Mock(prepare=AsyncMock())
             request = AsyncMock(return_value={"status": "ready"})
             bootstrap = WindowsSandboxBootstrap(
@@ -1191,6 +1199,8 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
             "codex-cli 0.163.0",
             "0.165.0",
             "codex-cli 0.165.0",
+            "0.171.0",
+            "codex-cli 0.171.0",
         ):
             with self.subTest(version=version):
                 resources = Mock(prepare=AsyncMock())
@@ -1204,7 +1214,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
                 resources.prepare.assert_awaited_with(SANDBOX_USERS_GROUP, cwd=Path.cwd())
 
     async def test_current_runtime_keeps_recovery_setup_and_resource_order(self) -> None:
-        for version in ("0.165.0", "codex-cli 0.165.0"):
+        for version in ("0.171.0", "codex-cli 0.171.0"):
             with self.subTest(version=version):
                 calls = []
                 home = Path.cwd()
@@ -1214,7 +1224,7 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
                 async def prepare_private(actual_home, actual_version, actual_executable):
                     self.assertEqual(
                         (actual_home, actual_version, actual_executable),
-                        (home, "0.165.0", executable),
+                        (home, "0.171.0", executable),
                     )
                     calls.append("private")
 
@@ -1285,7 +1295,15 @@ class WindowsSandboxContracts(unittest.IsolatedAsyncioTestCase):
         cleanup.assert_awaited_once()
 
     async def test_unreviewed_version_cannot_modify_acls(self) -> None:
-        for version in ("codex-cli 0.160.0", "0.164.0", "0.166.0", "0.165.0-r1", "0.165.0\n"):
+        for version in (
+            "codex-cli 0.160.0",
+            "0.164.0",
+            "0.166.0",
+            "0.165.0-r1",
+            "0.165.0\n",
+            "0.171.0-r1",
+            "0.171.0\n",
+        ):
             with self.subTest(version=version):
                 resources = Mock(prepare=AsyncMock())
                 recovery = Mock(prepare=AsyncMock())

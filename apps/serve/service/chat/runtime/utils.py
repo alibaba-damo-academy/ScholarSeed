@@ -3,8 +3,20 @@
 import os
 from contextlib import closing
 from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
 
 from service.platform.storage import canonical_root, open_directory
+
+
+def inline_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Omit redundant display titles from an inline request declaration."""
+    schema = model.model_json_schema()
+    schema.pop("title", None)
+    for field in schema.get("properties", {}).values():
+        field.pop("title", None)
+    return schema
 
 
 def request_file(workdir: Path, value: object) -> bytes:

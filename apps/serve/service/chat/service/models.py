@@ -37,6 +37,8 @@ from service.chat.service.completions import (
 )
 from service.chat.service.probe import list_upstream_models, probe_personal_connection
 from service.chat.service.providers import (
+    CHAT_OUTPUT_TOKEN_PARAMETER,
+    chat_output_token_parameter,
     preset_provider_labels,
     preset_providers,
     uses_vendor_capability_registry,
@@ -64,6 +66,8 @@ from service.settings.capabilities import (
     IMAGE_INPUT_KEY,
     IMAGE_MODALITY,
     INPUT_MODALITIES_KEY,
+    MAX_OUTPUT_LIMIT_KEY,
+    MAX_OUTPUT_TOKENS_KEY,
     MODALITY_KINDS,
     OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY,
     PDF_INPUT_KEY,
@@ -1165,6 +1169,10 @@ class ModelService:
                 model_id=personal_model_id,
             )
             _require_supported_personal_provider(runtime_config.get("provider"))
+            runtime_config[MAX_OUTPUT_TOKENS_KEY] = selected_row.get(MAX_OUTPUT_TOKENS_KEY)
+            runtime_config[OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY] = selected_row.get(
+                OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY
+            )
             runtime_model_ref = next(
                 (
                     self._catalog_entry(row).model_ref
@@ -1218,6 +1226,10 @@ class ModelService:
             )
         choice = resolve_model_choice(selected, config)
         runtime_config = apply_model_to_config(config, choice)
+        runtime_config[MAX_OUTPUT_TOKENS_KEY] = selected_row.get(MAX_OUTPUT_TOKENS_KEY)
+        runtime_config[OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY] = selected_row.get(
+            OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY
+        )
         billing = str(choice.get("billing") or API_BILLING).strip()
         if str(user_id or "").strip() == LOCAL_USER_ID and not _api_key(runtime_config):
             raise SessionModelUnavailableError(GATEWAY_LOGIN_REQUIRED_ERROR)
@@ -2010,6 +2022,7 @@ def _codex_provider(
         or reasoning_effort is not None
         or account_tokens is not None
         or gateway_owned
+        or _optional_int(config.get(MAX_OUTPUT_TOKENS_KEY)) is not None
     ):
         # 会话 id 按会话固定，可以随注册快照；用户 token 7 天到期且现在直接站网关的鉴权位
         # （验签腿必须校 exp），所以必须**调用时动态取** —— 注册时快照会让长会话后期整批 401。
@@ -2026,10 +2039,35 @@ def _codex_provider(
         def request_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
             model = str(payload.get("model") or "")
             if runtime_model_ref and model == runtime_model_ref:
-                return {**payload, "model": selected_model}
+                model = selected_model
             if model not in allowed_models:
                 raise SessionModelUnavailableError(MODEL_UNAVAILABLE_ERROR)
-            return dict(payload)
+            request = {**payload, "model": model}
+            maximum = (
+                _optional_int(config.get(MAX_OUTPUT_TOKENS_KEY))
+                if model == selected_model
+                else None
+            )
+            if model != selected_model and gateway_owned:
+                maximum = _optional_int(
+                    bundled_registry()
+                    .lookup(model, GATEWAY_CONNECTION)
+                    .limits.get(MAX_OUTPUT_LIMIT_KEY)
+                )
+            if maximum is not None and config.get(OUTPUT_TOKEN_LIMIT_SUPPORTED_KEY) is not False:
+                budget_key = (
+                    chat_output_token_parameter(base_url)
+                    if chat_completions
+                    else MAX_OUTPUT_TOKENS_KEY
+                )
+                requested = _optional_int(payload.get(budget_key)) or maximum
+                if chat_completions and budget_key != CHAT_OUTPUT_TOKEN_PARAMETER:
+                    converted_budget = (
+                        _optional_int(request.pop(CHAT_OUTPUT_TOKEN_PARAMETER, None)) or maximum
+                    )
+                    requested = min(requested, converted_budget)
+                request[budget_key] = min(requested, maximum)
+            return request
 
         def renewal_intent() -> object:
             return (

@@ -84,6 +84,9 @@ ERROR_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 METADATA_PATTERN = re.compile(r"[a-zA-Z0-9_.:/+\-]+")
 RESPONSE_TERMINALS = frozenset(("response.completed", "response.failed", "response.incomplete"))
 RESPONSE_FAILED = "response.failed"
+RESPONSE_INCOMPLETE = "response.incomplete"
+OUTPUT_LIMIT_CODE = "max_output_tokens"
+OUTPUT_LIMIT_MESSAGE = "The model response reached its output token limit."
 RESPONSE_OUTPUT_ITEM_DONE = "response.output_item.done"
 SSE_DATA = b"data:"
 SSE_EVENT = b"event:"
@@ -94,6 +97,10 @@ RETRY_SAFE_RESPONSE_EVENTS = frozenset(
 )
 CONTENT_SAFETY_BLOCKED = "CONTENT_SAFETY_BLOCKED"
 CONTENT_SAFETY_MESSAGE = "The request did not pass content safety review."
+INCOMPLETE_FAILURES = {
+    OUTPUT_LIMIT_CODE: (OUTPUT_LIMIT_CODE, OUTPUT_LIMIT_MESSAGE),
+    "content_filter": (CONTENT_SAFETY_BLOCKED, CONTENT_SAFETY_MESSAGE),
+}
 CODEX_INVALID_PROMPT = "invalid_prompt"
 PROVIDER_ERROR_PREFIX = re.compile(r"^<(\d{3})>\s+([A-Za-z][A-Za-z0-9_.-]*)(?::|$)", re.IGNORECASE)
 PROVIDER_FAILURE_CODES = {
@@ -111,6 +118,7 @@ class StreamEnd(str, Enum):
     BRIDGE_ERROR = "bridge_error"
     NOT_STARTED = "not_started"
     PROVIDER_ERROR = "provider_error"
+    INCOMPLETE = "incomplete"
 
 
 @dataclass
@@ -594,6 +602,12 @@ class StreamObservation:
                 self.text_delta_characters += len(delta)
             elif self.last_event == REASONING_TEXT_DELTA_EVENT:
                 self.reasoning_delta_characters += len(delta)
+        incomplete = source.get("incomplete_details")
+        if self.last_event == RESPONSE_INCOMPLETE and isinstance(incomplete, Mapping):
+            self.finish_reason = metadata_token(incomplete.get("reason"))
+            failure = INCOMPLETE_FAILURES.get(self.finish_reason)
+            if failure is not None:
+                self.error_code, self.error_message = failure
         error = source.get("error")
         if not isinstance(error, Mapping) and self.last_event == "error":
             error = source

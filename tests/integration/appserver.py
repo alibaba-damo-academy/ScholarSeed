@@ -40,6 +40,7 @@ class AppServer:
         self._stdout_thread.start()
         self._stderr_thread.start()
         self._request_id = 0
+        self.notifications: list[dict[str, Any]] = []
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self._request_id += 1
@@ -53,6 +54,8 @@ class AppServer:
                     raise queue.Empty()
                 payload = self._messages.get(timeout=remaining)
                 if payload.get("id") != request_id:
+                    if "method" in payload:
+                        self.notifications.append(payload)
                     continue
                 if "error" in payload:
                     raise RuntimeError(json.dumps(payload["error"], ensure_ascii=False))
@@ -65,6 +68,18 @@ class AppServer:
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         self._write({"method": method, "params": params})
+
+    def wait_notification(self, method: str) -> dict[str, Any]:
+        for index, payload in enumerate(self.notifications):
+            if payload.get("method") == method:
+                return self.notifications.pop(index)
+        deadline = time.monotonic() + APP_SERVER_TIMEOUT_SECONDS
+        while True:
+            payload = self._messages.get(timeout=max(0, deadline - time.monotonic()))
+            if payload.get("method") == method:
+                return payload
+            if "method" in payload:
+                self.notifications.append(payload)
 
     def close(self) -> None:
         if self._process.poll() is None:

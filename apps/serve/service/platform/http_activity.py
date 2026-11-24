@@ -70,7 +70,7 @@ class HttpActivityMiddleware:
                         **message,
                         "headers": observation.timingHeaders(message.get("headers", [])),
                     }
-                    observation.headers(message["status"])
+                    observation.headers(message["status"], message["headers"])
                 await send(message)
 
             if (

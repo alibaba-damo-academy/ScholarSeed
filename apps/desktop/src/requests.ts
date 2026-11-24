@@ -1,6 +1,7 @@
 export const API_DIAGNOSTIC_PREFIX = '[api-request]'
 export const PROJECT_CREATION_DIAGNOSTIC_PREFIX = '[project-creation]'
 export const API_DIAGNOSTIC_HEADER = 'x-scholarseed-diagnostic-id'
+export const API_REQUEST_ID_HEADER = 'x-scholarseed-request-id'
 export const HTTP_LATENCY_DIAGNOSTIC_PREFIX = '[http-latency]'
 export const REQUEST_TIMEOUT_ERROR_NAME = 'TimeoutError'
 export const REQUEST_ABORT_ERROR_NAME = 'AbortError'
@@ -9,7 +10,12 @@ export const MODEL_PROVIDERS_PATH = '/api/serve/model-providers'
 export const AUTH_ME_PATH = '/api/auth/me'
 export const CONTENT_OPERATIONS_PATH = '/api/content/operations'
 export const SESSION_CATALOG_PATH = '/api/serve/sessions'
+export const HISTORY_PATH_PREFIX = '/api/serve/history/'
 export const REQUEST_DIAGNOSTIC_ID_PATTERN = /^[a-f0-9]{32}$/
+
+export function compactHistoryPath(sessionId: string): string {
+  return `${HISTORY_PATH_PREFIX}${encodeURIComponent(sessionId)}?compact_activity=true`
+}
 
 export function isRequestDiagnosticId(value: unknown): value is string {
   return typeof value === 'string' && REQUEST_DIAGNOSTIC_ID_PATTERN.test(value)

@@ -2804,7 +2804,7 @@ test('archive real task consumers expose completed history, restore and delete o
           project.root === rows[0].project_path && project.archived_at == null
       )
     )
-    const history = await getHistoryWithTodos(rows[0].session_id)
+    const history = await getHistoryWithTodos(rows[0].session_id, 'archive')
     assert.equal(history?.turns.length, 3)
     assert.deepEqual(
       history?.turns.map((turn) => turn.kind),
@@ -2814,7 +2814,7 @@ test('archive real task consumers expose completed history, restore and delete o
     assert.equal((await listAllSessions({ archived: true }))?.length, 1)
     assert.deepEqual(await deleteSession(rows[1].session_id), { ok: true, status: 200 })
     assert.equal((await listAllSessions({ archived: true }))?.length, 0)
-    assert.equal(await getHistoryWithTodos(rows[1].session_id), null)
+    assert.equal(await getHistoryWithTodos(rows[1].session_id, 'archive'), null)
     assert.equal(
       (await runtime.request('/api/content/projects?includeArchived=true', 'default')).body.projects
         .length,
@@ -4480,7 +4480,7 @@ test('real review consumers share VFS identity, immutable candidate, and fenced 
       })
       const batch = await fetchResourceReviewBatchForPath('preview-project', 'readme.md')
       assert.ok(batch)
-      const history = await getHistoryWithTodos(batch.session_id)
+      const history = await getHistoryWithTodos(batch.session_id, 'transcript')
       assert.ok(history)
       const ready = history.activity_events.filter((event) => event.type === 'review_ready')
       assert.equal(ready.length, 1)
@@ -4492,7 +4492,7 @@ test('real review consumers share VFS identity, immutable candidate, and fenced 
         review_ids: batch.members.map((member) => member.review_id),
         paths: batch.members.map((member) => member.path),
       })
-      assert.deepEqual(await getHistoryWithTodos(batch.session_id), history)
+      assert.deepEqual(await getHistoryWithTodos(batch.session_id, 'transcript'), history)
       const otherHistory = await originalFetch(
         `${runtime.base}/api/serve/history/${batch.session_id}`,
         { headers: { 'x-preview-instance': 'review-other' } }

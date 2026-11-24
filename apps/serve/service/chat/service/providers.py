@@ -21,6 +21,8 @@ from typing import Any
 from scholarseed_runtime.contract import ModelWireProtocol
 
 CUSTOM_PROVIDER_ID = "custom"
+CHAT_OUTPUT_TOKEN_PARAMETER = "max_tokens"
+OPENAI_CHAT_OUTPUT_TOKEN_PARAMETER = "max_completion_tokens"
 LOCAL_CREDENTIAL_HINT = "本地服务通常不校验凭据，可填任意值（例如 ollama）"
 
 
@@ -35,6 +37,7 @@ class PresetProvider:
     note: str = ""
     credential_hint: str = ""
     capability_registry: bool = False
+    chat_output_token_parameter: str = CHAT_OUTPUT_TOKEN_PARAMETER
 
 
 # Anthropic is deliberately absent: it has no OpenAI-compatible surface, so it needs the
@@ -73,6 +76,7 @@ PRESET_PROVIDERS: tuple[PresetProvider, ...] = (
         note="该端点也实现 Responses 协议，可在下方切换",
         credential_hint="在 OpenAI 平台的 API keys 页创建",
         capability_registry=True,
+        chat_output_token_parameter=OPENAI_CHAT_OUTPUT_TOKEN_PARAMETER,
     ),
     PresetProvider(
         id="google",
@@ -137,6 +141,7 @@ def preset_providers() -> list[dict[str, Any]]:
     rows = [asdict(provider) for provider in PRESET_PROVIDERS]
     for row in rows:
         row.pop("capability_registry", None)
+        row.pop("chat_output_token_parameter", None)
     return rows
 
 
@@ -157,4 +162,17 @@ def uses_vendor_capability_registry(base_url: str) -> bool:
     return any(
         provider.capability_registry and provider.base_url.rstrip("/").lower() == endpoint
         for provider in PRESET_PROVIDERS
+    )
+
+
+def chat_output_token_parameter(base_url: str) -> str:
+    """Resolve the Chat output budget field from an exact endpoint declaration."""
+    endpoint = str(base_url or "").strip().rstrip("/").lower()
+    return next(
+        (
+            provider.chat_output_token_parameter
+            for provider in PRESET_PROVIDERS
+            if provider.base_url.rstrip("/").lower() == endpoint
+        ),
+        CHAT_OUTPUT_TOKEN_PARAMETER,
     )

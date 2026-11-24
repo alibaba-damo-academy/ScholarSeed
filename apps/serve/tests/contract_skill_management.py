@@ -88,6 +88,20 @@ class SkillManagementContracts(unittest.TestCase):
         self.live.interactions.request_product_input.assert_not_awaited()
         self.manager.marketplace_install.assert_not_awaited()
 
+    def test_search_rejects_missing_query_before_marketplace_access(self):
+        for body in ({}, {"cursor": "1", "locale": "zh"}):
+            with self.subTest(body=body):
+                result = self.call("search", body)
+                self.assertEqual(result.status_code, 400, result.text)
+        self.manager.marketplace.assert_not_awaited()
+
+    def test_search_allows_explicit_browsing_and_pagination(self):
+        result = self.call("search", {"query": "", "cursor": "1", "locale": "zh"})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.manager.marketplace.assert_awaited_once_with(query="", cursor="1", locale="zh")
+        self.live.interactions.request_product_input.assert_not_awaited()
+        self.manager.marketplace_install.assert_not_awaited()
+
     def test_install_requires_real_confirmation_and_replays_same_request(self):
         body = {"slug": "papers", "version": "1.0.0", "client_op_id": "install-papers"}
         first = self.call("install", body)

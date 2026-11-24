@@ -15,6 +15,7 @@ from scholarseed_codex.executable import _resolve_launch_arguments
 from scholarseed_codex.isolation import managed_codex_launch
 from scholarseed_codex.permission import local_socket_permissions
 from tests.integration.appserver import APP_SERVER_TIMEOUT_SECONDS, AppServer
+from tests.integration.context import verify_native_context_policy
 
 PASS = 0
 FAIL = 0
@@ -413,6 +414,7 @@ def _wait_mcp_inventory(server: AppServer, thread_id: str, expected: set[str]) -
 
 
 def main() -> int:
+    verify_native_context_policy()
     test_managed_runtime()
     test_managed_network_transport()
     test_strict_mcp_file_projection()

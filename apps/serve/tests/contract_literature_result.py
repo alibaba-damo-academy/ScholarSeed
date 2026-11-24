@@ -18,6 +18,7 @@ os.environ["SCHOLARSEED_HOME"] = _HOME
 from fastapi import FastAPI  # noqa: E402  # imports after SCHOLARSEED_HOME isolation on purpose
 from fastapi.testclient import TestClient  # noqa: E402
 
+from service.chat.active import developer_instructions  # noqa: E402
 from service.chat.api.cards import register_card_routes  # noqa: E402
 from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD  # noqa: E402
 from service.chat.persistence.catalog import (  # noqa: E402
@@ -213,7 +214,10 @@ class LiteratureResultContract(unittest.TestCase):
     def test_precise_skill_requires_selected_list_before_one_click_authorization(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
-        self.assertIn("`academic-research-guidance`", prompt)
+        for skill_name in ("`academic-research-guidance`", "`scholarseed-product-operations`"):
+            self.assertNotIn(skill_name, prompt)
+            self.assertNotIn(skill_name, developer_instructions(auto=True))
+            self.assertIn(skill_name, developer_instructions())
         self.assertIn(
             "The selected task skill owns its stages, modes, checkpoints, authorizations,",
             RESEARCH_GUIDANCE_SKILL.read_text(encoding="utf-8"),

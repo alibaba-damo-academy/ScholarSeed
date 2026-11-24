@@ -612,7 +612,12 @@ class PlanContract(unittest.TestCase):
                     )
                 )
         service = EventService({}, self.events, logging.getLogger(__name__))
-        snapshot = service.activity_snapshot(SESSION)
+        with patch.object(self.events, "replay", wraps=self.events.replay) as replay:
+            turns, snapshot, clocks = service.history_snapshot(SESSION, [])
+        full_replays = [call for call in replay.call_args_list if call.kwargs.get("kinds") is None]
+        self.assertEqual([call.kwargs["after_seq"] for call in full_replays], [0])
+        self.assertEqual([clock["turn_id"] for clock in clocks], ["turn-1"])
+        self.assertEqual(turns, [])
         resolved = {
             event["data"]["tool_id"]: event["data"].get("resolved_tool_ids")
             for event in snapshot
@@ -628,7 +633,11 @@ class PlanContract(unittest.TestCase):
             finally:
                 await stream.aclose()
 
-        replayed = asyncio.run(resumed())
+        with patch("service.chat.service.events.SSE_REPLAY_PAGE_SIZE", 1):
+            replayed = asyncio.run(resumed())
+        self.assertEqual(
+            [event["seq"] for event in replayed], [row.product_seq for row in rows[6:]]
+        )
         self.assertEqual(replayed[-1]["data"]["resolved_tool_ids"], ["bad-structure"])
         self.assertEqual(self.events.replay(SESSION), tuple(rows))
         for changes in (
@@ -1232,12 +1241,13 @@ class PlanContract(unittest.TestCase):
             )
         return live
 
-    def test_ordinary_session_keeps_native_plan_and_artifact_delivery(self):
+    def test_plan_opt_in_preserves_artifact_delivery(self):
         self.assertFalse(self.plans.enabled())
         tools = session_service_tools(product_plan=self.plans.enabled())
         names = frozenset(tool.name for tool in tools)
         self.assertEqual(names, {"scholarseed_bridge", "publish_artifacts"})
-        self.assertTrue(session_thread_config(frozenset(), names)["tools.update_plan.enabled"])
+        config = session_thread_config(frozenset(), names, native_plan_enabled=False)
+        self.assertFalse(config["tools.update_plan.enabled"])
         self.plans.native(
             [{"content": "Check result", "status": "in_progress"}],
             runtime_id="codex",

@@ -37,6 +37,8 @@ export const PREVIEW_UPDATE_IPC = {
   cancel: 'scholarseed:preview-policy-cancel',
 } as const
 
+export const MACOS_UPDATE_ZIP = 'macos-zip'
+
 /** Release identity as the update service reports it. */
 export interface LatestVersionMeta {
   id: string
@@ -49,6 +51,7 @@ export interface LatestVersionMeta {
   channel: string
   file_size: number
   sha512: string
+  artifact_kind?: typeof MACOS_UPDATE_ZIP
   version_built_at?: string
   /**
    * 「本次更新了什么」，由管理台在发布后人工录入，不是构建产物的一部分。

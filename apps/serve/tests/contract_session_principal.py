@@ -69,6 +69,7 @@ from service.identity.utils import (  # noqa: E402
     OWNERSHIP_AXIS_STATE,
 )
 from service.platform.activity import Activities  # noqa: E402
+from service.platform.latency import RequestPhases  # noqa: E402
 from service.workbench.domain.model import WorkbenchFormatPolicy  # noqa: E402
 
 PASS = 0
@@ -179,19 +180,14 @@ class _Events:
         return ()
 
     @staticmethod
-    def activity_snapshot(_session_id: str) -> list[dict[str, object]]:
-        return []
-
-    @staticmethod
-    def turn_activity_snapshot(_session_id: str) -> dict[str, object]:
-        return {}
-
-    @staticmethod
-    def decorate_history(
-        _session_id: str,
+    def history_snapshot(
+        session_id: str,
         turns: list[dict[str, object]],
-    ) -> list[dict[str, object]]:
-        return turns
+        *,
+        phases: RequestPhases | None = None,
+        compact_activity: bool = False,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+        return turns, [], []
 
     async def open(self, _session_id: str, _from_seq: int):
         # 空循环让本函数成为 async generator, 又不必用恒假条件。

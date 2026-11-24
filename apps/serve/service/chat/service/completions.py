@@ -36,8 +36,6 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
-from starlette.types import Message, Receive, Scope, Send
-
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
 from service.chat.service.namespaces import NAMESPACE_TOOL_TYPE, NamespaceTools
 from service.chat.service.provenance import ProvenanceStream, response_provenance
@@ -51,7 +49,9 @@ from service.chat.service.rejections import (
     rate_limit_policy,
 )
 from service.chat.service.streams import (
+    OUTPUT_LIMIT_CODE,
     RESPONSE_FAILED,
+    RESPONSE_INCOMPLETE,
     SSE_BUFFER_LIMIT,
     CompletionDiagnostic,
     NativeResponseNormalizer,
@@ -66,6 +66,7 @@ from service.chat.service.transport import (
     transport_diagnostics,
 )
 from service.identity.service.account_token import CONV_TURN_ID_HEADER
+from service.inference.auto import AutoRoute, GuideDecision, project_guidance
 from service.inference.reasoning import (
     ThinkingParameters,
     apply_thinking,
@@ -73,12 +74,14 @@ from service.inference.reasoning import (
     strip_thinking,
     thinking_parameters,
 )
+from service.inference.release import client_release_headers
 from service.inference.source import (
     SOURCE_UNAVAILABLE,
     ContentSource,
     accepts_source,
     attach_source,
 )
+from starlette.types import Message, Receive, Scope, Send
 
 MODEL_BRIDGE_ROUTE_PREFIX = "/api/internal/model-bridge/"
 BRIDGE_ROUTE = f"{MODEL_BRIDGE_ROUTE_PREFIX}{{bridge_id}}/v1/responses"
@@ -102,6 +105,7 @@ INLINE_IMAGE_QUALITY_STEPS = (85, 70, 55, 40, 25)
 MODEL_BRIDGE_INPUT_TOO_LARGE = "model_bridge_input_too_large"
 TOOL_IMAGE_OUTPUT_PLACEHOLDER = "Tool returned image output."
 INCOMPLETE_FINISH_REASONS = frozenset(("length", "content_filter"))
+INCOMPLETE_REASON_BY_FINISH = {"length": OUTPUT_LIMIT_CODE, "content_filter": "content_filter"}
 COMPLETION_STATUS_INCOMPLETE = "incomplete"
 COMPLETION_STATUS_COMPLETED = "completed"
 COMPLETION_STATUS_FAILED = "failed"
@@ -348,6 +352,7 @@ class CompletionStream(StreamingResponse):
             elif self.call.diagnostic.upstream_end in (
                 StreamEnd.TRANSPORT_ERROR.value,
                 StreamEnd.PROVIDER_ERROR.value,
+                StreamEnd.INCOMPLETE.value,
             ):
                 reason = self.call.diagnostic.upstream_end
             elif (
@@ -669,6 +674,8 @@ class CompletionBridge:
         on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
         on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
         on_tool_outputs: Callable[[str, str, set[str]], None] | None = None,
+        manual_skill_turn: Callable[[str, str], bool] | None = None,
+        auto_route: Callable[[str, str], GuideDecision | None] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         content_source: Callable[[str, str], ContentSource | None] | None = None,
         source_endpoints: Sequence[str] = (),
@@ -680,6 +687,8 @@ class CompletionBridge:
         self._on_diagnostic = on_diagnostic
         self._on_sources = on_sources
         self._on_tool_outputs = on_tool_outputs
+        self._manual_skill_turn = manual_skill_turn
+        self._auto_route = auto_route
         self._turn_ids = turn_ids
         self._content_source = content_source
         self._source_endpoints = tuple(source_endpoints)
@@ -1433,6 +1442,19 @@ class CompletionBridge:
             return JSONResponse(
                 {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
             )
+        route = (
+            self._auto_route(upstream.session_id, call.diagnostic.turn_id)
+            if self._auto_route and call.diagnostic.turn_id
+            else None
+        )
+        approval = upstream.approval_model_ref and payload.get("model") == upstream.approval_model_ref
+        if approval:
+            route = None
+        elif route or (
+            self._manual_skill_turn
+            and self._manual_skill_turn(upstream.session_id, call.diagnostic.turn_id)
+        ):
+            payload = project_guidance(payload, route)
         call.diagnostic.converted_input_items = converted_items
         if not upstream.allow_tools:
             # Native runtimes can still advertise interactive tools after their
@@ -1491,6 +1513,14 @@ class CompletionBridge:
             chat_request = strip_thinking(
                 chat_request,
                 outbound_names(upstream.reasoning_options, protocol.value, upstream.provider),
+            )
+        elif isinstance(route, AutoRoute):
+            options = route.catalog_row.get("reasoning_options")
+            resolution = thinking_parameters(
+                options, protocol.value, upstream.provider, effort=route.effort, thinking=None
+            )
+            chat_request = apply_thinking(
+                chat_request, options, protocol.value, upstream.provider, resolution
             )
         elif upstream.reasoning_effort is not None or upstream.thinking is not None:
             resolution = thinking_parameters(
@@ -1561,7 +1591,11 @@ class CompletionBridge:
                 native_tool_types,
                 len(chat_request.get("tools") or []),
             )
-        chat_request["model"] = upstream.route_model(chat_request.get("model"))
+        chat_request["model"] = (
+            route.catalog_row["model_name"]
+            if isinstance(route, AutoRoute)
+            else upstream.route_model(chat_request.get("model"))
+        )
         call.diagnostic.routed_model = str(chat_request["model"])
         call.diagnostic.wire_protocol = protocol.value
         logger.info(
@@ -1669,6 +1703,7 @@ class CompletionBridge:
             # The native client owns turn-state lifetime and auth-owner resets.
             # Forward only this request's opaque routing values; never pool them.
             headers.update(_native_headers(request_headers, NATIVE_REQUEST_HEADERS))
+        headers.update(client_release_headers(endpoint, self._source_endpoints))
         captured_turn_id = call.diagnostic.turn_id
         call.diagnostic.protect(headers)
 
@@ -2054,6 +2089,9 @@ class CompletionBridge:
                 downstream = call.diagnostic.downstream
                 if downstream.terminal == RESPONSE_FAILED and downstream.error_code:
                     call.diagnostic.upstream_end = StreamEnd.PROVIDER_ERROR.value
+                    call.diagnostic.failure_type = downstream.error_code
+                elif downstream.terminal == RESPONSE_INCOMPLETE:
+                    call.diagnostic.upstream_end = StreamEnd.INCOMPLETE.value
                     call.diagnostic.failure_type = downstream.error_code
                 else:
                     call.diagnostic.upstream_end = StreamEnd.EOF.value
@@ -3141,10 +3179,23 @@ async def chat_stream_to_responses(
         next_output_index += 1
     yield response_event(
         {
-            "type": "response.completed",
+            "type": (
+                RESPONSE_INCOMPLETE
+                if finish_reason in INCOMPLETE_FINISH_REASONS
+                else "response.completed"
+            ),
             "response": {
                 "id": response_id,
-                "status": "completed",
+                "status": (
+                    COMPLETION_STATUS_INCOMPLETE
+                    if finish_reason in INCOMPLETE_FINISH_REASONS
+                    else COMPLETION_STATUS_COMPLETED
+                ),
+                **(
+                    {"incomplete_details": {"reason": INCOMPLETE_REASON_BY_FINISH[finish_reason]}}
+                    if finish_reason in INCOMPLETE_FINISH_REASONS
+                    else {}
+                ),
                 "end_turn": finish_reason != "tool_calls",
                 "usage": _responses_usage(usage),
             },
@@ -3211,6 +3262,11 @@ def chat_response_to_response(
             else COMPLETION_STATUS_COMPLETED
         ),
         "output": output,
+        **(
+            {"incomplete_details": {"reason": INCOMPLETE_REASON_BY_FINISH[choice["finish_reason"]]}}
+            if choice.get("finish_reason") in INCOMPLETE_FINISH_REASONS
+            else {}
+        ),
         "usage": _responses_usage(dict(usage) if isinstance(usage, Mapping) else {}),
     }
 

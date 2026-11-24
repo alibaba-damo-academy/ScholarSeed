@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
@@ -14,9 +15,16 @@ LOGGER = logging.getLogger(__name__)
 WINDOWS_PLATFORM = "nt"
 PRIVATE_STAGE_PREFIX = ".private-"
 PRIVATE_STAGE_TOKEN_BYTES = 16
+PRIVATE_WRITE_CHUNK_BYTES = 1024 * 1024
 
 
-def publish_private(path: Path, payload: bytes, *, exclusive: bool = False) -> bool:
+def publish_private(
+    path: Path,
+    payload: bytes,
+    *,
+    exclusive: bool = False,
+    checkpoint: Callable[[], None] | None = None,
+) -> bool:
     """Create with private permissions, then publish through the pinned parent.
 
     Creating a writable file does not grant WRITE_OWNER on Windows. The native
@@ -30,9 +38,17 @@ def publish_private(path: Path, payload: bytes, *, exclusive: bool = False) -> b
         published = False
         try:
             with os.fdopen(descriptor, "wb") as handle:
-                handle.write(payload)
+                if checkpoint is None:
+                    handle.write(payload)
+                else:
+                    view = memoryview(payload)
+                    for start in range(0, len(view), PRIVATE_WRITE_CHUNK_BYTES):
+                        checkpoint()
+                        handle.write(view[start : start + PRIVATE_WRITE_CHUNK_BYTES])
                 handle.flush()
                 os.fsync(handle.fileno())
+                if checkpoint is not None:
+                    checkpoint()
                 try:
                     parent.replace_private(
                         temporary, name, exclusive=exclusive, source_descriptor=handle.fileno()

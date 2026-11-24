@@ -127,6 +127,56 @@ export function projectGenerationPreview(
   return next
 }
 
+export function projectContextCompaction(
+  items: ConvItem[],
+  event: Extract<ProductEvent, { type: 'context_compacted' }>
+): ConvItem[] {
+  if (items.some((item) => item.kind === 'status' && item.eventSeq === event.seq)) return items
+  const index = event.item_id
+    ? items.findIndex(
+        (item) =>
+          item.kind === 'status' &&
+          item.compactionPhase !== undefined &&
+          item.turnId === event.turn_id &&
+          item.itemId === event.item_id
+      )
+    : -1
+  const existing = items[index]
+  if (existing && (existing.eventSeq ?? -1) > event.seq) return items
+  const notice: ConvItem = {
+    kind: 'status',
+    text: event.data.message || {
+      key:
+        event.data.phase === 'completed'
+          ? 'context.compacted'
+          : event.data.phase === 'failed'
+            ? 'context.compactionIncomplete'
+            : 'context.compacting',
+    },
+    tone: event.data.phase === 'failed' ? 'tension' : 'inference',
+    compactionPhase: event.data.phase,
+    turnId: event.turn_id,
+    itemId: event.item_id,
+    eventSeq: event.seq,
+    retainOnHistoryRefresh: true,
+  }
+  if (index < 0) return insertTurnRuntimeItem(items, notice)
+  const next = [...items]
+  next[index] = notice
+  return next
+}
+
+function settleCompactionNotice(item: ConvItem): ConvItem {
+  return item.kind === 'status' && item.compactionPhase === 'started'
+    ? {
+        ...item,
+        compactionPhase: 'failed',
+        text: { key: 'context.compactionIncomplete' },
+        tone: 'tension',
+      }
+    : item
+}
+
 export function projectArtifactFailure(
   items: ConvItem[],
   event: Extract<ProductEvent, { type: 'artifact_failed' }>
@@ -622,6 +672,7 @@ export function placeFinalAssistantLast(
     for (let index = 0; index < projected.length; index += 1) {
       const item = projected[index]
       if (item.turnId !== turnId) continue
+      projected[index] = settleCompactionNotice(item)
       lastOwnedIndex = index
       if (item.kind === 'agent') finalIndex = index
     }
@@ -1524,6 +1575,7 @@ export function settleInterruptedActivities(
       return { ...item, preview: { ...item.preview, status: previewStatus } }
     }
     if (item.turnId !== turnId) return item
+    if (item.kind === 'status') return settleCompactionNotice(item)
     if (item.kind !== 'tool' && item.kind !== 'native_activity') return item
     if (item.status !== 'running') return item
     if (item.kind === 'tool') return { ...item, status: 'cancelled', completedAt }
@@ -1627,6 +1679,7 @@ export function projectActivityEvents(items: ConvItem[], events: ProductEvent[])
   return ordered.reduce<ConvItem[]>(
     (conversation, event) => {
       if (event.type === 'generation_preview') return projectGenerationPreview(conversation, event)
+      if (event.type === 'context_compacted') return projectContextCompaction(conversation, event)
       if (event.type === 'hil_requested') {
         if (!event.data.request_id) return conversation
         const existing = conversation.find(
@@ -1924,6 +1977,14 @@ function isRuntimeTranscriptItem(item: ConvItem): boolean {
 
 function sameDurableAnchor(left: ConvItem, right: ConvItem): boolean {
   if (left.kind !== right.kind) return false
+  if (
+    left.kind === 'status' &&
+    right.kind === 'status' &&
+    left.eventSeq !== undefined &&
+    right.eventSeq !== undefined
+  ) {
+    return left.eventSeq === right.eventSeq && left.turnId === right.turnId
+  }
   if (left.kind === 'artifact' && right.kind === 'artifact') {
     return left.artifact.artifact_id === right.artifact.artifact_id
   }
@@ -2077,8 +2138,50 @@ export function snapshotTurnActivity(
   return { turnOutcomes, turnTimings }
 }
 
+// The cold-history runner sets this User Timing mark in the renderer with --profile-history.
+const HISTORY_PROFILE_MARK = 'scholarseed.history.profile'
+let pendingHistoryCommits: WeakMap<ConvItem[], { caller: string; projectedAt: number }> | undefined
+
+function historyProfileStart(): number | undefined {
+  try {
+    if (performance.getEntriesByName(HISTORY_PROFILE_MARK, 'mark').length) return performance.now()
+  } catch {
+    // History must also work in renderers without User Timing.
+  }
+  return undefined
+}
+
+function measureHistoryPhase(
+  phase: 'projection' | 'projectionToCommit',
+  caller: string,
+  start: number
+): number | undefined {
+  try {
+    const end = performance.now()
+    performance.measure(`scholarseed.history.${phase}`, { start, end, detail: { caller } })
+    return end
+  } catch {
+    // The profiling runner checks for missing samples after the conversation is rendered.
+    return undefined
+  }
+}
+
+/** The Stream layout effect observes a committed projection by its exact conversation identity. */
+export function recordHistoryCommit(items: ConvItem[]): void {
+  if (!pendingHistoryCommits) return
+  const projection = pendingHistoryCommits.get(items)
+  if (!projection) return
+  pendingHistoryCommits.delete(items)
+  measureHistoryPhase('projectionToCommit', projection.caller, projection.projectedAt)
+}
+
 /** Project one authoritative history response for both initial display and resume refresh. */
-export function projectHistorySnapshot(history: HistoryResult, current: ConvItem[]): ConvItem[] {
+export function projectHistorySnapshot(
+  history: HistoryResult,
+  current: ConvItem[],
+  caller?: 'transcript' | 'resume' | 'resume_fallback'
+): ConvItem[] {
+  const started = caller ? historyProfileStart() : undefined
   const completedTurnIds = history.turn_activity.flatMap((turn) =>
     turn.outcome === 'completed' ? [turn.turn_id] : []
   )
@@ -2100,8 +2203,16 @@ export function projectHistorySnapshot(history: HistoryResult, current: ConvItem
         : items,
     activities
   )
-  return placeFinalAssistantLast(
+  const projected = placeFinalAssistantLast(
     projectArtifactSnapshot(settled, history.artifacts),
     completedTurnIds
   )
+  if (caller && started !== undefined) {
+    const projectedAt = measureHistoryPhase('projection', caller, started)
+    if (projectedAt !== undefined) {
+      pendingHistoryCommits ??= new WeakMap()
+      pendingHistoryCommits.set(projected, { caller, projectedAt })
+    }
+  }
+  return projected
 }

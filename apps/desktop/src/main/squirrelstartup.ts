@@ -21,6 +21,7 @@ import {
   validSquirrelBinding,
   type SquirrelHandoff,
   type SquirrelNativeRequest,
+  type SquirrelSourceVerifier,
   type SquirrelNativeCapture,
 } from './squirrel.ts'
 import { BUILD_NUMBER_PATTERN, isNewerRelease } from './version.ts'
@@ -448,7 +449,8 @@ export async function bindSquirrelRequest(
   bundle: string,
   application: string,
   handoff: SquirrelHandoff,
-  applicationSupport?: string
+  applicationSupport?: string,
+  verifySource?: SquirrelSourceVerifier
 ): Promise<SquirrelNativeRequest> {
   if (!/^[A-Za-z0-9.-]+$/.test(bundle)) throw new Error('Invalid Squirrel request bundle')
   const statePath = join(cache, `${bundle}.ShipIt`, SHIPIT_STATE)
@@ -499,14 +501,20 @@ export async function bindSquirrelRequest(
     readNativeRecord(join(source, 'Contents', 'Info.plist'), PRODUCT_CONFIG_BYTES)
   )
   const version = await versionResult
+  const requestUnchanged = () =>
+    readNativeRecord(statePath, PROBE_MAX_BYTES).equals(bytes) &&
+    JSON.stringify(nativeRequest) ===
+      JSON.stringify({ source: capture(source), target: capture(target), binding: handoff.binding })
   if (
     version.stdout.trim() !== handoff.version ||
     product.build_number !== handoff.buildNumber ||
-    !readNativeRecord(statePath, PROBE_MAX_BYTES).equals(bytes) ||
-    JSON.stringify(nativeRequest) !==
-      JSON.stringify({ source: capture(source), target: capture(target), binding: handoff.binding })
+    !requestUnchanged()
   )
     throw new Error('Squirrel request candidate changed or differs')
+  if (verifySource) {
+    await verifySource(source, nativeRequest)
+    if (!requestUnchanged()) throw new Error('Squirrel request changed during app verification')
+  }
   const prepared = applicationSupport
     ? await readPreparedCandidate(applicationSupport, bundle, nativeRequest)
     : undefined

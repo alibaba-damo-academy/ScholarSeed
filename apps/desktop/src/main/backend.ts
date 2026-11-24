@@ -104,6 +104,7 @@ import {
 } from '../../runtime/texlive.cjs'
 import { isFirstRun, resolveStartupBudgetMs, writeStartupMarker } from './startupmarker'
 import { clientVersion, STARTUP_BUILD_NUMBER } from './version'
+import { clientReleaseEnvironment } from './release-report'
 import { createAgentTransport, type AgentTransport } from './agenttransport'
 import type { StorageLaunchProjection } from './vaultstorage'
 import { stopChildProcess } from './subprocess'
@@ -1135,6 +1136,11 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
       [SCHOLARSEED_DESKTOP_ENV]: '1',
+      ...clientReleaseEnvironment(
+        productConfig,
+        applicationIdentity.version,
+        app.runningUnderARM64Translation
+      ),
       [SOURCE_BASELINE_ENV]: sourceIdentity || '',
       [BUNDLED_SKILL_LOCK_ENV]: backendPaths.bundledSkillLock ?? '',
       [SCHOLARSEED_APP_VERSION_ENV]: clientVersion(

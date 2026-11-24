@@ -68,6 +68,7 @@ import {
   CircleX,
   X,
   Hammer,
+  ScrollText,
 } from 'lucide-react'
 import { streamingTextClassName } from '../../design/motion'
 import aiThinking from '../../assets/ai-thinking.gif'
@@ -149,6 +150,7 @@ import {
   normalizeToolName,
   projectHistory,
   projectHistorySnapshot,
+  recordHistoryCommit,
   removeOptimisticUserMessage,
   resolveHilItem,
 } from '../../transcript'
@@ -194,6 +196,7 @@ import { isImageAttachment } from '../../features/assistant/utils'
 import { AnnotatedAnswer } from '../../features/assistant/Annotations'
 import { loadAnswerImage } from '../../features/assistant/pictures'
 import { TurnCitationSources } from '../../features/assistant/Citations'
+import { createTurnSourceViewport } from '../../features/assistant/viewport'
 import {
   ARTIFACT_DESCRIPTION_CLASS,
   ARTIFACT_ICON_CLASS,
@@ -210,6 +213,7 @@ import { SessionReference } from '../../features/assistant/SessionReference'
 import { WebSearchRecord } from './Retrieval'
 import {
   ToolExecution,
+  ExecutionActivityStatus,
   ExecutionBatch,
   ExecutionProcess,
   ExecutionStatus as ActivityStatusIcon,
@@ -564,6 +568,7 @@ export function Stream({
     state.activeSession === null && state.turnLaunch
       ? [state.turnLaunch.optimisticUserMessage]
       : thread.conversation
+  useLayoutEffect(() => recordHistoryCommit(conv), [conv])
   const hasSkillReferences = conv.some(
     (item) => item.kind === 'user' && item.refs?.some((reference) => reference.type === 'skill')
   )
@@ -581,6 +586,24 @@ export function Stream({
   const [navigationGutter, setNavigationGutter] = useState(0)
   const [hoveredNavigationIndex, setHoveredNavigationIndex] = useState<number | null>(null)
   const columnRef = useRef<HTMLDivElement>(null)
+  const sourceViewport = useMemo(createTurnSourceViewport, [thread.id, thread.sessionId])
+  useEffect(() => {
+    const root = streamRef.current
+    const column = columnRef.current
+    if (root && column) return sourceViewport.observe(home ? null : root, column)
+  }, [home, sourceViewport])
+  const answerTextVersions = useMemo(() => {
+    const turns = new Map<string, string[]>()
+    for (const item of conv) {
+      if (item.kind !== 'agent' || !item.turnId) continue
+      const fragments = turns.get(item.turnId) ?? []
+      fragments.push(item.text)
+      turns.set(item.turnId, fragments)
+    }
+    return new Map(
+      Array.from(turns, ([turnId, fragments]) => [turnId, JSON.stringify(fragments)] as const)
+    )
+  }, [conv])
   const focusSpacerRef = useRef<HTMLDivElement>(null)
   const focusBoundsRef = useRef<(() => DOMRect | null) | null>(null)
   const focusedSessionRef = useRef<string | null>(null)
@@ -774,11 +797,8 @@ export function Stream({
       <TurnCitationSources
         sessionId={thread.sessionId}
         turnId={turnId}
-        text={JSON.stringify(
-          currentConv.flatMap((item) =>
-            item.turnId === turnId && item.kind === 'agent' ? [item.text] : []
-          )
-        )}
+        viewport={sourceViewport}
+        textVersion={answerTextVersions.get(turnId) ?? '[]'}
       />
     ) : null
   const sessionRef = useRef(thread.sessionId)
@@ -1113,12 +1133,12 @@ export function Stream({
     const sessionId = thread.sessionId
     if (!sessionId || busy) return () => undefined
     let current = true
-    void getHistoryWithTodos(sessionId).then((history) => {
+    void getHistoryWithTodos(sessionId, 'transcript').then((history) => {
       if (!current || sessionRef.current !== sessionId || !history) return
       patchThread(thread.id, (active) =>
         active.sessionId === sessionId
           ? {
-              conversation: projectHistorySnapshot(history, active.conversation),
+              conversation: projectHistorySnapshot(history, active.conversation, 'transcript'),
               planSnapshots: projectPlanSnapshots(history.activity_events, active.planSnapshots),
             }
           : {}
@@ -7604,6 +7624,34 @@ function StatusLine({
   const { t: conversation } = useTranslation('conversation')
   const { state } = useApp()
   const userStopped = isUserStoppedStatus(item)
+  if (item.compactionPhase) {
+    const running = item.compactionPhase === 'started'
+    return (
+      <ExecutionActivityStatus
+        testId="context-compaction"
+        busy={running}
+        label={
+          typeof item.text === 'string' ? item.text : formatRuntimeStatus(item.text, conversation)
+        }
+        icon={
+          running ? (
+            <Spinner
+              aria-hidden="true"
+              size="sm"
+              className="!size-[var(--vds-icon-7)] motion-reduce:animate-none"
+            />
+          ) : item.compactionPhase === 'failed' ? (
+            <TriangleAlert
+              aria-hidden="true"
+              className="size-[var(--vds-icon-7)] text-[var(--vds-warning-text-primary)]"
+            />
+          ) : (
+            <ScrollText aria-hidden="true" className="size-[var(--vds-icon-7)]" />
+          )
+        }
+      />
+    )
+  }
   if (
     typeof item.displayMessage === 'object' &&
     item.displayMessage?.ns === 'components' &&
@@ -7864,7 +7912,9 @@ function ErrorCard({
               >
                 {continueUnknown
                   ? t('stream.continuePending')
-                  : item.failure?.kind === 'connection' || item.failure?.kind === 'unknown'
+                  : item.failure?.kind === 'connection' ||
+                      item.failure?.kind === 'unknown' ||
+                      item.failure?.kind === 'output_limit'
                     ? t('stream.continueInterrupted')
                     : conversation('failure.retry')}
               </Button>

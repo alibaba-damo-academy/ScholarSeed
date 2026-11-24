@@ -1,17 +1,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react'
-import {
-  ATTENTION_PATH,
-  attentionSnapshot,
-  type AttentionItem,
-  type AttentionSnapshot,
-} from '../../../../attention'
+import { ATTENTION_PATH, attentionSnapshot, type AttentionSnapshot } from '../../../../attention'
 import { apiFetch } from '../../app/api/client'
-import {
-  attentionContentLoaded,
-  attentionRenderedSequence,
-  canReadAttention,
-  matchingAttentionAnchors,
-} from '../../attention'
+import { canReadAttention, visibleAttentionIds } from '../../attention'
 import { activeThread, useApp } from '../../store'
 
 const POLL_INTERVAL_MS = 2_000
@@ -83,27 +73,17 @@ export async function markInteractionAttentionRead(
   if (ids.length) await readAttention(ids)
 }
 
-function targetsFor(item: AttentionItem): HTMLElement[] {
-  const elements = Array.from(document.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR))
-  return matchingAttentionAnchors(
-    elements.map((element) => ({
-      element,
-      recoverySessionId: element.dataset.recoverySessionId,
-      recoveryIncidentId: element.dataset.recoveryIncidentId,
-      interactionRequestId: element.dataset.interactionRequestId,
-      messageItemId: element.dataset.messageItemId,
-      messageTurnId: element.dataset.messageTurnId,
-      messageKind: element.dataset.messageKind,
-    })),
-    {
-      sessionId: item.session_id,
-      incidentId: item.incident_id,
-      requestId: item.request_id,
-      itemId: item.item_id,
-      turnId: item.turn_id,
-      kind: item.anchor_kind ?? item.kind,
-    }
-  ).map((anchor) => anchor.element)
+function renderedAttentionAnchors() {
+  const elements = document.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR)
+  return Array.from(elements, (element) => ({
+    element,
+    recoverySessionId: element.dataset.recoverySessionId,
+    recoveryIncidentId: element.dataset.recoveryIncidentId,
+    interactionRequestId: element.dataset.interactionRequestId,
+    messageItemId: element.dataset.messageItemId,
+    messageTurnId: element.dataset.messageTurnId,
+    messageKind: element.dataset.messageKind,
+  }))
 }
 
 function contentVisible(target: HTMLElement): boolean {
@@ -186,14 +166,9 @@ export function useAttentionLifecycle(): void {
         })
       )
         return
-      const ids = snapshot.items
-        .filter((item) => {
-          if (item.session_id !== thread.sessionId) return false
-          if (!attentionContentLoaded(attentionRenderedSequence(thread, item), item.source_seq))
-            return false
-          return targetsFor(item).some(contentVisible)
-        })
-        .map((item) => item.id)
+      const ids = visibleAttentionIds(thread, snapshot.items, renderedAttentionAnchors, (anchor) =>
+        contentVisible(anchor.element)
+      )
       if (!ids.length) return
       reading.current = true
       void readAttention(ids)

@@ -268,7 +268,7 @@ export function ArchivedTasksPage(): React.JSX.Element {
     setHistory(null)
     setHistoryFailed(false)
     if (selected)
-      void getHistoryWithTodos(selected.session_id).then((result) => {
+      void getHistoryWithTodos(selected.session_id, 'archive').then((result) => {
         if (!alive) return
         setHistory(result)
         setHistoryFailed(result === null)

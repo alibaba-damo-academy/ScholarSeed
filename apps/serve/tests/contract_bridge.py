@@ -117,6 +117,7 @@ class BridgeToolContracts(unittest.TestCase):
                         "target_operation": "list",
                     },
                     ("search", "run"): {"query": "long-term memory"},
+                    ("skill", "search"): {"query": "hydrogen"},
                 }.get((capability, operation), {})
                 self.assertTrue(validator.is_valid({**base, "request": request}))
                 self.assertTrue(validator.is_valid({**base, "request_file": "output/plot.json"}))
@@ -138,6 +139,28 @@ class BridgeToolContracts(unittest.TestCase):
                 self.assertFalse(validator.is_valid({**base, "request": request}))
         validator.validate({**base, "request": {"query": "long-term memory", "limit": 3}})
         validator.validate({**base, "request_file": "queries/memory.json"})
+
+    def test_skill_search_requires_explicit_query_and_preserves_browsing(self):
+        schema = SERVICE_BRIDGE_TOOL.input_schema
+        validator = Draft202012Validator(schema)
+        base = {"capability": "skill", "operation": "search"}
+        self.assertFalse(validator.is_valid({**base, "request": {}}))
+        self.assertFalse(validator.is_valid({**base, "request": {"cursor": "next"}}))
+        for query in ("hydrogen", "", "materials"):
+            validator.validate({**base, "request": {"query": query, "cursor": "next"}})
+        validator.validate({**base, "request_file": "queries/skills.json"})
+        branch = next(
+            branch
+            for branch in schema["oneOf"]
+            if branch["properties"]["capability"].get("const") == "skill"
+            and branch["properties"]["operation"].get("const") == "search"
+        )
+        self.assertIn("query", branch["properties"]["request"]["properties"])
+        result = self.invalid("skill", "search", {})
+        self.assertEqual(result["error"], "bridge_invalid_parameters")
+        self.assertIn(
+            ["request", "query"], [error["path"] for error in result["validation_errors"]]
+        )
 
     def test_artifact_contract_distinguishes_explicit_stage_delivery_from_working_files(self):
         contract = describe_contract("artifact", "publish")

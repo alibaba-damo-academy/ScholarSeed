@@ -389,9 +389,13 @@ export function hasVisibleTurnProgress(rows: readonly ActivityRow[], turnId?: st
   if (
     rows.some(
       (row) =>
-        row.kind === 'activity' &&
-        row.turnId === turnId &&
-        (row.tail || row.items.some((item) => 'status' in item && item.status === 'running'))
+        (row.kind === 'item' &&
+          row.item.turnId === turnId &&
+          row.item.kind === 'status' &&
+          row.item.compactionPhase === 'started') ||
+        (row.kind === 'activity' &&
+          row.turnId === turnId &&
+          (row.tail || row.items.some((item) => 'status' in item && item.status === 'running')))
     )
   )
     return true
