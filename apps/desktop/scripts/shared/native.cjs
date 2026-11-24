@@ -116,7 +116,7 @@ function nativeSourceFiles(platform) {
       'shipit/bridge.m', 'shipit/preflight.m', 'shipit/preparation.m', 'shipit/preparation.h',
       'shipit/cleanup.m', 'shipit/cleanup.h', 'shipit/readiness.m', 'shipit/readiness.h',
       'shipit/binding.h', 'shipit/observation.h', 'shipit/succession.h',
-      'shipit/parking.h',
+      'shipit/parking.h', 'shipit/successor.h', 'shipit/successorbridge.h',
       'shipit/compilation.cjs',
       'shipit/repair.test.cjs', 'shipit/repair.fixture.m', 'shipit/preflight.test.m',
     ] : []),
@@ -355,7 +355,7 @@ async function compileNative({
         .filter(argument => argument !== '-std=c11')
         .map(argument => argument === path.join(NATIVE, 'lease.c')
           ? path.join(NATIVE, 'shipit/bridge.m') : argument === output ? path.join(directory, 'repair.node') : argument)
-      repairArguments.push(...REPAIR_FLAGS,
+      repairArguments.push('-DSS_DESKTOP_UPDATE_SUCCESSORS=1', ...REPAIR_FLAGS,
         ...SUPPORT_UNITS.map(name => path.join(NATIVE, 'shipit', name)))
       invoke(compiler, repairArguments, selected)
       if (runContract || runRepairMappingsIntegration) {

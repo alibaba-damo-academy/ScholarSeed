@@ -53,6 +53,7 @@ const names = new Set([
   'previewCandidateValidated',
   'monotonicUpdateResult',
   'checkForUpdate',
+  'packageDownloadUrl',
   'getDownloadInfo',
   'readRejectedUpdate',
   'rejectedUpdatePath',

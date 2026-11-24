@@ -15,7 +15,7 @@ import {
   TERMINAL_RECORD_LIMITS,
 } from './terminal.ts'
 import { decodeUpdateLaunch, updateLaunchContextPath, updateStorageIdentities } from './relaunch.ts'
-import { decodeSquirrelHandoff, squirrelHandoffRecordPath } from './squirrel.ts'
+import { decodeSquirrelHandoff, squirrelHandoffRecordPath, squirrelJobLabel } from './squirrel.ts'
 
 export const UPDATE_REPAIR_ARGUMENT = '--repair-update-target='
 export const UPDATE_REPAIR_WIZARD_ARGUMENT = '--repair-update'
@@ -37,7 +37,6 @@ export const UPDATE_REPAIR_SELECTION = {
   userData: '--repair-update-user-data=',
   workspace: '--repair-update-workspace=',
 } as const
-const HELPER_SUFFIX = '.ShipIt'
 const PREPARATION_DIRECTORY = 'CandidatePreparation'
 const CLEANUP_DIRECTORY = 'DeferredCleanup'
 const NATIVE_STATE = 'ShipItState.plist'
@@ -104,14 +103,23 @@ export interface UpdateRepairScope {
 }
 
 export function repairNativePaths(
-  scope: Pick<UpdateRepairScope, 'bundleId' | 'applicationSupport' | 'cache'>
+  scope: Pick<UpdateRepairScope, 'bundleId' | 'applicationSupport' | 'cache'>,
+  alternate = false
 ) {
-  const owner = `${scope.bundleId}${HELPER_SUFFIX}`
+  const owner = squirrelJobLabel(scope.bundleId, alternate)
   return {
     nativeState: join(scope.cache, owner, NATIVE_STATE),
     preparation: join(scope.applicationSupport, owner, PREPARATION_DIRECTORY),
     cleanup: join(scope.applicationSupport, owner, CLEANUP_DIRECTORY),
   }
+}
+
+function matchesNativePaths(scope: UpdateRepairScope, recorded: TerminalRestorationOptions) {
+  return [false, true].some((alternate) =>
+    Object.entries(repairNativePaths(scope, alternate)).every(
+      ([key, path]) => recorded[key as keyof ReturnType<typeof repairNativePaths>] === path
+    )
+  )
 }
 
 export async function verifyRepairApplication(
@@ -141,7 +149,6 @@ export async function planInstalledUpdate(
   scope: UpdateRepairScope,
   runtime: TerminalRestorationRuntime
 ) {
-  const nativePaths = repairNativePaths(scope)
   const selection = scope.selection
   if (!selection) throw new Error('ERR_UPDATE_REPAIR_SELECTION_REQUIRED')
   const pending = pendingOrphanRecovery(
@@ -155,12 +162,7 @@ export async function planInstalledUpdate(
     runtime.uid
   )
   if (pending) {
-    if (
-      Object.entries(nativePaths).some(
-        ([key, value]) => pending[key as keyof typeof nativePaths] !== value
-      )
-    )
-      throw new Error('ERR_UPDATE_REPAIR_SCOPE')
+    if (!matchesNativePaths(scope, pending)) throw new Error('ERR_UPDATE_REPAIR_SCOPE')
     await runtime.verifyApplication(scope.application, scope.bundleId, scope.expectedTeam)
     return
   }
@@ -171,6 +173,7 @@ export async function planInstalledUpdate(
   )
   if (!handoff.binding || !['requested', 'failed'].includes(handoff.state))
     throw new Error('ERR_UPDATE_REPAIR_STATE')
+  const nativePaths = repairNativePaths(scope, handoff.alternate)
   const options = { ...nativePaths, application: scope.application }
   const source = orphanSource(options, undefined, runtime.uid)
   await runtime.verifyApplication(scope.application, scope.bundleId, scope.expectedTeam)
@@ -234,25 +237,13 @@ export async function repairInstalledUpdate(
     expectedTeam: scope.expectedTeam,
     toolDirectory: scope.repairApplication,
   }
-  let nativePaths: ReturnType<typeof repairNativePaths>
-  try {
-    nativePaths = repairNativePaths(scope)
-  } catch (error) {
-    throw new Error('ERR_UPDATE_REPAIR_STATE', { cause: error })
-  }
   let options: TerminalRestorationOptions | null = pendingOrphanRecovery(
     { ...common, selection: scope.selection },
     runtime.uid
   )
   if (options && options.recovery !== (scope.recovery ?? 'orphan'))
     throw new Error('ERR_UPDATE_REPAIR_SCOPE')
-  if (
-    options &&
-    Object.entries(nativePaths).some(
-      ([key, value]) => options![key as keyof typeof nativePaths] !== value
-    )
-  )
-    throw new Error('ERR_UPDATE_REPAIR_SCOPE')
+  if (options && !matchesNativePaths(scope, options)) throw new Error('ERR_UPDATE_REPAIR_SCOPE')
   if (!options) {
     let context: ReturnType<typeof decodeUpdateLaunch> | null = null
     try {
@@ -297,7 +288,7 @@ export async function repairInstalledUpdate(
       throw new Error('ERR_UPDATE_REPAIR_STATE')
     options = {
       ...common,
-      ...nativePaths,
+      ...repairNativePaths(scope, handoff.alternate),
       handoff: handoffPath,
       requestId: binding.requestId,
       recovery: scope.recovery ?? 'orphan',

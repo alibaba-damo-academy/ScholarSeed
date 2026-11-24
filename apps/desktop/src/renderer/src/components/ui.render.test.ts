@@ -1232,6 +1232,9 @@ test('update popover restart confirmation survives real pointer clicks on portal
 
 test('restart confirmation follows language, rejects stale releases and submits only once', async () => {
   await withFixture(async (page) => {
+    await page.evaluate(() => {
+      Object.assign(window.scholarseed, { platform: 'darwin' })
+    })
     const publish = async (next: Record<string, unknown>) =>
       page.evaluate((value) => {
         ;(
@@ -1243,6 +1246,7 @@ test('restart confirmation follows language, rejects stale releases and submits 
     await page.getByTestId('activity-update').click()
     await action.click()
     const confirmation = page.getByTestId('update-restart-confirmation')
+    await expect(confirmation).toContainText('确认时将安装已准备就绪的最新版本')
     await expect(confirmation).toContainText('重启后可点击「继续」或发送新消息接着处理')
     await expect(confirmation).not.toContainText('确认中断后发送新消息')
     await page.evaluate(() => {
@@ -1251,6 +1255,7 @@ test('restart confirmation follows language, rejects stale releases and submits 
       ).updateFixture.language('en')
     })
     await expect(confirmation).toContainText('click Continue or send a new message')
+    await expect(confirmation).toContainText('the latest version that is ready')
     await expect(confirmation).not.toContainText('acknowledge the interruption')
     await page.setViewportSize({ width: 480, height: 720 })
     await expect(page.getByTestId('update-restart-cancel')).toBeInViewport()
@@ -1263,6 +1268,17 @@ test('restart confirmation follows language, rejects stale releases and submits 
     await publish({ phase: 'ready' })
     await page.getByTestId('activity-update').click()
     await action.click()
+    await page.evaluate(async () => {
+      const { candidate } = await window.scholarseed.getUpdateState()
+      const fixture = (
+        window as unknown as { updateFixture: { publish(next: Record<string, unknown>): void } }
+      ).updateFixture
+      fixture.publish({
+        candidate: { ...candidate!, id: 'promoted', build_number: '2' },
+        readyOrigin: candidate!.id,
+      })
+    })
+    await expect(page.getByTestId('update-restart-confirm')).toBeEnabled()
     await page.getByTestId('update-restart-confirm').evaluate((button: HTMLButtonElement) => {
       button.click()
       button.click()

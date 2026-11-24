@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import { StartupState, STARTUP_PHASE } from '../startup.ts'
-import { UpdatePreparation } from './preparation.ts'
+import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import { BackendMaintenanceRejected } from './backend-control.ts'
 import { installationFailure } from './family.ts'
 import { redactDiagnosticError } from './redaction.ts'
@@ -225,6 +225,134 @@ for (const outcome of ['ready', 'manual-ready', 'missing-receipt', 'candidate-re
   })
 }
 
+for (const outcome of [
+  'promoted',
+  'failed',
+  'receipt-lost',
+  'archive-limit',
+  'restart-active',
+] as const) {
+  test(`macOS prepares a successor while the active release remains restartable: ${outcome}`, async () => {
+    const first = candidate('202610131000'),
+      next = candidate('202610131001')
+    let active = first
+    let receiptLost = false
+    let snapshot: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
+    const publications: string[] = []
+    let began!: () => void, finish!: () => void
+    const started = new Promise<void>((resolve) => {
+      began = resolve
+    })
+    const waiting = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    let promotionAllowed: (() => boolean) | undefined
+    let nativeSignal: AbortSignal | undefined
+    const worker = runInNewContext(preparationWorker, {
+      MACOS_PLATFORM: 'darwin',
+      WINDOWS_PLATFORM: 'win32',
+      process: { platform: 'darwin' },
+      app: { getVersion: () => snapshot.currentVersion },
+      pushLog: () => {},
+      currentUpdateSnapshot: () => snapshot,
+      publishUpdateSnapshot: (value: UpdateSnapshot, hidden?: string) => {
+        snapshot = value
+        publications.push(hidden ?? value.candidate!.id)
+      },
+      publishUpdateProgress: () => assert.fail('background progress replaced the restart action'),
+      requireDesktopWorkbench: () => {},
+      runBackgroundUpdateCheck: () => {},
+      updateInstallAbort: null,
+      appQuitting: false,
+      updateRestartRequested: false,
+      updateInstallationInProgress: false,
+      macMaintenanceUncertain: false,
+      previewPolicyChanging: false,
+      updater: {
+        logUpdateEvent: () => {},
+        resolveDesktopConfig: () => ({ buildNumber: '202610120900' }),
+        validatePreviewCandidate: async () => {},
+        macPreparationReady: (candidate: LatestVersionMeta) =>
+          !receiptLost && candidate.id === active.id,
+        prepareMacSuccessor: async (
+          candidate: LatestVersionMeta,
+          progress: (value: { phase: string }) => void,
+          _log: unknown,
+          signal: AbortSignal,
+          canPromote: () => boolean
+        ) => {
+          assert.equal(candidate, next)
+          nativeSignal = signal
+          promotionAllowed = canPromote
+          progress({ phase: 'downloading' })
+          began()
+          await waiting
+          if (outcome === 'receipt-lost') {
+            receiptLost = true
+            throw new Error('Active native receipt lost')
+          }
+          if (outcome === 'failed' || !canPromote()) return { ok: false }
+          if (outcome === 'archive-limit')
+            return { ok: false, errorFallback: 'install_archive_limit' }
+          active = next
+          return { ok: true, mode: 'auto' }
+        },
+      },
+    })
+    const queue = new UpdatePreparation(worker, undefined, {
+      ...backgroundPreparationPolicy('darwin')!,
+      coalesceMs: 0,
+    })
+    queue.adopt(first)
+    queue.observe(next)
+    assert.ok(outcome === 'promoted' ? queue.background(true) : queue.request(next))
+    await started
+    assert.equal(snapshot.phase, 'ready')
+    assert.equal(snapshot.candidate?.id, first.id)
+    assert.equal(promotionAllowed!(), true)
+    if (outcome === 'restart-active') {
+      assert.equal(
+        queue.claim(next, () => false),
+        false
+      )
+      assert.equal(
+        queue.claim(first, () => active.id === first.id),
+        true
+      )
+      assert.equal(nativeSignal!.aborted, true)
+      assert.equal(promotionAllowed!(), false)
+    }
+    finish()
+    await queue.settled()
+    if (receiptLost) {
+      assert.equal(snapshot.phase, 'failed')
+      assert.equal(snapshot.errorFallback, 'activation_recovery_required')
+      assert.equal(
+        queue.claim(first, () => false),
+        false
+      )
+      return
+    }
+    const expected = outcome === 'promoted' ? next : first
+    assert.equal(active.id, expected.id)
+    assert.equal(snapshot.phase, 'ready')
+    assert.equal(snapshot.candidate?.id, expected.id)
+    assert.equal(snapshot.readyOrigin, outcome === 'promoted' ? first.id : undefined)
+    assert.deepEqual(publications, ['promoted', 'archive-limit'].includes(outcome) ? [next.id] : [])
+    if (outcome === 'promoted')
+      assert.equal(
+        queue.claim(first, () => active.id === first.id),
+        false
+      )
+    if (outcome !== 'restart-active')
+      assert.equal(
+        queue.claim(expected, () => active.id === expected.id),
+        true
+      )
+    assert.equal(queue.offer(next), false)
+  })
+}
+
 for (const windows of [false, true]) {
   for (const rejected of [false, true]) {
     test(`${windows ? 'Velopack' : 'Squirrel'} pins restart across publication and ${rejected ? 'rejection' : 'handoff'}`, async () => {
@@ -233,8 +361,19 @@ for (const windows of [false, true]) {
       let snapshot: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
       let nativeReady = windows
       const prepared: string[] = []
-      const preparation = new UpdatePreparation(async ({ candidate }) => {
+      let began!: () => void
+      const successorStarted = new Promise<void>((resolve) => {
+        began = resolve
+      })
+      const preparation = new UpdatePreparation(async ({ candidate, signal, isCurrent }) => {
         prepared.push(candidate.id)
+        if (candidate.id === newer.id) {
+          began()
+          await new Promise<void>((resolve) =>
+            signal.addEventListener('abort', () => resolve(), { once: true })
+          )
+          assert.equal(isCurrent(), false)
+        }
         return true
       })
       preparation.offer(first)
@@ -243,7 +382,11 @@ for (const windows of [false, true]) {
       const waiting = new Promise<void>((resolve) => {
         finish = resolve
       })
-      let install!: (_event: unknown, expectedId: string) => Promise<{ ok: boolean }>
+      let install!: (
+        _event: unknown,
+        expectedId: string,
+        latestReady?: boolean
+      ) => Promise<{ ok: boolean }>
       let checks = 0,
         exits = 0
       const window = { webContents: { session: { cookies: { flushStore: async () => {} } } } }
@@ -330,15 +473,21 @@ for (const windows of [false, true]) {
           },
           logUpdateEvent: () => {},
           readReadyState: () => ({}),
-          installStagedUpdate: async () => {
-            await waiting
+          installStagedUpdate: async (
+            _progress: unknown,
+            _log: unknown,
+            _signal: AbortSignal,
+            authorize: (selected: LatestVersionMeta) => Promise<() => void>
+          ) => {
+            const guard = await authorize(first)
+            guard()
             return rejected
               ? { ok: false, errorFallback: 'activation_unavailable' }
               : { ok: true, mode: 'manual' }
           },
         },
         desktopHandoff: { isBusy: () => false },
-        backend: null,
+        backend: windows ? null : { stopping: false, proc: { exitCode: null, signalCode: null } },
         backendUpdateControl: () => ({
           prepareUpdate: async () => 'generation',
           resume: async () => {},
@@ -370,8 +519,18 @@ for (const windows of [false, true]) {
         assert.equal((await blocked).ok, false)
         nativeReady = true
         snapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
+        preparation.offer(newer)
+        await successorStarted
       }
-      const pending = install(null, first.id)
+      // These are distinct confirmations: a pinned Windows/old-client request
+      // cannot follow a promotion. A macOS latest-ready confirmation from this
+      // uninterrupted native chain can, even if the IPC was sent before promotion.
+      const origin = 'previously-ready'
+      snapshot = { ...snapshot, readyOrigin: origin }
+      assert.equal((await install(null, origin)).ok, false)
+      assert.equal((await install(null, 'unrelated', true)).ok, false)
+      if (windows) assert.equal((await install(null, origin, true)).ok, false)
+      const pending = install(null, windows ? first.id : origin, !windows)
       assert.equal(checks, 0, 'restart must not reselect the latest release')
       runInNewContext('publishUpdateCheckResult({ has_update: true, latest: newer })', context)
       assert.equal(preparation.offer(newer), false)
@@ -380,7 +539,9 @@ for (const windows of [false, true]) {
       const result = await pending
       assert.equal(result.ok, !rejected)
       assert.equal(checks, 0)
-      assert.deepEqual(prepared, [first.id])
+      await preparation.settled()
+      assert.deepEqual(prepared, windows ? [first.id] : [first.id, newer.id])
+      assert.equal(preparation.candidate?.id, first.id)
       assert.equal(snapshot.candidate?.id, first.id)
       assert.equal(exits, windows && !rejected ? 1 : 0)
     })

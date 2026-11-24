@@ -707,8 +707,8 @@ const bridge = {
   startUpdate(id: string): Promise<StartUpdateResult> {
     return ipcRenderer.invoke('scholarseed:update-start', id)
   },
-  installUpdate(expectedId: string): Promise<StartUpdateResult> {
-    return ipcRenderer.invoke('scholarseed:update-install', expectedId)
+  installUpdate(confirmedId: string, latestReady?: boolean): Promise<StartUpdateResult> {
+    return ipcRenderer.invoke('scholarseed:update-install', confirmedId, latestReady)
   },
   repairUpdate(): Promise<StartUpdateResult> {
     return ipcRenderer.invoke(UPDATE_REPAIR_CHANNEL)

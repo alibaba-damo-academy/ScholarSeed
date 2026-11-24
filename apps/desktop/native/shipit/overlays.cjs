@@ -9,5 +9,5 @@ const SHIPIT_OVERLAYS = [
   'binding.h', 'binding.patch', 'authorization.patch', 'recovery.patch',
   'succession.h', 'metadata.patch',
 ]
-const SQUIRREL_OVERLAYS = ['readiness.h', 'readiness.m', 'readinesswait.h', 'readiness.patch', 'observation.h', 'binding.h', 'binding.patch', 'transfer.patch', 'interaction.patch']
+const SQUIRREL_OVERLAYS = ['readiness.h', 'readiness.m', 'readinesswait.h', 'readiness.patch', 'observation.h', 'binding.h', 'binding.patch', 'transfer.patch', 'interaction.patch', 'successor.h', 'successor.m', 'successor.patch']
 module.exports = { SHIPIT_OVERLAYS, SQUIRREL_OVERLAYS }

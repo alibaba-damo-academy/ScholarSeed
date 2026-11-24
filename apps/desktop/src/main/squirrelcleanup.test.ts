@@ -1,5 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { retryMacCleanup } from './squirrelcleanup.ts'
 
 const request = {
@@ -8,6 +11,27 @@ const request = {
   application: '/Applications/Scholar Seed.app',
   bundle: 'com.scholarseed.desktop',
 }
+
+test('cleanup dispatches each fixed slot with its own journal', async (t) => {
+  const applicationSupport = await mkdtemp(join(tmpdir(), 'alternate-cleanup-'))
+  t.after(() => rm(applicationSupport, { recursive: true, force: true }))
+  const cleanup = join(applicationSupport, request.bundle + '.ShipIt.next', 'DeferredCleanup')
+  await mkdir(cleanup, { recursive: true })
+  await writeFile(join(cleanup, 'journal.plist'), '')
+  const calls: string[] = []
+  assert.equal(
+    await retryMacCleanup({ ...request, applicationSupport }, () => {}, {
+      execute: async (_, args) => {
+        calls.push(args[1])
+        return { code: 0, stderr: '' }
+      },
+      delay: async () => {},
+      log: () => {},
+    }),
+    true
+  )
+  assert.deepEqual(calls.sort(), [request.bundle + '.ShipIt', request.bundle + '.ShipIt.next'])
+})
 
 test('cleanup dispatches only the packaged native helper and never waits on startup', async () => {
   let finish!: (value: { code: number; stderr: string }) => void

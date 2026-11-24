@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { updateCandidateKey, type UpdateSnapshot } from '../../../../updates'
 import {
+  matchesRestartConfirmation,
   runLatestUpdateAction,
   runUpdateAction,
   updateActionOf,
@@ -36,10 +37,8 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
   const [failed, setFailed] = useState(false)
   const responding = useRef(false)
   const requestedKey = updateCandidateKey(requested?.candidate)
-  const valid =
-    updateActionOf(state) === 'install' &&
-    requestedKey === updateCandidateKey(state?.candidate) &&
-    requested?.candidate?.id === state?.candidate?.id
+  const latestReady = window.scholarseed.platform === 'darwin'
+  const valid = matchesRestartConfirmation(requested, state, latestReady)
 
   const execute = async (confirmedKey?: string, latest = false): Promise<void> => {
     if (responding.current) return
@@ -49,7 +48,11 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
     try {
       onAction?.()
       if (latest) await runLatestUpdateAction(state)
-      else await runUpdateAction(confirmedKey ? requested : state, confirmedKey)
+      else if (
+        (await runUpdateAction(confirmedKey ? requested : state, confirmedKey, latestReady)) ===
+        'candidate-changed'
+      )
+        return
       setRequested(null)
     } catch {
       setFailed(true)
@@ -110,6 +113,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
           <AlertDialogHeader>
             <AlertDialogTitle id={titleId}>{t('update.confirmRestartTitle')}</AlertDialogTitle>
             <AlertDialogDescription id={descriptionId}>
+              {latestReady && <>{t('update.confirmRestartLatestReady')} </>}
               {t('update.confirmRestartDetail')}
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -8,9 +8,22 @@ static const NSUInteger SSSuccessionStateBytes = 64 * 1024;
 static const NSUInteger SSSuccessionRequestFields = 7;
 static const NSUInteger SSSuccessionStateArgument = 2;
 static NSString * const SSSuccessionHelperSuffix = @".ShipIt";
+static NSString * const SSSuccessionAlternateSuffix = @".ShipIt.next";
 static NSString * const SSSuccessionTeamPattern = @"^[A-Z0-9]{10}$";
 static NSString * const SSSuccessionBundlePattern = @"^[A-Za-z0-9.-]+$";
 static NSString * const SSSuccessionRollbackKey = @"SQRLInstallerOwnedBundle";
+
+static inline BOOL SSSuccessionLabelMatches(id bundle, id label) {
+  if (![bundle isKindOfClass:NSString.class] || [bundle rangeOfString:SSSuccessionBundlePattern options:NSRegularExpressionSearch].location != 0)
+    return NO;
+  return [label isEqual:[bundle stringByAppendingString:SSSuccessionHelperSuffix]] ||
+    [label isEqual:[bundle stringByAppendingString:SSSuccessionAlternateSuffix]];
+}
+
+static inline NSString *SSSuccessionStateLabel(id bundle, NSString *path) {
+  NSString *label = path.stringByDeletingLastPathComponent.lastPathComponent;
+  return [path.lastPathComponent isEqual:@"ShipItState.plist"] && SSSuccessionLabelMatches(bundle, label) ? label : nil;
+}
 
 static inline NSURL *SSSuccessionStateURL(void) {
   NSArray *arguments = NSProcessInfo.processInfo.arguments;
@@ -48,7 +61,7 @@ static inline BOOL SSVerifySuccessionTrust(NSDictionary *request, NSString *labe
   NSDictionary *serialized = SSSuccessionRequest(request);
   if (request.count != SSSuccessionRequestFields || !SSBindingValid(request[@"binding"]) ||
       ![bundle isKindOfClass:NSString.class] || [bundle rangeOfString:SSSuccessionBundlePattern options:NSRegularExpressionSearch].location != 0 ||
-      ![label isEqual:[bundle stringByAppendingString:SSSuccessionHelperSuffix]] ||
+      !SSSuccessionLabelMatches(bundle, label) ||
       !SSObservationBoolean(request[@"installationAuthorized"]) || [request[@"installationAuthorized"] boolValue] ||
       !SSObservationBoolean(request[@"launchAfterInstallation"]) || [request[@"launchAfterInstallation"] boolValue] ||
       !SSObservationBoolean(request[@"useUpdateBundleName"]) || !serialized)
@@ -76,7 +89,8 @@ static inline BOOL SSVerifySuccessionTrust(NSDictionary *request, NSString *labe
   return verified ? YES : SSObservationFail(error, EPERM);
 }
 static inline BOOL SSVerifySuccession(NSDictionary *request, NSURL *state, NSString *label, NSString *rollbackKey, NSError **error) {
-  if (!state.isFileURL || state.host.length) return SSObservationFail(error, EINVAL);
+  if (!state.isFileURL || state.host.length || ![label isEqual:SSSuccessionStateLabel(request[@"bundleIdentifier"], state.path)])
+    return SSObservationFail(error, EINVAL);
   int directory = SSObservationOpenDirectory(state.path.stringByDeletingLastPathComponent);
   if (directory < 0) return SSObservationFail(error, errno);
   NSDictionary *before = SSObservationReadAt(directory, state.lastPathComponent, SSSuccessionStateBytes, NO, NO, error);
@@ -90,7 +104,7 @@ static inline BOOL SSVerifySuccession(NSDictionary *request, NSURL *state, NSStr
 static inline BOOL SSVerifyRetirementTrust(NSDictionary *request, NSString *label, NSError **error) {
   NSString *bundle = request[@"bundleIdentifier"];
   if (![bundle isKindOfClass:NSString.class] || [bundle rangeOfString:SSSuccessionBundlePattern options:NSRegularExpressionSearch].location != 0 ||
-      ![label isEqual:[bundle stringByAppendingString:SSSuccessionHelperSuffix]]) return SSObservationFail(error, EINVAL);
+      !SSSuccessionLabelMatches(bundle, label)) return SSObservationFail(error, EINVAL);
   if (!SSSuccessionRollbackAbsent(label, SSSuccessionRollbackKey, error)) return NO;
   SecCodeRef running = NULL; CFDictionaryRef information = NULL; SecRequirementRef requirement = NULL;
   OSStatus status = SecCodeCopySelf(kSecCSDefaultFlags, &running);

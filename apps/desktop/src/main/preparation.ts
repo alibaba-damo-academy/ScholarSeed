@@ -558,7 +558,33 @@ export class UpdatePreparation {
   }
 
   /** Pin the prepared release synchronously when the user requests restart. */
-  claim(candidate: LatestVersionMeta): boolean {
+  claim(candidate: LatestVersionMeta, liveReceipt?: () => boolean): boolean {
+    if (liveReceipt && !liveReceipt()) return false
+    if (this.worker && liveReceipt) {
+      // Native preparation can keep the ready candidate available while a
+      // newer generation runs. Only the caller holding its live receipt can
+      // cancel that generation and pin the exact candidate synchronously.
+      if (this.committed || this.stopped || !this.desired) return false
+      const generation = this.generation + 1
+      const admission = {
+        ...this.admission,
+        inFlight: null,
+        pending:
+          this.admission.pending ??
+          (this.desired.id !== candidate.id
+            ? { candidate: this.desired, since: this.admission.inFlight?.startedAt ?? this.now() }
+            : null),
+      }
+      if (!this.checkpoint(candidate, generation, candidate.id, admission)) return false
+      this.generation = generation
+      this.desired = candidate
+      this.completed = candidate.id
+      this.committed = true
+      this.terminal = null
+      this.paused = false
+      this.controller?.abort()
+      return true
+    }
     this.adopt(candidate)
     if (this.policy) this.paused = false
     else this.resume()

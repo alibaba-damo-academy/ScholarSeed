@@ -226,7 +226,7 @@ declare global {
     /** mac「高级」/ dev 提交数据父目录 P；写 userData 指针，下次启动生效。 */
     commitDataHome: (parent: string) => Promise<CommitDataHomeResult>
     startUpdate: (id: string) => Promise<StartUpdateResult>
-    installUpdate: (expectedId: string) => Promise<StartUpdateResult>
+    installUpdate: (confirmedId: string, latestReady?: boolean) => Promise<StartUpdateResult>
     repairUpdate: () => Promise<StartUpdateResult>
     cancelUpdate: () => Promise<StartUpdateResult>
     /** 收起「发现新版本」弹窗；确认由主进程落盘，跨客户端重启有效。false = 当前没有候选包。 */

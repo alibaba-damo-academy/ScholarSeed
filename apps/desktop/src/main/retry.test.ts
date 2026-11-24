@@ -7,6 +7,7 @@ import ts from 'typescript'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import type { PreparationCheckpoint } from './preparation.ts'
 import { nextUpdateCheckAt } from './checks.ts'
+import { isNewerRelease } from './version.ts'
 import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
 
 const source = ts.createSourceFile(
@@ -16,7 +17,7 @@ const source = ts.createSourceFile(
   true
 )
 const declarations: string[] = []
-const handlers = ['scholarseed:update-check']
+const handlers = ['scholarseed:update-check', 'scholarseed:update-start']
 function visit(node: ts.Node): void {
   if (
     ts.isFunctionDeclaration(node) &&
@@ -35,7 +36,7 @@ function visit(node: ts.Node): void {
   ts.forEachChild(node, visit)
 }
 visit(source)
-assert.equal(declarations.length, 4)
+assert.equal(declarations.length, 5)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
@@ -80,6 +81,7 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     updateInstallationInProgress: false,
     macMaintenanceUncertain: false,
     desktopWorkbenchReady: () => true,
+    requireDesktopWorkbench: () => {},
     app: { getVersion: () => '0.2.0', isPackaged: false },
     backgroundUpdateTimer: null,
     backgroundUpdateTimerStarted: true,
@@ -97,11 +99,12 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     updatePreparation: preparation,
     nextPreparationRetryAt: 0,
     loadRendererPreferences: () => ({ autoDownloadUpdates: true }),
-    isNewerRelease: () => true,
+    isNewerRelease,
     updater: {
       isCurrentPreviewResult: () => true,
       previewPolicyRevision: () => 0,
       macHandoffCommitted: () => false,
+      canPrepareMacSuccessor: () => false,
       macPreparationReady: () => true,
       updateLaneUnsupported: () => false,
       archType: () => 'windows-amd64',
@@ -115,7 +118,8 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     },
   }
   runInNewContext(code, context)
-  const invoke = (name: string) => ipc.get('scholarseed:update-' + name)!(null)
+  const invoke = (name: string, ...args: unknown[]) =>
+    ipc.get('scholarseed:update-' + name)!(null, ...args)
   const check = (latest = first) => {
     context.latest = latest
     return runInNewContext('publishUpdateCheckResult({has_update: true, latest})', context)
@@ -128,6 +132,48 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     schedule: () => runInNewContext('armBackgroundUpdateCheck()', context),
     timers,
   }
+}
+
+for (const enabled of [false, true]) {
+  test(`a reserved macOS release keeps checking for newer builds (automatic=${enabled})`, async () => {
+    const h = await harness('darwin')
+    const { context } = h
+    context.updater.macHandoffCommitted = () => true
+    context.loadRendererPreferences = () => ({ autoDownloadUpdates: enabled })
+    h.schedule()
+    h.check(newer)
+    assert.equal(h.timers.length, 0)
+    assert.equal(context.updateSnapshot.latestCandidate, undefined)
+    context.updater.canPrepareMacSuccessor = () => true
+    h.schedule()
+    assert.equal(h.timers.length, 1)
+    let finish!: () => void
+    const waiting = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const attempts: string[] = []
+    context.updatePreparation = new UpdatePreparation(
+      async ({ origin }) => {
+        attempts.push(origin)
+        await waiting
+        return true
+      },
+      undefined,
+      context.preparationPolicy
+    )
+    h.check(newer)
+    await Promise.resolve()
+    assert.equal(context.updateSnapshot.phase, 'ready')
+    assert.equal(context.updateSnapshot.candidate?.id, first.id)
+    assert.equal(context.currentUpdateSnapshot().latestCandidate?.id, newer.id)
+    assert.deepEqual(attempts, enabled ? ['background'] : [])
+    // The explicit action completes immediately, leaving the restart button enabled.
+    assert.equal(((await h.invoke('start', newer.id)) as { ok: boolean }).ok, true)
+    assert.deepEqual(attempts, [enabled ? 'background' : 'manual'])
+    assert.equal(context.updateSnapshot.candidate?.id, first.id)
+    finish()
+    await context.updatePreparation.settled()
+  })
 }
 
 test('a persisted archive limit projects the failure on the first cold update check', async () => {

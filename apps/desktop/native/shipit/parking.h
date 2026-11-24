@@ -24,11 +24,6 @@ static inline SSPreparationActivity SSParkingActivity(NSDictionary *config, NSDi
   return InspectActivityPolicy([NSURL fileURLWithPath:candidate], target, exemption);
 }
 
-static inline NSString *SSParkingLabel(id bundle) {
-  return [bundle isKindOfClass:NSString.class] && [bundle rangeOfString:SSSuccessionBundlePattern options:NSRegularExpressionSearch].location == 0
-    ? [bundle stringByAppendingString:SSSuccessionHelperSuffix] : nil;
-}
-
 static inline NSDictionary *SSParkingJobDomain(NSString *label, CFStringRef domain, NSError **error) {
   NSArray *jobs = CFBridgingRelease(SMCopyAllJobDictionaries(domain));
   if (![jobs isKindOfClass:NSArray.class]) { SSObservationFail(error, EIO); return nil; }
@@ -71,7 +66,7 @@ static inline BOOL SSParkSuccession(NSDictionary *config, NSError **error) {
   if (!observed) {
     if (code != ENOENT || !config[@"expected"]) return SSObservationFail(error, code);
     NSDictionary *expected = config[@"expected"];
-    label = SSParkingLabel(expected[@"bundleIdentifier"]);
+    label = SSSuccessionStateLabel(expected[@"bundleIdentifier"], state.path);
     if (!label) return SSObservationFail(error, EINVAL);
     if (!SSParkingSystemAbsent(label, error)) return NO;
     NSDictionary *job = SSParkingJob(label, error);
@@ -86,7 +81,7 @@ static inline BOOL SSParkSuccession(NSDictionary *config, NSError **error) {
     if (!url.isFileURL || url.host.length || ![url.path isEqual:config[pair[1]]]) return SSObservationFail(error, ESTALE);
     request[pair[0]] = url;
   }
-  label = SSParkingLabel(request[@"bundleIdentifier"]);
+  label = SSSuccessionStateLabel(request[@"bundleIdentifier"], state.path);
   if (!label) return SSObservationFail(error, EINVAL);
   if (!SSParkingSystemAbsent(label, error)) return NO;
   BOOL (^verify)(NSError **) = ^BOOL(NSError **failure) {

@@ -123,6 +123,18 @@ export function updateRestartLabelKey(
   return platform === 'darwin' ? 'update.restartUpdate' : nonMacLabelKey
 }
 
+export function matchesRestartConfirmation(
+  requested: UpdateSnapshot | null,
+  current: UpdateSnapshot | null,
+  latestReady: boolean
+): boolean {
+  const confirmed = requested?.candidate
+  const ready = current?.candidate
+  if (updateActionOf(current) !== 'install' || !confirmed || !ready) return false
+  if (confirmed.id === ready.id) return updateCandidateKey(confirmed) === updateCandidateKey(ready)
+  return latestReady && current?.readyOrigin === (requested?.readyOrigin ?? confirmed.id)
+}
+
 /**
  * 发起当前相位对应的那一个动作。
  *
@@ -130,8 +142,9 @@ export function updateRestartLabelKey(
  */
 export async function runUpdateAction(
   state: UpdateSnapshot | null,
-  confirmedCandidateKey?: string
-): Promise<void> {
+  confirmedCandidateKey?: string,
+  latestReady = false
+): Promise<'candidate-changed' | void> {
   const action = updateActionOf(state)
   const id = state?.candidate?.id
   if (action === 'repair') {
@@ -139,16 +152,22 @@ export async function runUpdateAction(
     if (!result.ok && !result.cancelled) throw new Error('Update repair could not start')
   } else if (action === 'download' && id) await window.scholarseed.startUpdate(id)
   else if (action === 'install') {
-    if (!confirmedCandidateKey || confirmedCandidateKey !== updateCandidateKey(state?.candidate))
-      return
-    const current = await window.scholarseed.getUpdateState()
     if (
-      updateActionOf(current) !== 'install' ||
-      current.candidate?.id !== id ||
-      updateCandidateKey(current.candidate) !== confirmedCandidateKey
+      !id ||
+      !confirmedCandidateKey ||
+      confirmedCandidateKey !== updateCandidateKey(state?.candidate)
     )
       return
-    await window.scholarseed.installUpdate(id!)
+    const current = await window.scholarseed.getUpdateState()
+    if (!current.candidate || !matchesRestartConfirmation(state, current, latestReady))
+      return 'candidate-changed'
+    const confirmedId = latestReady ? (current.readyOrigin ?? current.candidate.id) : id
+    const result = await window.scholarseed.installUpdate(confirmedId, latestReady)
+    if (
+      !result.ok &&
+      (await window.scholarseed.getUpdateState()).candidate?.id !== current.candidate.id
+    )
+      return 'candidate-changed'
   } else if (action === 'check') await window.scholarseed.checkUpdate()
 }
 

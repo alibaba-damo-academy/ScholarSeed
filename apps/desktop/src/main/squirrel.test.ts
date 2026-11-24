@@ -4,6 +4,7 @@ import { execFile, spawn } from 'node:child_process'
 import { activationCommitGuard, ActivationExpired } from './update-authorization.ts'
 import { EventEmitter, once } from 'node:events'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import {
   mkdtemp,
   mkdir,
@@ -17,6 +18,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { isDeepStrictEqual, promisify } from 'node:util'
+import { writeJson } from './journal.ts'
 import {
   SquirrelInstallation,
   discardOnTerminalSquirrelFailure,
@@ -28,6 +30,7 @@ import {
   type SquirrelHandoff,
   type SquirrelArchive,
   type SquirrelNativeRequest,
+  type SquirrelRecordMutation,
   validSquirrelBinding,
 } from './squirrel.ts'
 import { assertSquirrelArchiveSize, MAX_SQUIRREL_ARCHIVE_BYTES } from './archive.ts'
@@ -315,10 +318,139 @@ class InstallationFixture extends SquirrelInstallation {
         item: { dev: 1, ino: 3, uid: 501 },
       }
       return { source, target: { ...source, path: '/fixture/target' }, binding: candidate.binding }
-    }
+    },
+    successor = false
   ) {
-    super(updater, record, diagnostic, timeout, bind)
+    super(updater, record, diagnostic, timeout, bind, undefined, successor)
   }
+}
+
+test('successor publication preserves the downloaded update until a guarded exact replacement', async (t) => {
+  const { archive, record, directory } = await fixture(t)
+  const sidecar = join(directory, 'successor.json')
+  const source = new Updater(),
+    next = new Updater()
+  const previous = new InstallationFixture(source, record, () => {})
+  const successor = new InstallationFixture(next, sidecar, () => {}, undefined, undefined, true)
+  source.check = () => source.emit('update-downloaded')
+  next.check = () => next.emit('update-downloaded')
+  const authorize = async () => () => {}
+  await previous.prepare(archive, identity, authorize)
+  const first = readSquirrelHandoff(record)!
+  await successor.prepare(
+    archive,
+    { ...identity, alternate: true, candidate: 'newer', buildNumber: '202611260001' },
+    authorize
+  )
+  const second = readSquirrelHandoff(sidecar)!
+  const mutate = (fn: (write: (value: SquirrelHandoff) => void) => void) =>
+    fn((value) => writeJson(record, value))
+  assert.throws(() => successor.quitAndInstall(), /not ready/)
+  assert.equal(next.quits, 0)
+  assert.throws(
+    () =>
+      successor.promoteTo(record, mutate, first, () => {
+        throw new Error('activation expired')
+      }),
+    /activation expired/
+  )
+  writeJson(sidecar, { ...second, version: 'other' })
+  assert.throws(() => successor.promoteTo(record, mutate, first, () => {}), /changed/)
+  writeJson(sidecar, second)
+  assert.throws(
+    () => successor.promoteTo(record, mutate, { ...first, at: first.at + 1 }, () => {}),
+    /changed/
+  )
+  assert.deepEqual(readSquirrelHandoff(record), first)
+  successor.promoteTo(record, mutate, first, () => {})
+  previous.detach()
+  assert.equal(source.listenerCount('error'), 0)
+  assert.deepEqual(readSquirrelHandoff(record), second)
+  assert.throws(() => previous.quitAndInstall(), /not ready/)
+  successor.quitAndInstall()
+  assert.equal(next.quits, 1)
+  assert.equal(readSquirrelHandoff(record)?.state, 'installing')
+  assert.deepEqual(readSquirrelHandoff(sidecar), second)
+})
+
+for (const fault of [
+  'before-write',
+  'before-rename',
+  'after-rename',
+  'release',
+  'replaced',
+  'unknown',
+]) {
+  test(`uncertain successor publication retains only the exact selected request: ${fault}`, async (t) => {
+    const { archive, directory, record } = await fixture(t)
+    const sidecar = join(directory, 'successor.json')
+    const primary = new Updater(),
+      next = new Updater()
+    primary.check = () => primary.emit('update-downloaded')
+    next.check = () => next.emit('update-downloaded')
+    const original = new InstallationFixture(primary, record, () => {})
+    const events: string[] = []
+    const successor = new InstallationFixture(
+      next,
+      sidecar,
+      (event) => events.push(event),
+      undefined,
+      undefined,
+      true
+    )
+    const authorize = async () => () => {}
+    await original.prepare(archive, identity, authorize)
+    await successor.prepare(archive, { ...identity, candidate: 'next', alternate: true }, authorize)
+    const prior = readSquirrelHandoff(record)!
+    const published = readSquirrelHandoff(sidecar)!
+    const error = Object.assign(new Error(fault), {
+      code:
+        fault === 'unknown'
+          ? 'OTHER'
+          : fault === 'after-rename'
+            ? 'ERR_LEASE_SYNC'
+            : 'ERR_LEASE_RELEASE',
+    })
+    let fenced = false
+    const mutate: SquirrelRecordMutation = (operation) => {
+      if (fenced) throw new Error('Writer requires process exit')
+      fenced = true
+      if (fault === 'before-write') throw error
+      operation((write) => {
+        if (fault === 'before-rename') throw error
+        writeJson(record, fault === 'replaced' ? { ...write, at: write.at + 1 } : write)
+        if (fault !== 'release') throw error
+      })
+      throw error
+    }
+    let reads = 0
+    const promote = () =>
+      successor.promoteTo(
+        record,
+        mutate,
+        prior,
+        () => {},
+        () => {
+          reads++
+          return readFileSync(record)
+        }
+      )
+    if (fault === 'after-rename' || fault === 'release') {
+      promote()
+      assert.ok(events.includes('handoff-promotion-observed-after-writer-error'))
+      assert.throws(() => successor.quitAndInstall(), /process exit/)
+      assert.deepEqual(readSquirrelHandoff(record), published)
+    } else {
+      assert.throws(promote, (actual) => actual === error)
+      assert.throws(() => successor.quitAndInstall(), /not ready/)
+      if (fault === 'before-write' || fault === 'before-rename')
+        assert.deepEqual(readSquirrelHandoff(record), prior)
+    }
+    assert.equal(reads, fault === 'before-write' || fault === 'unknown' ? 0 : 1)
+    assert.equal(next.quits, 0)
+    assert.equal(primary.quits, 0)
+    assert.deepEqual(readSquirrelHandoff(sidecar), published)
+  })
 }
 
 test('retry of a restored installation requires a manual attempt, live proof and fresh activation', async (t) => {
@@ -915,6 +1047,11 @@ test('ShipIt diagnostics are bounded, deduplicated and never follow unrelated fi
     ['Squirrel_timing.log']
   )
   assert.match(timing[0].text, /stage=unzip/)
+  await mkdir(logs + '.next')
+  await writeFile(join(logs + '.next', 'ShipIt_stderr.log'), 'successor')
+  assert.deepEqual(await shipItDiagnostics(directory, 'org.scholarseed.app'), [
+    { name: 'next/ShipIt_stderr.log', text: 'successor' },
+  ])
   await assert.rejects(shipItDiagnostics(directory, '../escape'))
 })
 

@@ -1,6 +1,8 @@
 // Scheduling only. The native installer owns the journal, locks and deletion authority.
 import { execFile } from 'node:child_process'
+import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
+import { squirrelJobLabel } from './squirrel.ts'
 
 const CLEANUP_MODE = '___cleanup___'
 const HELPER = ['Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt']
@@ -14,6 +16,7 @@ interface CleanupRequest {
   packaged: boolean
   application: string
   bundle: string
+  applicationSupport?: string
 }
 interface CleanupDependencies {
   execute: (executable: string, args: string[]) => Promise<{ code: number; stderr: string }>
@@ -56,12 +59,36 @@ export async function retryMacCleanup(
     dependencies.log('[update-cleanup] event=invalid-request\n')
     return false
   }
+  const slots = [false]
+  if (request.applicationSupport) {
+    const journal = join(
+      request.applicationSupport,
+      squirrelJobLabel(request.bundle, true),
+      'DeferredCleanup',
+      'journal.plist'
+    )
+    try {
+      lstatSync(journal)
+      slots.push(true)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') slots.push(true)
+    }
+  }
+  const outcomes = await Promise.all(slots.map((slot) => retrySlot(request, dependencies, slot)))
+  return outcomes.every(Boolean)
+}
+
+async function retrySlot(
+  request: CleanupRequest,
+  dependencies: CleanupDependencies,
+  alternate: boolean
+) {
   for (const [index, milliseconds] of RETRY_DELAYS_MS.entries()) {
     await dependencies.delay(milliseconds)
     try {
       const result = await dependencies.execute(join(request.application, ...HELPER), [
         CLEANUP_MODE,
-        `${request.bundle}.ShipIt`,
+        squirrelJobLabel(request.bundle, alternate),
         request.application,
       ])
       // Forward only bounded native diagnostics, never arbitrary helper stderr/paths.

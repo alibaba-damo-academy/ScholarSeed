@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
@@ -15,7 +26,10 @@ import {
   ActivationExpired,
 } from './update-authorization.ts'
 import { retryUpdate, UpdateTransportError } from './retry.ts'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { SuccessorUpdater } from './successor.ts'
+import { planUpdatePrune, updateArtifactKind } from './staging.ts'
+import { writeJson } from './journal.ts'
 
 const source = readFileSync(new URL('./updater.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('updater.ts', source, ts.ScriptTarget.Latest, true)
@@ -31,6 +45,227 @@ function updaterFunctions(names: string[]): string {
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }
   ).outputText
 }
+
+test('a successor only replaces the selected slot after its native receipt and an uncontested commit', async () => {
+  for (const outcome of [
+    'promoted',
+    'rotated',
+    'download-failed',
+    'native-failed',
+    'missing-copy',
+    'clicked',
+    'changed-on-disk',
+  ] as const) {
+    const alternate = outcome === 'rotated'
+    const current = { meta: { id: 'B', version: '1', build_number: '2' } }
+    const next = { meta: { id: 'D', version: '1', build_number: '4' }, archive: {} }
+    const previous = { candidate: 'B', state: 'downloaded', ...(alternate ? { alternate } : {}) }
+    const published = [current, current]
+    const events: string[] = []
+    const controller = new AbortController()
+    const active = {
+      detach() {
+        events.push('detach B')
+      },
+    }
+    const prepared = { workspace: '/cache/D', receipt: { matches: () => true } }
+    const pending = {
+      async prepare(archive: unknown, identity: { alternate?: true }, authorize: Function) {
+        assert.equal(archive, next.archive)
+        assert.equal(!!identity.alternate, !alternate)
+        const grant = await authorize()
+        grant()
+        events.push('native checked')
+        if (outcome === 'native-failed') throw new Error('refused')
+        if (outcome === 'clicked') controller.abort()
+      },
+      matches: () => true,
+      preparedCandidate: () => (outcome === 'missing-copy' ? undefined : { device: 1 }),
+      promoteTo(path: string, _mutation: unknown, prior: unknown, guard: Function) {
+        assert.equal(path, '/canonical')
+        assert.equal(previous, prior)
+        guard()
+        if (outcome === 'changed-on-disk') throw new Error('different request')
+        events.push('commit')
+      },
+      detach() {
+        events.push('detach D')
+      },
+    }
+    const exports: Record<string, Function> = {}
+    const environment = {
+      exports,
+      squirrel: active,
+      macPrepared: {},
+      successorPreparing: false,
+      activeReadyAlternate: alternate,
+      activeSuccessorUpdater: undefined,
+      canPrepareMacUpdateWithoutInteraction: () => true,
+      macPreparationReady: () => true,
+      isNewerRelease: () => true,
+      squirrelHandoffPath: () => '/canonical',
+      readSquirrelHandoff: () => previous,
+      readReadyState: () => current,
+      macLaunchObserver: { prepareSuccessor() {} },
+      SuccessorUpdater,
+      InstallationProgress,
+      join,
+      stageUpdate: async (
+        _id: string,
+        _progress: unknown,
+        _log: unknown,
+        _signal: unknown,
+        scope: { retained: unknown; expected: unknown }
+      ) => {
+        assert.equal(scope.retained, current)
+        assert.equal(scope.expected, next.meta)
+        return outcome === 'download-failed' ? { ok: false } : { ok: true, ready: next, prepared }
+      },
+      revalidateMacArchive: async () => next.archive,
+      assertSquirrelPreparationSpace() {},
+      newMacInstallation: () => pending,
+      SUCCESSOR_HANDOFF_FILE: 'squirrel.pending.json',
+      authorizeActivation: async () => () => {},
+      retryUpdate,
+      squirrelPreparedDevice: (copy?: { device: number }) => copy?.device,
+      mutateMacRecord: () => {},
+      writeReadyState(ready: typeof current, nextSlot: boolean) {
+        assert.equal(nextSlot, !alternate)
+        published[Number(nextSlot)] = ready
+      },
+      logUpdateEvent() {},
+      logUpdateLine() {},
+      UpdateVerifyError: class extends Error {},
+      UpdateArchiveLimitError: class extends Error {},
+    }
+    runInNewContext(updaterFunctions(['prepareMacSuccessor']), environment)
+    const result = await exports.prepareMacSuccessor(
+      next.meta,
+      () => {},
+      () => {},
+      controller.signal,
+      () => !controller.signal.aborted
+    )
+    const selected = outcome === 'promoted' || outcome === 'rotated'
+    assert.equal(result.ok, selected, outcome)
+    assert.equal(
+      published[Number(environment.activeReadyAlternate)],
+      selected ? next : current,
+      outcome
+    )
+    assert.equal(environment.squirrel, selected ? pending : active, outcome)
+    assert.equal(events.includes('detach B'), selected, outcome)
+    assert.equal(environment.successorPreparing, false, outcome)
+  }
+})
+
+test('cold-start selection follows the canonical handoff across a staged but uncommitted promotion', (t) => {
+  const cache = mkdtempSync(join(tmpdir(), 'update-slots-'))
+  t.after(() => rmSync(cache, { recursive: true, force: true }))
+  let alternate = false
+  const exports: Record<string, Function> = {}
+  const path = (meta: { id: string }) => join(cache, meta.id + '.dmg')
+  const directory = (meta: { id: string }) => path(meta) + '.prepared'
+  runInNewContext(
+    updaterFunctions([
+      'readReadyState',
+      'readyStatePath',
+      'selectedReadyAlternate',
+      'writeReadyState',
+    ]) + '\nexports.writeReadyState = writeReadyState',
+    {
+      exports,
+      join,
+      writeJson,
+      MACOS_PLATFORM: 'darwin',
+      process: { platform: 'darwin' },
+      activeReadyAlternate: undefined,
+      squirrelHandoffPath: () => '/canonical',
+      readSquirrelHandoff: () => (alternate ? { alternate } : {}),
+      READY_STATE_FILE: 'ready.json',
+      ALTERNATE_READY_STATE_FILE: 'ready.next.json',
+      candidateStateDirectory: () => cache,
+      readRejectedUpdate: () => null,
+      stagedInstallerPath: path,
+      preparedApplicationDirectory: directory,
+      readFileSync,
+      existsSync,
+      statSync,
+    }
+  )
+  for (const id of ['B', 'D']) {
+    const meta = { id, sha512: '0'.repeat(128), file_size: 1 }
+    const archive = { path: join(directory(meta), 'application.zip'), size: 1, sha512: meta.sha512 }
+    mkdirSync(directory(meta))
+    writeFileSync(archive.path, id)
+    writeFileSync(path(meta), id)
+    exports.writeReadyState({ meta, archive, path: path(meta) }, id === 'D')
+  }
+  assert.equal(exports.readReadyState().meta.id, 'B')
+  alternate = true
+  assert.equal(exports.readReadyState().meta.id, 'D')
+})
+
+test('a failed successor download preserves the active DMG and ZIP through cache cleanup', async (t) => {
+  const cache = mkdtempSync(join(tmpdir(), 'update-successor-'))
+  t.after(() => rmSync(cache, { recursive: true, force: true }))
+  const dmg = (meta: { id: string }) => join(cache, `scholarseed-${meta.id}.dmg`)
+  const directory = (meta: { id: string }) => dmg(meta) + '.prepared'
+  const b = { id: 'B' },
+    d = { id: 'D', file_size: 1, sha512: 'verified' }
+  const retained = { meta: b, path: dmg(b) }
+  for (const meta of [b, { id: 'obsolete' }]) {
+    mkdirSync(directory(meta))
+    writeFileSync(dmg(meta), meta.id)
+    writeFileSync(join(directory(meta), 'application.zip'), meta.id)
+  }
+  const exports: Record<string, Function> = {}
+  const noop = () => {}
+  runInNewContext(
+    updaterFunctions(['stageUpdate', 'pruneUpdateArtifacts', 'discardPreparedApplications']),
+    {
+      exports,
+      MACOS_PLATFORM: 'darwin',
+      process: { platform: 'darwin' },
+      macPrepared: {},
+      macHandoffCommitted: () => true,
+      readReadyState: () => retained,
+      macPreparationReady: (meta: unknown) => meta === b,
+      getDownloadInfo: async () => d,
+      preparedIdentity: (meta: { id: string }) => meta.id,
+      updateCacheDir: () => cache,
+      stagedInstallerPath: dmg,
+      preparedApplicationDirectory: directory,
+      removeUpdateArtifact: async (path: string) => rmSync(path, { recursive: true }),
+      join,
+      basename,
+      readdirSync,
+      rmSync,
+      rmdirSync,
+      planUpdatePrune,
+      updateArtifactKind,
+      pruneInactiveMacCache: noop,
+      logUpdateEvent: noop,
+      assertDownloadSpace: noop,
+      logTiming: noop,
+      retryUpdate,
+      downloadWithProgress: async (_url: unknown, destination: string) =>
+        writeFileSync(destination, 'D'),
+      sha512OfFile: async () => 'damaged',
+      downloadResumable: () => false,
+    }
+  )
+  const result = await exports.stageUpdate(d.id, noop, noop, new AbortController().signal, {
+    expected: d,
+    retained,
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /SHA-512/)
+  assert.equal(readFileSync(dmg(b), 'utf8'), 'B')
+  assert.equal(readFileSync(join(directory(b), 'application.zip'), 'utf8'), 'B')
+  assert.equal(existsSync(dmg(d)), false)
+  assert.equal(existsSync(directory({ id: 'obsolete' })), false)
+})
 
 function fixture(failHelper = false, failFinalGrant = false, writable = true) {
   const events: string[] = []
@@ -135,6 +370,7 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
     updaterFunctions([
       'prepareMacUpdate',
       'macHandoffReplacement',
+      'revalidateMacArchive',
       'installStagedUpdate',
       'macArchiveReady',
       'macPreparationReady',

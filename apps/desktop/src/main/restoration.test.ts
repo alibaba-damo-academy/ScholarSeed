@@ -263,11 +263,17 @@ function fixture(context: test.TestContext) {
   }
 }
 
-function orphanFixture(context: test.TestContext, retirement = false, legacy = false) {
+function orphanFixture(
+  context: test.TestContext,
+  retirement = false,
+  legacy = false,
+  alternate = false
+) {
   const current = fixture(context)
   const selection = JSON.parse(readFileSync(current.contextPath, 'utf8'))
   const handoff = JSON.parse(readFileSync(current.handoff, 'utf8'))
   handoff.state = 'failed'
+  if (alternate) handoff.alternate = true
   delete handoff.nativeRequest
   if (legacy) delete handoff.binding
   writeFileSync(current.handoff, JSON.stringify(handoff), { mode: 0o600 })
@@ -288,7 +294,7 @@ function orphanFixture(context: test.TestContext, retirement = false, legacy = f
   )
   const applicationSupport = join(current.root, 'support')
   const cache = join(current.root, 'cache')
-  const owner = `${selection.bundleId}.ShipIt`
+  const owner = alternate ? `${selection.bundleId}.ShipIt.next` : `${selection.bundleId}.ShipIt`
   for (const path of [repairApplication, join(applicationSupport, owner), join(cache, owner)])
     mkdirSync(path, { recursive: true, mode: 0o700 })
   const nativeState = join(cache, owner, 'ShipItState.plist')
@@ -526,7 +532,7 @@ macosTest(
 macosTest(
   'external repair resumes native retirement before consuming the still-original context',
   async (context) => {
-    const current = orphanFixture(context)
+    const current = orphanFixture(context, false, false, true)
     current.interruptNative()
     await assert.rejects(
       repairInstalledUpdate(current.scope, current.runtime),

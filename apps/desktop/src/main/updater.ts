@@ -8,6 +8,7 @@ import {
   UpdateArchiveLimitError,
 } from './archive.ts'
 import { desktopDirectoryMaintenance, desktopDirectoryWriter } from './writer'
+import { SuccessorUpdater, type SuccessorBridge } from './successor.ts'
 import {
   captureRecord,
   sameRecord,
@@ -54,6 +55,8 @@ import {
   abandonedSquirrelRequest,
   type SquirrelArchive,
   type SquirrelHandoff,
+  type SquirrelUpdater,
+  type SquirrelRecordMutation,
   type SquirrelNativeCapture,
   type SquirrelLaunchCleanup,
   shipItDiagnostics,
@@ -169,7 +172,9 @@ const nativeNotarization: OfflineNotarization | undefined =
 
 const macLaunchObserver =
   process.platform === MACOS_PLATFORM
-    ? (require('./repair.node') as { observedLaunch(configuration: string): boolean })
+    ? (require('./repair.node') as SuccessorBridge & {
+        observedLaunch(configuration: string): boolean
+      })
     : undefined
 
 // macOS 安装准备链的外部命令上限（bug 87253073）：hdiutil/codesign 任一条挂起
@@ -181,6 +186,8 @@ const MACOS_SIGNATURE_COMMAND_TIMEOUT_MS = 180_000
 // 结构化事件行的 schema 版本（提案 §5.1 字段契约）。
 const UPDATE_EVENT_SCHEMA_VERSION = 1
 const READY_STATE_FILE = 'ready.json'
+const ALTERNATE_READY_STATE_FILE = 'ready.next.json'
+const SUCCESSOR_HANDOFF_FILE = 'squirrel.pending.json'
 const ANNOUNCED_STATE_FILE = 'announced.json'
 // 部分文件比远端对象还大时服务端回这个；留着它只会每次都 416，必须删掉从头下。
 // 协议级诊断串，不是界面文案：渲染层把它们当错误详情透出，翻译归属在展示侧。
@@ -1286,7 +1293,15 @@ async function verifyMountedNotarization(
 }
 
 let squirrel: SquirrelInstallation | null = null
-let macPrepared: { receipt: PreparedArchive; workspace: string } | null = null
+let activeSuccessorUpdater: SuccessorUpdater | undefined
+let activeReadyAlternate: boolean | undefined
+let successorPreparing = false
+let activeMacFailure: (() => void) | undefined
+interface MacPreparedApplication {
+  receipt: PreparedArchive
+  workspace: string
+}
+let macPrepared: MacPreparedApplication | null = null
 let macLaunchCleanup: SquirrelLaunchCleanup | undefined
 let macPreparationEpoch = 0
 
@@ -1509,12 +1524,15 @@ export async function macStartupAdmission(
           false,
           {
             candidate: expected.candidate,
-            observedLaunch: (source, target) => {
-              const { cleanup } = repairNativePaths({
-                cache,
-                bundleId: config.bundleId,
-                applicationSupport: app.getPath('appData'),
-              })
+            observedLaunch: (source, target, alternate) => {
+              const { cleanup } = repairNativePaths(
+                {
+                  cache,
+                  bundleId: config.bundleId,
+                  applicationSupport: app.getPath('appData'),
+                },
+                alternate
+              )
               return (
                 macLaunchObserver?.observedLaunch(JSON.stringify({ cleanup, source, target })) ===
                 true
@@ -1672,6 +1690,171 @@ export function macHandoffReady(): boolean {
   return process.platform === MACOS_PLATFORM && !!squirrel?.ready
 }
 
+export function onActiveMacUpdateFailure(listener: () => void): void {
+  activeMacFailure = listener
+}
+
+export function canPrepareMacSuccessor(): boolean {
+  if (!macHandoffReady() || !macLaunchObserver?.prepareSuccessor) return false
+  const ready = readReadyState()
+  return !!ready && macPreparationReady(ready.meta)
+}
+
+/** Keep the currently installable request selected until the successor has its own native receipt. */
+export async function prepareMacSuccessor(
+  candidate: LatestVersionMeta,
+  onProgress: (progress: UpdateProgress) => void,
+  log: LogSink,
+  signal: AbortSignal,
+  canPromote: () => boolean
+): Promise<StartUpdateResult> {
+  const active = squirrel
+  const retained = readReadyState()
+  if (
+    successorPreparing ||
+    !active ||
+    !retained ||
+    !macLaunchObserver?.prepareSuccessor ||
+    !macPreparationReady(retained.meta) ||
+    !canPrepareMacUpdateWithoutInteraction() ||
+    isNewerRelease(
+      { version: retained.meta.version, buildNumber: retained.meta.build_number },
+      { version: candidate.version, buildNumber: candidate.build_number }
+    ) !== true
+  )
+    return { ok: false, errorFallback: 'preparation_failed' }
+
+  const canonical = squirrelHandoffPath()
+  const previous = readSquirrelHandoff(canonical)
+  if (!previous || previous.state !== 'downloaded' || previous.candidate !== retained.meta.id)
+    return { ok: false, errorFallback: 'preparation_failed' }
+  const alternate = !previous.alternate
+  const checkSelection = () => {
+    signal.throwIfAborted()
+    if (
+      !canPromote() ||
+      squirrel !== active ||
+      canonical !== squirrelHandoffPath() ||
+      !macPreparationReady(retained.meta)
+    )
+      throw new Error('Active macOS installation changed during successor preparation')
+  }
+  successorPreparing = true
+  const port = new SuccessorUpdater(macLaunchObserver, alternate)
+  let pending: SquirrelInstallation | undefined
+  let progress: InstallationProgress | undefined
+  let promoted = false
+  const disposePort = (updater?: SuccessorUpdater) => {
+    try {
+      updater?.dispose()
+    } catch (error) {
+      logUpdateLine(log, `[update] successor handle disposal failed: ${String(error)}\n`)
+    }
+  }
+  const cancel = () => {
+    disposePort(port)
+    pending?.detach()
+  }
+  try {
+    checkSelection()
+    const staged = await stageUpdate(candidate.id, onProgress, log, signal, {
+      expected: candidate,
+      retained,
+    })
+    if (!staged.ok) return { ok: false, error: staged.error, errorFallback: staged.errorFallback }
+    checkSelection()
+    const { ready, prepared } = staged
+    if (!ready.archive || !prepared?.receipt.matches(candidate, ready.archive))
+      throw new Error('Successor archive not ready')
+    progress = new InstallationProgress(
+      (value) => onProgress({ ...value, phase: 'preparing' }),
+      signal,
+      (event) => logUpdateEvent(log, { ...event, updateId: candidate.id })
+    )
+    const archive = await revalidateMacArchive(prepared, ready, progress, log, signal)
+    checkSelection()
+    assertSquirrelPreparationSpace(archive, prepared.receipt.expandedBytes, false)
+    pending = newMacInstallation(
+      port,
+      join(prepared.workspace, SUCCESSOR_HANDOFF_FILE),
+      candidate,
+      log,
+      true
+    )
+    signal.addEventListener('abort', cancel, { once: true })
+    await pending.prepare(
+      archive,
+      {
+        candidate: candidate.id,
+        buildNumber: candidate.build_number,
+        version: candidate.version,
+        state: 'requested',
+        at: Date.now(),
+        ...(alternate ? { alternate: true } : {}),
+      },
+      async () => {
+        const grant = await retryUpdate(() => authorizeActivation(candidate, log, signal), signal)
+        return () => {
+          checkSelection()
+          grant()
+        }
+      }
+    )
+    checkSelection()
+    if (
+      squirrelPreparedDevice(pending.preparedCandidate()) === undefined ||
+      !pending.matches(archive, {
+        candidate: candidate.id,
+        buildNumber: candidate.build_number,
+        version: candidate.version,
+      })
+    )
+      throw new Error('Successor native readiness was revoked')
+    // A crash before the handoff CAS still selects the previous ready file. After it,
+    // startup resolves both the native state and the staged payload from the new slot.
+    writeReadyState(ready, alternate)
+    pending.promoteTo(
+      canonical,
+      mutateMacRecord(canonical),
+      previous,
+      checkSelection,
+      () => captureRecord(canonical, TERMINAL_RECORD_LIMITS.handoff, [process.getuid!()]).bytes
+    )
+    const oldPort = activeSuccessorUpdater
+    squirrel = pending
+    macPrepared = prepared
+    activeReadyAlternate = alternate
+    activeSuccessorUpdater = port
+    promoted = true
+    active.detach()
+    disposePort(oldPort)
+    logUpdateEvent(log, {
+      phase: 'macos-install',
+      event: 'successor-selected',
+      updateId: candidate.id,
+      result: 'ok',
+    })
+    return { ok: true, mode: 'auto' }
+  } catch (error) {
+    logUpdateLine(log, `[update] successor preparation failed: ${String(error)}\n`)
+    if (signal.aborted) return { ok: false, cancelled: true }
+    return {
+      ok: false,
+      errorFallback:
+        error instanceof UpdateVerifyError
+          ? updateInstallFallback(error)
+          : error instanceof UpdateArchiveLimitError
+            ? 'install_archive_limit'
+            : 'preparation_failed',
+    }
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    if (!promoted) cancel()
+    progress?.dispose()
+    successorPreparing = false
+  }
+}
+
 /** Only selects a startup notice. The consumed handoff still forbids backend startup. */
 export async function macStartupStatus(log: LogSink): Promise<SquirrelStartupStatus> {
   try {
@@ -1716,6 +1899,7 @@ export function startMacDeferredCleanup(log: LogSink): void {
       packaged: app.isPackaged,
       application: resolve(dirname(process.execPath), '..', '..'),
       bundle: resolveDesktopConfig(log).bundleId,
+      applicationSupport: app.getPath('appData'),
     },
     (line) => logUpdateLine(log, line)
   ).catch(() => {
@@ -1774,7 +1958,7 @@ async function prepareDmg(
   installation: InstallationProgress,
   log: LogSink,
   cached?: SquirrelArchive
-): Promise<NonNullable<typeof macPrepared>> {
+): Promise<MacPreparedApplication> {
   if (process.platform !== MACOS_PLATFORM || !app.isPackaged)
     throw new Error('automatic update requires a packaged macOS application')
   meta = Object.freeze({ ...meta })
@@ -1865,8 +2049,15 @@ async function prepareDmg(
   }
 }
 
-function readyStatePath(): string {
-  return join(candidateStateDirectory(), READY_STATE_FILE)
+function readyStatePath(alternate = false): string {
+  return join(candidateStateDirectory(), alternate ? ALTERNATE_READY_STATE_FILE : READY_STATE_FILE)
+}
+
+function selectedReadyAlternate(): boolean {
+  return (
+    process.platform === MACOS_PLATFORM &&
+    (activeReadyAlternate ?? readSquirrelHandoff(squirrelHandoffPath())?.alternate === true)
+  )
 }
 
 /**
@@ -1877,7 +2068,9 @@ function readyStatePath(): string {
  */
 export function readReadyState(): ReadyState | null {
   try {
-    const value = JSON.parse(readFileSync(readyStatePath(), 'utf8')) as ReadyState
+    const value = JSON.parse(
+      readFileSync(readyStatePath(selectedReadyAlternate()), 'utf8')
+    ) as ReadyState
     const meta = value.meta
     if (meta && readRejectedUpdate()?.id === meta.id) return null
     if (typeof value.path !== 'string' || !meta || typeof meta.sha512 !== 'string') return null
@@ -1902,15 +2095,16 @@ export function readReadyState(): ReadyState | null {
   }
 }
 
-function writeReadyState(ready: ReadyState): void {
-  const path = readyStatePath()
+function writeReadyState(ready: ReadyState, alternate = false): void {
+  const path = readyStatePath(alternate)
   writeJson(path, ready)
 }
 
 export function clearReadyState(): void {
   macPreparationEpoch += 1
   macPrepared = null
-  rmSync(readyStatePath(), { force: true })
+  rmSync(readyStatePath(selectedReadyAlternate()), { force: true })
+  activeReadyAlternate = undefined
 }
 
 /**
@@ -2029,10 +2223,12 @@ export function supersedeStagedUpdate(candidate: LatestVersionMeta | null, log: 
 async function discardPreparedApplications(
   log: LogSink,
   keep: string,
-  retained: readonly string[] = []
+  retained: readonly string[] = [],
+  active?: ReadyState
 ): Promise<void> {
   if (process.platform !== MACOS_PLATFORM) return
-  if (macHandoffCommitted()) throw new Error('Squirrel handoff requires recovery')
+  if (macHandoffCommitted() && !(active && macPreparationReady(active.meta)))
+    throw new Error('Squirrel handoff requires recovery')
   for (const entry of readdirSync(updateCacheDir(), { withFileTypes: true })) {
     if (!entry.isDirectory() || updateArtifactKind(entry.name) !== 'prepared') continue
     if (entry.name === keep || retained.includes(entry.name)) continue
@@ -2043,7 +2239,7 @@ async function discardPreparedApplications(
 
 /** stageUpdate 的结果：要么停在「已就绪」，要么带着「部分包是否保留」失败。 */
 export type StageUpdateResult =
-  | { ok: true; ready: ReadyState }
+  | { ok: true; ready: ReadyState; prepared?: MacPreparedApplication }
   | {
       ok: false
       error?: string
@@ -2062,7 +2258,8 @@ export async function stageUpdate(
   id: string,
   onProgress: (progress: UpdateProgress) => void,
   log: LogSink,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  successor?: { expected: LatestVersionMeta; retained: ReadyState }
 ): Promise<StageUpdateResult> {
   const previousPreparation = macPrepared
   const previousReady = process.platform === MACOS_PLATFORM ? readReadyState() : null
@@ -2070,7 +2267,7 @@ export async function stageUpdate(
     return { ok: true, ready: previousReady }
   try {
     // Only the preparation owner calls this after its previous worker has drained.
-    if (macHandoffCommitted())
+    if (macHandoffCommitted() && !(successor && macPreparationReady(successor.retained.meta)))
       return {
         ok: false,
         errorFallback: 'activation_recovery_required',
@@ -2086,6 +2283,12 @@ export async function stageUpdate(
   try {
     info = await getDownloadInfo(id, log, signal)
     signal?.throwIfAborted()
+    if (
+      successor &&
+      (preparedIdentity(info) !== preparedIdentity(successor.expected) ||
+        stagedInstallerPath(info) === successor.retained.path)
+    )
+      throw new Error('Successor release identity changed')
   } catch (error) {
     return {
       ok: false,
@@ -2099,7 +2302,8 @@ export async function stageUpdate(
     await discardPreparedApplications(
       log,
       basename(preparedApplicationDirectory(info)),
-      previousReady ? [basename(preparedApplicationDirectory(previousReady.meta))] : []
+      previousReady ? [basename(preparedApplicationDirectory(previousReady.meta))] : [],
+      successor?.retained
     )
     await pruneInactiveMacCache(log)
     signal?.throwIfAborted()
@@ -2149,7 +2353,7 @@ export async function stageUpdate(
   // 签名下载链接是短期的、安装阶段也用不到，不落盘。
   const { download_url: _downloadUrl, ...meta } = info
   let archive: SquirrelArchive | undefined
-  let prepared: NonNullable<typeof macPrepared> | null = null
+  let prepared: MacPreparedApplication | null = null
   if (process.platform === MACOS_PLATFORM) {
     const preparation = new InstallationProgress(
       (progress) => onProgress({ ...progress, phase: 'preparing' }),
@@ -2190,10 +2394,17 @@ export async function stageUpdate(
     }
   }
   const ready: ReadyState = { at: Date.now(), path: destination, meta, archive }
+  if (successor) {
+    // Only the native downloaded receipt can select this payload for restart.
+    return { ok: true, ready, prepared: prepared ?? undefined }
+  }
   try {
     signal?.throwIfAborted()
     writeReadyState(ready)
-    if (prepared) macPrepared = prepared
+    if (prepared) {
+      macPrepared = prepared
+      activeReadyAlternate = false
+    }
   } catch (error) {
     const published = readReadyState()
     if (
@@ -2274,7 +2485,7 @@ async function macHandoffReplacement(
       ) {
         recheck = () =>
           abandonedSquirrelRequest(prior, publisherAbsent) &&
-          squirrelNativeRequestAbsent(cache, bundle)
+          squirrelNativeRequestAbsent(cache, bundle, prior.alternate)
       }
     }
   }
@@ -2287,6 +2498,79 @@ async function macHandoffReplacement(
       process.getuid!(),
     ]) &&
     recheck?.() === true
+}
+
+function mutateMacRecord(path: string): SquirrelRecordMutation {
+  return (operation) => {
+    const writer = desktopDirectoryWriter(dirname(path))
+    try {
+      writer.withRecordLock(SQUIRREL_HANDOFF_LOCK, () =>
+        operation((handoff) =>
+          writer.replace(basename(path), Buffer.from(`${JSON.stringify(handoff)}\n`))
+        )
+      )
+    } finally {
+      writer.close()
+    }
+  }
+}
+
+function newMacInstallation(
+  port: SquirrelUpdater,
+  path: string,
+  meta: LatestVersionMeta,
+  log: LogSink,
+  standby: boolean
+): SquirrelInstallation {
+  const instance = new SquirrelInstallation(
+    port,
+    path,
+    (event, errorCode) => {
+      logUpdateEvent(log, {
+        phase: 'macos-install',
+        event,
+        errorCode,
+        updateId: meta.id,
+        toVersion: meta.version,
+      })
+      if (squirrel === instance) {
+        macLaunchCleanup = discardOnTerminalSquirrelFailure(event, macLaunchCleanup)
+        if (event === 'native-error') activeMacFailure?.()
+      }
+    },
+    undefined,
+    (identity) =>
+      bindSquirrelRequest(
+        systemCacheDir(),
+        resolveDesktopConfig(log).bundleId,
+        resolve(dirname(process.execPath), '..', '..'),
+        identity,
+        app.getPath('appData')
+      ),
+    mutateMacRecord(path),
+    standby
+  )
+  return instance
+}
+
+function revalidateMacArchive(
+  prepared: MacPreparedApplication,
+  staged: ReadyState,
+  installation: InstallationProgress,
+  log: LogSink,
+  signal: AbortSignal
+): Promise<SquirrelArchive> {
+  return retryUpdate(
+    () =>
+      prepared.receipt.revalidate(
+        () =>
+          withMountedDmg(staged.path, installation, log, (source) =>
+            verifyMountedNotarization(source, log, installation, 'source')
+          ),
+        signal
+      ),
+    signal
+  )
 }
 
 /** Verify the staged candidate and obtain the bound, unauthorized native receipt. */
@@ -2325,17 +2609,7 @@ export async function prepareMacUpdate(
   try {
     installation.step('package')
     const startedAt = Date.now()
-    const frozen = await retryUpdate(
-      () =>
-        prepared.receipt.revalidate(
-          () =>
-            withMountedDmg(staged.path, installation, log, (source) =>
-              verifyMountedNotarization(source, log, installation, 'source')
-            ),
-          signal
-        ),
-      signal
-    )
+    const frozen = await revalidateMacArchive(prepared, staged, installation, log, signal)
     const handoffIdentity = {
       version: staged.meta.version,
       buildNumber: staged.meta.build_number,
@@ -2355,44 +2629,7 @@ export async function prepareMacUpdate(
     signal?.throwIfAborted()
     const mayReplace = await macHandoffReplacement(startup, allowInteraction, log)
     signal?.throwIfAborted()
-    squirrel ??= new SquirrelInstallation(
-      autoUpdater,
-      squirrelHandoffPath(),
-      (event, errorCode) => {
-        logUpdateEvent(log, {
-          phase: 'macos-install',
-          event,
-          errorCode,
-          updateId: staged.meta.id,
-          toVersion: staged.meta.version,
-        })
-        // A native error delivered to this still-running session releases its launch context.
-        // ShipIt handles recovery for failures after the application exits.
-        macLaunchCleanup = discardOnTerminalSquirrelFailure(event, macLaunchCleanup)
-      },
-      undefined,
-      (identity) =>
-        bindSquirrelRequest(
-          systemCacheDir(),
-          resolveDesktopConfig(log).bundleId,
-          resolve(dirname(process.execPath), '..', '..'),
-          identity,
-          app.getPath('appData')
-        ),
-      (operation) => {
-        const path = squirrelHandoffPath()
-        const writer = desktopDirectoryWriter(dirname(path))
-        try {
-          writer.withRecordLock(SQUIRREL_HANDOFF_LOCK, () =>
-            operation((handoff) =>
-              writer.replace(basename(path), Buffer.from(`${JSON.stringify(handoff)}\n`))
-            )
-          )
-        } finally {
-          writer.close()
-        }
-      }
-    )
+    squirrel ??= newMacInstallation(autoUpdater, squirrelHandoffPath(), staged.meta, log, false)
     installation.step('helper')
     await squirrel.prepare(
       frozen,

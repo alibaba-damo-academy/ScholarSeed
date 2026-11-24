@@ -13,10 +13,11 @@ import {
 } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { constants as osConstants } from 'node:os'
-import { promisify } from 'node:util'
+import { isDeepStrictEqual, promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
   sameSquirrelBinding,
+  squirrelJobLabel,
   squirrelPublisherExited,
   validSquirrelBinding,
   type SquirrelHandoff,
@@ -37,13 +38,29 @@ const SHIPIT_EXECUTABLE = ['Contents', 'Frameworks', 'Squirrel.framework', 'Reso
 const SHIPIT_STATE = 'ShipItState.plist'
 const PREPARATION_DIRECTORY = 'CandidatePreparation'
 
-export function squirrelNativeRequestAbsent(cache: string, bundle: string): boolean {
+export function squirrelNativeRequestAbsent(
+  cache: string,
+  bundle: string,
+  alternate = false
+): boolean {
   if (!/^[A-Za-z0-9.-]+$/.test(bundle)) return false
   try {
-    lstatSync(join(cache, `${bundle}.ShipIt`, SHIPIT_STATE))
+    const owner = join(realpathSync(cache), squirrelJobLabel(bundle, alternate))
+    try {
+      const info = lstatSync(owner)
+      if (
+        !info.isDirectory() ||
+        ![0, process.getuid!()].includes(info.uid) ||
+        info.mode & UNSAFE_WRITE_MODE
+      )
+        return false
+      lstatSync(join(owner, SHIPIT_STATE))
+      return false
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT'
+    }
+  } catch {
     return false
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT'
   }
 }
 
@@ -213,15 +230,16 @@ export async function inspectSquirrelIdle(
   terminalRequest: boolean | 'restored' = false,
   orphanedLaunch?: {
     candidate: string
-    observedLaunch(source: string, target: string): boolean
+    alternate?: boolean
+    observedLaunch(source: string, target: string, alternate: boolean): boolean
   }
 ): Promise<boolean> {
   if (process.platform !== 'darwin' || !process.getuid || !/^[A-Za-z0-9.-]+$/.test(bundle))
     return false
   const uid = process.getuid()
-  const directory = join(cache, `${bundle}.ShipIt`)
-  const statePath = join(directory, SHIPIT_STATE)
-  const snapshot = () => {
+  const alternate = handoff?.alternate ?? orphanedLaunch?.alternate ?? false
+  const directory = join(cache, squirrelJobLabel(bundle, alternate))
+  const snapshot = (owner = directory) => {
     const identity = (path: string) => {
       const info = lstatSync(path)
       if (!info.isDirectory() || ![0, uid].includes(info.uid) || info.mode & UNSAFE_WRITE_MODE)
@@ -231,7 +249,8 @@ export async function inspectSquirrelIdle(
     const cacheIdentity = identity(cache)
     let directoryIdentity: ReturnType<typeof identity> | null = null
     try {
-      directoryIdentity = identity(directory)
+      directoryIdentity = identity(owner)
+      const statePath = join(owner, SHIPIT_STATE)
       const state = lstatSync(statePath)
       const bytes = readNativeRecord(statePath, PROBE_MAX_BYTES)
       return {
@@ -257,12 +276,39 @@ export async function inspectSquirrelIdle(
   }
   try {
     if ((await realpath(cache)) !== cache) return false
+    if (!handoff && orphanedLaunch && orphanedLaunch.alternate === undefined) {
+      const slots = [false, true].map((slot) => {
+        const owner = join(cache, squirrelJobLabel(bundle, slot))
+        return { slot, owner, before: snapshot(owner) }
+      })
+      const occupied = slots.filter(({ before }) => before.bytes)
+      // With no handoff, both slots must stay stable. The historical empty-state
+      // path remains available when neither contains a native request.
+      const outcomes = await Promise.all(
+        (occupied.length ? occupied : slots.slice(0, 1)).map(({ slot }) =>
+          inspectSquirrelIdle(
+            cache,
+            bundle,
+            application,
+            null,
+            verifyReplacement,
+            terminalRequest,
+            occupied.length ? { ...orphanedLaunch, alternate: slot } : undefined
+          )
+        )
+      )
+      return (
+        outcomes.filter(Boolean).length === 1 &&
+        slots.every(({ owner, before }) => isDeepStrictEqual(before, snapshot(owner)))
+      )
+    }
     const target = await realpath(application)
     if (target !== application) return false
     const native = handoff?.nativeRequest
     if (
       native &&
       (native.target.path !== target ||
+        dirname(dirname(native.source.path)) !== directory ||
         !validSquirrelBinding(native.binding) ||
         !sameSquirrelBinding(handoff?.binding, native.binding) ||
         native.binding.candidate !== handoff?.candidate)
@@ -273,7 +319,7 @@ export async function inspectSquirrelIdle(
       native?.source.path
     )
     const before = snapshot()
-    if (terminalRequest && !before.bytes) return false
+    if ((terminalRequest || orphanedLaunch) && !before.bytes) return false
     const options = {
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: PROBE_MAX_BYTES,
@@ -300,6 +346,7 @@ export async function inspectSquirrelIdle(
       const source = resolve(fileURLToPath(request.updateBundleURL))
       if (
         request.bundleIdentifier !== bundle ||
+        dirname(dirname(source)) !== directory ||
         !validSquirrelBinding(request.binding) ||
         !SHIPIT_REQUEST_FLAGS.every((key) => typeof request[key] === 'boolean') ||
         resolve(fileURLToPath(request.targetBundleURL)) !== target
@@ -332,7 +379,7 @@ export async function inspectSquirrelIdle(
           request.binding.candidate !== orphanedLaunch.candidate
         )
           return false
-        terminal = () => orphanedLaunch.observedLaunch(source, target)
+        terminal = () => orphanedLaunch.observedLaunch(source, target, alternate)
       }
       if (!replacementStable() || !(await terminal()) || !replacementStable()) return false
     }
@@ -388,9 +435,9 @@ async function inspectTerminalSquirrelRequest(
   legacyPublisherAbsent?: () => boolean
 ): Promise<(() => boolean) | null> {
   const { sourcePid } = handoff
-  const owner = join(cache, `${bundle}.ShipIt`)
   if (process.platform !== 'darwin' || !process.getuid || !/^[A-Za-z0-9.-]+$/.test(bundle))
     return null
+  const owner = join(cache, squirrelJobLabel(bundle, handoff.alternate))
   const publisherExited = () =>
     sourcePid === undefined
       ? legacyPublisherAbsent?.() === true
@@ -536,7 +583,15 @@ export async function bindSquirrelRequest(
   applicationSupport?: string
 ): Promise<SquirrelNativeRequest> {
   if (!/^[A-Za-z0-9.-]+$/.test(bundle)) throw new Error('Invalid Squirrel request bundle')
-  const statePath = join(cache, `${bundle}.ShipIt`, SHIPIT_STATE)
+  const owner = join(realpathSync(cache), squirrelJobLabel(bundle, handoff.alternate))
+  const ownerInfo = lstatSync(owner)
+  if (
+    !ownerInfo.isDirectory() ||
+    ![0, process.getuid!()].includes(ownerInfo.uid) ||
+    ownerInfo.mode & UNSAFE_WRITE_MODE
+  )
+    throw new Error('Unsafe Squirrel request directory')
+  const statePath = join(owner, SHIPIT_STATE)
   const bytes = readNativeRecord(statePath, PROBE_MAX_BYTES)
   const conversion = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], {
     timeout: PROBE_TIMEOUT_MS,
@@ -549,23 +604,22 @@ export async function bindSquirrelRequest(
     !validSquirrelBinding(handoff.binding) ||
     handoff.binding.candidate !== handoff.candidate ||
     !sameSquirrelBinding(state.binding, handoff.binding) ||
+    state.bundleIdentifier !== bundle ||
+    state.launchAfterInstallation !== false ||
     state.installationAuthorized !== false
   )
     throw new Error('Squirrel request artifact binding differs')
   const source = realpathSync(fileURLToPath(state.updateBundleURL))
   const target = realpathSync(fileURLToPath(state.targetBundleURL))
+  if (
+    dirname(dirname(source)) !== owner ||
+    source !== resolve(fileURLToPath(state.updateBundleURL))
+  )
+    throw new Error('Squirrel request source differs')
   if (target !== realpathSync(application)) throw new Error('Squirrel request target differs')
-  const capture = (path: string) => {
-    const identity = (value: string) => {
-      const info = lstatSync(value)
-      if (!info.isDirectory()) throw new Error('Squirrel request is not a directory')
-      return { dev: info.dev, ino: info.ino, uid: info.uid }
-    }
-    return { path, parent: identity(dirname(path)), item: identity(path) }
-  }
   const nativeRequest = {
-    source: capture(source),
-    target: capture(target),
+    source: captureDirectory(source),
+    target: captureDirectory(target),
     binding: handoff.binding,
   }
   const product = JSON.parse(
@@ -584,17 +638,22 @@ export async function bindSquirrelRequest(
     readNativeRecord(join(source, 'Contents', 'Info.plist'), PRODUCT_CONFIG_BYTES)
   )
   const version = await versionResult
+  const prepared = applicationSupport
+    ? await readPreparedCandidate(applicationSupport, bundle, nativeRequest, handoff.alternate)
+    : undefined
+  const currentOwner = lstatSync(owner)
   if (
     version.stdout.trim() !== handoff.version ||
     product.build_number !== handoff.buildNumber ||
+    currentOwner.dev !== ownerInfo.dev ||
+    currentOwner.ino !== ownerInfo.ino ||
+    currentOwner.uid !== ownerInfo.uid ||
+    currentOwner.mode !== ownerInfo.mode ||
     !readNativeRecord(statePath, PROBE_MAX_BYTES).equals(bytes) ||
-    JSON.stringify(nativeRequest) !==
-      JSON.stringify({ source: capture(source), target: capture(target), binding: handoff.binding })
+    !squirrelCaptureMatches(nativeRequest.source, captureDirectory(source)) ||
+    !squirrelCaptureMatches(nativeRequest.target, captureDirectory(target))
   )
     throw new Error('Squirrel request candidate changed or differs')
-  const prepared = applicationSupport
-    ? await readPreparedCandidate(applicationSupport, bundle, nativeRequest)
-    : undefined
   return prepared ? { ...nativeRequest, prepared } : nativeRequest
 }
 
@@ -615,10 +674,11 @@ function squirrelCaptureMatches(
 async function readPreparedCandidate(
   support: string,
   bundle: string,
-  request: SquirrelNativeRequest
+  request: SquirrelNativeRequest,
+  alternate = false
 ): Promise<SquirrelNativeCapture | undefined> {
   try {
-    const owner = join(realpathSync(support), `${bundle}.ShipIt`)
+    const owner = join(realpathSync(support), squirrelJobLabel(bundle, alternate))
     const directory = join(owner, PREPARATION_DIRECTORY)
     for (const path of [owner, directory]) {
       const info = lstatSync(path)
@@ -644,6 +704,7 @@ async function readPreparedCandidate(
     )
       return undefined
     const candidate = captureDirectory(realpathSync(record.candidate.path))
+    if (alternate && dirname(dirname(candidate.path)) !== directory) return undefined
     return squirrelCaptureMatches(record.candidate, candidate) ? candidate : undefined
   } catch {
     return undefined
@@ -861,45 +922,40 @@ export async function inspectSquirrelStartup(
   if (process.platform !== 'darwin' || !process.getuid || !/^[A-Za-z0-9.-]+$/.test(bundle))
     return 'unconfirmed'
   try {
+    const directory = join(cache, squirrelJobLabel(bundle, handoff.alternate))
+    const statePath = join(directory, SHIPIT_STATE)
+    if (handoff.nativeRequest && dirname(dirname(handoff.nativeRequest.source.path)) !== directory)
+      return 'unconfirmed'
     const options = {
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: PROBE_MAX_BYTES,
       encoding: 'utf8' as const,
     }
-    const [target, processes] = await Promise.all([
-      run(
-        '/usr/bin/plutil',
-        [
-          '-extract',
-          'targetBundleURL',
-          'raw',
-          '-o',
-          '-',
-          join(cache, `${bundle}.ShipIt`, SHIPIT_STATE),
-        ],
-        options
-      ),
+    const bytes = readNativeRecord(statePath, PROBE_MAX_BYTES)
+    const conversion = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], options)
+    conversion.child.stdin?.end(bytes)
+    const [state, processes] = await Promise.all([
+      conversion,
       run('/bin/ps', ['-ww', '-axo', 'uid=,comm='], options),
     ])
     const executable = await realpath(join(application, ...SHIPIT_EXECUTABLE))
     const uid = process.getuid()
-    const source = await run(
-      '/usr/bin/plutil',
-      [
-        '-extract',
-        'updateBundleURL',
-        'raw',
-        '-o',
-        '-',
-        join(cache, `${bundle}.ShipIt`, SHIPIT_STATE),
-      ],
-      options
-    )
+    const request = JSON.parse(state.stdout)
     const native = handoff.nativeRequest
+    if (
+      request.bundleIdentifier !== bundle ||
+      (native &&
+        (((native.binding || request.binding) &&
+          !sameSquirrelBinding(native.binding, request.binding)) ||
+          resolve(fileURLToPath(request.updateBundleURL)) !== native.source.path ||
+          resolve(fileURLToPath(request.targetBundleURL)) !== native.target.path)) ||
+      !readNativeRecord(statePath, PROBE_MAX_BYTES).equals(bytes)
+    )
+      return 'unconfirmed'
     if (
       native &&
       sameSquirrelBinding(handoff.binding, native.binding) &&
-      (await readSquirrelFailure(source.stdout.trim(), application, native))
+      (await readSquirrelFailure(request.updateBundleURL, application, native))
     ) {
       const executables = await squirrelHelperPaths(executable, native.source.path)
       return (await squirrelHelpersAbsent(processes.stdout, uid, executables))
@@ -924,7 +980,7 @@ export async function inspectSquirrelStartup(
         application,
         executable,
         uid,
-        target: target.stdout,
+        target: request.targetBundleURL,
         processes: observed.join('\n'),
       },
       Date.now()

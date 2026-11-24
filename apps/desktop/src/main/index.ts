@@ -982,7 +982,7 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
     updateInstallationInProgress ||
     updateRestartRequested ||
     macMaintenanceUncertain ||
-    updater.macHandoffCommitted() ||
+    (updater.macHandoffCommitted() && !updater.canPrepareMacSuccessor()) ||
     snapshot.phase === 'manual' ||
     snapshot.errorFallback === 'activation_recovery_required'
   )
@@ -1351,15 +1351,86 @@ const updatePreparation = new UpdatePreparation(
       updateId,
     })
     const windows = process.platform === WINDOWS_PLATFORM
+    const snapshot = currentUpdateSnapshot()
+    const retainedCandidate =
+      snapshot.phase === 'ready' &&
+      process.platform === MACOS_PLATFORM &&
+      snapshot.candidate?.id !== candidate.id
+        ? snapshot.candidate
+        : undefined
     let windowsStage: WindowsPreparationStage | 'preview-candidate' = 'preview-candidate'
     let errorOrigin: 'download' | 'preparation' = windows ? 'preparation' : 'download'
     const progress = (next: UpdateProgress): void => {
       if (next.phase === 'preparing') errorOrigin = 'preparation'
       if (isCurrent()) publishUpdateProgress(next)
     }
+    const publishMacReady = (ready: LatestVersionMeta, readyOrigin?: string): true => {
+      record('finish', 'ready')
+      publishUpdateSnapshot({
+        ...currentUpdateSnapshot(),
+        phase: 'ready',
+        candidate: ready,
+        readyOrigin,
+        percent: 100,
+        receivedBytes: ready.file_size,
+        error: undefined,
+        errorOrigin: undefined,
+        errorFallback: undefined,
+        resumable: undefined,
+        installation: undefined,
+      })
+      runBackgroundUpdateCheck()
+      return true
+    }
+    const retainMacReadyAfterFailure = (
+      active: LatestVersionMeta,
+      reason?: StartUpdateResult['errorFallback']
+    ): false | 'archive-limit' => {
+      if (!updater.macPreparationReady(active)) {
+        publishUpdateSnapshot({
+          ...currentUpdateSnapshot(),
+          phase: 'failed',
+          errorFallback: 'activation_recovery_required',
+          errorOrigin: 'preparation',
+        })
+      } else if (reason === 'install_archive_limit') {
+        publishUpdateSnapshot(currentUpdateSnapshot(), candidate.id)
+        return 'archive-limit'
+      }
+      return false
+    }
     try {
       await updater.validatePreviewCandidate(candidate, pushLog, signal)
       if (!isCurrent()) return false
+      if (retainedCandidate) {
+        const canPromote = (): boolean => {
+          const current = currentUpdateSnapshot()
+          return (
+            isCurrent() &&
+            !appQuitting &&
+            !previewPolicyChanging &&
+            !updateInstallAbort &&
+            !updateRestartRequested &&
+            !updateInstallationInProgress &&
+            !macMaintenanceUncertain &&
+            current.phase === 'ready' &&
+            current.candidate?.id === retainedCandidate.id
+          )
+        }
+        const replacement = await updater.prepareMacSuccessor(
+          candidate,
+          () => {},
+          pushLog,
+          signal,
+          canPromote
+        )
+        if (!isCurrent()) return false
+        if (!replacement.ok || !updater.macPreparationReady(candidate)) {
+          record('finish', replacement.errorFallback ?? 'failed')
+          return retainMacReadyAfterFailure(retainedCandidate, replacement.errorFallback)
+        }
+        return publishMacReady(candidate, snapshot.readyOrigin ?? retainedCandidate.id)
+      }
       if (windows) {
         await windowsPrepared?.update.close()
         if (!isCurrent()) return false
@@ -1477,19 +1548,7 @@ const updatePreparation = new UpdatePreparation(
         }
         return native.errorFallback === 'install_archive_limit' ? 'archive-limit' : false
       }
-      record('finish', 'ready')
-      publishUpdateSnapshot({
-        ...currentUpdateSnapshot(),
-        phase: 'ready',
-        candidate: staged.ready.meta,
-        percent: 100,
-        receivedBytes: staged.ready.meta.file_size,
-        error: undefined,
-        errorFallback: undefined,
-        installation: undefined,
-      })
-      runBackgroundUpdateCheck()
-      return true
+      return publishMacReady(staged.ready.meta)
     } catch (error) {
       record(
         'finish',
@@ -1497,6 +1556,7 @@ const updatePreparation = new UpdatePreparation(
         windows ? { stage: windowsStage, diagnostic: redactDiagnosticError(error) } : undefined
       )
       if (isCurrent()) {
+        if (retainedCandidate) return retainMacReadyAfterFailure(retainedCandidate)
         const retained = preparationPolicy ? retainedUpdateReady() : null
         publishUpdateSnapshot({
           ...currentUpdateSnapshot(),
@@ -3626,6 +3686,15 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
           ) {
             if (!saved.autoDownloadUpdates) {
               await updatePreparation.pause()
+              if (
+                updateInstallAbort ||
+                updateInstallationInProgress ||
+                updateRestartRequested ||
+                macMaintenanceUncertain ||
+                currentUpdateSnapshot().errorOrigin === 'install' ||
+                currentUpdateSnapshot().errorFallback === 'activation_recovery_required'
+              )
+                return saved
               const retained = preparationPolicy ? retainedUpdateReady() : null
               if (retained) {
                 updatePreparation.adopt(retained.meta)
@@ -3633,6 +3702,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
                   phase: 'ready',
                   currentVersion: app.getVersion(),
                   candidate: retained.meta,
+                  readyOrigin:
+                    currentUpdateSnapshot().candidate?.id === retained.meta.id
+                      ? currentUpdateSnapshot().readyOrigin
+                      : undefined,
                 })
               }
               if (currentUpdateSnapshot().candidate && currentUpdateSnapshot().phase !== 'ready')
@@ -4172,6 +4245,9 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       !requestedCandidate ||
       !['available', 'failed', 'ready'].includes(snapshot.phase) ||
       (snapshot.phase === 'ready' && requestedCandidate.id === snapshot.candidate?.id) ||
+      (snapshot.phase === 'ready' &&
+        process.platform === MACOS_PLATFORM &&
+        !updater.canPrepareMacSuccessor()) ||
       updateInstallAbort ||
       updateInstallationInProgress ||
       updateRestartRequested
@@ -4179,6 +4255,9 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return { ok: false, error: 'update candidate is no longer active' }
     }
     if (!updatePreparation.request(requestedCandidate)) return { ok: false }
+    // Keep the restart action available while the explicitly requested newer
+    // release prepares. Completion is published by the worker after promotion.
+    if (snapshot.phase === 'ready' && process.platform === MACOS_PLATFORM) return { ok: true }
     await updatePreparation.settled()
     const prepared = currentUpdateSnapshot()
     return { ok: prepared.phase === 'ready' && prepared.candidate?.id === id }
@@ -4188,19 +4267,32 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   // 这一步等用户自己挑时间，不由下载完成自动触发。
   ipcMain.handle(
     'scholarseed:update-install',
-    async (_event, expectedId: string): Promise<StartUpdateResult> => {
+    async (_event, confirmedId: string, latestReady?: boolean): Promise<StartUpdateResult> => {
       requireDesktopWorkbench()
+      const snapshot = currentUpdateSnapshot()
       if (
         previewPolicyChanging ||
-        currentUpdateSnapshot().phase !== 'ready' ||
-        currentUpdateSnapshot().errorFallback === 'activation_recovery_required' ||
+        snapshot.phase !== 'ready' ||
+        snapshot.errorFallback === 'activation_recovery_required' ||
         updateInstallAbort ||
         updateRestartRequested
       ) {
         return { ok: false, error: updater.NO_STAGED_UPDATE }
       }
-      const candidate = currentUpdateSnapshot().candidate
-      if (!candidate || candidate.id !== expectedId)
+      const candidate = snapshot.candidate
+      if (!candidate) return { ok: false, error: updater.NO_STAGED_UPDATE }
+      const expectedId = candidate.id
+      // Only an explicit latest-ready confirmation can follow a native promotion
+      // between the renderer's final read and this synchronous restart claim.
+      if (
+        confirmedId !== expectedId &&
+        !(
+          latestReady === true &&
+          process.platform === MACOS_PLATFORM &&
+          typeof confirmedId === 'string' &&
+          snapshot.readyOrigin === confirmedId
+        )
+      )
         return { ok: false, error: updater.NO_STAGED_UPDATE }
       if (process.platform === MACOS_PLATFORM && !updater.macPreparationReady(candidate)) {
         publishUpdateSnapshot({
@@ -4216,7 +4308,12 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       }
       if (process.platform === MACOS_PLATFORM && macShutdownReady && updater.macHandoffReady())
         return finishMacUpdateHandoff()
-      if (!updatePreparation.claim(candidate)) return { ok: false, error: updater.NO_STAGED_UPDATE }
+      const liveReceipt =
+        process.platform === MACOS_PLATFORM
+          ? () => updater.macPreparationReady(candidate)
+          : undefined
+      if (!updatePreparation.claim(candidate, liveReceipt))
+        return { ok: false, error: updater.NO_STAGED_UPDATE }
       if (process.platform === WINDOWS_PLATFORM) return installWindowsPreparedUpdate()
       const controller = new AbortController()
       updateInstallAbort = controller
@@ -4420,7 +4517,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         // 暂存包还在 → 留在「已就绪」并带上错误，用户重试的是安装这一步；暂存包已经没了
         // （校验不过被删掉）→ 退回失败态，下一次重试是重新下载。
         const stillStaged = updater.macPreparationReady(candidate)
-        if (updatePreparation.running) {
+        if (updatePreparation.running && !stillStaged) {
           publishUpdateSnapshot(currentUpdateSnapshot())
           return result
         }
@@ -5307,7 +5404,7 @@ function armBackgroundUpdateCheck(): void {
     updateInstallationInProgress ||
     updateRestartRequested ||
     macMaintenanceUncertain ||
-    updater.macHandoffCommitted()
+    (updater.macHandoffCommitted() && !updater.canPrepareMacSuccessor())
   if (blocked) return
   const decision = preparationPolicy
     ? updatePreparation.decision(loadRendererPreferences().autoDownloadUpdates)
@@ -5959,7 +6056,12 @@ async function startDesktop(): Promise<void> {
   let logsQuitPending = false
   let logsQuitFinished = false
   const PREPARATION_QUIT_TIMEOUT_MS = 15_000
-  autoUpdater.on('error', () => {
+  // Electron can emit a late error after its update has been superseded.
+  // Keep its error event handled; only the active installation can revoke readiness.
+  autoUpdater.on('error', (error) => {
+    pushLog(`[update] Electron updater error: ${redactDiagnosticError(error)}\n`)
+  })
+  updater.onActiveMacUpdateFailure(() => {
     if (!updater.macHandoffCommitted()) return
     setUpdateInstallationInProgress(false)
     publishUpdateSnapshot({

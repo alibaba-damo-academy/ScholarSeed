@@ -67,6 +67,7 @@ Object.assign(window, {
     installUpdate: async () => {
       recordAction('install')
       publish({ ...snapshot, phase: 'installing', errorFallback: undefined })
+      return { ok: true }
     },
   },
 })

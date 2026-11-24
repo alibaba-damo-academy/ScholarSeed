@@ -2,7 +2,7 @@ import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { beginDomains, ensureDirectories, type DomainNative } from '../../native/domains.cjs'
 import { REGISTRY_DIRECTORY } from '../../native/registry.cjs'
-import { writeRecord, type QualifiedRecordWriter } from './journal.ts'
+import { uncertainRecordWriteCode, writeRecord, type QualifiedRecordWriter } from './journal.ts'
 
 export interface DirectoryWriter {
   close(): void
@@ -100,11 +100,7 @@ export function acquireDirectoryWriter(
         lock = native.acquireAt(pin, name, true)
         operation()
       } catch (error) {
-        if (
-          ['ERR_LEASE_SYNC', 'ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'].includes(
-            (error as NodeJS.ErrnoException).code ?? ''
-          )
-        ) {
+        if (uncertainRecordWriteCode(error)) {
           closed = true
           retainUncertainDirectoryOwnership(lock, pin, domains)
         }

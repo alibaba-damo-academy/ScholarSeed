@@ -1669,6 +1669,7 @@
     "autoDownload": "自动下载更新",
     "autoDownloadHelp": "在后台下载并准备新版本，完成后由你选择重启。关闭后可手动下载。",
     "confirmRestartTitle": "确认重启并更新？",
+    "confirmRestartLatestReady": "确认时将安装已准备就绪的最新版本。",
     "confirmRestartDetail": "更新会重启应用，并中断所有项目中正在运行的任务。重启后可点击「继续」或发送新消息接着处理；继续时会先检查已有结果，避免重复执行。建议等任务完成后再更新。",
     "confirmRestart": "仍然重启并更新",
     "confirmRestartFailed": "未能发起更新，请稍后重试。",

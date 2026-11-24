@@ -77,6 +77,28 @@ recovery path, which reopens the restored app under the user's restart grant.
 再从原请求绑定的来源复制一次。新副本通过完整验签后继续本次安装。复制或再次验签失败时，
 助手沿用原有恢复流程，确认旧版已恢复后自动打开旧版。
 
+### Checking for newer releases while a restart is pending
+
+Desktop continues checking the selected channel while a prepared update waits
+for restart. With automatic downloads enabled, it can prepare a newer release
+in the other of two native slots. Each slot has its own extracted source,
+ShipIt job, preparation journal and private copy. The first uses the original
+job label. The other appends `.next`. Background preparation requires a
+writable installation and never requests administrator interaction.
+
+The selected request in `squirrel.json` identifies the matching staged metadata
+in `ready.json` or `ready.next.json`. Desktop changes that selection under the
+handoff lock only after binding the newer native readiness receipt to the same
+installed app. If a download, copy or check fails, the earlier selection can
+still be installed. Restart claims the selected request before asynchronous
+authorization and shutdown. Only its ShipIt receives installation authorization.
+The selected helper performs the usual final signature check and recovery.
+
+等待重启期间，桌面端继续检查当前渠道。开启自动下载后，新版本在另一套 ShipIt
+目录和助手中静默准备。两个版本各自保留绑定来源、准备记录和私有副本。新版本取得
+原生就绪凭据后，客户端才在交接锁内切换。下载、复制、校验失败或需要管理员交互时，
+原版本仍可重启安装。点击确认会先锁定当时已就绪的版本，再执行在线授权、退出和最终验签。
+
 The small source-parent readiness acknowledgement is readable by the initiating
 user even when ShipIt runs privileged. It controls exit timing only: it cannot
 supply the installer candidate path or authorize installation. Squirrel waits

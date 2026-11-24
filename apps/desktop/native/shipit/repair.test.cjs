@@ -75,8 +75,9 @@ function fixture(context) {
     item: identity(value),
     ...(contents ? { contents: identity(path.join(value, 'Contents')) } : {}),
   })
-  const source = bundle(path.join(root, 'cache', 'update.new', 'ScholarSeed.app'))
-  const oldSource = bundle(path.join(root, 'cache', 'update.old', 'ScholarSeed.app'))
+  const cache = path.join(root, 'cache', 'com.scholarseed.desktop.ShipIt')
+  const source = bundle(path.join(cache, 'update.new', 'ScholarSeed.app'))
+  const oldSource = bundle(path.join(cache, 'update.old', 'ScholarSeed.app'))
   const target = bundle(path.join(root, 'installed', 'ScholarSeed.app'))
   const owned = directory(path.join(root, 'shipit-candidate.fixture'))
   const candidate = bundle(path.join(owned, 'ScholarSeed.app'))
@@ -120,7 +121,7 @@ function fixture(context) {
   fs.chmodSync(cleanupJournal, 0o600)
   for (const owner of [preparation, cleanup])
     fs.writeFileSync(path.join(owner, 'lock'), '', { mode: 0o600 })
-  const state = path.join(root, 'cache', 'ShipItState.plist')
+  const state = path.join(cache, 'ShipItState.plist')
   fs.writeFileSync(
     state,
     JSON.stringify({
@@ -156,7 +157,9 @@ function fixture(context) {
 }
 
 contract('shipped repair library exposes no process-scope or fault-injection controls', (context) => {
-  assert.deepEqual(Object.getOwnPropertyNames(production), ['open', 'observedLaunch'])
+  assert.deepEqual(Object.getOwnPropertyNames(production), [
+    'open', 'observedLaunch', 'prepareSuccessor', 'installSuccessor', 'disposeSuccessor',
+  ])
   assert.notEqual(fs.realpathSync(library), fs.realpathSync(fixtureLibrary))
   assert.notEqual(path.dirname(fs.realpathSync(library)), path.dirname(fs.realpathSync(fixtureLibrary)))
   const current = fixture(context)
@@ -164,6 +167,18 @@ contract('shipped repair library exposes no process-scope or fault-injection con
     assert.throws(() => qualify({ ...current.config, ...extra }, production),
       (error) => error.code === 'ERR_TERMINAL_ARGUMENT')
   }
+})
+
+contract('update handles reject unknown requests and an unavailable Electron framework', () => {
+  const refused = (error) => error.code === 'ERR_UPDATE_SUCCESSOR'
+  for (const handle of [0, 1, -1, 1.5, NaN, '1', 2 ** 32 + 1]) {
+    assert.throws(() => production.installSuccessor(handle), refused)
+    assert.throws(() => production.disposeSuccessor(handle), refused)
+  }
+  const url = `http://127.0.0.1:1/${'a'.repeat(64)}/feed`
+  assert.throws(() => production.prepareSuccessor(url, 'next', () => {}), refused)
+  assert.throws(() => production.prepareSuccessor(url, true, null), refused)
+  assert.throws(() => production.prepareSuccessor(url, true, () => assert.fail()), refused)
 })
 
 contract('shipped observer recognizes only the matching launched cleanup record', (context) => {
