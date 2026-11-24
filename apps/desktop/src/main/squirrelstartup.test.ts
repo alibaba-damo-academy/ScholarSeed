@@ -534,11 +534,14 @@ test(
       (await bindSquirrelRequest(directory, bundle, target, next, directory)).prepared?.path,
       nextCandidate
     )
-    await writeFile(
-      alternateState,
-      JSON.stringify({ ...nextState, bundleIdentifier: bundle + '.next' })
-    )
-    await assert.rejects(bindSquirrelRequest(directory, bundle, target, next), /binding differs/)
+    for (const [changes, expected] of [
+      [{ bundleIdentifier: bundle + '.next' }, /bundle identifier differs/],
+      [{ launchAfterInstallation: true }, /launch flag differs/],
+      [{ installationAuthorized: true }, /installation authorization differs/],
+    ] as const) {
+      await writeFile(alternateState, JSON.stringify({ ...nextState, ...changes }))
+      await assert.rejects(bindSquirrelRequest(directory, bundle, target, next), expected)
+    }
     const owner = join(dirname(state), 'CandidatePreparation')
     const prepared = join(directory, 'native-copy', 'Example.app')
     await mkdir(owner, { mode: 0o700 })

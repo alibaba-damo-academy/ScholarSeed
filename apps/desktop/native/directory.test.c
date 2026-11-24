@@ -29,14 +29,18 @@ static BOOL WINAPI interrupted_close(HANDLE handle) {
 #include <sys/stat.h>
 #include <string.h>
 static int open_fault, mkdir_fault;
-static bool fail_workspace_call(const char *name, int *fault) {
+static struct stat workspace_parent;
+static bool fail_workspace_call(int parent, const char *name, int *fault) {
   if (!*fault || strcmp(name, "workspace")) return false;
+  struct stat current;
+  if (fstat(parent, &current) || current.st_dev != workspace_parent.st_dev ||
+      current.st_ino != workspace_parent.st_ino) return false;
   errno = *fault;
   *fault = 0;
   return true;
 }
-#define openat(parent, name, ...) (fail_workspace_call(name, &open_fault) ? -1 : openat(parent, name, __VA_ARGS__))
-#define mkdirat(parent, name, mode) (fail_workspace_call(name, &mkdir_fault) ? -1 : mkdirat(parent, name, mode))
+#define openat(parent, name, ...) (fail_workspace_call(parent, name, &open_fault) ? -1 : openat(parent, name, __VA_ARGS__))
+#define mkdirat(parent, name, mode) (fail_workspace_call(parent, name, &mkdir_fault) ? -1 : mkdirat(parent, name, mode))
 static int captured_locks[8];
 static int captured_lock(int file, int operation) {
   int result = flock(file, operation);
@@ -55,10 +59,7 @@ static int interrupted_close(int handle) {
 #include "directory.c"
 
 #ifndef _WIN32
-static bool interrupted_workspace_contract(void) {
-  char root[] = "lease-workspace-XXXXXX", resolved[PATH_UNITS], path[PATH_UNITS];
-  if (!mkdtemp(root) || !realpath(root, resolved)) return false;
-  if (snprintf(path, sizeof(path), "%s/workspace", resolved) >= (int)sizeof(path)) return false;
+static bool check_workspace_faults(const char *root, const char *path) {
   struct directory_error error = {0};
   open_fault = EINTR;
   struct directory *workspace = directory_open(path, true, &error);
@@ -76,7 +77,7 @@ static bool interrupted_workspace_contract(void) {
   valid = valid && !workspace && !open_fault && error.system == EACCES && !strcmp(error.code, "ERR_LEASE_DIRECTORY");
   if (workspace) directory_close(workspace);
   if (rmdir(path)) valid = false;
-  struct directory *parent = directory_open(resolved, false, &error);
+  struct directory *parent = directory_open(root, false, &error);
   if (parent) {
     mkdir_fault = EINTR;
     open_fault = EINTR;
@@ -88,6 +89,22 @@ static bool interrupted_workspace_contract(void) {
     valid = valid && denied && !mkdir_fault && error.system == EACCES && !strcmp(error.code, "ERR_LEASE_NATIVE");
     if (directory_close(parent)) valid = false;
   } else valid = false;
+  return valid;
+}
+
+static bool interrupted_workspace_contract(void) {
+  const char *temporary = getenv("TMPDIR");
+  if (!temporary) temporary = getenv("TEMP");
+  char resolved[PATH_UNITS], root[PATH_UNITS], path[PATH_UNITS];
+  if (!temporary || !realpath(temporary, resolved)) return false;
+  int length = snprintf(root, sizeof(root), "%s/lease-workspace-XXXXXX", resolved);
+  if (length < 0 || (size_t)length >= sizeof(root) || !mkdtemp(root)) return false;
+  length = snprintf(path, sizeof(path), "%s/workspace", root);
+  bool valid = length >= 0 && (size_t)length < sizeof(path);
+  if (valid) {
+    valid = !stat(root, &workspace_parent) && check_workspace_faults(root, path);
+    if (rmdir(path) && errno != ENOENT) valid = false;
+  }
   if (rmdir(root)) valid = false;
   printf("workspace directory pin after EINTR and EACCES: %s\n", valid ? "passed" : "failed");
   return valid;

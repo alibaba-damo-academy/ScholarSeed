@@ -612,12 +612,15 @@ export async function bindSquirrelRequest(
   if (
     !validSquirrelBinding(handoff.binding) ||
     handoff.binding.candidate !== handoff.candidate ||
-    !sameSquirrelBinding(state.binding, handoff.binding) ||
-    state.bundleIdentifier !== bundle ||
-    state.launchAfterInstallation !== false ||
-    state.installationAuthorized !== false
+    !sameSquirrelBinding(state.binding, handoff.binding)
   )
     throw new Error('Squirrel request artifact binding differs')
+  if (state.bundleIdentifier !== bundle)
+    throw new Error('Squirrel request bundle identifier differs')
+  if (state.launchAfterInstallation !== false)
+    throw new Error('Squirrel request launch flag differs')
+  if (state.installationAuthorized !== false)
+    throw new Error('Squirrel request installation authorization differs')
   const source = realpathSync(fileURLToPath(state.updateBundleURL))
   const target = realpathSync(fileURLToPath(state.targetBundleURL))
   if (

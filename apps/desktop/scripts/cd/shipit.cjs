@@ -229,7 +229,7 @@ async function verifySealedInstallation(directory, compiler, sources, squirrel, 
     command('/usr/bin/codesign', ['--force', '--sign', '-', item], directory)
   const verify = application => command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', application], directory)
   verify(template)
-  for (const scenario of ['rebuild', 'damaged-source', 'mixed', 'added', 'altered', 'cancel']) {
+  for (const scenario of ['rebuild', 'busy-cleanup', 'damaged-source', 'mixed', 'added', 'altered', 'cancel']) {
     const root = path.join(directory, `sealed-${scenario}`)
     for (const child of ['download', 'CandidatePreparation', 'DeferredCleanup'])
       fs.mkdirSync(path.join(root, child), { recursive: true, mode: 0o700 })
@@ -249,16 +249,19 @@ async function verifySealedInstallation(directory, compiler, sources, squirrel, 
         if (result.error || result.status !== 0) throw new Error(describeResult(result))
         // Only a missing sealed resource permits one rebuild and a second full signature check.
         const rebuilt = [...result.stderr.matchAll(/\[shipit-preparation\] event=candidate-rebuilt/g)].length
-        const expectedRebuilds = mode === 'rebuild' || mode === 'damaged-source' ? 1 : 0
+        const expectReplacement = mode === 'rebuild' || mode === 'busy-cleanup'
+        const expectedRebuilds = expectReplacement || mode === 'damaged-source' ? 1 : 0
         if (rebuilt !== expectedRebuilds) throw new Error(`Expected ${expectedRebuilds} rebuilds, observed ${rebuilt}`)
         const signatures = [...result.stderr.matchAll(/stage=verify-signature event=end result=(\w+)/g)].map(match => match[1])
         const expected = mode === 'replay' || mode === 'cancel' ? [] : ['error']
-        if (expectedRebuilds) expected.push(mode === 'rebuild' ? 'success' : 'error')
+        if (expectedRebuilds) expected.push(expectReplacement ? 'success' : 'error')
         if (signatures.join(',') !== expected.join(',')) throw new Error(`Unexpected signature results: ${signatures.join(',')}`)
         const current = fs.statSync(target).ino
         const targetReplaced = current !== previous
-        const expectReplacement = scenario === 'rebuild'
         if (targetReplaced !== expectReplacement) throw new Error('Unexpected installed target')
+        if (mode === 'busy-cleanup' &&
+            (!result.stderr.includes('event=superseded-directory-retained') ||
+             !result.stderr.includes('event=retired'))) throw new Error('Superseded directory cleanup was not deferred and retired')
         await verifySealedLaunch(root, mode, target, current, workspace ? result.stderr : undefined)
         verify(target)
       } catch (error) {

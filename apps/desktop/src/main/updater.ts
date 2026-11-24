@@ -59,6 +59,7 @@ import {
   type SquirrelHandoff,
   type SquirrelUpdater,
   type SquirrelRecordMutation,
+  squirrelRecordWriter,
   type SquirrelNativeCapture,
   type SquirrelLaunchCleanup,
   shipItDiagnostics,
@@ -2009,8 +2010,10 @@ export async function syncMacUpdateDiagnostics(log: LogSink): Promise<void> {
   if (process.platform !== MACOS_PLATFORM) return
   const config = resolveDesktopConfig(log)
   try {
-    for (const item of await shipItDiagnostics(systemCacheDir(), config.bundleId))
-      persistUpdateLog(`[update] ShipIt ${item.name}\n${item.text}\n`)
+    for (const item of await shipItDiagnostics(systemCacheDir(), config.bundleId)) {
+      const detail = 'error' in item ? `Unable to read ShipIt logs: ${item.error}` : item.text
+      persistUpdateLog(`[update] ShipIt ${item.name}\n${detail}\n`)
+    }
     await updateLog?.flush()
   } catch (error) {
     logUpdateLine(log, `[update] ShipIt diagnostics unavailable: ${String(error)}\n`)
@@ -2672,9 +2675,7 @@ function mutateMacRecord(path: string): SquirrelRecordMutation {
     const writer = desktopDirectoryWriter(dirname(path))
     try {
       writer.withRecordLock(SQUIRREL_HANDOFF_LOCK, () =>
-        operation((handoff) =>
-          writer.replace(basename(path), Buffer.from(`${JSON.stringify(handoff)}\n`))
-        )
+        operation(squirrelRecordWriter((bytes) => writer.replace(basename(path), bytes)))
       )
     } finally {
       writer.close()

@@ -8,7 +8,7 @@ import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { EventEmitter } from 'node:events'
 import { isDeepStrictEqual } from 'node:util'
-import { readRecord, uncertainRecordWriteCode, writeJson } from './journal.ts'
+import { readRecord, uncertainRecordWriteCode, writeRecord } from './journal.ts'
 import type { QualifiedRecordConsumer } from './journal.ts'
 import { commitWithActivation, type HandoffAuthorization } from './update-authorization.ts'
 import { assertSquirrelArchiveSize, MAX_SQUIRREL_ARCHIVE_BYTES } from './archive.ts'
@@ -346,9 +346,17 @@ export async function squirrelFeed(
   }
 }
 
-export type SquirrelRecordMutation = (
-  operation: (write: (handoff: SquirrelHandoff) => void) => void
-) => void
+// Writers expose the exact serialized bytes before replacement, since a sync or unlock may throw.
+type SquirrelRecordWrite = (handoff: SquirrelHandoff, onAttempt?: (bytes: Buffer) => void) => void
+export type SquirrelRecordMutation = (operation: (write: SquirrelRecordWrite) => void) => void
+
+export function squirrelRecordWriter(replace: (bytes: Buffer) => void): SquirrelRecordWrite {
+  return (handoff, onAttempt) => {
+    const bytes = Buffer.from(JSON.stringify(handoff) + '\n')
+    onAttempt?.(bytes)
+    replace(bytes)
+  }
+}
 
 export class SquirrelSourceVerificationRetry extends Error {}
 
@@ -411,7 +419,7 @@ export class SquirrelInstallation {
       verifySource?: SquirrelSourceVerifier
     ) => Promise<SquirrelNativeRequest>,
     private mutateRecord: SquirrelRecordMutation = (operation) =>
-      operation((handoff) => writeJson(recordPath, handoff)),
+      operation(squirrelRecordWriter((bytes) => writeRecord(recordPath, bytes))),
     private requiresPromotion = false
   ) {
     // A late error revokes readiness without restoring candidate replacement.
@@ -709,6 +717,7 @@ export class SquirrelInstallation {
     if (!this.requiresPromotion || this.recordPath === recordPath || !this.ready)
       throw new Error('Squirrel successor is not ready for promotion')
     let attempted: Buffer | undefined
+    let written = false
     try {
       mutateRecord((write) => {
         const current = readSquirrelHandoff(recordPath)
@@ -732,8 +741,10 @@ export class SquirrelInstallation {
         )
           throw new Error('Squirrel handoff changed before promotion')
         guard()
-        attempted = Buffer.from(JSON.stringify(successor) + '\n')
-        write(successor)
+        write(successor, (bytes) => {
+          attempted = Buffer.from(bytes)
+        })
+        written = true
       })
     } catch (error) {
       const code = uncertainRecordWriteCode(error)
@@ -747,9 +758,10 @@ export class SquirrelInstallation {
         throw new AggregateError([error, readError], 'Squirrel promotion could not be confirmed')
       }
       if (!current.equals(attempted)) throw error
+      written = true
       this.diagnostic('handoff-promotion-observed-after-writer-error', code)
     }
-    if (!attempted) throw new Error('Squirrel promotion was not published')
+    if (!written) throw new Error('Squirrel promotion was not published')
     this.recordPath = recordPath
     this.mutateRecord = mutateRecord
     this.requiresPromotion = false
@@ -786,14 +798,14 @@ const collectedLogs = new Map<string, string>()
 export async function shipItDiagnostics(
   cache: string,
   bundle: string
-): Promise<{ name: string; text: string }[]> {
+): Promise<({ name: string; text: string } | { name: string; error: string })[]> {
   const slots = await Promise.all(
     [false, true].map((alternate) => {
       const directory = join(cache, squirrelJobLabel(bundle, alternate))
       return shipItSlotDiagnostics(directory, alternate).catch((error: NodeJS.ErrnoException) => [
         {
           name: alternate ? 'next/diagnostics' : 'primary/diagnostics',
-          text: `Unable to read ShipIt logs: ${error.code ?? error.message}`,
+          error: error.code ?? error.message,
         },
       ])
     })

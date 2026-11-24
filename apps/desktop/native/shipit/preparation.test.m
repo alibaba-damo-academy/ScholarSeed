@@ -111,6 +111,25 @@ static void CheckRebuild(NSString *root, BOOL failCopy, BOOL interruptSwitch) {
     Check(WIFEXITED(status) && WEXITSTATUS(status) == REBUILD_SWITCH_EXIT && Exists(damaged),
           @"process exited after the rebuilt candidate was committed and before the former copy was discarded");
     assert(SSPreparationOpenDirectory(store, NULL));
+    NSDictionary *switched = Journal(store);
+    NSString *original = damaged.path.stringByDeletingLastPathComponent;
+    NSString *held = [original stringByAppendingString:@".held"];
+    assert([Manager moveItemAtPath:original toPath:held error:NULL]);
+    NSString *foreign = [Directory(original) stringByAppendingPathComponent:@"foreign"];
+    assert([@"preserve" writeToFile:foreign atomically:NO encoding:NSUTF8StringEncoding error:NULL]);
+    NSURL *committed = SSPreparationCopy(source, target, binding, NULL);
+    Check(committed && [committed.path isEqual:switched[@"record"][@"candidate"][@"path"]] &&
+          [Manager fileExistsAtPath:foreign] && [switched isEqual:Journal(store)],
+          @"reentry reuses the committed candidate without deleting a substituted former directory or its journal");
+    NSMutableDictionary *changed = Journal(store);
+    changed[@"record"][@"attempts"] = @2;
+    Rewrite(store, changed);
+    NSError *error = nil;
+    Check(!SSPreparationCopy(source, target, binding, &error) && error.code == ESTALE &&
+          [changed isEqual:Journal(store)] && [Manager fileExistsAtPath:foreign],
+          @"deferring cleanup requires an unchanged durable candidate journal");
+    Rewrite(store, switched);
+    assert([Manager removeItemAtPath:original error:NULL] && [Manager moveItemAtPath:held toPath:original error:NULL]);
     NSURL *replacement = SSPreparationCopy(source, target, binding, NULL);
     Check(replacement && !Exists(damaged) && [Manager fileExistsAtPath:[replacement.path stringByAppendingPathComponent:member]] &&
           [Journal(store)[@"record"][@"rebuild"] isEqual:@{}], @"restart collects the former private copy and retains the new one and its spent budget");
@@ -137,6 +156,8 @@ static void CheckRebuild(NSString *root, BOOL failCopy, BOOL interruptSwitch) {
   }
   NSString *sourceMember = [source.path stringByAppendingPathComponent:member];
   if (failCopy) assert(chmod(sourceMember.fileSystemRepresentation, 0000) == 0);
+  NSString *previousDirectory = damaged.path.stringByDeletingLastPathComponent;
+  if (!failCopy) assert(chmod(previousDirectory.fileSystemRepresentation, 0500) == 0);
   NSError *error = nil;
   NSURL *replacement = SSPreparationRebuildCandidate(source, target, binding, damaged, &error);
   if (failCopy) {
@@ -167,12 +188,15 @@ static void CheckRebuild(NSString *root, BOOL failCopy, BOOL interruptSwitch) {
     Check(fresh && !Exists(damaged) && ![Manager fileExistsAtPath:partial], @"the next request collects both owned copies of the failed rebuild");
     [OwnedParents addObject:fresh.path.stringByDeletingLastPathComponent];
   } else {
-    Check(replacement && ![replacement isEqual:damaged] && !Exists(damaged) &&
+    Check(replacement && ![replacement isEqual:damaged] &&
+          [Journal(store)[@"record"][@"rebuild"][@"directory"][@"path"] isEqual:previousDirectory] &&
           [[NSData dataWithContentsOfFile:[replacement.path stringByAppendingPathComponent:member]] isEqual:[NSData dataWithContentsOfFile:sourceMember]],
-          @"fresh private copy restores the missing resource from the bound source");
+          @"fresh bound copy restores the missing resource and remains usable while the previous directory is read-only");
+    assert(chmod(previousDirectory.fileSystemRepresentation, 0700) == 0);
     [OwnedParents addObject:replacement.path.stringByDeletingLastPathComponent];
     SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
-    Check([SSPreparationCopy(source, target, binding, NULL) isEqual:replacement], @"restart retains the rebuilt candidate");
+    Check([SSPreparationCopy(source, target, binding, NULL) isEqual:replacement] && ![Manager fileExistsAtPath:previousDirectory],
+          @"restart retains the rebuilt candidate and collects the old directory once writable");
     assert(SSPreparationBeginOwnership(source, target, binding, replacement, NULL));
     assert([Manager removeItemAtPath:[replacement.path stringByAppendingPathComponent:member] error:NULL]);
     Check(!SSPreparationRebuildCandidate(source, target, binding, replacement, &error) && error.code == ELOOP,

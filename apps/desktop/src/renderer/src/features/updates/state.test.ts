@@ -90,7 +90,8 @@ test('installation requires explicit confirmation for the same ready candidate',
   })
   try {
     const key = updateCandidateKey(CANDIDATE)!
-    await runUpdateAction(current)
+    assert.equal(await runUpdateAction(current), 'candidate-changed')
+    assert.equal(await runUpdateAction(current, 'outdated-key'), 'candidate-changed')
     assert.deepEqual(calls, [])
     await runUpdateAction(current, key)
     assert.deepEqual(calls, ['install'])
@@ -133,6 +134,7 @@ test('ready retains its install action while explicit newer download binds the o
   })
   try {
     assert.equal(updateActionOf(current), 'install')
+    await runLatestUpdateAction(current)
     await runLatestUpdateAction(current)
     assert.deepEqual(calls, ['newest'])
     const previous = current

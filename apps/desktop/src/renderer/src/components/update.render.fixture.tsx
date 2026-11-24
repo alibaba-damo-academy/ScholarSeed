@@ -65,8 +65,8 @@ Object.assign(window, {
       publish({ ...snapshot, phase: 'downloading', percent: 40, errorFallback: undefined })
       return { ok: true }
     },
-    installUpdate: async () => {
-      recordAction('install')
+    installUpdate: async (confirmedId: string) => {
+      recordAction(`install:${confirmedId}`)
       publish({ ...snapshot, phase: 'installing', errorFallback: undefined })
       return { ok: true }
     },

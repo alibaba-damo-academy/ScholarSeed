@@ -19,7 +19,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { isDeepStrictEqual, promisify } from 'node:util'
-import { writeJson } from './journal.ts'
+import { writeJson, writeRecord } from './journal.ts'
 import {
   SquirrelInstallation,
   SquirrelSourceVerificationRetry,
@@ -408,6 +408,7 @@ for (const fault of [
   'after-rename',
   'release',
   'replaced',
+  'reformatted',
   'unknown',
 ]) {
   test(`uncertain successor publication retains only the exact selected request: ${fault}`, async (t) => {
@@ -432,6 +433,7 @@ for (const fault of [
     await successor.prepare(archive, { ...identity, candidate: 'next', alternate: true }, authorize)
     const prior = readSquirrelHandoff(record)!
     const published = readSquirrelHandoff(sidecar)!
+    const verifiedBytes = Buffer.from(JSON.stringify(published, null, 2))
     const error = Object.assign(new Error(fault), {
       code:
         fault === 'unknown'
@@ -445,9 +447,13 @@ for (const fault of [
       if (fenced) throw new Error('Writer requires process exit')
       fenced = true
       if (fault === 'before-write') throw error
-      operation((write) => {
+      operation((handoff, onAttempt) => {
+        const bytes = Buffer.from(JSON.stringify(handoff, null, 2))
+        onAttempt?.(bytes)
         if (fault === 'before-rename') throw error
-        writeJson(record, fault === 'replaced' ? { ...write, at: write.at + 1 } : write)
+        if (fault === 'reformatted') writeJson(record, published)
+        else if (fault === 'replaced') writeJson(record, { ...handoff, at: handoff.at + 1 })
+        else writeRecord(record, bytes)
         if (fault !== 'release') throw error
       })
       throw error
@@ -469,6 +475,7 @@ for (const fault of [
       assert.ok(events.includes('handoff-promotion-observed-after-writer-error'))
       assert.throws(() => successor.quitAndInstall(), /process exit/)
       assert.deepEqual(readSquirrelHandoff(record), published)
+      assert.deepEqual(readFileSync(record), verifiedBytes)
     } else {
       assert.throws(promote, (actual) => actual === error)
       assert.throws(() => successor.quitAndInstall(), /not ready/)
@@ -1151,6 +1158,7 @@ test('ShipIt diagnostics are bounded, deduplicated and never follow unrelated fi
   await symlink(join(logs, 'ShipItState.plist'), join(logs, 'ShipIt_stderr.log'))
   const result = await shipItDiagnostics(directory, 'org.scholarseed.app')
   assert.equal(result.length, 1)
+  assert.ok('text' in result[0])
   assert.equal(result[0].text.length, 64 * 1024)
   assert.deepEqual(await shipItDiagnostics(directory, 'org.scholarseed.app'), [])
   await writeFile(join(logs, 'Squirrel_timing.log'), '[squirrel-timing] stage=unzip event=end')
@@ -1159,6 +1167,7 @@ test('ShipIt diagnostics are bounded, deduplicated and never follow unrelated fi
     timing.map((item) => item.name),
     ['Squirrel_timing.log']
   )
+  assert.ok('text' in timing[0])
   assert.match(timing[0].text, /stage=unzip/)
   await mkdir(logs + '.next')
   await writeFile(join(logs + '.next', 'ShipIt_stderr.log'), 'successor')
@@ -1189,8 +1198,17 @@ test(
         const result = await shipItDiagnostics(directory, bundle)
         const log = blocked === primary ? 'next/ShipIt_stdout.log' : 'ShipIt_stdout.log'
         const diagnostic = blocked === primary ? 'primary/diagnostics' : 'next/diagnostics'
-        assert.equal(result.find((entry) => entry.name === log)?.text, 'healthy')
-        assert.match(result.find((entry) => entry.name === diagnostic)?.text ?? '', /EACCES/)
+        assert.deepEqual(
+          result.find((entry) => entry.name === log),
+          { name: log, text: 'healthy' }
+        )
+        assert.deepEqual(
+          result.find((entry) => entry.name === diagnostic),
+          {
+            name: diagnostic,
+            error: 'EACCES',
+          }
+        )
       } finally {
         await chmod(blocked, 0o700)
       }

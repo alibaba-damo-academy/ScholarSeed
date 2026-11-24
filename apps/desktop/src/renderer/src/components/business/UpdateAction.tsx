@@ -8,7 +8,7 @@ import {
   runUpdateAction,
   updateActionOf,
   updateFailureText,
-  type UpdateFailure,
+  useLatestUpdateAttempt,
 } from '../../features/updates/state'
 import {
   AlertDialog,
@@ -38,43 +38,19 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
   const [requested, setRequested] = useState<UpdateSnapshot | null>(null)
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [latestAttempt, setLatestAttempt] = useState<{
-    readyId: string
-    latestId: string
-    failure?: UpdateFailure
-  } | null>(null)
-  const preparingLatest = useRef<typeof latestAttempt>(null)
+  const currentAttempt = useLatestUpdateAttempt(state)
   const responding = useRef(false)
   const requestedKey = updateCandidateKey(requested?.candidate)
   const followNativePromotion = window.scholarseed.platform === 'darwin'
   const valid = matchesRestartConfirmation(requested, state, followNativePromotion)
 
+  const canRestart = updateActionOf(state) === 'install'
   const latestFailure =
-    latestAttempt?.readyId === state?.candidate?.id &&
-    (!state?.latestCandidate || latestAttempt?.latestId === state.latestCandidate.id) &&
-    updateActionOf(state) === 'install'
-      ? latestAttempt?.failure
-      : undefined
-
-  const prepareLatest = async (): Promise<void> => {
-    if (responding.current || !state?.candidate || !state.latestCandidate) return
-    const attempt = { readyId: state.candidate.id, latestId: state.latestCandidate.id }
-    const active = preparingLatest.current
-    if (active?.readyId === attempt.readyId && active.latestId === attempt.latestId) return
-    preparingLatest.current = attempt
-    setLatestAttempt(attempt)
-    let failure: UpdateFailure | undefined
-    try {
-      onAction?.()
-      failure = await runLatestUpdateAction(state)
-    } catch {
-      failure = { origin: 'preparation', rolledBack: false }
-    }
-    // A restart or a newer request may have taken ownership during preparation.
-    if (preparingLatest.current !== attempt) return
-    preparingLatest.current = null
-    setLatestAttempt(failure ? { ...attempt, failure } : null)
-  }
+    typeof currentAttempt?.result === 'object' ? currentAttempt.result : undefined
+  const showPromotionHint =
+    followNativePromotion &&
+    valid &&
+    (state?.latestCandidate || state?.candidate?.id !== requested?.candidate?.id)
 
   const execute = async (confirmedKey?: string): Promise<void> => {
     if (responding.current) return
@@ -83,10 +59,6 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
     setFailed(false)
     try {
       onAction?.()
-      if (confirmedKey) {
-        preparingLatest.current = null
-        setLatestAttempt(null)
-      }
       if (
         (await runUpdateAction(
           confirmedKey ? requested : state,
@@ -109,7 +81,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
       {...props}
       disabled={props.disabled || pending}
       onClick={() => {
-        if (updateActionOf(state) === 'install') {
+        if (canRestart) {
           setFailed(false)
           setRequested(state)
         } else void execute()
@@ -124,19 +96,16 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
         if (!open && !responding.current) setRequested(null)
       }}
     >
-      {state?.latestCandidate && updateActionOf(state) === 'install' && (
+      {state?.latestCandidate && canRestart && (
         <Button
           size="sm"
           variant="outline"
           className="max-w-full whitespace-normal"
-          disabled={
-            pending ||
-            (latestAttempt?.readyId === state.candidate?.id &&
-              latestAttempt?.latestId === state.latestCandidate.id &&
-              !latestAttempt.failure)
-          }
+          disabled={pending || (!!currentAttempt && !latestFailure)}
           data-testid="update-download-latest"
-          onClick={() => void prepareLatest()}
+          onClick={() => {
+            if (!responding.current) void runLatestUpdateAction(state, onAction)
+          }}
         >
           {t('update.downloadLatest', { build: state.latestCandidate.build_number })}
         </Button>
@@ -145,11 +114,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
         <span role="alert">{updateFailureText(latestFailure, t, accountText)}</span>
       )}
       {/* Link the portal to its trigger so ancestor popovers retain it through pointerdown. */}
-      {updateActionOf(state) === 'install' ? (
-        <AlertDialogTrigger asChild>{button}</AlertDialogTrigger>
-      ) : (
-        button
-      )}
+      {canRestart ? <AlertDialogTrigger asChild>{button}</AlertDialogTrigger> : button}
 
       {failed && requested === null && <span role="alert">{t('update.confirmRestartFailed')}</span>}
       <AlertDialogPortal>
@@ -163,7 +128,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
           <AlertDialogHeader>
             <AlertDialogTitle id={titleId}>{t('update.confirmRestartTitle')}</AlertDialogTitle>
             <AlertDialogDescription id={descriptionId}>
-              {followNativePromotion && <>{t('update.confirmRestartLatestReady')} </>}
+              {showPromotionHint && <>{t('update.confirmRestartLatestReady')} </>}
               {t('update.confirmRestartDetail')}
             </AlertDialogDescription>
           </AlertDialogHeader>

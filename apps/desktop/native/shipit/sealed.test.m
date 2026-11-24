@@ -1,6 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <preparation.h>
 #include <assert.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <string.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -30,6 +33,19 @@ CFIndex SSFixtureGetAppIntegerValue(CFStringRef key, CFStringRef domain, Boolean
     NSNumber *number = preferences[(__bridge NSString *)key];
     if (valid) *valid = [number isKindOfClass:NSNumber.class];
     return number.integerValue;
+}
+
+// Fail only the first rmdir of this scenario's superseded candidate directory.
+static NSString *busyDirectory;
+int unlinkat(int directory, const char *name, int flags) {
+  if (busyDirectory && flags == AT_REMOVEDIR && strcmp(name, busyDirectory.fileSystemRepresentation) == 0) {
+    busyDirectory = nil;
+    errno = EBUSY;
+    return -1;
+  }
+  int (*removeEntry)(int, const char *, int) = dlsym(RTLD_NEXT, "unlinkat");
+  assert(removeEntry);
+  return removeEntry(directory, name, flags);
 }
 
 static int recordLaunch(NSBundle *bundle) {
@@ -65,7 +81,7 @@ int main(int argc, const char **argv) {
       return EXIT_FAILURE;
     }
     BOOL replay = [mode isEqual:@"replay"];
-    assert(([@[@"rebuild", @"damaged-source", @"mixed", @"added", @"altered", @"cancel", @"replay"] containsObject:mode]));
+    assert(([@[@"rebuild", @"busy-cleanup", @"damaged-source", @"mixed", @"added", @"altered", @"cancel", @"replay"] containsObject:mode]));
     preferencesPath = [path stringByAppendingPathComponent:@"preferences.plist"];
     if ([NSFileManager.defaultManager fileExistsAtPath:preferencesPath]) {
         preferences = [NSMutableDictionary dictionaryWithContentsOfFile:preferencesPath];
@@ -86,6 +102,7 @@ int main(int argc, const char **argv) {
             assert(reads == 2 && SSReadinessRead(source, target, NULL) == SSReadinessReady);
             NSURL *candidate = SSPreparationCopy(source, target, binding, NULL);
             assert(candidate && SSPreparationValidate(source, target, binding, candidate, NULL));
+            if ([mode isEqual:@"busy-cleanup"]) busyDirectory = candidate.URLByDeletingLastPathComponent.lastPathComponent;
             NSString *member = @"Contents/Resources/sealed.txt";
             if (![mode isEqual:@"altered"])
                 assert(unlink([candidate URLByAppendingPathComponent:member].fileSystemRepresentation) == 0);
