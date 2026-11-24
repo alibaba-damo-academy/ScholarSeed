@@ -1759,7 +1759,7 @@ test('model profile requests preserve auth events and raw HTTP diagnostics witho
       const receipt = await createSubscriptionProfile()
       assert.deepEqual(
         receipt,
-        { ok: false, code: 'invalid_response', status: 200, error: 'HTTP 200' },
+        { ok: false, code: 'invalid_response', status: 200, error: '' },
         body
       )
     }

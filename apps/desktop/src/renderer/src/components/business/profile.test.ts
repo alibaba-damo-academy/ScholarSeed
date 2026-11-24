@@ -657,7 +657,7 @@ test('probe failure detail classifies backend error codes and transport failures
     'auth'
   )
   assert.deepEqual(
-    probeFailureDetail({ ok: false, code: 'invalid_response', status: 200, error: 'HTTP 200' }),
+    probeFailureDetail({ ok: false, code: 'invalid_response', status: 200, error: '' }),
     {
       kind: 'invalidResponse',
       params: { status: 200 },

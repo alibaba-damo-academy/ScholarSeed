@@ -68,7 +68,7 @@
     "authentication": "Sign in and try again.",
     "http": "Model connection request failed (HTTP {{status}}).",
     "timeout": "The request timed out.",
-    "invalidResponse": "The model configuration service returned an invalid response.",
+    "invalidResponse": "The model configuration service returned an invalid response (HTTP {{status}}).",
     "network": "Could not reach the model configuration service. Try again later."
   },
   "listSeparator": ", ",

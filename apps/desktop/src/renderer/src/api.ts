@@ -3840,7 +3840,7 @@ export async function profileRequest<T>(
       }
     }
     if (!isRecord(payload)) {
-      return { ok: false, error: `HTTP ${r.status}`, code: 'invalid_response', status: r.status }
+      return { ok: false, error: '', code: 'invalid_response', status: r.status }
     }
     return { ok: true, data: payload as T }
   } catch (cause) {
