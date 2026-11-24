@@ -139,7 +139,7 @@ function publishedZipArguments(application, archive) {
     '-P', application, '(', '-xattrname', 'com.apple.ResourceFork', '-o',
     '-xattrname', 'com.apple.cs.CodeDirectory', ')', '-print', '-quit',
   ], { timeout: MACOS_ARCHIVE_TIMEOUT_MS })
-  return archiveApplicationArguments(application, archive, metadataMember ? '--sequesterRsrc' : '--norsrc')
+  return archiveApplicationArguments(application, archive, 6, metadataMember ? '--sequesterRsrc' : '--norsrc')
 }
 
 // Forward only structured timing fields; raw child diagnostics remain in the file.
@@ -1020,6 +1020,13 @@ async function verifyVelopackInstaller(installer, frozen) {
   })
 }
 
+async function createMeasuredApplicationArchive(archive, args) {
+  command(MACOS_DITTO, args, {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
+  const size = fs.statSync(archive).size
+  assertSquirrelArchiveSize(size)
+  return { size, ...await verifyApplicationArchive(archive) }
+}
+
 async function verify(builderContext) {
   const frozen = context()
   if (builderContext.appOutDir) {
@@ -1064,7 +1071,7 @@ async function verify(builderContext) {
     verifyWindowsSignature(installer, frozen.product.config.expected_windows_publisher)
   }
   const application = JSON.parse(fs.readFileSync(path.join(frozen.runDirectory, 'app.json')))
-  let archiveBudget = null
+  let dmgArchiveBudget = null
   let updateZip = null
   const image = frozen.platform === 'darwin'
     ? await verifyImage(installer, application.path, frozen, async (mounted, context, runtimeCheck) => {
@@ -1074,14 +1081,11 @@ async function verify(builderContext) {
           const directory = fs.mkdtempSync(path.join(context.runDirectory, 'update-archive-'))
           const archive = path.join(directory, 'application.zip')
           try {
-            const args = context.lane === 'distribution'
-              ? publishedZipArguments(mounted, archive)
-              : archiveApplicationArguments(mounted, archive)
-            command(MACOS_DITTO, args, {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
-            const size = fs.statSync(archive).size
-            assertSquirrelArchiveSize(size)
-            archiveBudget = { size, ...await verifyApplicationArchive(archive) }
+            // Measure the exact archive produced by a DMG-only client.
+            dmgArchiveBudget = await createMeasuredApplicationArchive(archive, archiveApplicationArguments(mounted, archive))
             if (context.lane === 'distribution') {
+              fs.unlinkSync(archive)
+              const zipBudget = await createMeasuredApplicationArchive(archive, publishedZipArguments(mounted, archive))
               const unpacked = path.join(directory, 'unpacked')
               fs.mkdirSync(unpacked)
               command(MACOS_DITTO, ['-x', '-k', archive, unpacked], {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
@@ -1094,8 +1098,8 @@ async function verify(builderContext) {
                 path: destination,
                 sha256: await sha256(destination),
                 sha512: await sha512(destination),
-                size,
-                archive_budget: archiveBudget,
+                size: zipBudget.size,
+                archive_budget: zipBudget,
                 signature_valid: true,
                 stapled: true,
               }
@@ -1122,7 +1126,7 @@ async function verify(builderContext) {
     trust: checked.trust,
   }
   if (image) evidence.installed_check.sha256 = evidence.sha256
-  if (archiveBudget) evidence.installed_check.update_archive = archiveBudget
+  if (dmgArchiveBudget) evidence.installed_check.update_archive = dmgArchiveBudget
   atomicJSON(path.join(frozen.runDirectory, 'app.json'), image
     ? await verifyApplication(application.path, frozen, false)
     : checked)
