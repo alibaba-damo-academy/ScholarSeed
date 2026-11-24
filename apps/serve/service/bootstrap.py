@@ -53,6 +53,7 @@ from service.assistant.service.resources import AssistantResourceService
 from service.capabilities.api.admission import register_skill_admission
 from service.capabilities.api.management import register_skill_management
 from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.maintenance import ComponentMaintenance
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.api.browser import register_browser_routes
 from service.chat.api.browserhistory import register_browser_history_routes
@@ -3639,6 +3640,11 @@ def create_app(
     previous_lifespan = app.router.lifespan_context
     storage_check = SessionStorageCheck(activities, SESSION_CATALOG_DB)
     app.state.session_service.bind_storage_check(storage_check.request)
+    component_maintenance = ComponentMaintenance(
+        app.state.skill_catalog.components,
+        activities,
+        lambda session_id: app.state.session_catalog.get(session_id) is not None,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -3647,12 +3653,14 @@ def create_app(
             admission.start(activities.workbench_changed)
             async with previous_lifespan(application):
                 probe = asyncio.create_task(storage_check.run())
+                component_task = asyncio.create_task(component_maintenance.run())
                 storage_check.request()
                 try:
                     yield
                 finally:
                     storage_check.stop()
-                    await probe
+                    component_maintenance.stop()
+                    await asyncio.gather(probe, component_task)
                     await close_storage_and_operations()
         finally:
             try:
@@ -3878,7 +3886,7 @@ def _compose_app(
     session_context = SessionContextProvider(history)
     answer_source = ProductAnswerSource(
         app.state.product_events,
-        ComponentRegistry(SERVICE_COMPONENTS_DATABASE).answer_markdown,
+        app.state.skill_catalog.components.answer_markdown,
     )
     app.state.answer_source = answer_source
     annotation_service = AnswerAnnotationService(assistant_store, answer_source)
@@ -4004,6 +4012,10 @@ def _compose_app(
     publications = PublicationService(content)
     app.state.session_service.bind_deletion(
         SessionDeletion(content, publications, events=app.state.product_events).delete
+    )
+    components = app.state.skill_catalog.components
+    app.state.session_service.bind_card_deletion(
+        components.prepare_session_deletion, components.deleted_session
     )
     app.state.runtime_service.bind_publications(publications)
     app.state.artifact_service.bind_content(content)

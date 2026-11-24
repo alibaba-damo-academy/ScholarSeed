@@ -569,6 +569,7 @@ class SessionService:
         self._queue_cancellation: Callable[[str], Awaitable[None]] | None = None
         self._settlement_resume: Callable[[LiveSession], None] | None = None
         self._deletion: Callable[[SessionCatalogRecord], None] | None = None
+        self._card_deletion: tuple[Callable[[str], None], Callable[[str], None]] | None = None
         self._storage_check: Callable[[], None] | None = None
         self._task_documents: Callable[[str, str], tuple[dict, ...]] = lambda _session, _project: ()
 
@@ -588,6 +589,11 @@ class SessionService:
 
     def bind_deletion(self, callback: Callable[[SessionCatalogRecord], None]) -> None:
         self._deletion = callback
+
+    def bind_card_deletion(
+        self, prepare: Callable[[str], None], complete: Callable[[str], None]
+    ) -> None:
+        self._card_deletion = (prepare, complete)
 
     def bind_storage_check(self, callback: Callable[[], None]) -> None:
         self._storage_check = callback
@@ -2782,11 +2788,22 @@ class SessionService:
         if status != HTTP_OK:
             return {"ok": False, "error": SESSION_DELETE_STOP_FAILED}, status
         try:
+            if self._card_deletion is not None:
+                await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, self._card_deletion[0], session_id
+                )
             await self._activities.to_thread(ActivityDomain.RESOURCE, self._deletion, record)
         except Exception:
             self._logger.exception("session_deletion_failed session_id=%s", session_id)
             return {"ok": False, "error": SESSION_DELETION_FAILED}, HTTP_INTERNAL_ERROR
         self._access.release(session_id, principal)
+        if self._card_deletion is not None and self._access.get(session_id) is None:
+            try:
+                await self._activities.to_thread(
+                    ActivityDomain.RESOURCE, self._card_deletion[1], session_id
+                )
+            except Exception:
+                self._logger.exception("session_card_cleanup_deferred session_id=%s", session_id)
         if self._storage_check is not None:
             self._storage_check()
         return {"ok": True, "session_id": session_id}, HTTP_OK
