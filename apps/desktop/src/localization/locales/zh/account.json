@@ -56,6 +56,7 @@
     "markAllRead": "全部标为已读"
   },
   "models": {
+    "saveUnconfirmed": "保存结果尚未确认。请先核对连接列表再决定是否重新保存，当前编辑内容已保留。",
     "loadFailed": "模型服务加载失败，请重试。",
     "deleteFailed": "删除该端点失败",
     "enabledCount": "{{enabled}} / {{total}} 已启用",

@@ -10,6 +10,11 @@ import { flushApiDiagnostics } from './app/api/diagnostics.ts'
 import { renderFeedback } from './contracts/feedback.ts'
 import { describeTurnAdmissionFailure, turnAdmissionFeedback } from './input.ts'
 import {
+  listProjects as listProjectMetadata,
+  previewProjectDirectory,
+  renameProject as updateProjectMetadata,
+} from './features/project/api.ts'
+import {
   formatApplicationRequestFailure,
   permissionModeFeedback,
   permissionModeSelectedFeedback,
@@ -30,6 +35,14 @@ import {
   readNavigationSession,
   getHistoryWithTodos,
   listQueuedMessages,
+  reconcileQueuedMessage,
+  getHealth,
+  getModels,
+  getPersonalApiProfiles,
+  deletePersonalApiProfile,
+  setPersonalApiModelVisibility,
+  setDefaultModel,
+  probePersonalApi,
   confirmUnknownTurn,
   checkSessionRecovery,
   requestFailureFeedback,
@@ -932,6 +945,60 @@ test('project creation exposes a busy folder rejection', async () => {
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
     else Reflect.deleteProperty(globalThis, 'window')
   }
+})
+
+test('project writes with expired receipts remain unconfirmed and are never replayed', async (context) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '' } },
+  })
+  context.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  const expired = new DOMException('deadline', 'TimeoutError')
+  context.mock.method(AbortSignal, 'timeout', () => {
+    const controller = new AbortController()
+    queueMicrotask(() => controller.abort(expired))
+    return controller.signal
+  })
+  const requests: string[] = []
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    requests.push(`${init.method ?? 'GET'} ${url}`)
+    const accepted = init.method === 'POST'
+    const response = new Response(null, { status: accepted ? 202 : 200 })
+    response.json = async () => {
+      init.signal?.throwIfAborted()
+      return accepted
+        ? { operation: 'b'.repeat(32) }
+        : { id: 'project', name: 'Unconfirmed', root: '/workspace/project', projects: [] }
+    }
+    return response
+  })
+  const attempt = 'a'.repeat(32)
+  assert.deepEqual(await submitProjectCreation({ name: 'Unconfirmed' }, attempt), {
+    kind: 'unknown',
+    operation: undefined,
+  })
+  assert.deepEqual(
+    await submitProjectCreation({ name: 'Unconfirmed', path: '/existing' }, attempt),
+    { kind: 'unknown', operation: undefined }
+  )
+  assert.deepEqual(await updateProjectMetadata('project', 'Unconfirmed'), {
+    ok: false,
+    error: 'content_operation_unknown',
+    project: undefined,
+  })
+  assert.equal(await previewProjectDirectory('Unconfirmed'), null)
+  assert.equal(await listProjectMetadata(), null)
+  assert.deepEqual(requests, [
+    'POST /api/content/projects',
+    'POST /api/content/projects/adopt',
+    'PATCH /api/content/projects',
+    'GET /api/content/projects/directory?name=Unconfirmed',
+    'GET /api/content/projects',
+  ])
 })
 
 test('a rejected create recovers and an unknown operation is queried without replaying the write', async () => {
@@ -2075,6 +2142,92 @@ test('handled queue conflicts do not publish raw backend failures', async () => 
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
     else Reflect.deleteProperty(globalThis, 'window')
   }
+})
+
+test('stalled foreground responses release callers without replaying writes or accepting partial receipts', async (context) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: modelSelectionStorage,
+      scholarseed: { getApiBase: () => '' },
+      dispatchEvent: () => true,
+    },
+  })
+  context.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  const expired = new DOMException('deadline', 'TimeoutError')
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    assert.ok(milliseconds > 0)
+    const controller = new AbortController()
+    queueMicrotask(() => controller.abort(expired))
+    return controller.signal
+  })
+  const methods: string[] = []
+  const cancelled: boolean[] = []
+  context.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    methods.push(init.method ?? 'GET')
+    const response = Response.json({})
+    response.json = async () => {
+      cancelled.push(init.signal?.aborted === true)
+      init.signal?.throwIfAborted()
+      return {}
+    }
+    return response
+  })
+  assert.equal((await postTurn('session', []))?.submissionOutcome, 'unknown')
+  assert.equal((await postSide('session', 'item', 'turn'))?.unknownOutcome, true)
+  assert.equal((await sendQueuedMessage('session', 'item'))?.unknownOutcome, true)
+  assert.equal((await interruptSession('session')).ok, false)
+  assert.equal((await deleteQueuedMessage('session', 'item')).status, 0)
+  assert.equal(await updateQueuedMessage('session', 'item', 'changed'), null)
+  assert.equal(await listQueuedMessages('session'), null)
+  assert.equal(await reconcileQueuedMessage('session', 'item'), null)
+  assert.equal(await getHealth(), null)
+  assert.equal(await getModels(), null)
+  assert.equal(await getPersonalApiProfiles(), null)
+  const result = await probePersonalApi({
+    base_url: 'http://localhost',
+    wire_api: 'responses',
+    provider: 'openai',
+    preview_name: 'test',
+    preset_id: '',
+    selected_models: [],
+    small_model_name: '',
+  })
+  assert.equal(result.ok, false)
+  assert.equal((await setPersonalApiModelVisibility('profile', 'model', false)).ok, false)
+  assert.equal(await deletePersonalApiProfile('profile'), null)
+  assert.equal(await setDefaultModel('model'), null)
+  assert.equal((await respondHil('session', 'request', { option_id: 'yes' })).outcome, 'unknown')
+  assert.equal((await checkSessionRecovery('session')).recovery_blocked, true)
+  assert.equal((await confirmUnknownTurn('session', 'turn')).ok, false)
+  assert.deepEqual(methods, [
+    'POST',
+    'POST',
+    'POST',
+    'POST',
+    'DELETE',
+    'PATCH',
+    'GET',
+    'POST',
+    'GET',
+    'GET',
+    'GET',
+    'POST',
+    'POST',
+    'DELETE',
+    'POST',
+    'POST',
+    'POST',
+    'POST',
+  ])
+  assert.deepEqual(
+    cancelled,
+    methods.map(() => true)
+  )
 })
 
 test('turn submission marks HTTP admission failures as rejected and transport failures as unknown', async () => {

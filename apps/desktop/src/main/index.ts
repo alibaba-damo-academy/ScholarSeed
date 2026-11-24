@@ -340,6 +340,7 @@ import {
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy, savePathCopy, SAVE_COPY_SENDER_ERROR } from './save'
 import { blocksRendererReload, prepareRendererLoad } from './reload'
+import { loadStartupWindow, waitForStartupWindow } from './loading'
 import { acquireRemoteImage, readSelectedImage } from './images'
 import {
   REMOTE_IMAGE_CHANNEL,
@@ -4615,9 +4616,13 @@ async function createWindow(
     if (details.isMainFrame) mainRendererNavigationEpoch += 1
   })
   const browserWindow = mainWindow
+  const startupWindow = new AbortController()
+  let firstHandoffPending = true
   if (!headless) windowController.ensureTray(browserWindow)
   const windowCurrent = (): boolean =>
-    aliveMainWindow() === browserWindow && startupState.snapshot().generation === generation
+    !startupWindow.signal.aborted &&
+    aliveMainWindow() === browserWindow &&
+    startupState.snapshot().generation === generation
   const recoverRendererExit = installTaskRecoveryFallback(browserWindow, taskRecovery(), {
     canPresent: () => windowCurrent() && windowPresentationAllowed(),
     reopen: () => browserWindow.loadURL(rendererUrl),
@@ -4751,12 +4756,6 @@ async function createWindow(
         })
     }
   )
-  const windowVisible = new Promise<void>((resolve) => {
-    browserWindow.once('ready-to-show', () => {
-      handoff.painted()
-      resolve()
-    })
-  })
   void componentsReused.then((reused) => {
     if (reused) handoff.reused()
   })
@@ -4767,7 +4766,15 @@ async function createWindow(
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     workbenchHealth.invalidate()
-    recoverRendererExit()
+    if (firstHandoffPending) {
+      startupWindow.abort(
+        new Error(
+          `Main window renderer exited during startup: ${details.reason} (${details.exitCode})`
+        )
+      )
+    } else {
+      recoverRendererExit()
+    }
     pushLog(
       `[shell] renderer process gone reason=${details.reason} exit-code=${details.exitCode}\n`
     )
@@ -4804,6 +4811,7 @@ async function createWindow(
   })
 
   mainWindow.on('closed', () => {
+    if (firstHandoffPending) startupWindow.abort(new Error('Main window closed during startup'))
     desktopReminders?.stop()
     desktopReminders = null
     attentionRendererReady = false
@@ -4825,30 +4833,49 @@ async function createWindow(
   mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => {
     if (isMainFrame) attentionRendererReady = false
   })
-  if (devUrl) {
-    const rendererSession = mainWindow.webContents.session
-    await prepareRendererLoad(devUrl, () => rendererSession.clearCache())
-    await mainWindow.loadURL(devUrl)
-    if (developerToolsEnabled) {
+  try {
+    await loadStartupWindow(
+      browserWindow,
+      startupWindow.signal,
+      async (signal) => {
+        if (devUrl) {
+          const rendererSession = browserWindow.webContents.session
+          await prepareRendererLoad(devUrl, () => rendererSession.clearCache())
+        }
+        signal.throwIfAborted()
+        await browserWindow.loadURL(rendererUrl)
+      },
+      handoff.painted
+    )
+    if (devUrl && developerToolsEnabled) {
       browserVaultIpc?.lock()
-      mainWindow.webContents.openDevTools({ mode: MAIN_DEVTOOLS_DOCK_MODE })
+      browserWindow.webContents.openDevTools({ mode: MAIN_DEVTOOLS_DOCK_MODE })
     }
-  } else {
-    await mainWindow.loadURL(rendererUrl)
-  }
 
-  if (!(await backendReady)) {
-    await windowVisible
-    handoff.settled()
-    return
-  }
-  const expectedBackend = backend
-  if (!currentStartup(generation, expectedBackend, browserWindow)) return
-  await initializeWindowServices(browserWindow, rendererUrl, devUrl, storageWindowGeneration)
-  if (currentStartup(generation, expectedBackend, browserWindow)) {
-    startupState.complete(generation, apiBase)
-    await windowVisible
-    if (currentStartup(generation, expectedBackend, browserWindow)) handoff.settled()
+    if (!(await waitForStartupWindow(startupWindow.signal, () => backendReady))) {
+      handoff.settled()
+      return
+    }
+    const expectedBackend = backend
+    if (!currentStartup(generation, expectedBackend, browserWindow)) return
+    await waitForStartupWindow(startupWindow.signal, () =>
+      initializeWindowServices(browserWindow, rendererUrl, devUrl, storageWindowGeneration)
+    )
+    if (currentStartup(generation, expectedBackend, browserWindow)) {
+      startupState.complete(generation, apiBase)
+      handoff.settled()
+    }
+  } catch (error) {
+    startupWindow.abort(error)
+    if (!browserWindow.isDestroyed()) {
+      const contents = browserWindow.webContents
+      if (!contents.isDestroyed() && !contents.isCrashed()) contents.stop()
+      // Keep the window owned until quit so Windows can display the startup failure.
+      browserWindow.hide()
+    }
+    if (!appQuitting) throw error
+  } finally {
+    firstHandoffPending = false
   }
 }
 

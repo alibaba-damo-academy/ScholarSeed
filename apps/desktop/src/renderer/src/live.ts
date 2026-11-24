@@ -71,7 +71,7 @@ import type {
 } from './model'
 import { artifactBelongsToResources, RELEASED_PLAN_SOURCE } from './model'
 import { queuedMessageFromPayload, upsertQueuedMessage } from './queue'
-import { mergeQueuedOutbox, releaseQueuedOutbox } from './outbox'
+import { acknowledgeQueuedOutboxMessage, mergeQueuedOutbox, releaseQueuedOutbox } from './outbox'
 import { projectResumedSession, reportSessionResume } from './resume'
 import { useApp } from './store'
 import { projectPlanSnapshots } from './todo'
@@ -588,16 +588,17 @@ export function onEvent(
     case 'send_now_outcome_unknown':
       patchThread(threadId, (thread) => {
         if (event.seq <= (thread.queueSnapshotSeq ?? -1)) return thread
-        if (
-          acknowledgeOutbox &&
-          (event.type === 'message_queued' || event.type === 'message_updated')
-        ) {
-          releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
-        }
+        const messages = thread.queuedMessages ?? []
+        const incoming = queuedMessageFromPayload(event.data)
         return {
           queuedMessages: upsertQueuedMessage(
-            thread.queuedMessages ?? [],
-            queuedMessageFromPayload(event.data)
+            messages,
+            acknowledgeQueuedOutboxMessage(
+              event.session_id,
+              incoming,
+              messages.find((item) => item.queuedMessageId === incoming.queuedMessageId),
+              acknowledgeOutbox
+            )
           ),
         }
       })
@@ -2009,14 +2010,19 @@ export function useLiveSession(): void {
               queueMicrotask(() => refresh.invalidate())
               return thread
             }
-            for (const identity of snapshot.acknowledged_queue_ids)
-              releaseQueuedOutbox(snapshot.session_id, identity)
+            const visible = new Set(
+              snapshot.queued_messages.map((message) => message.queued_message_id)
+            )
+            const terminal = new Set(
+              snapshot.acknowledged_queue_ids.filter((identity) => !visible.has(identity))
+            )
+            for (const identity of terminal) releaseQueuedOutbox(snapshot.session_id, identity)
             const queuedMessages = mergeQueuedOutbox(
               snapshot.session_id,
               snapshot.queued_messages.map(queuedMessageFromPayload),
               stateRef.current.workbenchReady,
               (thread.queuedMessages ?? []).filter(
-                (message) => !snapshot.acknowledged_queue_ids.includes(message.queuedMessageId)
+                (message) => !terminal.has(message.queuedMessageId)
               )
             )
             // The active transcript consumes runtime changes through SSE. Only its

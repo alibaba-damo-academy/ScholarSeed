@@ -67,6 +67,7 @@
   "request": {
     "authentication": "请登录后重试。",
     "http": "模型连接请求失败（HTTP {{status}}）。",
+    "timeout": "请求超时。",
     "network": "无法连接模型配置服务，请稍后重试。"
   },
   "listSeparator": "、",

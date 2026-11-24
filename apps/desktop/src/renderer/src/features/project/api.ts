@@ -8,8 +8,12 @@
  * `{ ok, error }` 并把后端 detail 码原样带回，让 UI 按码提示。
  */
 
-import { resolveContentResponse } from '../../app/api/content.ts'
-import { LIVE_CATALOG_REQUEST } from '../../app/api/client.ts'
+import {
+  CONTENT_OPERATION_UNKNOWN,
+  PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
+  resolveContentResponse,
+} from '../../app/api/content.ts'
+import { apiFetch, LIVE_CATALOG_REQUEST } from '../../app/api/client.ts'
 
 import type { ContentErrorCode, ExternalRootRef, ProjectRef } from '../../contracts/content'
 
@@ -177,10 +181,10 @@ export async function importProjectFiles(
 
 async function readJson<T>(
   path: string,
-  options?: Pick<RequestInit, 'cache' | 'signal'>
+  options?: Pick<RequestInit, 'cache' | 'signal'> & { timeoutMs?: number }
 ): Promise<T | null> {
   try {
-    const response = await fetch(`${base()}${path}`, { credentials: 'include', ...options })
+    const response = await apiFetch(path, options)
     if (!response.ok) return null
     return (await response.json()) as T
   } catch {
@@ -191,17 +195,21 @@ async function readJson<T>(
 async function sendJson(
   path: string,
   method: 'POST' | 'PATCH' | 'PUT',
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  timeoutMs?: number
 ): Promise<{ ok: boolean; error?: string; payload?: unknown }> {
   try {
-    let response = await fetch(`${base()}${path}`, {
+    let response = await apiFetch(path, {
       method,
-      credentials: 'include',
+      timeoutMs,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     response = await resolveContentResponse(response)
-    const payload = await response.json().catch(() => null)
+    const payload =
+      response.ok && timeoutMs !== undefined
+        ? await response.json()
+        : await response.json().catch(() => null)
     if (!response.ok) {
       const detail =
         payload && typeof payload === 'object' && 'detail' in payload
@@ -211,6 +219,7 @@ async function sendJson(
     }
     return { ok: true, payload }
   } catch (error) {
+    if (timeoutMs !== undefined) return { ok: false, error: CONTENT_OPERATION_UNKNOWN }
     return { ok: false, error: error instanceof Error ? error.message : FAILURE_CODES.networkError }
   }
 }
@@ -255,7 +264,12 @@ export async function forgetProject(id: string): Promise<ProjectMutation> {
 
 /** 新建项目：只填名字。 */
 export async function createProject(name: string): Promise<ProjectMutation> {
-  const result = await sendJson('/api/content/projects', 'POST', { name })
+  const result = await sendJson(
+    '/api/content/projects',
+    'POST',
+    { name },
+    PROJECT_WRITE_RECEIPT_TIMEOUT_MS
+  )
   return { ok: result.ok, error: result.error, project: result.payload as ProjectRef | undefined }
 }
 
@@ -265,7 +279,12 @@ export async function renameProject(
   name: string,
   metadata: { description?: string; pinned?: boolean } = {}
 ): Promise<ProjectMutation> {
-  const result = await sendJson('/api/content/projects', 'PATCH', { id, name, ...metadata })
+  const result = await sendJson(
+    '/api/content/projects',
+    'PATCH',
+    { id, name, ...metadata },
+    PROJECT_WRITE_RECEIPT_TIMEOUT_MS
+  )
   return { ok: result.ok, error: result.error, project: result.payload as ProjectRef | undefined }
 }
 
@@ -275,7 +294,8 @@ export async function loadWorkspaceRoot(): Promise<WorkspaceRootState | null> {
 
 export async function previewProjectDirectory(name: string): Promise<{ root: string } | null> {
   return readJson<{ root: string }>(
-    `/api/content/projects/directory?${new URLSearchParams({ name })}`
+    `/api/content/projects/directory?${new URLSearchParams({ name })}`,
+    LIVE_CATALOG_REQUEST
   )
 }
 

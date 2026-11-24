@@ -393,6 +393,38 @@ test('returns the authoritative latest selection after a CAS conflict', async ()
   }
 })
 
+test('incomplete context receipts release reads and keep a patch unconfirmed', async (testContext) => {
+  const expired = new DOMException('context deadline', 'TimeoutError')
+  testContext.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    assert.equal(milliseconds, 10_000)
+    return AbortSignal.abort(expired)
+  })
+  const methods: string[] = []
+  const restore = installBrowser(async (_url, init) => {
+    methods.push(init?.method ?? 'GET')
+    const response = Response.json(CONTEXT)
+    response.json = async () => {
+      init?.signal?.throwIfAborted()
+      return CONTEXT
+    }
+    return response
+  })
+  try {
+    assert.equal(await getAssistantContext('session-1'), null)
+    assert.equal(await listAnswerAnnotations('session-1'), null)
+    const result = await patchAssistantContext('session-1', {
+      expected_revision: 2,
+      project_policy: 'explicit_only',
+      search_scope: 'web',
+      refs: [],
+    })
+    assert.equal(result.ok, false)
+    assert.deepEqual(methods, ['GET', 'GET', 'PATCH'])
+  } finally {
+    restore()
+  }
+})
+
 test('preserves claimed-ref rejection and its authoritative selection', async () => {
   const latest = { ...CONTEXT, claimed_ref_ids: ['claimed-ref'] }
   const restore = installBrowser(async () =>

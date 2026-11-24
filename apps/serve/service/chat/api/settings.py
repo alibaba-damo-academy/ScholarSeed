@@ -188,20 +188,22 @@ def mount_setting_routes(
         return models.profiles(user_id=request_user_id(request))
 
     @app.post("/api/serve/model-profiles/models")
-    def model_profile_models(request: ModelApiProbeRequest, http_request: Request) -> dict:
+    async def model_profile_models(request: ModelApiProbeRequest, http_request: Request) -> dict:
         payload = request.model_dump(exclude={"profile_id"})
         try:
-            return models.profile_models(
+            return await models.profile_models(
                 payload, request.profile_id, user_id=request_user_id(http_request)
             )
         except ValueError as exc:
             raise HTTPException(PROFILE_INVALID_STATUS, str(exc)) from exc
 
     @app.post("/api/serve/model-profiles/probe")
-    def probe_model_profile_endpoint(request: ModelApiProbeRequest, http_request: Request) -> dict:
+    async def probe_model_profile_endpoint(
+        request: ModelApiProbeRequest, http_request: Request
+    ) -> dict:
         payload = request.model_dump(exclude={"profile_id"})
         try:
-            return models.probe_profile(
+            return await models.probe_profile(
                 payload, request.profile_id, user_id=request_user_id(http_request)
             )
         except ValueError as exc:

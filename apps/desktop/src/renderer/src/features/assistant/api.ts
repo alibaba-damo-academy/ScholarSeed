@@ -36,6 +36,7 @@ import type {
 } from '../../contracts/assistant'
 import type { ResourceLocationRef, ResourceMutation, ResourceNode } from '../../contracts/resources'
 
+const CONTEXT_REQUEST_TIMEOUT_MS = 10_000
 const SESSION_REFERENCE_PREVIEW_FAILED = 'assistant_session_preview_failed'
 const CITATION_UNVERIFIABLE_CODES = new Set([
   'answer_revision_conflict',
@@ -374,17 +375,17 @@ function annotationError(
   }
 }
 
-export async function listAnswerAnnotations(sessionId: string): Promise<AnswerAnnotation[]> {
+export async function listAnswerAnnotations(sessionId: string): Promise<AnswerAnnotation[] | null> {
   try {
     const response = await fetch(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/annotations`,
-      { credentials: 'include' }
+      { credentials: 'include', signal: AbortSignal.timeout(CONTEXT_REQUEST_TIMEOUT_MS) }
     )
-    if (!response.ok) return []
+    if (!response.ok) return null
     const payload = (await response.json()) as { annotations?: AnswerAnnotation[] }
-    return payload.annotations ?? []
+    return Array.isArray(payload.annotations) ? payload.annotations : null
   } catch {
-    return []
+    return null
   }
 }
 
@@ -638,7 +639,7 @@ export async function getAssistantContext(
   try {
     const response = await fetch(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/context`,
-      { credentials: 'include' }
+      { credentials: 'include', signal: AbortSignal.timeout(CONTEXT_REQUEST_TIMEOUT_MS) }
     )
     if (!response.ok) return null
     return (await response.json()) as AssistantContextSelection
@@ -656,12 +657,15 @@ export async function patchAssistantContext(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/context`,
       {
         method: 'PATCH',
+        signal: AbortSignal.timeout(CONTEXT_REQUEST_TIMEOUT_MS),
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
       }
     )
-    const payload = (await response.json().catch(() => null)) as
+    const payload = (
+      response.ok ? await response.json() : await response.json().catch(() => null)
+    ) as
       | AssistantContextSelection
       | {
           detail?:

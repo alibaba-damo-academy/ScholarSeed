@@ -5383,11 +5383,12 @@ export function StoreProvider({
           listQueuedMessages(sessionId),
         ])
         if (sequence !== assistantContextLoadSeq.current) return
-        const queuedSubmittedRefIds = (queuedMessages ?? []).flatMap((message) =>
-          (message.assistant_references ?? []).flatMap((reference) =>
-            reference.ref_id ? [reference.ref_id] : []
-          )
-        )
+        const queuedSubmittedRefIds =
+          queuedMessages?.flatMap((message) =>
+            (message.assistant_references ?? []).flatMap((reference) =>
+              reference.ref_id ? [reference.ref_id] : []
+            )
+          ) ?? null
         let selection = loadedSelection
         if (selection?.refs.some((ref) => ref.origin === 'current_document')) {
           const cleaned = await patchAssistantContext(sessionId, {

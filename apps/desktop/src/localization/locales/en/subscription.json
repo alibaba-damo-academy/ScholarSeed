@@ -67,6 +67,7 @@
   "request": {
     "authentication": "Sign in and try again.",
     "http": "Model connection request failed (HTTP {{status}}).",
+    "timeout": "The request timed out.",
     "network": "Could not reach the model configuration service. Try again later."
   },
   "listSeparator": ", ",

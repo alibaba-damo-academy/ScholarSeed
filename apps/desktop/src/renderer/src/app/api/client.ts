@@ -1,5 +1,4 @@
 import { reportApiFailure } from './diagnostics.ts'
-import { REQUEST_TIMEOUT_ERROR_NAME } from '../../../../requests.ts'
 import { startRequestTiming, type HistoryCaller } from './timing.ts'
 
 export const apiBase = (): string => window.scholarseed?.getApiBase() ?? ''
@@ -47,21 +46,15 @@ export async function apiFetch(path: string, init?: ApiFetchInit): Promise<Respo
 
 async function requestJson<T>(
   path: string,
-  init: RequestInit,
+  init: ApiFetchInit,
   timeoutMs?: number,
   onStatus?: (status: number) => void
 ): Promise<T | null> {
   const startedAt = performance.now()
   let response: Response | undefined
-  const ctl = timeoutMs ? new AbortController() : null
-  const timer = ctl
-    ? window.setTimeout(
-        () => ctl.abort(new DOMException('', REQUEST_TIMEOUT_ERROR_NAME)),
-        timeoutMs
-      )
-    : null
   try {
-    const r = await apiFetch(path, { ...init, ...(ctl ? { signal: ctl.signal } : {}) })
+    const budget = timeoutMs ? Math.min(timeoutMs, init.timeoutMs ?? timeoutMs) : init.timeoutMs
+    const r = await apiFetch(path, { ...init, timeoutMs: budget })
     response = r
     onStatus?.(r.status)
     if (r.status === 401 && !path.startsWith('/api/auth/')) {
@@ -74,8 +67,6 @@ async function requestJson<T>(
     if (response?.ok)
       reportApiFailure(path, init.method ?? 'GET', response.status, startedAt, 'decode', error)
     return null
-  } finally {
-    if (timer != null) window.clearTimeout(timer)
   }
 }
 

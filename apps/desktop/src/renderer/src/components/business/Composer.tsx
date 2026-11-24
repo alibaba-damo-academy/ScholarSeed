@@ -6,6 +6,7 @@ import {
   renderFeedback,
   runtimePreparationBusyFeedback,
   stopFailureFeedback,
+  type FeedbackDescriptor,
 } from '../../contracts/feedback'
 import React from 'react'
 import { ComposerConfirmationContext } from './confirmation'
@@ -171,6 +172,7 @@ import {
   canCancelQueuedMessage,
   canEditQueuedMessage,
   confirmQueuedOutcome,
+  confirmedQueuedSendFailure,
   hasAcceptedMessageAwaitingRuntime,
   QUEUED_MESSAGE_SAFE_ERRORS,
   QUEUE_PRESENTATION_MESSAGE_KEYS,
@@ -182,12 +184,20 @@ import {
   queuedMessageHasUnknownOpen,
   queuedWithdrawalFeedback,
   queuedMessageFromPayload,
+  queuedSendReceiptUnknown,
+  queuedSendStillUnconfirmed,
   settleOptimisticQueuedMessage,
   shouldOptimisticallyPresentUserMessage,
   shouldPresentQueuedMessage,
+  unconfirmedQueuedSend,
   upsertQueuedMessage,
 } from '../../queue'
-import { mergeQueuedOutbox, releaseQueuedOutbox, retainQueuedOutbox } from '../../outbox'
+import {
+  acknowledgeQueuedOutboxMessage,
+  mergeQueuedOutbox,
+  releaseQueuedOutbox,
+  retainQueuedOutbox,
+} from '../../outbox'
 import { useDocumentWorkspace } from '../../features/workbench/workspace'
 import { RESOURCE_CONTEXT_KIND } from '../../features/assistant/api'
 import {
@@ -558,7 +568,7 @@ export function ComposerQueue({
                       </Button>
                     ) : null}
                     {queued.state === 'outcome_unknown'
-                      ? !unknownOpen && confirmUnknownAction
+                      ? !unknownOpen && !queuedSendReceiptUnknown(queued) && confirmUnknownAction
                       : cancelAction}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -885,7 +895,27 @@ export function Composer({
   const [submittingMessage, setSubmittingMessage] = React.useState(false)
   const [loginPromptOpen, setLoginPromptOpen] = React.useState(false)
   const [draggingFiles, setDraggingFiles] = React.useState(false)
-  const [queuedActionId, setQueuedActionId] = React.useState<string | null>(null)
+  const queuedActions = React.useRef(new Map<string, string>())
+  const [queuedActionIds, setQueuedActionIds] = React.useState<ReadonlyMap<string, string>>(
+    () => new Map()
+  )
+  const queuedActionId = sidNow ? (queuedActionIds.get(sidNow) ?? null) : null
+  const [queuedReceiptReview, setQueuedReceiptReview] = React.useState<{
+    sessionId: string
+    observed: QueuedMessage
+  } | null>(null)
+  const receiptReviewOpen = Boolean(
+    queuedReceiptReview?.sessionId === sidNow &&
+    confirmedQueuedSendFailure(
+      queuedMessages.find(
+        (message) => message.queuedMessageId === queuedReceiptReview.observed.queuedMessageId
+      ),
+      queuedReceiptReview.observed
+    )
+  )
+  React.useLayoutEffect(() => {
+    setQueuedReceiptReview(null)
+  }, [sidNow, state.mainView, state.activeTab, state.serviceInstanceId])
   const [plusMenuOpen, setPlusMenuOpen] = React.useState(false)
   const [menuEntry, setMenuEntry] = React.useState<'plus' | 'skills'>('plus')
   React.useEffect(() => {
@@ -2659,13 +2689,95 @@ export function Composer({
     })
   }
 
+  const queueSurfaceCurrent = (current: AppState, sessionId: string): boolean =>
+    current.activeSession === sessionId &&
+    current.mainView === state.mainView &&
+    current.activeTab === state.activeTab &&
+    current.serviceInstanceId === state.serviceInstanceId
+
+  const showQueueFeedback = (sessionId: string, foregroundError: FeedbackDescriptor): void => {
+    set((current) => (queueSurfaceCurrent(current, sessionId) ? { foregroundError } : {}))
+  }
+
+  const runQueuedAction = async <T,>(
+    sessionId: string,
+    queuedMessageId: string,
+    action: () => Promise<T>
+  ): Promise<T | undefined> => {
+    const pending = queuedActions.current
+    if (pending.has(sessionId)) return
+    pending.set(sessionId, queuedMessageId)
+    setQueuedActionIds(new Map(pending))
+    try {
+      return await action()
+    } finally {
+      pending.delete(sessionId)
+      setQueuedActionIds(new Map(pending))
+    }
+  }
+
+  const applyQueueList = (
+    sessionId: string,
+    messages: NonNullable<Awaited<ReturnType<typeof listQueuedMessages>>>
+  ): void => {
+    patchThread(sessionId, (current) => ({
+      queuedMessages: mergeQueuedOutbox(
+        sessionId,
+        messages.map(queuedMessageFromPayload),
+        true,
+        current.queuedMessages ?? []
+      ),
+    }))
+  }
+
   const refreshQueuedMessages = async (sessionId: string): Promise<boolean> => {
     const authoritative = await listQueuedMessages(sessionId)
     if (authoritative === null) return false
-    patchThread(sessionId, {
-      queuedMessages: mergeQueuedOutbox(sessionId, authoritative.map(queuedMessageFromPayload)),
-    })
+    applyQueueList(sessionId, authoritative)
     return true
+  }
+
+  const checkQueuedSendReceipt = async (
+    sessionId: string,
+    pending: QueuedMessage
+  ): Promise<'observed' | 'absent' | 'unknown' | QueuedMessage> => {
+    const authoritative = await listQueuedMessages(sessionId)
+    if (authoritative === null) return 'unknown'
+    const observed = authoritative.find(
+      (item) => item.queued_message_id === pending.queuedMessageId
+    )
+    if (!observed) return 'absent'
+    const receipt = queuedMessageFromPayload(observed)
+    if (queuedSendStillUnconfirmed(pending, receipt))
+      return confirmedQueuedSendFailure(pending, receipt) ?? 'unknown'
+    patchThread(sessionId, (current) => {
+      const messages = current.queuedMessages ?? []
+      const local = messages.find((message) => message.queuedMessageId === pending.queuedMessageId)
+      if (!local || !queuedSendReceiptUnknown(local)) return current
+      return {
+        queuedMessages: upsertQueuedMessage(
+          messages,
+          acknowledgeQueuedOutboxMessage(sessionId, receipt, local, true)
+        ),
+      }
+    })
+    return 'observed'
+  }
+
+  const acceptQueuedReceiptReview = (): void => {
+    const review = queuedReceiptReview
+    setQueuedReceiptReview(null)
+    if (!review || !queueSurfaceCurrent(getSnapshot(), review.sessionId)) return
+    patchThread(review.sessionId, (current) => {
+      const messages = current.queuedMessages ?? []
+      const confirmed = confirmedQueuedSendFailure(
+        messages.find((message) => message.queuedMessageId === review.observed.queuedMessageId),
+        review.observed
+      )
+      if (!confirmed) return current
+      releaseQueuedOutbox(review.sessionId, confirmed.queuedMessageId)
+      return { queuedMessages: upsertQueuedMessage(messages, confirmed) }
+    })
   }
 
   const steerQueued = async (message: QueuedMessage): Promise<void> => {
@@ -2678,8 +2790,7 @@ export function Composer({
     )
       return
     const sessionId = sidNow
-    setQueuedActionId(message.queuedMessageId)
-    try {
+    await runQueuedAction(sessionId, message.queuedMessageId, async () => {
       const result = await postSide(
         sessionId,
         message.queuedMessageId,
@@ -2688,16 +2799,15 @@ export function Composer({
       )
       await refreshQueuedMessages(sessionId)
       if (!result?.ok) {
-        set({
-          foregroundError: feedback(
+        showQueueFeedback(
+          sessionId,
+          feedback(
             'components',
             result?.unknownOutcome ? 'composer.queueUnknown' : 'composer.steerFailed'
-          ),
-        })
+          )
+        )
       }
-    } finally {
-      setQueuedActionId(null)
-    }
+    })
   }
 
   const editQueued = (message: QueuedMessage): void => {
@@ -2711,14 +2821,10 @@ export function Composer({
   const resolveNotSendable = async (sessionId: string, queuedMessageId: string): Promise<void> => {
     const authoritative = await listQueuedMessages(sessionId)
     if (authoritative === null) {
-      set({ foregroundError: feedback('components', 'composer.checkFailed') })
+      showQueueFeedback(sessionId, feedback('components', 'composer.checkFailed'))
       return
     }
-    const syncQueue = (): void => {
-      patchThread(sessionId, {
-        queuedMessages: mergeQueuedOutbox(sessionId, authoritative.map(queuedMessageFromPayload)),
-      })
-    }
+    const syncQueue = (): void => applyQueueList(sessionId, authoritative)
     const queued = authoritative.find((item) => item.queued_message_id === queuedMessageId)
     if (!queued) {
       const reconciliation = await reconcileQueuedMessage(sessionId, queuedMessageId)
@@ -2730,10 +2836,10 @@ export function Composer({
       }
       if (!reconciliation?.ok || reconciliation.outcome !== 'not_applied') {
         syncQueue()
-        set({ foregroundError: feedback('components', 'composer.checkFailed') })
+        showQueueFeedback(sessionId, feedback('components', 'composer.checkFailed'))
         return
       }
-      const local = (activeThread(state).queuedMessages ?? []).find(
+      const local = getSnapshot().threads[sessionId]?.queuedMessages?.find(
         (item) => item.queuedMessageId === queuedMessageId
       )
       if (local) {
@@ -2752,7 +2858,7 @@ export function Composer({
         return
       }
     }
-    set({ foregroundError: feedback('components', 'composer.notSubmitted') })
+    showQueueFeedback(sessionId, feedback('components', 'composer.notSubmitted'))
   }
 
   const retractQueuedMessage = async (queuedMessageId: string): Promise<void> => {
@@ -2775,8 +2881,7 @@ export function Composer({
       }))
       return
     }
-    setQueuedActionId(queuedMessageId)
-    try {
+    await runQueuedAction(sessionId, queuedMessageId, async () => {
       const result = await deleteQueuedMessage(sessionId, queuedMessageId)
       if (result.ok) {
         releaseQueuedOutbox(sessionId, queuedMessageId)
@@ -2789,10 +2894,8 @@ export function Composer({
         return
       }
       await refreshQueuedMessages(sessionId)
-      set({ foregroundError: queuedWithdrawalFeedback(result) })
-    } finally {
-      setQueuedActionId(null)
-    }
+      showQueueFeedback(sessionId, queuedWithdrawalFeedback(result))
+    })
   }
 
   const sendQueued = async (queuedMessageId: string): Promise<void> => {
@@ -2814,142 +2917,195 @@ export function Composer({
       !recoveryAvailable
     )
       return
-    setQueuedActionId(queuedMessageId)
-    if (queued.serverPresent === false) {
-      const result = await postTurn(sessionId, queued.input, state.collaborationMode, {
-        clientUserMessageId: queuedMessageId,
-        assistantContextRevision: queued.assistantContextRevision,
-        activeDocument: queued.activeDocument,
-        selectedLiteratureIds: queued.selectedLiteratureIds,
-        serviceInstanceId: getSnapshot().serviceInstanceId ?? undefined,
-      })
-      if (!isComposerSubmissionAccepted(result)) {
-        set({ foregroundError: feedback('components', 'composer.resendFailed') })
-        setQueuedActionId(null)
-        return
+    await runQueuedAction(sessionId, queuedMessageId, async () => {
+      const pending = unconfirmedQueuedSend(queued)
+      const replacePending = (replacement: QueuedMessage): void => {
+        patchThread(sessionId, (current) => ({
+          queuedMessages: (current.queuedMessages ?? []).map((message) =>
+            message.queuedMessageId === queuedMessageId && queuedSendReceiptUnknown(message)
+              ? replacement
+              : message
+          ),
+        }))
       }
-      releaseQueuedOutbox(sessionId, queuedMessageId)
-    } else {
-      const result = await sendQueuedMessage(
-        sessionId,
-        queuedMessageId,
-        getSnapshot().serviceInstanceId
-      )
-      if (!result?.ok) {
-        if (isQueuedMessageNotSendable(result?.error)) {
-          await resolveNotSendable(sessionId, queuedMessageId)
-          setQueuedActionId(null)
+      retainQueuedOutbox(sessionId, pending)
+      patchThread(sessionId, (current) => ({
+        queuedMessages: upsertQueuedMessage(current.queuedMessages ?? [], pending),
+      }))
+      if (queued.serverPresent === false) {
+        const result = await postTurn(sessionId, queued.input, state.collaborationMode, {
+          clientUserMessageId: queuedMessageId,
+          assistantContextRevision: queued.assistantContextRevision,
+          activeDocument: queued.activeDocument,
+          selectedLiteratureIds: queued.selectedLiteratureIds,
+          serviceInstanceId: getSnapshot().serviceInstanceId ?? undefined,
+        })
+        if (!isComposerSubmissionAccepted(result)) {
+          if (
+            result?.code === MODEL_SELECTION_UNCONFIRMED ||
+            isComposerSubmissionRejectedBeforeEnqueue(result)
+          ) {
+            const current = getSnapshot().threads[sessionId]?.queuedMessages?.find(
+              (message) => message.queuedMessageId === queuedMessageId
+            )
+            if (current && queuedSendReceiptUnknown(current)) {
+              retainQueuedOutbox(sessionId, queued)
+              replacePending(queued)
+            }
+            showQueueFeedback(sessionId, feedback('components', 'composer.resendFailed'))
+          } else {
+            showQueueFeedback(sessionId, feedback('components', 'composer.queueCheckUnknown'))
+          }
           return
         }
-        await refreshQueuedMessages(sessionId)
-        set({
-          foregroundError: feedback('components', 'composer.pendingFailed', {
-            error: result?.applicationFailure
-              ? requestFailureFeedback(result.applicationFailure)
-              : queuedMessageErrorText(result?.error ?? '', queued.state, t),
-          }),
-        })
-        setQueuedActionId(null)
-        return
+      } else {
+        const result = await sendQueuedMessage(
+          sessionId,
+          queuedMessageId,
+          getSnapshot().serviceInstanceId
+        )
+        if (!result?.ok) {
+          if (result?.unknownOutcome) {
+            if ((await checkQueuedSendReceipt(sessionId, pending)) !== 'observed') {
+              showQueueFeedback(sessionId, feedback('components', 'composer.queueCheckUnknown'))
+            }
+            return
+          }
+          releaseQueuedOutbox(sessionId, queuedMessageId)
+          replacePending(queued)
+          if (isQueuedMessageNotSendable(result?.error)) {
+            await resolveNotSendable(sessionId, queuedMessageId)
+            return
+          }
+          await refreshQueuedMessages(sessionId)
+          showQueueFeedback(
+            sessionId,
+            feedback('components', 'composer.pendingFailed', {
+              error: result?.applicationFailure
+                ? requestFailureFeedback(result.applicationFailure)
+                : queuedMessageErrorText(result?.error ?? '', queued.state, t),
+            })
+          )
+          return
+        }
       }
-    }
-    const refreshed = await refreshQueuedMessages(sessionId)
-    if (!refreshed) {
-      set({
-        foregroundError: feedback('components', 'composer.queueRefreshFailed'),
+      releaseQueuedOutbox(sessionId, queuedMessageId)
+      replacePending({
+        ...queued,
+        state: queued.serverPresent === false ? 'queued' : 'waiting_resources',
+        serverPresent: true,
+        safeErrorCode: undefined,
+        safeErrorDetails: undefined,
       })
-    }
-    await act.loadAiContext(sessionId)
-    setQueuedActionId(null)
+      if (!(await refreshQueuedMessages(sessionId))) {
+        showQueueFeedback(sessionId, feedback('components', 'composer.queueRefreshFailed'))
+      }
+      void act.loadAiContext(sessionId)
+    })
   }
 
   const reconcileQueued = async (queuedMessageId: string): Promise<void> => {
     const sessionId = sidNow ?? ''
     if (!sessionId || queuedActionId) return
-    setQueuedActionId(queuedMessageId)
-    const result = await reconcileQueuedMessage(sessionId, queuedMessageId)
-    if (!result?.ok || !result.outcome) {
-      set({ foregroundError: feedback('components', 'composer.checkFailed') })
-      setQueuedActionId(null)
-      return
-    }
-    if (result.outcome === 'applied') {
-      releaseQueuedOutbox(sessionId, queuedMessageId)
-      patchThread(sessionId, (thread) => ({
-        queuedMessages: (thread.queuedMessages ?? []).filter(
-          (message) => message.queuedMessageId !== queuedMessageId
-        ),
-      }))
-      set({ foregroundError: feedback('components', 'composer.submissionRecovered') })
-    } else if (result.outcome === 'not_applied') {
-      const localMessage = (activeThread(state).queuedMessages ?? []).find(
-        (message) => message.queuedMessageId === queuedMessageId
-      )
-      if (!result.message && localMessage) {
-        retainQueuedOutbox(sessionId, {
-          ...localMessage,
-          state: 'failed',
-          safeErrorCode: QUEUED_MESSAGE_SAFE_ERRORS.SUBMISSION_NOT_APPLIED,
-          serverPresent: false,
-        })
+    await runQueuedAction(sessionId, queuedMessageId, async () => {
+      const latestQueuedMessage = (): QueuedMessage | undefined =>
+        getSnapshot().threads[sessionId]?.queuedMessages?.find(
+          (message) => message.queuedMessageId === queuedMessageId
+        )
+      const pending = latestQueuedMessage()
+      if (pending && queuedSendReceiptUnknown(pending)) {
+        const status = await checkQueuedSendReceipt(sessionId, pending)
+        if (status === 'observed') {
+          void act.loadAiContext(sessionId)
+          return
+        }
+        if (status === 'unknown') {
+          showQueueFeedback(sessionId, feedback('components', 'composer.queueCheckUnknown'))
+          return
+        }
+        if (status !== 'absent') {
+          if (queueSurfaceCurrent(getSnapshot(), sessionId))
+            setQueuedReceiptReview({ sessionId, observed: status })
+          return
+        }
       }
-      patchThread(sessionId, (thread) => ({
-        queuedMessages: (thread.queuedMessages ?? []).map((message) =>
-          message.queuedMessageId !== queuedMessageId
-            ? message
-            : result.message
-              ? queuedMessageFromPayload(result.message)
-              : {
-                  ...message,
-                  state: 'failed',
-                  safeErrorCode: QUEUED_MESSAGE_SAFE_ERRORS.SUBMISSION_NOT_APPLIED,
-                  serverPresent: false,
-                }
-        ),
-      }))
-    } else {
-      const localMessage = (activeThread(state).queuedMessages ?? []).find(
-        (message) => message.queuedMessageId === queuedMessageId
-      )
-      const reconciled = result.message
-        ? queuedMessageFromPayload(result.message)
-        : localMessage
-          ? {
-              ...localMessage,
-              ...(result.reason === QUEUED_MESSAGE_SAFE_ERRORS.SESSION_OPEN_UNKNOWN
-                ? { retryBlockedErrorCode: result.reason }
-                : {
-                    safeErrorCode:
-                      result.reason || QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED,
-                  }),
-            }
-          : null
-      if (reconciled?.serverPresent === false) retainQueuedOutbox(sessionId, reconciled)
-      patchThread(sessionId, (thread) => ({
-        queuedMessages: (thread.queuedMessages ?? []).map((message) =>
-          message.queuedMessageId === queuedMessageId && reconciled ? reconciled : message
-        ),
-      }))
-    }
-    await refreshQueuedMessages(sessionId)
-    await act.loadAiContext(sessionId)
-    setQueuedActionId(null)
+      const result = await reconcileQueuedMessage(sessionId, queuedMessageId)
+      if (!result?.ok || !result.outcome) {
+        showQueueFeedback(sessionId, feedback('components', 'composer.checkFailed'))
+        return
+      }
+      if (result.outcome === 'applied') {
+        releaseQueuedOutbox(sessionId, queuedMessageId)
+        patchThread(sessionId, (thread) => ({
+          queuedMessages: (thread.queuedMessages ?? []).filter(
+            (message) => message.queuedMessageId !== queuedMessageId
+          ),
+        }))
+        showQueueFeedback(sessionId, feedback('components', 'composer.submissionRecovered'))
+      } else if (result.outcome === 'not_applied') {
+        const localMessage = latestQueuedMessage()
+        const restored = result.message
+          ? queuedMessageFromPayload(result.message)
+          : localMessage
+            ? {
+                ...localMessage,
+                state: 'failed' as const,
+                safeErrorCode: QUEUED_MESSAGE_SAFE_ERRORS.SUBMISSION_NOT_APPLIED,
+                serverPresent: false,
+              }
+            : null
+        if (restored?.serverPresent === false) retainQueuedOutbox(sessionId, restored)
+        else releaseQueuedOutbox(sessionId, queuedMessageId)
+        patchThread(sessionId, (thread) => ({
+          queuedMessages: (thread.queuedMessages ?? []).map((message) =>
+            message.queuedMessageId === queuedMessageId && restored ? restored : message
+          ),
+        }))
+      } else {
+        const localMessage = latestQueuedMessage()
+        const reconciled = result.message
+          ? queuedMessageFromPayload(result.message)
+          : localMessage
+            ? {
+                ...localMessage,
+                ...(result.reason === QUEUED_MESSAGE_SAFE_ERRORS.SESSION_OPEN_UNKNOWN
+                  ? { retryBlockedErrorCode: result.reason }
+                  : {
+                      safeErrorCode: queuedSendReceiptUnknown(localMessage)
+                        ? localMessage.safeErrorCode
+                        : result.reason || QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED,
+                    }),
+              }
+            : null
+        if (reconciled?.serverPresent === false) retainQueuedOutbox(sessionId, reconciled)
+        patchThread(sessionId, (thread) => ({
+          queuedMessages: (thread.queuedMessages ?? []).map((message) =>
+            message.queuedMessageId === queuedMessageId && reconciled ? reconciled : message
+          ),
+        }))
+      }
+      await refreshQueuedMessages(sessionId)
+      void act.loadAiContext(sessionId)
+    })
   }
 
   const confirmQueuedUnknown = async (queued: QueuedMessage): Promise<void> => {
     const sessionId = sidNow ?? ''
-    if (!sessionId || queuedActionId || queuedMessageHasUnknownOpen(queued)) return
-    setQueuedActionId(queued.queuedMessageId)
-    try {
+    if (
+      !sessionId ||
+      queuedActionId ||
+      queuedMessageHasUnknownOpen(queued) ||
+      queuedSendReceiptUnknown(queued)
+    )
+      return
+    await runQueuedAction(sessionId, queued.queuedMessageId, async () => {
       const error = await confirmQueuedOutcome({
         confirm: () => confirmUnknownTurn(sessionId, queued.nativeTurnId || queued.queuedMessageId),
         refreshQueue: () => refreshQueuedMessages(sessionId),
         refreshContext: () => act.loadAiContext(sessionId),
       })
-      if (error) set({ foregroundError: error })
-    } finally {
-      setQueuedActionId(null)
-    }
+      if (error) showQueueFeedback(sessionId, error)
+    })
   }
 
   const openCreditsPage = async (): Promise<void> => {
@@ -3250,6 +3406,32 @@ export function Composer({
         )}
       >
         <LoginPrompt open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
+        <AlertDialog
+          open={receiptReviewOpen}
+          onOpenChange={(open) => {
+            if (!open) setQueuedReceiptReview(null)
+          }}
+        >
+          <AlertDialogPortal>
+            <AlertDialogContent data-testid="queued-receipt-review">
+              <AlertDialogHeader>
+                <AlertDialogTitle>{t('composer.reviewFailedReceiptTitle')}</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {t('composer.reviewFailedReceiptDetail')}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t('composer.cancel')}</AlertDialogCancel>
+                <AlertDialogAction
+                  data-testid="queued-receipt-review-accept"
+                  onClick={acceptQueuedReceiptReview}
+                >
+                  {t('composer.reviewFailedReceiptAccept')}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialogPortal>
+        </AlertDialog>
         <div
           ref={inputBoxRef}
           data-ob={state.homeSelectedProjectId ? PROJECT_GUIDE_ANCHORS.composer : undefined}

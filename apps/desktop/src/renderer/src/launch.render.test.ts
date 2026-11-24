@@ -1097,6 +1097,108 @@ async function openQueueStatusThread(page: Page, queuedMessages: QueuedMessage[]
   )
 }
 
+test('an unconfirmed queue resend requires explicit review before restoring the failed row', async (context) => {
+  const id = 'failed-resend'
+  const failed = { ...queueStatusMessage(id, 1), state: 'failed', operation_seq: 3 }
+  const started = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  let sends = 0
+  let withdrawals = 0
+  await fixture(
+    context,
+    async (page) => {
+      try {
+        await openQueueStatusThread(page, [
+          {
+            queuedMessageId: id,
+            enqueueSeq: 1,
+            operationSeq: 3,
+            state: 'failed',
+            submissionMode: 'queued',
+            text: id,
+            input: [{ type: 'text', text: id }],
+            assistantReferences: [],
+            serverPresent: true,
+          },
+        ])
+        const action = page.getByTestId('queued-send-' + id)
+        const withdraw = page.getByTestId('queued-delete-' + id)
+        await action.click()
+        await started.promise
+        await expect(action).toBeDisabled()
+        const otherId = 'other-message'
+        const otherSession = 'e'.repeat(32)
+        await page.evaluate(
+          ({ otherId, otherSession, session }) => {
+            const probe = Reflect.get(window, 'launchProbe')
+            const original = probe.state.threads[session]
+            probe.patch({
+              activeSession: otherSession,
+              foregroundError: null,
+              threads: {
+                ...probe.state.threads,
+                [otherSession]: {
+                  ...original,
+                  id: otherSession,
+                  sessionId: otherSession,
+                  queuedMessages: [
+                    { ...original.queuedMessages[0], queuedMessageId: otherId, state: 'queued' },
+                  ],
+                },
+              },
+            })
+          },
+          { otherId, otherSession, session: SESSION }
+        )
+        await expect(page.getByTestId('queued-delete-' + otherId)).toBeEnabled()
+        const oldQueue = page.waitForResponse('**/api/serve/sessions/' + SESSION + '/queue')
+        release.resolve()
+        await (await oldQueue).finished()
+        assert.equal(
+          await page.evaluate(async () => {
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            return Reflect.get(window, 'launchProbe').state.foregroundError
+          }),
+          null
+        )
+        await page.evaluate(
+          (id) => Reflect.get(window, 'launchProbe').patch({ activeSession: id }),
+          SESSION
+        )
+        await expect(action).toBeEnabled()
+        await expect(withdraw).toHaveCount(0)
+        await action.click()
+        const review = page.getByTestId('queued-receipt-review')
+        await expect(review).toBeVisible()
+        await expect(review).toContainText('本次重发结果尚未确认')
+        await page.getByTestId('queued-receipt-review-accept').click()
+        await expect(review).toBeHidden()
+        await expect(withdraw).toBeEnabled()
+        await expect(action).toBeEnabled()
+        assert.equal(sends, 1)
+        assert.equal(withdrawals, 0)
+      } finally {
+        release.resolve()
+      }
+    },
+    async (page) => {
+      await page.route('**/api/serve/sessions/*/queue', (route) =>
+        route.fulfill({ json: { messages: [failed] } })
+      )
+      await page.route('**/api/serve/sessions/*/queue/*/send', async (route) => {
+        sends++
+        started.resolve()
+        await release.promise
+        await route.abort('failed')
+      })
+      await page.route('**/api/serve/sessions/*/queue/' + id, async (route) => {
+        withdrawals++
+        await route.fulfill({ json: { ok: true } })
+      })
+    }
+  )
+})
+
 test('late manual recovery status cannot restore an already withdrawn queue item', async (context) => {
   const oldStatus = Promise.withResolvers<void>()
   const freshStatus = Promise.withResolvers<void>()

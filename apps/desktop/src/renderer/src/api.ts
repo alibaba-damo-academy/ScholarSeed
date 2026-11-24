@@ -1,5 +1,7 @@
 import type { PluginReference, PluginReport } from '../../plugins'
 import {
+  CONTENT_OPERATION_UNKNOWN,
+  PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
   queryContentOperation,
   readContentReceipt,
   resolveContentResponse,
@@ -93,6 +95,11 @@ const SESSION_LIST_DEFAULT_LIMIT = 60
 const SESSION_LIST_DEFAULT_SCOPE: SessionListScope = 'all'
 const REQUEST_TIMEOUT_MESSAGE = 'request_timeout'
 const REQUEST_FAILED_MESSAGE = 'request failed'
+// These requests acknowledge local commands. Model generation continues on the server.
+const SESSION_COMMAND_TIMEOUT_MS = 45_000
+const QUEUE_REQUEST_TIMEOUT_MS = 10_000
+const RUNTIME_HEALTH_TIMEOUT_MS = 25_000
+const MODEL_PROFILE_REQUEST_TIMEOUT_MS = 50_000
 const ATTENTION_REQUEST_TIMEOUT_MS = 10_000
 const CONTINUATION_PREVIEW_TIMEOUT_MS = 10_000
 const CONTINUATION_INVALID_RESPONSE = 'session_continuation_invalid'
@@ -159,7 +166,9 @@ export async function getBackendHealth(
   }
 }
 
-export async function getHealth(signal?: AbortSignal): Promise<HealthResp | null> {
+export async function getHealth(
+  signal: AbortSignal = AbortSignal.timeout(RUNTIME_HEALTH_TIMEOUT_MS)
+): Promise<HealthResp | null> {
   try {
     const r = await apiFetch('/api/healthz', { signal })
     if (!r.ok) return null
@@ -1398,6 +1407,7 @@ export interface SideTurnResponse {
 
 export interface QueuedMessageSendResponse {
   applicationFailure?: ApplicationRequestFailure
+  unknownOutcome?: boolean
   ok?: boolean
   turn_id?: string
   queued_message_id?: string
@@ -1560,6 +1570,7 @@ export async function postTurn(
   try {
     const r = await apiFetch(`/api/serve/sessions/${sid}/turns`, {
       method: 'POST',
+      timeoutMs: SESSION_COMMAND_TIMEOUT_MS,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         input,
@@ -1645,6 +1656,7 @@ export async function postSide(
   try {
     const r = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/side`, {
       method: 'POST',
+      timeoutMs: SESSION_COMMAND_TIMEOUT_MS,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         queued_message_id: queuedMessageId,
@@ -1663,6 +1675,7 @@ export async function postSide(
       return {
         ok: false,
         reason: error,
+        ...(r.status >= 500 || r.status === 408 ? { unknownOutcome: true } : {}),
         ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}),
       }
     }
@@ -1670,7 +1683,7 @@ export async function postSide(
     return response
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
-    return { ok: false, reason: error }
+    return { ok: false, reason: error, unknownOutcome: true }
   }
 }
 
@@ -1684,7 +1697,7 @@ export async function sendQueuedMessage(
   try {
     const r = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sid)}/queue/${encodeURIComponent(queuedMessageId)}/send`,
-      { method: 'POST' }
+      { method: 'POST', timeoutMs: SESSION_COMMAND_TIMEOUT_MS }
     )
     if (!r.ok) {
       const failure = await serviceErrorDetail(r)
@@ -1695,14 +1708,20 @@ export async function sendQueuedMessage(
       return {
         ok: false,
         error,
+        ...(r.status >= 500 || r.status === 408 ? { unknownOutcome: true } : {}),
         ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}),
       }
     }
     const response = (await r.json()) as QueuedMessageSendResponse
     return response
   } catch (e) {
-    const error = e instanceof Error ? e.message : String(e)
-    return { ok: false, error }
+    const failure = describeRequestFailure(e)
+    return {
+      ok: false,
+      error: failure.message,
+      applicationFailure: failure.applicationFailure,
+      unknownOutcome: true,
+    }
   }
 }
 
@@ -1756,6 +1775,7 @@ export async function updateQueuedMessage(
       `/api/serve/sessions/${encodeURIComponent(sid)}/queue/${encodeURIComponent(queuedMessageId)}`,
       {
         method: 'PATCH',
+        timeoutMs: QUEUE_REQUEST_TIMEOUT_MS,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text }),
       }
@@ -1787,6 +1807,7 @@ export async function listQueuedMessages(
   try {
     const response = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/queue`, {
       signal,
+      timeoutMs: QUEUE_REQUEST_TIMEOUT_MS,
     })
     if (!response.ok) return null
     const payload = (await response.json()) as { messages?: QueuedMessagePayload[] }
@@ -1812,7 +1833,7 @@ export async function deleteQueuedMessage(
   try {
     const response = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sid)}/queue/${encodeURIComponent(queuedMessageId)}`,
-      { method: 'DELETE' }
+      { method: 'DELETE', timeoutMs: QUEUE_REQUEST_TIMEOUT_MS }
     )
     if (!response.ok) {
       const failure = await serviceErrorDetail(response)
@@ -1844,7 +1865,7 @@ export async function reconcileQueuedMessage(
   try {
     const response = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sid)}/queue/${encodeURIComponent(queuedMessageId)}/reconcile`,
-      { method: 'POST' }
+      { method: 'POST', timeoutMs: SESSION_COMMAND_TIMEOUT_MS }
     )
     return (await response.json()) as QueuedMessageReconcileResponse
   } catch {
@@ -1951,6 +1972,7 @@ export async function interruptSession(sid: string): Promise<InterruptResponse> 
   try {
     const r = await apiFetch(`/api/serve/sessions/${encodeURIComponent(sid)}/interrupt`, {
       method: 'POST',
+      timeoutMs: SESSION_COMMAND_TIMEOUT_MS,
       headers: { 'content-type': 'application/json' },
       body: '{}',
     })
@@ -1966,7 +1988,8 @@ export async function interruptSession(sid: string): Promise<InterruptResponse> 
     if (response.ok !== true) return { ok: false, error: turnErrorText(response.error) }
     return response
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    const failure = describeRequestFailure(e)
+    return { ok: false, error: failure.message, applicationFailure: failure.applicationFailure }
   }
 }
 
@@ -1996,7 +2019,7 @@ export interface SessionModelResponse {
 export type SessionModelSnapshot = Omit<SessionModelResponse, 'ok' | 'error' | 'detail'>
 
 export const getSessionModel = (sid: string): Promise<SessionModelSnapshot | null> =>
-  getJson(`/api/serve/sessions/${encodeURIComponent(sid)}/model`)
+  getJson(`/api/serve/sessions/${encodeURIComponent(sid)}/model`, SESSION_COMMAND_TIMEOUT_MS)
 
 async function sessionModelFailure(
   sid: string,
@@ -2396,6 +2419,7 @@ export async function respondHil(
           `/api/serve/sessions/${encodeURIComponent(sid)}/hil/${encodeURIComponent(requestId)}`,
           {
             method: 'POST',
+            timeoutMs: SESSION_COMMAND_TIMEOUT_MS,
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body),
           }
@@ -2458,7 +2482,7 @@ export async function checkSessionRecovery(sid: string): Promise<RecoveryCheckRe
   try {
     const response = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sid)}/recovery/check`,
-      { method: 'POST' }
+      { method: 'POST', timeoutMs: SESSION_COMMAND_TIMEOUT_MS }
     )
     if (!response.ok)
       return {
@@ -2511,6 +2535,7 @@ export async function confirmUnknownTurn(
       `/api/serve/sessions/${encodeURIComponent(sid)}/turns/${encodeURIComponent(turnId)}/confirm-unknown`,
       {
         method: 'POST',
+        timeoutMs: SESSION_COMMAND_TIMEOUT_MS,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ decision: TURN_UNKNOWN_CONFIRM_DECISION }),
       }
@@ -3230,10 +3255,8 @@ export interface ProjectsResp {
   projects: Project[]
 }
 async function deleteJson<T>(path: string, timeoutMs?: number): Promise<T | null> {
-  const ctl = timeoutMs ? new AbortController() : null
-  const timer = ctl ? window.setTimeout(() => ctl.abort(), timeoutMs) : null
   try {
-    const r = await apiFetch(path, { method: 'DELETE', ...(ctl ? { signal: ctl.signal } : {}) })
+    const r = await apiFetch(path, { method: 'DELETE', timeoutMs: timeoutMs || undefined })
     if (r.status === 401 && !path.startsWith('/api/auth/')) {
       window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
       return null
@@ -3242,8 +3265,6 @@ async function deleteJson<T>(path: string, timeoutMs?: number): Promise<T | null
     return (await r.json()) as T
   } catch {
     return null
-  } finally {
-    if (timer != null) window.clearTimeout(timer)
   }
 }
 
@@ -3338,7 +3359,7 @@ export function reportProjectCreation(event: {
 
 const PROJECT_CREATION_ERROR_CODES = new Set([
   'update_maintenance',
-  'content_operation_unknown',
+  CONTENT_OPERATION_UNKNOWN,
   'content_operation_interrupted',
   'content_operations_closed',
   'project_creation_recovery_required',
@@ -3379,6 +3400,7 @@ export async function submitProjectCreation(
           payload.path ? '/api/content/projects/adopt' : '/api/content/projects',
           {
             method: 'POST',
+            timeoutMs: PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
             headers: { 'Content-Type': 'application/json', [API_DIAGNOSTIC_HEADER]: attemptId },
             body: JSON.stringify(payload),
           }
@@ -3546,19 +3568,22 @@ async function mutateProject(
   try {
     let response = await apiFetch(path, {
       method,
+      timeoutMs: PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
       headers: { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     response = await resolveContentResponse(response)
-    const payload = (await response.json().catch(() => ({}))) as {
+    const payload = (
+      response.ok ? await response.json() : await response.json().catch(() => ({}))
+    ) as {
       detail?: string | { message?: string }
     }
     if (response.ok) return { ok: true }
     const detail = payload?.detail
     const message = typeof detail === 'string' ? detail : detail?.message
     return { ok: false, error: message || `HTTP ${response.status}` }
-  } catch (error) {
-    return { ok: false, error: String(error) }
+  } catch {
+    return { ok: false, error: CONTENT_OPERATION_UNKNOWN }
   }
 }
 
@@ -3619,9 +3644,16 @@ export interface ModelsResp {
   reasoning_effort?: string
 }
 export const getModels = (refresh?: boolean): Promise<ModelsResp | null> =>
-  getJson(refresh ? '/api/serve/models?refresh=true' : '/api/serve/models')
+  getJson(
+    refresh ? '/api/serve/models?refresh=true' : '/api/serve/models',
+    MODEL_PROFILE_REQUEST_TIMEOUT_MS
+  )
 export const setDefaultModel = (modelKey: string): Promise<ModelsResp | null> =>
-  postJson('/api/serve/models/default', { model_key: modelKey, persist: true })
+  postJson(
+    '/api/serve/models/default',
+    { model_key: modelKey, persist: true },
+    MODEL_PROFILE_REQUEST_TIMEOUT_MS
+  )
 
 /** Upstream protocol this endpoint speaks, declared rather than guessed from the URL. */
 export type PersonalApiWireApi = 'chat_completions' | 'responses'
@@ -3720,7 +3752,8 @@ export interface PersonalApiProbeResult {
   error_class?: string
 }
 
-export type ProfileRequestErrorCode = 'authentication_required' | 'http_failure' | 'network_failure'
+export type ProfileRequestErrorCode =
+  'authentication_required' | 'http_failure' | 'network_failure' | 'request_timeout'
 /**
  * 保存校验失败时后端回传的结构化原因。`code` 固定为 connection_validation_failed;
  * `model` 只在「真的调用了某个已选模型」时非空, `upstream` 是截断后的上游原文。
@@ -3771,11 +3804,13 @@ export interface ModelProvidersResp {
 export async function profileRequest<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  timeoutMs?: number
 ): Promise<PersonalApiResult<T>> {
   try {
     const r = await apiFetch(path, {
       method,
+      timeoutMs,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
@@ -3783,7 +3818,10 @@ export async function profileRequest<T>(
       window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
       return { ok: false, error: '', code: 'authentication_required', status: r.status }
     }
-    const payload = (await r.json().catch(() => ({}))) as Record<string, unknown>
+    // An incomplete personal profile receipt cannot confirm a write.
+    const payload = (
+      r.ok && timeoutMs !== undefined ? await r.json() : await r.json().catch(() => ({}))
+    ) as Record<string, unknown>
     if (!r.ok) {
       // 保存校验失败回结构化 detail（含失败模型与上游原文）; 其余错误仍是不带结构的字符串。
       const detail = asFailureDetail(payload.detail)
@@ -3800,50 +3838,78 @@ export async function profileRequest<T>(
     return {
       ok: false,
       error: cause instanceof Error ? cause.message : String(cause),
-      code: 'network_failure',
+      code:
+        cause instanceof DOMException && cause.name === REQUEST_TIMEOUT_ERROR_NAME
+          ? 'request_timeout'
+          : 'network_failure',
     }
   }
 }
 
 export const getModelProviders = (): Promise<ModelProvidersResp | null> =>
-  getJson(MODEL_PROVIDERS_PATH)
+  getJson(MODEL_PROVIDERS_PATH, MODEL_PROFILE_REQUEST_TIMEOUT_MS)
 export const getPersonalApiProfiles = (): Promise<PersonalApiProfilesResp | null> =>
-  getJson(MODEL_PROFILES_PATH)
+  getJson(MODEL_PROFILES_PATH, MODEL_PROFILE_REQUEST_TIMEOUT_MS)
 export const listPersonalApiModels = (
   input: PersonalApiInput,
   profileId = ''
 ): Promise<PersonalApiResult<PersonalApiProbeResult>> =>
-  profileRequest('POST', `${MODEL_PROFILES_PATH}/models`, { ...input, profile_id: profileId })
+  profileRequest(
+    'POST',
+    `${MODEL_PROFILES_PATH}/models`,
+    { ...input, profile_id: profileId },
+    MODEL_PROFILE_REQUEST_TIMEOUT_MS
+  )
 export const probePersonalApi = (
   input: PersonalApiInput,
   profileId = ''
 ): Promise<PersonalApiResult<PersonalApiProbeResult>> =>
-  profileRequest('POST', `${MODEL_PROFILES_PATH}/probe`, { ...input, profile_id: profileId })
+  profileRequest(
+    'POST',
+    `${MODEL_PROFILES_PATH}/probe`,
+    { ...input, profile_id: profileId },
+    MODEL_PROFILE_REQUEST_TIMEOUT_MS
+  )
 export const createPersonalApiProfile = (
   input: PersonalApiInput
 ): Promise<PersonalApiResult<PersonalApiMutationResp>> =>
-  profileRequest('POST', MODEL_PROFILES_PATH, input)
+  profileRequest('POST', MODEL_PROFILES_PATH, input, MODEL_PROFILE_REQUEST_TIMEOUT_MS)
 export const updatePersonalApiProfile = (
   id: string,
   input: PersonalApiInput
 ): Promise<PersonalApiResult<PersonalApiMutationResp>> =>
-  profileRequest('PUT', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`, input)
+  profileRequest(
+    'PUT',
+    `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`,
+    input,
+    MODEL_PROFILE_REQUEST_TIMEOUT_MS
+  )
 export const setPersonalApiProfileEnabled = (
   id: string,
   enabled: boolean
 ): Promise<PersonalApiResult<PersonalApiProfilesResp>> =>
-  profileRequest('POST', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}/enabled`, { enabled })
+  profileRequest(
+    'POST',
+    `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}/enabled`,
+    { enabled },
+    MODEL_PROFILE_REQUEST_TIMEOUT_MS
+  )
 export const setPersonalApiModelVisibility = (
   id: string,
   modelId: string,
   hidden: boolean
 ): Promise<PersonalApiResult<ModelSelectionResp>> =>
-  profileRequest('POST', `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}/models/visibility`, {
-    model_id: modelId,
-    hidden,
-  })
+  profileRequest(
+    'POST',
+    `${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}/models/visibility`,
+    {
+      model_id: modelId,
+      hidden,
+    },
+    MODEL_PROFILE_REQUEST_TIMEOUT_MS
+  )
 export const deletePersonalApiProfile = (id: string): Promise<PersonalApiProfilesResp | null> =>
-  deleteJson(`${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`)
+  deleteJson(`${MODEL_PROFILES_PATH}/${encodeURIComponent(id)}`, MODEL_PROFILE_REQUEST_TIMEOUT_MS)
 
 export interface SkillAttribution {
   authors: string[]

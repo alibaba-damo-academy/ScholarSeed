@@ -11,7 +11,7 @@ test('catalog reads have a deadline and retain caller cancellation', async (cont
     globalThis.window = previousWindow
   })
   globalThis.window = {} as Window & typeof globalThis
-  const deadline = new AbortController()
+  let deadline = new AbortController()
   context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
     assert.ok(milliseconds > 0)
     return deadline.signal
@@ -26,8 +26,7 @@ test('catalog reads have a deadline and retain caller cancellation', async (cont
   deadline.abort()
   assert.equal(received.aborted, true)
   const caller = new AbortController()
-  const timeout = new AbortController()
-  context.mock.method(AbortSignal, 'timeout', () => timeout.signal)
+  deadline = new AbortController()
   await apiFetch('/api/serve/sessions', { ...LIVE_CATALOG_REQUEST, signal: caller.signal })
   assert.equal(received.aborted, false)
   caller.abort()
@@ -119,6 +118,12 @@ test('API failures preserve behavior and emit only safe diagnostic metadata', as
   assert.equal(lastRecord().method, 'POST')
 
   flushApiDiagnostics()
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    assert.equal(milliseconds, 1)
+    const deadline = new AbortController()
+    queueMicrotask(() => deadline.abort(new DOMException('deadline', 'TimeoutError')))
+    return deadline.signal
+  })
   globalThis.fetch = async (_input, init) =>
     new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
@@ -275,24 +280,20 @@ test('POST encoding failures report only safe metadata without issuing fetch', a
   assert.ok(!records.join('\n').includes('private-id'))
 })
 
-test('opt-in live catalog cache preserves ordinary fetch defaults, credentials, timeout cleanup and auth-required events', async () => {
+test('opt-in live catalog cache preserves ordinary defaults, the shorter deadline, and auth-required events', async (context) => {
   const previousFetch = globalThis.fetch
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const requests: RequestInit[] = []
   const events: string[] = []
-  let created = 0
-  let cleared = 0
+  const budgets: number[] = []
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    budgets.push(milliseconds)
+    return new AbortController().signal
+  })
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
       scholarseed: { getApiBase: () => 'http://serve.test' },
-      setTimeout: () => {
-        created += 1
-        return 1
-      },
-      clearTimeout: () => {
-        cleared += 1
-      },
       dispatchEvent: (event: Event) => {
         events.push(event.type)
         return true
@@ -313,8 +314,7 @@ test('opt-in live catalog cache preserves ordinary fetch defaults, credentials, 
     )
     assert.ok(requests.every((request) => request.credentials === 'include'))
     assert.ok(requests[1].signal instanceof AbortSignal)
-    assert.equal(created, 1)
-    assert.equal(cleared, 1)
+    assert.deepEqual(budgets, [500])
     globalThis.fetch = async () => new Response('{}', { status: 401 })
     assert.equal(await getJson('/live', undefined, LIVE_CATALOG_REQUEST), null)
     assert.equal(await getJson('/api/auth/me', undefined, LIVE_CATALOG_REQUEST), null)

@@ -12,7 +12,8 @@ const FAILED_OPERATION = 400
 const POLL_INTERVAL_MS = 100
 const OPERATION_TIMEOUT_MS = 90_000
 const STATUS_TIMEOUT_MS = 5_000
-const UNKNOWN_OUTCOME = 'content_operation_unknown'
+export const PROJECT_WRITE_RECEIPT_TIMEOUT_MS = 15_000
+export const CONTENT_OPERATION_UNKNOWN = 'content_operation_unknown'
 
 /** Resolve an accepted content command without ever resubmitting its mutation. */
 export async function resolveContentResponse(response: Response): Promise<Response> {
@@ -35,7 +36,7 @@ export async function readContentReceipt(response: Response): Promise<string | n
 }
 
 function unknownOutcome(): Response {
-  return Response.json({ detail: UNKNOWN_OUTCOME }, { status: INVALID_OPERATION })
+  return Response.json({ detail: CONTENT_OPERATION_UNKNOWN }, { status: INVALID_OPERATION })
 }
 
 export async function queryContentOperation(
@@ -71,7 +72,7 @@ export async function queryContentOperation(
     if (payload.state === 'failed') {
       return {
         response: Response.json(
-          { detail: typeof payload.error === 'string' ? payload.error : UNKNOWN_OUTCOME },
+          { detail: typeof payload.error === 'string' ? payload.error : CONTENT_OPERATION_UNKNOWN },
           { status: FAILED_OPERATION }
         ),
         terminal: 'failed',

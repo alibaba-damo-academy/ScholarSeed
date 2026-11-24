@@ -166,6 +166,10 @@ On macOS and Windows, main can offer a native action to reopen Home when Electro
 
 Manual reopening makes the transcript interactive as soon as history is ready. Queue hydration uses the independent session status snapshot. The queue tracks its snapshot sequence separately from transcript replay and rejects responses overtaken by a local queue edit.
 
+The first main-window document has a separate 45-second deadline for loading and becoming ready to show. Queue reads, edits, and withdrawals have 10-second deadlines, as do assistant context requests. Turn submission, interruption, and queue-send receipts have a 45-second deadline. Losing a write receipt can leave the outcome unknown. The client keeps the message identity and checks existing state. If the server still shows the previous failed send, the user can explicitly accept that record to recover the row controls.
+
+Project creation, adoption, and metadata edits allow 15 seconds for the write receipt. An accepted creation with an operation ID keeps the existing 90-second status polling budget. Personal model discovery and connection validation each have a 40-second upstream deadline. The renderer allows 50 seconds per personal model settings request, including the response body.
+
 手动重开时，历史读完即可操作正文。队列通过独立的会话状态请求补齐，单独记录快照序号。请求发出后若用户修改了队列，渲染器会丢弃旧快照并重新读取。
 
 在 macOS 和 Windows 上，若 Electron 报告恢复中的渲染进程无响应或退出，主进程可通过系统对话框提供重新打开到首页的入口。渲染进程的 15 秒预算和额外 1 秒确认时间结束后，主进程也会为仍未完成的恢复提供此入口。用户确认后，主进程跳过旧任务，在同一个窗口中重载渲染进程，Serve 进程继续运行。两个平台均需在真实桌面验证系统对话框和重载后的窗口。

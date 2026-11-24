@@ -122,8 +122,8 @@ export function literatureAttachmentNames(
 export function loadedAssistantContext(
   panel: AiPanelState,
   selection: AssistantContextSelection | null,
-  annotations: AnswerAnnotation[],
-  submittedRefIds: readonly string[]
+  annotations: AnswerAnnotation[] | null,
+  submittedRefIds: readonly string[] | null
 ): AiPanelState {
   if (
     selection &&
@@ -137,12 +137,16 @@ export function loadedAssistantContext(
   if (!selection) {
     return { ...panel, contextState: 'error', contextError: { key: 'contextErrors.loadFailed' } }
   }
+  const sameSession = panel.sessionId === selection.session_id
   return {
     ...panel,
-    ...assistantContextProjection(selection, submittedRefIds),
+    ...assistantContextProjection(
+      selection,
+      submittedRefIds ?? (sameSession ? panel.submittedRefIds : [])
+    ),
     sessionId: selection.session_id,
     contextState: 'ready',
-    annotations,
+    annotations: annotations ?? (sameSession ? panel.annotations : []),
     contextError: null,
   }
 }

@@ -586,7 +586,13 @@ test('probe failure detail classifies backend error codes and transport failures
   assert.equal(probeFailureDetail(reject('unsupported_wire_api')).kind, 'protocol')
   // 非 HTTP 状态的 error_class 是 httpx 网络层异常名
   assert.equal(probeFailureDetail(reject('ConnectError')).kind, 'network')
-  assert.equal(probeFailureDetail(reject('ReadTimeout')).kind, 'network')
+  for (const error of ['TimeoutError', 'ReadTimeout', 'ConnectTimeout']) {
+    assert.equal(probeFailureDetail(reject(error)).kind, 'timeout')
+  }
+  assert.equal(
+    probeFailureDetail({ ok: false, error: '', code: 'request_timeout' }).kind,
+    'timeout'
+  )
   // 无 error_class 且模型列表为空: 端点可达但没返回模型 (ok=bool(models))
   assert.equal(probeFailureDetail(reject(undefined)).kind, 'noModels')
   // 传输层失败 (PersonalApiFailure 形态, 带 code)
