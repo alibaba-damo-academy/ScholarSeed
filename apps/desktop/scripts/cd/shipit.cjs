@@ -19,7 +19,7 @@ const COMPILE_UNITS = [
   'NSBundle+SQRLVersionExtensions', 'NSError+SQRLVerbosityExtensions',
   'NSProcessInfo+SQRLVersionExtensions', 'RACSignal+SQRLTransactionExtensions',
   'SQRLCodeSignature', 'SQRLInstaller', 'SQRLInstallerOwnedBundle',
-  'SQRLShipItRequest', 'SQRLTerminationListener', 'ShipIt-main',
+  'SQRLShipItRequest', 'SQRLTerminationListener',
 ]
 const FRAMEWORKS = ['Mantle', 'ReactiveObjC', 'Foundation', 'AppKit', 'IOKit', 'Security']
 const RPATHS = ['@executable_path/../..', '@executable_path/../../../..']
@@ -166,6 +166,25 @@ function verifyBinding(directory, frameworks, headers, source) {
   if (result.error || result.status !== 0) throw new Error(`ShipIt binding contract failed: ${describeResult(result)}`)
 }
 
+function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
+  const executable = path.join(directory, 'relaunch-test')
+  command('/usr/bin/xcrun', [...compiler, '-UNDEBUG', `-I${path.join(squirrel, 'Squirrel')}`,
+    `-Wl,-rpath,${frameworks}`, '-o', executable, ...sources, path.join(OWNER, 'relaunch.test.m')], directory)
+  for (const mode of ['authorized', 'replay', 'cancel', 'mismatch']) {
+    const root = path.join(directory, 'relaunch-fixture', mode === 'replay' ? 'authorized' : mode)
+    const result = spawnSync(executable, [mode, root], {
+      cwd: directory, encoding: 'utf8', timeout: 60_000, env: { ...process.env, TMPDIR: directory },
+    })
+    recordContract(directory, `relaunch-${mode}`, result)
+    const launched = mode === 'authorized' || mode === 'replay'
+    const expectedStatus = mode === 'mismatch' ? 1 : 0
+    if (result.error || result.status !== expectedStatus ||
+        fs.existsSync(path.join(root, 'launched')) !== launched ||
+        result.stderr.includes('[shipit-admission] event=terminal-failure') !== (mode !== 'mismatch'))
+      throw new Error(`ShipIt relaunch ${mode} contract failed: ${describeResult(result)}`)
+  }
+}
+
 function verifyPreparation(directory) {
   for (const [name, configuration] of Object.entries(PREPARATION_CONTRACTS)) {
     const external = configuration.external === true
@@ -247,7 +266,7 @@ async function buildShipIt({ directory, electronDist, arch, sourceCache }) {
   for (const name of ['binding.patch', 'authorization.patch', 'recovery.patch', 'metadata.patch'])
     command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, name)], directory, dependencies.squirrel)
   const executable = path.join(directory, 'ShipIt')
-  const args = [
+  const compiler = [
     'clang', '-arch', ARCHITECTURES[arch], `-mmacosx-version-min=${MINIMUM_MACOS_VERSION}`,
     '-O2', '-DNDEBUG',
     '-fobjc-arc', '-fobjc-weak', '-Wno-deprecated-declarations', '-Wno-block-capture-autoreleasing',
@@ -255,15 +274,17 @@ async function buildShipIt({ directory, electronDist, arch, sourceCache }) {
     `-I${directory}`, `-F${frameworks}`,
     ...FRAMEWORKS.flatMap(name => ['-framework', name]),
     ...RPATHS.map(value => `-Wl,-rpath,${value}`),
-    '-o', executable,
+  ]
+  const sources = [
     ...COMPILE_UNITS.map(name => path.join(dependencies.squirrel, 'Squirrel', `${name}.m`)),
     path.join(directory, 'cleanup.m'), path.join(directory, 'preparation.m'), path.join(directory, 'readiness.m'),
   ]
-  command('/usr/bin/xcrun', args, directory)
+  command('/usr/bin/xcrun', [...compiler, '-o', executable, ...sources, path.join(dependencies.squirrel, 'Squirrel', 'ShipIt-main.m')], directory)
   command('/usr/bin/codesign', ['--force', '--sign', '-', executable], directory)
   verifyNativeTiming(directory, frameworks, headers)
   verifyAdmission(directory, frameworks, headers)
   verifyBinding(directory, frameworks, headers, dependencies.squirrel)
+  verifyRelaunch(directory, compiler, sources, dependencies.squirrel, frameworks)
   verifyCleanup(directory)
   verifyPreparation(directory)
   const licenses = []

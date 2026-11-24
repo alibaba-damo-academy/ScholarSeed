@@ -19,6 +19,7 @@ static const off_t SSMaximumJournalBytes = 1024 * 1024;
 static const useconds_t SSRetryDelay = 250000;
 static int SSDirectoryFD = -1, SSLockFD = -1;
 static NSMutableArray *SSRecords;
+static NSDictionary *SSCopyCommit;
 
 static BOOL SSFail(NSError **error, int code) {
     if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:code userInfo:nil];
@@ -132,7 +133,7 @@ static NSDictionary *SSReadOnlyJournal;
 static NSString *SSObservedDirectory;
 static BOOL SSCloseUncertain;
 
-static BOOL SSSave(void) {
+static BOOL SSSave(NSDictionary *__strong *publication) {
     if (SSReadOnly) { errno = EROFS; return NO; }
     NSError *error;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:@{@"schema":SSCleanupSchema, @"records":SSRecords} format:NSPropertyListBinaryFormat_v1_0 options:0 error:&error];
@@ -143,8 +144,11 @@ static BOOL SSSave(void) {
     if (fd < 0) return NO;
     const uint8_t *bytes = data.bytes; NSUInteger left = data.length;
     while (left) { ssize_t n = write(fd, bytes, left); if (n < 0 && errno == EINTR) continue; if (n <= 0) { close(fd); return NO; } left -= (NSUInteger)n; bytes += n; }
-    BOOL ok = fsync(fd) == 0; close(fd);
-    return ok && renameat(SSDirectoryFD, SSNextJournal.UTF8String, SSDirectoryFD, SSJournal.UTF8String) == 0 && fsync(SSDirectoryFD) == 0;
+    struct stat written;
+    BOOL ok = fsync(fd) == 0 && (!publication || fstat(fd, &written) == 0); close(fd);
+    if (!ok || renameat(SSDirectoryFD, SSNextJournal.UTF8String, SSDirectoryFD, SSJournal.UTF8String) != 0 || fsync(SSDirectoryFD) != 0) return NO;
+    if (publication) *publication = @{@"identity":SSIdentity(written), @"sha256":SSObservationDigest(data)};
+    return YES;
 }
 BOOL SSCleanupCloseChecked(NSError **error) {
     if (SSCloseUncertain) return SSFail(error, EIO);
@@ -155,6 +159,7 @@ BOOL SSCleanupCloseChecked(NSError **error) {
         if (closing >= 0 && close(closing) != 0) { SSCloseUncertain = YES; return SSFail(error, errno); }
     }
     SSRecords = nil;
+    SSCopyCommit = nil;
     SSReadOnly = NO;
     SSMaintenance = NO;
     SSReadOnlyJournal = nil;
@@ -300,6 +305,7 @@ static BOOL SSTargetMatches(NSDictionary *record, NSURL *target) {
     return capture && [capture[@"item"] isEqual:record[@"targetIdentity"]];
 }
 BOOL SSCleanupCommit(NSURL *source, NSURL *stage, NSURL *previous, NSURL *target, NSURL *originalTarget, NSError **error) {
+    SSCopyCommit = nil;
     if (SSReadOnly) return SSFail(error, EROFS);
     if (SSDirectoryFD < 0) return SSFail(error, EBADF);
     for (NSURL *url in @[source, stage, previous, target, originalTarget]) if (!SSPath(url)) return SSFail(error, EINVAL);
@@ -320,7 +326,16 @@ BOOL SSCleanupCommit(NSURL *source, NSURL *stage, NSURL *previous, NSURL *target
     // A different committed request supersedes completed tombstones, never pending work.
     for (NSDictionary *old in before) if ([old[@"items"] count]) [SSRecords addObject:old];
     [SSRecords addObject:record];
-    if (!SSSave()) { SSRecords = before; return SSFail(error, errno ?: EIO); }
+    BOOL copied = ![items[1][@"parent"][@"dev"] isEqual:capture[@"item"][@"dev"]];
+    NSDictionary *publication = nil;
+    if (!SSSave(copied ? &publication : NULL)) { SSRecords = before; return SSFail(error, errno ?: EIO); }
+    // An EXDEV move creates new inodes. Keep the installed bundle identity and
+    // the exact committed journal until this lock is released.
+    if (copied) {
+        NSDictionary *snapshot = SSCleanupMaintenanceSnapshot(NULL);
+        if ([snapshot[@"journal"][@"identity"] isEqual:publication[@"identity"]] && [snapshot[@"journal"][@"sha256"] isEqual:publication[@"sha256"]])
+            SSCopyCommit = @{@"snapshot":snapshot, @"bundle":capture[@"parent"]};
+    }
     NSLog(@"[shipit-cleanup] event=committed pending=%lu", (unsigned long)items.count);
     return YES;
 }
@@ -360,6 +375,25 @@ BOOL SSCleanupKnownRequest(NSURL *source) {
 BOOL SSCleanupCommittedRequest(NSURL *source, NSURL *target) {
     return SSCleanupRecoveredTarget(source, target) != nil;
 }
+BOOL SSCleanupConfirmsCopiedCandidate(NSDictionary *source, NSDictionary *candidate, NSDictionary *installed, NSString *originalTarget) {
+    NSDictionary *record = SSRecords.lastObject;
+    if (!SSCopyCommit || ![SSCopyCommit[@"snapshot"] isEqual:SSCleanupMaintenanceSnapshot(NULL)] ||
+        ![SSCopyCommit[@"bundle"] isEqual:installed[@"item"]] || ![record[@"targetIdentity"] isEqual:installed[@"contents"]] ||
+        ![record[@"target"] isEqual:installed[@"path"]] || ![record[@"originalTarget"] isEqual:originalTarget] ||
+        [record[@"items"] count] != 3 || [candidate[@"contents"][@"dev"] isEqual:installed[@"contents"][@"dev"]]) return NO;
+    NSDictionary *sourceItem = record[@"items"][0], *stage = record[@"items"][1];
+    if (![sourceItem[@"path"] isEqual:source[@"path"]] || ![sourceItem[@"parent"] isEqual:source[@"parent"]] ||
+        ![sourceItem[@"item"] isEqual:source[@"item"]] || ![stage[@"path"] isEqual:candidate[@"path"]] ||
+        ![stage[@"parent"] isEqual:candidate[@"parent"]]) return NO;
+    NSDictionary *current = SSCapture(stage[@"path"], YES);
+    if (![current[@"path"] isEqual:stage[@"path"]] || ![current[@"parent"] isEqual:stage[@"parent"]] ||
+        ![current[@"item"] isEqual:stage[@"item"]] || ![current[@"absent"] isEqual:stage[@"absent"]]) return NO;
+    if ([current[@"absent"] boolValue]) return YES;
+    // Direct Contents moves can leave the original stage wrapper behind.
+    NSDictionary *contents = SSCapture([stage[@"path"] stringByAppendingPathComponent:@"Contents"], YES);
+    return [current[@"item"] isEqual:candidate[@"item"]] && [contents[@"parent"] isEqual:candidate[@"item"]] &&
+        [contents[@"absent"] boolValue];
+}
 BOOL SSCleanupObservedLaunch(NSURL *source, NSURL *target, NSError **error) {
     if (!SSCleanupReadOnlySnapshot(error)) return NO;
     NSUInteger matches = 0;
@@ -378,7 +412,7 @@ BOOL SSCleanupLaunchNeeded(NSURL *source, NSURL *target) {
 }
 BOOL SSCleanupMarkLaunched(NSURL *source, NSURL *target) {
     if (SSReadOnly) { errno = EROFS; return NO; }
-    for (NSMutableDictionary *r in SSRecords) if (SSSamePath(r[@"source"], source) && SSTargetMatches(r, target)) { r[@"launched"] = @YES; return SSSave(); }
+    for (NSMutableDictionary *r in SSRecords) if (SSSamePath(r[@"source"], source) && SSTargetMatches(r, target)) { r[@"launched"] = @YES; return SSSave(NULL); }
     return YES;
 }
 // Unlink symlinks themselves; never follow them. Bind each opened directory to its inspected inode.
@@ -449,7 +483,7 @@ BOOL SSCleanupDrain(NSURL *protectedTarget) {
             if (ok) {
                 if (!record[@"previousCapture"] && [item[@"stage"] isEqual:@"cleanup-previous"]) record[@"previousCapture"] = item;
                 [pending removeObjectIdenticalTo:item];
-                if (!SSSave()) { [pending addObject:item]; all = NO; }
+                if (!SSSave(NULL)) { [pending addObject:item]; all = NO; }
             }
             else all = NO;
         }

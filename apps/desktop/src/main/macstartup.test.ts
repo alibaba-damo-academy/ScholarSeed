@@ -27,6 +27,7 @@ import {
 } from './squirrel.ts'
 import { captureRecord, sameRecord, TERMINAL_RECORD_LIMITS } from './terminal.ts'
 import {
+  inspectCancelledSquirrelPreparation,
   inspectSquirrelStartup,
   inspectSquirrelIdle,
   settleSquirrelStartup,
@@ -235,6 +236,7 @@ function harness(home: string, recordPath: string, channel: string, platform = '
     squirrelAdmission,
     squirrelLaunchSuperseded,
     settleSquirrelStartup,
+    inspectCancelledSquirrelPreparation,
     inspectSquirrelStartup,
     inspectSquirrelIdle,
     verifySquirrelReplacement: async () => undefined,
@@ -513,7 +515,7 @@ async function sourceRecovery(context: test.TestContext) {
   await mkdir(selection.userData)
   await mkdir(selection.workspace)
   const identity = {
-    uid: 501,
+    uid: userInfo().uid,
     application: join(fixture.home, 'target.app'),
     bundleId: 'fixture',
     build: '202611030001',

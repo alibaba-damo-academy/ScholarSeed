@@ -89,10 +89,11 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
     InstallationProgress,
     commitWithActivation,
     retryUpdate,
-    assertSquirrelInstallSpace: (_archive: unknown, _expanded: number, nativePrepared: boolean) => {
-      nativeSpaceChecks.push(nativePrepared)
-      if (failFinalGrant && ready && !nativePrepared) throw new Error('ENOSPC')
+    assertSquirrelPreparationSpace: () => {
+      nativeSpaceChecks.push(false)
+      if (failFinalGrant && ready) throw new Error('ENOSPC')
     },
+    assertSquirrelInstallSpace: () => nativeSpaceChecks.push(true),
     readReadyState: () => staged,
     preparedIdentity: (meta: { id: string }) => meta.id,
     authorizeActivation: authorize,
@@ -240,35 +241,51 @@ test('retry after authorization failure budgets only remaining space for a match
   assert.equal((await current.install()).ok, true)
   assert.deepEqual(current.nativeSpaceChecks, [false, true, true])
   assert.equal(current.events.filter((event) => event === 'helper').length, 1)
+})
 
-  const entry = parsed.statements.find(
-    (statement) =>
-      ts.isFunctionDeclaration(statement) && statement.name?.text === 'assertSquirrelInstallSpace'
-  )!
+test('macOS preparation budgets cache, candidate and installation on their respective volumes', () => {
   const requirements: Array<[string, bigint]> = []
-  const check = runInNewContext(
-    ts.transpileModule(entry.getText(parsed) + '\nassertSquirrelInstallSpace', {
-      compilerOptions: { target: ts.ScriptTarget.ES2022 },
-    }).outputText,
+  const devices: Record<string, number> = { '/cache': 1, '/support': 1, '/Applications': 1 }
+  const { prepare, install } = runInNewContext(
+    updaterFunctions(['assertSquirrelPreparationSpace', 'assertSquirrelInstallSpace']) +
+      '\n({ prepare: assertSquirrelPreparationSpace, install: assertSquirrelInstallSpace })',
     {
       process: { execPath: '/Applications/ScholarSeed.app/Contents/MacOS/ScholarSeed' },
+      app: { getPath: () => '/support' },
       dirname,
       resolve,
       systemCacheDir: () => '/cache',
-      statSync: () => ({ dev: 1 }),
+      statSync: (path: string) => ({ dev: devices[path] }),
       squirrelPreparedDevice: (candidate?: { dev: number }) => candidate?.dev,
       assertUpdateSpace: (path: string, bytes: bigint) => requirements.push([path, bytes]),
     }
   )
-  check({ size: 40 }, 100, false)
-  check({ size: 40 }, 100, true, { dev: 1 })
-  assert.deepEqual(requirements, [['/cache', 240n]])
-  check({ size: 40 }, 100, true, { dev: 2 })
-  check({ size: 40 }, 100, true)
-  assert.deepEqual(requirements, [
+  prepare({ size: 40 }, 100, false)
+  install(100, { dev: 1 })
+  assert.deepEqual(requirements.splice(0), [['/cache', 240n]])
+  devices['/Applications'] = 2
+  prepare({ size: 40 }, 100, false)
+  assert.deepEqual(requirements.splice(0), [
     ['/cache', 240n],
-    ['/Applications/ScholarSeed.app', 100n],
-    ['/Applications/ScholarSeed.app', 100n],
+    ['/Applications', 100n],
+  ])
+  devices['/support'] = 3
+  prepare({ size: 40 }, 100, false)
+  assert.deepEqual(requirements.splice(0), [
+    ['/cache', 140n],
+    ['/support', 100n],
+    ['/Applications', 100n],
+  ])
+  prepare({ size: 40 }, 100, true)
+  assert.deepEqual(requirements.splice(0), [
+    ['/cache', 140n],
+    ['/Applications', 100n],
+  ])
+  install(100, { dev: 3 })
+  install(100)
+  assert.deepEqual(requirements, [
+    ['/Applications', 100n],
+    ['/Applications', 100n],
   ])
 })
 
@@ -405,14 +422,8 @@ test('native installation authorization is fresh after shutdown and rechecks exa
         retryUpdate,
         AbortController,
         macPrepared: { receipt: { matches: () => true, expandedBytes: 100 } },
-        assertSquirrelInstallSpace: (
-          selected: unknown,
-          expanded: number,
-          nativePrepared: boolean
-        ) => {
-          assert.equal(selected, archive)
+        assertSquirrelInstallSpace: (expanded: number) => {
           assert.equal(expanded, 100)
-          assert.equal(nativePrepared, true)
           events.push('disk-check')
           if (diskFull) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' })
         },

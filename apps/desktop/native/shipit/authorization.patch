@@ -125,13 +125,15 @@
                      preparationFailed = YES;
                      return [RACSignal error:error];
                  }
-@@ -164,6 +166,10 @@
+@@ -164,6 +166,12 @@
  		ignoreValues]
  		concat:readRequestSignal]
  		flattenMap:^(SQRLShipItRequest *request) {
 +            if (!SSBindingRequestMatches(terminalRequest.dictionaryValue, request.dictionaryValue) ||
 +                ![terminalRequest.updateBundleURL isEqual:request.updateBundleURL] || ![terminalRequest.targetBundleURL isEqual:request.targetBundleURL] || ![(terminalRequest.bundleIdentifier ?: @"") isEqual:(request.bundleIdentifier ?: @"")] || terminalRequest.useUpdateBundleName != request.useUpdateBundleName || (request.installationAuthorized && !request.launchAfterInstallation))
 +                return [RACSignal error:[NSError errorWithDomain:NSPOSIXErrorDomain code:ESTALE userInfo:nil]];
++            // Terminal recovery must honor the same post-termination decision as installation.
++            terminalRequest = request;
 +            if (!request.installationAuthorized) return [RACSignal error:[NSError errorWithDomain:SSAdmissionErrorDomain code:ECANCELED userInfo:nil]];
              if (preparedRequest &&
                  (![preparedRequest.updateBundleURL isEqual:request.updateBundleURL] ||

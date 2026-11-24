@@ -1318,24 +1318,35 @@ export function macPreparationReady(meta: LatestVersionMeta): boolean {
   }
 }
 
-function assertSquirrelInstallSpace(
+function assertSquirrelPreparationSpace(
   archive: SquirrelArchive,
   expandedBytes: number,
-  nativePrepared: boolean,
-  prepared?: SquirrelNativeCapture
+  allowInteraction: boolean
 ): void {
   const application = resolve(dirname(process.execPath), '..', '..')
   const expanded = BigInt(expandedBytes)
-  if (nativePrepared) {
-    const preparedDevice = squirrelPreparedDevice(prepared)
-    if (preparedDevice === undefined || preparedDevice !== statSync(dirname(application)).dev)
-      assertUpdateSpace(application, expanded)
-    return
+  const volumes = new Map<number, { path: string; bytes: bigint }>()
+  const reserve = (path: string, bytes: bigint) => {
+    const device = statSync(path).dev
+    const previous = volumes.get(device)
+    if (previous) previous.bytes += bytes
+    else volumes.set(device, { path, bytes })
+    return device
   }
-  const cache = systemCacheDir()
-  const sameVolume = statSync(cache).dev === statSync(application).dev
-  assertUpdateSpace(cache, BigInt(archive.size) + expanded + (sameVolume ? expanded : 0n))
-  if (!sameVolume) assertUpdateSpace(application, expanded)
+  reserve(systemCacheDir(), BigInt(archive.size) + expanded)
+  // Background preparation runs in the user domain. An interactive helper may
+  // run as root, whose private support directory is owned by that helper.
+  const candidateDevice = allowInteraction ? undefined : reserve(app.getPath('appData'), expanded)
+  if (candidateDevice !== statSync(dirname(application)).dev)
+    reserve(dirname(application), expanded)
+  for (const { path, bytes } of volumes.values()) assertUpdateSpace(path, bytes)
+}
+
+function assertSquirrelInstallSpace(expandedBytes: number, prepared?: SquirrelNativeCapture): void {
+  const application = resolve(dirname(process.execPath), '..', '..')
+  const target = dirname(application)
+  if (squirrelPreparedDevice(prepared) !== statSync(target).dev)
+    assertUpdateSpace(target, BigInt(expandedBytes))
 }
 
 /** Mount lifetime is owned here, including failures and cancellation. The caller
@@ -1745,12 +1756,7 @@ export async function quitMacUpdate(log: LogSink, beforeCommit: () => void): Pro
         })
       )
         throw new Error('Squirrel candidate changed before installation authorization')
-      assertSquirrelInstallSpace(
-        staged.archive!,
-        receipt.expandedBytes,
-        true,
-        squirrel.preparedCandidate()
-      )
+      assertSquirrelInstallSpace(receipt.expandedBytes, squirrel.preparedCandidate())
       guard()
       squirrel.quitAndInstall()
     }
@@ -2284,7 +2290,7 @@ export async function prepareMacUpdate(
       buildNumber: staged.meta.build_number,
       candidate: staged.meta.id,
     }
-    assertSquirrelInstallSpace(frozen, prepared.receipt.expandedBytes, false)
+    assertSquirrelPreparationSpace(frozen, prepared.receipt.expandedBytes, allowInteraction)
     logTiming(log, 'final ZIP and current source trust recheck', startedAt)
     logUpdateEvent(log, {
       phase: 'macos-install',
@@ -2333,9 +2339,8 @@ export async function prepareMacUpdate(
           updateId: staged.meta.id,
           toVersion: staged.meta.version,
         })
-        // A committed handoff whose native installer terminally fails will never relaunch
-        // the target; drop the launch context so this live session recovers storage and
-        // future updates instead of carrying a dead transaction.
+        // A native error delivered to this still-running session releases its launch context.
+        // ShipIt handles recovery for failures after the application exits.
         macLaunchCleanup = discardOnTerminalSquirrelFailure(event, macLaunchCleanup)
       },
       undefined,
@@ -2472,12 +2477,7 @@ export async function installStagedUpdate(
   )
   let handoffReady = false
   try {
-    assertSquirrelInstallSpace(
-      staged.archive,
-      receipt.expandedBytes,
-      true,
-      squirrel?.preparedCandidate()
-    )
+    assertSquirrelInstallSpace(receipt.expandedBytes, squirrel?.preparedCandidate())
     installation.step('saving')
     macLaunchCleanup = await prepareLaunch(staged.meta)
     await commitWithActivation(

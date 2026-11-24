@@ -49,6 +49,18 @@ atomic, synchronized journal bind the source, target, candidate and private
 parent identities. A copying record and preparation attempt are persisted before
 copying starts. Only a completed copy becomes ready. Interrupted partial work is
 removed using recorded identities and no-follow descriptors, then copied again.
+New candidates stay in a private child directory of `CandidatePreparation`
+while the application waits for an explicit restart. A matched ready copy
+from the former temporary directory is rebuilt from the bound source in
+the private store. The final signature check still runs before replacement.
+When the candidate and installation are on different volumes, ShipIt retires
+the preparation record using the just-committed move and the installed bundle's identity.
+
+新候选副本保存在 Application Support 下 `CandidatePreparation` 的私有子目录中。
+即使用户隔夜才点击重启，副本也位于系统临时目录清理范围之外。接手旧临时目录中的就绪副本时，
+助手会先核对身份，再从本次更新绑定的来源重新准备。替换应用前仍会再次验签。
+候选副本和安装位置在不同卷上时，ShipIt 会核对刚提交的移动记录和已安装应用的身份，再清除准备记录。
+
 Ready reuse validates identities and never substitutes for final signature checks.
 Three preparation attempts are independent of the original installation counter.
 
@@ -111,7 +123,7 @@ a native assertion; missing kqueue code-signing or memory flags are not enough.
 Before an explicitly authorized human confirmation, freeze the reviewed sources,
 executable paths and SHA-256 inventory, and verify signatures. Run each approved
 artifact with new private fixtures; keep a denial as a failed attempt, without
-automatic replay. Then run the complete original helper build and all 13
+automatic replay. Then run the complete helper build and its native
 contracts, checking the newly compiled artifacts against that inventory. Human
 approval of exact test programs is not permission to change security policy,
 add broad exceptions, remove provenance, or switch launchers to evade a denial.
@@ -150,6 +162,17 @@ never resumes that installation. Other crashes before a terminal record or owner
 intent is persisted remain outside this terminal recovery protocol.
 An authorized failed installation publishes its bound failure before requesting an
 old-application launch through the same installed helper used for successful updates.
+Recovery uses the install request re-read after the old process exits, once its
+binding and controls match the prepared request. An ordinary quit leaves the
+initial preparation unauthorized and the application closed.
+
+用户点击重启后，ShipIt 在旧进程退出时重新读取并核对本次安装授权。安装失败且确认旧版已恢复时，
+ShipIt 先持久化失败结果，再请求 macOS 打开旧版。用户正常退出应用时，后台准备不会触发重开。
+
+`relaunch.test.m` drives ShipIt's two request reads with an isolated journal
+and an injected installation error. It observes dispatch to the old bundle's
+helper on failure, then exercises replay, ordinary quit, and a mismatched request.
+
 The existing NSWorkspace default schedules launches asynchronously, allowing the
 child and its transaction-owning parent to exit before Desktop admission. An exact
 already-running target needs no additional launch. Launch request acceptance is
