@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -102,9 +102,18 @@ argument_criteria["qwen4-max@high"] += (
 )
 
 
+def bounded_task(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    separator = "\n…\n"
+    head = limit // 2
+    return text[:head] + separator + text[-(limit - head - len(separator)) :]
+
+
 @dataclass(frozen=True)
 class GuideDecision:
     turn: str
+    context: dict = field(default_factory=dict, kw_only=True)
     guidance: str | None  # None restores skill discovery; an empty string means no guide.
 
 
@@ -118,17 +127,21 @@ class AutoRoute(GuideDecision):
         return next(row for row in GATEWAY_MODEL_CATALOG if row["key"] == self.model)
 
 
-async def decide(live, turn_input, accounts, *, auto=True):
+async def decide(live, turn_input, accounts, *, auto=True, body=None):
     token = accounts.current(live.user_id)
     if not auto and not token:
         return None
     turn = turn_input.client_user_message_id
-    queued = live.catalog.queued_message(live.id, turn)
-    text = "\n".join(i["text"] for i in queued.body["input"] if i.get("type") == "text")
+    if body is None:
+        body = live.catalog.queued_message(live.id, turn).body
+    text = "\n".join(str(i.get("text") or "") for i in body["input"] if i.get("type") == "text")
     attachments = [item.path.name for item in turn_input.items if item.path]
     recent = live.auto_history
     # Only expand an elliptical follow-up. A self-contained new task gets fresh routing.
-    effective = text[:6000]
+    effective = bounded_task(text, 6000)
+    recent_context = [
+        {k: v for k, v in entry.items() if k != "turn"} for entry in recent if "route" in entry
+    ]
     bare_continue = re.fullmatch(
         r"\s*(继续|接着做|继续处理|按上一步继续|continue|go on)[。！!.\s]*", text, re.I
     )
@@ -142,16 +155,22 @@ async def decide(live, turn_input, accounts, *, auto=True):
         if bare_continue:
             effective = previous_task
         elif identifier and re.search(r"论文|文章|表\s*\d|全文|paper", previous_task, re.I):
-            effective = f"针对用户刚补充的文献标识 {text}，执行上轮已提出的核验任务。上轮原文：{previous_task[:2000]}"
+            effective = f"针对用户刚补充的文献标识 {text}，执行上轮已提出的核验任务。上轮原文：{bounded_task(previous_task, 2000)}"
+        if bare_continue or effective != bounded_task(text, 6000):
+            recent_context = [
+                {k: recent[-1][k] for k in ("route", "attachments") if k in recent[-1]}
+            ]
     state = dict(
         scope="turn",
-        latest_user=effective,
+        latest_user=bounded_task(effective, 6000),
         attachments=attachments,
-        recent=[] if effective != text[:6000] else recent,
+        recent=recent_context,
         guide_policy="Direct text or unresolved paper reference: no guides. On a bare continuation "
         "preserve previous guides. Single-paper verification: evidence and retrieval, "
         "dispatch only for an explicit research handoff. Explicit guides off: no guides.",
     )
+    if bare_continue and recent:
+        state["follow_up"] = "continue"
     questions = dict(QUESTIONS)
     if auto:
         state["allowed_choices"] = list(criteria)
@@ -215,18 +234,16 @@ async def decide(live, turn_input, accounts, *, auto=True):
             turn,
             "guides_unavailable" if any(labels.values()) else "inconclusive",
         )
-    live.auto_history = [
-        *recent,
-        {
-            "user": text[:1000],
-            "effective_task": effective[:2400],
-            "attachments": attachments,
-            "route": {
-                **({"model": model, "effort": effort} if auto else {}),
-                "selected_guides": [key for key in GUIDES if key in docs],
-            },
+    context = {
+        "turn": turn,
+        "user": bounded_task(text, 1000),
+        "effective_task": bounded_task(effective, 2400),
+        "attachments": attachments,
+        "route": {
+            **({"model": model, "effort": effort} if auto else {}),
+            "selected_guides": [key for key in GUIDES if key in docs],
         },
-    ][-8:]
+    }
     logger.info(
         "%s session=%s turn=%s model=%s effort=%s guides=%s status=%s elapsed_ms=%.0f",
         "auto_route" if auto else "manual_guides",
@@ -240,8 +257,8 @@ async def decide(live, turn_input, accounts, *, auto=True):
     )
     guidance = None if use_discovery else "\n\n".join(doc.block for doc in docs.values())
     if auto:
-        return AutoRoute(turn=turn, model=model, effort=effort, guidance=guidance)
-    return GuideDecision(turn, guidance)
+        return AutoRoute(turn=turn, model=model, effort=effort, guidance=guidance, context=context)
+    return GuideDecision(turn, guidance, context=context)
 
 
 async def request(client, headers, state, questions):

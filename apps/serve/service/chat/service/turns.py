@@ -1510,6 +1510,7 @@ class TurnService:
             )
             if not payload["ok"]:
                 return payload, status
+            live.retained_guide_decisions.pop(queued_message_id, None)
             if live.waiting_request_id == queued_message_id:
                 waiting_task = live.resource_task
                 if waiting_task is not None:
@@ -1824,6 +1825,23 @@ class TurnService:
                 idempotency_key=f"queue:{queued.queued_message_id}:confirmed-without-replay",
             )
 
+    def _guide_intent(self, live, turn_input):
+        model = live.catalog.model_state(live.id)
+        return (
+            live.user_id,
+            model.selected_model_id,
+            self._auto_accounts.revision,
+            turn_input.items,
+        )
+
+    async def _guide_decision(self, live, turn_input, intent, *, body=None):
+        cached = live.retained_guide_decisions.pop(turn_input.client_user_message_id, None)
+        if cached is not None and cached[0] == intent:
+            return cached[1]
+        return await decide(
+            live, turn_input, self._auto_accounts, auto=intent[1] == "auto", body=body
+        )
+
     async def _submit_steer(
         self,
         live: LiveSession,
@@ -1867,7 +1885,32 @@ class TurnService:
             client_turn_id = admission.turn_input.client_user_message_id
             if not self._steer_target_active(live, expected_turn_id):
                 return await self._retain_steer(live, queued)
-            turn_id = await live.steer_runtime(admission.turn_input, expected_turn_id)
+            if self._auto_accounts is None:
+                turn_id = await live.steer_runtime(admission.turn_input, expected_turn_id)
+            else:
+                turn_input = admission.turn_input
+                intent = self._guide_intent(live, turn_input)
+                route = await self._guide_decision(live, turn_input, intent, body=body)
+                if self._guide_intent(live, turn_input) != intent:
+                    return await self._retain_steer(live, queued)
+                cached = (intent, route)
+                if not self._steer_target_active(live, expected_turn_id):
+                    live.retained_guide_decisions[client_turn_id] = cached
+                    return await self._retain_steer(live, queued)
+                previous_route = live.auto_route
+                live.auto_route = route
+                try:
+                    turn_id = await live.steer_runtime(turn_input, expected_turn_id)
+                except BaseException as error:
+                    if live.auto_route is route:
+                        live.auto_route = previous_route
+                    if (
+                        isinstance(error, RuntimeCommandError)
+                        and error.receipt.safe_error == RUNTIME_ACTIVE_TURN_CHANGED
+                    ):
+                        live.retained_guide_decisions[client_turn_id] = cached
+                    raise
+                live.remember_guide_decision(route)
         except ValueError as exc:
             await self._reject_steer(live, queued, TURN_INPUT_INVALID)
             return {
@@ -2511,11 +2554,13 @@ class TurnService:
         live.submission_retry_authorizer = authorize_retry
         try:
             if self._auto_accounts is not None:
-                auto = live.catalog.model_state(live.id).selected_model_id == "auto"
-                route = await decide(live, turn_input, self._auto_accounts, auto=auto)
+                route = await self._guide_decision(
+                    live, turn_input, self._guide_intent(live, turn_input)
+                )
                 if intent() != original_intent or live.interrupt_generation != interrupt_generation:
                     raise RuntimeError(RECOVERY_STALE)
                 live.auto_route = route
+                live.remember_guide_decision(route)
             replaced = False
             frozen_request = None
             while True:
