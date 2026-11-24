@@ -242,11 +242,12 @@ export function Fixture(): React.JSX.Element {
       {
         kind: 'tool',
         toolId: 'before',
-        name: 'Read',
+        name: 'bash',
         status: 'done',
         turnId,
-        input: { command: 'cat research.md' },
+        input: { command: 'cat research.md', cwd: '/workspace' },
         result: 'Research evidence\n'.repeat(80),
+        exitCode: 0,
         startedAt: batchTiming === 'missing' ? undefined : 1000,
         completedAt: batchTiming === 'missing' ? undefined : batchTiming ? 41000 : 2000,
       },
@@ -254,7 +255,7 @@ export function Fixture(): React.JSX.Element {
       {
         kind: 'tool',
         toolId: 'failed-step',
-        name: 'Command',
+        name: 'bash',
         status: 'error',
         exitCode: 2,
         result: 'Failed command',

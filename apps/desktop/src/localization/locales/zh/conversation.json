@@ -106,7 +106,7 @@
     "commandNotFound": "命令中的程序或语句不存在。",
     "permissionDenied": "当前步骤没有执行权限。",
     "fileMissing": "要查找的文件或目录不存在。",
-    "nonzero": "命令未成功完成（退出码 {{code}}）。",
+    "nonzero": "命令未成功完成。",
     "unknown": "命令未成功完成，原因尚不明确。",
     "toolFailed": "此工具步骤未成功完成。",
     "failedHelp": "此步骤可能影响任务结果；AI 可以继续尝试处理。原始信息仅供排查。",

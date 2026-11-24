@@ -83,7 +83,7 @@ import { useSkillNames, type SkillNames } from './skillnames'
 import { MessageActions, UserMessageText } from './Message'
 import { userMessageTime } from './utils'
 import { LoginPrompt } from './LoginPrompt'
-import { commandOutcome } from '../../command'
+import { commandInputText, commandOutcome } from '../../command'
 import { activeThread, useApp, type ComposerReference } from '../../store'
 import type {
   ConvCard,
@@ -3062,10 +3062,11 @@ function ToolStep({
     none: 'toolOutcome.toolFailed',
     noMatches: 'toolOutcome.noMatches',
   } as const
-  const outcomeText =
-    item.status === 'error' ? conversation(outcomeKey[outcome], { code: item.exitCode ?? 0 }) : ''
+  const outcomeText = item.status === 'error' ? conversation(outcomeKey[outcome]) : ''
+  const name = normalizeToolName(item.name)
   const summary = item.status !== 'error' ? toolInputSummary(item) : ''
   const action = activityAction(item)
+  const command = action === 'command' ? commandInputText(item.input) : undefined
   const duration = compactDurationLabel(
     item.startedAt,
     item.status === 'running' ? now : item.completedAt,
@@ -3078,7 +3079,7 @@ function ToolStep({
       itemId={item.toolId}
       turnId={item.turnId}
       data={{
-        name: normalizeToolName(item.name),
+        name: name.toLowerCase() === 'bash' ? undefined : name,
         label: toolLabel(item, conversation),
         status: displayStatus,
         statusLabel: item.recoveredBy
@@ -3106,7 +3107,7 @@ function ToolStep({
           : undefined,
         preview: item.status === 'done' ? toolPreview(item) : undefined,
         duration: duration ?? undefined,
-        input: item.input != null ? toolValue(item.input) : undefined,
+        input: command ?? (item.input != null ? toolValue(item.input) : undefined),
         output: item.result != null && item.result !== '' ? item.result : undefined,
         exitCode: typeof item.exitCode === 'number' ? item.exitCode : undefined,
       }}
