@@ -1496,7 +1496,16 @@ test(
           true
         )
         await page.route('**/api/serve/sessions/open', (route) =>
-          route.fulfill({ json: { session_id: 'recovery-target', running: false, last_seq: 3 } })
+          route.fulfill({
+            json: {
+              session_id: 'recovery-target',
+              running: false,
+              last_seq: 3,
+              active_turn_id: null,
+              unknown_outcome: false,
+              uncertain_operations: [],
+            },
+          })
         )
         await page.route('**/api/serve/history/recovery-target?**', (route) =>
           route.fulfill({ json: { turns: [] } })
