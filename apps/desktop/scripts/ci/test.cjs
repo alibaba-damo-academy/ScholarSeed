@@ -13,6 +13,7 @@ const TEST_GLOBS = Object.freeze({
 const TEST_FILES = Object.freeze([
   'e2e/fixtures/evidence.test.mjs',
   'e2e/fixtures/observation.test.mjs',
+  'e2e/fixtures/report.test.mjs',
   '../../packages/ui/validation.test.ts',
   '../../packages/ui/layout.test.ts',
   '../../packages/ui/messages.test.ts',
