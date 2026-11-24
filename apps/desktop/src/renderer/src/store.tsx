@@ -56,6 +56,12 @@ import { NavigationRecoveryContext, WebNavigationContext } from './contracts/nav
 import { openWebPage, webPageErrorKey } from './app/links'
 import { NAVIGATION_DIAGNOSTIC_PREFIX } from '../../navigation'
 import { StartupTaskRecovery } from './startup'
+import {
+  TASK_RECOVERY_OUTCOME,
+  TASK_RECOVERY_STATUS,
+  type TaskRecoveryOutcome,
+  type TaskRecoverySnapshot,
+} from '../../window'
 import { prepareStartupSession, projectResumedSession } from './resume'
 import {
   captureNavigationLocation,
@@ -1719,6 +1725,18 @@ function PreferenceRetry({ onRetry }: { onRetry: () => void }): React.JSX.Elemen
   return <Button onClick={onRetry}>{t('preferences.retry')}</Button>
 }
 
+type ManualRecoveryMarker = Pick<
+  TaskRecoverySnapshot,
+  'skippedSessionId' | 'needsManualAcknowledgement'
+>
+
+function manualRecoveryMarker({
+  skippedSessionId,
+  needsManualAcknowledgement,
+}: TaskRecoverySnapshot): ManualRecoveryMarker {
+  return { skippedSessionId, needsManualAcknowledgement }
+}
+
 export function StoreProvider({
   children,
   assistantSources,
@@ -1741,6 +1759,8 @@ export function StoreProvider({
   )
   const startupViewRecovery = Boolean(startupLocation && !startupTaskSessionId)
   const startupSearchesLoaded = useRef(false)
+  const initialTaskRecovery = useRef<Promise<TaskRecoverySnapshot> | null>(null)
+  const [manualRecovery, setManualRecovery] = useState<ManualRecoveryMarker | null>(null)
   const startupTask = useRef<{
     attempt: StartupTaskRecovery
     presenting: boolean
@@ -7162,6 +7182,23 @@ export function StoreProvider({
   actRef.current = act
 
   useEffect(() => {
+    const host = window.scholarseed
+    if (!host?.getTaskRecoveryStatus) return
+    const initial = (initialTaskRecovery.current ??= host.getTaskRecoveryStatus(
+      startupTaskSessionId ?? null
+    ))
+    let current = true
+    void initial
+      .then((snapshot) => {
+        if (current) setManualRecovery(manualRecoveryMarker(snapshot))
+      })
+      .catch(console.error)
+    return () => {
+      current = false
+    }
+  }, [startupTaskSessionId])
+
+  useEffect(() => {
     if (
       !startupTaskSessionId ||
       navigationRestoreStarted.current ||
@@ -7176,6 +7213,21 @@ export function StoreProvider({
     const serviceInstanceId = state.serviceInstanceId
     let token: string | null = null
     navigationRestoreStarted.current = true
+    const refreshMarker = async (): Promise<void> => {
+      const snapshot = await host?.getTaskRecoveryStatus?.(startupTaskSessionId)
+      if (snapshot) setManualRecovery(manualRecoveryMarker(snapshot))
+    }
+    const finishMarker = async (claimed: string, outcome: TaskRecoveryOutcome): Promise<void> => {
+      const written = await host?.finishTaskRecovery?.(claimed, outcome)
+      if (!written) {
+        await refreshMarker()
+        return
+      }
+      setManualRecovery({
+        skippedSessionId: outcome === TASK_RECOVERY_OUTCOME.skipped ? startupTaskSessionId : null,
+        needsManualAcknowledgement: false,
+      })
+    }
     const attempt = new StartupTaskRecovery((outcome) => {
       const restored = outcome === 'restored'
       if (!restored && candidate.presenting && !candidate.keepView) {
@@ -7191,25 +7243,32 @@ export function StoreProvider({
         startupTaskRecovery: restored ? null : 'skipped',
       }))
       if (token)
-        void host
-          ?.finishTaskRecovery?.(token, restored ? 'restored' : 'skipped')
-          .catch(console.error)
+        void finishMarker(
+          token,
+          restored ? TASK_RECOVERY_OUTCOME.restored : TASK_RECOVERY_OUTCOME.skipped
+        ).catch(console.error)
       console.info('[startup-task-recovery]', outcome)
     })
     const candidate = { attempt, presenting: false, keepView: false }
     startupTask.current = candidate
 
     void (async () => {
-      if (host?.getTaskRecoveryStatus && host.beginTaskRecovery && host.finishTaskRecovery) {
-        const status = await host.getTaskRecoveryStatus(startupTaskSessionId)
+      if (initialTaskRecovery.current && host?.beginTaskRecovery && host.finishTaskRecovery) {
+        const snapshot = await initialTaskRecovery.current
         if (!attempt.current) return
-        if (status !== 'eligible') {
+        if (snapshot.status !== TASK_RECOVERY_STATUS.eligible) {
           attempt.finish('skipped')
           return
         }
-        token = await host.beginTaskRecovery(startupTaskSessionId)
+        // Do not act on an older skip marker while the owner is claiming this one.
+        setManualRecovery(null)
+        try {
+          token = await host.beginTaskRecovery(startupTaskSessionId)
+        } finally {
+          if (!token) void refreshMarker().catch(console.error)
+        }
         if (!attempt.current) {
-          if (token) await host.finishTaskRecovery(token, 'skipped')
+          if (token) await finishMarker(token, TASK_RECOVERY_OUTCOME.skipped)
           return
         }
         if (!token) {
@@ -7363,9 +7422,9 @@ export function StoreProvider({
     const currentRestore = (): boolean => currentNavigation() && attempt.current
     const navigation = beginNavigation('restore')
     void (async () => {
-      const status = await window.scholarseed?.getTaskRecoveryStatus?.(null)
+      const recovery = await initialTaskRecovery.current
       if (!currentRestore()) return
-      if (status === 'home') {
+      if (recovery?.status === TASK_RECOVERY_STATUS.home) {
         attempt.finish('skipped')
         return
       }
@@ -7540,24 +7599,20 @@ export function StoreProvider({
     state.aiPanel.cover,
   ])
 
+  const currentThread = activeThread(state)
   const manuallyOpenedSession =
     state.navigationRestored &&
-    activeThread(state).resumeState === 'ready' &&
-    !activeThread(state).startupHistoryLoaded
+    currentThread.resumeState === 'ready' &&
+    !currentThread.startupHistoryLoaded &&
+    (manualRecovery?.needsManualAcknowledgement ||
+      (manualRecovery?.skippedSessionId && manualRecovery.skippedSessionId === state.activeSession))
       ? state.activeSession
       : null
   useEffect(() => {
     const host = window.scholarseed
-    if (
-      !manuallyOpenedSession ||
-      !host?.getTaskRecoveryStatus ||
-      !host.clearTaskRecoveryOnManualOpen
-    )
-      return
+    if (!manuallyOpenedSession || !host?.clearTaskRecoveryOnManualOpen) return
     let current = true
     void (async () => {
-      const status = await host.getTaskRecoveryStatus?.(manuallyOpenedSession)
-      if (!current || status !== 'home') return
       const snapshot = stateRef.current
       if (snapshot.activeSession !== manuallyOpenedSession) return
       const projectId = snapshot.homeSelectedProjectId ?? assistantProject(snapshot).projectId
@@ -7570,10 +7625,20 @@ export function StoreProvider({
         { lastLocation: location },
         PREFERENCE_SUBMISSION_SOURCE.navigation
       )
-      if (current && confirmed && stateRef.current.activeSession === manuallyOpenedSession) {
-        await host.clearTaskRecoveryOnManualOpen?.(manuallyOpenedSession)
-        actRef.current.dismissStartupTaskRecovery()
-      }
+      if (!current || !confirmed || stateRef.current.activeSession !== manuallyOpenedSession) return
+      if (!(await host.clearTaskRecoveryOnManualOpen?.(manuallyOpenedSession))) return
+      setManualRecovery(
+        (previous) =>
+          previous && {
+            ...previous,
+            needsManualAcknowledgement: false,
+            skippedSessionId:
+              previous.skippedSessionId === manuallyOpenedSession
+                ? null
+                : previous.skippedSessionId,
+          }
+      )
+      actRef.current.dismissStartupTaskRecovery()
     })().catch(console.error)
     return () => {
       current = false

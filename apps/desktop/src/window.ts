@@ -20,10 +20,15 @@ export const TASK_RECOVERY_STATUS = {
   attempted: 'attempted',
 } as const
 export type TaskRecoveryStatus = (typeof TASK_RECOVERY_STATUS)[keyof typeof TASK_RECOVERY_STATUS]
+export interface TaskRecoverySnapshot {
+  status: TaskRecoveryStatus
+  skippedSessionId: string | null
+  needsManualAcknowledgement: boolean
+}
 export const TASK_RECOVERY_OUTCOME = { restored: 'restored', skipped: 'skipped' } as const
 export type TaskRecoveryOutcome = (typeof TASK_RECOVERY_OUTCOME)[keyof typeof TASK_RECOVERY_OUTCOME]
 export interface TaskRecoveryBridge {
-  getTaskRecoveryStatus(sessionId: string | null): Promise<TaskRecoveryStatus>
+  getTaskRecoveryStatus(sessionId: string | null): Promise<TaskRecoverySnapshot>
   beginTaskRecovery(sessionId: string): Promise<string | null>
   finishTaskRecovery(token: string, outcome: TaskRecoveryOutcome): Promise<boolean>
   clearTaskRecoveryOnManualOpen(sessionId: string): Promise<boolean>

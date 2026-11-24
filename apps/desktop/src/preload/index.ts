@@ -84,7 +84,7 @@ import {
   WINDOW_FULLSCREEN_CHANNEL,
   TASK_RECOVERY_CHANNEL,
   type TaskRecoveryOutcome,
-  type TaskRecoveryStatus,
+  type TaskRecoverySnapshot,
   type WindowCloseRequest,
   type WindowCloseReply,
 } from '../window'
@@ -398,7 +398,7 @@ const bridge = {
   getWindowCloseRequest(): Promise<WindowCloseRequest> {
     return ipcRenderer.invoke(WINDOW_CLOSE_REQUEST_CHANNEL)
   },
-  getTaskRecoveryStatus(sessionId: string | null): Promise<TaskRecoveryStatus> {
+  getTaskRecoveryStatus(sessionId: string | null): Promise<TaskRecoverySnapshot> {
     return ipcRenderer.invoke(TASK_RECOVERY_CHANNEL.status, sessionId)
   },
   beginTaskRecovery(sessionId: string): Promise<string | null> {

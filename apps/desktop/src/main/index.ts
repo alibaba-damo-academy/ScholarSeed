@@ -3297,8 +3297,12 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   })
   ipcMain.handle(TASK_RECOVERY_CHANNEL.status, (event, sessionId: unknown) => {
     if (!isTaskRecoverySender(event) || (sessionId !== null && !isRecoverySessionId(sessionId)))
-      return TASK_RECOVERY_STATUS.home
-    return taskRecovery().status(sessionId)
+      return {
+        status: TASK_RECOVERY_STATUS.home,
+        skippedSessionId: null,
+        needsManualAcknowledgement: false,
+      }
+    return taskRecovery().snapshot(sessionId)
   })
   ipcMain.handle(TASK_RECOVERY_CHANNEL.begin, (event, sessionId: unknown) => {
     if (!isTaskRecoverySender(event) || !isRecoverySessionId(sessionId)) return null
@@ -3741,8 +3745,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.handle('scholarseed:authorized-root-add', (_event, scope: unknown, root: unknown) => {
     if (!isAuthorizationScope(scope)) return false
     if (typeof root !== 'string') return false
-    pathAuthorizer.add(scope, root)
-    return true
+    return pathAuthorizer.add(scope, root)
   })
   ipcMain.handle('scholarseed:open-external', (_e, url: unknown) => {
     requireDesktopWorkbench()

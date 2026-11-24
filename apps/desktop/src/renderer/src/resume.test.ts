@@ -45,12 +45,39 @@ function waitForAbort(signal: AbortSignal): Promise<Response> {
   )
 }
 
-for (const [lastTurnStatus, expectedStatus] of [
-  ['failed', 'failed'],
-  ['interrupted', 'abandon'],
+test('startup reports the denied session root and stops before reading history or the queue', async (context) => {
+  const runtimeRoot = '/fixture/session workspace'
+  const requests: string[] = []
+  useTestRequests(context, async (input) => {
+    requests.push(String(input))
+    return Response.json({ ...OPENED, last_turn_status: 'completed', runtime_workdir: runtimeRoot })
+  })
+  window.scholarseed.addAuthorizedRoot = async (scope, root) => {
+    assert.equal(scope, 'session')
+    assert.equal(root, runtimeRoot)
+    return false
+  }
+  const warning = context.mock.method(console, 'warn', () => {})
+  assert.equal(await prepareStartupSession(SESSION_ID, new AbortController().signal), null)
+  assert.deepEqual(requests, ['/api/serve/sessions/open'])
+  assert.equal(warning.mock.callCount(), 1)
+  const [prefix, detail] = warning.mock.calls[0].arguments
+  assert.equal(prefix, '[session-recovery]')
+  assert.deepEqual(JSON.parse(detail), {
+    stage: 'startup-root-denied',
+    sessionId: SESSION_ID,
+    runtimeRoot,
+  })
+})
+
+for (const [running, lastTurnStatus, expectedStatus] of [
+  [false, 'failed', 'failed'],
+  [false, 'interrupted', 'abandon'],
+  [false, 'completed', 'done'],
+  [true, 'failed', 'running'],
 ] as const) {
   test(
-    `startup renders ${lastTurnStatus} history without waiting for an unavailable queue`,
+    `startup shows ${expectedStatus} for ${lastTurnStatus} history without waiting for the queue`,
     {
       timeout: 2_000,
     },
@@ -62,7 +89,7 @@ for (const [lastTurnStatus, expectedStatus] of [
         requests.push(url)
         if (url.endsWith('/open')) {
           assert.deepEqual(JSON.parse(String(init?.body)), { resume_session_id: SESSION_ID })
-          return Response.json({ ...OPENED, last_turn_status: lastTurnStatus })
+          return Response.json({ ...OPENED, running, last_turn_status: lastTurnStatus })
         }
         if (url.endsWith('/queue')) {
           queueSignal = init!.signal!

@@ -68,6 +68,7 @@ const probe = {
   panel: () => flushSync(() => store.act.openPanel('context_added')),
   project: (projectId: string) => flushSync(() => store.act.selectProject(projectId)),
   returnHome: () => store.act.returnHome(),
+  dismissStartupRecovery: () => store.act.dismissStartupTaskRecovery(),
   openSettings: () => store.act.openSettings('preferences'),
   center: () => flushSync(() => store.act.openProjectCenter()),
   view: (view: Parameters<Store['act']['openWorkbenchView']>[0]) =>
@@ -80,6 +81,7 @@ const probe = {
   fail: () => pending.shift()!.reject(),
 }
 Object.assign(window, { preferenceProbe: probe })
+Object.assign(window.scholarseed, Reflect.get(window, 'taskRecoveryBridgeFixture'))
 Object.assign(window.scholarseed, {
   reconcilePreferences: async () => structuredClone(disk),
   savePreferences: (value: RendererPreferences) => {

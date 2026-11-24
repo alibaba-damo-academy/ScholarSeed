@@ -547,6 +547,38 @@ function useScrollControlPlacement(
   return target && visible ? placement : null
 }
 
+function startupTranscriptReadable(
+  stream: HTMLDivElement | null,
+  column: HTMLDivElement | null
+): boolean {
+  if (
+    !stream?.clientHeight ||
+    !stream.clientWidth ||
+    !column ||
+    column.closest('[inert]') ||
+    !column.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+  )
+    return false
+
+  const document = column.ownerDocument
+  const viewport = document.documentElement
+  const streamBounds = stream.getBoundingClientRect()
+  const columnBounds = column.getBoundingClientRect()
+  const left = Math.max(0, streamBounds.left, columnBounds.left)
+  const top = Math.max(0, streamBounds.top, columnBounds.top)
+  const width = Math.min(viewport.clientWidth, streamBounds.right, columnBounds.right) - left
+  const height = Math.min(viewport.clientHeight, streamBounds.bottom, columnBounds.bottom) - top
+  if (width <= 0 || height <= 0) return false
+
+  const reachesColumn = (x: number, y: number): boolean =>
+    column.contains(document.elementFromPoint(left + x * width, top + y * height))
+  // A local popup can cover the center while the rest of the transcript remains usable.
+  return (
+    reachesColumn(0.5, 0.5) ||
+    [0.25, 0.75].some((x) => reachesColumn(x, 0.25) || reachesColumn(x, 0.75))
+  )
+}
+
 export function Stream({
   home = false,
   onOpenDelivery,
@@ -1130,7 +1162,7 @@ export function Stream({
     updateScrollToBottomVisibility()
   }, [conv, showWorking, updateScrollToBottomVisibility])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const sessionId = thread.sessionId
     if (
       home ||
@@ -1139,12 +1171,13 @@ export function Stream({
       state.startupTaskRecovery !== 'presenting'
     )
       return
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        if (streamRef.current?.clientHeight && columnRef.current?.checkVisibility()) {
-          act.startupTaskReadable(sessionId)
-        }
-      })
+    // Presentation can outlast the first paint. Its owner bounds the wait and revokes it on exit.
+    let frame = requestAnimationFrame(function checkReadable() {
+      if (startupTranscriptReadable(streamRef.current, columnRef.current)) {
+        act.startupTaskReadable(sessionId)
+        return
+      }
+      frame = requestAnimationFrame(checkReadable)
     })
     return () => cancelAnimationFrame(frame)
   }, [

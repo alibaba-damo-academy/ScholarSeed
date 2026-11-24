@@ -77,11 +77,46 @@ test('a native reopen and a different manual task keep the interrupted task supp
   assert.equal(launch().status('other-task'), 'eligible')
 })
 
+test('the recovery snapshot preserves the skipped task independently from the selected location', (context) => {
+  const { launch } = fixture(context)
+  const first = launch()
+  assert.deepEqual(first.snapshot('other-task'), {
+    status: 'eligible',
+    skippedSessionId: null,
+    needsManualAcknowledgement: false,
+  })
+  assert.ok(first.begin('old-task'))
+
+  const restarted = launch()
+  assert.deepEqual(restarted.snapshot('other-task'), {
+    status: 'home',
+    skippedSessionId: 'old-task',
+    needsManualAcknowledgement: true,
+  })
+  assert.equal(restarted.manualOpened('other-task'), true)
+  assert.deepEqual(restarted.snapshot('other-task'), {
+    status: 'eligible',
+    skippedSessionId: 'old-task',
+    needsManualAcknowledgement: false,
+  })
+  assert.deepEqual(launch().snapshot('old-task'), {
+    status: 'home',
+    skippedSessionId: 'old-task',
+    needsManualAcknowledgement: false,
+  })
+  assert.equal(restarted.manualOpened('old-task'), true)
+  assert.equal(launch().snapshot(null).skippedSessionId, null)
+})
+
 test('invalid on-disk recovery state fails closed and supports a manual open', (context) => {
   const { marker, launch, messages } = fixture(context)
   writeFileSync(marker, '{}')
   const first = launch()
-  assert.equal(first.status('old-task'), 'home')
+  assert.deepEqual(first.snapshot('old-task'), {
+    status: 'home',
+    skippedSessionId: null,
+    needsManualAcknowledgement: true,
+  })
   assert.equal(first.begin('old-task'), null)
   assert.equal(messages.length, 1)
   assert.equal(first.manualOpened('old-task'), true)
@@ -101,17 +136,23 @@ test('failing to persist pending state denies the automatic attempt', (context) 
 function nativeWindow(recovery: TaskRecovery) {
   const actions: string[] = []
   const prompts: AbortSignal[] = []
+  const logs: string[] = []
   let reply: (value: boolean) => void = () => assert.fail('No prompt is open')
   let crashed = false
+  const presentation = { allowed: true, visible: true, minimized: false }
   const webContents = Object.assign(new EventEmitter(), {
     isCrashed: () => crashed,
     forcefullyCrashRenderer: () => {
       actions.push('crash')
     },
   })
-  const window = Object.assign(new EventEmitter(), { webContents })
-  const onRendererExit = installTaskRecoveryFallback(window as unknown as BrowserWindow, recovery, {
-    canPresent: () => true,
+  const window = Object.assign(new EventEmitter(), {
+    webContents,
+    isVisible: () => presentation.visible,
+    isMinimized: () => presentation.minimized,
+  }) as unknown as BrowserWindow
+  const onRendererExit = installTaskRecoveryFallback(window, recovery, {
+    canPresent: () => presentation.allowed,
     prompt: (signal) => {
       prompts.push(signal)
       return new Promise<boolean>((resolve) => {
@@ -122,12 +163,14 @@ function nativeWindow(recovery: TaskRecovery) {
       actions.push(recovery.status(null))
       webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
     },
-    log: () => {},
+    log: (message) => logs.push(message),
   })
   return {
     window,
     webContents,
     prompts,
+    presentation,
+    logs,
     actions,
     respond: (value: boolean) => reply(value),
     rendererExited: () => {
@@ -136,6 +179,50 @@ function nativeWindow(recovery: TaskRecovery) {
     },
   }
 }
+
+test('returning to a hidden or minimized window presents the recovery prompt once', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const { launch } = fixture(context)
+  for (const { visible, minimized, event } of [
+    { visible: false, minimized: false, event: 'show' },
+    { visible: true, minimized: true, event: 'restore' },
+  ]) {
+    const recovery = launch()
+    const native = nativeWindow(recovery)
+    const token = recovery.begin('old-task')
+    assert.ok(token)
+    Object.assign(native.presentation, { visible, minimized })
+    context.mock.timers.tick(STARTUP_TASK_RECOVERY_MS + 1_000)
+    assert.equal(native.prompts.length, 0)
+    Object.assign(native.presentation, { visible: true, minimized: false })
+    native.window.emit(event)
+    native.window.emit('restore')
+    native.window.emit('show')
+    assert.equal(native.prompts.length, 1)
+    native.respond(false)
+    await Promise.resolve()
+    assert.ok(recovery.finish(token, 'restored'))
+  }
+})
+
+test('settling or closing while hidden retires the deferred recovery prompt', (context) => {
+  const { launch } = fixture(context)
+  for (const close of [false, true]) {
+    const recovery = launch()
+    const native = nativeWindow(recovery)
+    const token = recovery.begin('old-task')
+    assert.ok(token)
+    native.presentation.visible = false
+    native.window.emit('unresponsive')
+    assert.equal(native.prompts.length, 0)
+    if (close) native.window.emit('closed')
+    else assert.ok(recovery.finish(token, 'restored'))
+    native.presentation.visible = true
+    native.window.emit('show')
+    native.window.emit('restore')
+    assert.equal(native.prompts.length, 0)
+  }
+})
 
 test('native recovery sets home and waits for the old renderer to exit before reopening', async (context) => {
   const { launch } = fixture(context)
@@ -186,6 +273,22 @@ test('a newer main navigation invalidates a scheduled recovery reopen', async (c
   native.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
   await new Promise<void>((resolve) => setImmediate(resolve))
   assert.deepEqual(native.actions, ['crash'])
+})
+
+test('the native recovery log records when the exited renderer cannot reopen', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(recovery.begin('old-task'))
+  native.window.emit('unresponsive')
+  native.respond(true)
+  await Promise.resolve()
+  native.rendererExited()
+  native.presentation.allowed = false
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['crash'])
+  assert.deepEqual(native.logs, ['native recovery reopen skipped: window presentation unavailable'])
+  assert.equal(launch().status('old-task'), 'home')
 })
 
 test('the watchdog offers recovery once without a Chromium hang signal', async (context) => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 import { createLocalization } from '../../../../localization/engine'
@@ -43,6 +43,7 @@ const copyCollapse = new URLSearchParams(location.search).get('copyCollapse')
 const cancelledQuestion = new URLSearchParams(location.search).get('cancelledQuestion')
 const batchTiming = new URLSearchParams(location.search).get('batchTiming')
 const turnSourceViewport = new URLSearchParams(location.search).has('turnSourceViewport')
+const startupPresentation = new URLSearchParams(location.search).get('startupPresentation')
 const publicComponents = new Map(
   literaturePublicComponents.map((component) => [component.slot, component])
 )
@@ -51,9 +52,20 @@ if (new URLSearchParams(location.search).has('dark'))
   document.documentElement.dataset.theme = 'dark'
 
 export function Fixture(): React.JSX.Element {
-  const { set, patchThread } = useApp()
+  const { act, set, patchThread } = useApp()
   const [streamRevision, setStreamRevision] = useState(0)
   const [scrollControlTarget, setScrollControlTarget] = useState<HTMLDivElement | null>(null)
+  const [showStartupStream, setShowStartupStream] = useState(true)
+  const [readableSessions, setReadableSessions] = useState<string[]>([])
+  useLayoutEffect(() => {
+    if (!startupPresentation) return
+    const original = act.startupTaskReadable
+    act.startupTaskReadable = (sessionId) =>
+      setReadableSessions((sessions) => [...sessions, sessionId])
+    return () => {
+      act.startupTaskReadable = original
+    }
+  }, [act])
   const scrollControlScenario = new URLSearchParams(location.search).has('scrollControl')
   const pdfReferences = new URLSearchParams(location.search).has('pdfReferences')
   const openGeometry = (): void => {
@@ -586,6 +598,42 @@ export function Fixture(): React.JSX.Element {
       </DisplayCardProvider>
     </DocumentWorkspaceContext.Provider>
   )
+  if (startupPresentation) {
+    return (
+      <div className="flex h-screen min-h-0 flex-col">
+        <div className="flex-none">
+          <Button
+            onClick={() => {
+              set({
+                activeSession: SESSION_ID,
+                startupTaskRecovery: 'presenting',
+                threads: {
+                  [SESSION_ID]: {
+                    id: SESSION_ID,
+                    title: 'Recovered conversation',
+                    sessionId: SESSION_ID,
+                    lastSeq: 1,
+                    startupHistoryLoaded: true,
+                    conversation:
+                      startupPresentation === 'empty'
+                        ? []
+                        : [{ kind: 'agent', text: 'Recovered transcript' }],
+                  },
+                },
+              })
+            }}
+          >
+            Present recovered conversation
+          </Button>
+          <Button onClick={() => set({ startupTaskRecovery: 'skipped' })}>Leave recovery</Button>
+          <Button onClick={() => setShowStartupStream(false)}>Unmount transcript</Button>
+          <Textarea aria-label="Focus probe" />
+          <output aria-label="Readable sessions">{readableSessions.join(', ') || 'none'}</output>
+        </div>
+        {showStartupStream && stream}
+      </div>
+    )
+  }
   return (
     <div
       className="flex h-screen min-h-0 flex-col"

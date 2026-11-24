@@ -1125,6 +1125,202 @@ async function fixture(
   }
 }
 
+const MANUAL_RECOVERY_SESSIONS = ['ordinary-first', 'ordinary-second', 'recovery-target']
+
+async function installRecoveryBridge(
+  page: Page,
+  marker: {
+    status: 'eligible' | 'home'
+    skippedSessionId: string | null
+    needsManualAcknowledgement: boolean
+  },
+  holdClaim = false
+): Promise<void> {
+  await page.addInitScript(
+    ({ marker, holdClaim }) => {
+      const calls: [string, string | null, string?][] = []
+      const claim = Promise.withResolvers<string>()
+      const finished = Promise.withResolvers<boolean>()
+      Reflect.set(window, 'manualRecoveryCalls', calls)
+      Reflect.set(window, 'releaseRecoveryClaim', () => claim.resolve('token-from-main'))
+      Reflect.set(window, 'releaseRecoveryFinish', () => finished.resolve(true))
+      if (holdClaim) {
+        localStorage.setItem(
+          'scholarseed.web.preferences',
+          JSON.stringify({ lastLocation: { view: 'conversation', sessionId: 'recovery-target' } })
+        )
+      }
+      Reflect.set(window, 'taskRecoveryBridgeFixture', {
+        getTaskRecoveryStatus: async (sessionId: string | null) => {
+          calls.push(['status', sessionId])
+          return marker
+        },
+        beginTaskRecovery: async (sessionId: string) => {
+          calls.push(['begin', sessionId])
+          return claim.promise
+        },
+        finishTaskRecovery: async (token: string, outcome: string) => {
+          calls.push(['finish', token, outcome])
+          return finished.promise
+        },
+        clearTaskRecoveryOnManualOpen: async (sessionId: string) => {
+          const confirmed = Reflect.get(window, 'preferenceProbe').disk.lastLocation?.sessionId
+          calls.push(['manual-open', sessionId, confirmed])
+          return true
+        },
+      })
+    },
+    { marker, holdClaim }
+  )
+}
+
+async function readyForRecovery(page: Page): Promise<void> {
+  await page.evaluate((sessions) => {
+    const probe = Reflect.get(window, 'preferenceProbe')
+    probe.patch({
+      workspaceLoadState: 'ready',
+      projectsLoaded: true,
+      sessions: sessions.map((id) => ({ id, title: `Renamed ${id}`, status: 'dormant' })),
+    })
+  }, MANUAL_RECOVERY_SESSIONS)
+}
+
+async function openReadyRecoverySession(page: Page, sessionId: string): Promise<void> {
+  await page.evaluate((id) => {
+    const probe = Reflect.get(window, 'preferenceProbe')
+    probe.openSession(id)
+    probe.patch((state: AppState) => ({
+      ...state,
+      threads: {
+        ...state.threads,
+        [id]: { ...state.threads[id], resumeState: 'ready' },
+      },
+    }))
+  }, sessionId)
+  await expect
+    .poll(() =>
+      page.evaluate(() => Reflect.get(window, 'preferenceProbe').disk.lastLocation?.sessionId)
+    )
+    .toBe(sessionId)
+}
+
+const manualRecoveryCalls = (page: Page): Promise<[string, string | null, string?][]> =>
+  page.evaluate(() => Reflect.get(window, 'manualRecoveryCalls'))
+
+for (const needsManualAcknowledgement of [false, true]) {
+  test(
+    `persisted task recovery follows the session ID after other opens and dismissal (forced Home=${needsManualAcknowledgement})`,
+    { timeout: 60_000 },
+    async () => {
+      await fixture(
+        async (page) => {
+          await readyForRecovery(page)
+          await expect.poll(() => manualRecoveryCalls(page)).toEqual([['status', null]])
+          await openReadyRecoverySession(page, 'ordinary-first')
+          if (needsManualAcknowledgement) {
+            await expect
+              .poll(() => manualRecoveryCalls(page))
+              .toEqual([
+                ['status', null],
+                ['manual-open', 'ordinary-first', 'ordinary-first'],
+              ])
+          } else {
+            assert.deepEqual(await manualRecoveryCalls(page), [['status', null]])
+          }
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').dismissStartupRecovery())
+          await openReadyRecoverySession(page, 'ordinary-second')
+          await openReadyRecoverySession(page, 'recovery-target')
+          const initialCalls = needsManualAcknowledgement
+            ? [
+                ['status', null],
+                ['manual-open', 'ordinary-first', 'ordinary-first'],
+              ]
+            : [['status', null]]
+          await expect
+            .poll(() => manualRecoveryCalls(page))
+            .toEqual([...initialCalls, ['manual-open', 'recovery-target', 'recovery-target']])
+          await openReadyRecoverySession(page, 'ordinary-second')
+          await openReadyRecoverySession(page, 'recovery-target')
+          assert.deepEqual(await manualRecoveryCalls(page), [
+            ...initialCalls,
+            ['manual-open', 'recovery-target', 'recovery-target'],
+          ])
+        },
+        (page) =>
+          installRecoveryBridge(page, {
+            status: needsManualAcknowledgement ? 'home' : 'eligible',
+            skippedSessionId: 'recovery-target',
+            needsManualAcknowledgement,
+          })
+      )
+    }
+  )
+}
+
+test(
+  'normal manual sessions never requery startup task recovery',
+  { timeout: 60_000 },
+  async () => {
+    await fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        const startupCalls = await manualRecoveryCalls(page)
+        await openReadyRecoverySession(page, 'ordinary-first')
+        await openReadyRecoverySession(page, 'ordinary-second')
+        assert.deepEqual(await manualRecoveryCalls(page), startupCalls)
+      },
+      (page) =>
+        installRecoveryBridge(page, {
+          status: 'eligible',
+          skippedSessionId: null,
+          needsManualAcknowledgement: false,
+        })
+    )
+  }
+)
+
+test(
+  'a late startup claim can be acknowledged only after its skip and a matching manual open',
+  { timeout: 60_000 },
+  async () => {
+    await fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([
+            ['status', 'recovery-target'],
+            ['begin', 'recovery-target'],
+          ])
+        await openReadyRecoverySession(page, 'ordinary-first')
+        await page.evaluate(() => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          probe.dismissStartupRecovery()
+          Reflect.get(window, 'releaseRecoveryClaim')()
+        })
+        const skipped = [
+          ['status', 'recovery-target'],
+          ['begin', 'recovery-target'],
+          ['finish', 'token-from-main', 'skipped'],
+        ]
+        await expect.poll(() => manualRecoveryCalls(page)).toEqual(skipped)
+        await openReadyRecoverySession(page, 'recovery-target')
+        assert.deepEqual(await manualRecoveryCalls(page), skipped)
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryFinish')())
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([...skipped, ['manual-open', 'recovery-target', 'recovery-target']])
+      },
+      (page) =>
+        installRecoveryBridge(
+          page,
+          { status: 'eligible', skippedSessionId: null, needsManualAcknowledgement: false },
+          true
+        )
+    )
+  }
+)
+
 test(
   'startup document body times out without opening a late document tab',
   { timeout: 60_000 },

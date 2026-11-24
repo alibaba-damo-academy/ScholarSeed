@@ -44,12 +44,13 @@ export class PathAuthorizer {
     this.roots.set(scope, next)
   }
 
-  add(scope: AuthorizationScope, path: string): void {
+  add(scope: AuthorizationScope, path: string): boolean {
     const canonical = this.tryCanonicalize(path)
-    if (!canonical) return
+    if (!canonical) return false
     const roots = this.roots.get(scope) ?? new Set<string>()
     roots.add(canonical)
     this.roots.set(scope, roots)
+    return true
   }
 
   clear(scope: AuthorizationScope): void {

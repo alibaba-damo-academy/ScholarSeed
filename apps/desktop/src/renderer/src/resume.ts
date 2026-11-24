@@ -6,7 +6,7 @@ import {
   type OpenResp,
   type QueuedMessagePayload,
 } from './api.ts'
-import type { Cognitive, ConvItem, Thread } from './model'
+import type { Cognitive, ConvItem, SessionStatus, Thread } from './model'
 import { mergeQueuedOutbox } from './outbox.ts'
 import { queuedMessageFromPayload } from './queue.ts'
 import { projectSessionRecovery, recoveredTurnOutcome, sessionResumeStatusItem } from './runtime.ts'
@@ -35,9 +35,17 @@ export async function prepareStartupSession(
     return null
 
   const runtimeRoot = opened.runtime_workdir || opened.workdir
-  if (runtimeRoot && !(await window.scholarseed.addAuthorizedRoot('session', runtimeRoot)))
-    return null
-  if (signal.aborted) return null
+  if (runtimeRoot) {
+    const authorized = await window.scholarseed.addAuthorizedRoot('session', runtimeRoot)
+    if (signal.aborted) return null
+    if (!authorized) {
+      console.warn(
+        '[session-recovery]',
+        JSON.stringify({ stage: 'startup-root-denied', sessionId, runtimeRoot })
+      )
+      return null
+    }
+  }
 
   // Read history after open captures the cursor. The queue can finish independently.
   const queue = new AbortController()
@@ -72,6 +80,13 @@ export function reportSessionResume(
   const conversation = [...thread.conversation]
   conversation[index] = notice
   return { conversation }
+}
+
+function resumedSessionStatus(opened: OpenResp): SessionStatus {
+  if (opened.running) return 'running'
+  if (opened.last_turn_status === 'failed') return 'failed'
+  if (opened.last_turn_status === 'interrupted') return 'abandon'
+  return 'done'
 }
 
 export function projectResumedSession(
@@ -149,13 +164,7 @@ export function projectResumedSession(
       acknowledgeQueue && queuedMessages !== null,
       thread.queuedMessages ?? []
     ),
-    status: opened.running
-      ? ('running' as const)
-      : opened.last_turn_status === 'failed'
-        ? ('failed' as const)
-        : opened.last_turn_status === 'interrupted'
-          ? ('abandon' as const)
-          : ('done' as const),
+    status: resumedSessionStatus(opened),
   }
   return {
     ...base,

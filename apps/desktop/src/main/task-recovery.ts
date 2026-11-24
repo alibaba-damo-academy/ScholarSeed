@@ -6,6 +6,7 @@ import {
   TASK_RECOVERY_OUTCOME,
   TASK_RECOVERY_STATUS,
   type TaskRecoveryOutcome,
+  type TaskRecoverySnapshot,
   type TaskRecoveryStatus,
 } from '../window.ts'
 import { readRecord, writeJson } from './journal.ts'
@@ -79,6 +80,16 @@ export class TaskRecovery {
     )
       return TASK_RECOVERY_STATUS.home
     return this.attempted ? TASK_RECOVERY_STATUS.attempted : TASK_RECOVERY_STATUS.eligible
+  }
+
+  snapshot(sessionId: string | null): TaskRecoverySnapshot {
+    const status = this.status(sessionId)
+    return {
+      status,
+      skippedSessionId:
+        this.marker?.state === RECOVERY_RECORD.skipped ? this.marker.sessionId : null,
+      needsManualAcknowledgement: this.forceHome || this.marker === undefined,
+    }
   }
 
   begin(sessionId: string): string | null {
@@ -173,6 +184,7 @@ export function installTaskRecoveryFallback(
   let dialog: AbortController | null = null
   let watchdog: ReturnType<typeof setTimeout> | null = null
   let offered = false
+  let deferredOffer: boolean | null = null
   let waitingForRendererExit = false
   let reopenJob: ReturnType<typeof setImmediate> | null = null
 
@@ -185,7 +197,10 @@ export function installTaskRecoveryFallback(
     // Give Electron's renderer-exit handlers the rest of this turn to retire the old document.
     reopenJob = setImmediate(() => {
       reopenJob = null
-      if (!canPresent()) return
+      if (!canPresent()) {
+        log('native recovery reopen skipped: window presentation unavailable')
+        return
+      }
       log('reopening the renderer at home')
       void reopen().catch((error: unknown) => log(`native recovery failed: ${String(error)}`))
     })
@@ -194,6 +209,15 @@ export function installTaskRecoveryFallback(
   const offer = async (watchdogExpired = false): Promise<void> => {
     const token = recovery.pendingToken()
     if (!token || offered || !canPresent()) return
+    // An unparented macOS message box blocks main and cannot be aborted.
+    // Wait for the user to bring the workbench back before presenting its sheet.
+    if (!window.isVisible() || window.isMinimized()) {
+      if (deferredOffer === null) log('native recovery prompt deferred: window hidden or minimized')
+      deferredOffer ??= watchdogExpired
+      clearWatchdog()
+      return
+    }
+    deferredOffer = null
     offered = true
     clearWatchdog()
     const controller = new AbortController()
@@ -221,6 +245,7 @@ export function installTaskRecoveryFallback(
   const unsubscribe = recovery.subscribeAttempt((token) => {
     clearWatchdog()
     if (!token) {
+      deferredOffer = null
       dialog?.abort()
       return
     }
@@ -234,6 +259,7 @@ export function installTaskRecoveryFallback(
 
   const retire = (): void => {
     clearWatchdog()
+    deferredOffer = null
     waitingForRendererExit = false
     if (reopenJob) clearImmediate(reopenJob)
     reopenJob = null
@@ -241,7 +267,12 @@ export function installTaskRecoveryFallback(
     const token = recovery.pendingToken()
     if (token) recovery.reopenHome(token)
   }
+  const presentDeferred = (): void => {
+    if (deferredOffer !== null) void offer(deferredOffer)
+  }
   window.on('unresponsive', () => void offer())
+  window.on('show', presentDeferred)
+  window.on('restore', presentDeferred)
   window.once('closed', () => {
     unsubscribe()
     retire()
