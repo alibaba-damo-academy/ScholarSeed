@@ -5,6 +5,8 @@ import { runInNewContext } from 'node:vm'
 import * as React from 'react'
 import { transformSync } from 'esbuild'
 
+import { CONTENT_TREE_READ_TIMEOUT_MS } from '../../app/api/content.ts'
+
 const compiled = transformSync(readFileSync(new URL('./Explorer.tsx', import.meta.url), 'utf8'), {
   loader: 'tsx',
   format: 'cjs',
@@ -68,6 +70,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
       useCallback: (callback: unknown) => callback,
       useEffect: () => undefined,
       useLayoutEffect: () => undefined,
+      useMemo: (factory: () => unknown) => factory(),
       useRef: (current: unknown) => {
         const index = refCursor++
         refs[index] ??= { current }
@@ -88,6 +91,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
     'react-i18next': { useTranslation: () => ({ t: (key: string) => key }) },
     'lucide-react': new Proxy({}, { get: (_target, name) => String(name) }),
     '../../assets/finder.svg': { default: 'finder.svg' },
+    '../../app/api/content': { CONTENT_TREE_READ_TIMEOUT_MS },
     '../../api': {
       revealSystemPath: async (path: string) => {
         revealed.push(path)
@@ -118,6 +122,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
     },
     '../resources/icons': {},
     '../resources/state': { resourceNameError: () => null },
+    '../../components/business/DragPreview': {},
     '../../drag': {},
     '../workbench/feature': { DocumentView: 'DocumentView' },
     '../workbench/workspace': {
