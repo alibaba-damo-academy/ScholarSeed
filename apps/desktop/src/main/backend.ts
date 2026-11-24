@@ -1136,7 +1136,11 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
       [SCHOLARSEED_DESKTOP_ENV]: '1',
-      ...clientReleaseEnvironment(productConfig, applicationIdentity.version),
+      ...clientReleaseEnvironment(
+        productConfig,
+        applicationIdentity.version,
+        app.runningUnderARM64Translation
+      ),
       [SOURCE_BASELINE_ENV]: sourceIdentity || '',
       [BUNDLED_SKILL_LOCK_ENV]: backendPaths.bundledSkillLock ?? '',
       [SCHOLARSEED_APP_VERSION_ENV]: clientVersion(

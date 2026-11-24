@@ -16,6 +16,8 @@ HEADERS = {
     "client_build_number": "X-ScholarSeed-Client-Build-Number",
     "client_channel": "X-ScholarSeed-Client-Channel",
 }
+ARCH_HEADER = "X-ScholarSeed-Client-Arch"
+ARCHITECTURES = ("mac-arm64", "mac-x86_64", "win-arm64", "win-x86_64")
 
 
 def client_release_headers(endpoint: str, product_gateways: Sequence[str]) -> dict[str, str]:
@@ -43,6 +45,10 @@ def client_release_headers(endpoint: str, product_gateways: Sequence[str]) -> di
                 or channel not in ("dev", "preview", "release")
             ):
                 return {}
-        return {header: report[field] for field, header in HEADERS.items()}
+        headers = {header: report[field] for field, header in HEADERS.items()}
+        arch = report.get("client_arch")
+        if arch in ARCHITECTURES:
+            headers[ARCH_HEADER] = arch
+        return headers
     except (TypeError, ValueError):
         return {}

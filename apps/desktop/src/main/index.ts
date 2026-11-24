@@ -2919,7 +2919,12 @@ const desktopHandoff = new DesktopHandoff({
   accountBaseUrl: accountBaseUrlFromServe,
   deviceFields: resolveDeviceInfo,
   clientReleaseFields: (base) =>
-    clientReleaseForLogin(resolveProductConfig(logWindowLifecycle), app.getVersion(), base),
+    clientReleaseForLogin(
+      resolveProductConfig(logWindowLifecycle),
+      app.getVersion(),
+      base,
+      app.runningUnderARM64Translation
+    ),
   adoptTokens: async (token, refreshToken) => {
     const win = mainWindow
     if (!win || win.isDestroyed()) {
