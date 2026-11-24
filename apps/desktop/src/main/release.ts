@@ -1,5 +1,6 @@
 import type { DesktopProductConfig } from './product.ts'
 import { BUILD_NUMBER_PATTERN } from './version.ts'
+import { MACOS_UPDATE_ZIP } from '../updates.ts'
 import type {
   DownloadInfo,
   LatestVersionMeta,
@@ -18,6 +19,21 @@ const TARGET_ARCH_TYPES: Readonly<Record<string, string>> = Object.freeze({
 })
 const MACOS_ARCH_TYPE_PREFIX = 'darwin-'
 const WINDOWS_ARCH_TYPE = 'windows-amd64'
+const UPDATE_FORMAT_PARAM = 'update_format'
+
+export function appendMacUpdateFormat(
+  url: URL,
+  config: DesktopUpdateConfig,
+  targetArchType: string,
+  pinnedArtifact?: LatestVersionMeta
+): void {
+  if (
+    targetArchType.startsWith(MACOS_ARCH_TYPE_PREFIX) &&
+    config.releaseLane === 'distribution' &&
+    (!pinnedArtifact || pinnedArtifact.artifact_kind === MACOS_UPDATE_ZIP)
+  )
+    url.searchParams.set(UPDATE_FORMAT_PARAM, MACOS_UPDATE_ZIP)
+}
 
 export interface DesktopUpdateConfig {
   baseUrl: string
@@ -98,6 +114,12 @@ function parseLatest(
   }
   const sha512 = requiredString(source, 'sha512')
   if (!SHA512_PATTERN.test(sha512)) throw new Error('update response sha512 is invalid')
+  const kind = source.artifact_kind
+  if (
+    kind != null &&
+    (kind !== MACOS_UPDATE_ZIP || !expectedArchType.startsWith(MACOS_ARCH_TYPE_PREFIX))
+  )
+    throw new Error('update response artifact kind is invalid')
   const latest: LatestVersionMeta = {
     id: requiredString(source, 'id'),
     version: requiredString(source, 'version'),
@@ -111,6 +133,7 @@ function parseLatest(
     channel: requiredString(source, 'channel'),
     file_size: requiredSize(source),
     sha512,
+    ...(kind === MACOS_UPDATE_ZIP ? { artifact_kind: kind } : {}),
     ...(typeof source.version_built_at === 'string'
       ? { version_built_at: source.version_built_at }
       : {}),
@@ -169,7 +192,8 @@ export function parseDownloadInfo(
 export function buildUpdateCheckUrl(
   config: DesktopUpdateConfig,
   version: string,
-  targetArchType: string
+  targetArchType: string,
+  pinnedArtifact?: LatestVersionMeta
 ): string {
   const url = new URL(`${config.baseUrl}${UPDATE_PATH_PREFIX}/check`)
   url.searchParams.set('product', config.productId)
@@ -179,6 +203,7 @@ export function buildUpdateCheckUrl(
   if (config.buildNumber) url.searchParams.set('build_number', config.buildNumber)
   url.searchParams.set('arch_type', targetArchType)
   url.searchParams.set('channel', config.channel)
+  appendMacUpdateFormat(url, config, targetArchType, pinnedArtifact)
   if (targetArchType === WINDOWS_ARCH_TYPE && config.releaseLane === 'distribution') {
     url.searchParams.set('update_engine', 'velopack')
   }

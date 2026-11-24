@@ -3,7 +3,6 @@ const { CommandError } = require('./execution.cjs')
 const TYPES = ['smoke', 'unit', 'integration', 'api', 'e2e', 'visual']
 const SCOPES = ['desktop', 'serve', 'runtime', 'trace', 'tooling']
 const PROJECT_API_SUITES = ['contract_projects', 'contract_project_queries', 'contract_resource_listing']
-const UPDATE_BRIDGE_FLAG = '--macos-update-bridge'
 const BUILD_VALUES = ['--result', '--platform', '--arch', '--version', '--build-number', '--update-base-url',
   '--team-id', '--windows-publisher', '--activation-public-keys', '--payload-public-keys',
   '--payload-activation-public-keys', '--payload-private-key', '--payload-key-id', '--payload-compatibility',
@@ -30,8 +29,8 @@ const INTERFACES = {
   'ci test api': { usage: 'ci test api --scope serve --suite projects' },
   'ci test integration': { usage: 'ci test integration --scope desktop --suite native-contract|preview-contract|preview-ui; tooling --suite i18n', ci: 'tooling i18n only' },
   'ci test e2e': { usage: 'ci test e2e --scope desktop [--suite mr|live|update|model-probe] [-- <controlled selection>]' },
-  'cd build local': { usage: 'cd build local [--target TARGET] [--stage app|dir|installer] [--workflow direct|package-acceptance] [--macos-update-bridge]', defaults: { target: 'desktop', stage: 'installer', workflow: 'direct' }, ci: 'app compilation or Python skills/wheels only' },
-  'cd build release': { usage: 'cd build release [--channel preview|release] [--stage dir|installer] [--candidate] [--workflow direct|distribution] [--macos-update-bridge]', defaults: { channel: 'release', stage: 'installer', workflow: 'direct' } }
+  'cd build local': { usage: 'cd build local [--target TARGET] [--stage app|dir|installer] [--workflow direct|package-acceptance]', defaults: { target: 'desktop', stage: 'installer', workflow: 'direct' }, ci: 'app compilation or Python skills/wheels only' },
+  'cd build release': { usage: 'cd build release [--channel preview|release] [--stage dir|installer] [--candidate] [--workflow direct|distribution]', defaults: { channel: 'release', stage: 'installer', workflow: 'direct' } }
 }
 const COMMANDS = [
   ['pre', 'Prepare the worktree development environment', 'toolchain', ['network', 'environment-write']],
@@ -336,7 +335,7 @@ function cd(argv) {
   if (argv.length === 1) return { help: true, command: 'cd build' }
   const kind = choice(argv[1], ['local', 'release'], 'build kind')
   const args = options(argv.slice(2), { '--target': String, '--stage': String, '--workflow': String, '--channel': String,
-    '--candidate': Boolean, [UPDATE_BRIDGE_FLAG]: Boolean, ...Object.fromEntries(BUILD_VALUES.map(key => [key, String])) })
+    '--candidate': Boolean, ...Object.fromEntries(BUILD_VALUES.map(key => [key, String])) })
   const target = choice(args['--target'] || 'desktop', ['desktop', 'web', 'backend', 'wheels', 'trace', 'skills'], '--target')
   const stage = args['--stage'] || 'installer'
   const workflow = args['--workflow'] || 'direct'
@@ -357,11 +356,6 @@ function cd(argv) {
   if (args['--build-number'] && !/^\d{12}$/.test(args['--build-number'])) invalid('--build-number requires YYYYMMDDHHMM')
   if (kind === 'local' && ['--team-id', '--windows-publisher', '--update-base-url'].some(key => args[key])) unsupported('Local builds do not accept distribution signing or update configuration')
   const forwarded = BUILD_VALUES.flatMap(key => args[key] ? [key, args[key]] : [])
-  if (args[UPDATE_BRIDGE_FLAG]) {
-    if (process.platform !== 'darwin' || stage === 'app' || workflow === 'package-acceptance')
-      unsupported(`${UPDATE_BRIDGE_FLAG} requires a native macOS directory or installer build`)
-    forwarded.push(UPDATE_BRIDGE_FLAG)
-  }
   if (workflow === 'package-acceptance') {
     if (stage !== 'installer' || BUILD_VALUES.some(key => key !== '--result' && args[key])) unsupported('Package acceptance requires the unchanged host installer recipe')
     return task('cd build local', [node('scripts/cd/package.cjs', args['--result'] ? ['--result', args['--result']] : [])])

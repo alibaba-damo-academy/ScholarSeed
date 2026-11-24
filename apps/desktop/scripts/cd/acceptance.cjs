@@ -4,17 +4,26 @@ const { spawn } = require('node:child_process')
 const { AsyncLocalStorage } = require('node:async_hooks')
 const { timedAsync } = require('../../../../scripts/shared/timing.cjs')
 const { assertMeasuredUpdateArchive } = require('../../src/main/archive.ts')
-function finalResult(base, app, installer, velopack, runtime) {
+
+function finalResult(base, app, installer, velopack, runtime, updateZip) {
   if (base.stage === 'dmg' && (installer?.installed_check?.status !== 'passed' ||
       installer.installed_check.source !== 'mounted-dmg' || !installer.installed_check.detached ||
       installer.installed_check.sha256 !== installer.sha256 || !installer.signature_valid ||
       !installer.installed_check.package_check?.ok)) throw new Error('Final DMG acceptance is incomplete')
-  if (base.stage === 'dmg' && base.publishable)
+  const macRelease = base.stage === 'dmg' && base.publishable
+  if (macRelease) {
     assertMeasuredUpdateArchive(installer.installed_check.update_archive)
+    if (!updateZip?.signature_valid || !updateZip.stapled ||
+        updateZip.size !== updateZip.archive_budget?.size ||
+        !/^[a-f0-9]{64}$/.test(updateZip.sha256) || !/^[a-f0-9]{128}$/.test(updateZip.sha512))
+      throw new Error('Final macOS update ZIP acceptance is incomplete')
+    assertMeasuredUpdateArchive(updateZip.archive_budget)
+  } else if (updateZip) throw new Error('Unexpected macOS update ZIP evidence')
   if (base.stage === 'velopack' && (!velopack || !installer?.installed_check?.ok || !installer.installed_check.retirement?.complete || !app?.package_check?.ok)) throw new Error('Velopack installed acceptance is incomplete')
   if (base.stage === 'velopack' && base.publishable && (!velopack.signed || !installer.signature_valid || !app.signature_valid)) throw new Error('Velopack distribution requires signed artifacts')
   if (base.stage === 'velopack' && (!runtime?.manifest_path || !runtime.components?.length)) throw new Error('Velopack runtime delivery artifacts are incomplete')
   return {...base,status:'passed',artifacts:{app,...(installer?{[base.stage==='dmg'?'dmg':'exe']:installer}:{}),
+    ...(updateZip?{macos_update_zip:updateZip}:{}),
     ...(velopack?{velopack}:{}), ...(runtime?{runtime}:{})},trust:{...base.trust,...(base.stage === 'dmg' ? installer?.trust : app?.trust)}}
 }
 const MUTEX_TIMEOUT_MS = 30_000

@@ -39,6 +39,7 @@ export function samePreviewArtifact(left: LatestVersionMeta, right: LatestVersio
     left.version === right.version &&
     left.build_number === right.build_number &&
     left.sha512 === right.sha512 &&
+    left.artifact_kind === right.artifact_kind &&
     left.file_size === right.file_size &&
     left.channel === right.channel &&
     left.product_id === right.product_id &&

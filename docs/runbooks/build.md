@@ -332,37 +332,41 @@ rejected. `--build-number` must be 12 digits in `YYYYMMDDHHMM` format.
 builds also require `--team-id`, and signed Windows `preview`/`release` builds also
 require `--windows-publisher`.
 
-### macOS Update Bridge Package
+### macOS installers and automatic updates
 
-For legacy macOS clients that cannot scan an ASAR file in a mounted update, use
-`pnpm ops cd build release --workflow distribution --macos-update-bridge` on the
-native signing runner. The bridge uses a physical `Contents/Resources/app`
-directory. Its App and mounted DMG must contain no ASAR paths. The packaging
-checks still verify the frozen JavaScript, protected entrypoints, native
-libraries, Developer ID signature, notarization, and mounted installer.
-The release result identifies the bridge as `application_layout: directory` and
-its build output has the `-update-bridge` suffix. Ordinary macOS and Windows
-packages keep the ASAR layout.
+Signed macOS distribution builds produce both the installer DMG and
+`scholarseed-update.zip` from the same application. Website downloads and
+clients that only understand the installer protocol use the ordinary DMG.
+Installing that release adds ZIP support. Subsequent automatic updates prefer
+the CI-built ZIP and fall back to the DMG when the selected release has no ZIP.
 
-For the `202611181656` release client, assign the bridge a build newer than
-`202611191815`, since the legacy client retains the newest candidate it has
-seen. Assign the subsequent ordinary release a newer build than the bridge.
-Before making that release available, verify that the release service still
-offers the bridge to the affected source build, serves its download, and
-grants its online installation authorization. The bridge build itself must
-receive the ordinary release. Test both signed upgrades on each affected macOS
-architecture, including a client with the previous failed attempt and existing
-user data. The build option selects the package layout. The release service
-controls candidate selection and release availability.
+The existing Release rule for build `202611181656` on arm64 and x86_64 is an
+exception. This client cannot scan an ASAR in a mounted update. It first takes
+the already published directory-layout bridge DMG `0.3.2-202611192102`. That
+bridge then takes the ordinary DMG to gain ZIP support. For signed acceptance
+on each architecture, verify the ordinary DMG-to-ZIP path and this historical
+route, including a previously failed update and the original workspace after
+restart.
 
-macOS 过渡包使用 `--macos-update-bridge` 构建，应用代码放在
-`Contents/Resources/app`。构建和挂载后都检查整棵 App 树没有 ASAR 路径，并继续核验
-冻结的 JavaScript、受保护的入口、原生库、正式签名与公证。`release` 渠道的 `202611181656`
-客户端会保留已看到的最新候选，因此过渡包构建号必须高于 `202611191815`，后续普通版还要高于
-过渡包。开放普通新版前，应验证发布服务仍会向受影响的来源构建提供过渡包，支持下载和在线
-安装授权，并向过渡版提供普通新版。在各受影响的 macOS 架构上保留旧失败现场和现有用户
-数据，用签名包实测两次升级和数据保留。该构建参数只选择应用布局，发布服务负责候选选取
-和版本的发布状态。
+CI checks the archive budget and verifies the Developer ID signature, stapled
+ticket and identity on the app extracted from the final ZIP. It records the
+size and digests in `artifacts.macos_update_zip`. The desktop verifies the app
+and ticket on Squirrel's existing extraction. If ticket verification is
+temporarily inconclusive, it can retry the same bound request. Installation
+requires a fresh online grant.
+
+macOS 签名分发构建从同一份应用生成安装 DMG 和更新 ZIP。官网下载和只支持安装器协议的
+旧客户端都使用普通 DMG。安装这个普通版本后，后续自动更新优先使用 CI 生成的 ZIP。
+选定的发布没有 ZIP 时使用 DMG。
+
+arm64 和 x86_64 上的 Release 构建 `202611181656` 是已有过渡规则的例外。这个客户端
+无法扫描挂载包中的 ASAR，因此先安装已发布的目录布局过渡 DMG `0.3.2-202611192102`，
+再通过普通 DMG 获得 ZIP 更新能力。两个架构的正式签名验收都应覆盖普通 DMG 到 ZIP 的
+路径和这条历史路径，包括曾经更新失败的客户端以及重启后原工作区是否可用。
+
+CI 检查 ZIP 归档限制，解包校验 Developer ID 签名、公证票据及应用身份，并在
+`artifacts.macos_update_zip` 记录大小和摘要。客户端复用 Squirrel 解出的应用校验身份和
+票据。票据暂无法判定时可以重试同一笔已绑定的请求。正式安装仍需重新获取在线授权。
 
 <a id="cicd-渠道与发布职责"></a>
 ### CI/CD Channels and Release Responsibilities

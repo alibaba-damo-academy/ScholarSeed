@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { runInNewContext } = require('node:vm')
 
-function fixture(failures, guardFailure = false, applicationLayout) {
+function fixture(failures, guardFailure = false) {
   const calls = { options: [], delays: [], verified: 0, native: [] }
   const module = { exports: {} }
   const source = fs.readFileSync(path.join(__dirname, '../signer.cjs'), 'utf8')
@@ -16,9 +16,9 @@ function fixture(failures, guardFailure = false, applicationLayout) {
     } }
     if (name === 'node:timers/promises') return { async setTimeout(ms) { calls.delays.push(ms) } }
     if (name === './macho.cjs') return { signableIgnore: () => name => name.endsWith('.txt') }
-    if (name === './sign.cjs') return { frozenContext: () => ({ native: {}, applicationLayout }) }
-    if (name === './seal.cjs') return { nativeSignatureGuard(app, native, layout) {
-      calls.native.push({ app, native, layout })
+    if (name === './sign.cjs') return { frozenContext: () => ({ native: {} }) }
+    if (name === './seal.cjs') return { nativeSignatureGuard(app, native) {
+      calls.native.push({ app, native })
       return {
         ignore: name => name.endsWith('.node'),
         verify() {
@@ -80,13 +80,6 @@ test('successful signing verifies frozen native artifacts without retrying', asy
   await f.sign(options)
   assert.equal(f.calls.options.length, 1)
   assert.equal(f.calls.verified, 1)
-  assert.deepEqual(f.calls.delays, [])
-})
-
-test('official signing supplies the frozen bridge layout to the native guard', async () => {
-  const f = fixture([], false, 'directory')
-  await f.sign(options)
-  assert.equal(f.calls.native.length, 1)
   assert.equal(f.calls.native[0].app, options.app)
-  assert.equal(f.calls.native[0].layout, 'directory')
+  assert.deepEqual(f.calls.delays, [])
 })

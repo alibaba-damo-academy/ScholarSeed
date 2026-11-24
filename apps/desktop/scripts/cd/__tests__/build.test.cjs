@@ -42,7 +42,7 @@ const { runInNewContext } = require('node:vm')
 const { createRequire } = require('node:module')
 const ts = require('typescript')
 const { TARGETS } = require('../../shared/target.cjs')
-const { applicationLayout, assertBridgeApplication, prepareBridgeApplication } = require('../layout.cjs')
+const { applicationLayout, assertBridgeApplication } = require('../layout.cjs')
 const { verifyInputs, verifyNotices, stageNotices } = require('../notices.cjs')
 const PACKAGE = require('../../../package.json')
 
@@ -102,57 +102,39 @@ const {
 } = require('../../pre/identity.cjs')
 const REPO_ROOT = path.join(sourceDirectory, '../../../..')
 
-test('the macOS update bridge is an explicit directory layout and has separate build output', () => {
-  const ordinary = options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'dir'])
-  const bridge = options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'dir', '--macos-update-bridge'])
-  assert.equal(ordinary.applicationLayout, 'asar')
-  assert.equal(bridge.applicationLayout, 'directory')
-  assert.notEqual(buildRunDirectory('release', ordinary), buildRunDirectory('release', bridge))
+test('native packaging rejects the retired macOS bridge option', () => {
   assert.throws(
-    () => options(['--platform', 'win32', '--arch', 'x86_64', '--macos-update-bridge']),
-    /requires a macOS application or installer stage/
-  )
-  assert.throws(
-    () => options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'backend', '--macos-update-bridge']),
-    /requires a macOS application or installer stage/
+    () => options(['--platform', 'darwin', '--arch', 'arm64', '--macos-update-bridge']),
+    /expected a supported --option value/
   )
 })
 
-test('macOS update bridge packaging removes only the fallback archive and refuses nested ASAR paths', (t) => {
+test('verification of a historical macOS bridge refuses nested ASAR paths', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-update-bridge-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const application = path.join(root, 'ScholarSeed.app')
   const resources = path.join(application, 'Contents', 'Resources')
   const layout = applicationLayout(resources, 'directory')
   fs.mkdirSync(layout.nativeDirectory, { recursive: true })
-  const fallback = path.join(resources, 'default_app.asar')
-  fs.writeFileSync(fallback, 'Electron fallback')
-  const module = path.join(layout.nativeDirectory, 'lease.node')
-  fs.writeFileSync(module, 'frozen native module')
-
-  prepareBridgeApplication(application)
-  assert.equal(fs.existsSync(fallback), false)
-  assert.equal(fs.readFileSync(module, 'utf8'), 'frozen native module')
   assert.doesNotThrow(() => assertBridgeApplication(application))
   fs.writeFileSync(path.join(layout.nativeDirectory, 'nested.ASAR'), 'unexpected archive')
   assert.throws(() => assertBridgeApplication(application), /nested\.ASAR/)
 })
 
-test('macOS update bridge keeps the normal frozen inputs and signing hook with a directory app', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-bridge-config-'))
+test('macOS packaging uses ASAR with native libraries and all signing and verification hooks', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-mac-config-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  const args = options(['--stage', 'dir', '--platform', 'darwin', '--arch', 'arm64', '--macos-update-bridge'])
+  const args = options(['--stage', 'dir', '--platform', 'darwin', '--arch', 'arm64'])
   const filename = writeBuilderConfiguration({
     runDirectory: directory,
     resourceRoot: path.join(directory, 'resources'),
     output: path.join(directory, 'artifacts'),
     productName: 'ScholarSeed',
-    applicationLayout: args.applicationLayout,
     closure: { protected: { generation: 'a'.repeat(64) } },
   }, args)
   const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
-  assert.equal(config.asar, false)
-  assert.equal(config.asarUnpack, undefined)
+  assert.equal(config.asar, true)
+  assert.ok(config.asarUnpack.some(pattern => pattern.endsWith('.node')))
   assert.equal(config.appId, PACKAGE.build.appId)
   assert.equal(config.mac.hardenedRuntime, true)
   assert.match(config.afterPack, /[/\\]sign\.cjs$/)
@@ -658,9 +640,9 @@ test('macOS install gate requires local Developer ID identity and offline ticket
   assert.match(NOTARIZATION_SOURCE, /await check\.native!\.verifySignature\(check\.appPath\)/)
   assert.match(NOTARIZATION_SOURCE, /await check\.native!\.verify\(ticket, check\.hashes\)/)
   assert.match(NATIVE_NOTARIZATION_SOURCE, /kSecCSCheckAllArchitectures\s*\|\s*kSecCSCheckNestedCode\s*\|\s*kSecCSStrictValidate\s*\|\s*kSecCSNoNetworkAccess/)
-  // Trust is refreshed on the exact read-only source; only the digest-bound ZIP
-  // is handed to Squirrel. No writable app copy or client-side re-extraction.
-  assert.match(UPDATER_SOURCE, /verifyMountedApplication\([\s\S]{0,80}source,/)
+  // DMGs are checked on the mounted source. Downloaded ZIPs use the app Squirrel extracts.
+  assert.match(UPDATER_SOURCE, /verifyUpdateApplication\(\s*source,\s*meta,/)
+  assert.match(UPDATER_SOURCE, /verifyUpdateApplication\(\s*source,\s*staged\.meta,/)
   assert.match(UPDATER_SOURCE, /PreparedArchive\.create\(/)
   assert.match(UPDATER_SOURCE, /receipt\.revalidate\(/)
   assert.doesNotMatch(UPDATER_SOURCE, /'stage application'|'inspect prepared archive'/)
@@ -683,7 +665,11 @@ test('the updater never blocks the main process with a synchronous spawn', () =>
   )
   assert.match(
     UPDATER_SOURCE,
-    /await verifyMountedApplication\(\s*source,\s*meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'source'\s*\)/
+    /await verifyUpdateApplication\(\s*source,\s*meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'source'\s*\)/
+  )
+  assert.match(
+    UPDATER_SOURCE,
+    /await verifyUpdateApplication\(\s*source,\s*staged\.meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'staged'\s*\)/
   )
   // bug 87253073：外部命令挂起不允许把安装变成无限等待。超时/取消的强制层在唯一收口点
   // subprocess.ts —— 超时 SIGKILL 子进程并 reject，准备链每一步都声明上限。

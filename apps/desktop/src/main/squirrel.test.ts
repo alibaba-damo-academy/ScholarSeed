@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import {
   SquirrelInstallation,
+  SquirrelSourceVerificationRetry,
   discardOnTerminalSquirrelFailure,
   readSquirrelHandoff,
   abandonedSquirrelRequest,
@@ -573,6 +574,62 @@ test('native request binding precedes readiness and survives the installing reco
   owner.quitAndInstall()
   assert.deepEqual(readSquirrelHandoff(record)?.nativeRequest, binding)
   assert.equal(readSquirrelHandoff(record)?.state, 'installing')
+})
+
+test('ZIP ticket retry reuses the native request and rejects a replaced extraction', async (t) => {
+  for (const replaced of [false, true]) {
+    const { archive, record } = await fixture(t)
+    const updater = new Updater()
+    const source = {
+      path: '/fixture/source',
+      parent: { dev: 1, ino: 2, uid: 501 },
+      item: { dev: 1, ino: 3, uid: 501 },
+    }
+    let bindingReads = 0
+    let checks = 0
+    let authorizations = 0
+    const owner = new SquirrelInstallation(updater, record, () => {}, 40, async (candidate, verify) => {
+      const actual = ++bindingReads > 1 && replaced
+        ? { ...source, item: { ...source.item, ino: 4 } }
+        : source
+      const request = {
+        source: actual, target: { ...source, path: '/fixture/target' }, binding: candidate.binding,
+      }
+      await verify?.(actual.path, request)
+      return request
+    })
+    updater.check = () => updater.emit('update-downloaded')
+    const authorize = async () => {
+      authorizations++
+      return () => {}
+    }
+    const verify = async () => {
+      if (++checks === 1) {
+        // The ticket has its own timeout after the native download event.
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        throw new SquirrelSourceVerificationRetry('ticket timeout')
+      }
+    }
+    await assert.rejects(owner.prepare(archive, identity, authorize, false, verify), /ticket timeout/)
+    assert.equal(owner.ready, false)
+    assert.equal(readSquirrelHandoff(record)?.state, 'requested')
+    assert.throws(() => owner.quitAndInstall(), /not ready/)
+    await assert.rejects(owner.prepare({ ...archive, size: archive.size + 1 }, identity, authorize, false, verify), /already consumed/)
+    const retry = owner.prepare(archive, identity, authorize, false, verify)
+    if (replaced) {
+      await assert.rejects(retry, /request changed/)
+      assert.equal(checks, 1)
+      assert.equal(readSquirrelHandoff(record)?.state, 'failed')
+      assert.throws(() => owner.quitAndInstall(), /not ready/)
+    } else {
+      await retry
+      assert.equal(checks, 2)
+      assert.equal(readSquirrelHandoff(record)?.state, 'downloaded')
+    }
+    assert.equal(updater.checks, 1)
+    assert.equal(authorizations, 1)
+    assert.equal(updater.quits, 0)
+  }
 })
 
 test('a native error while request binding is pending cannot publish a late downloaded success', async (t) => {

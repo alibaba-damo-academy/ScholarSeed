@@ -217,7 +217,7 @@ import {
 } from '../subscriptions'
 import { PREVIEW_UPDATE_IPC } from '../updates.ts'
 import type { PreviewUpdatePolicy } from '../updates.ts'
-import { previewScope } from './preview.ts'
+import { previewScope, samePreviewArtifact } from './preview.ts'
 import { randomUUID } from 'crypto'
 import { existsSync, realpathSync } from 'fs'
 import { resolveDeviceIdentity } from './device'
@@ -772,7 +772,7 @@ function publishUpdateSnapshot(next: UpdateSnapshot, archiveLimitedId?: string):
       next.candidate &&
       latestUpdateCandidate &&
       latestUpdateCandidate.id !== archiveLimitedId &&
-      !updatePreparation.isArchiveLimited(latestUpdateCandidate.id) &&
+      !updatePreparation.isArchiveLimited(latestUpdateCandidate) &&
       isNewerRelease(
         { version: next.candidate.version, buildNumber: next.candidate.build_number },
         { version: latestUpdateCandidate.version, buildNumber: latestUpdateCandidate.build_number }
@@ -991,7 +991,11 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
   if (latest) {
     // Installation requires an explicit retry. Periodic checks may discover a
     // newer candidate but must not consume/reprepare this failed handoff.
-    if (snapshot.errorOrigin === 'install' && snapshot.candidate?.id === latest.id)
+    if (
+      snapshot.errorOrigin === 'install' &&
+      snapshot.candidate &&
+      samePreviewArtifact(snapshot.candidate, latest)
+    )
       return publishUpdateSnapshot({
         ...snapshot,
         checkedAt: Date.now(),
@@ -1034,29 +1038,30 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
       const archiveLimited =
         current.phase !== 'ready' &&
         latestUpdateCandidate &&
-        updatePreparation.isArchiveLimited(latestUpdateCandidate.id)
+        updatePreparation.isArchiveLimited(latestUpdateCandidate)
           ? latestUpdateCandidate
           : null
+      let next = current
+      if (archiveLimited) {
+        next = {
+          currentVersion: current.currentVersion,
+          phase: 'failed',
+          candidate: archiveLimited,
+          errorOrigin: 'preparation',
+          errorFallback: 'install_archive_limit',
+          resumable: false,
+        }
+      } else if (current.phase !== 'ready' && !updatePreparation.running) {
+        const sameFailure =
+          current.phase === 'failed' &&
+          current.candidate &&
+          samePreviewArtifact(current.candidate, latest)
+        next = sameFailure
+          ? { ...current, candidate: latest }
+          : { phase: 'available', currentVersion: current.currentVersion, candidate: latest }
+      }
       return publishUpdateSnapshot({
-        ...current,
-        ...(archiveLimited
-          ? {
-              phase: 'failed',
-              candidate: archiveLimited,
-              error: undefined,
-              errorOrigin: 'preparation',
-              errorFallback: 'install_archive_limit',
-              resumable: false,
-            }
-          : current.phase === 'ready' || updatePreparation.running
-            ? {}
-            : {
-                phase:
-                  current.phase === 'failed' && current.candidate?.id === latest.id
-                    ? 'failed'
-                    : 'available',
-                candidate: latest,
-              }),
+        ...next,
         checkedAt: Date.now(),
         nextBackgroundPreparationAt: decision.at,
       })
@@ -1421,7 +1426,7 @@ const updatePreparation = new UpdatePreparation(
       }
       if (!preparationPolicy) updater.supersedeStagedUpdate(candidate, pushLog)
       publishUpdateSnapshot({ phase: 'downloading', currentVersion: app.getVersion(), candidate })
-      const staged = await updater.stageUpdate(candidate.id, progress, pushLog, signal)
+      const staged = await updater.stageUpdate(candidate, progress, pushLog, signal)
       if (!isCurrent()) {
         record('finish', 'interrupted')
         return false
