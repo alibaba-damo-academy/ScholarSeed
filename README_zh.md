@@ -31,6 +31,7 @@
   <a href="#recipes">使用场景</a> ·
   <a href="#integrations">集成</a> ·
   <a href="#for-developers">开发者指南</a> ·
+  <a href="https://discord.gg/ayKyU5qhf">Discord</a> ·
   <a href="README.md">English</a>
 </p>
 
@@ -381,11 +382,19 @@ AI 按 Skill 调用这些操作，书深检查当前项目范围和权限。卡�
 
 ## 社区与贡献
 
+欢迎加入 [ScholarSeed Discord 社区](https://discord.gg/ayKyU5qhf)，交流使用问题、分享科研实践，与其他研究者和开发者一起探索书深的用法。
+
+- **使用问答**：在 `#help-and-feedback` 讨论安装配置、日常使用和科研流程中的问题。
+- **案例分享**：在 `#showcase` 分享文献阅读方法、综述写作流程和科研案例。
+- **扩展共建**：在 `#skills-and-connectors` 讨论科研技能与连接器的想法，交流开发进展。
+
+社区支持中文与英文交流。加入后，请先查看 `#start-here` 中的导航与规则。
+
 扫描下方二维码加入书深社区，交流使用体验与科研问题。
 
 <img src="./assets/community-qr.png" alt="书深社区群二维码" width="280">
 
-- 通过 [Issues](https://github.com/alibaba-damo-academy/ScholarSeed/issues) 反馈问题或提出功能建议。请附上操作系统、应用版本、复现步骤和预期行为。
+- Bug 和功能建议请提交到 [GitHub Issues](https://github.com/alibaba-damo-academy/ScholarSeed/issues)，便于持续跟踪。请附上操作系统、应用版本、复现步骤和预期行为。
 - 开发和贡献说明见 [CONTRIBUTING_zh.md](CONTRIBUTING_zh.md)。
 - 由阿里巴巴达摩院决策智能实验室开发。
 
