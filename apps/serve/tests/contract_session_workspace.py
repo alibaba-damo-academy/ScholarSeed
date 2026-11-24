@@ -131,6 +131,7 @@ class _Live:
         self.waiting_request_id = ""
         self.last_seq = 0
         self.running = False
+        self.terminating = False
         self.ledger = SimpleNamespace(
             has_unknown_outcome=False, active_turn_id="", uncertainty_snapshot=lambda: []
         )
@@ -146,6 +147,10 @@ class _Live:
     @property
     def turn_active(self) -> bool:
         return bool(self.ledger.active_turn_id)
+
+    @property
+    def closing(self) -> bool:
+        return self.terminating
 
     async def activate(self) -> None:
         self.activated = True
@@ -943,7 +948,54 @@ class ResumeIOContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(restored["session_id"], self.session_id)
 
-    async def test_repeated_cancel_waits_for_worker_and_retains_open_lock(self) -> None:
+    async def test_blocked_cold_restore_allows_new_and_independent_cold_sessions(self) -> None:
+        other, status = await self.service.open({}, self.owner, actor_id=self.owner.user_id)
+        self.assertEqual(status, 200)
+        other_id = other["session_id"]
+        self.sessions.pop(other_id)
+        self.runtime.opens.clear()
+        entered, release = threading.Event(), threading.Event()
+        require = self.catalog.require
+
+        def blocked_require(session_id, principal):
+            if session_id == self.session_id:
+                self.assertNotEqual(threading.get_ident(), self.loop_thread)
+                entered.set()
+                if not release.wait(RESUME_WORKER_WAIT_SECONDS):
+                    raise TimeoutError("fixture did not release the cold-session catalog read")
+            return require(session_id, principal)
+
+        tasks = []
+        with patch.object(self.catalog, "require", blocked_require):
+            opening = asyncio.create_task(self.resume())
+            tasks.append(opening)
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, RESUME_WORKER_WAIT_SECONDS))
+                duplicate = asyncio.create_task(self.resume())
+                new = asyncio.create_task(
+                    self.service.open({}, self.owner, actor_id=self.owner.user_id)
+                )
+                independent = asyncio.create_task(
+                    self.service.open(
+                        {"resume_session_id": other_id}, self.owner, actor_id=self.owner.user_id
+                    )
+                )
+                tasks.extend((duplicate, new, independent))
+                _, pending = await asyncio.wait((new, independent), timeout=1)
+                self.assertFalse(pending, "an unrelated session open waited on the cold read")
+                self.assertEqual(new.result()[1], 200)
+                self.assertEqual(independent.result()[0]["session_id"], other_id)
+                self.assertFalse(opening.done())
+                self.assertFalse(duplicate.done())
+            finally:
+                release.set()
+                await asyncio.gather(*tasks)
+        self.assertEqual(duplicate.result()[0]["session_id"], self.session_id)
+        self.assertEqual(
+            sum(item["session_id"] == self.session_id for item in self.runtime.opens), 1
+        )
+
+    async def test_repeated_cancel_waits_for_worker_and_retains_session_guard(self) -> None:
         entered, release = threading.Event(), threading.Event()
         require = self.catalog.require
 
@@ -967,7 +1019,7 @@ class ResumeIOContracts(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 task.cancel()
                 await asyncio.sleep(0)
-                self.assertTrue(self.service._open_lock.locked())
+                self.assertTrue(self.service._operations.session(self.session_id).locked())
                 self.assertFalse(task.done())
                 self.assertGreater(gate.snapshot().counts.get(ActivityDomain.RUNTIME.value, 0), 0)
                 self.assertFalse(gate.seal(generation))
@@ -976,9 +1028,99 @@ class ResumeIOContracts(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await asyncio.wait_for(task, RESUME_WORKER_WAIT_SECONDS)
         await asyncio.wait_for(gate.wait_business_drained(generation), RESUME_WORKER_WAIT_SECONDS)
-        self.assertFalse(self.service._open_lock.locked())
+        self.assertFalse(self.service._operations.session(self.session_id).locked())
         self.assertFalse(self.runtime.opens)
         self.assertTrue(gate.seal(generation))
+
+    async def test_new_session_cannot_be_resumed_before_its_activation_finishes(self) -> None:
+        entered: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        release = asyncio.Event()
+        activate = _Live.activate
+
+        async def delayed_activate(live):
+            if not entered.done():
+                entered.set_result(live.id)
+                await release.wait()
+            await activate(live)
+
+        with patch.object(_Live, "activate", delayed_activate):
+            new = asyncio.create_task(
+                self.service.open({}, self.owner, actor_id=self.owner.user_id)
+            )
+            duplicate = None
+            try:
+                session_id = await asyncio.wait_for(entered, RESUME_WORKER_WAIT_SECONDS)
+                self.assertIsNotNone(self.catalog.get(session_id))
+                duplicate = asyncio.create_task(
+                    self.service.open(
+                        {"resume_session_id": session_id},
+                        self.owner,
+                        actor_id=self.owner.user_id,
+                    )
+                )
+                await asyncio.sleep(0)
+                self.assertFalse(duplicate.done())
+                self.assertEqual(len(self.runtime.opens), 1)
+            finally:
+                release.set()
+                created, status = await new
+                if duplicate is not None:
+                    reopened, reopen_status = await duplicate
+        self.assertEqual((status, reopen_status), (200, 200))
+        self.assertEqual(created["session_id"], reopened["session_id"])
+        self.assertEqual(len(self.runtime.opens), 1)
+
+    async def test_cancelled_activation_drains_before_reopening_same_session(self) -> None:
+        entered, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        activate = _Live.activate
+
+        async def delayed_activate(live):
+            if not entered.is_set():
+                entered.set()
+                await asyncio.Event().wait()
+            await activate(live)
+
+        async def delayed_close(_live):
+            closing.set()
+            await release.wait()
+
+        with (
+            patch.object(_Live, "activate", delayed_activate),
+            patch.object(_Live, "aclose", delayed_close),
+        ):
+            opening = asyncio.create_task(self.resume())
+            duplicate = None
+            try:
+                await asyncio.wait_for(entered.wait(), RESUME_WORKER_WAIT_SECONDS)
+                opening.cancel()
+                await asyncio.wait_for(closing.wait(), RESUME_WORKER_WAIT_SECONDS)
+                opening.cancel()
+                duplicate = asyncio.create_task(self.resume())
+                await asyncio.sleep(0)
+                self.assertFalse(duplicate.done())
+                self.assertNotIn(self.session_id, self.sessions)
+                self.assertEqual(len(self.runtime.opens), 1)
+            finally:
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await opening
+                if duplicate is not None:
+                    reopened, status = await duplicate
+        self.assertEqual(status, 200)
+        self.assertEqual(reopened["session_id"], self.session_id)
+        self.assertEqual(len(self.runtime.opens), 2)
+
+    async def test_failed_cleanup_retains_owner_and_blocks_duplicate_runtime(self) -> None:
+        with (
+            patch.object(_Live, "activate", side_effect=RuntimeError("activation failed")),
+            patch.object(_Live, "aclose", side_effect=OSError("close failed")),
+            self.assertRaisesRegex(OSError, "close failed"),
+        ):
+            await self.resume()
+        self.assertTrue(self.sessions[self.session_id].closing)
+        _, status = await self.resume()
+        self.assertEqual(status, 409)
+        self.assertEqual(len(self.runtime.opens), 1)
 
     async def test_denied_owner_and_unregistered_project_do_not_open_runtime(self) -> None:
         denied, denied_status = await self.resume(SessionPrincipal("foreign"))
@@ -1010,7 +1152,7 @@ class ResumeIOContracts(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.runtime.opens)
         self.assertEqual(self.catalog.activation(self.session_id), binding)
         self.assertFalse(self.service._activities.snapshot().counts)
-        self.assertFalse(self.service._open_lock.locked())
+        self.assertFalse(self.service._operations.session(self.session_id).locked())
 
     async def test_model_recovery_keeps_resolution_on_loop_and_write_durable(self) -> None:
         self.catalog.set_model(self.session_id, self.owner, "retired-selection")

@@ -70,7 +70,7 @@ export function mergeQueuedOutbox(
   current: QueuedMessage[] = []
 ): QueuedMessage[] {
   const pending = readOutbox().sessions[sessionId] ?? []
-  return pending.reduce((messages, message) => {
+  const merged = pending.reduce((messages, message) => {
     if (messages.some((item) => item.queuedMessageId === message.queuedMessageId)) {
       // Candidate UI restoration may read this projection before native commit.
       // Retain the durable local row until the workbench can acknowledge it.
@@ -88,4 +88,14 @@ export function mergeQueuedOutbox(
       serverPresent: false,
     })
   }, authoritative)
+  // Local storage can be unavailable while a submit is still in flight.
+  return current.reduce((messages, item) => {
+    if (
+      item.state === 'submitting' &&
+      item.serverPresent === false &&
+      !messages.some((message) => message.queuedMessageId === item.queuedMessageId)
+    )
+      return upsert(messages, item)
+    return messages
+  }, merged)
 }

@@ -576,6 +576,28 @@ test('restores an unacknowledged local outbox row and clears it on server acknow
   releaseQueuedOutbox('session-outbox', 'client-outbox')
 })
 
+test('keeps the in-flight queue row when local storage cannot persist it', (context) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  context.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: () => null,
+        setItem: () => {
+          throw new Error('storage unavailable')
+        },
+      },
+    },
+  })
+  const pending = optimisticQueuedMessage([], 'local-only', input, [])
+  retainQueuedOutbox('saved-task', pending)
+  assert.deepEqual(mergeQueuedOutbox('saved-task', [], true, [pending]), [pending])
+})
+
 test('queue failure codes translate while unknown codes use state-specific fallbacks', async () => {
   const instance = createInstance()
   await instance.init({

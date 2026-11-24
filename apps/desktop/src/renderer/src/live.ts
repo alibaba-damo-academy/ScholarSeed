@@ -9,6 +9,7 @@ import { DirtyRefresh } from '../../notifications'
 import { STARTUP_PHASE } from '../../startup'
 import {
   RECONFIGURATION_POLL_MS,
+  RECONFIGURATION_REQUEST_TIMEOUT_MS,
   RECONFIGURATION_RECOVERY,
   reconfigurationRecovery,
 } from '../../reconfiguration'
@@ -32,7 +33,6 @@ import {
   getModels,
   loadSessionCatalog,
   loadSessionStatus,
-  listQueuedMessages,
   listProjects,
   openSession,
   type SessionResumeFailure,
@@ -586,13 +586,14 @@ export function onEvent(
     case 'send_now_submitted':
     case 'send_now_rejected':
     case 'send_now_outcome_unknown':
-      if (
-        acknowledgeOutbox &&
-        (event.type === 'message_queued' || event.type === 'message_updated')
-      ) {
-        releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
-      }
       patchThread(threadId, (thread) => {
+        if (event.seq <= (thread.queueSnapshotSeq ?? -1)) return thread
+        if (
+          acknowledgeOutbox &&
+          (event.type === 'message_queued' || event.type === 'message_updated')
+        ) {
+          releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
+        }
         return {
           queuedMessages: upsertQueuedMessage(
             thread.queuedMessages ?? [],
@@ -603,12 +604,15 @@ export function onEvent(
       return
     case 'message_removed':
     case 'send_now_accepted':
-      if (acknowledgeOutbox) releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
-      patchThread(threadId, (thread) => ({
-        queuedMessages: (thread.queuedMessages ?? []).filter(
-          (item) => item.queuedMessageId !== event.data.queued_message_id
-        ),
-      }))
+      patchThread(threadId, (thread) => {
+        if (event.seq <= (thread.queueSnapshotSeq ?? -1)) return thread
+        if (acknowledgeOutbox) releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
+        return {
+          queuedMessages: (thread.queuedMessages ?? []).filter(
+            (item) => item.queuedMessageId !== event.data.queued_message_id
+          ),
+        }
+      })
       if (event.type === 'message_removed') {
         refreshAssistantContext(event.session_id)
       }
@@ -1322,7 +1326,9 @@ export function useLiveSession(): void {
           return true
         }
         try {
-          const shared = await getSharedRuntimeReconfiguration()
+          const shared = await getSharedRuntimeReconfiguration(
+            AbortSignal.any([lease.signal, AbortSignal.timeout(RECONFIGURATION_REQUEST_TIMEOUT_MS)])
+          )
           if (!current()) return true
           if (shared.service_instance_id !== instance) {
             diagnostic('superseded-instance')
@@ -1419,7 +1425,7 @@ export function useLiveSession(): void {
         ) {
           attach(Math.max(cached.lastSeq ?? 0, bodySequences.current.get(sessionId) ?? 0))
           patchThread(threadId, { resumeState: 'ready', resumeMessage: undefined })
-          if (cached.startupHistoryLoaded) refreshStatusRef.current()
+          refreshStatusRef.current()
           return
         }
         if (await waitForReconfiguration()) return
@@ -1427,14 +1433,14 @@ export function useLiveSession(): void {
           resumeState: 'pending',
           resumeMessage: { key: 'resume.agent' },
         })
-        const opened = await openSession({ resumeSessionId: sessionId })
+        const opened = await openSession({ resumeSessionId: sessionId, signal: lease.signal })
         if (!current()) {
           diagnostic('superseded')
           return
         }
         if (!opened || !('session_id' in opened) || !opened.session_id) {
           if (await waitForReconfiguration()) return
-          const history = await getHistoryWithTodos(sessionId, 'resume_fallback')
+          const history = await getHistoryWithTodos(sessionId, 'resume_fallback', lease.signal)
           if (!current()) {
             diagnostic('superseded')
             return
@@ -1478,19 +1484,13 @@ export function useLiveSession(): void {
           }
         }
 
-        const [history, queuedMessages] = await Promise.all([
-          getHistoryWithTodos(sessionId, 'resume'),
-          listQueuedMessages(sessionId),
-        ])
+        const history = await getHistoryWithTodos(sessionId, 'resume', lease.signal)
         if (!current()) {
           diagnostic('superseded')
           return
         }
-        if (!history || queuedMessages === null) {
-          diagnostic('snapshot-unavailable', {
-            historyAvailable: Boolean(history),
-            queueAvailable: queuedMessages !== null,
-          })
+        if (!history) {
+          diagnostic('snapshot-unavailable')
           reportFailure({
             message: SESSION_HISTORY_UNAVAILABLE,
             applicationFailure: { key: 'request.historyUnavailable' },
@@ -1510,9 +1510,9 @@ export function useLiveSession(): void {
           projectResumedSession(thread, {
             opened,
             history,
-            queuedMessages,
+            queuedMessages: null,
             serviceInstanceId: instance,
-            acknowledgeQueue: stateRef.current.workbenchReady,
+            acknowledgeQueue: false,
             timestamp: Date.now(),
             caller: 'resume',
           })
@@ -1520,10 +1520,10 @@ export function useLiveSession(): void {
 
         bodySequences.current.set(sessionId, fromSeq)
         attach(fromSeq)
+        refreshStatusRef.current()
         diagnostic('restored', {
           sequence: fromSeq,
           running: Boolean(opened.running),
-          queuedCount: queuedMessages.length,
           planCount: (opened.todos ?? history.todos).length,
           previousSequence: stateRef.current.threads[threadId]?.lastSeq,
         })
@@ -1953,7 +1953,7 @@ export function useLiveSession(): void {
     summarySequences.current.clear()
     const refresh = new DirtyRefresh(
       async (signal) => {
-        const snapshot = stateRef.current
+        const snapshot = getSnapshot()
         const threads = Object.values(snapshot.threads).filter(
           (thread) =>
             thread.sessionId &&
@@ -1961,6 +1961,9 @@ export function useLiveSession(): void {
             !(snapshot.startupTaskRecovery === 'presenting' && thread.startupHistoryLoaded)
         )
         const sessionIds = threads.map((thread) => thread.sessionId!)
+        const queuesAtRequest = new Map(
+          threads.map((thread) => [thread.sessionId!, thread.queuedMessages])
+        )
         const snapshots = await loadSessionStatus(
           sessionIds,
           Object.fromEntries(
@@ -1971,9 +1974,9 @@ export function useLiveSession(): void {
           ),
           signal
         )
-        return { sessionIds, snapshots }
+        return { sessionIds, snapshots, queuesAtRequest }
       },
-      ({ sessionIds, snapshots }) => {
+      ({ sessionIds, snapshots, queuesAtRequest }) => {
         let catalogInvalidated = sessionIds.some(
           (sessionId) => !snapshots.some((snapshot) => snapshot.session_id === sessionId)
         )
@@ -1985,31 +1988,40 @@ export function useLiveSession(): void {
             metadataSessions.current?.find((session) => session.session_id === snapshot.session_id),
             snapshot
           )
-          for (const identity of snapshot.acknowledged_queue_ids)
-            releaseQueuedOutbox(snapshot.session_id, identity)
-          const entry = Object.entries(stateRef.current.threads).find(
+          const current = getSnapshot()
+          const entry = Object.entries(current.threads).find(
             ([, thread]) => thread.sessionId === snapshot.session_id
           )
           if (!entry) continue
           const threadId = entry[0]
-          const active = threadId === stateRef.current.activeSession
+          const active = threadId === current.activeSession
           if (
             active &&
-            (!entry[1].startupHistoryLoaded ||
-              stateRef.current.startupTaskRecovery === 'presenting')
+            (entry[1].resumeServiceInstanceId !== current.serviceInstanceId ||
+              current.startupTaskRecovery === 'presenting')
           )
             continue
           patchThread(threadId, (thread) => {
-            if (snapshot.summary_seq < (thread.lastSeq ?? 0)) return thread
+            if (snapshot.summary_seq < Math.max(thread.lastSeq ?? 0, thread.queueSnapshotSeq ?? 0))
+              return thread
+            // An HTTP submit or retract can commit locally before its SSE sequence arrives.
+            if (thread.queuedMessages !== queuesAtRequest.get(snapshot.session_id)) {
+              queueMicrotask(() => refresh.invalidate())
+              return thread
+            }
+            for (const identity of snapshot.acknowledged_queue_ids)
+              releaseQueuedOutbox(snapshot.session_id, identity)
             const queuedMessages = mergeQueuedOutbox(
               snapshot.session_id,
               snapshot.queued_messages.map(queuedMessageFromPayload),
               stateRef.current.workbenchReady,
-              thread.queuedMessages ?? []
+              (thread.queuedMessages ?? []).filter(
+                (message) => !snapshot.acknowledged_queue_ids.includes(message.queuedMessageId)
+              )
             )
-            // An active transcript owns its runtime state through SSE. Refresh the queue
-            // separately because the startup history can commit before the queue is read.
-            if (active) return { queuedMessages }
+            // The active transcript consumes runtime changes through SSE. Only its
+            // queue uses this independently refreshed, sequence-checked snapshot.
+            if (active) return { queuedMessages, queueSnapshotSeq: snapshot.summary_seq }
             const projected = reconcileThreadRuntime({ [threadId]: thread }, [
               { ...snapshot, last_seq: snapshot.summary_seq },
             ])[threadId]
@@ -2026,6 +2038,7 @@ export function useLiveSession(): void {
               }),
               interrupting: Boolean(snapshot.interrupting),
               queuedMessages,
+              queueSnapshotSeq: snapshot.summary_seq,
               turnOutcomes:
                 snapshot.last_turn_id && snapshot.last_turn_status
                   ? {
@@ -2083,6 +2096,7 @@ export function useLiveSession(): void {
     state.workbenchReady,
     state.runtimeQuiescing,
     state.serviceInstanceId,
+    getSnapshot,
     pollMetadata,
     patchThread,
     act.invalidateResources,

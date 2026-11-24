@@ -133,6 +133,8 @@ export function projectResumedSession(
     lastSeq: opened.last_seq ?? 0,
     resumeState: 'ready' as const,
     resumeServiceInstanceId: serviceInstanceId ?? undefined,
+    queueSnapshotSeq:
+      thread.resumeServiceInstanceId === serviceInstanceId ? thread.queueSnapshotSeq : undefined,
     resumeMessage: undefined,
     running: Boolean(opened.running),
     recoveryBlocked: opened.recovery_blocked === true,

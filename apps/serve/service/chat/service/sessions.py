@@ -181,6 +181,7 @@ from service.chat.service.handoff import (
     CONTINUATION_UNAVAILABLE,
     continuation_snapshot,
 )
+from service.chat.service.lifecycle import SessionOperations
 from service.chat.service.models import RETIRED_NATIVE_MODEL_KEY, SessionModelUnavailableError
 from service.chat.service.retry import (
     RECOVERY_EVENT_KINDS,
@@ -565,7 +566,7 @@ class SessionService:
         self._settings = settings
         self._credentials = credentials
         self._logger = logger
-        self._open_lock = asyncio.Lock()
+        self._operations = SessionOperations()
         self._update_shutdown_generation: str | None = None
         self._update_shutdown_sessions: tuple[LiveSession, ...] = ()
         self._update_shutdown_prepared = False
@@ -782,7 +783,7 @@ class SessionService:
     ) -> tuple[dict[str, Any], int]:
         """Read a bounded draft snapshot without opening or mutating either task."""
 
-        async with self._open_lock:
+        async with self._operations.operation(session_id):
             self.require_access(session_id, principal)
             async with AsyncExitStack() as guards:
                 live = self._sessions.get(session_id)
@@ -879,10 +880,11 @@ class SessionService:
                     "error": "resume_session_fields_immutable",
                     "fields": mutable_resume_fields,
                 }, HTTP_CONFLICT
-        # _open_lock 是进程级全局串行锁: 整段冷恢复都握在锁内, 客户端 abort 也不会提前释放。
-        # 记录锁等待与总耗时, 才能把「服务端慢恢复」与「重试排队等锁」区分开 (Aone #87119853)。
+        fork_id = str(body.get("fork_session_id") or "").strip()
+        target_id = resume_id or uuid.uuid4().hex
         lock_requested_at = time.perf_counter()
-        async with self._open_lock, AsyncExitStack() as admission:
+        lock_id = fork_id if not resume_id and fork_id else target_id
+        async with self._operations.operation(lock_id), AsyncExitStack() as admission:
             admission.enter_context(self._activities.enter(ActivityDomain.RUNTIME, root=True))
             lock_wait_ms = (time.perf_counter() - lock_requested_at) * 1000.0
             opened_at = time.perf_counter()
@@ -892,8 +894,11 @@ class SessionService:
                     payload, status = await self._resume(
                         resume_id, principal, actor_id, skill_environment
                     )
-                elif body.get("fork_session_id"):
-                    payload, status = await self._fork(body, principal, actor_id, skill_environment)
+                elif fork_id:
+                    async with self._operations.session(target_id):
+                        payload, status = await self._fork(
+                            body, principal, actor_id, skill_environment, target_id=target_id
+                        )
                 else:
                     payload, status = await self._create(
                         body,
@@ -901,6 +906,7 @@ class SessionService:
                         actor_id,
                         skill_environment,
                         required_capabilities,
+                        session_id=target_id,
                     )
             except asyncio.CancelledError:
                 # 客户端断开是否取消本协程, 决定「排队等锁后自愈」还是「半启动进程被弃」两种机制;
@@ -932,6 +938,8 @@ class SessionService:
         principal: SessionPrincipal,
         actor_id: str,
         skill_environment: Mapping[str, str] | None,
+        *,
+        target_id: str,
     ) -> tuple[dict[str, Any], int]:
         source_id = str(body["fork_session_id"]).strip()
         self.require_access(source_id, principal)
@@ -1005,6 +1013,7 @@ class SessionService:
             required_capabilities=required_capabilities,
             fork_origin=origin,
             display_parent_session_id=record.display_parent_session_id or source_id,
+            session_id=target_id,
         )
 
     def _validate_fork_origin(self, origin: SessionForkOrigin) -> SessionCatalogRecord:
@@ -1164,8 +1173,9 @@ class SessionService:
         required_capabilities: tuple[RuntimeCapabilityName, ...] = (),
         fork_origin: SessionForkOrigin | None = None,
         display_parent_session_id: str | None = None,
+        *,
+        session_id: str,
     ) -> tuple[dict[str, Any], int]:
-        session_id = uuid.uuid4().hex
         supported = {
             capability.name
             for capability in self._runtime.gateway_capabilities.entries
@@ -1219,6 +1229,7 @@ class SessionService:
             output_root.mkdir(parents=True, exist_ok=True)
         live: LiveSession | None = None
         allocated: SessionCatalogRecord | None = None
+        published = False
         try:
             selected_model = str(body.get("model_id") or self._settings.runtime_model()).strip()
             reasoning_effort = str(body.get("reasoning_effort") or "").strip()
@@ -1301,13 +1312,18 @@ class SessionService:
                 if source is not None:
                     self._access.name_fork(session_id, source.session_id, principal)
             self._sessions[session_id] = live
+            published = True
+        except asyncio.CancelledError:
+            if live is not None:
+                await self._discard_failed_open(session_id, live)
+            raise
         except SessionModelUnavailableError as exc:
             if live is not None:
-                await live.aclose()
+                await self._discard_failed_open(session_id, live)
             return {"ok": False, "error": str(exc)}, HTTP_BAD_REQUEST
         except Exception as exc:
             if live is not None:
-                await live.aclose()
+                await self._discard_failed_open(session_id, live)
             failure = _runtime_failure_payload(exc, operation="open")
             self._logger.error(
                 "%s session_id=%s failure_type=%s code=%s rpc_method=%s rpc_code=%s",
@@ -1321,13 +1337,21 @@ class SessionService:
             )
             return failure, 500
         finally:
-            if (
-                fork_origin is not None
-                and allocated is not None
-                and session_id not in self._sessions
-            ):
+            if fork_origin is not None and allocated is not None and not published:
                 self._access.set_archived(session_id, principal, True)
         return await self._snapshot(live, readiness=readiness), HTTP_OK
+
+    async def _discard_failed_open(self, session_id: str, live: LiveSession) -> None:
+        async def close() -> None:
+            try:
+                await live.aclose()
+            except BaseException:
+                # Keep the uncertain owner visible to shutdown and block reopening.
+                live.terminating = True
+                self._sessions[session_id] = live
+                raise
+
+        await self._activities.finish(ActivityDomain.RUNTIME, close)
 
     def fork_origin(
         self, session_id: str, principal: SessionPrincipal
@@ -1451,6 +1475,8 @@ class SessionService:
                 return {"ok": False, "error": str(error)}, HTTP_CONFLICT
         existing = self._sessions.get(session_id)
         if existing is not None:
+            if existing.closing:
+                return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
             executable = self._settings.runtime_executable()
             with resume_stage(session_id, ResumeStage.READINESS):
                 readiness = await self._runtime.readiness(
@@ -1527,7 +1553,6 @@ class SessionService:
                 await live.activate()
             with resume_stage(session_id, ResumeStage.FORK):
                 await self._restore_fork_history(live)
-            self._sessions[session_id] = live
             pending = await self._activities.finish_thread(
                 ActivityDomain.RUNTIME, self._access.pending_turn_settlement, session_id
             )
@@ -1542,6 +1567,11 @@ class SessionService:
                 )
             elif was_inflight:
                 await self._publish_recovery(live, record, recovery_hil)
+            self._sessions[session_id] = live
+        except asyncio.CancelledError:
+            if live is not None:
+                await self._discard_failed_open(session_id, live)
+            raise
         except Exception as exc:
             if isinstance(exc, SessionModelUnavailableError) and live is None:
                 failure = _runtime_failure_payload(exc, operation="resume")
@@ -1552,11 +1582,16 @@ class SessionService:
                     failure["code"],
                 )
                 return failure, HTTP_CONFLICT
-            await self._activities.finish_thread(
-                ActivityDomain.RUNTIME, self._access.mark_turn_recovery_blocked, session_id, True
-            )
-            if live is not None:
-                await live.aclose()
+            try:
+                await self._activities.finish_thread(
+                    ActivityDomain.RUNTIME,
+                    self._access.mark_turn_recovery_blocked,
+                    session_id,
+                    True,
+                )
+            finally:
+                if live is not None:
+                    await self._discard_failed_open(session_id, live)
             failure = _runtime_failure_payload(exc, operation="resume")
             self._logger.error(
                 "%s session_id=%s failure_type=%s code=%s rpc_method=%s rpc_code=%s",
@@ -2274,7 +2309,7 @@ class SessionService:
         return {"ok": True, "idle": False, "interrupting": False}
 
     async def prepare_for_update_shutdown(self, generation: str) -> None:
-        async with self._open_lock:
+        async with self._operations.exclusive():
             snapshot = self._activities.snapshot()
             if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
                 raise MaintenanceStale("update_maintenance_stale")
@@ -2323,6 +2358,10 @@ class SessionService:
             if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
                 raise MaintenanceStale("update_maintenance_stale")
             self._update_shutdown_prepared = True
+
+    async def stop_session_operations(self, deadline: float | None) -> None:
+        async with asyncio.timeout_at(deadline):
+            await self._operations.stop()
 
     def resume_after_update_shutdown(self, generation: str) -> None:
         snapshot = self._activities.snapshot()
@@ -2405,6 +2444,12 @@ class SessionService:
 
     async def terminate(
         self, session_id: str, *, require_idle: bool = False
+    ) -> tuple[dict[str, Any], int]:
+        async with self._operations.operation(session_id):
+            return await self._terminate(session_id, require_idle=require_idle)
+
+    async def _terminate(
+        self, session_id: str, *, require_idle: bool
     ) -> tuple[dict[str, Any], int]:
         live = self._sessions.get(session_id)
         if live is None:
@@ -2768,7 +2813,7 @@ class SessionService:
         *,
         actor_id: str = "",
     ) -> tuple[dict[str, Any], int]:
-        async with self._open_lock:
+        async with self._operations.operation(session_id):
             return await self._activities.finish(
                 ActivityDomain.RESOURCE, lambda: self._delete(session_id, principal, actor_id)
             )
@@ -2834,7 +2879,7 @@ class SessionService:
         skill_environment: Mapping[str, str] | None = None,
         stop_running: bool = True,
     ) -> tuple[dict[str, Any], int]:
-        async with self._open_lock:
+        async with self._operations.operation(session_id):
             self.require_access(session_id, principal)
             record = self._access.get(session_id)
             if record is None:
@@ -2917,7 +2962,7 @@ class SessionService:
                 return payload, status
             live = self._sessions.get(session_id)
         if live is not None or needs_stop:
-            return await self.terminate(session_id, require_idle=True)
+            return await self._terminate(session_id, require_idle=True)
         return {"ok": True}, HTTP_OK
 
     def detach(self, session_id: str, principal: SessionPrincipal) -> dict[str, Any]:
@@ -2973,6 +3018,22 @@ class SessionService:
         return {"ok": True, "session_id": session_id, "pinned": record.pinned}
 
     async def assign_project(
+        self,
+        *,
+        session_id: str,
+        principal: SessionPrincipal,
+        project_path: str,
+        stop_running: bool = False,
+    ) -> tuple[dict[str, Any], int]:
+        async with self._operations.operation(session_id):
+            return await self._assign_project(
+                session_id=session_id,
+                principal=principal,
+                project_path=project_path,
+                stop_running=stop_running,
+            )
+
+    async def _assign_project(
         self,
         *,
         session_id: str,
@@ -4288,7 +4349,7 @@ class SessionService:
         thinking: ModelThinking | None = None,
         remember_default: bool = False,
     ) -> tuple[dict[str, Any], int]:
-        async with self._open_lock:
+        async with self._operations.operation(session_id):
             with self._activities.enter(ActivityDomain.RUNTIME, root=True):
                 return await self._activities.finish(
                     ActivityDomain.RUNTIME,

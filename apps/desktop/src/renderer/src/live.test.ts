@@ -921,7 +921,12 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
   let statusReads = 0
   const patched: string[] = []
   const acknowledgements: string[] = []
-  let accept!: (value: { sessionIds: string[]; snapshots: SessionStatusSnapshot[] }) => void
+  const queuesAtRequest = new Map<string, Thread['queuedMessages']>()
+  let accept!: (value: {
+    sessionIds: string[]
+    snapshots: SessionStatusSnapshot[]
+    queuesAtRequest: typeof queuesAtRequest
+  }) => void
   let notify!: (reset: boolean, changes: { topic: string; subject: string }[]) => void
   const background = {
     session_id: 'background',
@@ -942,6 +947,7 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
       state,
       stateRef: { current: state },
       metadataSessions: { current: [background] },
+      getSnapshot: () => state,
       summarySequences: { current: new Map() },
       refreshStatusRef: { current: () => undefined },
       sessionSummaryNeedsCatalog,
@@ -949,9 +955,14 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
       pollMetadata: () => {
         catalogReads++
       },
-      patchThread: (id: string) => {
+      patchThread: (id: string, update: (thread: { sessionId: string }) => unknown) => {
+        update(state.threads.background)
         patched.push(id)
       },
+      queuedMessageFromPayload: (message: unknown) => message,
+      mergeQueuedOutbox: (_session: string, messages: unknown[]) => messages,
+      reconcileThreadRuntime: (threads: unknown) => threads,
+      projectSessionRecovery: () => ({}),
       releaseQueuedOutbox: (_sessionId: string, identity: string) => {
         acknowledgements.push(identity)
       },
@@ -979,20 +990,26 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
     waiting: true,
     summary_seq: 10,
     acknowledged_queue_ids: ['queued'],
+    queued_messages: [],
   }
-  accept({ sessionIds: ['background'], snapshots: [waiting] })
+  accept({ sessionIds: ['background'], snapshots: [waiting], queuesAtRequest })
   assert.equal(catalogReads, 0)
   assert.deepEqual(patched, ['background'])
   assert.deepEqual(acknowledgements, ['queued'])
   accept({
     sessionIds: ['background'],
     snapshots: [{ ...waiting, summary_seq: 9, title: 'Stale' }],
+    queuesAtRequest,
   })
   assert.equal(catalogReads, 0)
   assert.equal(patched.length, 1)
-  accept({ sessionIds: ['background'], snapshots: [{ ...waiting, title: 'Renamed' }] })
+  accept({
+    sessionIds: ['background'],
+    snapshots: [{ ...waiting, title: 'Renamed' }],
+    queuesAtRequest,
+  })
   assert.equal(catalogReads, 1)
-  accept({ sessionIds: ['background'], snapshots: [] })
+  accept({ sessionIds: ['background'], snapshots: [], queuesAtRequest })
   assert.equal(catalogReads, 2)
   notify(false, [{ topic: 'sessions', subject: 'new-session' }])
   notify(false, [{ topic: 'projects', subject: 'project' }])

@@ -203,6 +203,9 @@ def create_chat_app(
             except BaseException as error:
                 failures.append(error)
             finally:
+                shutdown = _app.state.shutdown
+                with shutdown.stage(session_service.stop_session_operations.__qualname__):
+                    await session_service.stop_session_operations(shutdown.deadline)
                 if deferred_mcp is not None:
 
                     async def close_deferred_mcp() -> None:
@@ -316,7 +319,9 @@ def create_chat_app(
 
     def manual_skill_turn(session_id: str, turn: str) -> bool:
         live = sessions.get(session_id)
-        return bool(turn and live and live.active_product_turn_id == turn and live.auto_route is None)
+        return bool(
+            turn and live and live.active_product_turn_id == turn and live.auto_route is None
+        )
 
     completion_bridge = CompletionBridge(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),

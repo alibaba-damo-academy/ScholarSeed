@@ -1163,9 +1163,9 @@ export function Stream({
       return
     }
     if (thread.startupHistoryLoaded && startupHistoryBusy.current !== sessionId) return
-    let current = true
-    void getHistoryWithTodos(sessionId, 'transcript').then((history) => {
-      if (!current || sessionRef.current !== sessionId || !history) return
+    const controller = new AbortController()
+    void getHistoryWithTodos(sessionId, 'transcript', controller.signal).then((history) => {
+      if (controller.signal.aborted || sessionRef.current !== sessionId || !history) return
       patchThread(thread.id, (active) =>
         active.sessionId === sessionId
           ? {
@@ -1175,9 +1175,7 @@ export function Stream({
           : {}
       )
     })
-    return () => {
-      current = false
-    }
+    return () => controller.abort()
   }, [busy, patchThread, thread.id, thread.sessionId, thread.startupHistoryLoaded])
 
   const rewindPrompt = async (anchor: number): Promise<string | null> => {

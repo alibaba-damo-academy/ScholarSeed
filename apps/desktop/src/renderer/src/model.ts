@@ -993,6 +993,8 @@ export interface Thread {
   terminated?: boolean
   readOnly?: boolean
   queuedMessages?: QueuedMessage[]
+  /** Latest authoritative queue snapshot. The transcript may still be replaying earlier events. */
+  queueSnapshotSeq?: number
   /** 本会话的后台任务生命周期态 (background_task_event 帧; StatusStrip 读 activeThread) — 每会话独立 */
   backgroundTasks?: Record<string, BgTask>
   /** 本会话最后一份完整 Codex plan snapshot。 */

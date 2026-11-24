@@ -164,10 +164,16 @@ On macOS and Windows, main can offer a native action to reopen Home when Electro
 
 主进程在已选定的桌面配置目录中管理任务恢复标记。受信任的主窗口渲染进程通过 preload 申请一次自动恢复，等待待恢复标记提交后再读取任务。恢复中断后，下次启动进入首页。跳过后，成功手动打开该任务即可恢复其自动打开资格。渲染进程负责前台期限、取消操作和会话正文的可用状态。
 
+Manual reopening makes the transcript interactive as soon as history is ready. Queue hydration uses the independent session status snapshot. The queue tracks its snapshot sequence separately from transcript replay and rejects responses overtaken by a local queue edit.
+
+手动重开时，历史读完即可操作正文。队列通过独立的会话状态请求补齐，单独记录快照序号。请求发出后若用户修改了队列，渲染器会丢弃旧快照并重新读取。
+
 在 macOS 和 Windows 上，若 Electron 报告恢复中的渲染进程无响应或退出，主进程可通过系统对话框提供重新打开到首页的入口。渲染进程的 15 秒预算和额外 1 秒确认时间结束后，主进程也会为仍未完成的恢复提供此入口。用户确认后，主进程跳过旧任务，在同一个窗口中重载渲染进程，Serve 进程继续运行。两个平台均需在真实桌面验证系统对话框和重载后的窗口。
 
 <a id="基础健康与-ai-就绪"></a>
 ### Baseline Health and AI Readiness
+
+The main process uses one monotonic startup health budget for probe attempts, response bodies, and retry delays. A managed Serve exit cancels the outstanding probe.
 
 Early backend diagnostics do not participate in admission. `[startup] backend checkpoint` in `window.log` distinguishes the return from the spawn call, the spawn event, Windows Job binding/release being queued, and receipt of the first output. Queued does not mean the child process has been released, and the spawn event does not mean Python has executed. `startup_checkpoint` in `backend.log` is written directly by the child process and covers the Windows wrapper entry, handshake release, module dispatch, and completion of Serve's prerequisite dependencies, default environment, bootstrap, and remaining imports. Child-process markers carry the PID, monotonic-clock value, and Unix time. Use the monotonic clock for intervals within one process; use Unix time only to help align events across processes, and do not subtract monotonic-clock values with different origins. Interpreter initialization still occurs before the wrapper, so the entire preceding gap cannot be attributed to business imports. macOS retains `-m` startup and has only parent-process and Serve markers, with no Windows handshake markers. Logs expose no arguments or credentials and do not change health deadlines, signing policy, or readiness definitions. Recollect evidence to validate behavior in Windows packaged builds.
 

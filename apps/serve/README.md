@@ -80,6 +80,12 @@ after the worker completes, so the caller retains its open/lifecycle locks and
 activity ownership until actual I/O cleanup. Maintenance still rejects new roots
 and waits for admitted work; this is not permission to skip resource draining.
 
+Open and lifecycle commands serialize by product session identity. A new session
+holds its key through activation, and a fork holds both source and child keys.
+Update preparation takes an exclusive fence, waits for active commands to
+finish, then snapshots live sessions. Serve shutdown closes admission before
+draining the same operations.
+
 Runtime calls, asynchronous locks, live session state and final memory projections
 remain on the event loop. Durable fork replay is loaded in a worker before local
 input references are applied on the loop; the existing worker-owned constructor
@@ -93,6 +99,10 @@ corresponding installed package; local contracts are not that evidence.
 项目校验、可写根准入、模型持久化、恢复写入、分支历史事务和持久快照读取复用该
 机制。重复取消也须等工作线程完成才向调用方交付，因此打开锁、生命周期锁和活动
 归属持续到实际 I/O 清理完成。维护仍拒绝新 root 并等待已准入工作，不跳过资源排空。
+
+打开和生命周期操作按产品会话身份串行。新建会话在激活完成前持有自己的锁，分叉
+同时持有来源和子会话的锁。更新准备建立独占屏障，等已准入操作结束后再采集
+会话快照。Serve 关闭先停止准入，再排空同一批操作。
 
 Runtime 调用、异步锁、会话内存状态和最终内存投影仍由事件循环持有。分支历史先在
 工作线程读取，再在循环内恢复本地输入引用；既有工作线程构造路径仍完成首次历史
