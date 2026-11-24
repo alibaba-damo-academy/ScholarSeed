@@ -236,6 +236,7 @@ from service.platform.files import (
     read_file_raw,
     resolve_child,
 )
+from service.platform.latency import RequestPhases
 from service.platform.storage import open_directory
 from service.platform.vocabulary import (
     COMPONENT_ANSWER_CAPABILITY,
@@ -3135,18 +3136,29 @@ class SessionService:
             "output_root": assigned.output_root,
         }, HTTP_OK
 
-    def history(self, session_id: str) -> dict[str, Any]:
+    def history(self, session_id: str, *, phases: RequestPhases | None = None) -> dict[str, Any]:
         record = self._access.get(session_id)
         live = self._sessions.get(session_id)
+        if phases is not None:
+            phases.mark("catalog")
         if record is not None:
             if live is not None:
                 live.recover_publications()
             else:
                 self._runtime.recover_publications(session_id)
+        if phases is not None:
+            phases.mark("publication")
         detached = live is None or live.runtime_session is None
-        durable_history = self._events.history_payload(session_id) if detached else []
-        return {
-            "turns": (live.history() if live is not None and not detached else durable_history),
+        turns = (
+            live.history()
+            if live is not None and not detached
+            else self._events.history_payload(session_id)
+        )
+        if phases is not None:
+            phases.count("attached", int(not detached))
+            phases.mark("history_rows")
+        payload = {
+            "turns": turns,
             "recovery_blocked": bool(
                 (pending := self._access.pending_turn_settlement(session_id))
                 and (live is None or pending.recovery_blocked)
@@ -3161,12 +3173,17 @@ class SessionService:
             ),
             "todo_turn_id": record.todo_turn_id if record is not None else None,
             "todo_explanation": record.todo_explanation if record is not None else None,
-            "artifacts": (
-                artifact_snapshot_payload(self._artifacts.list_session(session_id))
-                if record is not None
-                else []
-            ),
         }
+        if phases is not None:
+            phases.mark("settlement")
+        payload["artifacts"] = (
+            artifact_snapshot_payload(self._artifacts.list_session(session_id))
+            if record is not None
+            else []
+        )
+        if phases is not None:
+            phases.mark("artifacts")
+        return payload
 
     def files(
         self, session_id: str, path: str = "", offset: int = 0, *, outputs_only: bool = False

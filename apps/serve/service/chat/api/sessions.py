@@ -76,7 +76,7 @@ from service.identity.utils import (
     require_host_process,
 )
 from service.platform.activity import ActivityDomain
-from service.platform.latency import requestLatency
+from service.platform.latency import requestLatency, requestPhases
 from service.platform.limits import ATTACHMENT_MAX_BYTES, UPLOAD_CHUNK_BYTES
 from service.platform.passive_events import passive_events
 
@@ -1044,11 +1044,20 @@ def mount_session_routes(
         return {"entries": entries, "next_cursor": payload.get("next_cursor")}
 
     @app.get("/api/serve/history/{session_id}", dependencies=session_guard)
-    def history(session_id: str) -> dict[str, Any]:
-        payload = sessions.history(session_id)
-        payload["turns"] = events.decorate_history(session_id, payload["turns"])
-        payload["activity_events"] = events.activity_snapshot(session_id)
-        payload["turn_activity"] = events.turn_activity_snapshot(session_id)
+    def history(
+        session_id: str, request: Request, compact_activity: bool = False
+    ) -> dict[str, Any]:
+        phases = requestPhases(request.scope, expose_request_id=True)
+        payload = sessions.history(session_id, phases=phases)
+        turns, activity, timing = events.history_snapshot(
+            session_id, payload["turns"], phases=phases, compact_activity=compact_activity
+        )
+        payload["turns"] = turns
+        payload["activity_events"] = activity
+        payload["turn_activity"] = timing
+        phases.count("turns", len(turns))
+        phases.count("activity_events", len(activity))
+        phases.count("turn_activity", len(timing))
         return payload
 
     @app.get("/api/serve/sessions/{session_id}/mode", dependencies=session_guard)

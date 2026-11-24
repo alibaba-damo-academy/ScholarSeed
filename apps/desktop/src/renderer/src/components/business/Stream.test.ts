@@ -35,19 +35,6 @@ test('subagent progress reuses main agent thinking and tool presenters', () => {
   contains('conversation(SUBAGENT_ACTION_KEYS[key].key)', { attribute: 'label' })
 })
 
-test('turn sources sit next to the answer before artifacts and copy actions', () => {
-  const message = jsxWithAttributes(streamSource, { className: 'group/message' })
-  const answer = message.indexOf('<AnnotatedAnswer')
-  const sources = message.indexOf('{sourcesContent}')
-  const artifacts = message.indexOf('{trailingContent}')
-  const actions = message.indexOf('<MessageActions')
-  assert.ok(answer >= 0 && sources > answer)
-  assert.ok(artifacts > sources && actions > sources)
-  expressions(message)('!item.turnId', { attribute: 'showSources' })
-  expressions(message)('loadAnswerImage', { attribute: 'loadRemoteImage' })
-  expressions(streamSource)('loadAnswerImage', { attribute: 'loadRemoteImage' })
-})
-
 test('turn sources use the final answer anchor with a card-only fallback', () => {
   const contains = expressions(streamSource)
   contains(

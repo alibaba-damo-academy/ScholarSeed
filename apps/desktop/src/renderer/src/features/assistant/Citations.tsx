@@ -19,6 +19,7 @@ import { answerProjectSource } from './sources'
 import { useWorkspaceController } from '../workbench/workspace'
 import { webSearchSiteIconUrl, webSourcePreview } from '../resources/api'
 import { sha256Text } from './anchors'
+import type { TurnSourceViewport } from './viewport'
 import {
   citationPreviewUrl,
   citationSources,
@@ -32,41 +33,41 @@ const EMPTY_CITATION_SOURCES: CitationResolution[] = []
 export function TurnCitationSources({
   sessionId,
   turnId,
-  text,
+  textVersion,
   coverage,
+  viewport,
 }: {
   sessionId: string
   turnId: string
-  text: string
+  textVersion: string
   coverage?: AnswerCoverage
+  viewport: TurnSourceViewport
 }): React.JSX.Element | null {
   const { state, act } = useApp()
   const openWebSource = React.useContext(WebNavigationContext)
   const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof turnCitationSources>>>()
   const [failed, setFailed] = useState(false)
+  // A new textVersion invalidates the previous answer's sources, even for the same turn.
   useEffect(() => {
-    let generation = 0
-    let active = true
     setSnapshot(undefined)
-    const refresh = (): void => {
-      const requested = ++generation
-      void turnCitationSources(sessionId, turnId)
-        .then((value) => {
-          if (!active || generation !== requested) return
+    setFailed(false)
+    const subscription = viewport.watch(turnId, async (signal) => {
+      try {
+        const value = await turnCitationSources(sessionId, turnId, signal)
+        if (!signal.aborted) {
           setSnapshot(value)
           setFailed(false)
-        })
-        .catch(() => {
-          if (active && generation === requested) setFailed(true)
-        })
-    }
-    refresh()
-    window.addEventListener(ANSWER_SOURCES_CHANGED_EVENT, refresh)
+        }
+      } catch {
+        if (!signal.aborted) setFailed(true)
+      }
+    })
+    window.addEventListener(ANSWER_SOURCES_CHANGED_EVENT, subscription.invalidate)
     return () => {
-      active = false
-      window.removeEventListener(ANSWER_SOURCES_CHANGED_EVENT, refresh)
+      subscription.dispose()
+      window.removeEventListener(ANSWER_SOURCES_CHANGED_EVENT, subscription.invalidate)
     }
-  }, [sessionId, turnId, text])
+  }, [sessionId, turnId, textVersion, viewport])
   const reveal = useCitationReveal()
   const loadSources = useCallback(async () => {
     if (failed || !snapshot) throw new Error('citation_sources_unavailable')
