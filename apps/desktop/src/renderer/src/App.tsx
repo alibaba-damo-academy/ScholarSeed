@@ -1017,6 +1017,10 @@ function AppMain({
     workspaceReady || homeAvailable || state.startupTaskRecovery === 'presenting'
   const stopRecoveryForInput =
     state.startupTaskRecovery === 'waiting' ? act.skipStartupTaskRecovery : undefined
+  const recoveryAlertClass =
+    window.scholarseed?.platform === 'darwin'
+      ? '!pl-[calc(var(--vds-layout-window-controls-end)+var(--vds-space-3))]'
+      : undefined
   useUpdateHealth(workspaceReady && state.backendReady && state.runtimeReadiness !== null)
   const workspaceFailed = state.workspaceLoadState === 'error'
   const needsLogin = workspaceFailed && authRequired
@@ -1080,6 +1084,7 @@ function AppMain({
           {startupTaskPending && (
             <Alert
               role="status"
+              className={recoveryAlertClass}
               data-testid="startup-task-restoring"
               description={t('taskRecovery.restoring')}
               action={
@@ -1092,6 +1097,7 @@ function AppMain({
           {state.startupTaskRecovery === 'skipped' && (
             <Alert
               role="status"
+              className={recoveryAlertClass}
               data-testid="startup-task-skipped"
               closable
               description={t('taskRecovery.skipped')}
