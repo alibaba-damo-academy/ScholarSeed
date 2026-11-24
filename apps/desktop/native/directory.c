@@ -975,6 +975,22 @@ static bool role_permissions(int descriptor, bool ancestor, enum directory_role 
   return true;
 }
 
+static int open_pinned_directory(int parent, const char *name) {
+  int descriptor;
+  do {
+    descriptor = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  } while (descriptor < 0 && errno == EINTR);
+  return descriptor;
+}
+
+static bool ensure_directory_at(int parent, const char *name) {
+  int result;
+  do {
+    result = mkdirat(parent, name, 0700);
+  } while (result < 0 && errno == EINTR);
+  return result == 0 || errno == EEXIST;
+}
+
 static struct directory *open_directory(const char *path, bool create, bool aliases, enum directory_role role, struct directory_error *error) {
   size_t length = strlen(path);
   if (!length || length >= PATH_UNITS || path[0] != '/') { failure(error, "ERR_LEASE_ARGUMENT", 0); return NULL; }
@@ -984,7 +1000,7 @@ static struct directory *open_directory(const char *path, bool create, bool alia
   directory->path = strdup(path);
   if (!directory->path) { free(directory); free(name); failure(error, "ERR_LEASE_ALLOCATION", 0); return NULL; }
   directory->role = role;
-  int descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int descriptor = open_pinned_directory(AT_FDCWD, "/");
   if (descriptor < 0) { failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto failed; }
   directory->handles[directory->count++] = descriptor;
   if (!role_permissions(descriptor, length > 1, role, error)) goto failed;
@@ -996,10 +1012,10 @@ static struct directory *open_directory(const char *path, bool create, bool alia
     if (!*cursor || !strcmp(cursor, ".") || !strcmp(cursor, "..") || directory->count == DIRECTORY_DEPTH_LIMIT) {
       failure(error, "ERR_LEASE_ARGUMENT", 0); goto failed;
     }
-    if (create && final && mkdirat(descriptor, cursor, 0700) != 0 && errno != EEXIST) {
+    if (create && final && !ensure_directory_at(descriptor, cursor)) {
       failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); goto failed;
     }
-    descriptor = openat(descriptor, cursor, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    descriptor = open_pinned_directory(descriptor, cursor);
     if (descriptor < 0) {
       failure(error, errno == ENOENT ? "ERR_LEASE_MISSING" : "ERR_LEASE_DIRECTORY", (uint32_t)errno);
       goto failed;
@@ -1058,10 +1074,10 @@ failed:
 bool directory_child(struct directory *directory, const char *name, char *encoded, struct directory_error *error) {
   if (!child_name(name)) { failure(error, "ERR_LEASE_ARGUMENT", 0); return false; }
   int parent = directory->handles[directory->count - 1];
-  if (mkdirat(parent, name, 0700) != 0 && errno != EEXIST) {
+  if (!ensure_directory_at(parent, name)) {
     failure(error, "ERR_LEASE_NATIVE", (uint32_t)errno); return false;
   }
-  int child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int child = open_pinned_directory(parent, name);
   if (child < 0) { failure(error, "ERR_LEASE_DIRECTORY", (uint32_t)errno); return false; }
   bool valid = role_permissions(child, false, directory->role, error);
   struct stat identity;

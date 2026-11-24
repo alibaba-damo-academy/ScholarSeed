@@ -1,4 +1,4 @@
-// Close-boundary contracts: real OS handles, synthetic directory-chain topology.
+// Directory contracts with real OS handles and injected syscall failures.
 // Substitution exists only in this test translation unit, never in lease.node.
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +26,17 @@ static BOOL WINAPI interrupted_close(HANDLE handle) {
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
+#include <string.h>
+static int open_fault, mkdir_fault;
+static bool fail_workspace_call(const char *name, int *fault) {
+  if (!*fault || strcmp(name, "workspace")) return false;
+  errno = *fault;
+  *fault = 0;
+  return true;
+}
+#define openat(parent, name, ...) (fail_workspace_call(name, &open_fault) ? -1 : openat(parent, name, __VA_ARGS__))
+#define mkdirat(parent, name, mode) (fail_workspace_call(name, &mkdir_fault) ? -1 : mkdirat(parent, name, mode))
 static int captured_locks[8];
 static int captured_lock(int file, int operation) {
   int result = flock(file, operation);
@@ -42,6 +53,46 @@ static int interrupted_close(int handle) {
 #define close interrupted_close
 #endif
 #include "directory.c"
+
+#ifndef _WIN32
+static bool interrupted_workspace_contract(void) {
+  char root[] = "lease-workspace-XXXXXX", resolved[PATH_UNITS], path[PATH_UNITS];
+  if (!mkdtemp(root) || !realpath(root, resolved)) return false;
+  if (snprintf(path, sizeof(path), "%s/workspace", resolved) >= (int)sizeof(path)) return false;
+  struct directory_error error = {0};
+  open_fault = EINTR;
+  struct directory *workspace = directory_open(path, true, &error);
+  struct stat info;
+  char identity[IDENTITY_BYTES];
+  bool valid = workspace && !open_fault && stat(path, &info) == 0;
+  if (valid) {
+    snprintf(identity, sizeof(identity), "posix:%016" PRIx64 ":%016" PRIx64,
+             (uint64_t)info.st_dev, (uint64_t)info.st_ino);
+    valid = !strcmp(directory_identity(workspace), identity);
+  }
+  if (workspace && directory_close(workspace)) valid = false;
+  open_fault = EACCES;
+  workspace = directory_open(path, false, &error);
+  valid = valid && !workspace && !open_fault && error.system == EACCES && !strcmp(error.code, "ERR_LEASE_DIRECTORY");
+  if (workspace) directory_close(workspace);
+  if (rmdir(path)) valid = false;
+  struct directory *parent = directory_open(resolved, false, &error);
+  if (parent) {
+    mkdir_fault = EINTR;
+    open_fault = EINTR;
+    bool created = directory_child(parent, "workspace", identity, &error);
+    valid = valid && created && !mkdir_fault && !open_fault;
+    if (created && rmdir(path)) valid = false;
+    mkdir_fault = EACCES;
+    bool denied = !directory_child(parent, "workspace", identity, &error);
+    valid = valid && denied && !mkdir_fault && error.system == EACCES && !strcmp(error.code, "ERR_LEASE_NATIVE");
+    if (directory_close(parent)) valid = false;
+  } else valid = false;
+  if (rmdir(root)) valid = false;
+  printf("workspace directory pin after EINTR and EACCES: %s\n", valid ? "passed" : "failed");
+  return valid;
+}
+#endif
 
 #define CHAIN_HANDLES 2
 #define TOTAL_HANDLES (CHAIN_HANDLES * 3)
@@ -319,6 +370,10 @@ int main(int argc, char **argv) {
   }
   if (argc != 2) return 2;
   size_t requested = (size_t)strtoul(argv[1], NULL, 10);
+#ifndef _WIN32
+  if (!requested && !interrupted_workspace_contract()) return 93;
+  calls = 0;
+#endif
   if (requested > TOTAL_HANDLES) return 2;
   if (!reclamation_contract(requested > RECLAIM_SLOTS + 1 ? RECLAIM_SLOTS + 1 : requested)) return 92;
   fail_at = requested;
