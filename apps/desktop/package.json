@@ -290,6 +290,7 @@
     },
     "dmg": {
       "format": "ULFO",
+      "filesystem": "APFS",
       "title": "ScholarSeed",
       "contents": [
         {
