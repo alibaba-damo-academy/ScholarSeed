@@ -174,6 +174,20 @@ test('native recovery reopens a renderer that already exited without crashing it
   assert.equal(native.prompts[0].aborted, false)
 })
 
+test('a newer main navigation invalidates a scheduled recovery reopen', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(recovery.begin('old-task'))
+  native.window.emit('unresponsive')
+  native.respond(true)
+  await Promise.resolve()
+  native.rendererExited()
+  native.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['crash'])
+})
+
 test('the watchdog offers recovery once without a Chromium hang signal', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const { launch } = fixture(context)
