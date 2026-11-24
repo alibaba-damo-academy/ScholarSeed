@@ -106,7 +106,7 @@
     "commandNotFound": "A program or statement in the command was not found.",
     "permissionDenied": "This step did not have permission to run.",
     "fileMissing": "The file or directory to search does not exist.",
-    "nonzero": "The command did not complete successfully (exit code {{code}}).",
+    "nonzero": "The command did not complete successfully.",
     "unknown": "The command did not complete successfully; the cause is not yet known.",
     "toolFailed": "This tool step did not complete successfully.",
     "failedHelp": "This step may affect the task result. The agent can continue trying. Raw information is for troubleshooting only.",

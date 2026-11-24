@@ -3062,8 +3062,8 @@ function ToolStep({
     none: 'toolOutcome.toolFailed',
     noMatches: 'toolOutcome.noMatches',
   } as const
-  const outcomeText =
-    item.status === 'error' ? conversation(outcomeKey[outcome], { code: item.exitCode ?? 0 }) : ''
+  const outcomeText = item.status === 'error' ? conversation(outcomeKey[outcome]) : ''
+  const name = normalizeToolName(item.name)
   const summary = item.status !== 'error' ? toolInputSummary(item) : ''
   const action = activityAction(item)
   const command = action === 'command' ? commandInputText(item.input) : undefined
@@ -3079,7 +3079,7 @@ function ToolStep({
       itemId={item.toolId}
       turnId={item.turnId}
       data={{
-        name: normalizeToolName(item.name),
+        name: name.toLowerCase() === 'bash' ? undefined : name,
         label: toolLabel(item, conversation),
         status: displayStatus,
         statusLabel: item.recoveredBy
