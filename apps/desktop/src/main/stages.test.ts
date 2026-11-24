@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import {
+  createReadStream,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -11,15 +13,23 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
+import { zipSync } from 'fflate'
+import { assertSquirrelArchiveSize, UpdateArchiveLimitError } from './archive.ts'
+import { assertDownloadSpace, downloadWithProgress } from './download.ts'
+import { PreparedArchive, PublishedZipDigestMismatch } from './prepared.ts'
+import { samePreviewArtifact } from './preview.ts'
+import { planUpdatePrune, stagedInstallerName, updateArtifactKind } from './staging.ts'
 import { InstallationProgress } from './installation.ts'
 import {
   abandonedSquirrelRequest,
   decodeSquirrelHandoff,
   readSquirrelHandoff,
+  SquirrelSourceVerificationRetry,
   type SquirrelHandoff,
 } from './squirrel.ts'
 import {
@@ -30,8 +40,8 @@ import {
 import { retryUpdate, UpdateTransportError } from './retry.ts'
 import { basename, dirname, join, resolve } from 'node:path'
 import { SuccessorUpdater } from './successor.ts'
-import { planUpdatePrune, updateArtifactKind } from './staging.ts'
 import { readRecord, writeJson } from './journal.ts'
+import { MACOS_UPDATE_ZIP } from '../updates.ts'
 
 const source = readFileSync(new URL('./updater.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('updater.ts', source, ts.ScriptTarget.Latest, true)
@@ -77,6 +87,9 @@ test('a successor only replaces the selected slot after its native receipt and a
   t.after(() => rmSync(root, { recursive: true, force: true }))
   for (const outcome of [
     'promoted',
+    'zip-promoted',
+    'zip-verification-failed',
+    'zip-clicked',
     'rotated',
     'download-failed',
     'native-failed',
@@ -98,15 +111,21 @@ test('a successor only replaces the selected slot after its native receipt and a
     const alternate = outcome === 'rotated'
     const cache = join(root, outcome)
     mkdirSync(cache)
-    const installer = ({ id }: { id: string }) => join(cache, id + '.dmg')
+    const zip = outcome.startsWith('zip-')
+    const installer = ({ id }: { id: string }) => join(cache, id + (zip ? '.zip' : '.dmg'))
     const workspace = (meta: { id: string }) => installer(meta) + '.prepared'
     const readyPath = (slot: boolean) => join(cache, slot ? 'ready.next.json' : 'ready.json')
     const release = (id: string, build_number: string) => {
-      const meta = { id, version: '1', build_number }
+      const meta = {
+        id,
+        version: '1',
+        build_number,
+        ...(zip ? { artifact_kind: MACOS_UPDATE_ZIP } : {}),
+      }
       return {
         meta,
         path: installer(meta),
-        archive: { path: join(workspace(meta), 'application.zip') },
+        archive: { path: zip ? installer(meta) : join(workspace(meta), 'application.zip') },
       }
     }
     const current = release('B', '2')
@@ -140,12 +159,21 @@ test('a successor only replaces the selected slot after its native receipt and a
       receipt: { matches: () => true, archive: next.archive },
     }
     const pending = {
-      async prepare(archive: unknown, identity: { alternate?: true }, authorize: Function) {
+      async prepare(
+        archive: unknown,
+        identity: { alternate?: true },
+        authorize: Function,
+        _interaction: boolean,
+        _replacement: unknown,
+        verifySource?: (source: string) => Promise<void>
+      ) {
         assert.equal(archive, next.archive)
         assert.equal(!!identity.alternate, !alternate)
         const grant = await authorize()
         grant()
         events.push('native checked')
+        assert.equal(!!verifySource, zip)
+        if (verifySource) await verifySource('/native/standby')
         const sidecar = join(prepared.workspace, 'squirrel.pending.json')
         if (outcome === 'native-failed' || outcome === 'different-publisher') {
           writeJson(sidecar, {
@@ -173,7 +201,7 @@ test('a successor only replaces the selected slot after its native receipt and a
           ].includes(outcome)
         )
           throw new Error('refused')
-        if (outcome === 'clicked') controller.abort()
+        if (outcome === 'clicked' || outcome === 'zip-clicked') controller.abort()
       },
       matches: () => true,
       preparedCandidate: () => (outcome === 'missing-copy' ? undefined : { device: 1 }),
@@ -215,18 +243,27 @@ test('a successor only replaces the selected slot after its native receipt and a
       InstallationProgress,
       join,
       stageUpdate: async (
-        _id: string,
+        candidate: unknown,
         _progress: unknown,
         _log: unknown,
         _signal: unknown,
-        scope: { retained: unknown; expected: unknown }
+        retained: unknown
       ) => {
-        assert.equal(scope.retained, current)
-        assert.equal(scope.expected, next.meta)
+        assert.equal(retained, current)
+        assert.equal(candidate, next.meta)
         if (outcome === 'cancelled-after-staging') controller.abort()
         return outcome === 'download-failed' ? { ok: false } : { ok: true, ready: next, prepared }
       },
       revalidateMacArchive: async () => next.archive,
+      MACOS_UPDATE_ZIP,
+      SquirrelSourceVerificationRetry,
+      resolveDesktopConfig: () => ({}),
+      verifyUpdateApplication: async (source: string, meta: unknown) => {
+        assert.equal(source, '/native/standby')
+        assert.equal(meta, next.meta)
+        events.push('verified standby ZIP')
+        if (outcome === 'zip-verification-failed') throw new Error('Invalid publisher')
+      },
       assertSquirrelPreparationSpace() {},
       newMacInstallation: (port: SuccessorUpdater) => {
         port.setFeedURL({ url: 'local' })
@@ -270,6 +307,7 @@ test('a successor only replaces the selected slot after its native receipt and a
       updaterFunctions([
         'prepareMacSuccessor',
         'successorFileIdentity',
+        'macZipSourceVerifier',
         'discardUnselectedSuccessor',
       ]),
       environment
@@ -281,7 +319,8 @@ test('a successor only replaces the selected slot after its native receipt and a
       controller.signal,
       () => !controller.signal.aborted
     )
-    const selected = outcome === 'promoted' || outcome === 'rotated'
+    const selected = outcome === 'promoted' || outcome === 'rotated' || outcome === 'zip-promoted'
+    assert.equal(events.includes('verified standby ZIP'), zip)
     assert.equal(result.ok, selected, outcome)
     assert.deepEqual(
       JSON.parse(readFileSync(readyPath(environment.activeReadyAlternate), 'utf8')),
@@ -334,7 +373,8 @@ test('cold-start selection follows the canonical handoff across a staged but unc
   t.after(() => rmSync(cache, { recursive: true, force: true }))
   let alternate = false
   const exports: Record<string, Function> = {}
-  const path = (meta: { id: string }) => join(cache, meta.id + '.dmg')
+  const path = (meta: { id: string; artifact_kind?: string }) =>
+    join(cache, meta.id + (meta.artifact_kind === MACOS_UPDATE_ZIP ? '.zip' : '.dmg'))
   const directory = (meta: { id: string }) => path(meta) + '.prepared'
   runInNewContext(
     updaterFunctions([
@@ -347,6 +387,7 @@ test('cold-start selection follows the canonical handoff across a staged but unc
       exports,
       join,
       writeJson,
+      MACOS_UPDATE_ZIP,
       MACOS_PLATFORM: 'darwin',
       process: { platform: 'darwin' },
       activeReadyAlternate: undefined,
@@ -364,8 +405,17 @@ test('cold-start selection follows the canonical handoff across a staged but unc
     }
   )
   for (const id of ['B', 'D']) {
-    const meta = { id, sha512: '0'.repeat(128), file_size: 1 }
-    const archive = { path: join(directory(meta), 'application.zip'), size: 1, sha512: meta.sha512 }
+    const meta = {
+      id,
+      sha512: '0'.repeat(128),
+      file_size: 1,
+      ...(id === 'D' ? { artifact_kind: MACOS_UPDATE_ZIP } : {}),
+    }
+    const archive = {
+      path: id === 'D' ? path(meta) : join(directory(meta), 'application.zip'),
+      size: 1,
+      sha512: meta.sha512,
+    }
     mkdirSync(directory(meta))
     writeFileSync(archive.path, id)
     writeFileSync(path(meta), id)
@@ -398,6 +448,9 @@ test('a failed successor download preserves the active DMG and ZIP through cache
       MACOS_PLATFORM: 'darwin',
       process: { platform: 'darwin' },
       macPrepared: {},
+      macArchiveReady: () => false,
+      MACOS_UPDATE_ZIP,
+      samePreviewArtifact,
       macHandoffCommitted: () => true,
       readReadyState: () => retained,
       macPreparationReady: (meta: unknown) => meta === b,
@@ -425,10 +478,7 @@ test('a failed successor download preserves the active DMG and ZIP through cache
       downloadResumable: () => false,
     }
   )
-  const result = await exports.stageUpdate(d.id, noop, noop, new AbortController().signal, {
-    expected: d,
-    retained,
-  })
+  const result = await exports.stageUpdate(d, noop, noop, new AbortController().signal, retained)
   assert.equal(result.ok, false)
   assert.match(result.error, /SHA-512/)
   assert.equal(readFileSync(dmg(b), 'utf8'), 'B')
@@ -437,7 +487,166 @@ test('a failed successor download preserves the active DMG and ZIP through cache
   assert.equal(existsSync(directory({ id: 'obsolete' })), false)
 })
 
-function fixture(failHelper = false, failFinalGrant = false, writable = true) {
+test(
+  'ZIP staging discards corrupt bytes and hashes the corrected download exactly once',
+  {
+    skip: process.platform !== 'darwin',
+  },
+  async (t) => {
+    const cache = mkdtempSync(join(tmpdir(), 'zip-stage-'))
+    t.after(() => rmSync(cache, { recursive: true, force: true }))
+    const bytes = Buffer.from(
+      zipSync(
+        {
+          'ScholarSeed.app/': new Uint8Array(),
+          'ScholarSeed.app/Contents/Info.plist': Buffer.from('fixture'),
+        },
+        { level: 0 }
+      )
+    )
+    const candidate = {
+      id: 'zip',
+      artifact_kind: MACOS_UPDATE_ZIP,
+      file_size: bytes.length,
+      version: '0.3.2',
+      build_number: '202611240001',
+      sha512: crypto.createHash('sha512').update(bytes).digest('hex'),
+    }
+    const path = join(
+      cache,
+      stagedInstallerName(candidate.version, candidate.build_number, 'darwin', true)
+    )
+    const damaged = Buffer.from(bytes)
+    damaged[0] ^= 1
+    let selected = candidate
+    let publications = 0
+    // A complete cached file is reused by the downloader until verification removes it.
+    writeFileSync(path, damaged)
+    const hashes = t.mock.method(crypto, 'createHash')
+    syncBuiltinESMExports()
+    t.after(() => {
+      hashes.mock.restore()
+      syncBuiltinESMExports()
+    })
+    const stage = runInNewContext(
+      updaterFunctions([
+        'stageUpdate',
+        'downloadResumable',
+        'sha512OfFile',
+        'removeStaleInstaller',
+      ]) + '\nstageUpdate',
+      {
+        PreparedArchive,
+        PublishedZipDigestMismatch,
+        exports: {},
+        process,
+        MACOS_PLATFORM: 'darwin',
+        MACOS_UPDATE_ZIP,
+        macPrepared: null,
+        activeReadyAlternate: undefined,
+        readReadyState: () => null,
+        macHandoffCommitted: () => false,
+        getDownloadInfo: (
+          id: string,
+          _log: unknown,
+          _signal: unknown,
+          expected: typeof candidate
+        ) => {
+          assert.equal(id, selected.id)
+          assert.equal(expected, selected)
+          return {
+            ...selected,
+            download_url: `data:application/zip;base64,${bytes.toString('base64')}`,
+          }
+        },
+        samePreviewArtifact,
+        assertSquirrelArchiveSize,
+        UpdateArchiveLimitError,
+        UpdateVerifyError: class extends Error {},
+        stagedInstallerPath: () => path,
+        preparedApplicationDirectory: () => path + '.prepared',
+        basename,
+        dirname,
+        updateCacheDir: () => cache,
+        updateArtifactKind,
+        mkdirSync,
+        rmSync,
+        statSync,
+        existsSync,
+        removeUpdateArtifact: (workspace: string) =>
+          rmSync(workspace, { recursive: true, force: true }),
+        discardPreparedApplications() {},
+        pruneInactiveMacCache() {},
+        pruneUpdateArtifacts() {},
+        assertDownloadSpace,
+        retryUpdate,
+        downloadWithProgress,
+        createHash: hashes,
+        createReadStream,
+        InstallationProgress,
+        writeReadyState() {
+          publications++
+        },
+        persistUpdateLog() {},
+        logUpdateEvent() {},
+        logTiming() {},
+      }
+    )
+    const corrupt = await stage(
+      candidate,
+      () => {},
+      () => {}
+    )
+    assert.equal(corrupt.errorOrigin, 'download')
+    assert.equal(corrupt.resumable, false)
+    assert.equal(existsSync(path), false)
+    hashes.mock.resetCalls()
+    const fresh = await stage(
+      candidate,
+      () => {},
+      () => {}
+    )
+    assert.equal(fresh.ok, true, fresh.error)
+    assert.equal(fresh.ready.archive.sha512, candidate.sha512)
+    assert.deepEqual(readFileSync(path), bytes)
+    assert.equal(
+      hashes.mock.calls.filter(({ arguments: [algorithm] }) => algorithm === 'sha512').length,
+      1
+    )
+
+    const retained = { meta: { id: 'previous' }, path: join(cache, 'previous.zip') }
+    writeFileSync(retained.path, 'previous')
+    const standby = await stage(
+      candidate,
+      () => {},
+      () => {},
+      undefined,
+      retained
+    )
+    assert.equal(standby.ok, true, standby.error)
+    assert.equal(standby.ready.archive.path, path)
+    assert.deepEqual(readdirSync(standby.prepared.workspace), [])
+    assert.equal(publications, 1)
+    assert.equal(readFileSync(retained.path, 'utf8'), 'previous')
+
+    writeFileSync(path, damaged)
+    selected = { ...candidate, sha512: crypto.createHash('sha512').update(damaged).digest('hex') }
+    const malformed = await stage(
+      selected,
+      () => {},
+      () => {}
+    )
+    assert.equal(malformed.errorOrigin, 'preparation')
+    assert.match(malformed.error, /ZIP structure/)
+  }
+)
+
+function fixture(
+  failHelper = false,
+  failFinalGrant = false,
+  writable = true,
+  zip: boolean | ((installation: InstallationProgress) => Promise<void>) = false
+) {
   const events: string[] = []
   const nativeSpaceChecks: boolean[] = []
   let ready = false
@@ -447,6 +656,9 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
   const exports: Record<string, Function> = {}
   const prepared = {
     receipt: {
+      get archive() {
+        return staged.archive
+      },
       matches: () => true,
       revalidate: async () => {
         events.push('revalidate')
@@ -455,6 +667,7 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
     },
   }
   let grants = 0
+  let pendingVerification = false
   const authorize = async () => {
     events.push('grant')
     if (++grants === 2 && failFinalGrant) throw new Error('offline')
@@ -477,34 +690,55 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
       return ready
     },
     dispose: () => {},
+    canRetrySourceVerification: () => pendingVerification,
     prepare: async (
       _archive: unknown,
       _identity: unknown,
       authorize: Function,
       allowInteraction: boolean,
-      mayReplace?: (current: SquirrelHandoff) => boolean
+      mayReplace?: (current: SquirrelHandoff) => boolean,
+      verifySource?: (source: string) => Promise<void>
     ) => {
       if (ready) return
-      events.push('helper')
-      const guard = await authorize()
-      if (handoff.current && (!allowInteraction || !mayReplace?.(handoff.current)))
-        throw new Error('handoff exists')
-      guard()
-      committed = true
+      if (!committed) {
+        events.push('helper')
+        const guard = await authorize()
+        if (handoff.current && (!allowInteraction || !mayReplace?.(handoff.current)))
+          throw new Error('handoff exists')
+        guard()
+        committed = true
+      }
       if (failHelper) throw new Error('native refused')
+      try {
+        await verifySource?.('/native/unpacked')
+      } catch (error) {
+        pendingVerification = error instanceof SquirrelSourceVerificationRetry
+        throw error
+      }
+      pendingVerification = false
       ready = true
       events.push('ready')
     },
   }
   const staged = {
-    meta: { id: 'candidate', version: '0.3.1', build_number: '202611100001' },
+    meta: {
+      id: 'candidate',
+      version: '0.3.1',
+      build_number: '202611100001',
+      ...(zip ? { artifact_kind: MACOS_UPDATE_ZIP } : {}),
+    },
     archive: {},
   }
   const progress: { phase: string; installation?: { step: string } }[] = []
+  class UpdateVerifyError extends Error {
+    readonly kind = 'notarization-indeterminate'
+  }
+  let checks = 0
   const environment = {
     exports,
     process: { platform: 'darwin' },
     MACOS_PLATFORM: 'darwin',
+    MACOS_UPDATE_ZIP,
     NO_STAGED_UPDATE: 'No staged update',
     InstallationProgress,
     commitWithActivation,
@@ -533,13 +767,28 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
     discardOnTerminalSquirrelFailure: () => {},
     ActivationCandidateChanged,
     PreparedArtifactChangedError: class extends Error {},
-    UpdateVerifyError: class extends Error {},
+    UpdateVerifyError,
+    SquirrelSourceVerificationRetry,
+    resolveDesktopConfig: () => ({}),
+    verifyUpdateApplication: async (
+      source: string,
+      _meta: unknown,
+      _config: unknown,
+      _log: unknown,
+      installation: InstallationProgress
+    ) => {
+      assert.equal(source, '/native/unpacked')
+      events.push('verify-zip')
+      if (typeof zip === 'function') return zip(installation)
+      if (++checks === 1) throw new UpdateVerifyError('notarization timed out')
+    },
     UpdateArchiveLimitError: class extends Error {},
   }
   runInNewContext(
     updaterFunctions([
       'prepareMacUpdate',
       'macHandoffReplacement',
+      'macZipSourceVerifier',
       'revalidateMacArchive',
       'installStagedUpdate',
       'macArchiveReady',
@@ -548,12 +797,12 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
     ]),
     environment
   )
-  const prepare = (allowInteraction = false, startup?: unknown) =>
+  const prepare = (allowInteraction = false, startup?: unknown, signal = controller.signal) =>
     exports.prepareMacUpdate(
       staged.meta.id,
       (value: (typeof progress)[number]) => progress.push(value),
       () => {},
-      controller.signal,
+      signal,
       startup,
       allowInteraction
     )
@@ -671,6 +920,75 @@ test('background preparation proves native readiness before activation can quies
     'installing'
   )
   assert.ok(current.progress.every((value) => value.installation?.step !== 'restarting'))
+})
+
+test('a ZIP ticket timeout permits retry without restarting native preparation or releasing the install gate', async () => {
+  const current = fixture(false, false, true, true)
+  const first = await current.prepare()
+  assert.equal(first.errorFallback, 'install_notarization_indeterminate')
+  assert.deepEqual(current.events, ['revalidate', 'helper', 'grant', 'grant-guard', 'verify-zip'])
+  assert.equal((await current.install()).ok, false)
+  assert.equal((await current.prepare()).ok, true)
+  assert.deepEqual(current.events, [
+    'revalidate',
+    'helper',
+    'grant',
+    'grant-guard',
+    'verify-zip',
+    'verify-zip',
+    'ready',
+  ])
+  assert.equal((await current.install()).ok, true)
+  assert.deepEqual(current.events.slice(-3), ['quiesce-and-context', 'grant', 'grant-guard'])
+})
+
+test('pausing ZIP source verification keeps the bound request for manual retry and final authorization', async () => {
+  const pause = new AbortController()
+  let entered!: () => void
+  const verifying = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  const verifyApplication = runInNewContext(
+    updaterFunctions(['verifyUpdateApplication']) + '\nverifyUpdateApplication',
+    {
+      UpdateVerifyError: class extends Error {},
+      plistValue: () => {
+        entered()
+        // An interrupted command probe rejects with its own Error.
+        return new Promise((_, reject) =>
+          pause.signal.addEventListener(
+            'abort',
+            () => reject(new Error('command aborted: /usr/bin/plutil')),
+            { once: true }
+          )
+        )
+      },
+    }
+  )
+  const current = fixture(false, false, true, async (installation) => {
+    if (installation.signal !== pause.signal) return
+    await verifyApplication('/native/unpacked', {}, {}, () => {}, installation, 'staged')
+  })
+  const background = current.prepare(false, undefined, pause.signal)
+  await verifying
+  pause.abort()
+  const interrupted = await background
+  assert.equal(interrupted.cancelled, true)
+  assert.equal((await current.install()).ok, false)
+  assert.equal((await current.prepare(true)).ok, true)
+  assert.equal((await current.install()).ok, true)
+  assert.deepEqual(current.events, [
+    'revalidate',
+    'helper',
+    'grant',
+    'grant-guard',
+    'verify-zip',
+    'verify-zip',
+    'ready',
+    'quiesce-and-context',
+    'grant',
+    'grant-guard',
+  ])
 })
 
 test('native preparation refusal never quiesces product writers or persists a launch context', async () => {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { mock } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { createContext, runInContext } from 'node:vm'
 import ts from 'typescript'
@@ -36,6 +36,7 @@ function fixture(
   const readiness = new Promise<void>((resolve) => {
     ready = resolve
   })
+  const whenReady = mock.fn(() => readiness)
   const dependencies = {
     electron: {
       Notification: class {
@@ -56,7 +57,7 @@ function fixture(
         }
       },
       app: {
-        whenReady: () => readiness,
+        whenReady,
         getVersion: () => '0.3.0',
         relaunch: (...args: unknown[]) => {
           assert.deepEqual(args, [], 'preserve Electron launch arguments without overrides')
@@ -152,6 +153,7 @@ function fixture(
     run,
     refuse,
     ready,
+    whenReady,
     actions,
     dialogs,
     logs,
@@ -294,6 +296,10 @@ test('late app readiness uses only the remaining reporting budget', async (conte
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const current = fixture([])
   const pending = current.refuse('installing')
+  // Let the logging deadline settle and the notification start waiting for Electron.
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(current.whenReady.mock.callCount(), 1)
+  assert.equal(current.notifications.length, 0)
   context.mock.timers.tick(1900)
   current.ready()
   await new Promise<void>((resolve) => setImmediate(resolve))

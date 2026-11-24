@@ -347,6 +347,13 @@ export type SquirrelRecordMutation = (
   operation: (write: (handoff: SquirrelHandoff) => void) => void
 ) => void
 
+export class SquirrelSourceVerificationRetry extends Error {}
+
+export type SquirrelSourceVerifier = (
+  source: string,
+  request: SquirrelNativeRequest
+) => Promise<void>
+
 export class SquirrelInstallation {
   private handedOff = false
   private downloaded = false
@@ -355,6 +362,7 @@ export class SquirrelInstallation {
   private downloadedHandoff?: SquirrelHandoff
   private detached = false
   private stopWaiting?: () => void
+  private pendingVerification?: { identity: SquirrelHandoff; request: SquirrelNativeRequest }
   private running: Promise<void> | null = null
   private readonly nativeError = (error: unknown): void => {
     if (this.detached) return
@@ -371,6 +379,7 @@ export class SquirrelInstallation {
   }
   private recordFailure(): boolean {
     this.nativeFailed = true
+    this.pendingVerification = undefined
     try {
       let recorded = false
       this.mutateRecord((write) => {
@@ -395,7 +404,8 @@ export class SquirrelInstallation {
     private readonly diagnostic: (event: string, errorCode?: string) => void,
     private readonly timeoutMs = HANDOFF_TIMEOUT_MS,
     private readonly bindNativeRequest?: (
-      identity: SquirrelHandoff
+      identity: SquirrelHandoff,
+      verifySource?: SquirrelSourceVerifier
     ) => Promise<SquirrelNativeRequest>,
     private mutateRecord: SquirrelRecordMutation = (operation) =>
       operation((handoff) => writeJson(recordPath, handoff)),
@@ -440,22 +450,52 @@ export class SquirrelInstallation {
     )
   }
 
+  canRetrySourceVerification(
+    archive: SquirrelArchive,
+    identity: Pick<SquirrelHandoff, 'candidate' | 'version' | 'buildNumber'>
+  ): boolean {
+    const pending = this.pendingVerification?.identity
+    return (
+      !this.detached &&
+      !this.nativeFailed &&
+      !!pending?.binding &&
+      pending.candidate === identity.candidate &&
+      pending.version === identity.version &&
+      pending.buildNumber === identity.buildNumber &&
+      pending.binding.size === archive.size &&
+      pending.binding.sha512 === archive.sha512.toLowerCase()
+    )
+  }
+
   prepare(
     archive: SquirrelArchive,
     identity: SquirrelHandoff,
     authorize: HandoffAuthorization,
     allowInteraction = false,
-    mayReplaceHandoff?: (prior: SquirrelHandoff) => boolean
+    mayReplaceHandoff?: (prior: SquirrelHandoff) => boolean,
+    verifySource?: SquirrelSourceVerifier
   ): Promise<void> {
     if (this.detached) return Promise.reject(new Error('Squirrel handoff detached'))
     if (this.running) return this.running
-    if (this.handedOff)
-      return this.matches(archive, identity)
-        ? Promise.resolve()
-        : Promise.reject(new Error('Squirrel handoff already consumed'))
-    this.running = this.start(archive, identity, authorize, allowInteraction, mayReplaceHandoff)
+    if (this.matches(archive, identity)) return Promise.resolve()
+    const pending = this.pendingVerification
+    const retry = pending && verifySource && this.canRetrySourceVerification(archive, identity)
+    if (this.handedOff && !retry)
+      return Promise.reject(new Error('Squirrel handoff already consumed'))
+    this.running = (
+      retry
+        ? this.bindAndPublish(pending.identity, verifySource)
+        : this.start(
+            archive,
+            identity,
+            authorize,
+            allowInteraction,
+            mayReplaceHandoff,
+            verifySource
+          )
+    )
       .catch((error) => {
-        if (this.handedOff) this.nativeFailed = true
+        if (this.handedOff && !this.pendingVerification) this.nativeFailed = true
         throw error
       })
       .finally(() => {
@@ -463,12 +503,79 @@ export class SquirrelInstallation {
       })
     return this.running
   }
+
+  private async bindAndPublish(
+    identity: SquirrelHandoff,
+    verifySource?: SquirrelSourceVerifier,
+    isActive = () => true,
+    onReady?: () => void
+  ): Promise<void> {
+    let captured: SquirrelNativeRequest | undefined
+    try {
+      this.diagnostic('handoff-binding-request')
+      const expected = this.pendingVerification?.request
+      const nativeRequest = await this.bindNativeRequest?.(
+        identity,
+        verifySource &&
+          (async (source, request) => {
+            if (expected && !isDeepStrictEqual(request, expected))
+              throw new Error('Squirrel request changed before source verification retry')
+            captured = request
+            await verifySource(source, request)
+          })
+      )
+      if (!isActive()) return
+      if (this.detached) throw new Error('Squirrel handoff detached')
+      if (
+        !nativeRequest ||
+        !validSquirrelNativeRequest(nativeRequest) ||
+        !sameSquirrelBinding(nativeRequest.binding, identity.binding) ||
+        (verifySource && !captured)
+      )
+        throw new Error('Squirrel request binding unavailable')
+      if (this.nativeFailed) throw new Error('Squirrel native readiness revoked')
+      this.mutateRecord((write) => {
+        const pending = readSquirrelHandoff(this.recordPath)
+        if (
+          pending?.state !== 'requested' ||
+          pending.sourcePid !== process.pid ||
+          !sameSquirrelBinding(pending.binding, identity.binding)
+        )
+          throw new Error('Squirrel handoff changed during request binding')
+        const downloadedHandoff: SquirrelHandoff = {
+          ...identity,
+          sourcePid: pending.sourcePid,
+          nativeRequest,
+          state: 'downloaded',
+        }
+        write(downloadedHandoff)
+        this.downloadedHandoff = downloadedHandoff
+      })
+      this.pendingVerification = undefined
+      this.downloaded = true
+      this.diagnostic('handoff-downloaded')
+      onReady?.()
+    } catch (error) {
+      if (!isActive()) return
+      if (this.detached) throw new Error('Squirrel handoff detached')
+      if (error instanceof SquirrelSourceVerificationRetry && captured && !this.nativeFailed) {
+        this.pendingVerification = { identity, request: captured }
+        this.diagnostic('handoff-source-verification-retry')
+      } else {
+        this.diagnostic('handoff-binding-failed')
+        if (this.recordFailure()) this.diagnostic(SQUIRREL_HANDOFF_FAILED_EVENT)
+      }
+      throw error
+    }
+  }
+
   private async start(
     archive: SquirrelArchive,
     identity: SquirrelHandoff,
     authorize: HandoffAuthorization,
     allowInteraction: boolean,
-    mayReplaceHandoff?: (prior: SquirrelHandoff) => boolean
+    mayReplaceHandoff?: (prior: SquirrelHandoff) => boolean,
+    verifySource?: SquirrelSourceVerifier
   ): Promise<void> {
     this.nativeFailed = false
     identity = {
@@ -535,43 +642,20 @@ export class SquirrelInstallation {
             reject(new Error('Squirrel candidate unavailable'))
           }
           const downloaded = (): void => {
-            void (async () => {
-              this.diagnostic('handoff-binding-request')
-              const nativeRequest = await this.bindNativeRequest?.(identity)
-              if (settled) return
-              if (
-                !nativeRequest ||
-                !validSquirrelNativeRequest(nativeRequest) ||
-                !sameSquirrelBinding(nativeRequest.binding, identity.binding)
-              )
-                throw new Error('Squirrel request binding unavailable')
-              if (this.nativeFailed) throw new Error('Squirrel native readiness revoked')
-              this.mutateRecord((write) => {
-                const pending = readSquirrelHandoff(this.recordPath)
-                if (
-                  pending?.state !== 'requested' ||
-                  pending.sourcePid !== process.pid ||
-                  !sameSquirrelBinding(pending.binding, identity.binding)
-                )
-                  throw new Error('Squirrel handoff changed during request binding')
-                const downloadedHandoff: SquirrelHandoff = {
-                  ...identity,
-                  sourcePid: pending.sourcePid,
-                  nativeRequest,
-                  state: 'downloaded',
-                }
-                write(downloadedHandoff)
-                this.downloadedHandoff = downloadedHandoff
-              })
-              this.downloaded = true
-              this.diagnostic('handoff-downloaded')
-              cleanup()
-              resolve()
-            })().catch((error) => {
+            // ZIP verification has its own probe and ticket deadlines. The native
+            // preparation deadline must not turn a slow ticket into a terminal error.
+            if (verifySource) clearTimeout(timer)
+            void this.bindAndPublish(
+              identity,
+              verifySource,
+              () => !settled,
+              () => {
+                cleanup()
+                resolve()
+              }
+            ).catch((error) => {
               if (settled) return
               cleanup()
-              this.diagnostic('handoff-binding-failed')
-              if (this.recordFailure()) this.diagnostic(SQUIRREL_HANDOFF_FAILED_EVENT)
               reject(error)
             })
           }

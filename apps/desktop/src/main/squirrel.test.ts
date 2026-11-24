@@ -21,6 +21,7 @@ import { isDeepStrictEqual, promisify } from 'node:util'
 import { writeJson } from './journal.ts'
 import {
   SquirrelInstallation,
+  SquirrelSourceVerificationRetry,
   discardOnTerminalSquirrelFailure,
   readSquirrelHandoff,
   abandonedSquirrelRequest,
@@ -31,6 +32,7 @@ import {
   type SquirrelArchive,
   type SquirrelNativeRequest,
   type SquirrelRecordMutation,
+  type SquirrelSourceVerifier,
   validSquirrelBinding,
 } from './squirrel.ts'
 import { assertSquirrelArchiveSize, MAX_SQUIRREL_ARCHIVE_BYTES } from './archive.ts'
@@ -311,13 +313,22 @@ class InstallationFixture extends SquirrelInstallation {
     record: string,
     diagnostic: (event: string, errorCode?: string) => void,
     timeout?: number,
-    bind: (identity: SquirrelHandoff) => Promise<SquirrelNativeRequest> = async (candidate) => {
+    bind: (
+      identity: SquirrelHandoff,
+      verifySource?: SquirrelSourceVerifier
+    ) => Promise<SquirrelNativeRequest> = async (candidate, verifySource) => {
       const source = {
         path: '/fixture/source',
         parent: { dev: 1, ino: 2, uid: 501 },
         item: { dev: 1, ino: 3, uid: 501 },
       }
-      return { source, target: { ...source, path: '/fixture/target' }, binding: candidate.binding }
+      const request = {
+        source,
+        target: { ...source, path: '/fixture/target' },
+        binding: candidate.binding,
+      }
+      if (verifySource) await verifySource(source.path, request)
+      return request
     },
     successor = false
   ) {
@@ -337,11 +348,28 @@ test('successor publication preserves the downloaded update until a guarded exac
   const authorize = async () => () => {}
   await previous.prepare(archive, identity, authorize)
   const first = readSquirrelHandoff(record)!
-  await successor.prepare(
-    archive,
-    { ...identity, alternate: true, candidate: 'newer', buildNumber: '202611260001' },
-    authorize
+  const candidate = {
+    ...identity,
+    alternate: true as const,
+    candidate: 'newer',
+    buildNumber: '202611260001',
+  }
+  const prepare = (verify: SquirrelSourceVerifier) =>
+    successor.prepare(archive, candidate, authorize, false, undefined, verify)
+  await assert.rejects(
+    prepare(async () => {
+      throw new SquirrelSourceVerificationRetry('ticket timeout')
+    }),
+    /ticket timeout/
   )
+  assert.equal(previous.ready, true)
+  assert.equal(successor.ready, false)
+  assert.deepEqual(readSquirrelHandoff(record), first)
+  await prepare(async (source, request) => {
+    assert.equal(request.source.path, source)
+    assert.equal(request.binding?.candidate, candidate.candidate)
+  })
+  assert.equal(next.checks, 1)
   const second = readSquirrelHandoff(sidecar)!
   const mutate = (fn: (write: (value: SquirrelHandoff) => void) => void) =>
     fn((value) => writeJson(record, value))
@@ -761,6 +789,90 @@ test('native request binding precedes readiness and survives the installing reco
   owner.quitAndInstall()
   assert.deepEqual(readSquirrelHandoff(record)?.nativeRequest, binding)
   assert.equal(readSquirrelHandoff(record)?.state, 'installing')
+})
+
+test('ZIP ticket retry reuses the native request and rejects a replaced extraction', async (t) => {
+  for (const outcome of ['verified', 'replaced', 'detached'] as const) {
+    const { archive, record } = await fixture(t)
+    const updater = new Updater()
+    const source = {
+      path: '/fixture/source',
+      parent: { dev: 1, ino: 2, uid: 501 },
+      item: { dev: 1, ino: 3, uid: 501 },
+    }
+    let bindingReads = 0
+    let checks = 0
+    let authorizations = 0
+    const owner = new SquirrelInstallation(
+      updater,
+      record,
+      () => {},
+      40,
+      async (candidate, verify) => {
+        const actual =
+          ++bindingReads > 1 && outcome === 'replaced'
+            ? { ...source, item: { ...source.item, ino: 4 } }
+            : source
+        const request = {
+          source: actual,
+          target: { ...source, path: '/fixture/target' },
+          binding: candidate.binding,
+        }
+        await verify?.(actual.path, request)
+        return request
+      }
+    )
+    updater.check = () => updater.emit('update-downloaded')
+    const authorize = async () => {
+      authorizations++
+      return () => {}
+    }
+    const verify = async () => {
+      if (++checks === 1) {
+        // The ticket has its own timeout after the native download event.
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        throw new SquirrelSourceVerificationRetry('ticket timeout')
+      }
+      if (outcome === 'detached') owner.detach()
+    }
+    await assert.rejects(
+      owner.prepare(archive, identity, authorize, false, undefined, verify),
+      /ticket timeout/
+    )
+    assert.equal(owner.ready, false)
+    assert.equal(readSquirrelHandoff(record)?.state, 'requested')
+    assert.throws(() => owner.quitAndInstall(), /not ready/)
+    await assert.rejects(
+      owner.prepare(
+        { ...archive, size: archive.size + 1 },
+        identity,
+        authorize,
+        false,
+        undefined,
+        verify
+      ),
+      /already consumed/
+    )
+    const retry = owner.prepare(archive, identity, authorize, false, undefined, verify)
+    if (outcome === 'detached') {
+      await assert.rejects(retry, /detached/)
+      assert.equal(readSquirrelHandoff(record)?.state, 'requested')
+      assert.equal(owner.canRetrySourceVerification(archive, identity), false)
+      assert.throws(() => owner.quitAndInstall(), /not ready/)
+    } else if (outcome === 'replaced') {
+      await assert.rejects(retry, /request changed/)
+      assert.equal(checks, 1)
+      assert.equal(readSquirrelHandoff(record)?.state, 'failed')
+      assert.throws(() => owner.quitAndInstall(), /not ready/)
+    } else {
+      await retry
+      assert.equal(checks, 2)
+      assert.equal(readSquirrelHandoff(record)?.state, 'downloaded')
+    }
+    assert.equal(updater.checks, 1)
+    assert.equal(authorizations, 1)
+    assert.equal(updater.quits, 0)
+  }
 })
 
 test('a native error while request binding is pending cannot publish a late downloaded success', async (t) => {

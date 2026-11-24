@@ -2,7 +2,6 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const APPLICATION_LAYOUT = Object.freeze({ asar: 'asar', directory: 'directory' })
-const DEFAULT_APP_ARCHIVE = 'default_app.asar'
 const ASAR_EXTENSION = '.asar'
 
 function applicationLayout(resources, format = APPLICATION_LAYOUT.asar) {
@@ -16,16 +15,11 @@ function applicationLayout(resources, format = APPLICATION_LAYOUT.asar) {
   }
 }
 
-function bridgeResources(app) {
+function assertBridgeApplication(app) {
   const contents = path.join(app, 'Contents')
   const resources = path.join(contents, 'Resources')
   for (const directory of [app, contents, resources])
     if (!fs.lstatSync(directory).isDirectory()) throw new Error('invalid macOS update bridge bundle layout')
-  return resources
-}
-
-function assertBridgeApplication(app) {
-  bridgeResources(app)
   const pending = [app]
   while (pending.length) {
     const directory = pending.pop()
@@ -38,16 +32,4 @@ function assertBridgeApplication(app) {
   }
 }
 
-function prepareBridgeApplication(app) {
-  const resources = bridgeResources(app)
-  const archive = path.join(resources, DEFAULT_APP_ARCHIVE)
-  const info = fs.lstatSync(archive, { throwIfNoEntry: false })
-  // Electron ships its fallback app even when the product uses a directory entrypoint.
-  if (info) {
-    if (!info.isFile() || info.nlink !== 1) throw new Error('unexpected Electron default app archive')
-    fs.unlinkSync(archive)
-  }
-  assertBridgeApplication(app)
-}
-
-module.exports = { APPLICATION_LAYOUT, applicationLayout, assertBridgeApplication, prepareBridgeApplication }
+module.exports = { APPLICATION_LAYOUT, applicationLayout, assertBridgeApplication }

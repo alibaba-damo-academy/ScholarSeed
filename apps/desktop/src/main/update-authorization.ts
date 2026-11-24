@@ -118,7 +118,7 @@ export function verifyActivationGrant(
     !data ||
     data.domain !== 'scholarseed.update.activation' ||
     data.schema !== 1 ||
-    data.artifact_kind !== 'installer' ||
+    data.artifact_kind !== (candidate.artifact_kind ?? 'installer') ||
     data.nonce !== nonce ||
     typeof data.revision !== 'string' ||
     !/^[1-9][0-9]{0,18}$/.test(data.revision) ||
@@ -171,6 +171,7 @@ export async function requestActivationGrant(
     body: JSON.stringify({
       nonce,
       candidate: activationCandidate(candidate),
+      ...(candidate.artifact_kind ? { artifact_kind: candidate.artifact_kind } : {}),
       ...(previewContext ? { preview_context: previewContext } : {}),
     }),
     signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),

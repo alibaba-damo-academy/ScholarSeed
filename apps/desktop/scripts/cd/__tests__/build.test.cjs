@@ -42,7 +42,7 @@ const { runInNewContext } = require('node:vm')
 const { createRequire } = require('node:module')
 const ts = require('typescript')
 const { TARGETS } = require('../../shared/target.cjs')
-const { applicationLayout, assertBridgeApplication, prepareBridgeApplication } = require('../layout.cjs')
+const { applicationLayout, assertBridgeApplication } = require('../layout.cjs')
 const { verifyInputs, verifyNotices, stageNotices } = require('../notices.cjs')
 const PACKAGE = require('../../../package.json')
 
@@ -102,57 +102,39 @@ const {
 } = require('../../pre/identity.cjs')
 const REPO_ROOT = path.join(sourceDirectory, '../../../..')
 
-test('the macOS update bridge is an explicit directory layout and has separate build output', () => {
-  const ordinary = options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'dir'])
-  const bridge = options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'dir', '--macos-update-bridge'])
-  assert.equal(ordinary.applicationLayout, 'asar')
-  assert.equal(bridge.applicationLayout, 'directory')
-  assert.notEqual(buildRunDirectory('release', ordinary), buildRunDirectory('release', bridge))
+test('native packaging rejects the retired macOS bridge option', () => {
   assert.throws(
-    () => options(['--platform', 'win32', '--arch', 'x86_64', '--macos-update-bridge']),
-    /requires a macOS application or installer stage/
-  )
-  assert.throws(
-    () => options(['--platform', 'darwin', '--arch', 'arm64', '--stage', 'backend', '--macos-update-bridge']),
-    /requires a macOS application or installer stage/
+    () => options(['--platform', 'darwin', '--arch', 'arm64', '--macos-update-bridge']),
+    /expected a supported --option value/
   )
 })
 
-test('macOS update bridge packaging removes only the fallback archive and refuses nested ASAR paths', (t) => {
+test('verification of a historical macOS bridge refuses nested ASAR paths', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-update-bridge-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const application = path.join(root, 'ScholarSeed.app')
   const resources = path.join(application, 'Contents', 'Resources')
   const layout = applicationLayout(resources, 'directory')
   fs.mkdirSync(layout.nativeDirectory, { recursive: true })
-  const fallback = path.join(resources, 'default_app.asar')
-  fs.writeFileSync(fallback, 'Electron fallback')
-  const module = path.join(layout.nativeDirectory, 'lease.node')
-  fs.writeFileSync(module, 'frozen native module')
-
-  prepareBridgeApplication(application)
-  assert.equal(fs.existsSync(fallback), false)
-  assert.equal(fs.readFileSync(module, 'utf8'), 'frozen native module')
   assert.doesNotThrow(() => assertBridgeApplication(application))
   fs.writeFileSync(path.join(layout.nativeDirectory, 'nested.ASAR'), 'unexpected archive')
   assert.throws(() => assertBridgeApplication(application), /nested\.ASAR/)
 })
 
-test('macOS update bridge keeps the normal frozen inputs and signing hook with a directory app', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-bridge-config-'))
+test('macOS packaging uses ASAR with native libraries and all signing and verification hooks', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-mac-config-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  const args = options(['--stage', 'dir', '--platform', 'darwin', '--arch', 'arm64', '--macos-update-bridge'])
+  const args = options(['--stage', 'dir', '--platform', 'darwin', '--arch', 'arm64'])
   const filename = writeBuilderConfiguration({
     runDirectory: directory,
     resourceRoot: path.join(directory, 'resources'),
     output: path.join(directory, 'artifacts'),
     productName: 'ScholarSeed',
-    applicationLayout: args.applicationLayout,
     closure: { protected: { generation: 'a'.repeat(64) } },
   }, args)
   const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
-  assert.equal(config.asar, false)
-  assert.equal(config.asarUnpack, undefined)
+  assert.equal(config.asar, true)
+  assert.ok(config.asarUnpack.some(pattern => pattern.endsWith('.node')))
   assert.equal(config.appId, PACKAGE.build.appId)
   assert.equal(config.mac.hardenedRuntime, true)
   assert.match(config.afterPack, /[/\\]sign\.cjs$/)
@@ -658,9 +640,11 @@ test('macOS install gate requires local Developer ID identity and offline ticket
   assert.match(NOTARIZATION_SOURCE, /await check\.native!\.verifySignature\(check\.appPath\)/)
   assert.match(NOTARIZATION_SOURCE, /await check\.native!\.verify\(ticket, check\.hashes\)/)
   assert.match(NATIVE_NOTARIZATION_SOURCE, /kSecCSCheckAllArchitectures\s*\|\s*kSecCSCheckNestedCode\s*\|\s*kSecCSStrictValidate\s*\|\s*kSecCSNoNetworkAccess/)
-  // Trust is refreshed on the exact read-only source; only the digest-bound ZIP
-  // is handed to Squirrel. No writable app copy or client-side re-extraction.
-  assert.match(UPDATER_SOURCE, /verifyMountedApplication\([\s\S]{0,80}source,/)
+  // DMGs are checked on the mounted source. Downloaded ZIPs use the app Squirrel extracts.
+  assert.match(UPDATER_SOURCE, /withMountedDmg\(dmgPath, installation, log, async \(source\) => \{\s*await verifyUpdateApplication\(\s*source,\s*meta,/)
+  assert.match(UPDATER_SOURCE, /if \(meta\.artifact_kind !== MACOS_UPDATE_ZIP\) return undefined\s*return async \(source: string\) =>/)
+  assert.match(UPDATER_SOURCE, /macZipSourceVerifier\(staged\.meta, installation, log\)/)
+  assert.match(UPDATER_SOURCE, /macZipSourceVerifier\(candidate, progress, log\)/)
   assert.match(UPDATER_SOURCE, /PreparedArchive\.create\(/)
   assert.match(UPDATER_SOURCE, /receipt\.revalidate\(/)
   assert.doesNotMatch(UPDATER_SOURCE, /'stage application'|'inspect prepared archive'/)
@@ -683,7 +667,11 @@ test('the updater never blocks the main process with a synchronous spawn', () =>
   )
   assert.match(
     UPDATER_SOURCE,
-    /await verifyMountedApplication\(\s*source,\s*meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'source'\s*\)/
+    /await verifyUpdateApplication\(\s*source,\s*meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'source'\s*\)/
+  )
+  assert.match(
+    UPDATER_SOURCE,
+    /await verifyUpdateApplication\(\s*source,\s*meta,\s*resolveDesktopConfig\(log\),\s*log,\s*installation,\s*'staged'\s*\)/
   )
   // bug 87253073：外部命令挂起不允许把安装变成无限等待。超时/取消的强制层在唯一收口点
   // subprocess.ts —— 超时 SIGKILL 子进程并 reject，准备链每一步都声明上限。
@@ -796,7 +784,11 @@ test('discovery keeps newer builds available without discarding a macOS ready pa
   assert.match(SHELL_SOURCE, /updatePreparation\.offer\(latest\)/)
   assert.match(
     SHELL_SOURCE,
-    /if \(snapshot\.phase === 'ready' && snapshot\.candidate\)\s*updatePreparation\.adopt\(snapshot\.candidate\)\s*updatePreparation\.observe\(latest\)/
+    /const ready = snapshot\.phase === 'ready' \? snapshot\.candidate : undefined\s*if \(ready\) updatePreparation\.adopt\(ready\)/
+  )
+  assert.match(
+    SHELL_SOURCE,
+    /const sameReadyBuild =\s*process\.platform === MACOS_PLATFORM &&\s*ready\?\.id === latest\.id &&\s*ready\.version === latest\.version &&\s*ready\.build_number === latest\.build_number &&\s*!samePreviewArtifact\(ready, latest\) &&\s*updater\.macPreparationReady\(ready\)\s*updatePreparation\.observe\(sameReadyBuild \? ready : latest\)/
   )
   assert.match(SHELL_SOURCE, /updatePreparation\.background\(enabled\)/)
   assert.match(SHELL_SOURCE, /snapshot\.latestCandidate \?\? snapshot\.candidate/)
@@ -836,13 +828,12 @@ test('discovery keeps newer builds available without discarding a macOS ready pa
   // Same-candidate checks preserve an install failure; a newer candidate may prepare.
   assert.match(
     SHELL_SOURCE,
-    /if \(snapshot\.phase === 'ready' && snapshot\.candidate\?\.id === latest\.id\)/
+    /snapshot\.errorOrigin === 'install' &&\s*snapshot\.candidate &&\s*samePreviewArtifact\(snapshot\.candidate, latest\)\s*\)\s*return publishUpdateSnapshot\(\{\s*\.\.\.snapshot,/
   )
-  assert.match(SHELL_SOURCE, /updatePreparation\.adopt\(latest\)/)
-})
-
-test('preparation reports success only for the requested ready identity', () => {
-  assert.match(SHELL_SOURCE, /ok: prepared\.phase === 'ready' && prepared\.candidate\?\.id === id/)
+  assert.match(
+    SHELL_SOURCE,
+    /if \(\s*!restoreMacPreparation &&\s*snapshot\.phase === 'ready' &&\s*snapshot\.candidate\?\.id === latest\.id\s*\)\s*updatePreparation\.adopt\(latest\)/
+  )
 })
 
 test('checkpoint failures retain a real ready package instead of routing it to download', () => {
@@ -862,16 +853,6 @@ test('the renderer holds no cross-restart update state', () => {
   )
   assert.match(UPDATE_FEATURE_SOURCE, /state\?\.announcedKey === key/)
   assert.match(UPDATER_SOURCE, /ANNOUNCED_STATE_FILE = 'announced\.json'/)
-})
-
-test('every snapshot the shell publishes carries the announcement acknowledgement', () => {
-  // 部分发布点是新构造的对象而不是展开当前快照；漏盖一次就等于把用户的确认丢掉。
-  assert.match(
-    SHELL_SOURCE,
-    /function publishUpdateSnapshot\([^\n)]*\): UpdateSnapshot \{\s*const stamped = withAnnouncedKey\(\{\s*\.\.\.next,[\s\S]*?\brestartPending:[\s\S]*?\}\)\s*updateSnapshot = stamped\s*sendToMainWindow\('scholarseed:update-state', stamped\)/
-  )
-  assert.match(SHELL_SOURCE, /updateSnapshot = withAnnouncedKey\(/)
-  assert.match(SHELL_SOURCE, /scholarseed:update-announce-ack/)
 })
 
 test('progress publication clears the previous failure so a retry is not shown as failed', () => {

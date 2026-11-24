@@ -3,14 +3,18 @@ from __future__ import annotations
 import base64
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 import zipfile
+from contextlib import closing
+from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
 from service.capabilities.service.candidates import Candidates
-from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.components import COMPONENT_SCHEMA, ComponentRegistry
 from service.capabilities.service.descriptor import (
     HOST_COMPONENT_FINGERPRINT,
     HOST_COMPONENT_PLUGIN,
@@ -22,6 +26,8 @@ from service.capabilities.service.descriptor import (
     SYSTEM_UI_PLUGIN,
     UIDependency,
 )
+from service.capabilities.service.files import UI_DIRECTORY, resource_name
+from service.capabilities.service.maintenance import ComponentMaintenance
 from service.capabilities.service.package import PACKAGE_MANIFEST, Payload, json_bytes
 from service.capabilities.service.ui import (
     UI_COMPATIBILITY,
@@ -33,10 +39,17 @@ from service.capabilities.service.ui import (
     read_declarative_catalog,
     read_ui,
 )
+from service.persistence.project import DatabaseBindingError
+from service.platform.activity import Activities, ActivityDomain
 
 
 def ui_payload(
-    version="1.0.0", exports=None, catalog=None, components=None, compatibility=UI_COMPATIBILITY
+    version="1.0.0",
+    exports=None,
+    catalog=None,
+    components=None,
+    compatibility=UI_COMPATIBILITY,
+    runtime=None,
 ):
     descriptor = {
         "schema": 1,
@@ -59,7 +72,7 @@ def ui_payload(
     }
     files = {
         UI_MANIFEST: Payload(json_bytes(descriptor)),
-        "ui.js": Payload(version.encode()),
+        "ui.js": Payload(version.encode() if runtime is None else runtime),
         "selection.js": Payload(b"selection"),
     }
     if catalog is not None:
@@ -128,17 +141,210 @@ def custom_payload():
 
 
 class UIDependencyContract(unittest.TestCase):
-    def test_display_only_major_preserves_the_previous_immutable_ui(self):
+    def test_maintenance_refuses_a_linked_database_before_writing(self):
+        original = self.registry.path.with_name("original.sqlite3")
+        with closing(sqlite3.connect(original)) as connection, connection:
+            connection.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY)")
+        self.registry.path.hardlink_to(original)
+        with self.assertRaises(DatabaseBindingError):
+            self.registry.maintain_storage()
+        with closing(sqlite3.connect(original)) as connection:
+            self.assertEqual(
+                connection.execute("SELECT name FROM sqlite_master").fetchall(),
+                [("unrelated",)],
+            )
+
+    def test_component_revisions_share_one_stored_ui_package(self):
+        ui = read_ui(ui_payload())
+        self.registry.install_ui(ui)
+        candidates = Candidates(host_version="0.3.2", capabilities=(), components=self.registry)
+        report = candidates.check(custom_payload())
+        first = candidates.get(report["candidate"], report["sha256"]).snapshot
+        second = deepcopy(first)
+        second["source_fingerprint"] = "second-plugin-revision"
+        self.registry.publish([first])
+        reference = self.registry.resolve(
+            "test.card", session_id="history", turn_id="turn", user_id="user"
+        )
+        self.registry.publish([second])
+        with self.registry._database() as connection:
+            revisions = connection.execute(
+                "SELECT body,file_digest,ui_fingerprint FROM component_revisions"
+            ).fetchall()
+            active = connection.execute("SELECT body FROM system_ui").fetchone()
+            self.assertEqual(len(revisions), 2)
+            self.assertTrue(all(row["body"] == "" and row["file_digest"] for row in revisions))
+            self.assertEqual({row["ui_fingerprint"] for row in revisions}, {ui["fingerprint"]})
+            self.assertEqual(active["body"], "")
+            packages = connection.execute(
+                "SELECT fingerprint,body,ref_count FROM component_ui_packages"
+            ).fetchall()
+        self.assertEqual([tuple(row) for row in packages], [(ui["fingerprint"], "", 3)])
+        self.assertEqual(self.registry.snapshot(reference, user_id="user")["ui"], ui)
+        self.assertEqual(self.registry.active_ui(), ui)
+
+    def test_startup_retires_an_unreferenced_previous_compatibility(self):
         old = read_ui(ui_payload(compatibility="1.0"))
         self.registry.install_ui(old)
         current = read_ui(ui_payload(version="2.0.0", components=[], compatibility="2.0"))
         self.registry.install_ui(current, initialize=True)
         self.assertEqual(self.registry.active_ui()["fingerprint"], current["fingerprint"])
+        self.assertTrue(self.registry.collect_resources())
         with self.registry._database() as connection:
-            previous = connection.execute(
-                "SELECT body FROM system_ui WHERE compatibility=?", ("1.0",)
+            self.assertIsNone(self.registry._ui(connection, "1.0"))
+        with self.assertRaises(FileNotFoundError):
+            self.registry.files.read((UI_DIRECTORY,), resource_name(old["fingerprint"]))
+
+    def test_last_session_deletion_collects_retired_ui_file(self):
+        old = read_ui(ui_payload())
+        self.registry.install_ui(old)
+        candidates = Candidates(host_version="0.3.2", capabilities=(), components=self.registry)
+        report = candidates.check(custom_payload())
+        self.registry.publish([candidates.get(report["candidate"], report["sha256"]).snapshot])
+        for session_id in ("one", "two"):
+            for turn_id in ("first", "second"):
+                self.registry.resolve(
+                    "test.card", session_id=session_id, turn_id=turn_id, user_id="user"
+                )
+        self.registry.install_ui(read_ui(ui_payload("1.0.1")))
+
+        def count():
+            with self.registry._read_database() as connection:
+                row = connection.execute(
+                    "SELECT ref_count FROM component_ui_packages WHERE fingerprint=?",
+                    (old["fingerprint"],),
+                ).fetchone()
+            return None if row is None else row["ref_count"]
+
+        self.assertEqual(count(), 2)
+        self.registry.prepare_session_deletion("one")
+        self.registry.resume_session_deletions(lambda _session: True)
+        self.assertEqual(count(), 2)
+        self.registry.deleted_session("one")
+        self.registry.deleted_session("one")
+        self.assertEqual(count(), 1)
+        self.assertEqual(self.registry.cards.load("one"), {})
+        self.assertTrue(self.registry.cards.load("two"))
+        self.registry.prepare_session_deletion("two")
+        self.registry.resume_session_deletions(lambda _session: False)
+        self.assertIsNone(count())
+        self.assertEqual(self.registry.cards.load("two"), {})
+        with self.assertRaises(FileNotFoundError):
+            self.registry.files.read((UI_DIRECTORY,), resource_name(old["fingerprint"]))
+
+    def test_failed_unlink_keeps_zero_count_for_retry(self):
+        old = read_ui(ui_payload())
+        self.registry.install_ui(old)
+        with patch.object(self.registry.files, "discard", side_effect=PermissionError("busy")):
+            self.registry.install_ui(read_ui(ui_payload("1.0.1")))
+        self.assertTrue(self.registry.cleanup_pending)
+        with self.registry._read_database() as connection:
+            pending = connection.execute(
+                "SELECT ref_count FROM component_ui_packages WHERE fingerprint=?",
+                (old["fingerprint"],),
             ).fetchone()
-        self.assertEqual(json.loads(previous["body"])["fingerprint"], old["fingerprint"])
+        self.assertEqual(pending["ref_count"], 0)
+        self.assertTrue(self.registry.collect_resources())
+        with self.assertRaises(FileNotFoundError):
+            self.registry.files.read((UI_DIRECTORY,), resource_name(old["fingerprint"]))
+
+    def test_byte_equivalent_ui_can_replace_a_historical_package(self):
+        old = read_ui(ui_payload(runtime=b"unchanged"))
+        current = read_ui(ui_payload("1.0.1", runtime=b"unchanged"))
+        self.registry.install_ui(old)
+        candidates = Candidates(host_version="0.3.2", capabilities=(), components=self.registry)
+        report = candidates.check(custom_payload())
+        self.registry.publish([candidates.get(report["candidate"], report["sha256"]).snapshot])
+        reference = self.registry.resolve(
+            "test.card", session_id="history", turn_id="turn", user_id="user"
+        )
+        self.registry.bind_data(reference, {"value": 7})
+        self.registry.install_ui(current)
+        snapshot = self.registry.snapshot(reference, user_id="user")
+        self.assertEqual(snapshot["fingerprint"], reference["fingerprint"])
+        self.assertEqual(snapshot["interaction"]["data"], {"value": 7})
+        self.assertEqual(snapshot["ui"], current)
+        with self.assertRaises(FileNotFoundError):
+            self.registry.files.read((UI_DIRECTORY,), resource_name(old["fingerprint"]))
+
+    def test_offline_maintenance_keeps_legacy_snapshot_identity_and_interaction(self):
+        ui = read_ui(ui_payload())
+        ui_body = json.dumps(ui, sort_keys=True, ensure_ascii=False)
+        legacy = {
+            "descriptor": {"id": "custom", "components": []},
+            "fingerprint": "legacy-revision",
+            "ui": ui,
+        }
+        body = json.dumps(legacy, sort_keys=True, ensure_ascii=False)
+        with closing(sqlite3.connect(self.registry.path)) as connection, connection:
+            connection.executescript(
+                "CREATE TABLE system_ui (compatibility TEXT PRIMARY KEY, body TEXT NOT NULL, digest TEXT NOT NULL);"
+                "CREATE TABLE component_revisions (fingerprint TEXT PRIMARY KEY, plugin TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL, extra TEXT);"
+                "CREATE TABLE component_bindings (binding TEXT PRIMARY KEY, plugin TEXT NOT NULL, component TEXT NOT NULL, fingerprint TEXT NOT NULL REFERENCES component_revisions(fingerprint), session_id TEXT NOT NULL, turn_id TEXT NOT NULL, user_id TEXT NOT NULL, data TEXT, state TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL);"
+            )
+            for table in ("component_slots", "component_unavailable", "component_copies"):
+                connection.execute(COMPONENT_SCHEMA[table])
+            connection.execute(
+                "ALTER TABLE component_bindings ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute(
+                "INSERT INTO system_ui VALUES (?,?,?)",
+                (UI_COMPATIBILITY, ui_body, sha256(ui_body.encode()).hexdigest()),
+            )
+            connection.execute(
+                "INSERT INTO component_revisions VALUES (?,?,?,?,?)",
+                (legacy["fingerprint"], "custom", body, sha256(body.encode()).hexdigest(), "keep"),
+            )
+            connection.execute(
+                "INSERT INTO component_bindings (binding,plugin,component,fingerprint,session_id,"
+                "turn_id,user_id,data,state,revision,status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "binding",
+                    "custom",
+                    "card",
+                    legacy["fingerprint"],
+                    "session",
+                    "turn",
+                    "user",
+                    '{"input": 1}',
+                    '{"draft": 2}',
+                    3,
+                    "pending",
+                ),
+            )
+        reference = {
+            "binding": "binding",
+            "plugin": "custom",
+            "component": "card",
+            "fingerprint": legacy["fingerprint"],
+        }
+        self.assertEqual(self.registry.active_ui(), ui)
+        before = self.registry.snapshot(reference, user_id="user")
+        self.assertTrue(self.registry.maintain_storage(batch_size=1))
+        self.assertEqual(self.registry.snapshot(reference, user_id="user"), before)
+        reopened = ComponentRegistry(self.registry.path)
+        self.assertTrue(reopened.maintain_storage(batch_size=1))
+        activities = Activities()
+        worker = ComponentMaintenance(reopened, activities, lambda _session: True)
+        with activities.enter(ActivityDomain.TURN):
+            worker._step()
+        self.assertEqual(reopened.cards.load("session"), {})
+        self.assertEqual(reopened.snapshot(reference, user_id="user"), before)
+        worker._step()
+        self.assertFalse(reopened.maintain_storage(batch_size=1))
+        self.assertEqual(reopened.snapshot(reference, user_id="user"), before)
+        self.assertEqual(reopened.cards.load("session")["binding"]["state"], {"draft": 2})
+        self.assertEqual(reopened.active_ui(), ui)
+        with reopened._database() as connection:
+            revision = connection.execute(
+                "SELECT body,digest,extra FROM component_revisions"
+            ).fetchone()
+            self.assertEqual(revision["body"], "")
+            self.assertEqual(revision["digest"], sha256(body.encode()).hexdigest())
+            self.assertEqual(revision["extra"], "keep")
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM component_ui_packages").fetchone()[0], 1
+            )
 
     def test_declarative_and_sandbox_discovery_are_separate_budgeted_responses(self):
         declarative = {"schema": {"properties": {}}, "prompt": "registered"}

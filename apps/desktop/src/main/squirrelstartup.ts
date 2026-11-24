@@ -22,6 +22,7 @@ import {
   validSquirrelBinding,
   type SquirrelHandoff,
   type SquirrelNativeRequest,
+  type SquirrelSourceVerifier,
   type SquirrelNativeCapture,
 } from './squirrel.ts'
 import { BUILD_NUMBER_PATTERN, isNewerRelease } from './version.ts'
@@ -587,7 +588,8 @@ export async function bindSquirrelRequest(
   bundle: string,
   application: string,
   handoff: SquirrelHandoff,
-  applicationSupport?: string
+  applicationSupport?: string,
+  verifySource?: SquirrelSourceVerifier
 ): Promise<SquirrelNativeRequest> {
   if (!/^[A-Za-z0-9.-]+$/.test(bundle)) throw new Error('Invalid Squirrel request bundle')
   const owner = join(realpathSync(cache), squirrelJobLabel(bundle, handoff.alternate))
@@ -645,22 +647,34 @@ export async function bindSquirrelRequest(
     readNativeRecord(join(source, 'Contents', 'Info.plist'), PRODUCT_CONFIG_BYTES)
   )
   const version = await versionResult
+  const requestUnchanged = () => {
+    const currentOwner = lstatSync(owner)
+    return (
+      currentOwner.dev === ownerInfo.dev &&
+      currentOwner.ino === ownerInfo.ino &&
+      currentOwner.uid === ownerInfo.uid &&
+      currentOwner.mode === ownerInfo.mode &&
+      readNativeRecord(statePath, PROBE_MAX_BYTES).equals(bytes) &&
+      squirrelCaptureMatches(nativeRequest.source, captureDirectory(source)) &&
+      squirrelCaptureMatches(nativeRequest.target, captureDirectory(target))
+    )
+  }
+  if (version.stdout.trim() !== handoff.version || product.build_number !== handoff.buildNumber)
+    throw new Error('Squirrel request candidate changed or differs')
+  if (verifySource) {
+    if (!requestUnchanged()) throw new Error('Squirrel request candidate changed or differs')
+    await verifySource(source, nativeRequest)
+  }
   const prepared = applicationSupport
     ? await readPreparedCandidate(applicationSupport, bundle, nativeRequest, handoff.alternate)
     : undefined
-  const currentOwner = lstatSync(owner)
-  if (
-    version.stdout.trim() !== handoff.version ||
-    product.build_number !== handoff.buildNumber ||
-    currentOwner.dev !== ownerInfo.dev ||
-    currentOwner.ino !== ownerInfo.ino ||
-    currentOwner.uid !== ownerInfo.uid ||
-    currentOwner.mode !== ownerInfo.mode ||
-    !readNativeRecord(statePath, PROBE_MAX_BYTES).equals(bytes) ||
-    !squirrelCaptureMatches(nativeRequest.source, captureDirectory(source)) ||
-    !squirrelCaptureMatches(nativeRequest.target, captureDirectory(target))
-  )
-    throw new Error('Squirrel request candidate changed or differs')
+  if (!requestUnchanged()) {
+    throw new Error(
+      verifySource
+        ? 'Squirrel request changed during app verification'
+        : 'Squirrel request candidate changed or differs'
+    )
+  }
   return prepared ? { ...nativeRequest, prepared } : nativeRequest
 }
 

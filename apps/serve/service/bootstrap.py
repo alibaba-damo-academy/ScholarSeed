@@ -12,8 +12,14 @@ import os
 import sqlite3
 import sys
 import time
-from collections.abc import Awaitable, Callable, Iterable
-from contextlib import AbstractContextManager, ExitStack, asynccontextmanager, contextmanager
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextlib import (
+    AbstractContextManager,
+    ExitStack,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from functools import partial
@@ -47,6 +53,7 @@ from service.assistant.service.resources import AssistantResourceService
 from service.capabilities.api.admission import register_skill_admission
 from service.capabilities.api.management import register_skill_management
 from service.capabilities.service.components import ComponentRegistry
+from service.capabilities.service.maintenance import ComponentMaintenance
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.api.browser import register_browser_routes
 from service.chat.api.browserhistory import register_browser_history_routes
@@ -510,9 +517,11 @@ def _storage_native(
     raise LeaseError("ERR_LEASE_UNSUPPORTED")
 
 
-def maintain_session_storage_offline() -> bool | None:
-    """Run one bounded batch under the normal cross-process directory authority."""
-    with session_storage_phase("directory_qualification"):
+@contextmanager
+def _offline_service_storage(
+    phase: Callable[[str], AbstractContextManager[object]],
+) -> Iterator[None]:
+    with phase("directory_qualification"):
         coordination_path = coordination_root()
         coordinator = str(coordination_path)
         native: (
@@ -524,17 +533,28 @@ def maintain_session_storage_offline() -> bool | None:
         native.release(pin)
         domains = Domains(native, coordinator, (str(SERVICE_DIR.absolute()),), maintenance=True)
     try:
-        with session_storage_phase("directory_occupancy"):
+        with phase("directory_occupancy"):
             domains.occupy()
         with domains.mutation():
-            with session_storage_phase("offline_probe"):
-                required = inspect_session_storage(SESSION_CATALOG_DB)
-            if required is not True:
-                return required
-            return maintain_session_storage(SESSION_CATALOG_DB)
+            yield
     finally:
-        with session_storage_phase("directory_release"):
+        with phase("directory_release"):
             domains.close()
+
+
+def maintain_session_storage_offline() -> bool | None:
+    """Run one bounded batch under the normal cross-process directory authority."""
+    with _offline_service_storage(session_storage_phase):
+        with session_storage_phase("offline_probe"):
+            required = inspect_session_storage(SESSION_CATALOG_DB)
+        if required is not True:
+            return required
+        return maintain_session_storage(SESSION_CATALOG_DB)
+
+
+def maintain_component_storage_offline() -> bool:
+    with _offline_service_storage(nullcontext):
+        return ComponentRegistry(SERVICE_COMPONENTS_DATABASE).maintain_storage()
 
 
 def _product_enabled(product: str, domain: str) -> bool:
@@ -3620,6 +3640,11 @@ def create_app(
     previous_lifespan = app.router.lifespan_context
     storage_check = SessionStorageCheck(activities, SESSION_CATALOG_DB)
     app.state.session_service.bind_storage_check(storage_check.request)
+    component_maintenance = ComponentMaintenance(
+        app.state.skill_catalog.components,
+        activities,
+        lambda session_id: app.state.session_catalog.get(session_id) is not None,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -3628,12 +3653,14 @@ def create_app(
             admission.start(activities.workbench_changed)
             async with previous_lifespan(application):
                 probe = asyncio.create_task(storage_check.run())
+                component_task = asyncio.create_task(component_maintenance.run())
                 storage_check.request()
                 try:
                     yield
                 finally:
                     storage_check.stop()
-                    await probe
+                    component_maintenance.stop()
+                    await asyncio.gather(probe, component_task)
                     await close_storage_and_operations()
         finally:
             try:
@@ -3859,7 +3886,7 @@ def _compose_app(
     session_context = SessionContextProvider(history)
     answer_source = ProductAnswerSource(
         app.state.product_events,
-        ComponentRegistry(SERVICE_COMPONENTS_DATABASE).answer_markdown,
+        app.state.skill_catalog.components.answer_markdown,
     )
     app.state.answer_source = answer_source
     annotation_service = AnswerAnnotationService(assistant_store, answer_source)
@@ -3985,6 +4012,10 @@ def _compose_app(
     publications = PublicationService(content)
     app.state.session_service.bind_deletion(
         SessionDeletion(content, publications, events=app.state.product_events).delete
+    )
+    components = app.state.skill_catalog.components
+    app.state.session_service.bind_card_deletion(
+        components.prepare_session_deletion, components.deleted_session
     )
     app.state.runtime_service.bind_publications(publications)
     app.state.artifact_service.bind_content(content)

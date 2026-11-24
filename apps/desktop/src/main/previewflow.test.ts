@@ -5,8 +5,9 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import * as preview from './preview.ts'
-import { isPreviewUpdateChannel } from '../updates.ts'
+import { isPreviewUpdateChannel, MACOS_UPDATE_ZIP } from '../updates.ts'
 import {
+  appendMacUpdateFormat,
   buildUpdateCheckUrl,
   parseDownloadInfo,
   parseUpdateCheckResult,
@@ -19,6 +20,7 @@ import { retryUpdate } from './retry.ts'
 
 type PreviewFixtureExports = Pick<
   typeof Updater,
+  | 'authorizeActivation'
   | 'checkForUpdate'
   | 'getDownloadInfo'
   | 'getPreviewUpdatePolicy'
@@ -127,6 +129,7 @@ function harness(channel = 'preview', stored?: unknown) {
     parseDownloadInfo,
     parseUpdateCheckResult,
     buildUpdateCheckUrl,
+    appendMacUpdateFormat,
     UPDATE_PATH_PREFIX,
     exports: {} as PreviewFixtureExports,
     previewPolicy: null as PreviewUpdatePolicy | null,
@@ -215,7 +218,7 @@ test('release request and cache behavior do not consume preview controls', async
   assert.throws(() => h.api.getPreviewUpdatePolicy(log), /unavailable/)
   h.response({ ...artifact('0.3.0', 'release'), download_url: 'https://cdn.example/package' })
   await h.api.getDownloadInfo('release-0.3.0', log)
-  assert.equal(h.requests[1].search, '')
+  assert.deepEqual([...h.requests[1].searchParams], [['update_format', 'macos-zip']])
   assert.equal(h.reads(), 0)
 })
 
@@ -246,12 +249,57 @@ test('manual preview discovery and selection bind the exact published artifact',
   assert.equal(h.requests.at(-1)!.searchParams.get('target_line'), '0.3')
   h.response({ ...target, download_url: 'https://cdn.example/fixed' })
   await h.api.validatePreviewCandidate(selected, log)
+  assert.equal(h.requests.at(-1)!.searchParams.has('update_format'), false)
   assert.equal(h.api.previewCandidateValidated(selected, log), true)
   h.response({ ...target, sha512: 'b'.repeat(128), download_url: 'https://cdn.example/fixed' })
   await assert.rejects(h.api.validatePreviewCandidate(selected, log), /outside|changed/)
   h.api.writePreviewUpdatePolicy({ scope: 'current-version' }, log)
   assert.equal(h.api.previewCandidateValidated(selected, log), false)
   assert.throws(() => h.api.previewTarget(target.id, log), /no longer listed/)
+})
+
+test('final authorization preserves a ready DMG or ZIP after both are published under one release id', async () => {
+  const h = harness()
+  const dmg = artifact()
+  const zip: LatestVersionMeta = {
+    ...dmg,
+    artifact_kind: MACOS_UPDATE_ZIP,
+    sha512: 'b'.repeat(128),
+  }
+  const grants: LatestVersionMeta[] = []
+  Object.assign(h.context, {
+    REQUEST_TIMEOUT_MS: 1000,
+    logUpdateLine() {},
+    resolveProductConfig: () => ({
+      updateActivationKeys: { fixture: 'key' },
+      updateBaseUrl: 'https://updates.example',
+    }),
+    requestActivationGrant: async (_url: string, _keys: unknown, selected: LatestVersionMeta) => {
+      grants.push(selected)
+      return { revision: 'fixture', assertValid() {} }
+    },
+  })
+  h.responder(async () => {
+    const query = h.requests.at(-1)!.searchParams
+    assert.equal(query.get('preview_scope'), 'current-line')
+    assert.equal(query.has('target_id'), false)
+    return {
+      ...(query.get('update_format') === MACOS_UPDATE_ZIP ? zip : dmg),
+      download_url: 'https://cdn.example/fixed',
+    }
+  })
+  for (const selected of [dmg, zip]) {
+    const authorize = await h.api.authorizeActivation(selected, log, new AbortController().signal)
+    authorize()
+    assert.equal(
+      h.requests.at(-1)!.searchParams.get('update_format'),
+      selected.artifact_kind ?? null
+    )
+    assert.equal(grants.at(-1), selected)
+  }
+  h.responder(async () => ({ ...zip, download_url: 'https://cdn.example/fixed' }))
+  await assert.rejects(h.api.authorizeActivation(dmg, log, new AbortController().signal), /changed/)
+  assert.equal(grants.length, 2)
 })
 
 test('a delayed check cannot publish after scope changes', async () => {

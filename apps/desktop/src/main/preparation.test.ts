@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LatestVersionMeta } from '../updates.ts'
+import { MACOS_UPDATE_ZIP } from '../updates.ts'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import type { PreparationCheckpoint } from './preparation.ts'
 import type { LegacyPreparationCheckpoint } from './preparation.ts'
@@ -79,6 +80,70 @@ const TEST_POLICY = {
   retryMaxMs: 1000,
   retryJitter: 0,
 }
+
+test('a same-build ZIP replaces the queued DMG for both manual and scheduled retry', async () => {
+  const dmg = release('202611240001')
+  const zip: LatestVersionMeta = {
+    ...dmg,
+    artifact_kind: MACOS_UPDATE_ZIP,
+    file_size: 2,
+    sha512: 'b'.repeat(128),
+  }
+  for (const origin of ['manual', 'background'] as const) {
+    let now = 1000
+    const attempts: LatestVersionMeta[] = []
+    const queue = new UpdatePreparation(
+      async ({ candidate }) => {
+        attempts.push(candidate)
+        return candidate.artifact_kind === MACOS_UPDATE_ZIP
+      },
+      undefined,
+      TEST_POLICY,
+      () => now
+    )
+    assert.equal(queue.request(dmg), true)
+    await queue.settled()
+    queue.observe(zip)
+    now += TEST_POLICY.retryMaxMs
+    assert.equal(origin === 'manual' ? queue.request(zip) : queue.background(true), true)
+    await queue.settled()
+    assert.deepEqual(queue.latest, zip)
+    assert.deepEqual(attempts, [dmg, zip])
+  }
+})
+
+test('an archive limit for a DMG does not block its replacement ZIP across restart', async () => {
+  let saved: PreparationCheckpoint | null = null
+  const dmg = release('202611240001')
+  const zip: LatestVersionMeta = { ...dmg, artifact_kind: MACOS_UPDATE_ZIP }
+  const persistence = {
+    load: () => saved,
+    save: (next: PreparationCheckpoint) => {
+      saved = next
+    },
+    failed: (error: unknown) => {
+      throw error
+    },
+  }
+  const before = new UpdatePreparation(async () => 'archive-limit', persistence, TEST_POLICY)
+  assert.equal(before.request(dmg), true)
+  await before.settled()
+  const after = new UpdatePreparation(
+    async ({ candidate }) => sameZip(candidate),
+    persistence,
+    TEST_POLICY
+  )
+  function sameZip(candidate: LatestVersionMeta): boolean {
+    assert.deepEqual(candidate, zip)
+    return true
+  }
+  after.observe(dmg)
+  assert.deepEqual(after.decision(true), { reason: 'archive-limit' })
+  after.observe(zip)
+  assert.equal(after.background(true), true)
+  await after.settled()
+  assert.equal(after.decision(true).reason, 'already-ready')
+})
 
 test('first preparation records occupancy and success only at completion', async () => {
   let now = 1000

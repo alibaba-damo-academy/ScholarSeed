@@ -26,6 +26,8 @@ const RAW_URL_LABEL = /^(?:https?:|www\.)/
 const ESCAPED_LINK_PREFIX = /\\\[[^\]\n]*\]\($/
 const EXPLICIT_REFERENCE = /^(?:\[[0-9]+\][\t ]*)+$/
 const INLINE_REFERENCE_GAP = /^[\t ]*$/
+const CITATION_TRAILING_SPACE = /(?<![\t \u00a0])[\t \u00a0]+$/u
+const CITATION_SENTENCE_PERIOD = /^[\t \u00a0]*(。|\.(?=[\t \u00a0]|$))/u
 const CITATION_STYLE_TAGS = new Set(['strong', 'em'])
 const CITATION_TABLE_CONTAINERS = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr'])
 const CITATION_TABLE_CELLS = new Set(['td', 'th'])
@@ -63,6 +65,7 @@ interface DecorationOptions {
   citationReferences?: readonly MarkdownCitationReference[]
   citationOccurrences?: readonly MarkdownCitationOccurrence[]
   citationPending?: boolean
+  citationPlacement?: 'streaming' | 'complete'
   citationGroupKeys?: Readonly<Record<string, string>>
   evidence: EvidenceAnnotation[]
   answers: MarkdownAnswerAnnotation[]
@@ -769,6 +772,91 @@ function markSourceLinks(
   parent.children = next
 }
 
+function placeSentenceCitations(
+  parent: Element,
+  parents: Element[],
+  options: DecorationOptions,
+  cache: OffsetCache
+): ElementContent[] {
+  const children = parent.children
+  const placed: ElementContent[] = []
+  const isReadyCitation = (node: ElementContent | undefined): boolean =>
+    node?.type === 'element' && isProjectedCitation(node) && !node.properties[CITATION_PENDING]
+
+  for (let index = 0; index < children.length; index += 1) {
+    const first = index
+    if (!isReadyCitation(children[first])) {
+      placed.push(children[first])
+      continue
+    }
+    while (index + 1 < children.length) {
+      const next = children[index + 1]
+      if (isReadyCitation(next)) index += 1
+      else if (
+        next.type === 'text' &&
+        CITATION_TRAILING_SPACE.exec(next.value)?.index === 0 &&
+        isReadyCitation(children[index + 2])
+      )
+        index += 2
+      else break
+    }
+    const citations = children.slice(first, index + 1)
+    const following = children[index + 1]
+    const period =
+      following?.type === 'text' ? CITATION_SENTENCE_PERIOD.exec(following.value) : null
+    if (!period || following?.type !== 'text') {
+      placed.push(...citations)
+      continue
+    }
+    const periodEnd = period[0].length
+    if (
+      period[1] === '.' &&
+      periodEnd === following.value.length &&
+      (options.citationPlacement === 'streaming' || index + 2 < children.length)
+    ) {
+      placed.push(...citations)
+      continue
+    }
+
+    const leaf = mappedLeaf(options.source, following, parents, cache)
+    const previous = placed.at(-1)
+    const space = previous?.type === 'text' ? CITATION_TRAILING_SPACE.exec(previous.value) : null
+    const previousLeaf =
+      space && previous?.type === 'text'
+        ? mappedLeaf(options.source, previous, parents, cache)
+        : null
+    if (
+      !leaf ||
+      leaf.boundaries[periodEnd - 1] == null ||
+      leaf.boundaries[periodEnd] == null ||
+      (space && previousLeaf?.boundaries[space.index] == null)
+    ) {
+      placed.push(...citations)
+      continue
+    }
+
+    // Keep citation and punctuation positions in the original Markdown coordinate space.
+    if (space && previous?.type === 'text' && previousLeaf) {
+      placed.pop()
+      if (space.index > 0) {
+        placed.push(citationTextSlice(previous, options.source, previousLeaf, 0, space.index))
+      }
+    }
+    placed.push(
+      citationTextSlice(following, options.source, leaf, periodEnd - 1, periodEnd),
+      { type: 'text', value: ' ' },
+      ...citations
+    )
+    if (periodEnd < following.value.length) {
+      placed.push(
+        citationTextSlice(following, options.source, leaf, periodEnd, following.value.length)
+      )
+    }
+    index += 1
+  }
+  return placed
+}
+
 function transformChildren(
   parent: Root | Element,
   parents: Element[],
@@ -776,7 +864,13 @@ function transformChildren(
   cache: OffsetCache
 ): void {
   const next: ElementContent[] = []
-  for (const child of parent.children) {
+  const children =
+    options.citationPlacement &&
+    parent.type === 'element' &&
+    (parent.tagName === 'p' || parent.tagName === 'li')
+      ? placeSentenceCitations(parent, parents, options, cache)
+      : parent.children
+  for (const child of children) {
     if (child.type === 'element') {
       const childParents = [...parents, child]
       transformChildren(child, childParents, options, cache)

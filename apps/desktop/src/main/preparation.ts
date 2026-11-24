@@ -1,5 +1,30 @@
 import type { LatestVersionMeta } from '../updates.ts'
 import { isNewerRelease } from './version.ts'
+import { samePreviewArtifact } from './preview.ts'
+
+function advancesArtifact(current: LatestVersionMeta, candidate: LatestVersionMeta): boolean {
+  if (
+    current.id === candidate.id &&
+    current.version === candidate.version &&
+    current.build_number === candidate.build_number
+  )
+    return !samePreviewArtifact(current, candidate)
+  return (
+    isNewerRelease(
+      { version: current.version, buildNumber: current.build_number },
+      { version: candidate.version, buildNumber: candidate.build_number }
+    ) === true
+  )
+}
+
+function archiveLimitKey(candidate: LatestVersionMeta): string {
+  return JSON.stringify([
+    candidate.id,
+    candidate.artifact_kind ?? null,
+    candidate.file_size,
+    candidate.sha512,
+  ])
+}
 
 const MINUTE_MS = 60_000
 export interface PreparationPolicy {
@@ -62,6 +87,7 @@ export interface PreparationAdmission {
   retry: { at: number; failures: number }
   recovery: { at: number; interruptions: number }
   archiveLimitCandidate?: string
+  archiveLimitArtifact?: string
 }
 function initialAdmission(): PreparationAdmission {
   return {
@@ -81,6 +107,7 @@ function validAdmission(value: PreparationAdmission): boolean {
     value.version === ADMISSION_VERSION &&
     (value.archiveLimitCandidate === undefined ||
       (typeof value.archiveLimitCandidate === 'string' && !!value.archiveLimitCandidate)) &&
+    (value.archiveLimitArtifact === undefined || typeof value.archiveLimitArtifact === 'string') &&
     validTime(value.retry?.at) &&
     validTime(value.retry?.failures) &&
     validTime(value.recovery?.at) &&
@@ -186,6 +213,11 @@ export class UpdatePreparation {
       if (state.admission && validAdmission(state.admission)) {
         admission = {
           ...state.admission,
+          archiveLimitArtifact:
+            state.admission.archiveLimitArtifact ??
+            (state.admission.archiveLimitCandidate === state.desiredRelease.id
+              ? archiveLimitKey(state.desiredRelease)
+              : undefined),
           pending: state.admission.pending
             ? { ...state.admission.pending, since: Math.min(state.admission.pending.since, now) }
             : null,
@@ -238,8 +270,10 @@ export class UpdatePreparation {
     return this.observed
   }
 
-  isArchiveLimited(candidateId: string): boolean {
-    return this.admission.archiveLimitCandidate === candidateId
+  isArchiveLimited(candidate: LatestVersionMeta): boolean {
+    return this.admission.archiveLimitArtifact !== undefined
+      ? this.admission.archiveLimitArtifact === archiveLimitKey(candidate)
+      : this.admission.archiveLimitCandidate === candidate.id
   }
   get nextBackgroundAt(): number {
     return this.decision(true).at ?? 0
@@ -248,20 +282,16 @@ export class UpdatePreparation {
   observe(candidate: LatestVersionMeta): void {
     if (this.stopped || this.committed) return
     if (!this.load() || !this.flushTerminal()) return
-    if (
-      this.observed &&
-      isNewerRelease(
-        { version: this.observed.version, buildNumber: this.observed.build_number },
-        { version: candidate.version, buildNumber: candidate.build_number }
-      ) !== true
-    ) {
+    if (this.observed && !advancesArtifact(this.observed, candidate)) {
       this.flushObservation()
       return
     }
     this.observed = candidate
     if (this.policy) {
       const pending =
-        this.completed === candidate.id || (this.desired?.id === candidate.id && this.worker)
+        this.desired &&
+        samePreviewArtifact(this.desired, candidate) &&
+        (this.completed === candidate.id || this.worker)
           ? this.admission.pending
           : {
               candidate,
@@ -296,8 +326,13 @@ export class UpdatePreparation {
     if (this.committed) return { reason: PREPARATION_REASONS.committed }
     if (this.worker) return { reason: PREPARATION_REASONS.running }
     if (!this.observed) return { reason: PREPARATION_REASONS.absent }
-    if (this.isArchiveLimited(this.observed.id)) return { reason: PREPARATION_REASONS.archiveLimit }
-    if (this.completed === this.observed.id) return { reason: PREPARATION_REASONS.ready }
+    if (this.isArchiveLimited(this.observed)) return { reason: PREPARATION_REASONS.archiveLimit }
+    if (
+      this.completed === this.observed.id &&
+      this.desired &&
+      samePreviewArtifact(this.desired, this.observed)
+    )
+      return { reason: PREPARATION_REASONS.ready }
     let decision: PreparationDecision = { reason: PREPARATION_REASONS.eligible, at: this.now() }
     if (this.policy) {
       const gates: PreparationDecision[] = [
@@ -325,7 +360,7 @@ export class UpdatePreparation {
     if (this.decision(enabled).reason !== PREPARATION_REASONS.eligible) return false
     const candidate = this.observed
     if (!enabled || !candidate || this.stopped || this.committed || this.worker) return false
-    if (this.desired?.id === candidate.id) {
+    if (this.desired && samePreviewArtifact(this.desired, candidate)) {
       if (this.completed === candidate.id) return false
       this.paused = false
       this.retry('background')
@@ -350,7 +385,7 @@ export class UpdatePreparation {
 
   private begin(candidate: LatestVersionMeta, generation: number): boolean {
     if (!this.load() || !this.flushTerminal() || !this.flushObservation()) return false
-    if (this.isArchiveLimited(candidate.id)) return false
+    if (this.isArchiveLimited(candidate)) return false
     const admission = this.policy
       ? {
           ...this.admission,
@@ -384,10 +419,17 @@ export class UpdatePreparation {
               lastSuccess: { candidateId: candidate.id, at: this.now() },
               retry: { at: 0, failures: 0 },
               recovery: { at: 0, interruptions: 0 },
-              pending: admission.pending?.candidate.id === candidate.id ? null : admission.pending,
+              pending:
+                admission.pending && samePreviewArtifact(admission.pending.candidate, candidate)
+                  ? null
+                  : admission.pending,
             }
           : outcome === 'archive-limit'
-            ? { archiveLimitCandidate: candidate.id, retry: { failures: 0, at: 0 } }
+            ? {
+                archiveLimitCandidate: candidate.id,
+                archiveLimitArtifact: archiveLimitKey(candidate),
+                retry: { failures: 0, at: 0 },
+              }
             : { retry: { failures, at: this.now() + this.delay(failures) } }),
       }
     }
@@ -440,13 +482,7 @@ export class UpdatePreparation {
 
   offer(candidate: LatestVersionMeta, origin: PreparationOrigin = 'manual'): boolean {
     if (this.committed || this.stopped) return false
-    if (this.desired) {
-      const newer = isNewerRelease(
-        { version: this.desired.version, buildNumber: this.desired.build_number },
-        { version: candidate.version, buildNumber: candidate.build_number }
-      )
-      if (newer !== true) return false
-    }
+    if (this.desired && !advancesArtifact(this.desired, candidate)) return false
     if (!this.load()) return false
     this.observe(candidate)
     if (!this.begin(candidate, this.generation + 1)) return false
@@ -461,7 +497,8 @@ export class UpdatePreparation {
 
   request(candidate: LatestVersionMeta): boolean {
     if (this.stopped || this.committed) return false
-    if (this.desired?.id !== candidate.id) {
+    if (this.observed?.id === candidate.id) candidate = this.observed
+    if (!this.desired || !samePreviewArtifact(this.desired, candidate)) {
       if (!this.offer(candidate)) return false
     } else if (!this.worker && !this.retry()) return false
     this.paused = false

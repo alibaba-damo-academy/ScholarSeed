@@ -42,6 +42,73 @@ from service.settings.credentials import ModelCredentialStore
 
 
 class StartupContracts(unittest.TestCase):
+    def test_session_archive_restore_and_permanent_deletion_use_card_storage(self) -> None:
+        root = make_directory("component-deletion-")
+        self.addCleanup(shutil.rmtree, root)
+        home = root / "home"
+        workspace = root / "workspace"
+        workspace.mkdir()
+        program = r"""
+import asyncio
+
+from httpx import ASGITransport, AsyncClient
+from service.bootstrap import create_app
+from service.chat.persistence.catalog import SessionPrincipal, SessionStatus
+
+async def verify():
+    app = create_app(auth=False, auth_mode='off', ownership_axis='machine')
+    try:
+        catalog = app.state.session_catalog
+        catalog.register(
+            'card-session', SessionPrincipal('local'), runtime_id='codex',
+            vendor_thread_id='card-thread', vendor_session_id=None,
+            runtime_workdir=str(app.state.workspace), project_path=None,
+            output_root=str(app.state.workspace), model_id='unused',
+            policy_id='workspace-write', status=SessionStatus.READY, created_at=1.0,
+            codex_version=None, title='Test card session',
+        )
+        components = app.state.skill_catalog.components
+        reference = components.resolve(
+            'interaction.question', session_id='card-session', turn_id='turn', user_id='local',
+        )
+        components.bind_data(reference, {'content': 'keep while archived'})
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://contract') as client:
+                path = '/api/serve/sessions/card-session'
+                for archived in (True, False):
+                    result = await client.put(path + '/archive', json={'archived': archived})
+                    assert result.status_code == 200, result.text
+                    state = components.snapshot(reference, user_id='local')['interaction']
+                    assert state['data'] == {'content': 'keep while archived'}
+                result = await client.delete(path)
+                assert result.status_code == 200, result.text
+                assert catalog.get('card-session') is None
+                assert components.cards.load('card-session') == {}
+                with components._read_database() as connection:
+                    assert not connection.execute(
+                        'SELECT binding FROM component_bindings WHERE session_id=?', ('card-session',)
+                    ).fetchone()
+    finally:
+        app.state.storage_domains.close()
+
+asyncio.run(verify())
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            env=dict(
+                os.environ,
+                SCHOLARSEED_HOME=str(home),
+                DAMOATRACE_HOME=str(home),
+                DAMOATRACE_LEDGER_ROOT=str(home / "projects"),
+                SCHOLARSEED_CODEX_HOME=str(home / "codex"),
+                SCHOLARSEED_DEFAULT_WORKSPACE=str(workspace),
+            ),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_storage_maintenance_refuses_live_home_and_preserves_legacy_history(self) -> None:
         root = make_directory("storage-maintenance-")
         self.addCleanup(shutil.rmtree, root)

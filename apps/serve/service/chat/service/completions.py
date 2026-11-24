@@ -36,8 +36,6 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
-from starlette.types import Message, Receive, Scope, Send
-
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
 from service.chat.service.namespaces import NAMESPACE_TOOL_TYPE, NamespaceTools
 from service.chat.service.provenance import ProvenanceStream, response_provenance
@@ -68,6 +66,7 @@ from service.chat.service.transport import (
     transport_diagnostics,
 )
 from service.identity.service.account_token import CONV_TURN_ID_HEADER
+from service.inference.auto import AutoRoute, GuideDecision, project_guidance
 from service.inference.reasoning import (
     ThinkingParameters,
     apply_thinking,
@@ -82,6 +81,7 @@ from service.inference.source import (
     accepts_source,
     attach_source,
 )
+from starlette.types import Message, Receive, Scope, Send
 
 MODEL_BRIDGE_ROUTE_PREFIX = "/api/internal/model-bridge/"
 BRIDGE_ROUTE = f"{MODEL_BRIDGE_ROUTE_PREFIX}{{bridge_id}}/v1/responses"
@@ -674,6 +674,8 @@ class CompletionBridge:
         on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
         on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
         on_tool_outputs: Callable[[str, str, set[str]], None] | None = None,
+        manual_skill_turn: Callable[[str, str], bool] | None = None,
+        auto_route: Callable[[str, str], GuideDecision | None] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         content_source: Callable[[str, str], ContentSource | None] | None = None,
         source_endpoints: Sequence[str] = (),
@@ -685,6 +687,8 @@ class CompletionBridge:
         self._on_diagnostic = on_diagnostic
         self._on_sources = on_sources
         self._on_tool_outputs = on_tool_outputs
+        self._manual_skill_turn = manual_skill_turn
+        self._auto_route = auto_route
         self._turn_ids = turn_ids
         self._content_source = content_source
         self._source_endpoints = tuple(source_endpoints)
@@ -1438,6 +1442,19 @@ class CompletionBridge:
             return JSONResponse(
                 {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
             )
+        route = (
+            self._auto_route(upstream.session_id, call.diagnostic.turn_id)
+            if self._auto_route and call.diagnostic.turn_id
+            else None
+        )
+        approval = upstream.approval_model_ref and payload.get("model") == upstream.approval_model_ref
+        if approval:
+            route = None
+        elif route or (
+            self._manual_skill_turn
+            and self._manual_skill_turn(upstream.session_id, call.diagnostic.turn_id)
+        ):
+            payload = project_guidance(payload, route)
         call.diagnostic.converted_input_items = converted_items
         if not upstream.allow_tools:
             # Native runtimes can still advertise interactive tools after their
@@ -1496,6 +1513,14 @@ class CompletionBridge:
             chat_request = strip_thinking(
                 chat_request,
                 outbound_names(upstream.reasoning_options, protocol.value, upstream.provider),
+            )
+        elif isinstance(route, AutoRoute):
+            options = route.catalog_row.get("reasoning_options")
+            resolution = thinking_parameters(
+                options, protocol.value, upstream.provider, effort=route.effort, thinking=None
+            )
+            chat_request = apply_thinking(
+                chat_request, options, protocol.value, upstream.provider, resolution
             )
         elif upstream.reasoning_effort is not None or upstream.thinking is not None:
             resolution = thinking_parameters(
@@ -1566,7 +1591,11 @@ class CompletionBridge:
                 native_tool_types,
                 len(chat_request.get("tools") or []),
             )
-        chat_request["model"] = upstream.route_model(chat_request.get("model"))
+        chat_request["model"] = (
+            route.catalog_row["model_name"]
+            if isinstance(route, AutoRoute)
+            else upstream.route_model(chat_request.get("model"))
+        )
         call.diagnostic.routed_model = str(chat_request["model"])
         call.diagnostic.wire_protocol = protocol.value
         logger.info(

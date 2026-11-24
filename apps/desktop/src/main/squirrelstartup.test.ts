@@ -472,6 +472,21 @@ test(
       })
     )
     const bound = await bindSquirrelRequest(directory, bundle, target, current)
+    await assert.rejects(
+      bindSquirrelRequest(directory, bundle, target, current, undefined, async (path) => {
+        assert.equal(path, bound.source.path)
+        throw new Error('attached ticket rejected')
+      }),
+      /attached ticket rejected/
+    )
+    const stateBeforeVerification = readFileSync(state)
+    await assert.rejects(
+      bindSquirrelRequest(directory, bundle, target, current, undefined, async () => {
+        await writeFile(state, '{}')
+      }),
+      /request changed during app verification/
+    )
+    await writeFile(state, stateBeforeVerification)
     const alternateOwner = join(directory, `${bundle}.ShipIt.next`)
     await mkdir(alternateOwner, { mode: 0o700 })
     const alternateState = join(alternateOwner, 'ShipItState.plist')

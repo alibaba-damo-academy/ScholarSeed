@@ -7,6 +7,7 @@ const SCRIPT_SUFFIX = '.sh'
 const WINDOWS_PLATFORM = 'win32'
 const WINDOWS_INSTALLER_EXTENSION = '.exe'
 const MACOS_INSTALLER_EXTENSION = '.dmg'
+const MACOS_UPDATE_EXTENSION = '.update.zip'
 const PREPARED_SUFFIX = `${MACOS_INSTALLER_EXTENSION}.prepared`
 
 export type UpdateArtifactKind = 'payload' | 'prepared' | 'mount' | 'script' | 'other'
@@ -34,7 +35,8 @@ export function installerExtension(platform: NodeJS.Platform = process.platform)
 export function stagedInstallerName(
   version: string,
   buildNumber: string,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  zip = false
 ): string {
   if (
     ![version, buildNumber].every(
@@ -42,7 +44,8 @@ export function stagedInstallerName(
     )
   )
     throw new Error('Invalid staged release identity')
-  return `${PAYLOAD_PREFIX}${version}-${buildNumber}${installerExtension(platform)}`
+  const extension = zip ? MACOS_UPDATE_EXTENSION : installerExtension(platform)
+  return `${PAYLOAD_PREFIX}${version}-${buildNumber}${extension}`
 }
 
 /** 只认领本模块命名的东西；认不出来的一律归 `other`，回收时不会被碰。 */
@@ -52,7 +55,9 @@ export function updateArtifactKind(name: string): UpdateArtifactKind {
   if (name.startsWith(PAYLOAD_PREFIX) && name.endsWith(PREPARED_SUFFIX)) return 'prepared'
   if (
     name.startsWith(PAYLOAD_PREFIX) &&
-    (name.endsWith(WINDOWS_INSTALLER_EXTENSION) || name.endsWith(MACOS_INSTALLER_EXTENSION))
+    (name.endsWith(WINDOWS_INSTALLER_EXTENSION) ||
+      name.endsWith(MACOS_INSTALLER_EXTENSION) ||
+      name.endsWith(MACOS_UPDATE_EXTENSION))
   ) {
     return 'payload'
   }

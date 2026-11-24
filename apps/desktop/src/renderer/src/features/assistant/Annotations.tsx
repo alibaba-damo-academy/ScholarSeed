@@ -784,6 +784,7 @@ export function AnnotatedAnswer({
             : []
         )}
         citationPending={citationPending}
+        sentenceEndCitations={Boolean(answerId && thread.sessionId && citationEnabled)}
         citationGroupKeys={citationGroupKeys}
         renderCitationGroup={
           answerId && thread.sessionId && citationEnabled
