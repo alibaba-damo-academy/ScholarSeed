@@ -3729,6 +3729,7 @@ def main() -> int:
         "client_version": "0.3.2",
         "client_build_number": "202611231430",
         "client_channel": "preview",
+        "client_arch": "mac-arm64",
         "production": True,
     }
     for destinations in ((), ("https://gateway.example/v1",)):
@@ -3743,6 +3744,11 @@ def main() -> int:
             "release fields follow the product gateway boundary",
             requests[0].headers.get("x-scholarseed-client-channel")
             == ("preview" if destinations else None),
+        )
+        check(
+            "client architecture follows the product gateway boundary",
+            requests[0].headers.get("x-scholarseed-client-arch")
+            == ("mac-arm64" if destinations else None),
         )
         sent = json.loads(requests[0].content)
         check(
