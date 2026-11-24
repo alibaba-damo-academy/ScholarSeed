@@ -25,7 +25,10 @@ const FRAMEWORKS = ['Mantle', 'ReactiveObjC', 'Foundation', 'AppKit', 'IOKit', '
 const RPATHS = ['@executable_path/../..', '@executable_path/../../../..']
 const TIMING_TEST_SPANS = 7
 const CONTRACT_RESULT_SCHEMA = 1
+const CONTRACT_TIMEOUT_MS = 60_000
+const SEALED_CONTRACT_TIMEOUT_MS = 30_000
 const VOLUME_COMMAND_TIMEOUT_MS = 60_000
+// The second volume holds only the preparation test's tiny Contents/data bundles and HFS+ metadata.
 const PREPARATION_VOLUME_SIZE = '16m'
 const PREPARATION_CONTRACTS = {
   preparation: { units: SUPPORT_UNITS, separateVolume: true },
@@ -172,10 +175,10 @@ function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
   const executable = path.join(directory, 'relaunch-test')
   command('/usr/bin/xcrun', [...compiler, '-UNDEBUG', `-I${path.join(squirrel, 'Squirrel')}`,
     `-Wl,-rpath,${frameworks}`, '-o', executable, ...sources, path.join(OWNER, 'relaunch.test.m')], directory)
-  for (const mode of ['authorized', 'replay', 'cancel', 'mismatch']) {
-    const root = path.join(directory, 'relaunch-fixture', mode === 'replay' ? 'authorized' : mode)
+  const fixtures = path.join(directory, 'relaunch-fixture')
+  const run = (mode, root) => {
     const result = spawnSync(executable, [mode, root], {
-      cwd: directory, encoding: 'utf8', timeout: 60_000, env: { ...process.env, TMPDIR: directory },
+      cwd: directory, encoding: 'utf8', timeout: CONTRACT_TIMEOUT_MS, env: { ...process.env, TMPDIR: directory },
     })
     recordContract(directory, `relaunch-${mode}`, result)
     const launched = mode === 'authorized' || mode === 'replay'
@@ -185,6 +188,11 @@ function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
         result.stderr.includes('[shipit-admission] event=terminal-failure') !== (mode !== 'mismatch'))
       throw new Error(`ShipIt relaunch ${mode} contract failed: ${describeResult(result)}`)
   }
+  // Replay the consumed authorization against the same helper, journal and launch marker.
+  const authorized = path.join(fixtures, 'authorized')
+  run('authorized', authorized)
+  run('replay', authorized)
+  for (const mode of ['cancel', 'mismatch']) run(mode, path.join(fixtures, mode))
 }
 
 function verifySealedInstallation(directory, compiler, sources, squirrel, frameworks) {
@@ -209,7 +217,9 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
     CFBundleIdentifier: 'org.scholarseed.test.sealed', CFBundleVersion: '1',
     CFBundleShortVersionString: '1.0', LSBackgroundOnly: true,
   }))
+  // plutil preserves the JSON boolean type for Launch Services' LSBackgroundOnly key.
   command('/usr/bin/plutil', ['-convert', 'xml1', plist], directory)
+  // Seal the modified framework first so the app signature covers the final nested signature.
   for (const item of [framework, template])
     command('/usr/bin/codesign', ['--force', '--sign', '-', item], directory)
   const verify = application => command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', application], directory)
@@ -222,14 +232,14 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
     copy(template, target)
     copy(template, path.join(root, 'download', 'Fixture.app'))
     const previous = fs.statSync(target).ino
-    fs.writeFileSync(path.join(root, 'previous-inode'), String(previous))
     const modes = scenario === 'damaged-source' ? [scenario, 'replay', 'replay'] : [scenario]
     for (const [attempt, mode] of modes.entries()) {
       const result = spawnSync(executable, [mode, root], {
-        cwd: directory, env: { ...process.env, TMPDIR: root }, encoding: 'utf8', timeout: 30_000,
+        cwd: directory, env: { ...process.env, TMPDIR: root }, encoding: 'utf8', timeout: SEALED_CONTRACT_TIMEOUT_MS,
       })
       recordContract(directory, `sealed-${scenario}-${attempt + 1}`, result)
       if (result.error || result.status !== 0) throw new Error(`ShipIt sealed ${mode}: ${describeResult(result)}`)
+      // Only a missing sealed resource permits one rebuild and a second full signature check.
       const rebuilt = [...result.stderr.matchAll(/\[shipit-preparation\] event=candidate-rebuilt/g)].length
       if (rebuilt !== (mode === 'rebuild' || mode === 'damaged-source' ? 1 : 0))
         throw new Error(`ShipIt sealed ${mode} performed ${rebuilt} rebuilds`)
@@ -239,20 +249,29 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
       if (signatures.join(',') !== expected.join(','))
         throw new Error(`ShipIt sealed ${mode} signature results: ${signatures.join(',')}`)
       const current = fs.statSync(target).ino
-      const launchFile = path.join(root, 'launches.jsonl')
       if ((current !== previous) !== (scenario === 'rebuild'))
         throw new Error(`ShipIt sealed ${mode} left an unexpected target`)
-      if (mode === 'cancel') {
-        if (fs.existsSync(launchFile)) throw new Error('ShipIt reopened the application without authorization')
-      } else {
-        const launched = fs.readFileSync(launchFile, 'utf8').trim().split('\n').map(line => JSON.parse(line))
-        if (launched.length !== 1 || launched[0].inode !== current || launched[0].application !== target ||
-            !launched[0].pid || launched[0].version !== '1.0')
-          throw new Error(`ShipIt sealed ${mode} launched an unexpected application`)
-      }
+      verifySealedLaunch(root, mode, target, current)
       verify(target)
     }
   }
+}
+
+function verifySealedLaunch(root, mode, target, inode) {
+  const launchFile = path.join(root, 'launches.jsonl')
+  let contents
+  try {
+    contents = fs.readFileSync(launchFile, 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    if (mode === 'cancel') return
+    throw new Error(`ShipIt sealed ${mode} has no application launch record at ${launchFile}`, { cause: error })
+  }
+  if (mode === 'cancel') throw new Error('ShipIt reopened the application without authorization')
+  const launched = contents.trim().split('\n').map(line => JSON.parse(line))
+  if (launched.length !== 1 || launched[0].inode !== inode || launched[0].application !== target ||
+      !launched[0].pid || launched[0].version !== '1.0')
+    throw new Error(`ShipIt sealed ${mode} launched an unexpected application`)
 }
 
 function withPreparationVolume(directory, run) {
@@ -297,7 +316,7 @@ function verifyPreparation(directory) {
       '-framework', 'Foundation', ...configuration.units.map(unit => path.join(directory, unit)), fixture, '-o', executable], directory)
     const run = (...volumes) => {
       const result = spawnSync(executable, [path.join(directory, `${name}-fixture`), ...volumes], {
-        encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: 60_000,
+        encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: CONTRACT_TIMEOUT_MS,
       })
       recordContract(directory, name, result)
       if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${describeResult(result)}`)

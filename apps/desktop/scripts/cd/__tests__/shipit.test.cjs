@@ -145,6 +145,25 @@ test('ShipIt rejects another Electron release and unsupported platforms before c
   assert.throws(() => validateTarget('darwin', 'arm64', '44.2.0', '44.3.0'), /does not match/)
 })
 
+test('sealed installation distinguishes a missing launch record from cancellation and read failures', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'shipit-launch-record-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const filename = require.resolve('../shipit.cjs')
+  const verify = runInNewContext(fs.readFileSync(filename, 'utf8') + '\nverifySealedLaunch', {
+    __dirname: path.dirname(filename), require: createRequire(filename), module: { exports: {} },
+  })
+  const target = path.join(directory, 'Fixture.app')
+  const receipt = path.join(directory, 'launches.jsonl')
+  assert.throws(() => verify(directory, 'rebuild', target, 1), /sealed rebuild has no application launch record/)
+  verify(directory, 'cancel', target, 1)
+  fs.writeFileSync(receipt, JSON.stringify({ inode: 1, application: target, pid: 2, version: '1.0' }))
+  verify(directory, 'rebuild', target, 1)
+  assert.throws(() => verify(directory, 'cancel', target, 1), /without authorization/)
+  fs.unlinkSync(receipt)
+  fs.mkdirSync(receipt)
+  assert.throws(() => verify(directory, 'rebuild', target, 1), { code: 'EISDIR' })
+})
+
 test('native contract registry selects each dependency without changing execution budgets', (context) => {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'shipit-registry-'))
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }))

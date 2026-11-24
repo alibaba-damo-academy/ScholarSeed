@@ -327,14 +327,18 @@ BOOL SSCleanupCommit(NSURL *source, NSURL *stage, NSURL *previous, NSURL *target
     for (NSDictionary *old in before) if ([old[@"items"] count]) [SSRecords addObject:old];
     [SSRecords addObject:record];
     BOOL copied = ![items[1][@"parent"][@"dev"] isEqual:capture[@"item"][@"dev"]];
+    // Freeze the live request's physical paths alongside the bundle identity.
+    // Its original leaf may already have moved. Persisted matching keys stay lexical.
+    NSDictionary *original = copied ? SSCapture(SSPath(originalTarget), YES) : nil;
     NSDictionary *publication = nil;
     if (!SSSave(copied ? &publication : NULL)) { SSRecords = before; return SSFail(error, errno ?: EIO); }
     // An EXDEV move creates new inodes. Keep the installed bundle identity and
     // the exact committed journal until this lock is released.
-    if (copied) {
+    if (original) {
         NSDictionary *snapshot = SSCleanupMaintenanceSnapshot(NULL);
         if ([snapshot[@"journal"][@"identity"] isEqual:publication[@"identity"]] && [snapshot[@"journal"][@"sha256"] isEqual:publication[@"sha256"]])
-            SSCopyCommit = @{@"snapshot":snapshot, @"bundle":capture[@"parent"]};
+            SSCopyCommit = @{@"snapshot":snapshot, @"bundle":capture[@"parent"],
+                             @"target":[capture[@"path"] stringByDeletingLastPathComponent], @"originalTarget":original[@"path"]};
     }
     NSLog(@"[shipit-cleanup] event=committed pending=%lu", (unsigned long)items.count);
     return YES;
@@ -379,7 +383,7 @@ BOOL SSCleanupConfirmsCopiedCandidate(NSDictionary *source, NSDictionary *candid
     NSDictionary *record = SSRecords.lastObject;
     if (!SSCopyCommit || ![SSCopyCommit[@"snapshot"] isEqual:SSCleanupMaintenanceSnapshot(NULL)] ||
         ![SSCopyCommit[@"bundle"] isEqual:installed[@"item"]] || ![record[@"targetIdentity"] isEqual:installed[@"contents"]] ||
-        ![record[@"target"] isEqual:installed[@"path"]] || ![record[@"originalTarget"] isEqual:originalTarget] ||
+        ![SSCopyCommit[@"target"] isEqual:installed[@"path"]] || ![SSCopyCommit[@"originalTarget"] isEqual:originalTarget] ||
         [record[@"items"] count] != 3 || [candidate[@"contents"][@"dev"] isEqual:installed[@"contents"][@"dev"]]) return NO;
     NSDictionary *sourceItem = record[@"items"][0], *stage = record[@"items"][1];
     if (![sourceItem[@"path"] isEqual:source[@"path"]] || ![sourceItem[@"parent"] isEqual:source[@"parent"]] ||

@@ -274,6 +274,11 @@ int main(int argc, const char **argv) {
         CheckCopiedRetirement(localRoot, localRoot, NO);
         NSString *volumeRoot = Directory([@(argv[2]) stringByAppendingPathComponent:NSUUID.UUID.UUIDString]);
         CheckCopiedRetirement(Case(@"cross-volume"), volumeRoot, YES);
+        NSString *aliasCase = Case(@"cross-volume-alias");
+        NSString *applications = Directory([volumeRoot stringByAppendingPathComponent:@"Applications"]);
+        NSString *alias = [aliasCase stringByAppendingPathComponent:@"Applications"];
+        assert(symlink(applications.fileSystemRepresentation, alias.fileSystemRepresentation) == 0);
+        CheckCopiedRetirement(aliasCase, alias, YES);
         NSString *root = Case(@"success"), *store = Store(root);
         NSURL *source = Bundle([root stringByAppendingPathComponent:@"source.app"]);
         NSURL *target = Bundle([root stringByAppendingPathComponent:@"target.app"]);
