@@ -192,7 +192,6 @@ import {
   beginContextCandidateLoad,
   sentAnswerAnnotationIds,
   deletableAnswerAnnotationIds,
-  submittedContextRefIds,
   mergeContextCandidates,
   literatureAttachmentNames,
   INITIAL_AI_PANEL_STATE,

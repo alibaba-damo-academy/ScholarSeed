@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import * as React from 'react'
 import { transformSync } from 'esbuild'
 
+import type { createDirectoryRefresh } from './Explorer'
 import { CONTENT_TREE_READ_TIMEOUT_MS } from '../../app/api/content.ts'
 
 const compiled = transformSync(readFileSync(new URL('./Explorer.tsx', import.meta.url), 'utf8'), {
@@ -37,8 +38,7 @@ interface ElementProps {
 type Element = React.ReactElement<ElementProps>
 
 test('a rejected directory read settles the coordinator without publishing partial pages', async () => {
-  type ExplorerModule = typeof import('./Explorer.tsx')
-  const loaded = { exports: {} as ExplorerModule }
+  const loaded = { exports: {} as { createDirectoryRefresh: typeof createDirectoryRefresh } }
   runInNewContext(compiled, { module: loaded, exports: loaded.exports, require: () => ({}) })
   const refresh = loaded.exports.createDirectoryRefresh()
   const signal = new AbortController().signal
