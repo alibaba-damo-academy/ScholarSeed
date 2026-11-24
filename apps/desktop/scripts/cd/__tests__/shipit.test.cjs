@@ -4,23 +4,49 @@ const path = require('node:path')
 const os = require('node:os')
 const { createRequire } = require('node:module')
 const { runInNewContext } = require('node:vm')
-const { spawnSync } = require('node:child_process')
+const { execFileSync, spawnSync } = require('node:child_process')
 const { test } = require('node:test')
 const { validateTarget, verifyAdmission, command } = require('../shipit.cjs')
 
-function fixtureModules(originalRequire, spawn, volumeCalls) {
+function fixtureModules(originalRequire, spawn, volumeCalls, faults = {}) {
   let mounted
+  let attachedImage
+  const imagePaths = () => attachedImage ? [__filename, attachedImage] : [__filename]
   return name => {
     if (name === 'node:child_process') return {
       spawnSync: spawn,
-      execFileSync(executable, args) {
+      execFileSync(executable, args, options) {
+        if (executable === '/usr/bin/plutil') {
+          if (process.platform === 'darwin') return execFileSync(executable, args, options)
+          const key = args[1]
+          const type = key === 'images' ? 'array' : 'string'
+          assert.deepEqual(Array.from(args), ['-extract', key, 'raw', '-expect', type, '-n', '-'])
+          return key === 'images' ? String(imagePaths().length) : imagePaths()[Number(key.split('.')[1])]
+        }
         assert.equal(executable, '/usr/bin/hdiutil')
         volumeCalls.push(args)
         if (args[0] === 'create') fs.writeFileSync(args.at(-1), 'fixture')
-        if (args[0] === 'attach') mounted = args[args.indexOf('-mountpoint') + 1]
+        if (args[0] === 'info') {
+          const images = imagePaths().map(name => {
+            const escaped = name.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+            return `<dict><key>image-path</key><string>${escaped}</string><key>image-alias</key><data>AQ==</data></dict>`
+          })
+          return `<plist version="1.0"><dict><key>images</key><array>${images.join('')}</array></dict></plist>`
+        }
+        if (args[0] === 'attach') {
+          mounted = args[args.indexOf('-mountpoint') + 1]
+          attachedImage = args.at(-1)
+        }
         if (args[0] === 'detach') {
           assert.equal(args[1], mounted)
+          if (faults.detach === 'busy') throw new Error('disk busy')
           mounted = undefined
+          if (faults.detach === 'attached') {
+            attachedImage = path.dirname(attachedImage) + '/./' + path.basename(attachedImage)
+            throw new Error('disk still attached')
+          }
+          attachedImage = undefined
+          if (faults.detach === 'detached') throw new Error('detach response timed out')
         }
       },
     }
@@ -30,10 +56,44 @@ function fixtureModules(originalRequire, spawn, volumeCalls) {
         const stat = fs.statSync(target, options)
         return target === mounted ? { dev: stat.dev + 1 } : stat
       },
+      rmdirSync(target) {
+        if (faults.mountRemoval && path.basename(target) === 'mount') throw new Error('could not remove mount directory')
+        fs.rmdirSync(target)
+      },
     }
     return originalRequire(name)
   }
 }
+
+test('volume cleanup preserves attached images and cleans independent paths after confirmed detachment', t => {
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'shipit-volume-errors-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const filename = require.resolve('../shipit.cjs')
+  for (const faults of [{ detach: 'busy' }, { detach: 'attached' }, { detach: 'detached' }, { mountRemoval: true }]) {
+    const calls = []
+    const withVolume = runInNewContext(fs.readFileSync(filename, 'utf8') + '\nwithPreparationVolume', {
+      __dirname: path.dirname(filename), module: { exports: {} },
+      require: fixtureModules(createRequire(filename), undefined, calls, faults),
+    })
+    let failure
+    assert.throws(() => withVolume(directory, () => { throw new Error('contract failed') }), error => {
+      failure = error
+      return error.name === 'AggregateError' && error.errors[0].message === 'contract failed'
+    })
+    const image = calls[0].at(-1)
+    const root = path.dirname(image)
+    const mount = path.join(root, 'mount')
+    if (faults.detach === 'busy' || faults.detach === 'attached') {
+      assert.equal(fs.existsSync(image), true)
+      assert.equal(fs.existsSync(mount), true)
+      assert.ok(failure.message.includes(`Retained ${image}`))
+    } else {
+      assert.equal(fs.existsSync(image), false)
+      assert.equal(fs.existsSync(root), !!faults.mountRemoval)
+      assert.match(failure.message, /detach response timed out|could not remove mount directory/)
+    }
+  }
+})
 
 test('native command failures retain exit status even without stderr', (context) => {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'shipit-exit-'))

@@ -1,5 +1,6 @@
 #import "preparation.h"
 #import "cleanup.h"
+#import "observation.h"
 #import "readiness.h"
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -144,6 +145,11 @@ static void CheckRebuild(NSString *root, BOOL failCopy, BOOL interruptSwitch) {
           @"a real unreadable source member fails the copy and preserves the old ready bundle");
     NSString *partial = Journal(store)[@"record"][@"rebuild"][@"directory"][@"path"];
     assert(partial);
+    NSDictionary *interrupted = Journal(store);
+    Check(!SSPreparationBeginOwnership(source, target, binding, damaged, NULL) &&
+          !SSPreparationAcceptOwnership(source, target, binding, damaged, &error) &&
+          error.code == ECANCELED && [interrupted isEqual:Journal(store)],
+          @"unfinished rebuild preserves ownership intent until failure recovery");
     SSPreparationClose(); assert(SSPreparationOpenDirectory(store, NULL));
     Check(!SSPreparationRebuildCandidate(source, target, binding, damaged, NULL), @"an interrupted ownership operation cannot spend another rebuild on restart");
     NSInteger code = 0;
@@ -219,6 +225,13 @@ static void CheckCopiedRetirement(NSString *root, NSString *targetRoot, BOOL cro
     assert([Manager moveItemAtURL:target toURL:previous error:NULL]);
     assert([Manager copyItemAtURL:candidate toURL:target error:NULL]);
     Check(!SSPreparationRetire(source, target, NULL), @"a copied target alone cannot retire preparation");
+    if (crossVolume) {
+        NSURL *unavailable = [NSURL fileURLWithPath:[targetRoot stringByAppendingPathComponent:@"missing/App.app"]];
+        NSError *error = nil;
+        Check(!SSCleanupCommit(source, candidate, previous, target, unavailable, &error) && error.code == ENOENT &&
+              !SSCleanupKnowsRollback(previous, target) && ![Manager fileExistsAtPath:[cleanup stringByAppendingPathComponent:@"journal.plist"]],
+              @"unavailable original parent leaves the cross-volume cleanup commit unpublished");
+    }
     assert(SSCleanupCommit(source, candidate, previous, target, target, NULL));
     Check(!SSPreparationRetire(source, target, NULL), @"commit cannot retire a stage that still contains the candidate");
     NSURL *parked = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"parked.app"]];
@@ -243,6 +256,23 @@ static void CheckCopiedRetirement(NSString *root, NSString *targetRoot, BOOL cro
         Check(!SSPreparationRetire(source, target, NULL), @"a byte-identical journal substituted during commit cannot qualify as proof");
     }
     assert(SSCleanupCommit(source, candidate, previous, target, target, NULL));
+    if (crossVolume) {
+        NSDictionary *record = Journal(CurrentStore)[@"record"];
+        NSMutableDictionary *installed = [record[@"target"] mutableCopy];
+        struct stat bundle, contents;
+        assert(stat(target.fileSystemRepresentation, &bundle) == 0 &&
+               stat([target URLByAppendingPathComponent:@"Contents"].fileSystemRepresentation, &contents) == 0);
+        installed[@"item"] = SSObservationIdentity(bundle);
+        installed[@"contents"] = SSObservationIdentity(contents);
+        NSMutableDictionary *incomplete = [record[@"candidate"] mutableCopy];
+        assert(SSCleanupConfirmsCopiedCandidate(record[@"source"], incomplete, installed, installed[@"path"]));
+        [incomplete removeObjectForKey:@"contents"];
+        Check(!SSCleanupConfirmsCopiedCandidate(record[@"source"], incomplete, installed, installed[@"path"]),
+              @"cross-volume retirement requires the staged Contents identity");
+        [installed removeObjectForKey:@"contents"];
+        Check(!SSCleanupConfirmsCopiedCandidate(record[@"source"], record[@"candidate"], installed, installed[@"path"]),
+              @"cross-volume retirement requires the installed Contents identity");
+    }
     Check(SSPreparationRetire(source, target, NULL) == crossVolume,
           crossVolume ? @"committed cross-volume copy retires preparation" : @"same-volume retirement still requires the original inodes");
     SSCleanupClose(); SSPreparationClose();

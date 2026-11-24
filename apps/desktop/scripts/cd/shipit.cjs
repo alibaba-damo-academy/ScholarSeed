@@ -183,9 +183,10 @@ function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
     recordContract(directory, `relaunch-${mode}`, result)
     const launched = mode === 'authorized' || mode === 'replay'
     const expectedStatus = mode === 'mismatch' ? 1 : 0
+    const expectedTerminalFailure = mode !== 'mismatch'
     if (result.error || result.status !== expectedStatus ||
         fs.existsSync(path.join(root, 'launched')) !== launched ||
-        result.stderr.includes('[shipit-admission] event=terminal-failure') !== (mode !== 'mismatch'))
+        result.stderr.includes('[shipit-admission] event=terminal-failure') !== expectedTerminalFailure)
       throw new Error(`ShipIt relaunch ${mode} contract failed: ${describeResult(result)}`)
   }
   // Replay the consumed authorization against the same helper, journal and launch marker.
@@ -237,22 +238,27 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
       const result = spawnSync(executable, [mode, root], {
         cwd: directory, env: { ...process.env, TMPDIR: root }, encoding: 'utf8', timeout: SEALED_CONTRACT_TIMEOUT_MS,
       })
-      recordContract(directory, `sealed-${scenario}-${attempt + 1}`, result)
-      if (result.error || result.status !== 0) throw new Error(`ShipIt sealed ${mode}: ${describeResult(result)}`)
-      // Only a missing sealed resource permits one rebuild and a second full signature check.
-      const rebuilt = [...result.stderr.matchAll(/\[shipit-preparation\] event=candidate-rebuilt/g)].length
-      if (rebuilt !== (mode === 'rebuild' || mode === 'damaged-source' ? 1 : 0))
-        throw new Error(`ShipIt sealed ${mode} performed ${rebuilt} rebuilds`)
-      const signatures = [...result.stderr.matchAll(/stage=verify-signature event=end result=(\w+)/g)].map(match => match[1])
-      const expected = mode === 'replay' || mode === 'cancel' ? [] : ['error']
-      if (rebuilt) expected.push(mode === 'rebuild' ? 'success' : 'error')
-      if (signatures.join(',') !== expected.join(','))
-        throw new Error(`ShipIt sealed ${mode} signature results: ${signatures.join(',')}`)
-      const current = fs.statSync(target).ino
-      if ((current !== previous) !== (scenario === 'rebuild'))
-        throw new Error(`ShipIt sealed ${mode} left an unexpected target`)
-      verifySealedLaunch(root, mode, target, current)
-      verify(target)
+      const receipt = `sealed-${scenario}-${attempt + 1}`
+      try {
+        recordContract(directory, receipt, result)
+        if (result.error || result.status !== 0) throw new Error(describeResult(result))
+        // Only a missing sealed resource permits one rebuild and a second full signature check.
+        const rebuilt = [...result.stderr.matchAll(/\[shipit-preparation\] event=candidate-rebuilt/g)].length
+        const expectedRebuilds = mode === 'rebuild' || mode === 'damaged-source' ? 1 : 0
+        if (rebuilt !== expectedRebuilds) throw new Error(`Expected ${expectedRebuilds} rebuilds, observed ${rebuilt}`)
+        const signatures = [...result.stderr.matchAll(/stage=verify-signature event=end result=(\w+)/g)].map(match => match[1])
+        const expected = mode === 'replay' || mode === 'cancel' ? [] : ['error']
+        if (expectedRebuilds) expected.push(mode === 'rebuild' ? 'success' : 'error')
+        if (signatures.join(',') !== expected.join(',')) throw new Error(`Unexpected signature results: ${signatures.join(',')}`)
+        const current = fs.statSync(target).ino
+        const targetReplaced = current !== previous
+        const expectReplacement = scenario === 'rebuild'
+        if (targetReplaced !== expectReplacement) throw new Error('Unexpected installed target')
+        verifySealedLaunch(root, mode, target, current)
+        verify(target)
+      } catch (error) {
+        throw new Error(`ShipIt ${receipt} (${mode}) failed: ${error.message}`, { cause: error })
+      }
     }
   }
 }
@@ -275,34 +281,75 @@ function verifySealedLaunch(root, mode, target, inode) {
 }
 
 function withPreparationVolume(directory, run) {
-  const root = fs.mkdtempSync(path.join(directory, 'preparation-volume-'))
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(directory), 'preparation-volume-'))
   const image = path.join(root, 'fixture.dmg')
   const mount = path.join(root, 'mount')
   fs.mkdirSync(mount, { mode: 0o700 })
   const sourceDevice = fs.statSync(root).dev
   const hdiutil = args => execFileSync('/usr/bin/hdiutil', args, { timeout: VOLUME_COMMAND_TIMEOUT_MS, stdio: 'pipe' })
-  let failure
+  const mounted = () => {
+    const entry = fs.statSync(mount, { throwIfNoEntry: false })
+    return entry && entry.dev !== sourceDevice
+  }
+  const errors = []
+  let attachAttempted = false
   try {
     hdiutil(['create', '-size', PREPARATION_VOLUME_SIZE, '-fs', 'HFS+', '-volname', 'ShipIt Preparation', image])
+    attachAttempted = true
     hdiutil(['attach', '-nobrowse', '-owners', 'on', '-mountpoint', mount, image])
     if (fs.statSync(mount).dev === sourceDevice) throw new Error('ShipIt preparation requires a separate test volume')
     run(mount)
   } catch (error) {
-    failure = error
-    throw error
-  } finally {
-    try {
-      // A failed attach may still have mounted the image. Never remove files through the mount.
-      const mounted = fs.statSync(mount, { throwIfNoEntry: false })
-      if (mounted && mounted.dev !== sourceDevice) hdiutil(['detach', mount])
-      if (fs.existsSync(mount)) fs.rmdirSync(mount)
-      fs.rmSync(image, { force: true })
-      fs.rmdirSync(root)
-    } catch (error) {
-      if (failure) throw new AggregateError([failure, error], 'ShipIt preparation verification and volume cleanup failed')
-      throw error
+    errors.push(error)
+  }
+  let detached = false
+  try {
+    if (mounted()) {
+      hdiutil(['detach', mount])
+      detached = true
+    }
+  } catch (error) {
+    errors.push(error)
+  }
+  let removable = false
+  try {
+    // A failed attach or detach can leave a disk image attached without a mount point.
+    if (mounted()) throw new Error(`Test volume is still mounted at ${mount}`)
+    if (attachAttempted && !detached) {
+      const inventory = hdiutil(['info', '-plist'])
+      const extract = (key, type) => execFileSync('/usr/bin/plutil', ['-extract', key, 'raw', '-expect', type, '-n', '-'], {
+        input: inventory, timeout: VOLUME_COMMAND_TIMEOUT_MS, encoding: 'utf8',
+      })
+      // Other images may contain plist data fields that cannot be converted to JSON.
+      const count = extract('images', 'array')
+      if (!/^\d+$/.test(count)) throw new Error('Invalid disk image count in hdiutil inventory')
+      const target = fs.statSync(image)
+      for (let index = 0; index < Number(count); index++) {
+        const name = extract(`images.${index}.image-path`, 'string')
+        if (!name) throw new Error('Missing disk image path in hdiutil inventory')
+        const other = fs.statSync(name, { throwIfNoEntry: false })
+        if (name === image || (other && other.dev === target.dev && other.ino === target.ino))
+          throw new Error('Test image is still attached')
+      }
+    }
+    removable = true
+  } catch (error) {
+    errors.push(new Error(`Retained ${image}. Verify the disk with hdiutil info and detach it before removing ${root}: ${error.message}`, { cause: error }))
+  }
+  if (removable) {
+    // The mount directory and image can be removed independently once detached.
+    for (const item of [mount, image, root]) {
+      try {
+        if (item === image) fs.rmSync(item, { force: true })
+        else fs.rmdirSync(item)
+      } catch (error) {
+        if (error.code !== 'ENOENT') errors.push(error)
+      }
     }
   }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1)
+    throw new AggregateError(errors, `ShipIt preparation volume ${root}: ${errors.map(error => error.message).join('\n')}`)
 }
 
 function verifyPreparation(directory) {

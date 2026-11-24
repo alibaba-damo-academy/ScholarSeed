@@ -171,14 +171,27 @@ contract('shipped repair library exposes no process-scope or fault-injection con
 
 contract('update handles reject unknown requests and an unavailable Electron framework', () => {
   const refused = (error) => error.code === 'ERR_UPDATE_SUCCESSOR'
+  const unknown = { code: 'ERR_UPDATE_SUCCESSOR', message: 'Unknown update candidate' }
   for (const handle of [0, 1, -1, 1.5, NaN, '1', 2 ** 32 + 1]) {
-    assert.throws(() => production.installSuccessor(handle), refused)
-    assert.throws(() => production.disposeSuccessor(handle), refused)
+    assert.throws(() => production.installSuccessor(handle), unknown)
+    assert.throws(() => production.disposeSuccessor(handle), unknown)
   }
   const url = `http://127.0.0.1:1/${'a'.repeat(64)}/feed`
   assert.throws(() => production.prepareSuccessor(url, 'next', () => {}), refused)
   assert.throws(() => production.prepareSuccessor(url, true, null), refused)
   assert.throws(() => production.prepareSuccessor(url, true, () => assert.fail()), refused)
+  assert.throws(() => repair.prepareSuccessor(url, false, () => assert.fail()), {
+    code: 'ERR_UPDATE_SUCCESSOR', message: 'Native update operation failed',
+  })
+  const pending = repair.prepareSuccessor(url, true, () => assert.fail())
+  try {
+    assert.throws(() => repair.installSuccessor(pending), {
+      code: 'ERR_UPDATE_SUCCESSOR', message: 'Update candidate is not ready',
+    })
+  } finally {
+    repair.disposeSuccessor(pending)
+  }
+  assert.throws(() => repair.installSuccessor(pending), unknown)
 })
 
 contract('shipped observer recognizes only the matching launched cleanup record', (context) => {

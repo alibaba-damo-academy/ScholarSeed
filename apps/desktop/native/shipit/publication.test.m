@@ -242,6 +242,9 @@ static void Exercise(NSString *root, PublicationFault fault) {
   NSData *before = Bytes(journal);
   Check(SSPreparationRecoverFailure(nextSource, nextTarget, nextBinding, &code, NULL) == SSPreparationFailureInvalid, @"fault removal cannot restore recovery qualification");
   Check(SSPreparationCopy(nextSource, nextTarget, nextBinding, NULL) == nil, @"fault removal cannot restart candidate copying");
+  NSError *rebuildError = nil;
+  Check(!SSPreparationRebuildCandidate(source, target, nil, candidate, &rebuildError) && rebuildError.code == EIO,
+        @"uncertain writer reports its original error before checking rebuild arguments");
   Check(!SSPreparationValidate(source, target, binding, candidate, NULL), @"uncertain qualification cannot validate");
   Check(!SSPreparationBeginOwnership(source, target, binding, candidate, NULL), @"uncertain qualification cannot begin ownership");
   Check(!SSPreparationAcceptOwnership(source, target, binding, candidate, NULL), @"uncertain qualification cannot accept ownership");

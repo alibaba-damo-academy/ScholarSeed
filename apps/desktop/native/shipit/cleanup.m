@@ -320,16 +320,17 @@ BOOL SSCleanupCommit(NSURL *source, NSURL *stage, NSURL *previous, NSURL *target
     }
     NSDictionary *capture = SSCapture([SSPath(target) stringByAppendingPathComponent:@"Contents"], NO);
     if (!capture) return SSFail(error, errno ?: EINVAL);
+    BOOL copied = ![items[1][@"parent"][@"dev"] isEqual:capture[@"item"][@"dev"]];
+    // Freeze the live request's physical paths before publishing the commit.
+    // Its original leaf may already have moved. Persisted matching keys stay lexical.
+    NSDictionary *original = copied ? SSCapture(SSPath(originalTarget), YES) : nil;
+    if (copied && !original) return SSFail(error, errno ?: EIO);
     NSMutableDictionary *record = [@{@"source":SSPath(source), @"originalTarget":SSPath(originalTarget), @"target":SSPath(target), @"targetIdentity":capture[@"item"], @"previous":SSPath(previous), @"previousIdentity":items[2][@"item"], @"previousCapture":items[2], @"items":items, @"launched":@NO} mutableCopy];
     NSMutableArray *before = SSRecords;
     SSRecords = [NSMutableArray array];
     // A different committed request supersedes completed tombstones, never pending work.
     for (NSDictionary *old in before) if ([old[@"items"] count]) [SSRecords addObject:old];
     [SSRecords addObject:record];
-    BOOL copied = ![items[1][@"parent"][@"dev"] isEqual:capture[@"item"][@"dev"]];
-    // Freeze the live request's physical paths alongside the bundle identity.
-    // Its original leaf may already have moved. Persisted matching keys stay lexical.
-    NSDictionary *original = copied ? SSCapture(SSPath(originalTarget), YES) : nil;
     NSDictionary *publication = nil;
     if (!SSSave(copied ? &publication : NULL)) { SSRecords = before; return SSFail(error, errno ?: EIO); }
     // An EXDEV move creates new inodes. Keep the installed bundle identity and
@@ -381,6 +382,7 @@ BOOL SSCleanupCommittedRequest(NSURL *source, NSURL *target) {
 }
 BOOL SSCleanupConfirmsCopiedCandidate(NSDictionary *source, NSDictionary *candidate, NSDictionary *installed, NSString *originalTarget) {
     NSDictionary *record = SSRecords.lastObject;
+    if (!SSValidIdentity(candidate[@"contents"]) || !SSValidIdentity(installed[@"contents"])) return NO;
     if (!SSCopyCommit || ![SSCopyCommit[@"snapshot"] isEqual:SSCleanupMaintenanceSnapshot(NULL)] ||
         ![SSCopyCommit[@"bundle"] isEqual:installed[@"item"]] || ![record[@"targetIdentity"] isEqual:installed[@"contents"]] ||
         ![SSCopyCommit[@"target"] isEqual:installed[@"path"]] || ![SSCopyCommit[@"originalTarget"] isEqual:originalTarget] ||

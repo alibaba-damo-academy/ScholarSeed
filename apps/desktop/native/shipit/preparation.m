@@ -787,7 +787,9 @@ static NSDictionary *RebuildJournal(NSError **error) {
   return entry[@"snapshot"];
 }
 NSURL *SSPreparationRebuildCandidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
+  if (SSPreparationCloseUncertain) { Fail(error, SSPreparationUncertaintyCode()); return nil; }
   if (SSPreparationReadOnly) { Fail(error, EROFS); return nil; }
+  if (SSPreparationFD < 0) { Fail(error, EBADF); return nil; }
   if (!candidateURL.isFileURL || !SSBindingValid(binding)) { Fail(error, EINVAL); return nil; }
   if (!ValidatePreparation(sourceURL, targetURL, binding, error)) return nil;
   if (SSPreparationRecord[@"rebuild"]) { Fail(error, ELOOP); return nil; }
@@ -835,6 +837,9 @@ BOOL SSPreparationAcceptOwnership(NSURL *sourceURL, NSURL *targetURL, NSDictiona
     if (SSPreparationReadOnly) return Fail(error, EROFS);
     if (!candidateURL.isFileURL) return Fail(error, EINVAL);
     if (!ValidatePreparation(sourceURL, targetURL, binding, error)) return NO;
+    // An unfinished rebuild needs its ownership intent for failure recovery.
+    NSDictionary *rebuild = SSPreparationRecord[@"rebuild"];
+    if (rebuild[@"directory"] && !rebuild[@"candidate"]) return Fail(error, ECANCELED);
     NSDictionary *before = SSPreparationRecord[@"candidate"], *after = Capture(candidateURL.path, YES);
     if (!CandidateOwnershipMatches(before, after)) return Fail(error, ESTALE);
     // SQRLInstaller.takeOwnershipOfFileSecurity uses the real UID, not a

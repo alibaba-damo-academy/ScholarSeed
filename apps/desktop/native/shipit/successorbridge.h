@@ -17,7 +17,7 @@ static NSMutableDictionary<NSNumber *, SSSuccessorHandle *> *SSHandles;
 static uint32_t SSNextHandle;
 
 static napi_value SSSuccessorError(napi_env env, const char *message) {
-  napi_throw_error(env, "ERR_UPDATE_SUCCESSOR", message);
+  napi_throw_error(env, "ERR_UPDATE_SUCCESSOR", message ?: "Native update operation failed");
   return NULL;
 }
 
@@ -112,6 +112,7 @@ static SSSuccessorHandle *SSLookupSuccessor(napi_env env, napi_callback_info inf
 static napi_value SSInstallSuccessor(napi_env env, napi_callback_info info) {
   @autoreleasepool {
     SSSuccessorHandle *handle = SSLookupSuccessor(env, info);
+    if (!handle) return SSSuccessorError(env, "Unknown update candidate");
     if (!handle.ready) return SSSuccessorError(env, "Update candidate is not ready");
     NSError *error = nil;
     if (![handle.updater ss_installSuccessor:&error]) return SSSuccessorError(env, error.localizedDescription.UTF8String);
