@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -925,6 +927,89 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
             str(Path("outputs") / "nested" / "new.py"): "add",
         }
         self.assertEqual(self.state.watched_paths, expected)
+
+    async def test_git_turn_observes_dirty_paths_and_only_the_bound_ignored_output(self):
+        workspace = self.workspace.resolve()
+
+        def git(*args):
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Watch test",
+                    "-c",
+                    "user.email=watch@example.org",
+                    "-c",
+                    "commit.gpgsign=false",
+                    *args,
+                ],
+                cwd=workspace,
+                check=True,
+                capture_output=True,
+            )
+
+        git("init", "-q")
+        (workspace / ".gitignore").write_text("output/\n")
+        (workspace / ".git" / "info" / "exclude").write_text("excluded.txt\n")
+        global_config = workspace / ".host-config"
+        global_excludes = workspace / ".host-ignore"
+        global_excludes.write_text("globally-excluded.txt\n")
+        git("config", "--file", str(global_config), "core.excludesFile", str(global_excludes))
+        tracked = workspace / "tracked.txt"
+        dirty = workspace / "dirty.txt"
+        clean_again = workspace / "restored.txt"
+        for path in (tracked, dirty, clean_again):
+            path.write_text("committed")
+        git("add", ".")
+        git("commit", "-qm", "fixture")
+        dirty.write_text("dirty before the turn")
+        clean_again.write_text("dirty before the turn")
+        untracked = workspace / "untracked.txt"
+        untracked.write_text("already existed")
+        output = workspace / "output" / "one"
+        output.mkdir(parents=True)
+        sibling = output.parent / "two"
+        sibling.mkdir()
+        no_change = workspace / "untouched.txt"
+        no_change.touch()
+        with (
+            patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_config)}),
+            patch("scholarseed_codex.files.workspace_snapshot", wraps=workspace_snapshot) as scan,
+        ):
+            await self.host._watcher.begin_turn(self.state, output)
+            tracked.write_text("modified")
+            dirty.write_text("dirty again")
+            clean_again.write_text("committed")
+            untracked.write_text("modified")
+            (workspace / "新 报告.txt").write_text("new")
+            (workspace / "excluded.txt").write_text("ignore")
+            (workspace / "globally-excluded.txt").write_text("ignore")
+            (output / "report.txt").write_text("include")
+            (sibling / "other.txt").write_text("ignore")
+            await self.host._watcher.finish_turn(self.state)
+        self.assertEqual(
+            [call.kwargs["directory"] for call in scan.call_args_list], [output, output]
+        )
+        self.assertEqual(
+            self.state.watched_paths,
+            {
+                "tracked.txt": "update",
+                "dirty.txt": "update",
+                "restored.txt": "update",
+                "untracked.txt": "update",
+                "新 报告.txt": "add",
+                str(Path("output") / "one" / "report.txt"): "add",
+            },
+        )
+
+    async def test_loss_of_git_status_does_not_publish_unchanged_tracked_files(self):
+        with patch("scholarseed_codex.files.worktree_status", side_effect=[{}, None]):
+            (self.workspace / "tracked.py").write_text("old")
+            await self.host._watcher.begin_turn(self.state)
+            with self.assertLogs("scholarseed_codex.watch", level="WARNING"):
+                await self.host._watcher.finish_turn(self.state)
+        self.assertFalse(self.state.watched_paths)
+        self.assertIn("fs_snapshot_incomplete:OSError", self.host._diagnostics)
 
     async def test_invalid_input_preserves_previous_turn_state(self) -> None:
         self.state.final_text = "previous answer"

@@ -619,7 +619,7 @@ class ResourceVersionSupervisor:
     def scan_turn_inventory(self, project_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Use one inventory while the turn holds the writer through baseline capture."""
 
-        inventory = self._inventory(project_id)
+        inventory = self._inventory(project_id, exclude_git=True)
         _, eligible = self._scan_project(project_id, inventory)
         initial_paths = tuple(
             path for path, repository in inventory.repositories.items() if repository is None
@@ -627,10 +627,10 @@ class ResourceVersionSupervisor:
         return eligible, initial_paths
 
     def _inventory(
-        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+        self, project_id: str, *, include_missing: tuple[str, ...] = (), exclude_git: bool = False
     ) -> _ResourceInventory:
         entries, repositories = self._content.scan_resource_inventory(
-            project_id, include_missing=include_missing
+            project_id, include_missing=include_missing, exclude_git=exclude_git
         )
         return _ResourceInventory(entries, repositories)
 
@@ -784,7 +784,7 @@ class ResourceVersionSupervisor:
                 tuple(ResourceEntry(path=path, size=0) for path in include_missing),
             )
             return tuple(cached | set(additions))
-        inventory = self._inventory(project_id, include_missing=include_missing)
+        inventory = self._inventory(project_id, include_missing=include_missing, exclude_git=True)
         present = {entry.path for entry in inventory.entries}
         entries = (
             *inventory.entries,

@@ -926,9 +926,9 @@ class ContentPort(Protocol):
         ...
 
     def scan_resource_inventory(
-        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+        self, project_id: str, *, include_missing: tuple[str, ...] = (), exclude_git: bool = False
     ) -> tuple[tuple[ResourceEntry, ...], dict[str, str | None]]:
-        """Enumerate resources and qualify their repository ownership in one pass."""
+        """Optionally prune Git trees while qualifying missing paths and separate grants."""
         ...
 
     def resource_entries(

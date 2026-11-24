@@ -1013,10 +1013,12 @@ class LiveSession:
             }
             for item in turn_input.items
         )
+        artifact_directory = None
         if self.project_path == self.runtime_workdir:
             output_dir = await self._persistence.run(
                 self._catalog.prepare_output, self.id, self.runtime_workdir
             )
+            artifact_directory = Path(output_dir) if output_dir is not None else None
             record = self._catalog.get(self.id)
             if record is None:
                 raise RuntimeError("session context is unavailable")
@@ -1026,7 +1028,7 @@ class LiveSession:
                     "text": session_context(
                         title=record.title if record.title_fallback is None else "",
                         cwd=self.runtime_workdir,
-                        output_dir=Path(output_dir) if output_dir is not None else None,
+                        output_dir=artifact_directory,
                     ),
                     "path": "",
                     "name": "",
@@ -1065,6 +1067,7 @@ class LiveSession:
                 submission_deadline=turn_input.submission_deadline,
                 submission_attempts=turn_input.submission_attempts,
                 retry_authorizer=self.submission_retry_authorizer,
+                artifact_directory=artifact_directory,
             )
         )
 

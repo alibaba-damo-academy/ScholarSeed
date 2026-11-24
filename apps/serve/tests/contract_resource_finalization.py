@@ -326,6 +326,57 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         baselines = store.turn_baselines("session", "turn")
         self.assertEqual([baseline.path for baseline in baselines], ["resources/notes.md"])
 
+    async def test_turn_prunes_git_directories_before_listing_and_keeps_external_grants(
+        self,
+    ) -> None:
+        resources = self.target.parent
+        (resources / ".git").mkdir()
+        external = Path(self.temporary.name) / "external"
+        shared = external / "shared"
+        nested = shared / "repo"
+        nested.mkdir(parents=True)
+        (external / ".git").mkdir()
+        (nested / ".git").write_text("gitdir: /unused\n", encoding="utf-8")
+        (nested / "git.md").write_bytes(b"git")
+        notes = shared / "notes.md"
+        notes.write_bytes(b"initial")
+        grant = self.content.authorize_root(self.project.id, str(shared), "shared")
+        path = f"{grant.mount_path}/notes.md"
+        forbidden = {resources.resolve(), nested.resolve()}
+        scandir = os.scandir
+
+        def scan(path):
+            if isinstance(path, (str, os.PathLike)):
+                self.assertNotIn(Path(path).resolve(), forbidden)
+            return scandir(path)
+
+        with patch("os.scandir", side_effect=scan):
+            await self.deliveries.begin_turn("session", "turn", self.project.root)
+            await self.deliveries.bind_turn("session", "turn", "vendor", "generation")
+            notes.write_bytes(b"changed")
+            await self.deliveries.record_change(
+                "session", "vendor", str(notes), "update", generation="generation"
+            )
+            result = await self.deliveries.finish_turn("session", "turn", TurnOutcome.COMPLETED)
+
+        self.assertEqual(result.paths, (path,))
+        plain, repositories = self.content.scan_resource_inventory(self.project.id)
+        self.assertIn("resources/notes.md", {entry.path for entry in plain})
+        self.assertIsNotNone(repositories[f"{grant.mount_path}/repo/git.md"])
+
+    def test_adopted_git_root_qualifies_missing_baselines_without_walking(self) -> None:
+        root = Path(self.temporary.name) / "worktree"
+        root.mkdir()
+        (root / ".git").write_text("gitdir: /unused\n", encoding="utf-8")
+        project = self.content.adopt_project(str(root))
+        with patch("service.content.service.enumeration.os.walk") as walk:
+            entries, repositories = self.content.scan_resource_inventory(
+                project.id, include_missing=("removed.md",), exclude_git=True
+            )
+        walk.assert_not_called()
+        self.assertEqual(entries, ())
+        self.assertEqual(repositories, {"removed.md": ""})
+
     async def test_finalization_captures_two_files_concurrently(self) -> None:
         self.target.with_name("other.md").write_bytes(b"unchanged peer\n")
         await self.begin()

@@ -1038,7 +1038,7 @@ class CodexTurnRuntime:
         self.turn_done = asyncio.get_running_loop().create_future()
         completion = self.turn_done
         try:
-            await self._watcher.begin_turn(self)
+            await self._watcher.begin_turn(self, turn_input.artifact_directory)
             if self._closed or completion.done() or self.attached_generation != generation:
                 raise AppServerError(
                     "Codex attachment changed before turn submission",

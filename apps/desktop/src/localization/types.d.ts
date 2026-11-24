@@ -7535,6 +7535,7 @@ declare module 'i18next' {
             "acceptAll": "接受全部"
         },
         "finalizations": {
+            "checkingFiles": "正在检查文件变更…",
             "notReadyTitle": "文件审阅快照未就绪",
             "refresh": "刷新审阅快照状态",
             "refreshAction": "刷新状态",
