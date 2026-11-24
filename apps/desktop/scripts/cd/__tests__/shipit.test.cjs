@@ -205,7 +205,7 @@ test('ShipIt rejects another Electron release and unsupported platforms before c
   assert.throws(() => validateTarget('darwin', 'arm64', '44.2.0', '44.3.0'), /does not match/)
 })
 
-test('sealed installation distinguishes a missing launch record from cancellation and read failures', t => {
+test('sealed installation distinguishes a missing launch record from cancellation and read failures', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'shipit-launch-record-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const filename = require.resolve('../shipit.cjs')
@@ -214,14 +214,32 @@ test('sealed installation distinguishes a missing launch record from cancellatio
   })
   const target = path.join(directory, 'Fixture.app')
   const receipt = path.join(directory, 'launches.jsonl')
-  assert.throws(() => verify(directory, 'rebuild', target, 1), /sealed rebuild has no application launch record/)
-  verify(directory, 'cancel', target, 1)
+  await assert.rejects(verify(directory, 'rebuild', target, 1), /sealed rebuild has no application launch record/)
+  await verify(directory, 'cancel', target, 1)
   fs.writeFileSync(receipt, JSON.stringify({ inode: 1, application: target, pid: 2, version: '1.0' }))
-  verify(directory, 'rebuild', target, 1)
-  assert.throws(() => verify(directory, 'cancel', target, 1), /without authorization/)
+  await verify(directory, 'rebuild', target, 1)
+  await assert.rejects(verify(directory, 'cancel', target, 1), /without authorization/)
   fs.unlinkSync(receipt)
   fs.mkdirSync(receipt)
-  assert.throws(() => verify(directory, 'rebuild', target, 1), { code: 'EISDIR' })
+  await assert.rejects(verify(directory, 'rebuild', target, 1), { code: 'EISDIR' })
+})
+
+test('workspace launch verification waits for the app receipt and detects missing or repeated opens', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'shipit-workspace-launch-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const filename = require.resolve('../shipit.cjs')
+  const verify = runInNewContext(fs.readFileSync(filename, 'utf8') + '\nverifySealedLaunch', {
+    __dirname: path.dirname(filename), require: createRequire(filename), module: { exports: {} },
+  })
+  const target = path.join(directory, 'Fixture.app')
+  const opened = `Successfully launched application at ${target}\n`
+  const pending = verify(directory, 'rebuild', target, 1, opened)
+  fs.writeFileSync(path.join(directory, 'launches.jsonl'), JSON.stringify({ inode: 1, application: target, pid: 2, version: '1.0' }))
+  await pending
+  await assert.rejects(verify(directory, 'rebuild', target, 1, ''), /Expected 1 successful NSWorkspace launches, observed 0/)
+  await assert.rejects(verify(directory, 'damaged-source', target, 1, opened.repeat(2)), /observed 2/)
+  await verify(directory, 'replay', target, 1, '')
+  await assert.rejects(verify(directory, 'replay', target, 1, opened), /Expected 0 successful NSWorkspace launches, observed 1/)
 })
 
 test('native contract registry selects each dependency without changing execution budgets', (context) => {

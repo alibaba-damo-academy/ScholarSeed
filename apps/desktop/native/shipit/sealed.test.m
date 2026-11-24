@@ -55,12 +55,14 @@ int main(int argc, const char **argv) {
     assert(argc == 3 && geteuid() != 0);
     NSString *mode = @(argv[1]), *path = @(argv[2]);
     if ([mode isEqual:launchSignal]) {
-        if ([NSFileManager.defaultManager fileExistsAtPath:[path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"use-workspace"]])
-            return originalShipItMain(argc, argv);
-        // Headless builds still execute the actual installed application's binary.
-        NSString *executable = [path stringByAppendingPathComponent:@"Contents/MacOS/Fixture"];
-        execl(executable.fileSystemRepresentation, executable.fileSystemRepresentation, NULL);
-        return EXIT_FAILURE;
+      // The production launch request receives the installed app URL and exits
+      // after NSWorkspace opens it. Only installer requests use the fixture journal.
+      if ([NSProcessInfo.processInfo.environment[@"SHIPIT_TEST_WORKSPACE"] isEqual:@"1"])
+        return originalShipItMain(argc, argv);
+      // Headless builds still execute the actual installed application's binary.
+      NSString *executable = [path stringByAppendingPathComponent:@"Contents/MacOS/Fixture"];
+      execl(executable.fileSystemRepresentation, executable.fileSystemRepresentation, NULL);
+      return EXIT_FAILURE;
     }
     BOOL replay = [mode isEqual:@"replay"];
     assert(([@[@"rebuild", @"damaged-source", @"mixed", @"added", @"altered", @"cancel", @"replay"] containsObject:mode]));

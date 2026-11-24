@@ -3,6 +3,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { execFileSync, spawnSync } = require('node:child_process')
+const { performance } = require('node:perf_hooks')
+const { setTimeout: delay } = require('node:timers/promises')
 const { sha256 } = require('../shared/digest.cjs')
 const { fingerprint } = require('../../native/shipit/fingerprint.cjs')
 const { ensureArtifact } = require('../../../../scripts/shared/artifacts.cjs')
@@ -27,6 +29,8 @@ const TIMING_TEST_SPANS = 7
 const CONTRACT_RESULT_SCHEMA = 1
 const CONTRACT_TIMEOUT_MS = 60_000
 const SEALED_CONTRACT_TIMEOUT_MS = 30_000
+const WORKSPACE_LAUNCH_TIMEOUT_MS = 10_000
+const WORKSPACE_LAUNCH_POLL_MS = 100
 const VOLUME_COMMAND_TIMEOUT_MS = 60_000
 // The second volume holds only the preparation test's tiny Contents/data bundles and HFS+ metadata.
 const PREPARATION_VOLUME_SIZE = '16m'
@@ -196,7 +200,7 @@ function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
   for (const mode of ['cancel', 'mismatch']) run(mode, path.join(fixtures, mode))
 }
 
-function verifySealedInstallation(directory, compiler, sources, squirrel, frameworks) {
+async function verifySealedInstallation(directory, compiler, sources, squirrel, frameworks, workspace) {
   const executable = path.join(directory, 'sealed-test')
   const preferences = ['CopyValue', 'SetValue', 'Synchronize', 'GetAppIntegerValue']
     .map(name => `-DCFPreferences${name}=SSFixture${name}`)
@@ -236,7 +240,8 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
     const modes = scenario === 'damaged-source' ? [scenario, 'replay', 'replay'] : [scenario]
     for (const [attempt, mode] of modes.entries()) {
       const result = spawnSync(executable, [mode, root], {
-        cwd: directory, env: { ...process.env, TMPDIR: root }, encoding: 'utf8', timeout: SEALED_CONTRACT_TIMEOUT_MS,
+        cwd: directory, env: { ...process.env, TMPDIR: root, SHIPIT_TEST_WORKSPACE: workspace ? '1' : '0' },
+        encoding: 'utf8', timeout: SEALED_CONTRACT_TIMEOUT_MS,
       })
       const receipt = `sealed-${scenario}-${attempt + 1}`
       try {
@@ -254,7 +259,7 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
         const targetReplaced = current !== previous
         const expectReplacement = scenario === 'rebuild'
         if (targetReplaced !== expectReplacement) throw new Error('Unexpected installed target')
-        verifySealedLaunch(root, mode, target, current)
+        await verifySealedLaunch(root, mode, target, current, workspace ? result.stderr : undefined)
         verify(target)
       } catch (error) {
         throw new Error(`ShipIt ${receipt} (${mode}) failed: ${error.message}`, { cause: error })
@@ -263,8 +268,19 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
   }
 }
 
-function verifySealedLaunch(root, mode, target, inode) {
+async function verifySealedLaunch(root, mode, target, inode, workspaceLog) {
   const launchFile = path.join(root, 'launches.jsonl')
+  if (workspaceLog !== undefined) {
+    const expected = mode === 'cancel' || mode === 'replay' ? 0 : 1
+    const launches = [...workspaceLog.matchAll(/Successfully launched application at/g)].length
+    if (launches !== expected) throw new Error(`Expected ${expected} successful NSWorkspace launches, observed ${launches}`)
+    if (expected) {
+      // Launch Services may return before the application has written its receipt.
+      const deadline = performance.now() + WORKSPACE_LAUNCH_TIMEOUT_MS
+      while (!fs.statSync(launchFile, { throwIfNoEntry: false })?.size && performance.now() < deadline)
+        await delay(WORKSPACE_LAUNCH_POLL_MS)
+    }
+  }
   let contents
   try {
     contents = fs.readFileSync(launchFile, 'utf8')
@@ -456,7 +472,7 @@ async function buildShipIt({ directory, electronDist, arch, sourceCache }) {
   verifyAdmission(directory, frameworks, headers)
   verifyBinding(directory, frameworks, headers, dependencies.squirrel)
   verifyRelaunch(directory, compiler, sources, dependencies.squirrel, frameworks)
-  verifySealedInstallation(directory, compiler, sources, dependencies.squirrel, frameworks)
+  await verifySealedInstallation(directory, compiler, sources, dependencies.squirrel, frameworks, process.env.SHIPIT_TEST_WORKSPACE === '1')
   verifyCleanup(directory)
   verifyPreparation(directory)
   const licenses = []

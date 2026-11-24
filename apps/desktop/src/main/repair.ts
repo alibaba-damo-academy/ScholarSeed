@@ -15,7 +15,12 @@ import {
   TERMINAL_RECORD_LIMITS,
 } from './terminal.ts'
 import { decodeUpdateLaunch, updateLaunchContextPath, updateStorageIdentities } from './relaunch.ts'
-import { decodeSquirrelHandoff, squirrelHandoffRecordPath, squirrelJobLabel } from './squirrel.ts'
+import {
+  decodeSquirrelHandoff,
+  squirrelHandoffRecordPath,
+  squirrelJobLabel,
+  validSquirrelBundleId,
+} from './squirrel.ts'
 
 export const UPDATE_REPAIR_ARGUMENT = '--repair-update-target='
 export const UPDATE_REPAIR_WIZARD_ARGUMENT = '--repair-update'
@@ -119,6 +124,7 @@ export function repairNativePaths(
 }
 
 function matchesNativePaths(scope: UpdateRepairScope, recorded: TerminalRestorationOptions) {
+  if (!validSquirrelBundleId(scope.bundleId)) return false
   return [false, true].some((alternate) =>
     Object.entries(repairNativePaths(scope, alternate)).every(
       ([key, path]) => recorded[key as keyof ReturnType<typeof repairNativePaths>] === path

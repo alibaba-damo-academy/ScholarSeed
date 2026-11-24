@@ -3715,15 +3715,18 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
                 updateInstallAbort ||
                 updateInstallationInProgress ||
                 updateRestartRequested ||
-                macMaintenanceUncertain ||
-                currentUpdateSnapshot().errorOrigin === 'install' ||
-                currentUpdateSnapshot().errorFallback === 'activation_recovery_required'
+                macMaintenanceUncertain
+              )
+                return saved
+              const current = currentUpdateSnapshot()
+              if (
+                current.errorOrigin === 'install' ||
+                current.errorFallback === 'activation_recovery_required'
               )
                 return saved
               const retained = preparationPolicy ? retainedUpdateReady() : null
               if (retained) {
                 updatePreparation.adopt(retained.meta)
-                const current = currentUpdateSnapshot()
                 publishUpdateSnapshot({
                   phase: 'ready',
                   currentVersion: app.getVersion(),
@@ -3731,13 +3734,13 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
                   readyOrigin:
                     current.candidate?.id === retained.meta.id ? current.readyOrigin : undefined,
                 })
-              }
-              if (currentUpdateSnapshot().candidate && currentUpdateSnapshot().phase !== 'ready')
+              } else if (current.candidate && current.phase !== 'ready') {
                 publishUpdateSnapshot({
-                  ...currentUpdateSnapshot(),
+                  ...current,
                   phase: 'available',
                   installation: undefined,
                 })
+              }
             } else {
               runBackgroundUpdateCheck()
             }

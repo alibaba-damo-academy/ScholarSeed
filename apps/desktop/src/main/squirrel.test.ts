@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import {
   mkdtemp,
   mkdir,
+  chmod,
   rm,
   writeFile,
   symlink,
@@ -1164,8 +1165,38 @@ test('ShipIt diagnostics are bounded, deduplicated and never follow unrelated fi
   assert.deepEqual(await shipItDiagnostics(directory, 'org.scholarseed.app'), [
     { name: 'next/ShipIt_stderr.log', text: 'successor' },
   ])
+  await rm(logs + '.next', { recursive: true })
+  await symlink(logs, logs + '.next', 'dir')
+  assert.deepEqual(await shipItDiagnostics(directory, 'org.scholarseed.app'), [])
   await assert.rejects(shipItDiagnostics(directory, '../escape'))
 })
+
+test(
+  'ShipIt diagnostics report an unreadable slot and retain logs from the other slot',
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 },
+  async (t) => {
+    const { directory } = await fixture(t)
+    const bundle = 'org.scholarseed.app'
+    const primary = join(directory, bundle + '.ShipIt')
+    const next = primary + '.next'
+    for (const slot of [primary, next]) {
+      await mkdir(slot)
+      await writeFile(join(slot, 'ShipIt_stdout.log'), 'healthy')
+    }
+    for (const blocked of [primary, next]) {
+      await chmod(blocked, 0)
+      try {
+        const result = await shipItDiagnostics(directory, bundle)
+        const log = blocked === primary ? 'next/ShipIt_stdout.log' : 'ShipIt_stdout.log'
+        const diagnostic = blocked === primary ? 'primary/diagnostics' : 'next/diagnostics'
+        assert.equal(result.find((entry) => entry.name === log)?.text, 'healthy')
+        assert.match(result.find((entry) => entry.name === diagnostic)?.text ?? '', /EACCES/)
+      } finally {
+        await chmod(blocked, 0o700)
+      }
+    }
+  }
+)
 
 test('native quit failure after a possible grant stays unresolved and cannot regain restart authority', async (t) => {
   const { archive, record } = await fixture(t)

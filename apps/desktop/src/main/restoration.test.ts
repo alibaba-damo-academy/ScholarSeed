@@ -699,6 +699,23 @@ macosTest('repair planning classifies an invalid native job label', async (conte
   assert.equal(current.events.includes('native-repair'), false)
 })
 
+macosTest('pending repair rejects an invalid native bundle as out of scope', async (context) => {
+  const current = orphanFixture(context)
+  const { home, userData, workspace } = current.selection
+  const scope = { ...current.scope, selection: { home, userData, workspace } }
+  current.interruptNative()
+  await assert.rejects(repairInstalledUpdate(scope, current.runtime), TerminalRestorationError)
+  const handoff = readFileSync(current.handoff)
+  const original = readFileSync(current.contextPath)
+  current.events.length = 0
+  const invalid = { ...scope, bundleId: 'invalid/bundle' }
+  for (const entry of [planInstalledUpdate, repairInstalledUpdate])
+    await assert.rejects(entry(invalid, current.runtime), { message: 'ERR_UPDATE_REPAIR_SCOPE' })
+  assert.equal(current.events.includes('native-open'), false)
+  assert.deepEqual(readFileSync(current.handoff), handoff)
+  assert.deepEqual(readFileSync(current.contextPath), original)
+})
+
 macosTest(
   'handoff-only continuation refuses conflicting selection and a newly appeared context',
   async (context) => {

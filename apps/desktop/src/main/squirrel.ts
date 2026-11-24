@@ -23,8 +23,11 @@ const HANDOFF_FILE = 'squirrel.json'
 export function squirrelHandoffRecordPath(home: string): string {
   return join(home, UPDATE_STATE_DIRECTORY, HANDOFF_FILE)
 }
+export function validSquirrelBundleId(bundle: string): boolean {
+  return typeof bundle === 'string' && /^[A-Za-z0-9.-]+$/.test(bundle)
+}
 export function squirrelJobLabel(bundle: string, alternate = false): string {
-  if (!/^[A-Za-z0-9.-]+$/.test(bundle)) throw new Error('Invalid application identifier')
+  if (!validSquirrelBundleId(bundle)) throw new Error('Invalid application identifier')
   return alternate ? `${bundle}.ShipIt.next` : `${bundle}.ShipIt`
 }
 
@@ -785,9 +788,15 @@ export async function shipItDiagnostics(
   bundle: string
 ): Promise<{ name: string; text: string }[]> {
   const slots = await Promise.all(
-    [false, true].map((alternate) =>
-      shipItSlotDiagnostics(join(cache, squirrelJobLabel(bundle, alternate)), alternate)
-    )
+    [false, true].map((alternate) => {
+      const directory = join(cache, squirrelJobLabel(bundle, alternate))
+      return shipItSlotDiagnostics(directory, alternate).catch((error: NodeJS.ErrnoException) => [
+        {
+          name: alternate ? 'next/diagnostics' : 'primary/diagnostics',
+          text: `Unable to read ShipIt logs: ${error.code ?? error.message}`,
+        },
+      ])
+    })
   )
   return slots.flat()
 }

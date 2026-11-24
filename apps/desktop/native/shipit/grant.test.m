@@ -38,9 +38,6 @@ static RACSignal *RecordSubmission(id receiver, SEL selector, BOOL privileged) {
 static void CheckInteraction(void) {
   GrantUpdater *updater = [GrantUpdater alloc];
   assert([updater respondsToSelector:@selector(launchShipItWithRequiredPrivilege:)]);
-  Method method = class_getClassMethod(SQRLShipItLauncher.class, @selector(launchPrivileged:));
-  assert(method != NULL);
-  IMP original = method_setImplementation(method, (IMP)RecordSubmission);
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://127.0.0.1/feed"]];
   [updater setValue:[request copy] forKey:@"updateRequest"];
   NSError *error = nil;
@@ -56,7 +53,6 @@ static void CheckInteraction(void) {
   [updater setValue:[request copy] forKey:@"updateRequest"];
   assert([[updater launchShipItWithRequiredPrivilege:YES] waitUntilCompleted:NULL]);
   assert(Submissions == 2 && LastSubmissionPrivileged);
-  method_setImplementation(method, original);
 }
 
 static void CheckGrant(NSURL *state, SQRLShipItRequest *prepared, SQRLShipItRequest *current, BOOL expected) {
@@ -77,6 +73,26 @@ static void CheckGrant(NSURL *state, SQRLShipItRequest *prepared, SQRLShipItRequ
   [subscription dispose];
   assert(!NSApp && authorized == expected && (expected || failure));
 }
+static void WaitFor(NSString *event, BOOL (^observed)(void)) {
+  const NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 10;
+  while (!observed()) {
+    if (NSProcessInfo.processInfo.systemUptime >= deadline) {
+      NSLog(@"[squirrel-slot-test] timed out waiting for %@", event);
+      abort();
+    }
+    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  }
+}
+
+static id<SSSuccessor> AcquireAlternateAfterDisposal(NSURL *feed, NSString *event, void (^completion)(NSError *)) {
+  __block id<SSSuccessor> successor;
+  WaitFor(event, ^BOOL {
+    successor = [SQRLUpdater ss_prepareSuccessor:feed alternate:YES completion:completion];
+    return successor != nil;
+  });
+  return successor;
+}
+
 static void CheckSlots(NSString *root, SQRLShipItRequest *request) {
   assert(setenv("FORCE_APP_IDENTIFIER", "fixture.slots", 1) == 0);
   Method resolver = class_getInstanceMethod(SQRLDirectoryManager.class, @selector(storageURL));
@@ -107,13 +123,16 @@ static void CheckSlots(NSString *root, SQRLShipItRequest *request) {
   [primary setValue:request forKey:@"scholarseedRequest"];
   __block NSError *primaryError = nil;
   RACDisposable *install = [[primary relaunchToInstallUpdate] subscribeError:^(NSError *error) { primaryError = error; }];
-  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
-  while (errors == 0 && deadline.timeIntervalSinceNow > 0)
-    [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-  SQRLShipItRequest *selected = [[SQRLShipItRequest readUsingURL:[RACSignal return:primaryState]] first];
-  assert(errors == 1 && !primaryError && selected.installationAuthorized && [selected.binding isEqual:request.binding]);
-  assert(![NSFileManager.defaultManager fileExistsAtPath:nextState.path] && ![next ss_installSuccessor:NULL]);
+  __block SQRLShipItRequest *selected;
+  WaitFor(@"primary installation grant", ^BOOL {
+    selected = [[SQRLShipItRequest readUsingURL:[RACSignal return:primaryState]] first];
+    return primaryError != nil || selected.installationAuthorized;
+  });
   [install dispose];
+  assert(!primaryError && selected.installationAuthorized && [selected.binding isEqual:request.binding]);
+  WaitFor(@"successor check failure", ^BOOL { return errors > 0; });
+  assert(errors == 1);
+  assert(![NSFileManager.defaultManager fileExistsAtPath:nextState.path] && ![next ss_installSuccessor:NULL]);
   [next ss_disposeSuccessor];
   // A fresh pair of bound ready requests exercises the other selection. Use the
   // same coordinated grant write as installSuccessor without quitting this test.
@@ -140,12 +159,14 @@ static void CheckSlots(NSString *root, SQRLShipItRequest *request) {
   assert([[NSData dataWithContentsOfURL:primaryState] isEqual:retained]);
   assert(![[[SQRLShipItRequest readUsingURL:[RACSignal return:primaryState]] first] installationAuthorized]);
   [winner ss_disposeSuccessor];
-  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
   // Disposing an unfinished request suppresses its callback, without touching B.
-  id<SSSuccessor> disposed = [SQRLUpdater ss_prepareSuccessor:feed alternate:YES completion:failed];
-  assert(disposed);
+  id<SSSuccessor> disposed = AcquireAlternateAfterDisposal(feed, @"winner slot release", failed);
   [disposed ss_disposeSuccessor];
-  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  __block NSError *probeError = nil;
+  id<SSSuccessor> probe = AcquireAlternateAfterDisposal(feed, @"unfinished successor slot release",
+    ^(NSError *error) { probeError = error; });
+  WaitFor(@"replacement check failure", ^BOOL { return probeError != nil; });
+  [probe ss_disposeSuccessor];
   assert(errors == 1 && ![disposed ss_installSuccessor:NULL]);
   method_setImplementation(resolver, original);
   imp_removeBlock(isolated);
@@ -158,6 +179,10 @@ int main(int argc, const char **argv) {
     NSString *root = @(argv[1]);
     Dl_info loaded; assert(dladdr((__bridge const void *)SQRLUpdater.class, &loaded));
     assert([@(loaded.dli_fname) hasPrefix:root.stringByDeletingLastPathComponent]);
+    // Isolate launchd for the lifetime of this process, including asynchronous slot work.
+    Method submit = class_getClassMethod(SQRLShipItLauncher.class, @selector(launchPrivileged:));
+    assert(submit);
+    method_setImplementation(submit, (IMP)RecordSubmission);
     CheckInteraction();
     NSURL *source = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"request/New.app"]];
     NSURL *target = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"live/Old.app"]];
