@@ -7,6 +7,7 @@ import ts from 'typescript'
 import * as preview from './preview.ts'
 import { isPreviewUpdateChannel } from '../updates.ts'
 import {
+  appendMacUpdateFormat,
   buildUpdateCheckUrl,
   parseDownloadInfo,
   parseUpdateCheckResult,
@@ -53,6 +54,7 @@ const names = new Set([
   'previewCandidateValidated',
   'monotonicUpdateResult',
   'checkForUpdate',
+  'packageDownloadUrl',
   'getDownloadInfo',
   'readRejectedUpdate',
   'rejectedUpdatePath',
@@ -126,6 +128,7 @@ function harness(channel = 'preview', stored?: unknown) {
     parseDownloadInfo,
     parseUpdateCheckResult,
     buildUpdateCheckUrl,
+    appendMacUpdateFormat,
     UPDATE_PATH_PREFIX,
     exports: {} as PreviewFixtureExports,
     previewPolicy: null as PreviewUpdatePolicy | null,
@@ -214,7 +217,7 @@ test('release request and cache behavior do not consume preview controls', async
   assert.throws(() => h.api.getPreviewUpdatePolicy(log), /unavailable/)
   h.response({ ...artifact('0.3.0', 'release'), download_url: 'https://cdn.example/package' })
   await h.api.getDownloadInfo('release-0.3.0', log)
-  assert.equal(h.requests[1].search, '')
+  assert.deepEqual([...h.requests[1].searchParams], [['update_format', 'macos-zip']])
   assert.equal(h.reads(), 0)
 })
 
@@ -245,6 +248,7 @@ test('manual preview discovery and selection bind the exact published artifact',
   assert.equal(h.requests.at(-1)!.searchParams.get('target_line'), '0.3')
   h.response({ ...target, download_url: 'https://cdn.example/fixed' })
   await h.api.validatePreviewCandidate(selected, log)
+  assert.equal(h.requests.at(-1)!.searchParams.has('update_format'), false)
   assert.equal(h.api.previewCandidateValidated(selected, log), true)
   h.response({ ...target, sha512: 'b'.repeat(128), download_url: 'https://cdn.example/fixed' })
   await assert.rejects(h.api.validatePreviewCandidate(selected, log), /outside|changed/)

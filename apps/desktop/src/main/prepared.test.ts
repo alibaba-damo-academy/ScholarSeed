@@ -105,6 +105,30 @@ test('wrong source fails before conversion and before current trust', macOnly, a
   assert.equal(inspected, false)
 })
 
+test('published ZIP binds the server digest and needs no DMG to revalidate', macOnly, async (t) => {
+  const f = fixture(t)
+  await f.generate()
+  rmSync(f.source)
+  const bytes = readFileSync(f.archive)
+  const meta: LatestVersionMeta = {
+    ...f.meta,
+    artifact_kind: 'macos-zip',
+    file_size: bytes.length,
+    sha512: createHash('sha512').update(bytes).digest('hex'),
+  }
+  const receipt = await PreparedArchive.fromReleaseZip(meta, f.archive)
+  assert.equal(receipt.matches(meta, receipt.archive), true)
+  assert.equal(receipt.matches({ ...meta, artifact_kind: undefined }, receipt.archive), false)
+  assert.deepEqual(await receipt.revalidate(async () => assert.fail('must not mount DMG')), receipt.archive)
+  await assert.rejects(
+    PreparedArchive.fromReleaseZip({ ...meta, sha512: 'a'.repeat(128) }, f.archive),
+    /Published ZIP digest differs/
+  )
+  bytes[0] ^= 1
+  writeFileSync(f.archive, bytes)
+  await assert.rejects(receipt.revalidate(async () => assert.fail('must not mount DMG')), /digest differs/)
+})
+
 test(
   'cold reattachment requires the cached ZIP to match the freshly inspected source tree',
   macOnly,

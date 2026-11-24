@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import test from 'node:test'
+import type { LatestVersionMeta } from '../updates.ts'
 import {
   ActivationExpired,
   ActivationCandidateChanged,
@@ -52,6 +53,19 @@ test('accepts exact signed artifact from packaged trust root', () => {
     revision: '2',
     expiresAt: now + 60000,
   })
+})
+
+test('a macOS ZIP grant cannot be substituted for an installer grant', () => {
+  const zip: LatestVersionMeta = {
+    ...candidate,
+    arch_type: 'darwin-arm64',
+    artifact_kind: 'macos-zip',
+  }
+  const signed = { ...payload, candidate: activationCandidate(zip) }
+  assert.throws(() => verifyActivationGrant(envelope(signed), keys, zip, nonce, now))
+  const zipGrant = envelope({ ...signed, artifact_kind: 'macos-zip' })
+  assert.equal(verifyActivationGrant(zipGrant, keys, zip, nonce, now).revision, '2')
+  assert.throws(() => verifyActivationGrant(zipGrant, keys, { ...zip, artifact_kind: undefined }, nonce, now))
 })
 test('rejects unknown root, tampered payload, signature and replay nonce', () => {
   assert.throws(() =>

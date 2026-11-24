@@ -7,6 +7,8 @@ import ts from 'typescript'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import type { PreparationCheckpoint } from './preparation.ts'
 import { nextUpdateCheckAt } from './checks.ts'
+import { samePreviewArtifact } from './preview.ts'
+import { isNewerRelease } from './version.ts'
 import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
 
 const source = ts.createSourceFile(
@@ -16,7 +18,7 @@ const source = ts.createSourceFile(
   true
 )
 const declarations: string[] = []
-const handlers = ['scholarseed:update-check']
+const handlers = ['scholarseed:update-check', 'scholarseed:update-start']
 function visit(node: ts.Node): void {
   if (
     ts.isFunctionDeclaration(node) &&
@@ -35,7 +37,7 @@ function visit(node: ts.Node): void {
   ts.forEachChild(node, visit)
 }
 visit(source)
-assert.equal(declarations.length, 4)
+assert.equal(declarations.length, 5)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
@@ -80,6 +82,7 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     updateInstallationInProgress: false,
     macMaintenanceUncertain: false,
     desktopWorkbenchReady: () => true,
+    requireDesktopWorkbench: () => {},
     app: { getVersion: () => '0.2.0', isPackaged: false },
     backgroundUpdateTimer: null,
     backgroundUpdateTimerStarted: true,
@@ -97,7 +100,8 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     updatePreparation: preparation,
     nextPreparationRetryAt: 0,
     loadRendererPreferences: () => ({ autoDownloadUpdates: true }),
-    isNewerRelease: () => true,
+    samePreviewArtifact,
+    isNewerRelease,
     updater: {
       isCurrentPreviewResult: () => true,
       previewPolicyRevision: () => 0,
@@ -115,7 +119,7 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     },
   }
   runInNewContext(code, context)
-  const invoke = (name: string) => ipc.get('scholarseed:update-' + name)!(null)
+  const invoke = (name: string, ...args: unknown[]) => ipc.get('scholarseed:update-' + name)!(null, ...args)
   const check = (latest = first) => {
     context.latest = latest
     return runInNewContext('publishUpdateCheckResult({has_update: true, latest})', context)
@@ -170,6 +174,40 @@ test('a persisted archive limit projects the failure on the first cold update ch
     assert.equal(h.context.updateSnapshot.candidate?.id, first.id)
     assert.equal(h.context.updateSnapshot.latestCandidate, undefined)
   }
+})
+
+test('manual download becomes available when a ZIP replaces the same build’s oversized DMG', async () => {
+  const h = await harness('darwin')
+  const dmg = { ...newer, file_size: 200, sha512: 'a'.repeat(128) }
+  const zip: LatestVersionMeta = {
+    ...dmg, artifact_kind: 'macos-zip', file_size: 100, sha512: 'b'.repeat(128),
+  }
+  const attempts: LatestVersionMeta[] = []
+  h.context.updatePreparation = new UpdatePreparation(async ({ candidate }) => {
+    attempts.push(candidate)
+    if (!candidate.artifact_kind) return 'archive-limit'
+    h.context.updateSnapshot = { phase: 'ready', candidate, currentVersion: first.version }
+    return true
+  }, undefined, h.context.preparationPolicy)
+  h.context.loadRendererPreferences = () => ({ autoDownloadUpdates: false })
+  h.context.updateSnapshot = { phase: 'idle', currentVersion: first.version }
+  h.context.updatePreparation.request(dmg)
+  await h.context.updatePreparation.settled()
+  h.check(dmg)
+  assert.equal(h.context.updateSnapshot.errorFallback, 'install_archive_limit')
+  for (let check = 0; check < 2; check++) {
+    h.check(zip)
+    const state = h.context.updateSnapshot
+    assert.equal(state.phase, 'available')
+    assert.deepEqual(state.candidate, zip)
+    assert.equal(state.errorFallback, undefined)
+    assert.equal(state.errorOrigin, undefined)
+    assert.equal(state.resumable, undefined)
+  }
+  assert.deepEqual(attempts, [dmg])
+  const result = await h.invoke('start', zip.id) as { ok: boolean }
+  assert.equal(result.ok, true)
+  assert.deepEqual(attempts, [dmg, zip])
 })
 
 for (const platform of ['win32', 'darwin'] as const)

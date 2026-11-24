@@ -1,4 +1,4 @@
-// Process-local proof of the trusted DMG -> ZIP conversion. Disk state is only a hint.
+// Process-local proof of the ZIP bytes supplied to native Squirrel.
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, open, type FileHandle } from 'node:fs/promises'
@@ -8,9 +8,10 @@ import {
   type MountedArchiveSource,
 } from './archive.ts'
 import type { SquirrelArchive } from './squirrel.ts'
-import type { LatestVersionMeta } from '../updates.ts'
+import { MACOS_UPDATE_ZIP, type LatestVersionMeta } from '../updates.ts'
 
 export class PreparedArtifactChangedError extends Error {}
+export class PublishedZipDigestMismatch extends PreparedArtifactChangedError {}
 
 export function preparedIdentity(meta: LatestVersionMeta): string {
   return createHash('sha256')
@@ -26,6 +27,7 @@ export function preparedIdentity(meta: LatestVersionMeta): string {
         meta.team_id,
         meta.bundle_id,
         meta.channel,
+        meta.artifact_kind ?? null,
       ])
     )
     .digest('hex')
@@ -35,7 +37,7 @@ async function digest(
   path: string,
   expectedSize: number | undefined,
   signal?: AbortSignal,
-  inspect?: (file: FileHandle) => Promise<void>
+  inspect?: (file: FileHandle, sha512: string) => Promise<void>
 ): Promise<SquirrelArchive> {
   if (process.platform !== 'darwin') throw new Error('macOS prepared archive only')
   signal?.throwIfAborted()
@@ -65,7 +67,8 @@ async function digest(
       if (size > expected) throw new PreparedArtifactChangedError('Prepared artifact grew')
       hash.update(chunk)
     }
-    await inspect?.(file)
+    const sha512 = hash.digest('hex')
+    await inspect?.(file, sha512)
     const after = await file.stat({ bigint: true })
     const located = await lstat(path, { bigint: true })
     if (
@@ -80,7 +83,7 @@ async function digest(
     )
       throw new PreparedArtifactChangedError('Prepared artifact changed')
     signal?.throwIfAborted()
-    return Object.freeze({ path, size, sha512: hash.digest('hex') })
+    return Object.freeze({ path, size, sha512 })
   } finally {
     await file.close()
   }
@@ -105,6 +108,27 @@ export class PreparedArchive {
     readonly expandedBytes: number
   ) {
     this.release = preparedIdentity(meta)
+  }
+
+  static async fromReleaseZip(
+    meta: LatestVersionMeta,
+    path: string,
+    signal?: AbortSignal
+  ): Promise<PreparedArchive> {
+    if (meta.artifact_kind !== MACOS_UPDATE_ZIP)
+      throw new PreparedArtifactChangedError('Expected a published macOS update ZIP')
+    const candidate = Object.freeze({ ...meta })
+    assertSquirrelArchiveSize(candidate.file_size)
+    const expectedSha512 = candidate.sha512.toLowerCase()
+    let expanded = 0
+    const archive = await digest(path, candidate.file_size, signal, async (file, sha512) => {
+      // A bad download must be evicted even when its ZIP headers are also invalid.
+      if (sha512 === expectedSha512)
+        expanded = (await verifyApplicationArchiveFile(file, signal)).expanded
+    })
+    if (archive.sha512 !== expectedSha512)
+      throw new PublishedZipDigestMismatch('Published ZIP digest differs from release metadata')
+    return new PreparedArchive(candidate, path, archive, expanded)
   }
 
   /** Only the preparation owner supplies generate: it verifies the exact read-only
@@ -173,6 +197,7 @@ export class PreparedArchive {
     inspectSource: () => Promise<void>,
     signal?: AbortSignal
   ): Promise<SquirrelArchive> {
+    if (this.meta.artifact_kind === MACOS_UPDATE_ZIP) return this.verifyArchive(signal)
     await verifySource(this.meta, this.source, signal)
     await this.verifyArchive(signal)
     await inspectSource()

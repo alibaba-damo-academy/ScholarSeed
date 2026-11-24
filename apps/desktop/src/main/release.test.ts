@@ -41,7 +41,22 @@ test('update check URL scopes product, version, build, architecture, and channel
   assert.equal(url.searchParams.get('build_number'), '202608270900')
   assert.equal(url.searchParams.get('arch_type'), 'darwin-arm64')
   assert.equal(url.searchParams.get('channel'), 'release')
+  assert.equal(url.searchParams.get('update_format'), 'macos-zip')
   assert.equal(url.searchParams.has('updater_capability'), false)
+})
+
+test('negotiated macOS ZIP identity is preserved and unknown formats are rejected', () => {
+  const metadata = { ...LATEST, download_url: 'https://updates.example.test/object' }
+  assert.equal(parseDownloadInfo(metadata, CONFIG, 'darwin-arm64', LATEST.id).artifact_kind, undefined)
+  assert.equal(
+    parseDownloadInfo({ ...metadata, artifact_kind: 'macos-zip' }, CONFIG, 'darwin-arm64', LATEST.id)
+      .artifact_kind,
+    'macos-zip'
+  )
+  assert.throws(
+    () => parseDownloadInfo({ ...metadata, artifact_kind: 'unexpected' }, CONFIG, 'darwin-arm64', LATEST.id),
+    /artifact kind/
+  )
 })
 
 test('packaged Windows selects the Velopack feed without legacy capabilities', () => {
@@ -53,6 +68,15 @@ test('packaged Windows selects the Velopack feed without legacy capabilities', (
     buildUpdateCheckUrl({ ...CONFIG, releaseLane: 'local' }, '0.1.1', 'windows-amd64')
   )
   assert.equal(local.searchParams.has('update_engine'), false)
+})
+
+test('format negotiation respects the artifact explicitly selected by a Preview user', () => {
+  const dmg = new URL(buildUpdateCheckUrl(CONFIG, '0.1.1', 'darwin-arm64', LATEST))
+  const zip = new URL(buildUpdateCheckUrl(CONFIG, '0.1.1', 'darwin-arm64', {
+    ...LATEST, artifact_kind: 'macos-zip',
+  }))
+  assert.equal(dmg.searchParams.has('update_format'), false)
+  assert.equal(zip.searchParams.get('update_format'), 'macos-zip')
 })
 
 test('an unpackaged source run reports no build stamp instead of an empty one', () => {
