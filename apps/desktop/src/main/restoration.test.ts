@@ -682,6 +682,23 @@ macosTest(
   }
 )
 
+macosTest('repair planning classifies an invalid native job label', async (context) => {
+  const current = orphanFixture(context)
+  const { home, userData, workspace } = current.selection
+  await assert.rejects(
+    planInstalledUpdate(
+      { ...current.scope, bundleId: 'invalid/bundle', selection: { home, userData, workspace } },
+      current.runtime
+    ),
+    (error) =>
+      error instanceof Error &&
+      error.message === 'ERR_UPDATE_REPAIR_STATE' &&
+      error.cause instanceof Error &&
+      error.cause.message === 'Invalid application identifier'
+  )
+  assert.equal(current.events.includes('native-repair'), false)
+})
+
 macosTest(
   'handoff-only continuation refuses conflicting selection and a newly appeared context',
   async (context) => {

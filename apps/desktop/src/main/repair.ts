@@ -106,11 +106,15 @@ export function repairNativePaths(
   scope: Pick<UpdateRepairScope, 'bundleId' | 'applicationSupport' | 'cache'>,
   alternate = false
 ) {
-  const owner = squirrelJobLabel(scope.bundleId, alternate)
-  return {
-    nativeState: join(scope.cache, owner, NATIVE_STATE),
-    preparation: join(scope.applicationSupport, owner, PREPARATION_DIRECTORY),
-    cleanup: join(scope.applicationSupport, owner, CLEANUP_DIRECTORY),
+  try {
+    const owner = squirrelJobLabel(scope.bundleId, alternate)
+    return {
+      nativeState: join(scope.cache, owner, NATIVE_STATE),
+      preparation: join(scope.applicationSupport, owner, PREPARATION_DIRECTORY),
+      cleanup: join(scope.applicationSupport, owner, CLEANUP_DIRECTORY),
+    }
+  } catch (cause) {
+    throw new Error('ERR_UPDATE_REPAIR_STATE', { cause })
   }
 }
 

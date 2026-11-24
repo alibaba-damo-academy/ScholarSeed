@@ -153,10 +153,11 @@ for (const enabled of [false, true]) {
     })
     const attempts: string[] = []
     context.updatePreparation = new UpdatePreparation(
-      async ({ origin }) => {
+      async ({ origin, candidate }) => {
         attempts.push(origin)
         await waiting
-        return true
+        if (enabled) context.updateSnapshot = { ...context.updateSnapshot, candidate }
+        return enabled
       },
       undefined,
       context.preparationPolicy
@@ -167,12 +168,21 @@ for (const enabled of [false, true]) {
     assert.equal(context.updateSnapshot.candidate?.id, first.id)
     assert.equal(context.currentUpdateSnapshot().latestCandidate?.id, newer.id)
     assert.deepEqual(attempts, enabled ? ['background'] : [])
-    // The explicit action completes immediately, leaving the restart button enabled.
-    assert.equal(((await h.invoke('start', newer.id)) as { ok: boolean }).ok, true)
+    let answered = false
+    const response = h.invoke('start', newer.id).then((value) => {
+      answered = true
+      return value as { ok: boolean; errorFallback?: string }
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(answered, false, 'accepting the request does not establish readiness')
     assert.deepEqual(attempts, [enabled ? 'background' : 'manual'])
     assert.equal(context.updateSnapshot.candidate?.id, first.id)
     finish()
-    await context.updatePreparation.settled()
+    const result = await response
+    assert.equal(result.ok, enabled)
+    assert.equal(result.errorFallback, enabled ? undefined : 'preparation_failed')
+    assert.equal(context.updateSnapshot.phase, 'ready')
+    assert.equal(context.updateSnapshot.candidate?.id, enabled ? newer.id : first.id)
   })
 }
 

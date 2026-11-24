@@ -4255,19 +4255,28 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return { ok: false, error: 'update candidate is no longer active' }
     }
     if (!updatePreparation.request(requestedCandidate)) return { ok: false }
-    // Keep the restart action available while the explicitly requested newer
-    // release prepares. Completion is published by the worker after promotion.
-    if (snapshot.phase === 'ready' && process.platform === MACOS_PLATFORM) return { ok: true }
     await updatePreparation.settled()
     const prepared = currentUpdateSnapshot()
-    return { ok: prepared.phase === 'ready' && prepared.candidate?.id === id }
+    const result: StartUpdateResult = {
+      ok: prepared.phase === 'ready' && prepared.candidate?.id === id,
+    }
+    if (!result.ok && snapshot.phase === 'ready' && process.platform === MACOS_PLATFORM) {
+      result.errorFallback = updatePreparation.isArchiveLimited(id)
+        ? 'install_archive_limit'
+        : (prepared.errorFallback ?? 'preparation_failed')
+    }
+    return result
   })
 
   // 安装并重启：只在「已就绪」可发起。换掉正在运行的客户端必然中断用户手头的活，所以
   // 这一步等用户自己挑时间，不由下载完成自动触发。
   ipcMain.handle(
     'scholarseed:update-install',
-    async (_event, confirmedId: string, latestReady?: boolean): Promise<StartUpdateResult> => {
+    async (
+      _event,
+      confirmedId: string,
+      followNativePromotion?: boolean
+    ): Promise<StartUpdateResult> => {
       requireDesktopWorkbench()
       const snapshot = currentUpdateSnapshot()
       if (
@@ -4287,7 +4296,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       if (
         confirmedId !== expectedId &&
         !(
-          latestReady === true &&
+          followNativePromotion === true &&
           process.platform === MACOS_PLATFORM &&
           typeof confirmedId === 'string' &&
           snapshot.readyOrigin === confirmedId
@@ -4517,7 +4526,11 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         // 暂存包还在 → 留在「已就绪」并带上错误，用户重试的是安装这一步；暂存包已经没了
         // （校验不过被删掉）→ 退回失败态，下一次重试是重新下载。
         const stillStaged = updater.macPreparationReady(candidate)
-        if (updatePreparation.running && !stillStaged) {
+        if (
+          updatePreparation.running &&
+          updatePreparation.candidate?.id !== candidate.id &&
+          !stillStaged
+        ) {
           publishUpdateSnapshot(currentUpdateSnapshot())
           return result
         }

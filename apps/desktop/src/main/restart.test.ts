@@ -361,6 +361,10 @@ for (const windows of [false, true]) {
       let snapshot: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
       let nativeReady = windows
       const prepared: string[] = []
+      let finishDisposal!: () => void
+      const disposal = new Promise<void>((resolve) => {
+        finishDisposal = resolve
+      })
       let began!: () => void
       const successorStarted = new Promise<void>((resolve) => {
         began = resolve
@@ -372,6 +376,7 @@ for (const windows of [false, true]) {
           await new Promise<void>((resolve) =>
             signal.addEventListener('abort', () => resolve(), { once: true })
           )
+          if (rejected) await disposal
           assert.equal(isCurrent(), false)
         }
         return true
@@ -385,7 +390,7 @@ for (const windows of [false, true]) {
       let install!: (
         _event: unknown,
         expectedId: string,
-        latestReady?: boolean
+        followNativePromotion?: boolean
       ) => Promise<{ ok: boolean }>
       let checks = 0,
         exits = 0
@@ -535,10 +540,17 @@ for (const windows of [false, true]) {
       runInNewContext('publishUpdateCheckResult({ has_update: true, latest: newer })', context)
       assert.equal(preparation.offer(newer), false)
       assert.equal(snapshot.candidate?.id, first.id)
+      if (!windows && rejected) nativeReady = false
       finish()
       const result = await pending
       assert.equal(result.ok, !rejected)
       assert.equal(checks, 0)
+      if (!windows && rejected) {
+        assert.equal(preparation.running, true)
+        assert.equal(snapshot.phase, 'failed')
+        assert.equal(snapshot.errorOrigin, 'install')
+      }
+      finishDisposal()
       await preparation.settled()
       assert.deepEqual(prepared, windows ? [first.id] : [first.id, newer.id])
       assert.equal(preparation.candidate?.id, first.id)

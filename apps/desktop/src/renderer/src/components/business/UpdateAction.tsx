@@ -7,6 +7,8 @@ import {
   runLatestUpdateAction,
   runUpdateAction,
   updateActionOf,
+  updateFailureText,
+  type UpdateFailure,
 } from '../../features/updates/state'
 import {
   AlertDialog,
@@ -30,27 +32,60 @@ interface UpdateActionProps extends Omit<ButtonProps, 'onClick'> {
 
 export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): React.JSX.Element {
   const { t } = useTranslation('components')
+  const { t: accountText } = useTranslation('account')
   const titleId = useId()
   const descriptionId = useId()
   const [requested, setRequested] = useState<UpdateSnapshot | null>(null)
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [latestAttempt, setLatestAttempt] = useState<{
+    readyId: string
+    latestId: string
+    failure?: UpdateFailure
+  } | null>(null)
   const responding = useRef(false)
   const requestedKey = updateCandidateKey(requested?.candidate)
-  const latestReady = window.scholarseed.platform === 'darwin'
-  const valid = matchesRestartConfirmation(requested, state, latestReady)
+  const followNativePromotion = window.scholarseed.platform === 'darwin'
+  const valid = matchesRestartConfirmation(requested, state, followNativePromotion)
 
-  const execute = async (confirmedKey?: string, latest = false): Promise<void> => {
+  const latestFailure =
+    latestAttempt?.readyId === state?.candidate?.id &&
+    (!state?.latestCandidate || latestAttempt?.latestId === state.latestCandidate.id) &&
+    updateActionOf(state) === 'install'
+      ? latestAttempt?.failure
+      : undefined
+
+  const prepareLatest = async (): Promise<void> => {
+    if (!state?.candidate || !state.latestCandidate) return
+    const attempt = { readyId: state.candidate.id, latestId: state.latestCandidate.id }
+    setLatestAttempt(attempt)
+    let failure: UpdateFailure | undefined
+    try {
+      onAction?.()
+      failure = await runLatestUpdateAction(state)
+    } catch {
+      failure = { origin: 'preparation', rolledBack: false }
+    }
+    // A restart or a newer request may have taken ownership during preparation.
+    setLatestAttempt((active) =>
+      active !== attempt ? active : failure ? { ...attempt, failure } : null
+    )
+  }
+
+  const execute = async (confirmedKey?: string): Promise<void> => {
     if (responding.current) return
     responding.current = true
     setPending(true)
     setFailed(false)
     try {
       onAction?.()
-      if (latest) await runLatestUpdateAction(state)
-      else if (
-        (await runUpdateAction(confirmedKey ? requested : state, confirmedKey, latestReady)) ===
-        'candidate-changed'
+      if (confirmedKey) setLatestAttempt(null)
+      if (
+        (await runUpdateAction(
+          confirmedKey ? requested : state,
+          confirmedKey,
+          followNativePromotion
+        )) === 'candidate-changed'
       )
         return
       setRequested(null)
@@ -87,12 +122,18 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
           size="sm"
           variant="outline"
           className="max-w-full whitespace-normal"
-          disabled={pending}
+          disabled={
+            pending ||
+            (latestAttempt?.latestId === state.latestCandidate.id && !latestAttempt.failure)
+          }
           data-testid="update-download-latest"
-          onClick={() => void execute(undefined, true)}
+          onClick={() => void prepareLatest()}
         >
           {t('update.downloadLatest', { build: state.latestCandidate.build_number })}
         </Button>
+      )}
+      {latestFailure && (
+        <span role="alert">{updateFailureText(latestFailure, t, accountText)}</span>
       )}
       {/* Link the portal to its trigger so ancestor popovers retain it through pointerdown. */}
       {updateActionOf(state) === 'install' ? (
@@ -113,7 +154,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
           <AlertDialogHeader>
             <AlertDialogTitle id={titleId}>{t('update.confirmRestartTitle')}</AlertDialogTitle>
             <AlertDialogDescription id={descriptionId}>
-              {latestReady && <>{t('update.confirmRestartLatestReady')} </>}
+              {followNativePromotion && <>{t('update.confirmRestartLatestReady')} </>}
               {t('update.confirmRestartDetail')}
             </AlertDialogDescription>
           </AlertDialogHeader>

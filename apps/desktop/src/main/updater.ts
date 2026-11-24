@@ -187,6 +187,7 @@ const MACOS_SIGNATURE_COMMAND_TIMEOUT_MS = 180_000
 const UPDATE_EVENT_SCHEMA_VERSION = 1
 const READY_STATE_FILE = 'ready.json'
 const ALTERNATE_READY_STATE_FILE = 'ready.next.json'
+const READY_STATE_LIMIT = 64 * 1024
 const SUCCESSOR_HANDOFF_FILE = 'squirrel.pending.json'
 const ANNOUNCED_STATE_FILE = 'announced.json'
 // 部分文件比远端对象还大时服务端回这个；留着它只会每次都 416，必须删掉从头下。
@@ -1741,6 +1742,9 @@ export async function prepareMacSuccessor(
   }
   successorPreparing = true
   const port = new SuccessorUpdater(macLaunchObserver, alternate)
+  let discardStaged: (() => void) | undefined
+  let readyWriteAttempted = false
+  let portReleaseFailed = false
   let pending: SquirrelInstallation | undefined
   let progress: InstallationProgress | undefined
   let promoted = false
@@ -1748,6 +1752,7 @@ export async function prepareMacSuccessor(
     try {
       updater?.dispose()
     } catch (error) {
+      if (updater === port) portReleaseFailed = true
       logUpdateLine(log, `[update] successor handle disposal failed: ${String(error)}\n`)
     }
   }
@@ -1762,8 +1767,26 @@ export async function prepareMacSuccessor(
       retained,
     })
     if (!staged.ok) return { ok: false, error: staged.error, errorFallback: staged.errorFallback }
-    checkSelection()
     const { ready, prepared } = staged
+    if (prepared && ready.archive) {
+      const archivePath = ready.archive.path
+      const snapshot = () => successorFileIdentity(ready.path, prepared.workspace, archivePath)
+      const initial = snapshot()
+      discardStaged = () => {
+        mutateMacRecord(canonical)(() => {
+          if (snapshot() === initial)
+            discardUnselectedSuccessor(
+              canonical,
+              previous,
+              ready,
+              prepared,
+              readyWriteAttempted,
+              log
+            )
+        })
+      }
+    }
+    checkSelection()
     if (!ready.archive || !prepared?.receipt.matches(candidate, ready.archive))
       throw new Error('Successor archive not ready')
     progress = new InstallationProgress(
@@ -1812,12 +1835,15 @@ export async function prepareMacSuccessor(
       throw new Error('Successor native readiness was revoked')
     // A crash before the handoff CAS still selects the previous ready file. After it,
     // startup resolves both the native state and the staged payload from the new slot.
-    writeReadyState(ready, alternate)
     pending.promoteTo(
       canonical,
       mutateMacRecord(canonical),
       previous,
-      checkSelection,
+      () => {
+        checkSelection()
+        readyWriteAttempted = true
+        writeReadyState(ready, alternate)
+      },
       () => captureRecord(canonical, TERMINAL_RECORD_LIMITS.handoff, [process.getuid!()]).bytes
     )
     const oldPort = activeSuccessorUpdater
@@ -1849,10 +1875,91 @@ export async function prepareMacSuccessor(
     }
   } finally {
     signal.removeEventListener('abort', cancel)
-    if (!promoted) cancel()
+    if (!promoted) {
+      cancel()
+      if (!portReleaseFailed) {
+        try {
+          discardStaged?.()
+        } catch (error) {
+          logUpdateLine(log, `[update] successor cleanup deferred: ${String(error)}\n`)
+        }
+      }
+    }
     progress?.dispose()
     successorPreparing = false
   }
+}
+
+function successorFileIdentity(installer: string, workspace: string, archive: string): string {
+  return [installer, workspace, archive]
+    .map((path) => {
+      const stat = lstatSync(path, { bigint: true })
+      const directory = path === workspace
+      if (directory ? !stat.isDirectory() : !stat.isFile())
+        throw new Error('Unexpected successor artifact type')
+      // Creating the handoff sidecar changes the directory timestamps. The two
+      // staged files must also retain the exact content revision we observed.
+      return `${stat.dev}:${stat.ino}:${directory ? stat.birthtimeNs : stat.ctimeNs}`
+    })
+    .join('/')
+}
+
+function discardUnselectedSuccessor(
+  canonical: string,
+  previous: SquirrelHandoff,
+  ready: ReadyState,
+  prepared: MacPreparedApplication,
+  readyWriteAttempted: boolean,
+  log: LogSink
+): void {
+  // A promotion write may have reached disk even if its acknowledgement failed.
+  // Re-read the selection under its publication lock before retiring any files.
+  const selected = readSquirrelHandoff(canonical)
+  if (
+    !selected ||
+    canonical !== squirrelHandoffPath() ||
+    selected.alternate !== previous.alternate ||
+    selected.candidate !== previous.candidate ||
+    selected.binding?.requestId !== previous.binding?.requestId ||
+    selected.sourcePid !== process.pid ||
+    previous.sourcePid !== process.pid ||
+    ready.meta.id === selected.candidate ||
+    ready.path !== stagedInstallerPath(ready.meta) ||
+    prepared.workspace !== preparedApplicationDirectory(ready.meta) ||
+    ready.archive?.path !== join(prepared.workspace, 'application.zip')
+  )
+    return
+  const sidecar = join(prepared.workspace, SUCCESSOR_HANDOFF_FILE)
+  const lock = join(prepared.workspace, SQUIRREL_HANDOFF_LOCK)
+  const owner = readSquirrelHandoff(sidecar)
+  if (owner && (owner.sourcePid !== process.pid || owner.candidate !== ready.meta.id)) return
+  if (!owner && existsSync(lock)) return
+  const expected = Buffer.from(`${JSON.stringify(ready)}\n`)
+  for (const standby of [false, true]) {
+    const path = readyStatePath(standby ? !previous.alternate : !!previous.alternate)
+    try {
+      const stored = readRecord(path, Math.max(expected.length, READY_STATE_LIMIT))
+      if (standby && readyWriteAttempted && stored.equals(expected)) rmSync(path)
+      else {
+        const other: ReadyState = JSON.parse(stored.toString('utf8'))
+        if (
+          (!standby && other.meta?.id !== selected.candidate) ||
+          typeof other.path !== 'string' ||
+          typeof other.archive?.path !== 'string' ||
+          other.path === ready.path ||
+          other.archive.path === ready.archive.path
+        )
+          return
+      }
+    } catch (error) {
+      if (!standby || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+  removeStaleInstaller(ready.path, log)
+  rmSync(ready.archive.path)
+  // Native preparation uses a separate record lock in this workspace. Its
+  // control files follow normal cache retirement; only remove an empty root.
+  if (!owner) rmdirSync(prepared.workspace)
 }
 
 /** Only selects a startup notice. The consumed handoff still forbids backend startup. */

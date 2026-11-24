@@ -1230,6 +1230,43 @@ test('update popover restart confirmation survives real pointer clicks on portal
   }, '/components/update.render.fixture.html')
 })
 
+test('a ready update remains clickable during successor preparation and rejected actions show feedback', async () => {
+  await withFixture(async (page) => {
+    let finishPreparation!: (value: { ok: boolean }) => void
+    const prepared = new Promise<{ ok: boolean }>((resolve) => {
+      finishPreparation = resolve
+    })
+    await page.exposeFunction('prepareSuccessor', () => prepared)
+    await page.evaluate(async () => {
+      const { candidate } = await window.scholarseed.getUpdateState()
+      Object.assign(window.scholarseed, {
+        platform: 'darwin',
+        startUpdate: Reflect.get(window, 'prepareSuccessor'),
+        installUpdate: async () => ({ ok: false }),
+      })
+      Reflect.get(window, 'updateFixture').publish({
+        phase: 'ready',
+        latestCandidate: { ...candidate, id: 'next', build_number: '2' },
+      })
+    })
+    await page.getByTestId('activity-update').click()
+    const latest = page.getByTestId('update-download-latest')
+    const restart = page.getByTestId('update-panel-action')
+    await latest.click()
+    await expect(latest).toBeDisabled()
+    await expect(restart).toBeEnabled()
+    finishPreparation({ ok: false })
+    await expect(page.getByRole('alert').filter({ hasText: '无法准备更新' })).toBeVisible()
+    await expect(latest).toBeEnabled()
+    await restart.click()
+    await page.getByTestId('update-restart-confirm').click()
+    await expect(page.getByTestId('update-restart-confirmation').getByRole('alert')).toHaveText(
+      '未能发起更新，请稍后重试。'
+    )
+    await expect(page.getByTestId('update-restart-confirm')).toBeEnabled()
+  }, '/components/update.render.fixture.html')
+})
+
 test('restart confirmation follows language, rejects stale releases and submits only once', async () => {
   await withFixture(async (page) => {
     await page.evaluate(() => {

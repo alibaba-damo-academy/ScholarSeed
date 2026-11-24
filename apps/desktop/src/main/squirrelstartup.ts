@@ -276,12 +276,25 @@ export async function inspectSquirrelIdle(
   }
   try {
     if ((await realpath(cache)) !== cache) return false
+    const target = await realpath(application)
+    if (target !== application) return false
+    const replacement = captureDirectory(target)
+    const contents = captureDirectory(join(target, 'Contents'))
+    const replacementStable = () =>
+      isDeepStrictEqual(replacement, captureDirectory(target)) &&
+      isDeepStrictEqual(contents, captureDirectory(join(target, 'Contents')))
     if (!handoff && orphanedLaunch && orphanedLaunch.alternate === undefined) {
       const slots = [false, true].map((slot) => {
         const owner = join(cache, squirrelJobLabel(bundle, slot))
         return { slot, owner, before: snapshot(owner) }
       })
       const occupied = slots.filter(({ before }) => before.bytes)
+      // Both slots inspect the same signed installation. Keep the signature
+      // result scoped to this observation and recheck its directory identities.
+      let verification: Promise<void> | undefined
+      const verifyOnce = verifyReplacement
+        ? () => (verification ??= verifyReplacement(target))
+        : undefined
       // With no handoff, both slots must stay stable. The historical empty-state
       // path remains available when neither contains a native request.
       const outcomes = await Promise.all(
@@ -291,7 +304,7 @@ export async function inspectSquirrelIdle(
             bundle,
             application,
             null,
-            verifyReplacement,
+            verifyOnce,
             terminalRequest,
             occupied.length ? { ...orphanedLaunch, alternate: slot } : undefined
           )
@@ -299,11 +312,10 @@ export async function inspectSquirrelIdle(
       )
       return (
         outcomes.filter(Boolean).length === 1 &&
+        replacementStable() &&
         slots.every(({ owner, before }) => isDeepStrictEqual(before, snapshot(owner)))
       )
     }
-    const target = await realpath(application)
-    if (target !== application) return false
     const native = handoff?.nativeRequest
     if (
       native &&
@@ -331,12 +343,7 @@ export async function inspectSquirrelIdle(
       return squirrelHelpersAbsent(processes.stdout, uid, executables, undefined, handoff === null)
     }
     if (!(await helpersAbsent())) return false
-    const replacement = captureDirectory(target)
-    const contents = captureDirectory(join(target, 'Contents'))
     if (verifyReplacement) await verifyReplacement(target)
-    const replacementStable = () =>
-      JSON.stringify(replacement) === JSON.stringify(captureDirectory(target)) &&
-      JSON.stringify(contents) === JSON.stringify(captureDirectory(join(target, 'Contents')))
     let terminal: (() => boolean | Promise<boolean>) | undefined
     if (before.bytes) {
       if (!native && !orphanedLaunch) return false

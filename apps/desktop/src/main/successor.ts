@@ -24,7 +24,9 @@ export class SuccessorUpdater extends EventEmitter implements SquirrelUpdater {
     super()
   }
 
-  setFeedURL({ url }: { url: string }): void {
+  setFeedURL({ url, headers }: Parameters<SquirrelUpdater['setFeedURL']>[0]): void {
+    if (headers !== undefined)
+      throw new Error('Successor preparation does not support feed headers')
     this.url = url
   }
 
@@ -46,7 +48,8 @@ export class SuccessorUpdater extends EventEmitter implements SquirrelUpdater {
 
   dispose(): void {
     this.detached = true
-    if (this.handle !== undefined) this.bridge.disposeSuccessor(this.handle)
+    const handle = this.handle
     this.handle = undefined
+    if (handle !== undefined) this.bridge.disposeSuccessor(handle)
   }
 }

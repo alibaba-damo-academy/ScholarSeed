@@ -657,6 +657,7 @@ export class UpdatePreparation {
       !this.stopped &&
       !this.paused &&
       this.desired &&
+      this.completed !== this.desired.id &&
       !this.committed &&
       this.generation !== this.invalidatedGeneration
     ) {

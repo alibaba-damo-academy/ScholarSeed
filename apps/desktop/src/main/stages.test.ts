@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,6 +19,7 @@ import { InstallationProgress } from './installation.ts'
 import {
   abandonedSquirrelRequest,
   decodeSquirrelHandoff,
+  readSquirrelHandoff,
   type SquirrelHandoff,
 } from './squirrel.ts'
 import {
@@ -29,7 +31,7 @@ import { retryUpdate, UpdateTransportError } from './retry.ts'
 import { basename, dirname, join, resolve } from 'node:path'
 import { SuccessorUpdater } from './successor.ts'
 import { planUpdatePrune, updateArtifactKind } from './staging.ts'
-import { writeJson } from './journal.ts'
+import { readRecord, writeJson } from './journal.ts'
 
 const source = readFileSync(new URL('./updater.ts', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('updater.ts', source, ts.ScriptTarget.Latest, true)
@@ -46,7 +48,33 @@ function updaterFunctions(names: string[]): string {
   ).outputText
 }
 
-test('a successor only replaces the selected slot after its native receipt and an uncontested commit', async () => {
+test('successor rejects feed headers and releases a failed native disposal only once', () => {
+  let disposals = 0
+  const updater = new SuccessorUpdater(
+    {
+      prepareSuccessor: () => 42,
+      installSuccessor: () => assert.fail('detached handle cannot install'),
+      disposeSuccessor: (handle) => {
+        assert.equal(handle, 42)
+        disposals++
+        throw new Error('native release failed')
+      },
+    },
+    true
+  )
+  assert.throws(() => updater.setFeedURL({ url: 'local', headers: {} }), /headers/)
+  assert.throws(() => updater.checkForUpdates(), /unavailable/)
+  updater.setFeedURL({ url: 'local' })
+  updater.checkForUpdates()
+  assert.throws(() => updater.dispose(), /native release failed/)
+  updater.dispose()
+  assert.equal(disposals, 1)
+  assert.throws(() => updater.quitAndInstall(), /unavailable/)
+})
+
+test('a successor only replaces the selected slot after its native receipt and an uncontested commit', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'update-successor-retirement-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
   for (const outcome of [
     'promoted',
     'rotated',
@@ -55,12 +83,51 @@ test('a successor only replaces the selected slot after its native receipt and a
     'missing-copy',
     'clicked',
     'changed-on-disk',
+    'cancelled-after-staging',
+    'write-failed',
+    'write-refused',
+    'another-ready-record',
+    'publication-uncertain',
+    'standby-references-D',
+    'active-references-D',
+    'different-publisher',
+    'changed-ZIP',
+    'release-failed',
+    'invalid-sidecar',
   ] as const) {
     const alternate = outcome === 'rotated'
-    const current = { meta: { id: 'B', version: '1', build_number: '2' } }
-    const next = { meta: { id: 'D', version: '1', build_number: '4' }, archive: {} }
-    const previous = { candidate: 'B', state: 'downloaded', ...(alternate ? { alternate } : {}) }
-    const published = [current, current]
+    const cache = join(root, outcome)
+    mkdirSync(cache)
+    const installer = ({ id }: { id: string }) => join(cache, id + '.dmg')
+    const workspace = (meta: { id: string }) => installer(meta) + '.prepared'
+    const readyPath = (slot: boolean) => join(cache, slot ? 'ready.next.json' : 'ready.json')
+    const release = (id: string, build_number: string) => {
+      const meta = { id, version: '1', build_number }
+      return {
+        meta,
+        path: installer(meta),
+        archive: { path: join(workspace(meta), 'application.zip') },
+      }
+    }
+    const current = release('B', '2')
+    const next = release('D', '4')
+    for (const item of outcome === 'download-failed' ? [current] : [current, next]) {
+      writeFileSync(item.path, item.meta.id)
+      mkdirSync(workspace(item.meta))
+      writeFileSync(item.archive.path, item.meta.id)
+    }
+    writeJson(readyPath(alternate), current)
+    const other = release('A', '1')
+    if (outcome === 'write-refused') writeJson(readyPath(!alternate), other)
+    if (outcome === 'standby-references-D') writeJson(readyPath(!alternate), next)
+    const previous = {
+      candidate: 'B',
+      state: 'downloaded',
+      sourcePid: process.pid,
+      ...(alternate ? { alternate } : {}),
+    }
+    let canonical: { candidate: string; state: string; sourcePid: number; alternate?: boolean } =
+      previous
     const events: string[] = []
     const controller = new AbortController()
     const active = {
@@ -68,7 +135,10 @@ test('a successor only replaces the selected slot after its native receipt and a
         events.push('detach B')
       },
     }
-    const prepared = { workspace: '/cache/D', receipt: { matches: () => true } }
+    const prepared = {
+      workspace: workspace(next.meta),
+      receipt: { matches: () => true, archive: next.archive },
+    }
     const pending = {
       async prepare(archive: unknown, identity: { alternate?: true }, authorize: Function) {
         assert.equal(archive, next.archive)
@@ -76,7 +146,33 @@ test('a successor only replaces the selected slot after its native receipt and a
         const grant = await authorize()
         grant()
         events.push('native checked')
-        if (outcome === 'native-failed') throw new Error('refused')
+        const sidecar = join(prepared.workspace, 'squirrel.pending.json')
+        if (outcome === 'native-failed' || outcome === 'different-publisher') {
+          writeJson(sidecar, {
+            candidate: 'D',
+            state: 'requested',
+            version: '1',
+            buildNumber: '4',
+            at: 1,
+            sourcePid: outcome === 'native-failed' ? process.pid : process.pid + 1,
+          })
+          writeFileSync(join(prepared.workspace, 'squirrel-handoff.lock'), '')
+        }
+        if (outcome === 'invalid-sidecar') writeFileSync(sidecar, '{')
+        if (outcome === 'active-references-D') writeJson(readyPath(alternate), next)
+        if (outcome === 'changed-ZIP') writeFileSync(next.archive.path, 'another ZIP')
+        if (
+          [
+            'native-failed',
+            'standby-references-D',
+            'active-references-D',
+            'different-publisher',
+            'changed-ZIP',
+            'release-failed',
+            'invalid-sidecar',
+          ].includes(outcome)
+        )
+          throw new Error('refused')
         if (outcome === 'clicked') controller.abort()
       },
       matches: () => true,
@@ -84,8 +180,10 @@ test('a successor only replaces the selected slot after its native receipt and a
       promoteTo(path: string, _mutation: unknown, prior: unknown, guard: Function) {
         assert.equal(path, '/canonical')
         assert.equal(previous, prior)
-        guard()
         if (outcome === 'changed-on-disk') throw new Error('different request')
+        guard()
+        canonical = { ...previous, candidate: 'D', alternate: !alternate }
+        if (outcome === 'publication-uncertain') throw new Error('unconfirmed after write')
         events.push('commit')
       },
       detach() {
@@ -104,9 +202,15 @@ test('a successor only replaces the selected slot after its native receipt and a
       macPreparationReady: () => true,
       isNewerRelease: () => true,
       squirrelHandoffPath: () => '/canonical',
-      readSquirrelHandoff: () => previous,
+      readSquirrelHandoff: (path: string) =>
+        path === '/canonical' ? canonical : readSquirrelHandoff(path),
       readReadyState: () => current,
-      macLaunchObserver: { prepareSuccessor() {} },
+      macLaunchObserver: {
+        prepareSuccessor: () => 11,
+        disposeSuccessor: () => {
+          if (outcome === 'release-failed') throw new Error('unknown handle')
+        },
+      },
       SuccessorUpdater,
       InstallationProgress,
       join,
@@ -119,26 +223,57 @@ test('a successor only replaces the selected slot after its native receipt and a
       ) => {
         assert.equal(scope.retained, current)
         assert.equal(scope.expected, next.meta)
+        if (outcome === 'cancelled-after-staging') controller.abort()
         return outcome === 'download-failed' ? { ok: false } : { ok: true, ready: next, prepared }
       },
       revalidateMacArchive: async () => next.archive,
       assertSquirrelPreparationSpace() {},
-      newMacInstallation: () => pending,
+      newMacInstallation: (port: SuccessorUpdater) => {
+        port.setFeedURL({ url: 'local' })
+        port.checkForUpdates()
+        return pending
+      },
       SUCCESSOR_HANDOFF_FILE: 'squirrel.pending.json',
       authorizeActivation: async () => () => {},
       retryUpdate,
       squirrelPreparedDevice: (copy?: { device: number }) => copy?.device,
-      mutateMacRecord: () => {},
+      mutateMacRecord: () => (operation: () => void) => operation(),
+      stagedInstallerPath: installer,
+      preparedApplicationDirectory: workspace,
+      readyStatePath: readyPath,
+      removeStaleInstaller: (path: string) => rmSync(path),
+      rmSync,
+      rmdirSync,
+      existsSync,
+      lstatSync,
+      process,
+      SQUIRREL_HANDOFF_LOCK: 'squirrel-handoff.lock',
+      Buffer,
+      readRecord,
+      READY_STATE_LIMIT: 64 * 1024,
       writeReadyState(ready: typeof current, nextSlot: boolean) {
         assert.equal(nextSlot, !alternate)
-        published[Number(nextSlot)] = ready
+        if (outcome === 'write-refused') throw new Error('could not write standby')
+        writeJson(readyPath(nextSlot), ready)
+        if (outcome === 'another-ready-record') {
+          writeJson(readyPath(nextSlot), { ...ready, at: 99 })
+          throw new Error('standby changed')
+        }
+        if (outcome === 'write-failed') throw new Error('standby flush failed')
       },
       logUpdateEvent() {},
       logUpdateLine() {},
       UpdateVerifyError: class extends Error {},
       UpdateArchiveLimitError: class extends Error {},
     }
-    runInNewContext(updaterFunctions(['prepareMacSuccessor']), environment)
+    runInNewContext(
+      updaterFunctions([
+        'prepareMacSuccessor',
+        'successorFileIdentity',
+        'discardUnselectedSuccessor',
+      ]),
+      environment
+    )
     const result = await exports.prepareMacSuccessor(
       next.meta,
       () => {},
@@ -148,14 +283,49 @@ test('a successor only replaces the selected slot after its native receipt and a
     )
     const selected = outcome === 'promoted' || outcome === 'rotated'
     assert.equal(result.ok, selected, outcome)
-    assert.equal(
-      published[Number(environment.activeReadyAlternate)],
-      selected ? next : current,
+    assert.deepEqual(
+      JSON.parse(readFileSync(readyPath(environment.activeReadyAlternate), 'utf8')),
+      selected || outcome === 'active-references-D' ? next : current,
       outcome
     )
     assert.equal(environment.squirrel, selected ? pending : active, outcome)
     assert.equal(events.includes('detach B'), selected, outcome)
     assert.equal(environment.successorPreparing, false, outcome)
+    const keepNext =
+      selected ||
+      [
+        'publication-uncertain',
+        'another-ready-record',
+        'standby-references-D',
+        'active-references-D',
+        'different-publisher',
+        'changed-ZIP',
+        'release-failed',
+        'invalid-sidecar',
+      ].includes(outcome)
+    for (const path of [next.path, next.archive.path])
+      assert.equal(existsSync(path), keepNext, outcome)
+    if (outcome === 'native-failed') {
+      assert.deepEqual(readdirSync(prepared.workspace).sort(), [
+        'squirrel-handoff.lock',
+        'squirrel.pending.json',
+      ])
+    } else assert.equal(existsSync(prepared.workspace), keepNext, outcome)
+    assert.equal(
+      existsSync(readyPath(!alternate)),
+      selected ||
+        [
+          'publication-uncertain',
+          'another-ready-record',
+          'standby-references-D',
+          'write-refused',
+        ].includes(outcome),
+      outcome
+    )
+    if (outcome === 'write-refused')
+      assert.deepEqual(JSON.parse(readFileSync(readyPath(!alternate), 'utf8')), other)
+    for (const path of [current.path, current.archive.path, readyPath(alternate)])
+      assert.ok(existsSync(path), outcome)
   }
 })
 

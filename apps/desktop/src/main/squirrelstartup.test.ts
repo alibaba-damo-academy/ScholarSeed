@@ -751,14 +751,26 @@ test(
     })
     await writeFile(alternateState, alternateRequest, { mode: 0o600 })
     const orphan = (
-      observedLaunch: (source: string, target: string, alternate: boolean) => boolean
+      observedLaunch: (source: string, target: string, alternate: boolean) => boolean,
+      verifyReplacement?: (path: string) => Promise<void>
     ) =>
-      inspectSquirrelIdle(directory, bundle, application, null, undefined, false, {
+      inspectSquirrelIdle(directory, bundle, application, null, verifyReplacement, false, {
         candidate: native.binding.candidate,
         observedLaunch,
       })
     assert.equal(await orphan(() => true), false)
-    assert.equal(await orphan((value, _, slot) => slot && value === alternateSource), true)
+    const observedAlternate = (value: string, _: string, slot: boolean) =>
+      slot && value === alternateSource
+    const verifyBothSlots = t.mock.fn(async (path: string) => {
+      assert.equal(path, application)
+    })
+    assert.equal(await orphan(observedAlternate, verifyBothSlots), true)
+    assert.equal(verifyBothSlots.mock.callCount(), 1)
+    const failedVerification = t.mock.fn(async () => {
+      throw new Error('untrusted replacement')
+    })
+    assert.equal(await orphan(observedAlternate, failedVerification), false)
+    assert.equal(failedVerification.mock.callCount(), 1)
     assert.equal(
       await orphan((_, __, slot) => {
         if (!slot) writeFileSync(alternateState, alternateRequest + '\n')

@@ -1329,6 +1329,75 @@ test('restart cannot claim stale or unfinished preparation', async () => {
   assert.equal(queue.claim(next), true)
 })
 
+for (const hasNewerObservation of [false, true]) {
+  test(`a live restart claim preserves the pending successor (newer observed=${hasNewerObservation})`, async () => {
+    const ready = release('202610131000')
+    const successor = release('202610131001')
+    const latest = release('202610131002')
+    const disposal = deferred()
+    const started = deferred()
+    const attempts: string[] = []
+    const checkpoints: PreparationCheckpoint[] = []
+    let signal!: AbortSignal
+    let storageUnavailable = false
+    const queue = new UpdatePreparation(
+      async (attempt) => {
+        attempts.push(attempt.candidate.id)
+        signal = attempt.signal
+        started.resolve()
+        await disposal.promise
+        return true
+      },
+      {
+        load: () => null,
+        save: (checkpoint) => {
+          if (storageUnavailable) throw new Error('checkpoint unavailable')
+          checkpoints.push(checkpoint)
+        },
+        failed: () => assert.ok(storageUnavailable),
+      },
+      TEST_POLICY
+    )
+    queue.adopt(ready)
+    assert.ok(queue.request(successor))
+    await started.promise
+    if (hasNewerObservation) queue.observe(latest)
+    const before = checkpoints.at(-1)
+    assert.equal(
+      queue.claim(ready, () => false),
+      false
+    )
+    storageUnavailable = true
+    assert.equal(
+      queue.claim(ready, () => true),
+      false
+    )
+    assert.equal(checkpoints.at(-1), before)
+    assert.equal(queue.candidate?.id, successor.id)
+    assert.equal(signal.aborted, false)
+    storageUnavailable = false
+    assert.ok(queue.claim(ready, () => true))
+    assert.equal(signal.aborted, true)
+    const saved = checkpoints.at(-1)!
+    assert.equal(saved.desiredRelease.id, ready.id)
+    assert.equal(saved.preparedRelease, ready.id)
+    assert.equal(saved.admission?.inFlight, null)
+    assert.equal(
+      saved.admission?.pending?.candidate.id,
+      hasNewerObservation ? latest.id : successor.id
+    )
+    assert.equal(
+      queue.claim(ready, () => true),
+      false
+    )
+    queue.release()
+    disposal.resolve()
+    await queue.settled()
+    assert.deepEqual(attempts, [successor.id])
+    assert.equal(checkpoints.at(-1), saved)
+  })
+}
+
 test('a released restart with lost evidence can rebuild the same completed candidate', async () => {
   let preparations = 0
   const candidate = release('202610131200')

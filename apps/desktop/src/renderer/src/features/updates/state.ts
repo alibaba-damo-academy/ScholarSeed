@@ -126,13 +126,13 @@ export function updateRestartLabelKey(
 export function matchesRestartConfirmation(
   requested: UpdateSnapshot | null,
   current: UpdateSnapshot | null,
-  latestReady: boolean
+  followNativePromotion: boolean
 ): boolean {
   const confirmed = requested?.candidate
   const ready = current?.candidate
   if (updateActionOf(current) !== 'install' || !confirmed || !ready) return false
   if (confirmed.id === ready.id) return updateCandidateKey(confirmed) === updateCandidateKey(ready)
-  return latestReady && current?.readyOrigin === (requested?.readyOrigin ?? confirmed.id)
+  return followNativePromotion && current?.readyOrigin === (requested?.readyOrigin ?? confirmed.id)
 }
 
 /**
@@ -143,7 +143,7 @@ export function matchesRestartConfirmation(
 export async function runUpdateAction(
   state: UpdateSnapshot | null,
   confirmedCandidateKey?: string,
-  latestReady = false
+  followNativePromotion = false
 ): Promise<'candidate-changed' | void> {
   const action = updateActionOf(state)
   const id = state?.candidate?.id
@@ -159,19 +159,26 @@ export async function runUpdateAction(
     )
       return
     const current = await window.scholarseed.getUpdateState()
-    if (!current.candidate || !matchesRestartConfirmation(state, current, latestReady))
+    if (!current.candidate || !matchesRestartConfirmation(state, current, followNativePromotion))
       return 'candidate-changed'
-    const confirmedId = latestReady ? (current.readyOrigin ?? current.candidate.id) : id
-    const result = await window.scholarseed.installUpdate(confirmedId, latestReady)
-    if (
-      !result.ok &&
-      (await window.scholarseed.getUpdateState()).candidate?.id !== current.candidate.id
-    )
-      return 'candidate-changed'
+    const confirmedId = followNativePromotion ? (current.readyOrigin ?? current.candidate.id) : id
+    const result = await window.scholarseed.installUpdate(confirmedId, followNativePromotion)
+    if (!result.ok) {
+      const after = await window.scholarseed.getUpdateState()
+      if (after.candidate?.id !== current.candidate.id) return 'candidate-changed'
+      if (
+        updateActionOf(after) === 'install' &&
+        (!updateFailureOf(after) ||
+          (after.error === current.error && after.errorFallback === current.errorFallback))
+      )
+        throw new Error('Update restart could not start')
+    }
   } else if (action === 'check') await window.scholarseed.checkUpdate()
 }
 
-export async function runLatestUpdateAction(state: UpdateSnapshot | null): Promise<void> {
+export async function runLatestUpdateAction(
+  state: UpdateSnapshot | null
+): Promise<UpdateFailure | undefined> {
   if (!state?.latestCandidate || updateActionOf(state) !== 'install') return
   const current = await window.scholarseed.getUpdateState()
   if (
@@ -179,7 +186,9 @@ export async function runLatestUpdateAction(state: UpdateSnapshot | null): Promi
     current.latestCandidate?.id !== state.latestCandidate.id
   )
     return
-  await window.scholarseed.startUpdate(state.latestCandidate.id)
+  const result = await window.scholarseed.startUpdate(state.latestCandidate.id)
+  if (!result.ok && !result.cancelled)
+    return { origin: 'preparation', fallback: result.errorFallback, rolledBack: false }
 }
 
 /** 更新入口是否该常驻：从发现新版本到更新完成前一直保留（PRD 第 2 条）。 */

@@ -228,6 +228,8 @@ function replaceableHandoff(prior: SquirrelHandoff, allowInteraction: boolean): 
       return prior.sourcePid ? abandonedSquirrelRequest(prior) : unstartedSquirrelRequest(prior)
     case 'failed':
       return true
+    default:
+      return false
   }
 }
 

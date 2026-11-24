@@ -83,12 +83,13 @@ async function retrySlot(
   dependencies: CleanupDependencies,
   alternate: boolean
 ) {
+  const jobLabel = squirrelJobLabel(request.bundle, alternate)
   for (const [index, milliseconds] of RETRY_DELAYS_MS.entries()) {
     await dependencies.delay(milliseconds)
     try {
       const result = await dependencies.execute(join(request.application, ...HELPER), [
         CLEANUP_MODE,
-        squirrelJobLabel(request.bundle, alternate),
+        jobLabel,
         request.application,
       ])
       // Forward only bounded native diagnostics, never arbitrary helper stderr/paths.
@@ -96,12 +97,16 @@ async function retrySlot(
         const marker = line.indexOf('[shipit-cleanup]')
         if (marker >= 0) dependencies.log(line.slice(marker, marker + MAX_LOG_LINE) + '\n')
       }
-      dependencies.log(`[update-cleanup] event=attempt attempt=${index + 1} code=${result.code}\n`)
+      dependencies.log(
+        `[update-cleanup] event=attempt jobLabel=${jobLabel} attempt=${index + 1} code=${result.code}\n`
+      )
       if (result.code === 0) return true
     } catch {
-      dependencies.log(`[update-cleanup] event=attempt attempt=${index + 1} result=failed\n`)
+      dependencies.log(
+        `[update-cleanup] event=attempt jobLabel=${jobLabel} attempt=${index + 1} result=failed\n`
+      )
     }
   }
-  dependencies.log('[update-cleanup] event=retry-on-next-startup\n')
+  dependencies.log(`[update-cleanup] event=retry-on-next-startup jobLabel=${jobLabel}\n`)
   return false
 }
