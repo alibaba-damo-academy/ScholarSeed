@@ -34,6 +34,8 @@ export type AssistantContextError =
         | 'contextErrors.loading'
         | 'contextErrors.updated'
         | 'contextErrors.saveFailed'
+        | 'contextErrors.saveUnconfirmed'
+        | 'contextErrors.saveReconciled'
         | 'contextErrors.syncFailed'
         | 'contextErrors.loadFailed'
         | 'contextErrors.initializeFailed'
@@ -51,7 +53,14 @@ export type AssistantContextError =
 
 export const ASSISTANT_CLAIMED_REFS_IMMUTABLE = 'assistant_claimed_refs_immutable'
 
-export function assistantContextSaveError(failure?: AssistantFailure): AssistantContextError {
+export function assistantContextSaveError(
+  failure?: AssistantFailure & { receiptUnknown?: true; latest?: AssistantContextSelection }
+): AssistantContextError {
+  if (failure?.receiptUnknown) {
+    return {
+      key: failure.latest ? 'contextErrors.saveReconciled' : 'contextErrors.saveUnconfirmed',
+    }
+  }
   const detail = failure ? assistantFailureDetail(failure) : undefined
   return detail ? { key: 'contextErrors.saveFailed', detail } : { key: 'contextErrors.saveRetry' }
 }
@@ -122,8 +131,8 @@ export function literatureAttachmentNames(
 export function loadedAssistantContext(
   panel: AiPanelState,
   selection: AssistantContextSelection | null,
-  annotations: AnswerAnnotation[],
-  submittedRefIds: readonly string[]
+  annotations: AnswerAnnotation[] | null,
+  submittedRefIds: readonly string[] | null
 ): AiPanelState {
   if (
     selection &&
@@ -137,12 +146,16 @@ export function loadedAssistantContext(
   if (!selection) {
     return { ...panel, contextState: 'error', contextError: { key: 'contextErrors.loadFailed' } }
   }
+  const sameSession = panel.sessionId === selection.session_id
   return {
     ...panel,
-    ...assistantContextProjection(selection, submittedRefIds),
+    ...assistantContextProjection(
+      selection,
+      submittedRefIds ?? (sameSession ? panel.submittedRefIds : [])
+    ),
     sessionId: selection.session_id,
     contextState: 'ready',
-    annotations,
+    annotations: annotations ?? (sameSession ? panel.annotations : []),
     contextError: null,
   }
 }

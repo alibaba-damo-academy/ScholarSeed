@@ -64,6 +64,7 @@ declare module 'i18next' {
             "markAllRead": "全部标为已读"
         },
         "models": {
+            "saveUnconfirmed": "保存结果尚未确认。请先核对连接列表再决定是否重新保存，当前编辑内容已保留。",
             "loadFailed": "模型服务加载失败，请重试。",
             "deleteFailed": "删除该端点失败",
             "enabledCount": "{{enabled}} / {{total}} 已启用",
@@ -599,6 +600,8 @@ declare module 'i18next' {
             "loading": "上下文仍在加载，请稍后再试。",
             "updated": "上下文已被其他窗口更新，已同步最新版本。",
             "saveFailed": "上下文保存失败：{{detail}}",
+            "saveReconciled": "未收到保存确认。已重新读取上下文，请核对当前选择。",
+            "saveUnconfirmed": "未能确认保存结果，请重新读取上下文。",
             "syncFailed": "资料已更新，但当前上下文同步失败：{{detail}}",
             "loadFailed": "上下文加载失败，请重试。",
             "initializeFailed": "新会话上下文初始化失败，请重试。",
@@ -1249,6 +1252,7 @@ declare module 'i18next' {
             "createFailed": "无法创建项目，请重试。",
             "folderBusy": "所选文件夹或其上级、下级目录可能已被其他项目占用。请选择其他文件夹，或移除占用目录的项目后重试。",
             "saveFailed": "保存失败",
+            "outcomeUnconfirmed": "暂时无法确认项目操作结果。请先在项目列表中核对，再决定是否重试。",
             "removeFailed": "移除失败",
             "created": "已创建项目 {{name}}",
             "renamed": "已重命名为 {{name}}",
@@ -1941,6 +1945,9 @@ declare module 'i18next' {
             "itemNamed": "{{kind}}：{{name}}",
             "unknownError": "未知错误",
             "queueCheckUnknown": "消息入队结果暂时无法确认，请在待处理消息中检查发送结果。",
+            "reviewFailedReceiptTitle": "核对待处理消息",
+            "reviewFailedReceiptDetail": "服务端仍显示上一次失败，本次重发结果尚未确认。采用当前记录后，可以另行选择重发或撤回。",
+            "reviewFailedReceiptAccept": "采用当前记录",
             "resourceWaitTimeout": "等待运行资源超时，消息已保留，请重新发送。",
             "resourceWaitBlocked": "上一轮仍有后台任务运行，消息已保留。请先终止后台任务或重启会话后再发送。",
             "resourceWaitPendingHil": "上一轮仍有待回答的问题，消息已保留。请先处理问题卡，再重新发送。",
@@ -2548,6 +2555,8 @@ declare module 'i18next' {
                 "probeSuggestionNotFound": "请检查 Base URL 是否填写完整（例如到版本号为止），然后重新测试连接。",
                 "probeReasonStatus": "端点返回错误状态 {{status}}",
                 "probeSuggestionStatus": "请检查服务地址与 API Key，或稍后重试。",
+                "probeReasonTimeout": "模型端点未在时限内返回完整响应。",
+                "probeSuggestionTimeout": "请检查端点状态，再重新测试连接。",
                 "probeReasonNetwork": "无法连接到该服务地址",
                 "probeSuggestionNetwork": "请检查网络与 Base URL 后重试。",
                 "probeReasonProtocol": "该连接声明的接口协议不受支持",
@@ -2558,6 +2567,8 @@ declare module 'i18next' {
                 "probeSuggestionNoModels": "请手动填写模型名，或确认服务地址支持模型列表接口。",
                 "probeReasonModelRejected": "模型 {{model}} 在该端点调用失败，上游返回：{{upstream}}",
                 "probeSuggestionModelRejected": "请更换模型后重试，或确认该端点与模型支持 Responses 协议。",
+                "probeReasonInvalidResponse": "模型配置服务返回了无效响应（HTTP {{status}}）",
+                "probeSuggestionInvalidResponse": "请稍后重新读取模型配置。",
                 "probeReasonGeneric": "连接测试未通过",
                 "probeSuggestionGeneric": "请检查服务地址与 API Key 后重试。",
                 "apiNo": "不修改则留空"
@@ -6036,6 +6047,13 @@ declare module 'i18next' {
             "detail": "正在执行的任务将停止。书深会先保存待写入的设置并关闭后台进程，再允许安装器替换程序。项目和历史记录将保留。",
             "confirm": "退出并安装"
         },
+        "taskRecovery": {
+            "title": "书深任务恢复",
+            "message": "书深在打开上次任务时无响应。",
+            "detail": "你可以回到首页，再从任务列表打开该任务。正在运行的后台任务会继续执行。",
+            "reopen": "重新打开到首页",
+            "wait": "继续等待"
+        },
         "updateRecovery": {
             "title": "书深更新恢复",
             "message": "更新保护进程已全部异常退出。请先保存工作，重启电脑后重新打开书深尝试恢复。现有数据已保留，此提示不会自动重启电脑。"
@@ -6531,6 +6549,8 @@ declare module 'i18next' {
             "cancelRestored": "已取消生成，已恢复上次解读。",
             "configure": "配置模型",
             "retry": "重试",
+            "checkSubmission": "检查状态",
+            "checkSubmissionFailed": "仍无法确认本次解读的状态，可以稍后再查。",
             "explain": "解释",
             "translate": "翻译",
             "figure": "图表解释",
@@ -6642,7 +6662,8 @@ declare module 'i18next' {
                 "translation_alignment_missing": "译文缺少逐句对照，请重试。",
                 "translation_sentence_incomplete": "逐句译文不完整，请重试。",
                 "task_missing": "任务不存在",
-                "task_unresolved": "暂时无法确认翻译任务状态。为避免重复生成，已暂停自动重试；请等待服务恢复后再检查结果。",
+                "task_unresolved": "暂时无法确认 PDF AI 任务状态。为避免重复生成，已暂停自动重试。请在服务恢复后检查结果。",
+                "service_instance_changed": "应用服务已重启，这次 PDF AI 操作未受理。请重试。",
                 "pdf_input_unsupported": "当前模型未声明支持 PDF 文件输入，请在设置 → 模型服务确认能力或切换模型。",
                 "image_input_unsupported": "当前模型未声明支持图片输入，请切换支持图片的模型。",
                 "generation_failed": "生成失败，请检查模型连接并重试。",
@@ -7723,6 +7744,13 @@ declare module 'i18next' {
             "returnHome": "返回项目中心",
             "skipToContent": "跳转到主要内容"
         },
+        "taskRecovery": {
+            "restoring": "正在恢复上次的任务…",
+            "restoringView": "正在恢复上次打开的页面…",
+            "skip": "跳过恢复",
+            "skipped": "已跳过上次任务的恢复，可从任务列表重新打开。",
+            "skippedView": "已跳过上次页面的恢复，可手动重新打开。"
+        },
         "errorBoundary": {
             "title": "页面遇到了一些问题",
             "description": "书深没有正常完成页面渲染，但你的项目和本地文件不会因此丢失。",
@@ -8586,6 +8614,8 @@ declare module 'i18next' {
         "request": {
             "authentication": "请登录后重试。",
             "http": "模型连接请求失败（HTTP {{status}}）。",
+            "timeout": "请求超时。",
+            "invalidResponse": "模型配置服务返回了无效响应（HTTP {{status}}）。",
             "network": "无法连接模型配置服务，请稍后重试。"
         },
         "listSeparator": "、",
@@ -9020,6 +9050,8 @@ declare module 'i18next' {
             "unsaved": "未保存",
             "filePath": "文件路径",
             "saving": "保存中…",
+            "saveUnconfirmed": "保存结果待确认，编辑内容已保留。",
+            "checkSave": "核对保存结果",
             "externalChange": "文件已被外部修改",
             "saveFailed": "保存失败",
             "ignored": "未加入版本管理",

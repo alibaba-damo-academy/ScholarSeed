@@ -498,6 +498,7 @@ test('attached session stream keeps applying events across model selection', () 
     refreshMetaRef: { current: () => undefined },
     act: { invalidateResources: () => undefined },
     bodySequences: { current: new Map() },
+    acceptedQueueSequences: { current: new Map() },
   }
   for (const name of ['streamCurrent', 'current', 'attach']) {
     if (!declarations[name]) continue
@@ -903,7 +904,7 @@ test('only current sequenced catalog state can clear pending resource settlement
   assert.equal(blocked.resourceFinalizing, false)
 })
 
-test('summary invalidation preserves status delivery and catalog catch-up for reset, removal and rename', () => {
+function sessionStatusHarness() {
   const parsed = ts.createSourceFile('live.ts', liveSource, ts.ScriptTarget.Latest, true)
   let effect = ''
   function visit(node: ts.Node): void {
@@ -919,9 +920,16 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
   assert.ok(effect)
   let catalogReads = 0
   let statusReads = 0
+  let beforePatch: (() => void) | undefined
+  const scheduled: { callback: () => void; delay: number }[] = []
   const patched: string[] = []
   const acknowledgements: string[] = []
-  let accept!: (value: { sessionIds: string[]; snapshots: SessionStatusSnapshot[] }) => void
+  const queuesAtRequest = new Map<string, Thread['queuedMessages']>()
+  let accept!: (value: {
+    sessionIds: string[]
+    snapshots: SessionStatusSnapshot[]
+    queuesAtRequest: typeof queuesAtRequest
+  }) => void
   let notify!: (reset: boolean, changes: { topic: string; subject: string }[]) => void
   const background = {
     session_id: 'background',
@@ -934,7 +942,22 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
     workbenchReady: true,
     runtimeQuiescing: false,
     activeSession: 'foreground',
-    threads: { background: { sessionId: 'background' }, foreground: { sessionId: 'foreground' } },
+    threads: {
+      background: {
+        id: 'background',
+        sessionId: 'background',
+        title: 'Task',
+        conversation: [],
+        lastSeq: 0,
+      } as Thread,
+      foreground: {
+        id: 'foreground',
+        sessionId: 'foreground',
+        title: 'Current',
+        conversation: [],
+        lastSeq: 0,
+      } as Thread,
+    },
   }
   runInNewContext(
     ts.transpileModule(effect, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText,
@@ -942,15 +965,35 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
       state,
       stateRef: { current: state },
       metadataSessions: { current: [background] },
+      getSnapshot: () => state,
       summarySequences: { current: new Map() },
+      bodySequences: { current: new Map() },
+      refreshStatusRef: { current: () => undefined },
       sessionSummaryNeedsCatalog,
       useEffect: (callback: () => unknown) => callback(),
+      flushSync: (callback: () => unknown) => callback(),
+      setTimeout: (callback: () => void, delay: number) => scheduled.push({ callback, delay }),
+      clearTimeout: () => {},
+      QUEUE_SNAPSHOT_RETRY_MS: 500,
       pollMetadata: () => {
         catalogReads++
       },
-      patchThread: (id: string) => {
+      patchThread: (
+        id: keyof typeof state.threads,
+        update: (thread: Thread) => Partial<Thread>
+      ) => {
+        beforePatch?.()
+        // StrictMode replays the projection without committing its first invocation.
+        const current = state.threads[id]
+        update(current)
+        const delta = update(current)
+        if (delta !== current) state.threads[id] = { ...current, ...delta }
         patched.push(id)
       },
+      queuedMessageFromPayload: (message: unknown) => message,
+      mergeQueuedOutbox: (_session: string, messages: unknown[]) => messages,
+      reconcileThreadRuntime: (threads: unknown) => threads,
+      projectSessionRecovery: () => ({}),
       releaseQueuedOutbox: (_sessionId: string, identity: string) => {
         acknowledgements.push(identity)
       },
@@ -969,34 +1012,131 @@ test('summary invalidation preserves status delivery and catalog catch-up for re
       },
     }
   )
-  assert.equal(statusReads, 1)
+  return {
+    background,
+    state,
+    queuesAtRequest,
+    accept,
+    notify,
+    acknowledgements,
+    patched,
+    scheduled,
+    catalogReads: () => catalogReads,
+    statusReads: () => statusReads,
+    changeBeforePatch: (change: () => void) => {
+      beforePatch = change
+    },
+  }
+}
+
+test('summary invalidation preserves status delivery and catalog catch-up for reset, removal and rename', () => {
+  const {
+    background,
+    statusReads,
+    catalogReads,
+    accept,
+    notify,
+    queuesAtRequest,
+    patched,
+    acknowledgements,
+    state,
+  } = sessionStatusHarness()
+  assert.equal(statusReads(), 1)
   notify(false, [{ topic: 'sessions', subject: 'background' }])
-  assert.equal(catalogReads, 0)
-  assert.equal(statusReads, 2)
+  assert.equal(catalogReads(), 0)
+  assert.equal(statusReads(), 2)
   const waiting = {
     ...background,
     waiting: true,
     summary_seq: 10,
     acknowledged_queue_ids: ['queued'],
+    queued_messages: [],
   }
-  accept({ sessionIds: ['background'], snapshots: [waiting] })
-  assert.equal(catalogReads, 0)
+  accept({ sessionIds: ['background'], snapshots: [waiting], queuesAtRequest })
+  assert.equal(catalogReads(), 0)
   assert.deepEqual(patched, ['background'])
   assert.deepEqual(acknowledgements, ['queued'])
+  assert.equal(state.threads.background.queueSnapshotSeq, 10)
+  queuesAtRequest.set('background', state.threads.background.queuedMessages)
   accept({
     sessionIds: ['background'],
     snapshots: [{ ...waiting, summary_seq: 9, title: 'Stale' }],
+    queuesAtRequest,
   })
-  assert.equal(catalogReads, 0)
+  assert.equal(catalogReads(), 0)
   assert.equal(patched.length, 1)
-  accept({ sessionIds: ['background'], snapshots: [{ ...waiting, title: 'Renamed' }] })
-  assert.equal(catalogReads, 1)
-  accept({ sessionIds: ['background'], snapshots: [] })
-  assert.equal(catalogReads, 2)
+  accept({
+    sessionIds: ['background'],
+    snapshots: [{ ...waiting, title: 'Renamed' }],
+    queuesAtRequest,
+  })
+  assert.equal(catalogReads(), 1)
+  accept({ sessionIds: ['background'], snapshots: [], queuesAtRequest })
+  assert.equal(catalogReads(), 2)
   notify(false, [{ topic: 'sessions', subject: 'new-session' }])
   notify(false, [{ topic: 'projects', subject: 'project' }])
   notify(true, [])
-  assert.equal(catalogReads, 5)
+  assert.equal(catalogReads(), 5)
+})
+
+test('a queue snapshot rejected during React publication cannot acknowledge the durable outbox and retries at most once per delay', () => {
+  const h = sessionStatusHarness()
+  h.changeBeforePatch(() => {
+    h.state.threads.background = { ...h.state.threads.background, queuedMessages: [] }
+  })
+  const requested = {
+    sessionIds: ['background'],
+    queuesAtRequest: h.queuesAtRequest,
+    snapshots: [
+      {
+        ...h.background,
+        summary_seq: 10,
+        acknowledged_queue_ids: ['queued'],
+        queued_messages: [],
+      },
+    ],
+  }
+  h.accept(requested)
+  assert.deepEqual(h.acknowledgements, [])
+  assert.equal(h.state.threads.background.queueSnapshotSeq, undefined)
+  h.accept(requested)
+  h.accept(requested)
+  assert.equal(h.statusReads(), 1)
+  assert.deepEqual(
+    h.scheduled.map((item) => item.delay),
+    [500]
+  )
+  h.scheduled[0].callback()
+  assert.equal(h.statusReads(), 2)
+})
+
+test('a terminal queue event releases its outbox once even without a thread to patch', () => {
+  for (const withThread of [true, false]) {
+    const thread: Thread | undefined = withThread
+      ? { id: 'thread', sessionId: 'session', title: 'Task', conversation: [], lastSeq: 0 }
+      : undefined
+    const acknowledgements: string[] = []
+    const branch = block(liveSource, "case 'message_removed':", "case 'subagent_spawned':")
+    const apply = runInNewContext(`(event) => { switch (event.type) { ${branch} } }`, {
+      threadId: 'thread',
+      threadAtReceipt: thread,
+      acknowledgeOutbox: true,
+      releaseQueuedOutbox: (_session: string, id: string) => acknowledgements.push(id),
+      refreshAssistantContext: () => {},
+      patchThread: (_id: string, update: (current: Thread) => Partial<Thread>) => {
+        if (!thread) return
+        update(thread)
+        update(thread)
+      },
+    }) as (event: unknown) => void
+    apply({
+      type: 'message_removed',
+      seq: 1,
+      session_id: 'session',
+      data: { queued_message_id: 'message' },
+    })
+    assert.deepEqual(acknowledgements, ['message'])
+  }
 })
 
 test('shutdown prevents a new catalog request', async () => {
@@ -1051,16 +1191,6 @@ test('visible home refreshes the catalog before a background running event is kn
   assert.match(
     refresh,
     /sessionCatalogNeedsRefresh\(state.sessions, state.activeSession, state.threads\)/
-  )
-})
-
-test('resuming a terminal conversation preserves the durable failed or interrupted outcome', () => {
-  const resumed = block(liveSource, 'const base = {', '...projectSessionRecovery(base,')
-  assert.match(resumed, /opened\.last_turn_status === 'failed'/)
-  assert.match(resumed, /opened\.last_turn_status === 'interrupted'/)
-  assert.doesNotMatch(
-    resumed,
-    /status: opened\.running \? \('running' as const\) : \('done' as const\)/
   )
 })
 

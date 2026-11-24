@@ -129,6 +129,7 @@ export function HomeOverview(): React.JSX.Element {
                   onChange={(event) => {
                     setQuery(event.target.value)
                     setProjectPage(0)
+                    if (state.startupTaskRecovery === 'waiting') act.skipStartupTaskRecovery()
                   }}
                 />
               )}

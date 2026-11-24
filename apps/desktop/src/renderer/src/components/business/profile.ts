@@ -33,7 +33,9 @@ export function modelApiKeyShowsSavedMask(draft: ModelApiKeyDraft): boolean {
 const PROFILE_ERROR_KEYS = {
   authentication_required: 'request.authentication',
   http_failure: 'request.http',
+  invalid_response: 'request.invalidResponse',
   network_failure: 'request.network',
+  request_timeout: 'request.timeout',
 } as const
 
 const MODEL_DISABLED_REASON_KEYS = {
@@ -79,6 +81,13 @@ export function profileFailureText(
   return message + (failure.error ? ` (${failure.error})` : '')
 }
 
+const PROBE_TIMEOUT_CLASSES = new Set([
+  'TimeoutError',
+  'ReadTimeout',
+  'ConnectTimeout',
+  'WriteTimeout',
+  'PoolTimeout',
+])
 const PROBE_HTTP_STATUS_PREFIX = 'http_status_'
 const PROBE_BASE_URL_REQUIRED = 'base_url_required'
 const PROBE_UNSUPPORTED_PROTOCOL = 'unsupported_wire_api'
@@ -93,6 +102,8 @@ export type ProbeFailureKind =
   | 'notFound'
   | 'status'
   | 'network'
+  | 'invalidResponse'
+  | 'timeout'
   | 'protocol'
   | 'baseUrl'
   | 'noModels'
@@ -118,6 +129,8 @@ export const PROBE_REASON_KEYS = {
   notFound: 'accountPanel.modelsPage.probeReasonNotFound',
   status: 'accountPanel.modelsPage.probeReasonStatus',
   network: 'accountPanel.modelsPage.probeReasonNetwork',
+  invalidResponse: 'accountPanel.modelsPage.probeReasonInvalidResponse',
+  timeout: 'accountPanel.modelsPage.probeReasonTimeout',
   protocol: 'accountPanel.modelsPage.probeReasonProtocol',
   baseUrl: 'accountPanel.modelsPage.probeReasonBaseUrl',
   noModels: 'accountPanel.modelsPage.probeReasonNoModels',
@@ -131,6 +144,8 @@ export const PROBE_SUGGESTION_KEYS = {
   notFound: 'accountPanel.modelsPage.probeSuggestionNotFound',
   status: 'accountPanel.modelsPage.probeSuggestionStatus',
   network: 'accountPanel.modelsPage.probeSuggestionNetwork',
+  invalidResponse: 'accountPanel.modelsPage.probeSuggestionInvalidResponse',
+  timeout: 'accountPanel.modelsPage.probeSuggestionTimeout',
   protocol: 'accountPanel.modelsPage.probeSuggestionProtocol',
   baseUrl: 'accountPanel.modelsPage.probeSuggestionBaseUrl',
   noModels: 'accountPanel.modelsPage.probeSuggestionNoModels',
@@ -146,6 +161,7 @@ function probeHttpStatusDetail(status: number): ProbeFailureDetail {
 
 /** 按后端 error_class 分类; 空串（无从归类）返回 undefined, 由调用方兜底。 */
 function classifyErrorClass(errorClass: string): ProbeFailureDetail | undefined {
+  if (PROBE_TIMEOUT_CLASSES.has(errorClass)) return { kind: 'timeout' }
   if (errorClass === PROBE_BASE_URL_REQUIRED) return { kind: 'baseUrl' }
   if (errorClass === PROBE_UNSUPPORTED_PROTOCOL) return { kind: 'protocol' }
   if (errorClass.startsWith(PROBE_HTTP_STATUS_PREFIX)) {
@@ -168,7 +184,10 @@ export function probeFailureDetail(
     if (failure.models.length === 0) return { kind: 'noModels' }
     return { kind: 'generic' }
   }
+  if (failure.code === 'request_timeout') return { kind: 'timeout' }
   if (failure.code === 'network_failure') return { kind: 'network' }
+  if (failure.code === 'invalid_response')
+    return { kind: 'invalidResponse', params: { status: failure.status } }
   const detail = failure.detail
   if (detail?.code === CONNECTION_VALIDATION_FAILED) {
     const byClass = classifyErrorClass(detail.error_class ?? '')

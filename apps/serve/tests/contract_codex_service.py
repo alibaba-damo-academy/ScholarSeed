@@ -895,8 +895,13 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
     async def test_delete_waits_for_strict_stop_before_removing_data(self) -> None:
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
-        deletion = Mock()
-        service.bind_deletion(deletion)
+        callbacks = Mock()
+        service.bind_deletion(callbacks.delete)
+        service.bind_card_deletion(callbacks.prepare_cards, callbacks.complete_cards)
+        cleanup_catalog_entries: list[object] = []
+        callbacks.complete_cards.side_effect = lambda session_id: cleanup_catalog_entries.append(
+            self.catalog.get(session_id)
+        )
         started = asyncio.Event()
         release = asyncio.Event()
 
@@ -907,17 +912,25 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             return {"ok": True}, 200
 
-        with patch.object(service, "terminate", side_effect=stop):
+        with patch.object(service, "_terminate", side_effect=stop):
             operation = asyncio.create_task(service.delete(PRODUCT_SESSION_ID, OWNER))
             try:
                 await asyncio.wait_for(started.wait(), 1)
-                deletion.assert_not_called()
+                self.assertTrue(service._operations.session(PRODUCT_SESSION_ID).locked())
+                self.assertFalse(callbacks.mock_calls)
                 self.assertIsNotNone(self.catalog.get(PRODUCT_SESSION_ID))
             finally:
                 release.set()
                 payload, status = await operation
         self.assertEqual(status, 200, payload)
-        deletion.assert_called_once()
+        callbacks.prepare_cards.assert_called_once_with(PRODUCT_SESSION_ID)
+        callbacks.delete.assert_called_once()
+        callbacks.complete_cards.assert_called_once_with(PRODUCT_SESSION_ID)
+        self.assertEqual(cleanup_catalog_entries, [None])
+        self.assertEqual(
+            [entry[0] for entry in callbacks.mock_calls],
+            ["prepare_cards", "delete", "complete_cards"],
+        )
         self.assertIsNone(self.catalog.get(PRODUCT_SESSION_ID))
 
     async def test_delete_stop_failure_preserves_data_for_retry(self) -> None:
@@ -925,8 +938,11 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         service = self.session_service(runtime)
         deletion = Mock()
         service.bind_deletion(deletion)
-        with patch.object(service, "terminate", new=AsyncMock(return_value=({"ok": False}, 409))):
+        with patch.object(
+            service, "_terminate", new=AsyncMock(return_value=({"ok": False}, 409))
+        ) as stop:
             payload, status = await service.delete(PRODUCT_SESSION_ID, OWNER)
+        stop.assert_awaited_once_with(PRODUCT_SESSION_ID, require_idle=True)
         self.assertEqual(status, 409)
         self.assertFalse(payload["ok"])
         deletion.assert_not_called()
@@ -1108,14 +1124,16 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             return {"ok": True}, 200
 
-        with patch.object(service, "terminate", side_effect=stop):
+        with patch.object(service, "_terminate", side_effect=stop):
             operation = asyncio.create_task(
                 service.set_archived(PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id)
             )
-            await started.wait()
-            self.assertFalse(self.catalog.get(PRODUCT_SESSION_ID).archived)
-            release.set()
-            payload, status = await operation
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                self.assertFalse(self.catalog.get(PRODUCT_SESSION_ID).archived)
+            finally:
+                release.set()
+                payload, status = await operation
         self.assertEqual(status, 200)
         self.assertTrue(payload["archived"])
         self.assertEqual((await service._resume(PRODUCT_SESSION_ID, OWNER, OWNER.user_id))[1], 409)
@@ -1130,10 +1148,13 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         runtime, _provider = self.runtime_service()
         service = self.session_service(runtime)
         await self.live.ledger.activate_turn("archive-running")
-        with patch.object(service, "terminate", new=AsyncMock(return_value=({"ok": False}, 409))):
+        with patch.object(
+            service, "_terminate", new=AsyncMock(return_value=({"ok": False}, 409))
+        ) as stop:
             payload, status = await service.set_archived(
                 PRODUCT_SESSION_ID, True, OWNER, actor_id=OWNER.user_id
             )
+        stop.assert_awaited_once_with(PRODUCT_SESSION_ID, require_idle=True)
         self.assertEqual(status, 409)
         self.assertFalse(payload["ok"])
         self.assertFalse(self.catalog.get(PRODUCT_SESSION_ID).archived)

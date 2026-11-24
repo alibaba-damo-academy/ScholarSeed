@@ -10,6 +10,104 @@ import { ANSWER_SOURCES_CHANGED_EVENT } from '../../contracts/citations.ts'
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const FIXTURE = '/components/business/conversation.render.fixture.html'
 
+test('startup presentation waits for the transcript to become readable', async (context) => {
+  const fixture = await renderFixture(ROOT, {
+    launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+  })
+  context.after(() => fixture.close())
+
+  const noHeight = '.conversation-stream { height: 0 !important; padding-block: 0 !important }'
+  const hidden = '[data-testid="conversation-content"] { visibility: hidden }'
+  const offscreen = '.conversation-stream { transform: translateX(-200vw) }'
+  const mask = `body:has([data-message-kind="agent"])::after {
+    content: ''; position: fixed; inset: 0; z-index: 1000; background: white;
+  }`
+  const cases = [
+    { name: 'zero-height viewport', style: noHeight },
+    { name: 'hidden transcript', style: hidden },
+    { name: 'off-screen transcript', style: offscreen },
+    { name: 'full-window mask', style: mask },
+    { name: 'local popover leaves the transcript usable', style: mask, shrinkMask: true },
+    { name: 'inert transcript', inert: true },
+    { name: 'recovery exits before layout', style: noHeight, leave: 'Leave recovery' },
+    { name: 'transcript unmounts before layout', style: noHeight, leave: 'Unmount transcript' },
+    { name: 'unobscured transcript' },
+    { name: 'empty conversation', empty: true },
+  ]
+  for (const { name, style, inert, leave, empty, shrinkMask } of cases) {
+    await context.test(name, async (subtest) => {
+      const page = await fixture.page(subtest)
+      const afterFrames = () =>
+        page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              let remaining = 8
+              const next = () => {
+                if (--remaining === 0) resolve()
+                else requestAnimationFrame(next)
+              }
+              requestAnimationFrame(next)
+            })
+        )
+      await page.goto(
+        new URL(`${FIXTURE}?startupPresentation=${empty ? 'empty' : 'history'}`, fixture.url).href,
+        { waitUntil: 'domcontentloaded' }
+      )
+      const blocker = style ? await page.addStyleTag({ content: style }) : null
+      const stream = page.locator('.conversation-stream')
+      if (inert) await stream.evaluate((element) => element.setAttribute('inert', ''))
+      const column = page.getByTestId('conversation-content')
+      const transcript = empty ? column : column.getByText('Recovered transcript')
+      const readable = page.getByLabel('Readable sessions')
+      const focus = page.getByRole('textbox', { name: 'Focus probe' })
+      await page.getByRole('button', { name: 'Present recovered conversation' }).click()
+      await expect(transcript).toBeAttached()
+      if (style === noHeight)
+        assert.equal(await stream.evaluate(({ clientHeight }) => clientHeight), 0)
+      if (style || inert) {
+        await afterFrames()
+        await expect(readable).toHaveText('none')
+      }
+      if (leave) await page.getByRole('button', { name: leave }).click()
+      await focus.focus()
+      if (shrinkMask && blocker) {
+        const bounds = await column.boundingBox()
+        assert.ok(bounds)
+        await blocker.evaluate((element, { x, y, width, height }) => {
+          element.textContent = `body::after { content: ''; position: fixed; z-index: 1000;
+              left: ${x + width / 2 - 36}px; top: ${y + height / 2 - 12}px;
+              width: 72px; height: 24px; background: white; }`
+        }, bounds)
+        assert.equal(
+          await column.evaluate((element) => {
+            const rect = element.getBoundingClientRect()
+            return element.contains(
+              document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+            )
+          }),
+          false
+        )
+      } else {
+        await blocker?.evaluate((element) => {
+          element.parentNode?.removeChild(element)
+        })
+      }
+      if (inert) await stream.evaluate((element) => element.removeAttribute('inert'))
+
+      if (leave) {
+        await afterFrames()
+        await expect(readable).toHaveText('none')
+      } else {
+        await expect(transcript).toBeVisible()
+        await expect(readable).toHaveText('conversation-layout')
+        await afterFrames()
+        await expect(readable).toHaveText('conversation-layout')
+      }
+      await expect(focus).toBeFocused()
+    })
+  }
+})
+
 function turnSourceResult(turnId: string) {
   return {
     answer_id: turnId,

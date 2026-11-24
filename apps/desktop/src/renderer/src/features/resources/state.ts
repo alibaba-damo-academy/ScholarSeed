@@ -611,6 +611,7 @@ export interface ResourceState {
   notice: ResourceNoticeState | null
   /** 树加载态，用于区分「空项目」与「还没加载完」。 */
   loadState: 'idle' | 'loading' | 'ready' | 'refreshing' | 'error'
+  treeRefreshFailed: boolean
 }
 
 export const INITIAL_RESOURCE_STATE: ResourceState = {
@@ -633,6 +634,7 @@ export const INITIAL_RESOURCE_STATE: ResourceState = {
   moveDialog: null,
   notice: null,
   loadState: 'idle',
+  treeRefreshFailed: false,
 }
 
 /** Start a clean resource projection for another project while retaining window-owned search jobs. */

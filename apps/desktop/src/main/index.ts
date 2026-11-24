@@ -114,6 +114,9 @@ import { PreferenceDiagnostics, parsePreferenceSubmission } from '../preference-
 import { PreferenceQuiescence, PREFERENCE_SHUTDOWN_CHANNEL } from '../quiescence.ts'
 import {
   LOGIN_WINDOW_CHANNEL,
+  TASK_RECOVERY_CHANNEL,
+  TASK_RECOVERY_OUTCOME,
+  TASK_RECOVERY_STATUS,
   WINDOW_CLOSE_REQUEST_CHANNEL,
   WINDOW_CLOSE_REPLY_CHANNEL,
   WINDOW_FULLSCREEN_CHANNEL,
@@ -125,6 +128,7 @@ import {
   createWorkspaceWindowOptions,
   WINDOWS_PLATFORM,
 } from './window'
+import { TaskRecovery, installTaskRecoveryFallback, isRecoverySessionId } from './task-recovery'
 import {
   BROWSER_DOWNLOAD_NOTICE_CHANNEL,
   BROWSER_FIND_CHANNEL,
@@ -336,6 +340,7 @@ import {
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy, savePathCopy, SAVE_COPY_SENDER_ERROR } from './save'
 import { blocksRendererReload, prepareRendererLoad } from './reload'
+import { loadStartupWindow, waitForStartupWindow } from './loading'
 import { acquireRemoteImage, readSelectedImage } from './images'
 import {
   REMOTE_IMAGE_CHANNEL,
@@ -602,6 +607,7 @@ const startupState = new StartupState((snapshot) => sendToMainWindow(STARTUP_CHA
 let backendManaged = false
 let mainRendererOrigin: string | null = null
 let mainRendererNavigationEpoch = 0
+let taskRecoveryOwner: TaskRecovery | undefined
 let appQuitting = false
 let startupFailureReports = 0
 let startupAdmissionResolved = process.platform !== MACOS_PLATFORM || !app.isPackaged
@@ -686,7 +692,7 @@ function aliveMainWindow(): BrowserWindow | null {
 
 function sendToMainWindow(channel: string, ...args: unknown[]): boolean {
   const win = aliveMainWindow()
-  if (!win) return false
+  if (!win || win.webContents.isCrashed()) return false
   win.webContents.send(channel, ...args)
   return true
 }
@@ -698,6 +704,26 @@ function isMainWindowSender(
   const win = aliveMainWindow()
   if (!win || sender !== win.webContents) return false
   return senderFrame === undefined || senderFrame === win.webContents.mainFrame
+}
+
+function taskRecovery(): TaskRecovery {
+  return (taskRecoveryOwner ??= new TaskRecovery(desktopStorage().userData, logTaskRecovery))
+}
+
+function logTaskRecovery(message: string): void {
+  logWindowLifecycle(`[task-recovery] ${message}\n`)
+}
+
+function isTaskRecoverySender(
+  event: Pick<Electron.IpcMainInvokeEvent, 'sender' | 'senderFrame'>
+): boolean {
+  const frame = event.senderFrame
+  return (
+    !appQuitting &&
+    !!frame &&
+    isMainWindowSender(event.sender, frame) &&
+    URL.parse(frame.url)?.origin === mainRendererOrigin
+  )
 }
 
 function logWindowLifecycle(line: string): void {
@@ -3041,6 +3067,12 @@ function dismissLanding(): void {
   landingResolved = true
 }
 
+function dismissLandingForTaskRecovery(): void {
+  if (landingResolved) return
+  const handoff = desktopHandoff.current()
+  if (handoff.phase !== 'failed' || !handoff.terminal) dismissLanding()
+}
+
 const workbenchHealth = new WorkbenchHealth()
 let backgroundUpdateCheckDeferred = false
 
@@ -3351,6 +3383,29 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     if (!isMainWindowSender(event.sender) || typeof visible !== 'boolean') return
     setLoginWindowVisible?.(visible)
   })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.status, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || (sessionId !== null && !isRecoverySessionId(sessionId)))
+      return {
+        status: TASK_RECOVERY_STATUS.home,
+        skippedSessionId: null,
+        needsManualAcknowledgement: false,
+      }
+    return taskRecovery().snapshot(sessionId)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.begin, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || !isRecoverySessionId(sessionId)) return null
+    return taskRecovery().begin(sessionId)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.finish, (event, token: unknown, outcome: unknown) => {
+    if (!isTaskRecoverySender(event) || typeof token !== 'string') return false
+    if (outcome !== TASK_RECOVERY_OUTCOME.restored && outcome !== TASK_RECOVERY_OUTCOME.skipped)
+      return false
+    return taskRecovery().finish(token, outcome)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.manualOpen, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || !isRecoverySessionId(sessionId)) return false
+    return taskRecovery().manualOpened(sessionId)
+  })
 
   ipcMain.handle(UPDATE_HEALTH_CHANNEL, async (event) => {
     const { currentBackend, isCurrent } = workbenchObservation(event)
@@ -3448,6 +3503,13 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.on('scholarseed:boot', (e) => {
     const desktopConfig = updater.resolveDesktopConfig(pushLog)
     const productConfig = resolveProductConfig(pushLog)
+    const preferences = loadRendererPreferences()
+    if (isTaskRecoverySender(e)) {
+      const recovery = taskRecovery()
+      const sessionId = preferences.lastLocation?.sessionId ?? null
+      if (recovery.skipsColdLanding(sessionId)) dismissLandingForTaskRecovery()
+      recovery.prepare(sessionId, mainRendererNavigationEpoch)
+    }
     e.returnValue = {
       apiBase,
       startup: startupState.snapshot(),
@@ -3464,7 +3526,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       browserAgentNavigationEnabled: productConfig.features.browserAgentNavigation,
       browserAdvancedSettingsEnabled: productConfig.features.browserAdvancedSettings,
       feedbackRecorderEnabled: productConfig.features.feedbackRecorder,
-      preferences: loadRendererPreferences(),
+      preferences,
     }
   })
   ipcMain.handle(FEEDBACK_DIAGNOSTICS_CHANNEL, async (event) => {
@@ -3793,8 +3855,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.handle('scholarseed:authorized-root-add', (_event, scope: unknown, root: unknown) => {
     if (!isAuthorizationScope(scope)) return false
     if (typeof root !== 'string') return false
-    pathAuthorizer.add(scope, root)
-    return true
+    return pathAuthorizer.add(scope, root)
   })
   ipcMain.handle('scholarseed:open-external', (_e, url: unknown) => {
     requireDesktopWorkbench()
@@ -4713,9 +4774,36 @@ async function createWindow(
     if (details.isMainFrame) mainRendererNavigationEpoch += 1
   })
   const browserWindow = mainWindow
+  const startupWindow = new AbortController()
+  let firstHandoffPending = true
   if (!headless) windowController.ensureTray(browserWindow)
   const windowCurrent = (): boolean =>
-    aliveMainWindow() === browserWindow && startupState.snapshot().generation === generation
+    !startupWindow.signal.aborted &&
+    aliveMainWindow() === browserWindow &&
+    startupState.snapshot().generation === generation
+  const recoverRendererExit = installTaskRecoveryFallback(browserWindow, taskRecovery(), {
+    canPresent: () => windowCurrent() && windowPresentationAllowed(),
+    reopen: () => {
+      dismissLandingForTaskRecovery()
+      return browserWindow.loadURL(rendererUrl)
+    },
+    prompt: async (signal) => {
+      const t = mainLocalization().getFixedT(null, 'native')
+      const result = await dialog.showMessageBox(browserWindow, {
+        type: 'warning',
+        title: t('taskRecovery.title'),
+        message: t('taskRecovery.message'),
+        detail: t('taskRecovery.detail'),
+        buttons: [t('taskRecovery.reopen'), t('taskRecovery.wait')],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+        signal,
+      })
+      return result.response === 0
+    },
+    log: logTaskRecovery,
+  })
   const windowHiding = createWindowHiding(
     browserWindow,
     () => !appQuitting && !headless && !preferenceQuiescence.isPreparing(),
@@ -4829,12 +4917,6 @@ async function createWindow(
         })
     }
   )
-  const windowVisible = new Promise<void>((resolve) => {
-    browserWindow.once('ready-to-show', () => {
-      handoff.painted()
-      resolve()
-    })
-  })
   void componentsReused.then((reused) => {
     if (reused) handoff.reused()
   })
@@ -4845,6 +4927,15 @@ async function createWindow(
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     workbenchHealth.invalidate()
+    if (firstHandoffPending) {
+      startupWindow.abort(
+        new Error(
+          `Main window renderer exited during startup: ${details.reason} (${details.exitCode})`
+        )
+      )
+    } else {
+      recoverRendererExit()
+    }
     pushLog(
       `[shell] renderer process gone reason=${details.reason} exit-code=${details.exitCode}\n`
     )
@@ -4881,6 +4972,7 @@ async function createWindow(
   })
 
   mainWindow.on('closed', () => {
+    if (firstHandoffPending) startupWindow.abort(new Error('Main window closed during startup'))
     desktopReminders?.stop()
     desktopReminders = null
     attentionRendererReady = false
@@ -4902,30 +4994,49 @@ async function createWindow(
   mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => {
     if (isMainFrame) attentionRendererReady = false
   })
-  if (devUrl) {
-    const rendererSession = mainWindow.webContents.session
-    await prepareRendererLoad(devUrl, () => rendererSession.clearCache())
-    await mainWindow.loadURL(devUrl)
-    if (developerToolsEnabled) {
+  try {
+    await loadStartupWindow(
+      browserWindow,
+      startupWindow.signal,
+      async (signal) => {
+        if (devUrl) {
+          const rendererSession = browserWindow.webContents.session
+          await prepareRendererLoad(devUrl, () => rendererSession.clearCache())
+        }
+        signal.throwIfAborted()
+        await browserWindow.loadURL(rendererUrl)
+      },
+      handoff.painted
+    )
+    if (devUrl && developerToolsEnabled) {
       browserVaultIpc?.lock()
-      mainWindow.webContents.openDevTools({ mode: MAIN_DEVTOOLS_DOCK_MODE })
+      browserWindow.webContents.openDevTools({ mode: MAIN_DEVTOOLS_DOCK_MODE })
     }
-  } else {
-    await mainWindow.loadURL(rendererUrl)
-  }
 
-  if (!(await backendReady)) {
-    await windowVisible
-    handoff.settled()
-    return
-  }
-  const expectedBackend = backend
-  if (!currentStartup(generation, expectedBackend, browserWindow)) return
-  await initializeWindowServices(browserWindow, rendererUrl, devUrl, storageWindowGeneration)
-  if (currentStartup(generation, expectedBackend, browserWindow)) {
-    startupState.complete(generation, apiBase)
-    await windowVisible
-    if (currentStartup(generation, expectedBackend, browserWindow)) handoff.settled()
+    if (!(await waitForStartupWindow(startupWindow.signal, () => backendReady))) {
+      handoff.settled()
+      return
+    }
+    const expectedBackend = backend
+    if (!currentStartup(generation, expectedBackend, browserWindow)) return
+    await waitForStartupWindow(startupWindow.signal, () =>
+      initializeWindowServices(browserWindow, rendererUrl, devUrl, storageWindowGeneration)
+    )
+    if (currentStartup(generation, expectedBackend, browserWindow)) {
+      startupState.complete(generation, apiBase)
+      handoff.settled()
+    }
+  } catch (error) {
+    startupWindow.abort(error)
+    if (!browserWindow.isDestroyed()) {
+      const contents = browserWindow.webContents
+      if (!contents.isDestroyed() && !contents.isCrashed()) contents.stop()
+      // Keep the window owned until quit so Windows can display the startup failure.
+      browserWindow.hide()
+    }
+    if (!appQuitting) throw error
+  } finally {
+    firstHandoffPending = false
   }
 }
 

@@ -9,6 +9,7 @@ import { DirtyRefresh } from '../../notifications'
 import { STARTUP_PHASE } from '../../startup'
 import {
   RECONFIGURATION_POLL_MS,
+  RECONFIGURATION_REQUEST_TIMEOUT_MS,
   RECONFIGURATION_RECOVERY,
   reconfigurationRecovery,
 } from '../../reconfiguration'
@@ -16,6 +17,7 @@ import { mergedSessionTitle, openedSessionTitle, sessionTitleFallback } from './
 import { feedback } from './contracts/feedback'
 import { useTranslation } from 'react-i18next'
 import { useCallback, useEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 
 import type { AspEnvelope, ServeSession } from './api'
 import {
@@ -32,7 +34,6 @@ import {
   getModels,
   loadSessionCatalog,
   loadSessionStatus,
-  listQueuedMessages,
   listProjects,
   openSession,
   type SessionResumeFailure,
@@ -62,7 +63,6 @@ import {
   hilRequestedRunState,
 } from './hil'
 import type {
-  Cognitive,
   ConvItem,
   ModelRun,
   SessionArtifact,
@@ -72,7 +72,8 @@ import type {
 } from './model'
 import { artifactBelongsToResources, RELEASED_PLAN_SOURCE } from './model'
 import { queuedMessageFromPayload, upsertQueuedMessage } from './queue'
-import { mergeQueuedOutbox, releaseQueuedOutbox } from './outbox'
+import { acknowledgeQueuedOutboxMessage, mergeQueuedOutbox, releaseQueuedOutbox } from './outbox'
+import { projectResumedSession, reportSessionResume } from './resume'
 import { useApp } from './store'
 import { projectPlanSnapshots } from './todo'
 import {
@@ -89,7 +90,6 @@ import {
   projectHistorySnapshot,
   projectToolCompletion,
   normalizeToolName,
-  snapshotTurnActivity,
   projectNativeActivityEvent,
   projectPaperSearchEvent,
   projectReviewReadyEvent,
@@ -113,7 +113,6 @@ import {
   reportTransportState,
   reportTurnUnknown,
   reportTurnReconciled,
-  sessionResumeStatusItem,
   SESSION_RESUME_REQUEST_EVENT,
   shouldRetrySessionResume,
   projectResumeRunState,
@@ -124,6 +123,7 @@ import {
 // The renderer consumes only ScholarSeed product events. Codex JSON-RPC method names
 // and DamoAgent Harness event names stop at the Service projector boundary.
 const BACKGROUND_SESSION_REFRESH_INTERVAL_MS = 2_000
+const QUEUE_SNAPSHOT_RETRY_MS = 500
 const SESSION_CATALOG_APPEARANCE_GRACE_SECONDS = 5
 const SESSION_RESUME_INITIAL_DELAY_MS = 1_000
 const SESSION_RESUME_MAX_DELAY_MS = 30_000
@@ -259,27 +259,6 @@ function reportLegacyRuntimeNotice(
   }
 }
 
-function reportSessionResume(
-  thread: Thread,
-  sessionId: string,
-  text: Extract<ConvItem, { kind: 'status' }>['text'],
-  tone: Cognitive,
-  actionable = false,
-  replaceOnly = false
-): ThreadUpdate {
-  const notice = sessionResumeStatusItem(sessionId, text, tone, actionable)
-  const incidentId = notice.incidentId
-  const index = thread.conversation.findIndex(
-    (item) => item.kind === 'status' && item.incidentId === incidentId
-  )
-  if (index < 0) {
-    return replaceOnly ? {} : { conversation: insertTurnRuntimeItem(thread.conversation, notice) }
-  }
-  const conversation = [...thread.conversation]
-  conversation[index] = notice
-  return { conversation }
-}
-
 function appendDelta(
   threadId: string,
   kind: 'agent' | 'thinking',
@@ -326,6 +305,11 @@ function upsertArtifact(items: SessionArtifact[], artifact: SessionArtifact): Se
   return next
 }
 
+interface QueueEventContext {
+  acknowledgeOutbox: boolean
+  threadAtReceipt: Thread | undefined
+}
+
 export function onEvent(
   threadId: string,
   event: AspEnvelope,
@@ -337,7 +321,7 @@ export function onEvent(
   invalidateScopes: (scopes: string[]) => void,
   refreshAssistantContext: (sessionId: string) => void,
   refreshArtifactLinks: (sessionId: string) => void,
-  acknowledgeOutbox: boolean
+  { acknowledgeOutbox, threadAtReceipt }: QueueEventContext
 ): void {
   switch (event.type) {
     case 'generation_preview':
@@ -608,34 +592,41 @@ export function onEvent(
     case 'message_updated':
     case 'send_now_submitted':
     case 'send_now_rejected':
-    case 'send_now_outcome_unknown':
-      if (
-        acknowledgeOutbox &&
-        (event.type === 'message_queued' || event.type === 'message_updated')
-      ) {
-        releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
-      }
+    case 'send_now_outcome_unknown': {
+      if (event.seq <= (threadAtReceipt?.queueSnapshotSeq ?? -1)) return
+      const incoming = queuedMessageFromPayload(event.data)
+      const message = acknowledgeQueuedOutboxMessage(
+        event.session_id,
+        incoming,
+        threadAtReceipt?.queuedMessages?.find(
+          (item) => item.queuedMessageId === incoming.queuedMessageId
+        ),
+        acknowledgeOutbox
+      )
       patchThread(threadId, (thread) => {
-        return {
-          queuedMessages: upsertQueuedMessage(
-            thread.queuedMessages ?? [],
-            queuedMessageFromPayload(event.data)
-          ),
-        }
+        if (event.seq <= (thread.queueSnapshotSeq ?? -1)) return thread
+        return { queuedMessages: upsertQueuedMessage(thread.queuedMessages ?? [], message) }
       })
       return
+    }
     case 'message_removed':
-    case 'send_now_accepted':
-      if (acknowledgeOutbox) releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
-      patchThread(threadId, (thread) => ({
-        queuedMessages: (thread.queuedMessages ?? []).filter(
-          (item) => item.queuedMessageId !== event.data.queued_message_id
-        ),
-      }))
+    case 'send_now_accepted': {
+      if (event.seq > (threadAtReceipt?.queueSnapshotSeq ?? -1)) {
+        if (acknowledgeOutbox) releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
+        patchThread(threadId, (thread) => {
+          if (event.seq <= (thread.queueSnapshotSeq ?? -1)) return thread
+          return {
+            queuedMessages: (thread.queuedMessages ?? []).filter(
+              (item) => item.queuedMessageId !== event.data.queued_message_id
+            ),
+          }
+        })
+      }
       if (event.type === 'message_removed') {
         refreshAssistantContext(event.session_id)
       }
       return
+    }
     case 'subagent_spawned':
     case 'subagent_started':
     case 'subagent_status_changed':
@@ -1083,6 +1074,7 @@ export function useLiveSession(): void {
   const detachers = useRef<Record<string, () => void>>({})
   const liveIndex = useRef<Record<string, number | null>>({})
   const refreshMetaRef = useRef<() => void>(() => undefined)
+  const refreshStatusRef = useRef<() => void>(() => undefined)
   const resumeAttempts = useRef<Map<string, number>>(new Map())
   const resumeRetryTimers = useRef<Record<string, number>>({})
   const resumeDeferredRetries = useRef<Set<string>>(new Set())
@@ -1198,6 +1190,7 @@ export function useLiveSession(): void {
       if (
         !stateRef.current.workbenchReady ||
         stateRef.current.runtimeQuiescing ||
+        stateRef.current.startupTaskRecovery === 'presenting' ||
         (getSnapshot().modelSelectionSessions[threadId]?.pending ?? 0) > 0
       )
         return
@@ -1299,6 +1292,7 @@ export function useLiveSession(): void {
           startupSnapshot().phase === STARTUP_PHASE.ready &&
           snapshot.backendReady &&
           !snapshot.runtimeQuiescing &&
+          snapshot.startupTaskRecovery !== 'presenting' &&
           !resumeUnknownModels.current.has(threadId) &&
           snapshot.workbenchReady &&
           snapshot.serviceInstanceId === instance &&
@@ -1342,7 +1336,9 @@ export function useLiveSession(): void {
           return true
         }
         try {
-          const shared = await getSharedRuntimeReconfiguration()
+          const shared = await getSharedRuntimeReconfiguration(
+            AbortSignal.any([lease.signal, AbortSignal.timeout(RECONFIGURATION_REQUEST_TIMEOUT_MS)])
+          )
           if (!current()) return true
           if (shared.service_instance_id !== instance) {
             diagnostic('superseded-instance')
@@ -1405,7 +1401,10 @@ export function useLiveSession(): void {
                     void act.reloadArtifactLinks(activeSessionId)
                   }
                 },
-                stateRef.current.workbenchReady
+                {
+                  acknowledgeOutbox: stateRef.current.workbenchReady,
+                  threadAtReceipt: getSnapshot().threads[threadId],
+                }
               )
               bodySequences.current.set(sessionId, event.seq)
               patchThread(threadId, { lastSeq: event.seq })
@@ -1437,6 +1436,8 @@ export function useLiveSession(): void {
           cached.resumeServiceInstanceId === instance &&
           cached.resumeState !== 'failed'
         ) {
+          // Queue reconciliation does not depend on the stream connecting or sending a heartbeat.
+          refreshStatusRef.current()
           attach(Math.max(cached.lastSeq ?? 0, bodySequences.current.get(sessionId) ?? 0))
           patchThread(threadId, { resumeState: 'ready', resumeMessage: undefined })
           return
@@ -1446,14 +1447,14 @@ export function useLiveSession(): void {
           resumeState: 'pending',
           resumeMessage: { key: 'resume.agent' },
         })
-        const opened = await openSession({ resumeSessionId: sessionId })
+        const opened = await openSession({ resumeSessionId: sessionId, signal: lease.signal })
         if (!current()) {
           diagnostic('superseded')
           return
         }
         if (!opened || !('session_id' in opened) || !opened.session_id) {
           if (await waitForReconfiguration()) return
-          const history = await getHistoryWithTodos(sessionId, 'resume_fallback')
+          const history = await getHistoryWithTodos(sessionId, 'resume_fallback', lease.signal)
           if (!current()) {
             diagnostic('superseded')
             return
@@ -1497,19 +1498,13 @@ export function useLiveSession(): void {
           }
         }
 
-        const [history, queuedMessages] = await Promise.all([
-          getHistoryWithTodos(sessionId, 'resume'),
-          listQueuedMessages(sessionId),
-        ])
+        const history = await getHistoryWithTodos(sessionId, 'resume', lease.signal)
         if (!current()) {
           diagnostic('superseded')
           return
         }
-        if (!history || queuedMessages === null) {
-          diagnostic('snapshot-unavailable', {
-            historyAvailable: Boolean(history),
-            queueAvailable: queuedMessages !== null,
-          })
+        if (!history) {
+          diagnostic('snapshot-unavailable')
           reportFailure({
             message: SESSION_HISTORY_UNAVAILABLE,
             applicationFailure: { key: 'request.historyUnavailable' },
@@ -1524,110 +1519,24 @@ export function useLiveSession(): void {
           window.clearTimeout(resumeRetryTimers.current[threadId])
           delete resumeRetryTimers.current[threadId]
         }
-        const {
-          todos,
-          todo_turn_id: historyTodoTurnId,
-          artifacts,
-          turn_activity: turnActivity,
-        } = history
-        const durableTurnActivity = snapshotTurnActivity(turnActivity)
         const fromSeq = opened.last_seq ?? 0
-        patchThread(threadId, (thread) => {
-          const artifactSnapshot = opened.artifacts ?? artifacts
-          const conversation = projectHistorySnapshot(
-            {
-              ...history,
-              artifacts: artifactSnapshot,
-            },
-            thread.conversation,
-            'resume'
-          )
-          const recovered = reportSessionResume(
-            { ...thread, conversation },
-            sessionId,
-            { key: 'resume.reconnected' },
-            'experience',
-            false,
-            true
-          )
-          const base = {
-            ...thread,
-            ...openedSessionTitle(opened),
-            conversation: recovered.conversation ?? conversation,
-            todos: opened.todos ?? todos,
-            todoTurnId: opened.todo_turn_id !== undefined ? opened.todo_turn_id : historyTodoTurnId,
-            planSnapshots: projectPlanSnapshots(history.activity_events, thread.planSnapshots),
-            turnOutcomes:
-              opened.last_turn_id && opened.last_turn_status
-                ? {
-                    ...thread.turnOutcomes,
-                    ...durableTurnActivity.turnOutcomes,
-                    [opened.last_turn_id]: recoveredTurnOutcome(opened.last_turn_status),
-                  }
-                : {
-                    ...thread.turnOutcomes,
-                    ...durableTurnActivity.turnOutcomes,
-                  },
-            turnTimings: {
-              ...thread.turnTimings,
-              ...durableTurnActivity.turnTimings,
-            },
-            artifacts: artifactSnapshot,
-            workdir: opened.runtime_workdir || opened.workdir || thread.workdir,
-            projectPath:
-              opened.project_path !== undefined
-                ? opened.project_path
-                : (thread.projectPath ?? null),
-            runtimeId: opened.runtime_id,
-            runtime: opened.runtime,
-            readiness: opened.readiness,
-            capabilities: opened.capabilities,
-            lastSeq: fromSeq,
-            resumeState: 'ready' as const,
-            resumeServiceInstanceId: instance ?? undefined,
-            resumeMessage: undefined,
-            running: Boolean(opened.running),
-            recoveryBlocked: opened.recovery_blocked === true,
-            recoveryIncidentId: opened.recovery_incident_id ?? null,
-            recoverySourceSeq: opened.recovery_source_seq ?? 0,
-            recoveryPending: opened.recovery_pending === true,
-            resourceFinalizing: opened.resource_finalizing === true,
-            interrupting: Boolean(opened.interrupting),
-            queuedMessages: mergeQueuedOutbox(
-              sessionId,
-              (queuedMessages ?? []).map(queuedMessageFromPayload),
-              stateRef.current.workbenchReady,
-              thread.queuedMessages ?? []
-            ),
-            status: opened.running
-              ? ('running' as const)
-              : opened.last_turn_status === 'failed'
-                ? ('failed' as const)
-                : opened.last_turn_status === 'interrupted'
-                  ? ('abandon' as const)
-                  : ('done' as const),
-          }
-          return {
-            ...base,
-            ...projectSessionRecovery(base, {
-              sessionId,
-              running: Boolean(opened.running),
-              activeTurnId: opened.active_turn_id,
-              unknownOutcome: opened.unknown_outcome,
-              pendingHil: opened.pending_hil ?? [],
-              uncertainOperations: opened.uncertain_operations,
-              timestamp: Date.now(),
-            }),
-          }
-        })
+        patchThread(threadId, (thread) =>
+          projectResumedSession(thread, {
+            opened,
+            history,
+            serviceInstanceId: instance,
+            timestamp: Date.now(),
+            caller: 'resume',
+          })
+        )
 
         bodySequences.current.set(sessionId, fromSeq)
         attach(fromSeq)
+        refreshStatusRef.current()
         diagnostic('restored', {
           sequence: fromSeq,
           running: Boolean(opened.running),
-          queuedCount: queuedMessages.length,
-          planCount: (opened.todos ?? todos).length,
+          planCount: (opened.todos ?? history.todos).length,
           previousSequence: stateRef.current.threads[threadId]?.lastSeq,
         })
       } catch (error) {
@@ -2054,12 +1963,20 @@ export function useLiveSession(): void {
   useEffect(() => {
     if (!state.backendReady || !state.workbenchReady || state.runtimeQuiescing) return
     summarySequences.current.clear()
+    let queueRetry: ReturnType<typeof setTimeout> | undefined
     const refresh = new DirtyRefresh(
       async (signal) => {
-        const threads = Object.values(stateRef.current.threads).filter(
-          (thread) => thread.sessionId && !thread.readOnly
+        const snapshot = getSnapshot()
+        const threads = Object.values(snapshot.threads).filter(
+          (thread) =>
+            thread.sessionId &&
+            !thread.readOnly &&
+            !(snapshot.startupTaskRecovery === 'presenting' && thread.startupHistoryLoaded)
         )
         const sessionIds = threads.map((thread) => thread.sessionId!)
+        const queuesAtRequest = new Map(
+          threads.map((thread) => [thread.sessionId!, thread.queuedMessages])
+        )
         const snapshots = await loadSessionStatus(
           sessionIds,
           Object.fromEntries(
@@ -2070,9 +1987,18 @@ export function useLiveSession(): void {
           ),
           signal
         )
-        return { sessionIds, snapshots }
+        return { sessionIds, snapshots, queuesAtRequest }
       },
-      ({ sessionIds, snapshots }) => {
+      ({ sessionIds, snapshots, queuesAtRequest }) => {
+        const current = getSnapshot()
+        if (
+          !current.workbenchReady ||
+          current.runtimeQuiescing ||
+          current.serviceInstanceId !== state.serviceInstanceId
+        )
+          return
+        let queueInvalidated = false
+        const queuePublications: { publish: () => void; acknowledge: () => void }[] = []
         let catalogInvalidated = sessionIds.some(
           (sessionId) => !snapshots.some((snapshot) => snapshot.session_id === sessionId)
         )
@@ -2084,45 +2010,123 @@ export function useLiveSession(): void {
             metadataSessions.current?.find((session) => session.session_id === snapshot.session_id),
             snapshot
           )
-          for (const identity of snapshot.acknowledged_queue_ids)
-            releaseQueuedOutbox(snapshot.session_id, identity)
-          const entry = Object.entries(stateRef.current.threads).find(
+          const entry = Object.entries(current.threads).find(
             ([, thread]) => thread.sessionId === snapshot.session_id
           )
-          if (!entry || entry[0] === stateRef.current.activeSession) continue
-          const threadId = entry[0]
-          patchThread(threadId, (thread) => {
-            if (snapshot.summary_seq < (thread.lastSeq ?? 0)) return thread
-            const projected = reconcileThreadRuntime({ [threadId]: thread }, [
-              { ...snapshot, last_seq: snapshot.summary_seq },
-            ])[threadId]
-            return {
-              ...projected,
-              ...projectSessionRecovery(projected, {
-                sessionId: snapshot.session_id,
-                running: Boolean(snapshot.running),
-                activeTurnId: snapshot.active_turn_id,
-                unknownOutcome: snapshot.unknown_outcome,
-                pendingHil: snapshot.pending_hil ?? [],
-                uncertainOperations: snapshot.uncertain_operations,
-                timestamp: Date.now(),
-              }),
-              interrupting: Boolean(snapshot.interrupting),
-              queuedMessages: mergeQueuedOutbox(
-                snapshot.session_id,
-                snapshot.queued_messages.map(queuedMessageFromPayload),
-                stateRef.current.workbenchReady,
-                thread.queuedMessages ?? []
-              ),
-              turnOutcomes:
-                snapshot.last_turn_id && snapshot.last_turn_status
-                  ? {
-                      ...thread.turnOutcomes,
-                      [snapshot.last_turn_id]: recoveredTurnOutcome(snapshot.last_turn_status),
-                    }
-                  : thread.turnOutcomes,
-            }
+          if (!entry) continue
+          const [threadId, threadAtReceipt] = entry
+          const active = threadId === current.activeSession
+          if (
+            active &&
+            (threadAtReceipt.resumeServiceInstanceId !== current.serviceInstanceId ||
+              current.startupTaskRecovery === 'presenting')
+          )
+            continue
+          if (
+            snapshot.summary_seq <
+            Math.max(
+              threadAtReceipt.lastSeq ?? 0,
+              threadAtReceipt.queueSnapshotSeq ?? 0,
+              bodySequences.current.get(snapshot.session_id) ?? 0
+            )
+          )
+            continue
+          // A submit or retract may have committed locally before its SSE sequence arrives.
+          const queueAtRequest = queuesAtRequest.get(snapshot.session_id)
+          if (threadAtReceipt.queuedMessages !== queueAtRequest) {
+            queueInvalidated = true
+            continue
+          }
+          const visible = new Set(
+            snapshot.queued_messages.map((message) => message.queued_message_id)
+          )
+          const terminal = new Set(
+            snapshot.acknowledged_queue_ids.filter((identity) => !visible.has(identity))
+          )
+          const authoritative = snapshot.queued_messages.map(queuedMessageFromPayload)
+          const known = (threadAtReceipt.queuedMessages ?? []).filter(
+            (message) => !terminal.has(message.queuedMessageId)
+          )
+          const queuedMessages = mergeQueuedOutbox(
+            snapshot.session_id,
+            authoritative,
+            false,
+            known
+          ).filter((message) => !terminal.has(message.queuedMessageId))
+          const timestamp = Date.now()
+          const publish = () =>
+            patchThread(threadId, (thread) => {
+              if (
+                snapshot.summary_seq < Math.max(thread.lastSeq ?? 0, thread.queueSnapshotSeq ?? 0)
+              )
+                return thread
+              if (
+                thread.sessionId !== snapshot.session_id ||
+                thread.queuedMessages !== queueAtRequest
+              )
+                return thread
+              // The active transcript consumes runtime changes through SSE. Only its
+              // queue uses this independently refreshed, sequence-checked snapshot.
+              if (active) return { queuedMessages, queueSnapshotSeq: snapshot.summary_seq }
+              const projected = reconcileThreadRuntime({ [threadId]: thread }, [
+                { ...snapshot, last_seq: snapshot.summary_seq },
+              ])[threadId]
+              return {
+                ...projected,
+                ...projectSessionRecovery(projected, {
+                  sessionId: snapshot.session_id,
+                  running: Boolean(snapshot.running),
+                  activeTurnId: snapshot.active_turn_id,
+                  unknownOutcome: snapshot.unknown_outcome,
+                  pendingHil: snapshot.pending_hil ?? [],
+                  uncertainOperations: snapshot.uncertain_operations,
+                  timestamp,
+                }),
+                interrupting: Boolean(snapshot.interrupting),
+                queuedMessages,
+                queueSnapshotSeq: snapshot.summary_seq,
+                turnOutcomes:
+                  snapshot.last_turn_id && snapshot.last_turn_status
+                    ? {
+                        ...thread.turnOutcomes,
+                        [snapshot.last_turn_id]: recoveredTurnOutcome(snapshot.last_turn_status),
+                      }
+                    : thread.turnOutcomes,
+              }
+            })
+          queuePublications.push({
+            publish,
+            acknowledge: () => {
+              const latest = getSnapshot()
+              if (
+                !latest.workbenchReady ||
+                latest.runtimeQuiescing ||
+                latest.serviceInstanceId !== current.serviceInstanceId
+              )
+                return
+              const thread = latest.threads[threadId]
+              if (thread?.sessionId !== snapshot.session_id) return
+              if (thread.queuedMessages !== queuedMessages) {
+                queueInvalidated = true
+                return
+              }
+              for (const identity of terminal) releaseQueuedOutbox(snapshot.session_id, identity)
+              mergeQueuedOutbox(snapshot.session_id, authoritative, true, known)
+            },
           })
+        }
+        if (queuePublications.length > 0) {
+          // Queue stream events trust only the committed snapshot cursor.
+          flushSync(() => {
+            for (const publication of queuePublications) publication.publish()
+          })
+          for (const publication of queuePublications) publication.acknowledge()
+        }
+        if (queueInvalidated && queueRetry === undefined) {
+          queueRetry = setTimeout(() => {
+            queueRetry = undefined
+            refresh.invalidate()
+          }, QUEUE_SNAPSHOT_RETRY_MS)
         }
         if (catalogInvalidated) pollMetadata()
       },
@@ -2157,8 +2161,11 @@ export function useLiveSession(): void {
       expireJoinedPapers(libraryStatusCache.invalidate(reset, changes))
       act.invalidateLiterature()
     })
+    refreshStatusRef.current = () => refresh.invalidate()
     refresh.invalidate()
     return () => {
+      refreshStatusRef.current = () => undefined
+      clearTimeout(queueRetry)
       refresh.stop()
       unsubscribe()
       resources()
@@ -2169,6 +2176,7 @@ export function useLiveSession(): void {
     state.workbenchReady,
     state.runtimeQuiescing,
     state.serviceInstanceId,
+    getSnapshot,
     pollMetadata,
     patchThread,
     act.invalidateResources,
@@ -2176,7 +2184,13 @@ export function useLiveSession(): void {
   ])
 
   useEffect(() => {
-    if (!state.backendReady || !state.workbenchReady || state.runtimeQuiescing) return
+    if (
+      !state.backendReady ||
+      !state.workbenchReady ||
+      state.runtimeQuiescing ||
+      state.startupTaskRecovery === 'presenting'
+    )
+      return
     const targets = new Set<string>()
     if (state.activeSession && !state.threads[state.activeSession]?.readOnly)
       targets.add(state.activeSession)
@@ -2234,6 +2248,7 @@ export function useLiveSession(): void {
     state.activeSession,
     state.backendReady,
     state.runtimeQuiescing,
+    state.startupTaskRecovery,
     state.modelSelectionSessions,
     state.serviceInstanceId,
     state.workbenchReady,

@@ -145,6 +145,8 @@
     "unsaved": "未保存",
     "filePath": "文件路径",
     "saving": "保存中…",
+    "saveUnconfirmed": "保存结果待确认，编辑内容已保留。",
+    "checkSave": "核对保存结果",
     "externalChange": "文件已被外部修改",
     "saveFailed": "保存失败",
     "ignored": "未加入版本管理",

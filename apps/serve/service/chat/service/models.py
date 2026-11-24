@@ -902,7 +902,7 @@ class ModelService:
         _require_supported_personal_provider(candidate.get("provider"))
         selected = bool(candidate[SELECTED_MODELS_KEY])
         validate = probe_personal_connection if selected else list_upstream_models
-        result = await asyncio.to_thread(validate, candidate)
+        result = await validate(candidate)
         if result["ok"]:
             return
         # Only the selected-model path names a model, because only it really called one.
@@ -945,12 +945,12 @@ class ModelService:
             **({"warning": warning} if warning else {}),
         }
 
-    def probe_profile(
+    async def probe_profile(
         self, values: Mapping[str, Any], profile_id: str = "", *, user_id: str = ""
     ) -> dict[str, Any]:
         """Test endpoint access through its model directory, without running inference."""
 
-        return self.profile_models(values, profile_id, user_id=user_id)
+        return await self.profile_models(values, profile_id, user_id=user_id)
 
     @staticmethod
     def providers() -> dict[str, Any]:
@@ -958,14 +958,16 @@ class ModelService:
 
         return {"providers": preset_providers()}
 
-    def profile_models(
+    async def profile_models(
         self, values: Mapping[str, Any], profile_id: str = "", *, user_id: str = ""
     ) -> dict[str, Any]:
         """Read the models a candidate endpoint advertises, without saving anything."""
 
         _require_supported_personal_provider(values.get("provider"))
         existing = (
-            self._profiles.profile(profile_id, owner_id=self._owner_id(user_id))
+            await asyncio.to_thread(
+                self._profiles.profile, profile_id, owner_id=self._owner_id(user_id)
+            )
             if profile_id
             else None
         )
@@ -973,7 +975,7 @@ class ModelService:
             raise UnknownProfileError("model connection is unavailable")
         if is_oauth_connection(values) or (existing and is_oauth_connection(existing)):
             raise SessionModelUnavailableError("use_oauth_model_directory")
-        return list_upstream_models(values, existing)
+        return await list_upstream_models(values, existing)
 
     async def _selection(self, *, user_id: str = "") -> dict[str, Any]:
         """Project catalogue and inventory together, as the selector expects them."""

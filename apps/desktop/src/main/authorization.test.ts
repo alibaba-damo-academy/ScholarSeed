@@ -64,6 +64,17 @@ test('rejects a symlink inside an authorized root when its real target escapes',
   })
 })
 
+test('adding a root acknowledges only paths that can be canonicalized and registered', () => {
+  withFixture(({ root, file }) => {
+    const authorizer = new PathAuthorizer()
+    const missing = join(root, 'missing')
+    assert.equal(authorizer.add('session', missing), false)
+    assert.deepEqual(authorizer.roots_of('session'), [])
+    assert.equal(authorizer.add('session', root), true)
+    assert.equal(authorizer.resolveAuthorized(file), realpathSync.native(file))
+  })
+})
+
 test('replacing a Service scope revokes roots missing from the new snapshot', () => {
   withFixture(({ root, file, sibling, outsideFile }) => {
     const authorizer = new PathAuthorizer()

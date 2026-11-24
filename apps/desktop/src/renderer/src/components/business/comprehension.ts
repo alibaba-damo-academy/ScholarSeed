@@ -1,8 +1,15 @@
 import { apiFetch } from '../../api.ts'
+import {
+  PDF_AI_PREFIX,
+  queryPdfAiTask,
+  readPdfAiTask,
+  submitPdfAiReceipt,
+} from '../../app/api/pdf.ts'
 import { sseData } from '../../sse.ts'
 import type { ReadingState, ReadingTask, ReadingTiming } from '../../contracts/literature'
 
-const PREFIX = '/api/literature/ai/tasks'
+const PREFIX = `${PDF_AI_PREFIX}/tasks`
+const NEVER_ABORT = new AbortController().signal
 export const readingBusy = (task?: ReadingTask | null): boolean =>
   task?.status === 'pending' || task?.status === 'running'
 export class ReadingError extends Error {
@@ -54,9 +61,11 @@ export function generateReading(
   attachmentId: string,
   revision: string,
   modelKey: string,
-  language: 'zh' | 'en'
+  language: 'zh' | 'en',
+  serviceInstanceId?: string | null,
+  signal = NEVER_ABORT
 ): Promise<ReadingTask> {
-  return readingRequest(PREFIX, {
+  const request = {
     literature_id: literatureId,
     attachment_id: attachmentId,
     revision,
@@ -66,11 +75,21 @@ export function generateReading(
     response_language: language,
     client_action_id: crypto.randomUUID(),
     client_attempt_id: crypto.randomUUID(),
-  })
+    service_instance_id: serviceInstanceId ?? undefined,
+  }
+  return submitPdfAiReceipt<ReadingTask>(request, signal, { allowJoinedTaskId: true })
 }
-export function cancelReading(taskId: string): Promise<ReadingTask> {
-  return readingRequest(`${PREFIX}/${encodeURIComponent(taskId)}/cancel`, {})
+export function cancelReading(taskId: string, signal = NEVER_ABORT): Promise<ReadingTask> {
+  return readPdfAiTask(`${PREFIX}/${encodeURIComponent(taskId)}/cancel`, {}, signal)
 }
+export function checkReading(
+  attemptId: string,
+  signal: AbortSignal,
+  serviceInstanceId?: string | null
+): Promise<ReadingTask> {
+  return queryPdfAiTask<ReadingTask>(attemptId, signal, serviceInstanceId ?? undefined)
+}
+
 export async function observeReading(
   taskId: string,
   signal: AbortSignal,

@@ -9,6 +9,7 @@ import zhUi from '../../../../localization/locales/zh/ui.json'
 import enUi from '../../../../localization/locales/en/ui.json'
 import { Button } from '../../components/ui'
 import { Directory } from './Explorer'
+import { useDirectoryRefresh } from './directory-refresh'
 import '../../styles.css'
 
 const localization = createLocalization(
@@ -21,7 +22,7 @@ Object.assign(window, { scholarseed: { getApiBase: () => window.location.origin 
 export function Fixture(): React.JSX.Element {
   const [project, setProject] = useState('first')
   const [path, setPath] = useState('')
-  const [revision, setRevision] = useState(0)
+  const [revisionRefresh, refreshDirectory] = useDirectoryRefresh()
   const [mounted, setMounted] = useState(true)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -32,11 +33,7 @@ export function Fixture(): React.JSX.Element {
   const onLoadingChange = useCallback((_path: string, value: boolean) => setLoading(value), [])
   return (
     <>
-      <Button
-        data-testid="fixture-refresh"
-        aria-busy={loading}
-        onClick={() => setRevision((value) => value + 1)}
-      >
+      <Button data-testid="fixture-refresh" aria-busy={loading} onClick={refreshDirectory}>
         Refresh
       </Button>
       <Button
@@ -61,7 +58,8 @@ export function Fixture(): React.JSX.Element {
         <Directory
           project={project}
           path={path}
-          revision={revision}
+          revisionRefresh={revisionRefresh}
+          onRetryRefresh={refreshDirectory}
           expanded={expanded}
           selected={selected}
           dragTarget={null}

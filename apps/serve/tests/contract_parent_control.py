@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from service.chat.persistence.catalog import SessionStatus
 from service.chat.runtime.composition import LiveSessionService
+from service.chat.service.lifecycle import SessionOperations
 from service.chat.service.sessions import SessionService
 from service.platform.activity import (
     Activities,
@@ -359,7 +360,7 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
         generation = activities.begin_restart()
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         live_sessions = {
@@ -387,7 +388,7 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
         generation = activities.begin_restart()
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         live = Mock(prepare_update_shutdown=AsyncMock())
@@ -413,7 +414,7 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
 
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         live_sessions = {
@@ -459,7 +460,7 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
 
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         sessions._sessions = {}
@@ -512,7 +513,7 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
 
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         sessions._sessions = {}
@@ -551,7 +552,7 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
         activities = Activities()
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         sessions._sessions = {}
@@ -581,24 +582,21 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
         activities = Activities()
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         sessions._sessions = {}
-        sessions._create = AsyncMock(return_value=({"session_id": "must-not-open"}, 200))
-        await sessions._open_lock.acquire()
-        with activities.enter(ActivityDomain.RUNTIME, root=True):
-            opening = asyncio.create_task(sessions.open({}, Mock(), actor_id="actor"))
+        sessions._resume = AsyncMock(return_value=({"session_id": "must-not-open"}, 200))
+        async with sessions._operations.session("queued"):
+            opening = asyncio.create_task(
+                sessions.open({"resume_session_id": "queued"}, Mock(), actor_id="actor")
+            )
             await asyncio.sleep(0)
             generation = activities.begin_restart()
-            preparing = asyncio.create_task(sessions.prepare_for_update_shutdown(generation))
-            sessions._open_lock.release()
-            try:
-                with self.assertRaises(MaintenanceActive):
-                    await opening
-            finally:
-                await preparing
-        sessions._create.assert_not_awaited()
+            await sessions.prepare_for_update_shutdown(generation)
+        with self.assertRaises(MaintenanceActive):
+            await opening
+        sessions._resume.assert_not_awaited()
         self.assertEqual(sessions._update_shutdown_sessions, ())
 
     async def test_update_preparation_rechecks_generation_after_waiting_for_open(self):
@@ -606,26 +604,25 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
         generation = activities.begin_restart()
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         live = Mock(prepare_update_shutdown=AsyncMock())
         sessions._sessions = {}
         sessions._sessions["one"] = live
-        await sessions._open_lock.acquire()
-        preparing = asyncio.create_task(sessions.prepare_for_update_shutdown(generation))
-        await asyncio.sleep(0)
-        activities.resume(generation)
-        sessions._open_lock.release()
+        async with sessions._operations.operation("opening"):
+            preparing = asyncio.create_task(sessions.prepare_for_update_shutdown(generation))
+            await asyncio.sleep(0)
+            activities.resume(generation)
         with self.assertRaises(MaintenanceStale):
             await preparing
         live.prepare_update_shutdown.assert_not_awaited()
 
-    async def test_update_timeout_cancels_open_lock_wait_without_reopening_admission(self):
+    async def test_update_timeout_cancels_session_drain_wait_without_reopening_admission(self):
         activities = Activities()
         sessions = SessionService.__new__(SessionService)
         sessions._activities = activities
-        sessions._open_lock = asyncio.Lock()
+        sessions._operations = SessionOperations()
         sessions._update_shutdown_generation = None
         sessions._update_shutdown_sessions = ()
         sessions._sessions = {}
@@ -634,18 +631,43 @@ class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
             prepare_update=sessions.prepare_for_update_shutdown,
             resume_update=sessions.resume_after_update_shutdown,
         )
-        await sessions._open_lock.acquire()
         try:
-            with patch("service.platform.parent_control.UPDATE_PREPARATION_SECONDS", 0.01):
-                with self.assertRaisesRegex(ParentControlError, "preparation timed out"):
-                    await control._command({"operation": "prepare_update", "generation": None})
-            await asyncio.wait_for(control.aclose(), 1)
-            self.assertEqual(activities.snapshot().phase, ActivityPhase.DRAINING)
-            self.assertIsNotNone(control._generation)
-            self.assertIsNone(sessions._update_shutdown_generation)
+            async with sessions._operations.operation("opening"):
+                with patch("service.platform.parent_control.UPDATE_PREPARATION_SECONDS", 0.01):
+                    with self.assertRaisesRegex(ParentControlError, "preparation timed out"):
+                        await control._command({"operation": "prepare_update", "generation": None})
+                await asyncio.wait_for(control.aclose(), 1)
+                self.assertEqual(activities.snapshot().phase, ActivityPhase.DRAINING)
+                self.assertIsNotNone(control._generation)
+                self.assertIsNone(sessions._update_shutdown_generation)
         finally:
-            sessions._open_lock.release()
             await control.aclose()
+
+    async def test_session_shutdown_rejects_new_operations_and_waits_for_admitted_owners(self):
+        operations = SessionOperations()
+        async with operations.operation("first"), operations.operation("second"):
+            shutting_down = asyncio.create_task(operations.stop())
+            await asyncio.sleep(0)
+            self.assertFalse(shutting_down.done())
+            with self.assertRaises(MaintenanceActive):
+                await self._admit_after_shutdown(operations)
+        await shutting_down
+
+    async def test_session_shutdown_uses_existing_deadline_without_reopening_admission(self):
+        sessions = SessionService.__new__(SessionService)
+        operations = sessions._operations = SessionOperations()
+        async with operations.operation("active"):
+            deadline = asyncio.get_running_loop().time() + 0.01
+            with self.assertRaises(TimeoutError):
+                await sessions.stop_session_operations(deadline)
+            with self.assertRaises(MaintenanceActive):
+                await self._admit_after_shutdown(operations)
+        await sessions.stop_session_operations(None)
+
+    @staticmethod
+    async def _admit_after_shutdown(operations):
+        async with operations.operation("late"):
+            raise AssertionError("session operation was admitted after shutdown")
 
     async def test_removal_cannot_cold_resume_a_session_after_update_preparation(self):
         activities = Activities()

@@ -496,23 +496,26 @@ export function MonacoDocument({
     const unregisterSave = lightweight
       ? controller.registerSaveDelegate(sessionId, {
           prepare: () => controller.updateText(sessionId, model.getValue()),
-          beforeSave: async () => {
+          beforeSave: async (signal) => {
             if (!formatOnSave) return
             const current = controller.getSnapshot().sessions[sessionId]
             const position = editor.getPosition()
             if (!current || !position) return
             const source = model.getValue()
+            const version = model.getVersionId()
             const result = await formatTextOnSave({
               path: current.source.path,
               text: source,
               savedBytes: current.savedBytes,
               cursorOffset: model.getOffsetAt(position),
             })
+            if (signal?.aborted || editorRef.current !== editor || model.getVersionId() !== version)
+              return
             if (result.status === 'failed') {
               toast({ title: t('formatOnSaveFailed'), tone: 'warning' })
               return
             }
-            if (result.status !== 'formatted' || model.getValue() !== source) return
+            if (result.status !== 'formatted') return
             editor.pushUndoStop()
             const applied = editor.executeEdits('format-on-save', [
               {
@@ -873,7 +876,8 @@ export function MonacoDocument({
                     disabled={
                       !session.dirty ||
                       !session.capabilities.can_save ||
-                      session.saveState === 'saving'
+                      session.saveState === 'saving' ||
+                      session.saveState === 'unconfirmed'
                     }
                     onClick={() => void controller.save(sessionId)}
                   />

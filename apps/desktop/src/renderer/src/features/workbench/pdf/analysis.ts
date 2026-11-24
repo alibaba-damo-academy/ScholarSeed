@@ -7,10 +7,24 @@ import {
   type AssistantTranslationTarget,
 } from '../../../contracts/assistant.ts'
 import {
+  PDF_AI_INVALID_RESPONSE,
+  PDF_AI_PREFIX,
+  PDF_AI_RECOVERY_DELAYS,
+  PDF_AI_STREAM_INTERRUPTED,
+  PDF_AI_TASK_STATUSES,
   PDF_AI_TASK_UNRESOLVED,
-  pdfAiFailure,
-  type PdfAiFailure,
-} from '../../../components/business/diagnostic.ts'
+  PdfAiRequestError,
+  pdfAiTaskFinished,
+  pdfAiTaskMissing,
+  queryPdfAiTask,
+  readPdfAiTask,
+  recoverablePdfTransport,
+  recoveryDelay,
+  submitPdfAiReceipt,
+  type PdfAiSubmission,
+} from '../../../app/api/pdf.ts'
+
+const PDF_AI_EVENT_STREAM = 'text/event-stream'
 
 export type PdfAction =
   | 'document_translation'
@@ -212,63 +226,6 @@ interface FigureStreamResult extends FigurePrepared {
   error_code: string
   error_detail: string
 }
-export const PDF_AI_PREFIX = '/api/literature/ai'
-export const PDF_AI_INVALID_RESPONSE = 'pdf_ai_invalid_response'
-const PDF_AI_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
-const PDF_AI_TASK_STATUSES = new Set(['pending', 'running', 'unknown', ...PDF_AI_TERMINAL_STATUSES])
-const PDF_AI_RECOVERY_DELAYS = [1000, 2000, 4000, 8000, 16000, 16000, 16000] as const
-const PDF_AI_STREAM_INTERRUPTED = 'pdf_ai_stream_interrupted'
-const PDF_AI_RECOVERY_REQUEST_TIMEOUT_MS = 10_000
-const PDF_AI_TRANSIENT_HTTP = new Set([502, 503, 504])
-const PDF_AI_EVENT_STREAM = 'text/event-stream'
-export const pdfAiTaskFinished = (task: PdfAiTask): boolean =>
-  PDF_AI_TERMINAL_STATUSES.has(task.status)
-export class PdfAiRequestError extends Error {
-  readonly httpStatus?: number
-  readonly code?: string
-  readonly diagnostic: string
-  constructor(failure: PdfAiFailure, httpStatus?: number) {
-    super(failure.diagnostic || failure.code || '')
-    this.code = failure.code
-    this.diagnostic = failure.diagnostic
-    this.name = 'PdfAiRequestError'
-    this.httpStatus = httpStatus
-  }
-}
-export async function pdfAiApi<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await apiFetch(
-    path,
-    body === undefined
-      ? { signal }
-      : {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal,
-        }
-  )
-  const responseText = await response.text()
-  let payload: unknown
-  try {
-    payload = responseText ? JSON.parse(responseText) : null
-  } catch {
-    throw new PdfAiRequestError(
-      {
-        code: PDF_AI_INVALID_RESPONSE,
-        diagnostic: response.ok ? '' : `HTTP ${response.status}`,
-      },
-      response.status
-    )
-  }
-  const detail =
-    typeof payload === 'object' && payload !== null && !Array.isArray(payload)
-      ? (payload as Record<string, unknown>).detail
-      : undefined
-  if (!response.ok)
-    throw new PdfAiRequestError(pdfAiFailure(detail) ?? { diagnostic: '' }, response.status)
-  return payload as T
-}
-
 export async function subscribePdfAiTask(
   taskId: string,
   signal: AbortSignal,
@@ -305,43 +262,6 @@ export async function subscribePdfAiTask(
     throw new PdfAiRequestError({ code: PDF_AI_STREAM_INTERRUPTED, diagnostic: '' })
 }
 
-function recoverablePdfTransport(cause: unknown): boolean {
-  return (
-    cause instanceof TypeError ||
-    (cause instanceof DOMException && cause.name === 'TimeoutError') ||
-    (cause instanceof PdfAiRequestError &&
-      (cause.code === PDF_AI_STREAM_INTERRUPTED ||
-        PDF_AI_TRANSIENT_HTTP.has(cause.httpStatus ?? 0)))
-  )
-}
-
-async function recoveryDelay(delay: number, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted()
-  await new Promise<void>((resolve, reject) => {
-    const aborted = (): void => {
-      clearTimeout(timer)
-      reject(signal.reason)
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', aborted)
-      resolve()
-    }, delay)
-    signal.addEventListener('abort', aborted, { once: true })
-  })
-}
-
-async function queryPdfAiTask(taskId: string, signal: AbortSignal): Promise<PdfAiTask> {
-  const task = await pdfAiApi<PdfAiTask>(
-    `${PDF_AI_PREFIX}/tasks/${encodeURIComponent(taskId)}`,
-    undefined,
-    AbortSignal.any([signal, AbortSignal.timeout(PDF_AI_RECOVERY_REQUEST_TIMEOUT_MS)])
-  )
-  if (!task || task.task_id !== taskId || !PDF_AI_TASK_STATUSES.has(task.status)) {
-    throw new PdfAiRequestError({ code: PDF_AI_INVALID_RESPONSE, diagnostic: '' })
-  }
-  return task
-}
-
 export async function recoverPdfAiTask(
   taskId: string,
   signal: AbortSignal,
@@ -367,7 +287,7 @@ export async function recoverPdfAiTask(
   while (recovery.attempts < delays.length) {
     await recoveryDelay(delays[recovery.attempts++], signal)
     try {
-      const task = await queryPdfAiTask(taskId, signal)
+      const task = await queryPdfAiTask<PdfAiTask>(taskId, signal)
       if (signal.aborted) return
       publish(task)
       if (pdfAiTaskFinished(task)) return
@@ -383,9 +303,9 @@ export async function recoverPdfAiTask(
 }
 
 export async function submitPdfAiTask(
-  request: PdfAiRequest,
+  request: PdfAiRequest & PdfAiSubmission,
   signal: AbortSignal,
-  delays: readonly number[] = PDF_AI_RECOVERY_DELAYS
+  delays?: readonly number[]
 ): Promise<PdfAiTask> {
   const cancel = (): void => {
     void cancelPdfAiTask(request.client_attempt_id, delays).catch((cause) =>
@@ -395,7 +315,10 @@ export async function submitPdfAiTask(
   signal.throwIfAborted()
   signal.addEventListener('abort', cancel, { once: true })
   try {
-    return await submitPdfAiAttempt(request, signal, delays)
+    return await submitPdfAiReceipt<PdfAiTask>(request, signal, {
+      allowJoinedTaskId: request.kind === 'interpretation',
+      delays,
+    })
   } finally {
     signal.removeEventListener('abort', cancel)
   }
@@ -409,56 +332,18 @@ export async function cancelPdfAiTask(
   for (const delay of [0, ...delays]) {
     await recoveryDelay(delay, signal)
     try {
-      const task = await queryPdfAiTask(taskId, signal)
+      const task = await queryPdfAiTask<PdfAiTask>(taskId, signal)
       if (pdfAiTaskFinished(task)) return
       if (task.status === 'unknown') continue
-      const cancelled = await pdfAiApi<PdfAiTask>(
+      const cancelled = await readPdfAiTask<PdfAiTask>(
         `${PDF_AI_PREFIX}/tasks/${encodeURIComponent(taskId)}/cancel`,
         {},
-        AbortSignal.timeout(PDF_AI_RECOVERY_REQUEST_TIMEOUT_MS)
+        signal
       )
       if (pdfAiTaskFinished(cancelled)) return
     } catch (cause) {
-      if (
-        cause instanceof PdfAiRequestError &&
-        cause.httpStatus === 404 &&
-        cause.code === 'pdf_ai_task_missing'
-      )
-        continue
+      if (pdfAiTaskMissing(cause)) continue
       if (!recoverablePdfTransport(cause)) throw cause
-    }
-  }
-  throw new PdfAiRequestError({ code: PDF_AI_TASK_UNRESOLVED, diagnostic: '' })
-}
-
-async function submitPdfAiAttempt(
-  request: PdfAiRequest,
-  signal: AbortSignal,
-  delays: readonly number[]
-): Promise<PdfAiTask> {
-  signal.throwIfAborted()
-  try {
-    return await pdfAiApi<PdfAiTask>(`${PDF_AI_PREFIX}/tasks`, request)
-  } catch (cause) {
-    if (!recoverablePdfTransport(cause)) throw cause
-  }
-  for (const delay of delays) {
-    await recoveryDelay(delay, signal)
-    try {
-      return await queryPdfAiTask(request.client_attempt_id, signal)
-    } catch (cause) {
-      signal.throwIfAborted()
-      if (
-        cause instanceof PdfAiRequestError &&
-        cause.httpStatus === 404 &&
-        cause.code === 'pdf_ai_task_missing'
-      ) {
-        try {
-          return await pdfAiApi<PdfAiTask>(`${PDF_AI_PREFIX}/tasks`, request)
-        } catch (retryCause) {
-          if (!recoverablePdfTransport(retryCause)) throw retryCause
-        }
-      } else if (!recoverablePdfTransport(cause)) throw cause
     }
   }
   throw new PdfAiRequestError({ code: PDF_AI_TASK_UNRESOLVED, diagnostic: '' })

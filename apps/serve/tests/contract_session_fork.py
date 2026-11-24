@@ -551,6 +551,7 @@ class ForkTests(unittest.TestCase):
                     self.owner,
                     "owner",
                     fork_origin=origin,
+                    session_id="failed-fork",
                 )
             )
         self.assertEqual(status, 500, payload)
@@ -845,6 +846,10 @@ class ForkTests(unittest.TestCase):
                 )[0]["error"],
                 SESSION_FORK_INVALID,
             )
+            for invalid in ("", " "):
+                with self.subTest(invalid=invalid):
+                    payload, status = self.open({"fork_session_id": invalid})
+                    self.assertEqual((payload["error"], status), (SESSION_FORK_INVALID, 400))
             with self.assertRaises(SessionAccessError):
                 self.open(
                     {"fork_session_id": "source", "fork_turn_id": "done"},

@@ -82,6 +82,9 @@ import {
   WINDOW_CLOSE_REQUEST_CHANNEL,
   WINDOW_CLOSE_REPLY_CHANNEL,
   WINDOW_FULLSCREEN_CHANNEL,
+  TASK_RECOVERY_CHANNEL,
+  type TaskRecoveryOutcome,
+  type TaskRecoverySnapshot,
   type WindowCloseRequest,
   type WindowCloseReply,
 } from '../window'
@@ -394,6 +397,18 @@ const bridge = {
   } satisfies BrowserBridge,
   getWindowCloseRequest(): Promise<WindowCloseRequest> {
     return ipcRenderer.invoke(WINDOW_CLOSE_REQUEST_CHANNEL)
+  },
+  getTaskRecoveryStatus(sessionId: string | null): Promise<TaskRecoverySnapshot> {
+    return ipcRenderer.invoke(TASK_RECOVERY_CHANNEL.status, sessionId)
+  },
+  beginTaskRecovery(sessionId: string): Promise<string | null> {
+    return ipcRenderer.invoke(TASK_RECOVERY_CHANNEL.begin, sessionId)
+  },
+  finishTaskRecovery(token: string, outcome: TaskRecoveryOutcome): Promise<boolean> {
+    return ipcRenderer.invoke(TASK_RECOVERY_CHANNEL.finish, token, outcome)
+  },
+  clearTaskRecoveryOnManualOpen(sessionId: string): Promise<boolean> {
+    return ipcRenderer.invoke(TASK_RECOVERY_CHANNEL.manualOpen, sessionId)
   },
   onTrayRequest(callback: (requestId: number) => void): () => void {
     const handler = (_event: unknown, requestId: number): void => callback(requestId)

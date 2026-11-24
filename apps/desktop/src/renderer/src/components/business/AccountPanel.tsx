@@ -2793,7 +2793,7 @@ function formatContextBadge(tokens: number): string {
 const CHATGPT_PROVIDER_ID = 'chatgpt-oauth'
 const CUSTOM_PROVIDER_ID = 'custom'
 type ModelPageFailure = {
-  messageKey: 'models.loadFailed' | 'models.deleteFailed'
+  messageKey: 'models.loadFailed' | 'models.deleteFailed' | 'models.saveUnconfirmed'
 }
 
 const WIRE_API_CHOICES = [
@@ -3094,6 +3094,15 @@ function ModelServicePage({
     const result = ready.id
       ? await updatePersonalApiProfile(ready.id, inputOf(ready))
       : await createPersonalApiProfile(inputOf(ready))
+    if (!result.ok && (result.code === 'network_failure' || result.code === 'request_timeout')) {
+      setError({ messageKey: 'models.saveUnconfirmed' })
+      try {
+        await reconcileInventory(revision, getPersonalApiProfiles, settle)
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     setBusy(false)
     if (!result.ok) {
       // 落库失败多为后端连接校验拒绝; 走分类弹窗, 底部不再渲染原始英文/JSON。
@@ -3283,21 +3292,29 @@ function ModelServicePage({
     setBusy(true)
     setError('')
     const result = await deletePersonalApiProfile(id)
-    if (!result) setError({ messageKey: 'models.deleteFailed' })
+    let removed = result?.profiles.every((profile) => profile.id !== id) ?? false
     if (result) {
       revision.next()
       absorb(result)
       setLoadState('ready')
     } else {
-      await reconcileInventory(revision, getPersonalApiProfiles, settle, () => {
-        setLoadState('ready')
-      })
+      await reconcileInventory(
+        revision,
+        getPersonalApiProfiles,
+        (inventory) => {
+          settle(inventory)
+          removed = inventory.profiles.every((profile) => profile.id !== id)
+        },
+        () => setLoadState('ready')
+      )
     }
+    if (!removed) setError({ messageKey: 'models.deleteFailed' })
     const ticket = revision.next()
     void getModels().then((catalog) => {
       if (revision.current(ticket)) act.applyModelCatalog(catalog)
     })
     setBusy(false)
+    if (!removed) return
     setForm((current) => (current && current.id === id ? null : current))
     setSelectedId((current) => (current === id ? '' : current))
   }

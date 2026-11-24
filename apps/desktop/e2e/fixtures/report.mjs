@@ -1,5 +1,7 @@
 import { oldSourceTimings } from './profiling.mjs'
 
+const STARTUP_HISTORY_CALLER = 'startup_resume'
+
 function recoveryOutcome(prepare, { prepared, visibleAt, heartbeatAt }) {
   if (prepare) {
     if (prepared && visibleAt !== null) return 'profile_prepared'
@@ -13,7 +15,7 @@ function recoveryOutcome(prepare, { prepared, visibleAt, heartbeatAt }) {
 function historyProfile(
   records,
   oldTurn,
-  { memory, firstInteraction, projectionPhases },
+  { memory, firstInteraction, projectionPhases, visibleAt },
   fromStart
 ) {
   const clientReads = records
@@ -36,6 +38,15 @@ function historyProfile(
   return {
     memory,
     clientReads,
+    requestsBeforeVisible:
+      visibleAt === null
+        ? null
+        : records.filter(
+            (row) =>
+              row.event === 'renderer_request' &&
+              row.kind === 'history' &&
+              row.startedAt <= visibleAt
+          ).length,
     projectionPhases,
     olderSource: oldSourceTimings(records, oldTurn),
     failure: records.find((row) => row.event === 'run_failed')?.message ?? null,
@@ -137,14 +148,12 @@ export function verifyHistoryProfile({ historyProfile: profile }, checkOldSource
     (checkOldSources && !Number.isFinite(profile.olderSource?.serveHeadersMs)) ||
     !profile.memory?.rendererPeakKiB ||
     !profile.memory.processPeaks.some((row) => row.role === 'serve') ||
-    !profile.projectionPhases?.some(
-      (row) => row.caller === 'transcript' && row.phase === 'projectionToCommit'
-    ) ||
-    !profile.projectionPhases?.some(
-      (row) => row.caller === 'resume' && row.phase === 'projection'
-    ) ||
-    !['transcript', 'resume'].every((caller) =>
-      profile.clientReads.some((row) => row.caller === caller)
+    profile.requestsBeforeVisible !== 1 ||
+    profile.clientReads.filter((row) => row.caller === STARTUP_HISTORY_CALLER).length !== 1 ||
+    !['projection', 'projectionToCommit'].every((phase) =>
+      profile.projectionPhases?.some(
+        (row) => row.caller === STARTUP_HISTORY_CALLER && row.phase === phase
+      )
     )
   )
     throw new Error('Incomplete renderer history profile; inspect the timeline and summary')

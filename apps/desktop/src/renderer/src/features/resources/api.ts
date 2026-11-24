@@ -16,6 +16,7 @@ import {
 } from '../../contracts/resources.ts'
 import type { FileEvent } from '../../contracts/content'
 import type { FindTextReveal } from '../../contracts/workbench.ts'
+import { CONTENT_TREE_READ_TIMEOUT_MS } from '../../app/api/content.ts'
 import { sseData } from '../../sse.ts'
 import {
   applyResourceListingChanges,
@@ -724,16 +725,20 @@ function versionParams(project: string, path?: string): URLSearchParams {
   return params
 }
 
+const VERSION_CAPABILITY_TIMEOUT_MS = 10_000
+
 export async function fetchVersionCapability(
   project: string,
   path: string
 ): Promise<ResourceCapability | null> {
+  const signal = AbortSignal.timeout(VERSION_CAPABILITY_TIMEOUT_MS)
   try {
     const response = await fetch(
       `${base()}/api/resource/capability?${versionParams(project, path)}`,
-      { credentials: 'include', cache: 'no-store' }
+      { credentials: 'include', cache: 'no-store', signal }
     )
-    return response.ok ? ((await response.json()) as ResourceCapability) : null
+    if (!response.ok) return null
+    return (await response.json()) as ResourceCapability
   } catch {
     return null
   }
@@ -747,7 +752,10 @@ export function observeResourceFileEvent(
 ): Promise<ResourceCapability | null> {
   const existing = fileEventObservations.get(event)
   if (existing) return existing
-  const observation = fetchVersionCapability(project, event.path)
+  const observation = fetchVersionCapability(project, event.path).then((capability) => {
+    if (capability === null) fileEventObservations.delete(event)
+    return capability
+  })
   fileEventObservations.set(event, observation)
   return observation
 }
@@ -1390,7 +1398,8 @@ export async function fetchResourceListingChanges<Snapshot extends ResourceListi
 export async function fetchResourceTree(
   project?: string | null,
   path?: string,
-  offset = 0
+  offset = 0,
+  signal = AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)
 ): Promise<{
   root: string
   resourceRoot: string
@@ -1407,9 +1416,11 @@ export async function fetchResourceTree(
     const response = await fetch(`${base()}/api/resource/tree${query ? `?${query}` : ''}`, {
       credentials: 'include',
       cache: 'no-store',
+      signal,
     })
     if (!response.ok) return null
     const payload = (await response.json()) as ResourceTreePayload
+    if (signal.aborted) return null
     const linkedRoots = toLinkRoots(payload.linked_roots)
     return {
       root: payload.root,

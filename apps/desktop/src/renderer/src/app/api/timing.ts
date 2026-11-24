@@ -10,8 +10,8 @@ import {
 import { captureCatalogResource, type CatalogResourceCapture } from './resources.ts'
 
 const ERROR_NAMES = new Set(['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'])
-export type HistoryCaller =
-  'transcript' | 'resume' | 'resume_fallback' | 'archive' | 'archived_task' | 'literature'
+export type HistoryProjectionCaller = 'transcript' | 'resume' | 'startup_resume' | 'resume_fallback'
+export type HistoryCaller = HistoryProjectionCaller | 'archive' | 'archived_task' | 'literature'
 const HISTORY_ROUTE = `${HISTORY_PATH_PREFIX}{session_id}`
 const responseTimings = new WeakMap<Response, RequestTiming>()
 type TimingEvent =

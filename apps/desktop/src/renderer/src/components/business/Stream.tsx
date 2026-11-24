@@ -547,6 +547,38 @@ function useScrollControlPlacement(
   return target && visible ? placement : null
 }
 
+function startupTranscriptReadable(
+  stream: HTMLDivElement | null,
+  column: HTMLDivElement | null
+): boolean {
+  if (
+    !stream?.clientHeight ||
+    !stream.clientWidth ||
+    !column ||
+    column.closest('[inert]') ||
+    !column.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+  )
+    return false
+
+  const document = column.ownerDocument
+  const viewport = document.documentElement
+  const streamBounds = stream.getBoundingClientRect()
+  const columnBounds = column.getBoundingClientRect()
+  const left = Math.max(0, streamBounds.left, columnBounds.left)
+  const top = Math.max(0, streamBounds.top, columnBounds.top)
+  const width = Math.min(viewport.clientWidth, streamBounds.right, columnBounds.right) - left
+  const height = Math.min(viewport.clientHeight, streamBounds.bottom, columnBounds.bottom) - top
+  if (width <= 0 || height <= 0) return false
+
+  const reachesColumn = (x: number, y: number): boolean =>
+    column.contains(document.elementFromPoint(left + x * width, top + y * height))
+  // A local popup can cover the center while the rest of the transcript remains usable.
+  return (
+    reachesColumn(0.5, 0.5) ||
+    [0.25, 0.75].some((x) => reachesColumn(x, 0.25) || reachesColumn(x, 0.75))
+  )
+}
+
 export function Stream({
   home = false,
   onOpenDelivery,
@@ -558,7 +590,7 @@ export function Stream({
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
-  const { state, set, patchThread, getSnapshot } = useApp()
+  const { state, set, patchThread, getSnapshot, act } = useApp()
   const thread = activeThread(state)
   const [recoveryChecking, setRecoveryChecking] = useState(false)
   const [failedRecovery, setFailedRecovery] = useState<RecoveryCheckIdentity | null>(null)
@@ -616,6 +648,7 @@ export function Stream({
   // Turn 终态事件是停止工作态的唯一依据。中途 assistant 文本之后仍可能继续执行
   // 不需要单独展示的活动（例如 web_fetch），因此不能根据最后一条文本隐藏运行标签。
   const busy = thread.running === true || thread.status === 'running' || thread.status === 'waiting'
+  const startupHistoryBusy = useRef<string | null>(null)
   const admitting =
     state.turnLaunch !== null || hasQueuedMessageAwaitingRuntime(thread.queuedMessages ?? [])
   const cardArtifacts = useCardArtifacts(conv)
@@ -1129,12 +1162,43 @@ export function Stream({
     updateScrollToBottomVisibility()
   }, [conv, showWorking, updateScrollToBottomVisibility])
 
+  useLayoutEffect(() => {
+    const sessionId = thread.sessionId
+    if (
+      home ||
+      !sessionId ||
+      !thread.startupHistoryLoaded ||
+      state.startupTaskRecovery !== 'presenting'
+    )
+      return
+    // Presentation can outlast the first paint. Its owner bounds the wait and revokes it on exit.
+    let frame = requestAnimationFrame(function checkReadable() {
+      if (startupTranscriptReadable(streamRef.current, columnRef.current)) {
+        act.startupTaskReadable(sessionId)
+        return
+      }
+      frame = requestAnimationFrame(checkReadable)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [
+    act.startupTaskReadable,
+    home,
+    state.startupTaskRecovery,
+    thread.sessionId,
+    thread.startupHistoryLoaded,
+  ])
+
   useEffect(() => {
     const sessionId = thread.sessionId
-    if (!sessionId || busy) return () => undefined
-    let current = true
-    void getHistoryWithTodos(sessionId, 'transcript').then((history) => {
-      if (!current || sessionRef.current !== sessionId || !history) return
+    if (!sessionId) return
+    if (busy) {
+      startupHistoryBusy.current = sessionId
+      return
+    }
+    if (thread.startupHistoryLoaded && startupHistoryBusy.current !== sessionId) return
+    const controller = new AbortController()
+    void getHistoryWithTodos(sessionId, 'transcript', controller.signal).then((history) => {
+      if (controller.signal.aborted || sessionRef.current !== sessionId || !history) return
       patchThread(thread.id, (active) =>
         active.sessionId === sessionId
           ? {
@@ -1144,10 +1208,8 @@ export function Stream({
           : {}
       )
     })
-    return () => {
-      current = false
-    }
-  }, [busy, patchThread, thread.id, thread.sessionId])
+    return () => controller.abort()
+  }, [busy, patchThread, thread.id, thread.sessionId, thread.startupHistoryLoaded])
 
   const rewindPrompt = async (anchor: number): Promise<string | null> => {
     const sessionId = thread.sessionId
