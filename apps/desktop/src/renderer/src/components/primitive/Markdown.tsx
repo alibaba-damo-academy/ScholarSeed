@@ -788,6 +788,7 @@ export function MarkdownContent({
   citationReferences = EMPTY_CITATION_REFERENCES,
   citationOccurrences = EMPTY_CITATION_OCCURRENCES,
   citationPending = false,
+  sentenceEndCitations = false,
 }: {
   text: string
   pending?: boolean
@@ -817,6 +818,7 @@ export function MarkdownContent({
   citationReferences?: MarkdownCitationReference[]
   citationOccurrences?: MarkdownCitationOccurrence[]
   citationPending?: boolean
+  sentenceEndCitations?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('ui')
   const renderMath = math ?? texMath
@@ -880,6 +882,7 @@ export function MarkdownContent({
         citationReferences,
         citationOccurrences,
         citationPending,
+        citationPlacement: sentenceEndCitations ? (pending ? 'streaming' : 'complete') : undefined,
         citationGroupKeys: renderCitationGroup ? citationGroupKeys : undefined,
         isSourceLink: renderSourceLink ? (href) => renderSourceLink(href, null) != null : undefined,
       }),
@@ -890,6 +893,8 @@ export function MarkdownContent({
       citationOccurrences,
       citationPending,
       citationGroupKeys,
+      pending,
+      sentenceEndCitations,
       renderCitationGroup,
       evidence,
       source,
