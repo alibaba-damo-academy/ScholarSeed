@@ -79,7 +79,7 @@ for (const [lastTurnStatus, expectedStatus] of [
       assert.deepEqual(requests, [
         '/api/serve/sessions/open',
         `/api/serve/sessions/${SESSION_ID}/queue`,
-        `/api/serve/history/${SESSION_ID}`,
+        `/api/serve/history/${SESSION_ID}?compact_activity=true`,
       ])
       const restored = projectResumedSession(INITIAL_THREAD, {
         ...snapshot,

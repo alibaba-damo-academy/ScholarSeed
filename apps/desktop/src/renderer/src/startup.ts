@@ -1,4 +1,6 @@
-export const STARTUP_TASK_RECOVERY_MS = 15_000
+import { STARTUP_TASK_RECOVERY_MS } from '../../window.ts'
+
+export { STARTUP_TASK_RECOVERY_MS }
 
 export type StartupTaskRecoveryOutcome = 'restored' | 'skipped' | 'failed' | 'timeout'
 

@@ -7,6 +7,7 @@ export const WINDOW_CLOSE_PLATFORM = 'win32'
 export const WINDOW_CLOSE_REQUEST_CHANNEL = 'scholarseed:window-close-request'
 export const WINDOW_CLOSE_REPLY_CHANNEL = 'scholarseed:window-close-reply'
 export const WINDOW_FULLSCREEN_CHANNEL = 'scholarseed:window-fullscreen'
+export const STARTUP_TASK_RECOVERY_MS = 15_000
 export const TASK_RECOVERY_CHANNEL = {
   status: 'scholarseed:task-recovery-status',
   begin: 'scholarseed:task-recovery-begin',

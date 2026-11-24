@@ -8,6 +8,7 @@ import logging
 import sys
 import threading
 import time
+from bisect import bisect_right
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -26,16 +27,37 @@ SLOW_HEADERS_WARNING_SECONDS = 0.5
 MILLISECONDS_PER_SECOND = 1000
 UNMATCHED_ROUTE = "unmatched"
 DIAGNOSTIC_HEADER = b"x-scholarseed-diagnostic-id"
+REQUEST_ID_HEADER = b"x-scholarseed-request-id"
 DIAGNOSTIC_ID_LENGTH = 32
 DIAGNOSTIC_ID_ALPHABET = b"0123456789abcdef"
+MAX_CONTENT_LENGTH_DIGITS = len(str(sys.maxsize))
 ORIGIN_HEADER = b"origin"
 CORS_ORIGIN_HEADER = b"access-control-allow-origin"
+EXPOSE_HEADERS = b"access-control-expose-headers"
 TIMING_ORIGIN_HEADER = b"timing-allow-origin"
 LOOP_THREAD_NAME = "http-loop-monitor"
 LOOP_STACK_LIMIT = 12
+LOOP_STACK_RESAMPLE_SECONDS = (2.0, 10.0, 30.0)
 LOOP_JOIN_POLL_SECONDS = 0.01
 
 logger = logging.getLogger(LOGGER_NAME)
+
+
+def _expose_request_id(headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+    remaining = []
+    exposed: dict[bytes, bytes] = {}
+    for name, value in headers:
+        if name.lower() != EXPOSE_HEADERS:
+            remaining.append((name, value))
+            continue
+        for token in value.split(b","):
+            field = token.strip(b" \t")
+            if field:
+                exposed.setdefault(field.lower(), field)
+    # Credentialed requests require an explicit name even when "*" is present.
+    exposed.setdefault(REQUEST_ID_HEADER, REQUEST_ID_HEADER)
+    remaining.append((EXPOSE_HEADERS, b", ".join(exposed.values())))
+    return remaining
 
 
 class LoopMonitor:
@@ -55,12 +77,20 @@ class LoopMonitor:
         self.lastEpisode: str | None = None
         self.lastStallAt: float | None = None
         self.lastLagMs = 0.0
+        self.watchdogWake = 0.0
+        self.maxWakeGap = 0.0
+        self.sampleStage = -1
+        self.sampleCount = 0
+        self.stackSamples: dict[tuple[tuple[str, str, int], ...], int] = {}
 
     async def __aenter__(self) -> LoopMonitor:
         if logger.isEnabledFor(logging.DEBUG):
             self.stopped.clear()
+            self._reset_episode()
+            self.maxWakeGap = 0.0
             self.loopThread = threading.get_ident()
             self.heartbeat = time.perf_counter()
+            self.watchdogWake = self.heartbeat
             self.heartbeatAt = time.time()
             self.thread = threading.Thread(target=self._watch, name=LOOP_THREAD_NAME, daemon=True)
             self.thread.start()
@@ -87,9 +117,9 @@ class LoopMonitor:
         self.timer = asyncio.get_running_loop().call_later(self.interval, self._beat)
 
     def _beat(self) -> None:
-        now = time.perf_counter()
         recovered = None
         with self.lock:
+            now = time.perf_counter()
             lag = max(0.0, now - self.heartbeat - self.interval)
             if lag >= self.threshold:
                 self.lastEpisode = self.episode or uuid4().hex
@@ -99,8 +129,16 @@ class LoopMonitor:
                     "event": "loop_recovered",
                     **self._state(),
                     "recovered_at": time.time(),
+                    "sample_count": self.sampleCount,
+                    "distinct_stack_count": len(self.stackSamples),
+                    "watchdog_max_gap_ms": round(
+                        max(self.maxWakeGap, now - max(self.heartbeat, self.watchdogWake))
+                        * MILLISECONDS_PER_SECOND,
+                        3,
+                    ),
                 }
-            self.episode = None
+                self._reset_episode()
+            self.maxWakeGap = 0.0
             self.heartbeat = now
             self.heartbeatAt = time.time()
         if recovered is not None:
@@ -115,37 +153,69 @@ class LoopMonitor:
             "process_loop_lag_ms": round(self.lastLagMs, 3),
         }
 
+    def _reset_episode(self) -> None:
+        self.episode = None
+        self.sampleStage = -1
+        self.sampleCount = 0
+        self.stackSamples.clear()
+
     def _watch(self) -> None:
         while not self.stopped.wait(self.interval):
-            with self.lock:
-                lag = time.perf_counter() - self.heartbeat - self.interval
-                if lag < self.threshold or self.episode is not None:
-                    continue
+            payload = self._observe()
+            if payload is not None:
+                logger.warning(json.dumps(payload, separators=(",", ":")))
+
+    def _observe(self) -> dict[str, Any] | None:
+        with self.lock:
+            now = time.perf_counter()
+            gap = now - self.watchdogWake
+            # Count only the part of this wake interval since the last loop beat.
+            self.maxWakeGap = max(self.maxWakeGap, now - max(self.watchdogWake, self.heartbeat))
+            self.watchdogWake = now
+            lag = now - self.heartbeat - self.interval
+            if lag < self.threshold:
+                return None
+            stage = bisect_right(LOOP_STACK_RESAMPLE_SECONDS, lag)
+            if stage <= self.sampleStage:
+                return None
+            self.sampleStage = stage
+            first = self.episode is None
+            if first:
                 self.episode = uuid4().hex
                 self.lastEpisode = self.episode
                 self.lastStallAt = self.heartbeatAt
-                self.lastLagMs = lag * MILLISECONDS_PER_SECOND
-                payload = {
-                    "event": "loop_stall",
-                    **self._state(),
-                    "detected_at": time.time(),
-                }
-            stack: list[dict[str, str | int]] = []
-            frame = sys._current_frames().get(self.loopThread)
-            try:
-                while frame is not None and len(stack) < LOOP_STACK_LIMIT:
-                    stack.append(
-                        {
-                            "file": Path(frame.f_code.co_filename).name,
-                            "function": frame.f_code.co_name,
-                            "line": frame.f_lineno,
-                        }
-                    )
-                    frame = frame.f_back
-            finally:
-                del frame
-            payload["stack"] = stack
-            logger.warning(json.dumps(payload, separators=(",", ":")))
+            self.lastLagMs = lag * MILLISECONDS_PER_SECOND
+            self.sampleCount += 1
+            payload = {
+                "event": "loop_stall" if first else "loop_stall_sample",
+                **self._state(),
+                "detected_at": time.time(),
+                "sample_index": self.sampleCount,
+                "watchdog_gap_ms": round(gap * MILLISECONDS_PER_SECOND, 3),
+            }
+            stack = self._stack()
+            original = self.stackSamples.setdefault(stack, self.sampleCount)
+            if original == self.sampleCount:
+                payload["stack"] = [
+                    {"file": file, "function": function, "line": line}
+                    for file, function, line in stack
+                ]
+            else:
+                payload["stack_sample_index"] = original
+            return payload
+
+    def _stack(self) -> tuple[tuple[str, str, int], ...]:
+        stack: list[tuple[str, str, int]] = []
+        frame = sys._current_frames().get(self.loopThread)
+        try:
+            while frame is not None and len(stack) < LOOP_STACK_LIMIT:
+                stack.append(
+                    (Path(frame.f_code.co_filename).name, frame.f_code.co_name, frame.f_lineno)
+                )
+                frame = frame.f_back
+        finally:
+            del frame
+        return tuple(stack)
 
 
 class LatencyEvent(StrEnum):
@@ -153,6 +223,27 @@ class LatencyEvent(StrEnum):
     HEADERS = "headers"
     FINISHED = "finished"
     LOOP_LAG = "loop_lag"
+
+
+class RequestPhases:
+    """Record monotonic boundaries and counts under fixed, handler-owned names."""
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.started = time.perf_counter() if enabled else 0.0
+        self.last = self.started
+        self.durations: dict[str, float] = {}
+        self.counts: dict[str, int] = {}
+
+    def mark(self, name: str) -> None:
+        if self.enabled:
+            now = time.perf_counter()
+            self.durations[name] = round((now - self.last) * MILLISECONDS_PER_SECOND, 3)
+            self.last = now
+
+    def count(self, name: str, value: int) -> None:
+        if self.enabled:
+            self.counts[name] = value
 
 
 class RequestLatency:
@@ -189,6 +280,9 @@ class RequestLatency:
         self.timer: asyncio.TimerHandle | None = None
         self.status: int | None = None
         self.headersMs: float | None = None
+        self.phases: RequestPhases | None = None
+        self.exposeRequestId = False
+        self.contentLength: int | None = None
         self.identityWaitMs: float | None = None
         self.identityRunMs: float | None = None
         self.identityQueuedAt: float | None = None
@@ -250,20 +344,31 @@ class RequestLatency:
             self.identityResumedMs = (time.perf_counter() - self.started) * MILLISECONDS_PER_SECOND
 
     def timingHeaders(self, headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+        shared_id = self.requestId if self.exposeRequestId else None
+        if shared_id is not None:
+            headers = [*headers, (REQUEST_ID_HEADER, shared_id.encode("ascii"))]
         origins = [value for name, value in self.scope.get("headers", []) if name == ORIGIN_HEADER]
-        if (
-            self.clientRequestId is not None
-            and len(origins) == 1
-            and origins[0] != b"*"
-            and (CORS_ORIGIN_HEADER, origins[0]) in headers
-            and not any(name == TIMING_ORIGIN_HEADER for name, _value in headers)
-        ):
-            return [*headers, (TIMING_ORIGIN_HEADER, origins[0])]
+        if len(origins) == 1 and origins[0] != b"*" and (CORS_ORIGIN_HEADER, origins[0]) in headers:
+            if shared_id is not None:
+                headers = _expose_request_id(headers)
+            if (self.clientRequestId is not None or shared_id is not None) and not any(
+                name == TIMING_ORIGIN_HEADER for name, _value in headers
+            ):
+                headers = [*headers, (TIMING_ORIGIN_HEADER, origins[0])]
         return headers
 
-    def headers(self, status: int) -> None:
+    def headers(self, status: int, headers: list[tuple[bytes, bytes]] | None = None) -> None:
         if not self.enabled:
             return
+        if self.phases is not None and headers:
+            for name, value in headers:
+                if (
+                    name == b"content-length"
+                    and len(value) <= MAX_CONTENT_LENGTH_DIGITS
+                    and value.isdigit()
+                ):
+                    self.contentLength = int(value)
+                    break
         self.status = status
         self.headersMs = (time.perf_counter() - self.started) * MILLISECONDS_PER_SECOND
         self._sample()
@@ -304,7 +409,11 @@ class RequestLatency:
         level = (
             logging.WARNING
             if event is LatencyEvent.LOOP_LAG or slowHeaders or errorType
-            else logging.INFO if self.clientRequestId is not None else logging.DEBUG
+            else (
+                logging.INFO
+                if self.clientRequestId is not None or self.exposeRequestId
+                else logging.DEBUG
+            )
         )
         if not self.enabled or not logger.isEnabledFor(level) or self.limiter is None:
             return
@@ -354,9 +463,31 @@ class RequestLatency:
             "error_type": errorType,
             **(self.monitor.snapshot() if self.monitor is not None else {}),
         }
+        if self.phases is not None:
+            phases = self.phases
+            payload.update(
+                handler_started_ms=round(
+                    (phases.started - self.started) * MILLISECONDS_PER_SECOND, 3
+                ),
+                handler_last_mark_ms=round(
+                    (phases.last - self.started) * MILLISECONDS_PER_SECOND, 3
+                ),
+                handler_phases_ms=phases.durations.copy(),
+                handler_counts=phases.counts.copy(),
+                response_content_length=self.contentLength,
+            )
         logger.log(level, json.dumps(payload, separators=(",", ":")))
 
 
 def requestLatency(scope: Scope) -> RequestLatency | None:
     observation: Any = scope.get("state", {}).get(REQUEST_LATENCY_KEY)
     return observation if isinstance(observation, RequestLatency) else None
+
+
+def requestPhases(scope: Scope, *, expose_request_id: bool = False) -> RequestPhases:
+    observation = requestLatency(scope)
+    phases = RequestPhases(observation is not None and observation.enabled)
+    if observation is not None:
+        observation.phases = phases
+        observation.exposeRequestId = expose_request_id
+    return phases

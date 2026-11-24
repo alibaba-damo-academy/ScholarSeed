@@ -11,6 +11,8 @@ const TEST_GLOBS = Object.freeze({
   'e2e/fixtures/*.test.ts': { directory: 'e2e/fixtures', recursive: false },
 })
 const TEST_FILES = Object.freeze([
+  'e2e/fixtures/evidence.test.mjs',
+  'e2e/fixtures/observation.test.mjs',
   '../../packages/ui/validation.test.ts',
   '../../packages/ui/layout.test.ts',
   '../../packages/ui/messages.test.ts',

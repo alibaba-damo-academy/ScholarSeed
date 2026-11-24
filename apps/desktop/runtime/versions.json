@@ -20,7 +20,7 @@
     "codex": {
       "version": "0.171.0-r1",
       "contentId": "7a66dafac1ce05de6e2d4c5d71fe8e55ea6162e7b37dda23bed5a8efaf613b4d",
-      "archiveSha256": "1390142b2df161b42f9e10076ba45c2b65a660c84ba0ea2dfef244c348276748"
+      "archiveSha256": "4ee6be5885b2300feda564931da5dd4b80138acf9705093a4000906db9babd6e"
     },
     "electron": {
       "version": "44.3.0-r2",

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { BrowserWindow } from 'electron'
 import {
+  STARTUP_TASK_RECOVERY_MS,
   TASK_RECOVERY_OUTCOME,
   TASK_RECOVERY_STATUS,
   type TaskRecoveryOutcome,
@@ -12,6 +13,7 @@ import { readRecord, writeJson } from './journal.ts'
 export const TASK_RECOVERY_FILENAME = 'startup-task-recovery.json'
 const RECORD_MAX_BYTES = 16 * 1024
 const SESSION_ID_MAX_LENGTH = 1024
+const RENDERER_SETTLEMENT_GRACE_MS = 1_000
 const RECOVERY_RECORD = { pending: 'pending', skipped: 'skipped' } as const
 
 interface RecoveryRecord {
@@ -49,6 +51,7 @@ export class TaskRecovery {
   private forceHome = false
   private attempted = false
   private active: { token: string; sessionId: string } | null = null
+  private readonly attemptListeners = new Set<(token: string | null) => void>()
 
   constructor(
     profile: string,
@@ -84,6 +87,7 @@ export class TaskRecovery {
     if (!this.write({ sessionId, state: RECOVERY_RECORD.pending })) return null
     const token = randomUUID()
     this.active = { sessionId, token }
+    for (const listener of this.attemptListeners) listener(token)
     this.log('started')
     return token
   }
@@ -92,10 +96,16 @@ export class TaskRecovery {
     return this.active?.token ?? null
   }
 
+  subscribeAttempt(listener: (token: string | null) => void): () => void {
+    this.attemptListeners.add(listener)
+    return () => this.attemptListeners.delete(listener)
+  }
+
   finish(token: string, outcome: TaskRecoveryOutcome): boolean {
     const active = this.active
     if (!active || active.token !== token) return false
     this.active = null
+    for (const listener of this.attemptListeners) listener(null)
     const written = this.write(
       outcome === TASK_RECOVERY_OUTCOME.restored
         ? null
@@ -160,13 +170,23 @@ export function installTaskRecoveryFallback(
 ): void {
   const contents = window.webContents
   let dialog: AbortController | null = null
+  let watchdog: ReturnType<typeof setTimeout> | null = null
+  let offered = false
 
-  const offer = async (): Promise<void> => {
+  const clearWatchdog = (): void => {
+    if (watchdog) clearTimeout(watchdog)
+    watchdog = null
+  }
+
+  const offer = async (watchdogExpired = false): Promise<void> => {
     const token = recovery.pendingToken()
-    if (!token || dialog || !canPresent()) return
+    if (!token || offered || !canPresent()) return
+    offered = true
+    clearWatchdog()
     const controller = new AbortController()
     dialog = controller
     try {
+      if (watchdogExpired) log('renderer did not settle before the recovery watchdog')
       const confirmed = await prompt(controller.signal)
       if (!confirmed || controller.signal.aborted || !canPresent() || !recovery.reopenHome(token))
         return
@@ -181,18 +201,33 @@ export function installTaskRecoveryFallback(
     }
   }
 
-  window.on('unresponsive', () => void offer())
-  window.on('responsive', () => dialog?.abort())
-  window.once('closed', () => {
+  const unsubscribe = recovery.subscribeAttempt((token) => {
+    clearWatchdog()
+    if (!token) {
+      dialog?.abort()
+      return
+    }
+    // Electron may report a hang only after native input. Let the renderer
+    // settle its own deadline first, then offer recovery from main.
+    watchdog = setTimeout(
+      () => void offer(true),
+      STARTUP_TASK_RECOVERY_MS + RENDERER_SETTLEMENT_GRACE_MS
+    )
+  })
+
+  const retire = (): void => {
+    clearWatchdog()
+    dialog?.abort()
     const token = recovery.pendingToken()
     if (token) recovery.reopenHome(token)
-    dialog?.abort()
+  }
+  window.on('unresponsive', () => void offer())
+  window.once('closed', () => {
+    unsubscribe()
+    retire()
   })
   contents.on('render-process-gone', () => void offer())
   contents.on('did-start-navigation', (details) => {
-    if (!details.isMainFrame || details.isSameDocument) return
-    const token = recovery.pendingToken()
-    if (token) recovery.reopenHome(token)
-    dialog?.abort()
+    if (details.isMainFrame && !details.isSameDocument) retire()
   })
 }

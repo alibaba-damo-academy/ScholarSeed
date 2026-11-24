@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -29,11 +30,20 @@ from service.assistant.service.context import AssistantService
 from service.chat.active import RUNTIME_ID
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.api.history import register_history_routes
-from service.chat.constants import PRODUCT_EVENT_USER_MESSAGE
+from service.chat.constants import (
+    PRODUCT_EVENT_MESSAGE_DELTA,
+    PRODUCT_EVENT_PLAN_SNAPSHOT,
+    PRODUCT_EVENT_TURN_COMPLETED,
+    PRODUCT_EVENT_TURN_FAILED,
+    PRODUCT_EVENT_USER_MESSAGE,
+    USER_MESSAGE_BINDING_ADMITTED,
+    USER_MESSAGE_BINDING_BOUND,
+)
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.composition import LiveSessionService
 from service.chat.service.context import SessionContextProvider
+from service.chat.service.events import EventService
 from service.chat.service.history import HistoryError, HistoryService
 from service.cli.bridge import main
 from service.platform.activity import Activities, ActivityDomain
@@ -145,6 +155,123 @@ class HistoryContract(unittest.TestCase):
             payload={"text": text, "client_turn_id": message_id},
             idempotency_key=message_id,
         )
+
+    def test_compact_history_keeps_message_boundaries_and_metadata_across_pages(self) -> None:
+        delta = PRODUCT_EVENT_MESSAGE_DELTA
+        events = (
+            ("a", delta, {"delta": "one"}),
+            ("a", delta, {"delta": "two"}),
+            ("a", delta, {"delta": "three"}),
+            ("a", delta, {"delta": "four", "phase": "commentary"}),
+            ("a", PRODUCT_EVENT_PLAN_SNAPSHOT, {"items": []}),
+            ("a", delta, {"delta": "five", "phase": "commentary"}),
+            ("b", delta, {"delta": "six", "phase": "final_answer"}),
+            ("b", delta, {"delta": "seven", "phase": "final_answer"}),
+            ("b", delta, {"delta": "eight", "phase": "final_answer"}),
+        )
+        for index, (item, kind, payload) in enumerate(events):
+            self.events.append(
+                session_id=CALLER,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=CALLER,
+                vendor_turn_id="turn",
+                vendor_item_id=item,
+                kind=kind,
+                payload=payload,
+                idempotency_key=f"compact-{index}",
+            )
+        service = EventService({}, self.events, logging.getLogger(__name__))
+        with patch("service.chat.service.events.MAXIMUM_REPLAY_LIMIT", 2):
+            _, full, clocks = service.history_snapshot(CALLER, [])
+            with patch.object(self.events, "replay", wraps=self.events.replay) as replay:
+                _, compact, compact_clocks = service.history_snapshot(
+                    CALLER, [], compact_activity=True
+                )
+        self.assertEqual(clocks, compact_clocks)
+        self.assertEqual(clocks, service.turn_activity_snapshot(CALLER))
+        full_pages = [call for call in replay.call_args_list if call.kwargs.get("kinds") is None]
+        self.assertEqual([call.kwargs["after_seq"] for call in full_pages], [0, 2, 4, 6, 8])
+        self.assertEqual([event["data"] for event in full], [payload for _, _, payload in events])
+        self.assertEqual(compact, [full[i] for i in (0, 2, 3, 4, 5, 6, 8)])
+
+    def test_activity_and_clocks_share_a_boundary_when_a_terminal_event_arrives(self) -> None:
+        service = EventService({}, self.events, logging.getLogger(__name__))
+        replay = self.events.replay
+
+        def read_then_commit(session_id, **options):
+            page = replay(session_id, **options)
+            if options.get("kinds") is None and not page:
+                self.events.append(
+                    session_id=session_id,
+                    runtime_id=RUNTIME_ID,
+                    vendor_thread_id=session_id,
+                    vendor_turn_id="turn",
+                    vendor_item_id=None,
+                    kind=PRODUCT_EVENT_TURN_FAILED,
+                    payload={},
+                    idempotency_key="late-failure",
+                )
+            return page
+
+        with patch.object(self.events, "replay", side_effect=read_then_commit):
+            _, activity, clocks = service.history_snapshot(CALLER, [])
+        self.assertEqual((activity, clocks), ([], []))
+        _, activity, clocks = service.history_snapshot(CALLER, [])
+        self.assertEqual([event["type"] for event in activity], [PRODUCT_EVENT_TURN_FAILED])
+        self.assertEqual(
+            [(clock["turn_id"], clock["outcome"]) for clock in clocks], [("turn", "failed")]
+        )
+
+    def test_late_binding_resolves_clocks_after_out_of_order_timestamps(self) -> None:
+        events = (
+            ("vendor", PRODUCT_EVENT_MESSAGE_DELTA, {"delta": "first"}, 120.0),
+            ("vendor", PRODUCT_EVENT_TURN_FAILED, {}, 85.0),
+            ("unbound", PRODUCT_EVENT_MESSAGE_DELTA, {"delta": "first"}, 102.0),
+            ("unbound", PRODUCT_EVENT_TURN_COMPLETED, {}, 80.0),
+            (
+                "client",
+                PRODUCT_EVENT_USER_MESSAGE,
+                {"client_turn_id": "client", "binding": USER_MESSAGE_BINDING_ADMITTED},
+                100.0,
+            ),
+            (
+                "vendor",
+                PRODUCT_EVENT_USER_MESSAGE,
+                {"client_turn_id": "client", "binding": USER_MESSAGE_BINDING_BOUND},
+                122.0,
+            ),
+            ("vendor", PRODUCT_EVENT_TURN_COMPLETED, {}, 115.0),
+        )
+        for index, (turn_id, kind, payload, timestamp) in enumerate(events):
+            self.events.append(
+                session_id=CALLER,
+                runtime_id=RUNTIME_ID,
+                vendor_thread_id=CALLER,
+                vendor_turn_id=turn_id,
+                vendor_item_id=None,
+                kind=kind,
+                payload=payload,
+                created_at=timestamp,
+                idempotency_key=f"timing-{index}",
+            )
+        service = EventService({}, self.events, logging.getLogger(__name__))
+        expected = [
+            {
+                "turn_id": "unbound",
+                "started_at": 80.0,
+                "completed_at": 80.0,
+                "outcome": "completed",
+            },
+            {
+                "turn_id": "vendor",
+                "started_at": 100.0,
+                "completed_at": 115.0,
+                "outcome": "completed",
+            },
+        ]
+        with patch("service.chat.service.events.MAXIMUM_REPLAY_LIMIT", 2):
+            _, _, actual = service.history_snapshot(CALLER, [], compact_activity=True)
+        self.assertEqual(actual, expected)
 
     def test_context_is_reference_not_truncated_transcript(self) -> None:
         self.assertIn("scholarseed_bridge", self.context.model_context)

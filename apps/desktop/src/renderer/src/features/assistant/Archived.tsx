@@ -23,7 +23,7 @@ export function ArchivedConversation({
     let alive = true
     setLoaded(false)
     setFailed(false)
-    void getHistoryWithTodos(task.session_id).then((history) => {
+    void getHistoryWithTodos(task.session_id, 'archived_task').then((history) => {
       if (!alive) return
       if (!history) {
         setFailed(true)

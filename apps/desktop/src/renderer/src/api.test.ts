@@ -1098,7 +1098,7 @@ test('startup history and queue reads propagate caller cancellation through the 
   })
   try {
     for (const read of [
-      (signal: AbortSignal) => getHistoryWithTodos('saved', signal),
+      (signal: AbortSignal) => getHistoryWithTodos('saved', 'startup_resume', signal),
       (signal: AbortSignal) => listQueuedMessages('saved', signal),
     ]) {
       const controller = new AbortController()

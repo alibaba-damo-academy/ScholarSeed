@@ -10,6 +10,7 @@ import {
   TaskRecovery,
   TASK_RECOVERY_FILENAME,
 } from './task-recovery.ts'
+import { STARTUP_TASK_RECOVERY_MS } from '../window.ts'
 
 function fixture(context: { after: (cleanup: () => void) => void }) {
   const profile = mkdtempSync(join(tmpdir(), 'scholarseed-task-recovery-'))
@@ -125,7 +126,7 @@ function nativeWindow(recovery: TaskRecovery) {
     },
     log: () => {},
   })
-  return { window, webContents, prompts, actions, confirm: () => reply(true) }
+  return { window, webContents, prompts, actions, respond: (value: boolean) => reply(value) }
 }
 
 test('native recovery only offers one prompt and sets home before crashing the renderer', async (context) => {
@@ -138,28 +139,67 @@ test('native recovery only offers one prompt and sets home before crashing the r
   native.window.emit('unresponsive')
   native.window.emit('unresponsive')
   assert.equal(native.prompts.length, 1)
-  native.confirm()
+  native.respond(true)
   await Promise.resolve()
   assert.deepEqual(native.actions, ['crash', 'home'])
   assert.equal(native.prompts.length, 1)
   assert.equal(launch().status('old-task'), 'home')
 })
 
-test('a late native dialog reply cannot reload a recovered or replaced document', async (context) => {
+test('the watchdog offers recovery once without a Chromium hang signal', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(recovery.begin('old-task'))
+  context.mock.timers.tick(STARTUP_TASK_RECOVERY_MS)
+  assert.equal(native.prompts.length, 0)
+  context.mock.timers.tick(1_000)
+  assert.equal(native.prompts.length, 1)
+  native.respond(false)
+  await Promise.resolve()
+  native.window.emit('unresponsive')
+  native.webContents.emit('render-process-gone')
+  assert.equal(native.prompts.length, 1)
+  assert.deepEqual(native.actions, [])
+})
+
+test('settling within the renderer budget disarms the main watchdog', (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  const token = recovery.begin('old-task')
+  assert.ok(token)
+  context.mock.timers.tick(STARTUP_TASK_RECOVERY_MS)
+  assert.ok(recovery.finish(token, 'skipped'))
+  context.mock.timers.tick(2_000)
+  assert.deepEqual(native.prompts, [])
+})
+
+test('a late native dialog reply cannot reload a restored task', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  const token = recovery.begin('old-task')
+  assert.ok(token)
+  native.window.emit('unresponsive')
+  assert.ok(recovery.finish(token, 'restored'))
+  assert.ok(native.prompts[0].aborted)
+  native.respond(true)
+  await Promise.resolve()
+  assert.deepEqual(native.actions, [])
+})
+
+test('replacing the main document retires a pending recovery and its dialog', async (context) => {
   const { launch } = fixture(context)
   const recovery = launch()
   const native = nativeWindow(recovery)
   assert.ok(recovery.begin('old-task'))
   native.window.emit('unresponsive')
-  native.window.emit('responsive')
-  assert.ok(native.prompts[0].aborted)
-  native.confirm()
-  await Promise.resolve()
-  assert.deepEqual(native.actions, [])
-  native.window.emit('unresponsive')
   native.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
-  assert.ok(native.prompts[1].aborted)
-  native.confirm()
+  assert.ok(native.prompts[0].aborted)
+  native.respond(true)
   await Promise.resolve()
   assert.deepEqual(native.actions, [])
   assert.equal(recovery.status(null), 'home')

@@ -160,11 +160,11 @@ The TeX receipt and AI execution gate remain independent. The probe is a startup
 
 Main owns the task recovery marker in the selected Desktop profile. The approved main renderer must claim its one automatic session attempt through preload and receive an acknowledgment after the pending marker is committed. An interrupted attempt opens Home on the next launch. Skipping suppresses automatic reopening for that task until a successful manual open. The renderer owns the foreground deadline, cancellation, and the readiness of the visible conversation.
 
-The macOS and Windows main windows use the same Electron recovery events. If the renderer becomes unresponsive or exits during the attempt, main can offer a native action to reopen Home. After the user confirms, main suppresses the old task and reloads the renderer in the same window. The Serve process remains attached. Real Desktop acceptance covers the native dialog and the replacement renderer on each platform.
+On macOS and Windows, main can offer a native action to reopen Home when Electron reports the renderer unresponsive or exited during the attempt. A main-process watchdog also offers the action if the attempt is still pending after the 15-second renderer deadline and a one-second acknowledgment window. After the user confirms, main suppresses the old task and reloads the renderer in the same window, retaining the Serve process. Real Desktop acceptance covers the native dialog and the replacement renderer on each platform.
 
 主进程在已选定的桌面配置目录中管理任务恢复标记。受信任的主窗口渲染进程通过 preload 申请一次自动恢复，等待待恢复标记提交后再读取任务。恢复中断后，下次启动进入首页。跳过后，成功手动打开该任务即可恢复其自动打开资格。渲染进程负责前台期限、取消操作和会话正文的可用状态。
 
-macOS 和 Windows 的主窗口使用同一组 Electron 恢复事件。恢复期间渲染进程无响应或退出时，主进程可通过系统对话框提供重新打开到首页的入口。用户确认后，主进程跳过旧任务，在同一个窗口中重载渲染进程，Serve 进程继续运行。两个平台均需在真实桌面验证系统对话框和重载后的窗口。
+在 macOS 和 Windows 上，若 Electron 报告恢复中的渲染进程无响应或退出，主进程可通过系统对话框提供重新打开到首页的入口。渲染进程的 15 秒预算和额外 1 秒确认时间结束后，主进程也会为仍未完成的恢复提供此入口。用户确认后，主进程跳过旧任务，在同一个窗口中重载渲染进程，Serve 进程继续运行。两个平台均需在真实桌面验证系统对话框和重载后的窗口。
 
 <a id="基础健康与-ai-就绪"></a>
 ### Baseline Health and AI Readiness

@@ -7,13 +7,19 @@ import {
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
 import { flushApiDiagnostics, reportApiFailure } from './app/api/diagnostics.ts'
-import { readApiJson, reportCatalogReady, reportCatalogFailure } from './app/api/timing.ts'
+import {
+  readApiJson,
+  reportCatalogReady,
+  reportCatalogFailure,
+  type HistoryCaller,
+} from './app/api/timing.ts'
 import {
   API_DIAGNOSTIC_HEADER,
   PROJECT_CREATION_DIAGNOSTIC_PREFIX,
   MODEL_PROFILES_PATH,
   MODEL_PROVIDERS_PATH,
   SESSION_CATALOG_PATH,
+  compactHistoryPath,
   REQUEST_TIMEOUT_ERROR_NAME,
   REQUEST_ABORT_ERROR_NAME,
 } from '../../requests.ts'
@@ -1274,7 +1280,7 @@ export interface HistoryResult {
   todo_turn_id: string | null
   /** Persisted, source-attributed session artifact snapshot. */
   artifacts: SessionArtifact[]
-  /** Ordered message anchors plus durable activity used to rebuild the transcript timeline. */
+  /** Timeline anchors and durable activity. Adjacent cumulative text snapshots may be coalesced. */
   activity_events: ProductEvent[]
   /** Durable turn clock and terminal truth, projected from product events. */
   turn_activity: TurnActivitySnapshot[]
@@ -1294,15 +1300,17 @@ export interface TurnActivitySnapshot {
  */
 export async function getHistoryWithTodos(
   sid: string,
+  caller: HistoryCaller,
   signal?: AbortSignal
 ): Promise<HistoryResult | null> {
   try {
-    const r = await apiFetch(`/api/serve/history/${encodeURIComponent(sid)}`, {
+    const r = await apiFetch(compactHistoryPath(sid), {
       timeoutMs: RESUME_REQUEST_TIMEOUT_MS,
+      historyCaller: caller,
       signal,
     })
     if (!r.ok) return null
-    const data = (await r.json()) as {
+    const data = (await readApiJson(r)) as {
       turns?: HistoryTurn[]
       recovery_blocked?: boolean
       recovery_incident_id?: string | null
@@ -1316,7 +1324,7 @@ export async function getHistoryWithTodos(
       turn_activity?: TurnActivitySnapshot[]
     }
     signal?.throwIfAborted()
-    if (signal && !Array.isArray(data.turns)) return null
+    if (caller === 'startup_resume' && !Array.isArray(data.turns)) return null
     return {
       turns: data.turns ?? [],
       recovery_blocked: data.recovery_blocked === true,

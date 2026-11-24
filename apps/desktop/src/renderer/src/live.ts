@@ -1434,14 +1434,14 @@ export function useLiveSession(): void {
         }
         if (!opened || !('session_id' in opened) || !opened.session_id) {
           if (await waitForReconfiguration()) return
-          const history = await getHistoryWithTodos(sessionId)
+          const history = await getHistoryWithTodos(sessionId, 'resume_fallback')
           if (!current()) {
             diagnostic('superseded')
             return
           }
           if (history) {
             patchThread(threadId, (thread) => ({
-              conversation: projectHistorySnapshot(history, thread.conversation),
+              conversation: projectHistorySnapshot(history, thread.conversation, 'resume_fallback'),
               todos: history.todos,
               todoTurnId: history.todo_turn_id,
               planSnapshots: projectPlanSnapshots(history.activity_events),
@@ -1479,7 +1479,7 @@ export function useLiveSession(): void {
         }
 
         const [history, queuedMessages] = await Promise.all([
-          getHistoryWithTodos(sessionId),
+          getHistoryWithTodos(sessionId, 'resume'),
           listQueuedMessages(sessionId),
         ])
         if (!current()) {
@@ -1514,6 +1514,7 @@ export function useLiveSession(): void {
             serviceInstanceId: instance,
             acknowledgeQueue: stateRef.current.workbenchReady,
             timestamp: Date.now(),
+            caller: 'resume',
           })
         )
 

@@ -42,6 +42,7 @@ const pluginQuestion = new URLSearchParams(location.search).has('pluginQuestion'
 const copyCollapse = new URLSearchParams(location.search).get('copyCollapse')
 const cancelledQuestion = new URLSearchParams(location.search).get('cancelledQuestion')
 const batchTiming = new URLSearchParams(location.search).get('batchTiming')
+const turnSourceViewport = new URLSearchParams(location.search).has('turnSourceViewport')
 const publicComponents = new Map(
   literaturePublicComponents.map((component) => [component.slot, component])
 )
@@ -77,6 +78,27 @@ export function Fixture(): React.JSX.Element {
         turnId: `turn-${index}`,
       },
     ]).flat()
+    if (turnSourceViewport) {
+      conversation.splice(1, 2, {
+        kind: 'display_card',
+        itemId: 'card-only-turn',
+        turnId: 'turn-0',
+        card: {
+          cardId: 'card-only-turn',
+          type: 'literature-search',
+          content: {
+            schema_version: '1.0',
+            session_id: SESSION_ID,
+            status: 'success',
+            papers: [{ id: 'source-paper', title: 'Card-only source result' }],
+            criteria: [],
+            sources: [],
+            warnings: [],
+            retained: 1,
+          },
+        },
+      })
+    }
     conversation.push({
       kind: 'agent',
       text: '正在整理公开结果。',
@@ -664,6 +686,12 @@ export function Fixture(): React.JSX.Element {
           >
             Runtime failure
           </Button>
+        )}
+        {turnSourceViewport && (
+          <>
+            <Button onClick={openGeometry}>来源历史</Button>
+            <Button onClick={() => set({ activeSession: null })}>退出来源会话</Button>
+          </>
         )}
         {new URLSearchParams(location.search).has('geometry') && (
           <>

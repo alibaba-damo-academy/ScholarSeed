@@ -612,7 +612,12 @@ class PlanContract(unittest.TestCase):
                     )
                 )
         service = EventService({}, self.events, logging.getLogger(__name__))
-        snapshot = service.activity_snapshot(SESSION)
+        with patch.object(self.events, "replay", wraps=self.events.replay) as replay:
+            turns, snapshot, clocks = service.history_snapshot(SESSION, [])
+        full_replays = [call for call in replay.call_args_list if call.kwargs.get("kinds") is None]
+        self.assertEqual([call.kwargs["after_seq"] for call in full_replays], [0])
+        self.assertEqual([clock["turn_id"] for clock in clocks], ["turn-1"])
+        self.assertEqual(turns, [])
         resolved = {
             event["data"]["tool_id"]: event["data"].get("resolved_tool_ids")
             for event in snapshot

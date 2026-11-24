@@ -46,7 +46,7 @@ export async function prepareStartupSession(
     queuedMessages = messages
   })
   try {
-    const history = await getHistoryWithTodos(sessionId, signal)
+    const history = await getHistoryWithTodos(sessionId, 'startup_resume', signal)
     return history && !signal.aborted ? { opened, history, queuedMessages } : null
   } finally {
     queue.abort()
@@ -83,10 +83,12 @@ export function projectResumedSession(
     serviceInstanceId,
     acknowledgeQueue,
     timestamp,
+    caller = 'startup_resume',
   }: SessionResumeSnapshot & {
     serviceInstanceId: string | null
     acknowledgeQueue: boolean
     timestamp: number
+    caller?: 'startup_resume' | 'resume'
   }
 ): Thread {
   const sessionId = opened.session_id
@@ -94,7 +96,8 @@ export function projectResumedSession(
   const durableTurnActivity = snapshotTurnActivity(history.turn_activity)
   const conversation = projectHistorySnapshot(
     { ...history, artifacts: artifactSnapshot },
-    thread.conversation
+    thread.conversation,
+    caller
   )
   const recovered = reportSessionResume(
     { ...thread, conversation },

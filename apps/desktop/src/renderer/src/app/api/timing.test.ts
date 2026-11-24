@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { getHistoryWithTodos } from '../../api.ts'
 import { apiFetch, LIVE_CATALOG_REQUEST } from './client.ts'
-import { API_DIAGNOSTIC_HEADER, HTTP_LATENCY_DIAGNOSTIC_PREFIX } from '../../../../requests.ts'
+import {
+  API_DIAGNOSTIC_HEADER,
+  API_REQUEST_ID_HEADER,
+  HTTP_LATENCY_DIAGNOSTIC_PREFIX,
+} from '../../../../requests.ts'
 import { flushApiDiagnostics } from './diagnostics.ts'
 import { readApiJson, reportCatalogFailure } from './timing.ts'
 import { resourceTimingDetails, RESOURCE_OBSERVATION_BUDGET_MS } from './resources.ts'
@@ -11,9 +16,11 @@ const CORRELATION = '0123456789abcdef0123456789abcdef'
 
 function fixture(context: test.TestContext, transport: typeof fetch, resourceObserver = false) {
   const records: Record<string, unknown>[] = []
+  const batches: (Record<string, unknown> & { stages: Record<string, unknown>[] })[] = []
   context.mock.method(console, 'info', (prefix: string, value: string) => {
     if (prefix === HTTP_LATENCY_DIAGNOSTIC_PREFIX) {
       const batch = JSON.parse(value)
+      batches.push(batch)
       records.push(...batch.stages)
     }
   })
@@ -39,13 +46,13 @@ function fixture(context: test.TestContext, transport: typeof fetch, resourceObs
     if (previous) Object.defineProperty(globalThis, 'window', previous)
     else delete (globalThis as Record<string, unknown>).window
   })
-  return records
+  return { records, batches }
 }
 
 test('ordinary catalog requests correlate fetch and JSON without recording private content', async (context) => {
   let observed: RequestInit | undefined
   const response = Response.json({ sessions: [{ title: 'private-answer' }] })
-  const records = fixture(context, async (_input, init) => {
+  const { records } = fixture(context, async (_input, init) => {
     observed = init
     return response
   })
@@ -73,10 +80,88 @@ test('ordinary catalog requests correlate fetch and JSON without recording priva
   assert.ok(!JSON.stringify(records).includes('private'))
 })
 
+test('overlapping history readers retain separate correlations and report the caller before headers', async (context) => {
+  const { batches } = fixture(context, async (input, init) => {
+    const url = new URL(String(input))
+    assert.equal(url.pathname, '/api/serve/history/private%2Fsession')
+    assert.equal(url.searchParams.get('compact_activity'), 'true')
+    assert.equal(new Headers(init?.headers).has(API_DIAGNOSTIC_HEADER), false)
+    return Response.json(
+      { turns: ['private-answer'] },
+      { headers: { [API_REQUEST_ID_HEADER]: CORRELATION } }
+    )
+  })
+  const readers = ['transcript', 'resume'] as const
+  const requests = readers.map((caller) => getHistoryWithTodos('private/session', caller))
+  assert.deepEqual(
+    batches.map((record) => record.caller),
+    readers
+  )
+  const identifiers = batches.map((record) => record.client_request_id)
+  assert.equal(new Set(identifiers).size, 2)
+  for (const history of await Promise.all(requests)) {
+    assert.deepEqual(history?.turns, ['private-answer'])
+  }
+  for (const [index, id] of identifiers.entries()) {
+    const logs = batches.filter((record) => record.client_request_id === id)
+    assert.deepEqual(
+      logs.map((log) => log.event),
+      ['fetch_started', 'headers_received', 'body_decoded']
+    )
+    const rows = logs[2].stages
+    assert.equal(rows[0].server_request_id, null)
+    assert.ok(rows.slice(1).every((row) => row.server_request_id === CORRELATION))
+    assert.deepEqual(
+      rows.map((record) => record.event),
+      ['fetch_started', 'headers_received', 'body_started', 'body_decoded']
+    )
+    assert.ok(
+      rows.every(
+        (record) =>
+          record.caller === readers[index] && record.route === '/api/serve/history/{session_id}'
+      )
+    )
+  }
+  assert.ok(!JSON.stringify(batches).includes('private'))
+})
+
+test('history failures before headers only correlate within the renderer', async (context) => {
+  const { batches } = fixture(context, async (_input, init) => {
+    assert.equal(new Headers(init?.headers).has(API_DIAGNOSTIC_HEADER), false)
+    throw new DOMException('request timed out', 'TimeoutError')
+  })
+  assert.equal(await getHistoryWithTodos('private-session', 'resume'), null)
+  const failure = batches.find((batch) => batch.event === 'fetch_failed')!
+  assert.deepEqual(
+    failure.stages.map((stage) => stage.event),
+    ['fetch_started', 'fetch_failed']
+  )
+  assert.ok(
+    failure.stages.every(
+      (stage) =>
+        stage.client_request_id === failure.client_request_id && stage.server_request_id === null
+    )
+  )
+})
+
+test('history timing excludes empty session IDs, nested paths and similar route prefixes', async (context) => {
+  const { records } = fixture(context, async () => Response.json({}))
+  for (const path of [
+    '/api/serve/history',
+    '/api/serve/history/?compact_activity=true',
+    '/api/serve/history/id/',
+    '/api/serve/history/id/events',
+    '/api/serve/history-archive/id',
+  ]) {
+    await readApiJson(await apiFetch(path, { historyCaller: 'resume' }))
+  }
+  assert.deepEqual(records, [])
+})
+
 test('caller abort and timeout remain failures with the original reason and no retry', async (context) => {
   let requests = 0
   const failure = new DOMException('private-detail', 'TimeoutError')
-  const records = fixture(context, async () => {
+  const { records } = fixture(context, async () => {
     requests += 1
     throw failure
   })
@@ -92,7 +177,7 @@ test('caller abort and timeout remain failures with the original reason and no r
 
 test('body failures are not mistaken for successful catalog completion', async (context) => {
   const response = new Response('not JSON')
-  const records = fixture(context, async () => response)
+  const { records } = fixture(context, async () => response)
   await apiFetch(CATALOG)
   await assert.rejects(readApiJson(response), SyntaxError)
   assert.deepEqual(
@@ -104,7 +189,7 @@ test('body failures are not mistaken for successful catalog completion', async (
 
 test('same-URL concurrent calls retain distinct exact correlations', async (context) => {
   const identifiers: string[] = []
-  const records = fixture(context, async (_input, init) => {
+  const { records } = fixture(context, async (_input, init) => {
     identifiers.push(new Headers(init?.headers).get(API_DIAGNOSTIC_HEADER)!)
     return Response.json({ sessions: [] })
   })
@@ -145,7 +230,7 @@ test('diagnostic sinks cannot change HTTP or decode results', async (context) =>
 
 test('other endpoints are not opted into automatic catalog diagnostics', async (context) => {
   let headers: Headers | undefined
-  const records = fixture(context, async (_input, init) => {
+  const { records } = fixture(context, async (_input, init) => {
     headers = new Headers(init?.headers)
     return Response.json({ ok: true })
   })
@@ -159,7 +244,7 @@ test('caller cancellation retains its reason and the existing request deadline',
   const controller = new AbortController()
   const reason = new DOMException('private-cancellation-detail', 'AbortError')
   controller.abort(reason)
-  const records = fixture(context, async (_input, init) => {
+  const { records } = fixture(context, async (_input, init) => {
     throw init?.signal?.reason
   })
   let timeout: number | undefined
@@ -179,7 +264,7 @@ test('caller cancellation retains its reason and the existing request deadline',
 
 test('an unavailable correlation generator does not break the catalog request', async (context) => {
   const response = Response.json({ sessions: [] })
-  const records = fixture(context, async () => response)
+  const { records } = fixture(context, async () => response)
   context.mock.method(crypto, 'randomUUID', () => {
     throw new Error('unavailable')
   })
@@ -190,11 +275,7 @@ test('an unavailable correlation generator does not break the catalog request', 
 
 test('stage capture batches diagnostic writes without losing early timestamps', async (context) => {
   const response = Response.json({ sessions: [] })
-  fixture(context, async () => response)
-  const batches: Record<string, unknown>[] = []
-  context.mock.method(console, 'info', (prefix: string, value: string) => {
-    if (prefix === HTTP_LATENCY_DIAGNOSTIC_PREFIX) batches.push(JSON.parse(value))
-  })
+  const { batches } = fixture(context, async () => response)
   await apiFetch(CATALOG)
   assert.equal(batches.length, 0)
   await readApiJson(response)
@@ -212,7 +293,7 @@ test('stage capture batches diagnostic writes without losing early timestamps', 
 
 test('schema failures after JSON decoding retain the same exact correlation', async (context) => {
   const response = Response.json({ private: 'invalid-schema-body' })
-  const records = fixture(context, async () => response)
+  const { records } = fixture(context, async () => response)
   await apiFetch(CATALOG)
   await readApiJson(response)
   reportCatalogFailure(response, 'schema')
@@ -286,7 +367,7 @@ test('real-resource observations correlate only unambiguous dispatches and alway
   })
   context.mock.timers.enable({ apis: ['setTimeout'] })
   const starts: number[] = []
-  const records = fixture(
+  const { records } = fixture(
     context,
     async () => {
       starts.push(performance.now())
