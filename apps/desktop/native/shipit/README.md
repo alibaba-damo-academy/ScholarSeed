@@ -55,11 +55,16 @@ from the former temporary directory is rebuilt from the bound source in
 the private store. The final signature check still runs before replacement.
 When the candidate and installation are on different volumes, ShipIt retires
 the preparation record using the just-committed move and the installed bundle's identity.
+If initial preparation or a rebuild fails before the journal rename, ShipIt
+removes its newly created empty directory after checking its identity. Once the
+rename succeeds, the journal owns the directory even if its subsequent sync fails.
 
 新候选副本保存在 Application Support 下 `CandidatePreparation` 的私有子目录中。
 即使用户隔夜才点击重启，副本也位于系统临时目录清理范围之外。接手旧临时目录中的就绪副本时，
 助手会先核对身份，再从本次更新绑定的来源重新准备。替换应用前仍会再次验签。
 候选副本和安装位置在不同卷上时，ShipIt 会核对刚提交的移动记录和已安装应用的身份，再清除准备记录。
+首次准备或重建在日志重命名前失败时，ShipIt 核对身份并删除本次新建的空目录。
+重命名成功后，即使随后的目录同步失败，也会保留日志引用的目录。
 
 Ready reuse validates identities and never substitutes for final signature checks.
 Three preparation attempts are independent of the original installation counter.
@@ -136,6 +141,11 @@ notification validation and RAC readiness/error/timeout/disposal. These remain
 local contracts; final signed-product restart timing and privileged recovery
 require the CI update acceptance described below. Windows does not consume the
 new native journal, notification or gate.
+
+The macOS build mounts a temporary writable disk image for the cross-volume
+preparation contract. The build fails if the second volume cannot be mounted.
+
+macOS 构建会挂载临时可写磁盘镜像来运行跨卷准备测试。无法挂载第二个卷时，构建会报错。
 
 Preparation, cleanup, timing, admission and binding contracts preserve stdout/stderr in their test logs and write a
 schema-1 `*-test.result.json` receipt with child PID, exit status, termination signal and

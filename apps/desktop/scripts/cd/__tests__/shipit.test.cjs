@@ -8,6 +8,33 @@ const { spawnSync } = require('node:child_process')
 const { test } = require('node:test')
 const { validateTarget, verifyAdmission, command } = require('../shipit.cjs')
 
+function fixtureModules(originalRequire, spawn, volumeCalls) {
+  let mounted
+  return name => {
+    if (name === 'node:child_process') return {
+      spawnSync: spawn,
+      execFileSync(executable, args) {
+        assert.equal(executable, '/usr/bin/hdiutil')
+        volumeCalls.push(args)
+        if (args[0] === 'create') fs.writeFileSync(args.at(-1), 'fixture')
+        if (args[0] === 'attach') mounted = args[args.indexOf('-mountpoint') + 1]
+        if (args[0] === 'detach') {
+          assert.equal(args[1], mounted)
+          mounted = undefined
+        }
+      },
+    }
+    if (name === 'node:fs') return {
+      ...fs,
+      statSync(target, options) {
+        const stat = fs.statSync(target, options)
+        return target === mounted ? { dev: stat.dev + 1 } : stat
+      },
+    }
+    return originalRequire(name)
+  }
+}
+
 test('native command failures retain exit status even without stderr', (context) => {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'shipit-exit-'))
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -59,22 +86,18 @@ for (const name of ['preparation', 'admission', 'binding']) {
       const directory = path.join(root, String(index))
       fs.mkdirSync(directory)
       let calls = 0
+      const volumeCalls = []
       const loaded = { exports: {} }
       runInNewContext(source + '\nmodule.exports.verifyPreparation = verifyPreparation', {
         __dirname: path.dirname(filename),
         module: loaded,
         process,
-        require: (name) =>
-          name === 'node:child_process'
-            ? {
-                spawnSync: () => {
-                  calls++
-                  return calls === 1
-                    ? { status: 0, signal: null, stdout: '', stderr: '' }
-                    : { ...failure, stdout: 'native detail', stderr: '' }
-                },
-              }
-            : originalRequire(name),
+        require: fixtureModules(originalRequire, () => {
+          calls++
+          return calls === 1
+            ? { status: 0, signal: null, stdout: '', stderr: '' }
+            : { ...failure, stdout: 'native detail', stderr: '' }
+        }, volumeCalls),
       })
       assert.throws(
         () =>
@@ -87,6 +110,7 @@ for (const name of ['preparation', 'admission', 'binding']) {
         new RegExp(`ShipIt ${name} contract failed: status=`)
       )
       assert.equal(calls, 2)
+      assert.deepEqual(volumeCalls.map(args => args[0]), name === 'preparation' ? ['create', 'attach', 'detach'] : [])
       const receipt = JSON.parse(
         fs.readFileSync(path.join(directory, `${name}-test.result.json`), 'utf8')
       )
@@ -127,18 +151,22 @@ test('native contract registry selects each dependency without changing executio
   const filename = require.resolve('../shipit.cjs')
   const originalRequire = createRequire(filename)
   const calls = []
+  const volumeCalls = []
   const loaded = { exports: {} }
   runInNewContext(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.verifyPreparation = verifyPreparation', {
     __dirname: path.dirname(filename), module: loaded, process,
-    require: name => name === 'node:child_process' ? {
-      spawnSync: (executable, args, options) => {
-        calls.push({ executable, args, options })
-        return { status: 0, signal: null, stdout: '', stderr: '', pid: 1234 }
-      },
-    } : originalRequire(name),
+    require: fixtureModules(originalRequire, (executable, args, options) => {
+      calls.push({ executable, args, options })
+      return { status: 0, signal: null, stdout: '', stderr: '', pid: 1234 }
+    }, volumeCalls),
   })
   loaded.exports.verifyPreparation(directory)
   assert.equal(calls.length, 18)
+  assert.deepEqual(volumeCalls.map(args => args[0]), ['create', 'attach', 'detach'])
+  const preparation = calls.find(call => call.executable === path.join(directory, 'preparation-test'))
+  const mount = volumeCalls[1][volumeCalls[1].indexOf('-mountpoint') + 1]
+  assert.deepEqual(Array.from(preparation.args), [path.join(directory, 'preparation-fixture'), mount])
+  assert.equal(fs.existsSync(path.dirname(mount)), false)
   const compilation = name => calls.find(call => call.args.includes(path.join(directory, `${name}-test`)))
   const succession = compilation('succession').args
   assert.ok(compilation('retirement'))

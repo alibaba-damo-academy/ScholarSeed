@@ -249,7 +249,11 @@ static void CheckCopiedRetirement(NSString *root, NSString *targetRoot, BOOL cro
 }
 int main(int argc, const char **argv) {
     @autoreleasepool {
-        assert((argc == 2 || argc == 3) && geteuid() != 0); Manager = NSFileManager.defaultManager;
+        if (argc != 3) {
+            NSLog(@"preparation-test requires a fixture directory and a writable directory on a second volume");
+            return EXIT_FAILURE;
+        }
+        assert(geteuid() != 0); Manager = NSFileManager.defaultManager;
         CFFileSecurityRef security = CFFileSecurityCreate(NULL);
         assert(security != NULL);
         Check(!SSPreparationFileSecurityMatches(security), @"missing ownership fields require normalization");
@@ -268,10 +272,8 @@ int main(int argc, const char **argv) {
         Root = @(argv[1]); Directory(Root); OwnedParents = [NSMutableSet set];
         NSString *localRoot = Case(@"copied-target");
         CheckCopiedRetirement(localRoot, localRoot, NO);
-        if (argc == 3) {
-            NSString *volumeRoot = Directory([@(argv[2]) stringByAppendingPathComponent:NSUUID.UUID.UUIDString]);
-            CheckCopiedRetirement(Case(@"cross-volume"), volumeRoot, YES);
-        }
+        NSString *volumeRoot = Directory([@(argv[2]) stringByAppendingPathComponent:NSUUID.UUID.UUIDString]);
+        CheckCopiedRetirement(Case(@"cross-volume"), volumeRoot, YES);
         NSString *root = Case(@"success"), *store = Store(root);
         NSURL *source = Bundle([root stringByAppendingPathComponent:@"source.app"]);
         NSURL *target = Bundle([root stringByAppendingPathComponent:@"target.app"]);

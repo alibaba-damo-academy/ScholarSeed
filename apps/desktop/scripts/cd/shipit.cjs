@@ -2,7 +2,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
-const { spawnSync } = require('node:child_process')
+const { execFileSync, spawnSync } = require('node:child_process')
 const { sha256 } = require('../shared/digest.cjs')
 const { fingerprint } = require('../../native/shipit/fingerprint.cjs')
 const { ensureArtifact } = require('../../../../scripts/shared/artifacts.cjs')
@@ -25,8 +25,10 @@ const FRAMEWORKS = ['Mantle', 'ReactiveObjC', 'Foundation', 'AppKit', 'IOKit', '
 const RPATHS = ['@executable_path/../..', '@executable_path/../../../..']
 const TIMING_TEST_SPANS = 7
 const CONTRACT_RESULT_SCHEMA = 1
+const VOLUME_COMMAND_TIMEOUT_MS = 60_000
+const PREPARATION_VOLUME_SIZE = '16m'
 const PREPARATION_CONTRACTS = {
-  preparation: { units: SUPPORT_UNITS },
+  preparation: { units: SUPPORT_UNITS, separateVolume: true },
   readiness: { units: ['readiness.m'] },
   terminal: { units: SUPPORT_UNITS },
   publication: { units: ['cleanup.m', 'readiness.m'] },
@@ -253,6 +255,37 @@ function verifySealedInstallation(directory, compiler, sources, squirrel, framew
   }
 }
 
+function withPreparationVolume(directory, run) {
+  const root = fs.mkdtempSync(path.join(directory, 'preparation-volume-'))
+  const image = path.join(root, 'fixture.dmg')
+  const mount = path.join(root, 'mount')
+  fs.mkdirSync(mount, { mode: 0o700 })
+  const sourceDevice = fs.statSync(root).dev
+  const hdiutil = args => execFileSync('/usr/bin/hdiutil', args, { timeout: VOLUME_COMMAND_TIMEOUT_MS, stdio: 'pipe' })
+  let failure
+  try {
+    hdiutil(['create', '-size', PREPARATION_VOLUME_SIZE, '-fs', 'HFS+', '-volname', 'ShipIt Preparation', image])
+    hdiutil(['attach', '-nobrowse', '-owners', 'on', '-mountpoint', mount, image])
+    if (fs.statSync(mount).dev === sourceDevice) throw new Error('ShipIt preparation requires a separate test volume')
+    run(mount)
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    try {
+      // A failed attach may still have mounted the image. Never remove files through the mount.
+      const mounted = fs.statSync(mount, { throwIfNoEntry: false })
+      if (mounted && mounted.dev !== sourceDevice) hdiutil(['detach', mount])
+      if (fs.existsSync(mount)) fs.rmdirSync(mount)
+      fs.rmSync(image, { force: true })
+      fs.rmdirSync(root)
+    } catch (error) {
+      if (failure) throw new AggregateError([failure, error], 'ShipIt preparation verification and volume cleanup failed')
+      throw error
+    }
+  }
+}
+
 function verifyPreparation(directory) {
   for (const [name, configuration] of Object.entries(PREPARATION_CONTRACTS)) {
     const external = configuration.external === true
@@ -262,11 +295,15 @@ function verifyPreparation(directory) {
     command('/usr/bin/xcrun', ['clang', '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror',
       ...(configuration.flags || []), ...(configuration.sources || []).map(source => path.join(OWNER, source)),
       '-framework', 'Foundation', ...configuration.units.map(unit => path.join(directory, unit)), fixture, '-o', executable], directory)
-    const result = spawnSync(executable, [path.join(directory, `${name}-fixture`)], {
-      encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: 60_000,
-    })
-    recordContract(directory, name, result)
-    if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${describeResult(result)}`)
+    const run = (...volumes) => {
+      const result = spawnSync(executable, [path.join(directory, `${name}-fixture`), ...volumes], {
+        encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: 60_000,
+      })
+      recordContract(directory, name, result)
+      if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${describeResult(result)}`)
+    }
+    if (configuration.separateVolume) withPreparationVolume(directory, run)
+    else run()
   }
 }
 
