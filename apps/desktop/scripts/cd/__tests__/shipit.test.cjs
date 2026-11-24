@@ -196,7 +196,7 @@ test('real ReactiveObjC timing preserves termination, disposal and per-subscript
   fs.mkdirSync(output, { recursive: true })
   const executable = path.join(output, 'timing-test')
   const frameworks = path.join(electron, 'Electron.app', 'Contents', 'Frameworks')
-  const owner = path.resolve(sourceDirectory, '../../native/shipit')
+  const owner = path.resolve(__dirname, '../../../native/shipit')
   const compile = spawnSync('/usr/bin/xcrun', [
     'clang', '-fobjc-arc', '-fobjc-weak', '-Wno-deprecated-declarations',
     `-I${path.join(build, 'headers')}`, `-I${owner}`, `-F${frameworks}`,

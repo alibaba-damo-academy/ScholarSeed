@@ -794,7 +794,10 @@ test('the shell never discards the staged package before the install result is k
 test('discovery keeps newer builds available without discarding a macOS ready package', () => {
   assert.match(SHELL_SOURCE, /const updatePreparation = new UpdatePreparation/)
   assert.match(SHELL_SOURCE, /updatePreparation\.offer\(latest\)/)
-  assert.match(SHELL_SOURCE, /updatePreparation\.observe\(latest\)/)
+  assert.match(
+    SHELL_SOURCE,
+    /if \(snapshot\.phase === 'ready' && snapshot\.candidate\)\s*updatePreparation\.adopt\(snapshot\.candidate\)\s*updatePreparation\.observe\(latest\)/
+  )
   assert.match(SHELL_SOURCE, /updatePreparation\.background\(enabled\)/)
   assert.match(SHELL_SOURCE, /snapshot\.latestCandidate \?\? snapshot\.candidate/)
   assert.match(
@@ -803,7 +806,7 @@ test('discovery keeps newer builds available without discarding a macOS ready pa
   )
   assert.match(
     SHELL_SOURCE,
-    /if\s*\(\s*updateInstallAbort\s*\|\|\s*updateInstallationInProgress\s*\|\|\s*updateRestartRequested\s*\|\|\s*macMaintenanceUncertain\s*\|\|\s*updater\.macHandoffCommitted\(\)\s*\|\|\s*snapshot\.phase === 'manual'\s*\|\|\s*snapshot\.errorFallback === 'activation_recovery_required'\s*\)/
+    /if\s*\(\s*updateInstallAbort\s*\|\|\s*updateInstallationInProgress\s*\|\|\s*updateRestartRequested\s*\|\|\s*macMaintenanceUncertain\s*\|\|\s*\(updater\.macHandoffCommitted\(\)\s*&&\s*!updater\.canPrepareMacSuccessor\(\)\)\s*\|\|\s*snapshot\.phase === 'manual'\s*\|\|\s*snapshot\.errorFallback === 'activation_recovery_required'\s*\)\s*return snapshot/
   )
 
   // 推进判定只此一份：启动期检查、周期复查、手动「检查更新」三个入口共用，才不会一个能
