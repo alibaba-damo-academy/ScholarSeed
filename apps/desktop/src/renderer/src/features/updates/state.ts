@@ -201,6 +201,12 @@ export async function runUpdateAction(
       const after = await window.scholarseed.getUpdateState()
       if (after.candidate?.id !== current.candidate.id) return 'candidate-changed'
       if (
+        (result.errorFallback === 'update_storage_full' ||
+          result.errorFallback === 'update_import_store_unavailable') &&
+        result.errorFallback === after.errorFallback
+      )
+        return
+      if (
         updateActionOf(after) === 'install' &&
         (!updateFailureOf(after) ||
           (after.error === current.error && after.errorFallback === current.errorFallback))
@@ -472,6 +478,9 @@ export function updateFailureText(
   if (failure.fallback === 'preparation_failed') return accountText('update.preparationFailed')
   if (failure.fallback === 'download_failed') return t('update.downloadFailed')
   if (failure.fallback === 'storage_exhausted') return t('update.insufficientSpace')
+  if (failure.fallback === 'update_storage_full') return accountText('update.preflightStorageFull')
+  if (failure.fallback === 'update_import_store_unavailable')
+    return accountText('update.preflightImportStoreUnavailable')
   if (failure.fallback === 'activation_recovery_required')
     return accountText('update.activationRecoveryRequired')
   if (failure.fallback === 'activation_candidate_changed')

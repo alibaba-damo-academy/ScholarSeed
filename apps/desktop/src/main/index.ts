@@ -1331,13 +1331,15 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
       pushLog(`[update] runtime recovery failed: ${String(recovery)}\n`)
     }
     const cancelled = controller.signal.aborted || error instanceof WindowsHandoffCancelled
+    const maintenanceFailure =
+      error instanceof BackendMaintenanceRejected ? error.reason : undefined
     const errorFallback = recoveryFailed
       ? 'activation_recovery_required'
       : candidateChanged
         ? 'activation_candidate_changed'
         : cancelled
           ? undefined
-          : (installationFailure(error) ?? 'install_failed')
+          : (maintenanceFailure ?? installationFailure(error) ?? 'install_failed')
     const result: StartUpdateResult = errorFallback
       ? { ok: false, errorFallback }
       : { ok: false, cancelled: true }
@@ -4422,6 +4424,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       const maintenanceBackend = backend
       let maintenance: ReturnType<typeof backendUpdateControl> | null = null
       let maintenanceGeneration: string | null = null
+      let maintenanceFailure: BackendMaintenanceRejected['reason']
       let preferencesRequested = false
       const resumeMaintenance = async (): Promise<void> => {
         if (!maintenance || !maintenanceGeneration) return
@@ -4486,6 +4489,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
                 if (error instanceof BackendMaintenanceRejected) {
                   macMaintenanceUncertain = false
                   macUpdateMaintenanceActive = false
+                  maintenanceFailure = error.reason
                 }
                 throw error
               }
@@ -4558,6 +4562,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         })
         return result
       }
+      if (!result.ok && !result.cancelled && maintenanceFailure)
+        result = { ok: false, errorFallback: maintenanceFailure }
       if (result.ok && result.mode === 'auto') {
         updateRestartRequested = true
         // Keep the durable handoff until a subsequent process observes the installed build.

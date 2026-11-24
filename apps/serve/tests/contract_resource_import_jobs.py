@@ -26,6 +26,7 @@ from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.identity.utils import OWNERSHIP_AXIS_MACHINE, OWNERSHIP_AXIS_STATE
+from service.persistence.project import open_database
 from service.platform.activity import Activities
 from service.platform.content import ImportMode
 from service.resources.api.jobs import register_resource_import_routes
@@ -38,7 +39,11 @@ from service.resources.domain.jobs import (
     VersionInitializationProgress,
 )
 from service.resources.persistence.jobs import ImportJobStore
-from service.resources.service.jobs import ResourceImportService, public_import_job
+from service.resources.service.jobs import (
+    ResourceImportError,
+    ResourceImportService,
+    public_import_job,
+)
 
 PASS = 0
 FAIL = 0
@@ -208,6 +213,151 @@ class ImportShutdownContract(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         await asyncio.wait_for(self.service.aclose(), 0.5)
         self.assertEqual(self.activities.snapshot().generation, generation)
+        self.assertEqual(self.activities.snapshot().counts, {})
+
+    def queue_source(self):
+        source = Path(self.directory.name) / "source.txt"
+        source.write_text("import after storage recovery", encoding="utf-8")
+        project = self.content.create_project("retry")
+        return self.service.create(
+            owner_id="local",
+            project_id=project.id,
+            mode=ImportMode.COPY,
+            target_dir="",
+            sources=(str(source),),
+            idempotency_key="retry",
+        )
+
+    async def test_poll_recovers_and_prepare_checks_storage_before_handoff(self):
+        job = self.queue_source()
+        failures = []
+        available = threading.Event()
+
+        def open_ledger(*args, **kwargs):
+            if available.is_set():
+                return open_database(*args, **kwargs)
+            failures.append(time.monotonic())
+            error = sqlite3.OperationalError("private storage location")
+            error.sqlite_errorcode = sqlite3.SQLITE_IOERR_SHMOPEN
+            error.sqlite_errorname = "SQLITE_IOERR_SHMOPEN"
+            raise error
+
+        with (
+            patch("service.resources.persistence.jobs.open_database", side_effect=open_ledger),
+            patch("service.resources.service.jobs.IMPORT_POLL_RETRY_INITIAL_SECONDS", 0.04),
+            patch("service.resources.service.jobs.IMPORT_POLL_RETRY_MAX_SECONDS", 0.08),
+            patch.object(self.content, "import_sources", wraps=self.content.import_sources) as copy,
+            self.assertLogs("scholarseed.resources.imports", level="INFO") as logs,
+        ):
+            await self.service.start()
+            try:
+                await self.wait_for(lambda: len(failures) >= 3)
+                self.assertGreaterEqual(failures[1] - failures[0], 0.035)
+                self.assertGreaterEqual(failures[2] - failures[1], 0.075)
+                generation = self.activities.begin_restart()
+                with self.assertRaisesRegex(ResourceImportError, "storage_io_failed"):
+                    await self.service.prepare_for_update_shutdown(generation)
+                available.set()
+                await self.service.prepare_for_update_shutdown(generation)
+                self.assertEqual(self.store.get(job.job_id, "local").status, ImportJobStatus.QUEUED)
+                self.activities.resume(generation)
+                await self.wait_for(
+                    lambda: self.store.get(job.job_id, "local").status is ImportJobStatus.COMPLETED
+                )
+                copy.assert_called_once()
+            finally:
+                available.set()
+                await self.service.aclose()
+        self.assertEqual(self.activities.snapshot().counts, {})
+        messages = "\n".join(logs.output)
+        self.assertIn("resource_import_poll_unavailable", messages)
+        self.assertIn(str(sqlite3.SQLITE_IOERR_SHMOPEN), messages)
+        self.assertIn("resource_import_poll_recovered", messages)
+        self.assertNotIn("private storage location", messages)
+
+    async def test_uncertain_claim_commit_is_not_replayed(self):
+        job = self.queue_source()
+        committed = threading.Event()
+
+        class UncertainCommit(sqlite3.Connection):
+            def commit(self):
+                super().commit()
+                if self.total_changes and not committed.is_set():
+                    committed.set()
+                    error = sqlite3.OperationalError("uncertain commit")
+                    error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+                    raise error
+
+        def open_ledger(*args, **kwargs):
+            return open_database(*args, factory=UncertainCommit, **kwargs)
+
+        with (
+            patch("service.resources.persistence.jobs.open_database", side_effect=open_ledger),
+            patch.object(self.content, "import_sources", wraps=self.content.import_sources) as copy,
+        ):
+            await self.service.start()
+            try:
+                await self.wait_for(committed.is_set)
+                generation = self.activities.begin_restart()
+                with self.assertRaisesRegex(
+                    ResourceImportError, "resource_import_worker_unavailable"
+                ):
+                    await self.service.prepare_for_update_shutdown(generation)
+            finally:
+                with self.assertRaisesRegex(sqlite3.OperationalError, "uncertain commit"):
+                    await self.service.aclose()
+            claimed = self.store.get(job.job_id, "local")
+            self.assertEqual(claimed.status, ImportJobStatus.RUNNING)
+            self.assertEqual(claimed.lease_generation, 1)
+            copy.assert_not_called()
+
+    async def test_cancelled_update_probe_keeps_sqlite_owned_until_it_exits(self):
+        entered, release = threading.Event(), threading.Event()
+        verify = self.store.verify_writable
+
+        def blocked_probe():
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("test update probe barrier")
+            verify()
+
+        with patch.object(self.store, "verify_writable", side_effect=blocked_probe):
+            await self.service.start()
+            generation = self.activities.begin_restart()
+            probe = asyncio.create_task(self.service.prepare_for_update_shutdown(generation))
+            try:
+                await self.wait_for(entered.is_set)
+                probe.cancel()
+                closed = asyncio.create_task(self.service.aclose())
+                await asyncio.sleep(0)
+                self.assertFalse(probe.done())
+                self.assertFalse(closed.done())
+            finally:
+                release.set()
+                await asyncio.gather(probe, return_exceptions=True)
+                await self.service.aclose()
+            self.assertTrue(probe.cancelled())
+            await closed
+            self.assertEqual(self.activities.snapshot().counts, {})
+
+    async def test_missing_ledger_is_preserved_and_close_interrupts_backoff(self):
+        ledger = self.store.database
+        ledger.rename(ledger.with_suffix(".saved"))
+        with (
+            patch("service.resources.service.jobs.IMPORT_POLL_RETRY_INITIAL_SECONDS", 60),
+            self.assertLogs("scholarseed.resources.imports") as logs,
+        ):
+            await self.service.start()
+            try:
+                await self.wait_for(
+                    lambda: any("resource_import_poll_unavailable" in line for line in logs.output)
+                )
+                generation = self.activities.begin_restart()
+                with self.assertRaisesRegex(ResourceImportError, "storage_io_failed"):
+                    await self.service.prepare_for_update_shutdown(generation)
+                self.assertFalse(ledger.exists())
+            finally:
+                await asyncio.wait_for(self.service.aclose(), 1)
         self.assertEqual(self.activities.snapshot().counts, {})
 
 

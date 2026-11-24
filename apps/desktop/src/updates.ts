@@ -137,7 +137,10 @@ export type UpdateErrorOrigin = 'check' | 'download' | 'preparation' | 'install'
  * Main-process failure classification for localized update messages. Keep
  * native diagnostics in logs and pass only the classification to the renderer.
  */
+export type UpdatePreflightFailure = 'update_storage_full' | 'update_import_store_unavailable'
+
 export type UpdateInstallFallback =
+  | UpdatePreflightFailure
   | 'download_failed'
   | 'storage_exhausted'
   | 'install_failed'

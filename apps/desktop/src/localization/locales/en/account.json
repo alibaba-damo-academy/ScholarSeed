@@ -158,6 +158,8 @@
     "launcherMaintenanceRequired": "The installed launcher needs an upgrade. Quit ScholarSeed normally, download the latest installer from the official channel, and install it in the existing location. Then reopen the app. In-app updates cannot replace this launcher.",
     "preparationConnectionClosed": "The update preparation connection closed. Retry preparation.",
     "preparationFailed": "Could not prepare the update. Retry preparation.",
+    "preflightStorageFull": "There is not enough disk space to check local import tasks. Free up space, then retry the update.",
+    "preflightImportStoreUnavailable": "ScholarSeed could not check the local import task database. Check available disk space and make sure the data folder is writable, then retry the update. If it still fails, restart ScholarSeed.",
     "installationInProgress": "An update is being installed. ScholarSeed will exit to let installation finish. Please open it again shortly.",
     "installationFailed": "Update installation failed. Quit and reopen ScholarSeed. If it still cannot start, reinstall the latest version and include update diagnostics in your feedback.",
     "activationRecoveryRequired": "The update handoff could not be confirmed. Quit and reopen ScholarSeed. If this message persists, reinstall the latest version from the official website and include update diagnostics when contacting support.",

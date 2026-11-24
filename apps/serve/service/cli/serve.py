@@ -73,6 +73,7 @@ from service.identity.utils import (  # noqa: E402
 )
 from service.paths import SERVICE_BRIDGE_DIR, SERVICE_CASES_DIR  # noqa: E402
 from service.platform.activity import Activities, ActivityDomain  # noqa: E402
+from service.platform.content import DISK_FULL_ERROR  # noqa: E402
 from service.platform.executables import (  # noqa: E402
     SKILL_PYTHON_COMMAND,
     SKILL_PYTHON_ENV,
@@ -82,12 +83,17 @@ from service.platform.executables import (  # noqa: E402
     probe_command,
     resolve_command,
 )
-from service.platform.parent_control import ParentControl  # noqa: E402
+from service.platform.parent_control import ParentControl, UpdateStorageRefusal  # noqa: E402
 from service.platform.server import ProductServer  # noqa: E402
 from service.platform.shutdown import DEFAULT_SHUTDOWN_SECONDS  # noqa: E402
 from service.platform.startup import startup_phase  # noqa: E402
 from service.platform.toolchain import ToolchainReadiness  # noqa: E402
 from service.platform.vocabulary import INTERNAL_BASE_URL_ENV  # noqa: E402
+from service.resources.service.jobs import (  # noqa: E402
+    RESOURCE_IMPORT_WORKER_UNAVAILABLE,
+    STORAGE_IO_FAILED_ERROR,
+    ResourceImportError,
+)
 
 startup_checkpoint("serve.imports_ready")
 
@@ -430,6 +436,18 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
             return not _is_shutdown_cancellation(record)
 
     logging.getLogger("uvicorn.error").addFilter(_LifespanCancelFilter())
+
+    async def check_update_storage(generation: str) -> UpdateStorageRefusal | None:
+        try:
+            await app.state.resource_imports.prepare_for_update_shutdown(generation)
+        except ResourceImportError as error:
+            if error.code == DISK_FULL_ERROR:
+                return UpdateStorageRefusal.DISK_FULL
+            if error.code in (STORAGE_IO_FAILED_ERROR, RESOURCE_IMPORT_WORKER_UNAVAILABLE):
+                return UpdateStorageRefusal.IMPORT_UNAVAILABLE
+            raise
+        return None
+
     ProductServer(
         uvicorn.Config(app, host=args.host, port=args.port, log_level=log_level),
         app.state.activities,
@@ -445,6 +463,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
                 interrupt_running=app.state.session_service.interrupt_running_for_update,
                 drain_attachments=app.state.runtime_service.drain_for_update,
                 prepare_update=app.state.session_service.prepare_for_update_shutdown,
+                check_update_storage=check_update_storage,
                 resume_update=app.state.session_service.resume_after_update_shutdown,
                 toolchain_complete=(
                     app.state.runtime_service.toolchain.complete if args.await_toolchain else None

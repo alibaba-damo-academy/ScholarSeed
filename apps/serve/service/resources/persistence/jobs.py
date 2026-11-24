@@ -7,12 +7,16 @@ import sqlite3
 import time
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from errno import EIO
 from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
 from service.paths import RESOURCE_IMPORTS_DB
 from service.persistence.project import (
+    SQLITE_PRIMARY_RESULT_MASK,
+    DatabaseMode,
+    classify_storage_failure,
     database_files,
     open_database,
     reader,
@@ -36,6 +40,10 @@ RESULTS_TABLE = "resource_import_results"
 EVENTS_TABLE = "resource_import_events"
 EVENT_SEQUENCE = f"COALESCE((SELECT MAX(seq) FROM {EVENTS_TABLE} WHERE {EVENTS_TABLE}.job_id = {JOBS_TABLE}.job_id),0)"
 SQLITE_TIMEOUT_SECONDS = 15.0
+POLL_BUSY_TIMEOUT_SECONDS = 0.5
+POLL_RETRYABLE_SQLITE_CODES = frozenset(
+    (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_CANTOPEN)
+)
 LEASE_RENEWAL_SECONDS = 30.0
 ADDITIVE_JOB_COLUMNS = {
     "scan_discovered_items": "INTEGER NOT NULL DEFAULT 0",
@@ -65,6 +73,18 @@ class ImportSchema:
             or self.results_backfill
             or self.events_backfill
         )
+
+
+class ImportPollUnavailable(RuntimeError):
+    """Storage rejected a poll before it entered its write transaction."""
+
+    def __init__(self, error: OSError | sqlite3.Error) -> None:
+        super().__init__("resource import polling storage unavailable")
+        self.error = error
+
+
+class ImportJournalModeError(RuntimeError):
+    """The import ledger is unavailable in its required WAL mode."""
 
 
 class ImportJobStore:
@@ -163,20 +183,50 @@ class ImportJobStore:
         )
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = open_database(self.database, timeout=SQLITE_TIMEOUT_SECONDS)
+    def _connection(
+        self, *, polling: bool = False, probe: bool = False
+    ) -> Iterator[sqlite3.Connection]:
+        bounded = polling or probe
+        timeout = POLL_BUSY_TIMEOUT_SECONDS if bounded else SQLITE_TIMEOUT_SECONDS
+        mode = DatabaseMode.EXISTING if bounded else DatabaseMode.CREATE
+        connection: sqlite3.Connection | None = None
         try:
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute(f"PRAGMA busy_timeout={int(SQLITE_TIMEOUT_SECONDS * 1000)}")
+            try:
+                connection = open_database(self.database, mode=mode, timeout=timeout)
+                connection.row_factory = sqlite3.Row
+                journal = connection.execute(
+                    "PRAGMA journal_mode" if probe else "PRAGMA journal_mode=WAL"
+                ).fetchone()
+                if bounded and (journal is None or journal[0] != "wal"):
+                    raise ImportJournalModeError("resource import ledger is not in WAL mode")
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+                if bounded:
+                    connection.execute("BEGIN IMMEDIATE")
+            except (OSError, sqlite3.Error) as error:
+                primary_code = getattr(error, "sqlite_errorcode", 0) & SQLITE_PRIMARY_RESULT_MASK
+                if polling and (
+                    classify_storage_failure(error) is not None
+                    or primary_code in POLL_RETRYABLE_SQLITE_CODES
+                    or (isinstance(error, OSError) and error.errno == EIO)
+                ):
+                    raise ImportPollUnavailable(error) from None
+                raise
             yield connection
             connection.commit()
         except BaseException:
-            connection.rollback()
+            if connection is not None and connection.in_transaction:
+                connection.rollback()
             raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
+
+    def verify_writable(self) -> None:
+        """Check the existing WAL ledger and writer lock without modifying job data."""
+        with self._connection(probe=True) as connection:
+            connection.execute(f"SELECT job_id FROM {JOBS_TABLE} LIMIT 1").fetchone()
+            connection.rollback()
 
     @staticmethod
     def _create_schema(connection: sqlite3.Connection) -> None:
@@ -345,8 +395,7 @@ class ImportJobStore:
     def claim(self, worker_id: str, lease_seconds: float) -> ImportJob | None:
         now = time.time()
         deadline = now + lease_seconds
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._connection(polling=True) as connection:
             row = connection.execute(
                 f"SELECT * FROM {JOBS_TABLE} WHERE cancel_requested = 0 AND "
                 "status = ? "
@@ -381,8 +430,7 @@ class ImportJobStore:
         """Fail expired work instead of replaying non-transactional filesystem effects."""
 
         now = time.time()
-        with self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self._connection(polling=True) as connection:
             rows = connection.execute(
                 f"SELECT job_id, completed_items, EXISTS("
                 f"SELECT 1 FROM {RESULTS_TABLE} WHERE {RESULTS_TABLE}.job_id = "

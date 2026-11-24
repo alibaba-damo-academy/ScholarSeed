@@ -562,6 +562,16 @@ handling belong to the [Serve lifecycle contract](../../../docs/architecture/ser
 Ordinary quiesce, idle maintenance and normal suspension retain their existing
 Trace checkpoint requirements.
 
+When Serve confirms it retained no maintenance, the exact `prepare_update`
+receipts `00 01` and `00 02` identify insufficient storage space and an
+unavailable import-task database, respectively. Desktop resumes preference
+writes, preserves the live workbench and any still-verified candidate, and
+shows the localized reason with the restart action available for retry.
+
+Serve 确认未保留维护状态后，`prepare_update` 的精确回执 `00 01` 和 `00 02`
+分别表示存储空间不足和导入任务数据库不可用。桌面端恢复偏好写入，保留当前工作台
+和仍通过验证的更新候选，并显示本地化原因，保留可重试的重启动作。
+
 Preparation does not close the live sessions. Cancellation before backend shutdown
 may resume the exact successful generation; unknown preparation outcomes never
 authorize installation or a guessed resume. Windows retains its owned-family
