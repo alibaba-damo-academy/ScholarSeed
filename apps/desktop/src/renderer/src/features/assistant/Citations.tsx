@@ -47,6 +47,7 @@ export function TurnCitationSources({
   const openWebSource = React.useContext(WebNavigationContext)
   const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof turnCitationSources>>>()
   const [failed, setFailed] = useState(false)
+  // A new textVersion invalidates the previous answer's sources, even for the same turn.
   useEffect(() => {
     setSnapshot(undefined)
     setFailed(false)

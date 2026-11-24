@@ -107,9 +107,7 @@ export function sampleHistoryMemory(serve, desktop, emit) {
   }
 }
 
-export async function measureHistoryClick(page, turnId, stage, timeoutMs) {
-  const deadline = Date.now() + timeoutMs
-  const remaining = () => Math.max(1, deadline - Date.now())
+export async function measureHistoryClick(page, turnId, stage, remaining) {
   const mark = `scholarseed.history.${stage}`
   const stream = page.locator('.conversation-stream')
   const answer = stream
@@ -151,9 +149,10 @@ export async function measureHistoryClick(page, turnId, stage, timeoutMs) {
       { timeout: remaining() }
     )
     .then((handle) => handle.jsonValue())
-  const [, interaction] = await Promise.all([trigger.click({ timeout: remaining() }), response])
+  const clickSource = async () => trigger.click({ timeout: remaining() })
+  const [interaction] = await Promise.all([response, clickSource()])
   if (stage === 'firstClick') {
-    await trigger.click({ timeout: remaining() })
+    await clickSource()
     await page
       .locator('[data-citation-source-panel]')
       .waitFor({ state: 'hidden', timeout: remaining() })

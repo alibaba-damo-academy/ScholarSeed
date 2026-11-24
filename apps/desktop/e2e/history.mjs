@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, constants, statSync } from 'node:fs'
+import { constants, statSync } from 'node:fs'
 import {
   access,
   cp,
@@ -14,19 +14,19 @@ import {
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { chromium } from 'playwright'
+import { captureFirstScreen, observationTimeLeft, observeOldTurn } from './fixtures/observation.mjs'
+import { captureOutput, createTimeline } from './fixtures/evidence.mjs'
 import {
   boundedProfileRead,
   enableHistoryProfile,
-  measureHistoryClick,
-  oldSourceTimings,
   rendererHistoryPhases,
   sampleHistoryMemory,
 } from './fixtures/profiling.mjs'
+import { buildRecoveryReport, verifyHistoryProfile, verifySourceLimit } from './fixtures/report.mjs'
 
 const STARTUP_TIMEOUT_MS = 30_000
 const HEALTH_INTERVAL_MS = 500
@@ -34,10 +34,6 @@ const DEFAULT_ALERT_MS = 800
 const DEFAULT_TIMEOUT_MS = 120_000
 // Leave room under the macOS Unix socket path limit for the fixture home and Serve bridge.
 const TEMP_PARENT_BYTE_LIMIT = 35
-const MAX_SCROLL_ATTEMPTS = 100
-const SCROLL_DELTA_Y_PX = -12_000
-const SCROLL_SETTLE_MS = 100
-const SCROLL_LOCATOR_TIMEOUT_MS = 5_000
 const HEALTH_ROUTE = '/api/healthz/backend'
 const RENDERER_PATH = '/'
 const LOOPBACK = '127.0.0.1'
@@ -174,35 +170,36 @@ function ownsListener(pid, port) {
   }
 }
 
-function launch(executable, arguments_, options, logPath, evidence, onLine = () => {}) {
+function launch(executable, arguments_, options, logPath, evidence, onLine) {
   evidence.signal.throwIfAborted()
   const child = spawn(executable, arguments_, { ...options, stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise((resolve) => {
-    child.once('error', (error) => resolve({ error: error.message }))
-    child.once('close', (code, signal) => resolve({ code, signal }))
-  })
-  for (const stream of [child.stdout, child.stderr]) {
-    createInterface({ input: stream }).on('line', (line) => {
-      if (evidence.signal.aborted) return
-      try {
-        appendFileSync(logPath, `${line}\n`)
-        onLine(line)
-      } catch (error) {
-        evidence.abort(error)
-      }
+    let spawnError
+    child.once('error', (error) => {
+      spawnError = error
     })
-  }
-  return { child, exited, identity: child.pid ? processIdentity(child.pid) : '' }
+    child.once('close', (code, signal) =>
+      resolve(spawnError ? { error: spawnError.message } : { code, signal })
+    )
+  })
+  const flushOutput = captureOutput([child.stdout, child.stderr], logPath, evidence, onLine)
+  return { child, exited, flushOutput, identity: child.pid ? processIdentity(child.pid) : '' }
 }
 
 async function stop(owned) {
   if (!owned) return null
   const { child, exited } = owned
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
-  const outcome = await Promise.race([exited, delay(10_000, null, { ref: false })])
-  if (outcome) return outcome
-  if (owned.identity && processIdentity(child.pid) === owned.identity) child.kill('SIGKILL')
-  return Promise.race([exited, delay(3_000, { error: 'Process did not exit' }, { ref: false })])
+  let outcome = await Promise.race([exited, delay(10_000, null, { ref: false })])
+  if (!outcome) {
+    if (owned.identity && processIdentity(child.pid) === owned.identity) child.kill('SIGKILL')
+    outcome = await Promise.race([
+      exited,
+      delay(3_000, { error: 'Process did not exit' }, { ref: false }),
+    ])
+  }
+  await owned.flushOutput()
+  return outcome
 }
 
 async function waitFor(signal, probe, timeoutMs, label) {
@@ -300,6 +297,61 @@ function observeNetwork(cdp, fixture, emit, profileHistory) {
   return () => heartbeatAt
 }
 
+function serveDiagnostic(line, sessionId, active, emit, triggerSample) {
+  const replay = line.match(/sse\.replay_(started|finished)\s+session_id=([\w-]+)\s+(.*)/)
+  if (replay?.[2] === sessionId) {
+    emit('sse_replay', {
+      phase: replay[1],
+      details: Object.fromEntries(
+        [...replay[3].matchAll(/(\w+)=(\S+)/g)].map((field) => field.slice(1))
+      ),
+    })
+  }
+  const marker = line.indexOf(PRODUCT_LOG_PREFIX)
+  if (marker < 0) return
+  let row
+  try {
+    row = JSON.parse(line.slice(marker + PRODUCT_LOG_PREFIX.length))
+  } catch {
+    return
+  }
+  if (row.event === 'loop_stall')
+    triggerSample('loop_stall', {
+      loopStallId: row.loop_stall_id,
+      processLoopLagMs: row.process_loop_lag_ms,
+    })
+  if (row.event === 'loop_stall' || row.event === 'loop_recovered' || row.event === 'loop_lag')
+    emit('serve_loop', { phase: row.event, record: row })
+  const ingress = active.get(row.request_id)
+  if (row.event === 'received')
+    active.set(row.request_id, {
+      requestId: row.request_id,
+      method: row.method,
+      startedAt: row.started_at,
+      ingressObservedAt: Date.now(),
+    })
+  if (row.event === 'headers')
+    active.set(row.request_id, {
+      requestId: row.request_id,
+      method: row.method,
+      route: row.route,
+      startedAt: row.started_at,
+      headersMs: row.headers_ms,
+      handlerPhasesMs: row.handler_phases_ms,
+    })
+  if (row.event === 'finished') active.delete(row.request_id)
+  if (
+    row.route?.includes('/history/') ||
+    row.route?.endsWith('/sources') ||
+    row.route?.endsWith('/events') ||
+    row.route === '/api/serve/sessions/open'
+  ) {
+    if (row.event === 'headers' && ingress)
+      emit('serve_ingress_matched', { ...ingress, route: row.route })
+    emit('serve_request', { phase: row.event, record: row })
+  }
+}
+
 function rendererDiagnostic(line, sessionId, emit) {
   for (const [token, name] of [
     ['[session-recovery]', 'recovery'],
@@ -314,6 +366,7 @@ function rendererDiagnostic(line, sessionId, emit) {
       if (
         data.sessionId === sessionId ||
         data.route === `/api/serve/history/${sessionId}` ||
+        // HTTP latency diagnostics identify history by its redacted route template.
         data.route === '/api/serve/history/{session_id}'
       ) {
         emit(name, { ...data, diagnosticEvent: data.event })
@@ -335,15 +388,17 @@ async function copyFixture(fixture) {
     profile: join(root, 'profile'),
     codex: join(root, 'codex'),
   }
-  for (const key of ['home', 'profile', 'codex']) {
-    await cp(fixture[key], paths[key], {
-      recursive: true,
-      filter: (path) =>
-        key !== 'profile' ||
-        dirname(path) !== fixture.profile ||
-        !PROFILE_SINGLETONS.has(basename(path)),
-    })
-  }
+  await Promise.all(
+    ['home', 'profile', 'codex'].map((key) =>
+      cp(fixture[key], paths[key], {
+        recursive: true,
+        filter: (path) =>
+          key !== 'profile' ||
+          dirname(path) !== fixture.profile ||
+          !PROFILE_SINGLETONS.has(basename(path)),
+      })
+    )
+  )
   for (const folder of ['trace', 'ledger']) await mkdir(join(root, folder), { mode: 0o700 })
   return paths
 }
@@ -357,15 +412,6 @@ async function run(options, fixture, artifact) {
   const active = new Map()
   const sampling = []
   const evidence = new AbortController()
-  const emit = (event, data = {}) => {
-    const row = { ...data, observedAt: Date.now(), event }
-    records.push(row)
-    try {
-      appendFileSync(join(artifact, 'timeline.jsonl'), `${JSON.stringify(row)}\n`)
-    } catch (error) {
-      evidence.abort(error)
-    }
-  }
   const product = JSON.parse(
     await readFile(join(options.desktop, 'resources', 'product.json'), 'utf8')
   )
@@ -400,16 +446,7 @@ async function run(options, fixture, artifact) {
   const rendererSha256 = createHash('sha256')
     .update(await readFile(join(renderer, entry)))
     .digest('hex')
-  emit('variant', {
-    revision: options.revision,
-    rendererSha256,
-    rendererEntry: entry,
-    fixture: { id: fixture.sessionId, events: fixture.events, turns: fixture.turns },
-  })
-  await availablePort(fixture.port)
-  const cdpPort = await availablePort()
-  if (cdpPort === fixture.port)
-    throw new Error('The chosen CDP port conflicts with the fixture origin')
+  const { emit, finish } = createTimeline(join(artifact, 'timeline.jsonl'), records, evidence)
   let serve,
     desktop,
     browser,
@@ -417,19 +454,21 @@ async function run(options, fixture, artifact) {
     healthStopped = false
   let requestedSample = false
   let desktopStartedAt = null
-  let visibleAt = null
+  const firstScreen = { visibleAt: null, firstInteraction: null }
   let heartbeatAt = null
   let observationEndedAt = null
   let prepared = false
   let stopMemory
   let memory
-  let firstInteraction
   let projectionPhases
   let productPage
-  let rendererSourcesBeforeHeartbeat = null
-  let rendererObservationComplete = false
-  let exitFailed = false
+  let report
   let runFailure
+  const recordFailure = (error) => {
+    if (!error || runFailure) return
+    runFailure = error
+    emit('run_failed', { message: error.message })
+  }
   const stopChildren = () => {
     desktop?.child.kill('SIGTERM')
     serve?.child.kill('SIGTERM')
@@ -442,7 +481,8 @@ async function run(options, fixture, artifact) {
   process.once('SIGTERM', stopOnInterrupt)
   process.once('SIGINT', stopOnInterrupt)
   const triggerSample = (reason, detail) => {
-    if (requestedSample || process.platform !== 'darwin' || !serve?.identity) return
+    if (healthStopped || requestedSample || process.platform !== 'darwin' || !serve?.identity)
+      return
     if (
       processIdentity(serve.child.pid) !== serve.identity ||
       !ownsListener(serve.child.pid, fixture.port) ||
@@ -485,7 +525,8 @@ async function run(options, fixture, artifact) {
     )
     sampling.push(
       sampler.exited
-        .then((outcome) => {
+        .then(async (outcome) => {
+          await sampler.flushOutput()
           const bytes = statSync(sampleFile, { throwIfNoEntry: false })?.size ?? 0
           emit('sample_finished', { pid: serve.child.pid, ...outcome, bytes })
           if (outcome.error) throw new Error(`Could not start Serve sample: ${outcome.error}`)
@@ -494,6 +535,16 @@ async function run(options, fixture, artifact) {
     )
   }
   try {
+    emit('variant', {
+      revision: options.revision,
+      rendererSha256,
+      rendererEntry: entry,
+      fixture: { id: fixture.sessionId, events: fixture.events, turns: fixture.turns },
+    })
+    await availablePort(fixture.port)
+    const cdpPort = await availablePort()
+    if (cdpPort === fixture.port)
+      throw new Error('The chosen CDP port conflicts with the fixture origin')
     serve = launch(
       options.python,
       [
@@ -515,64 +566,7 @@ async function run(options, fixture, artifact) {
       { cwd: fixture.workspace, env },
       join(artifact, 'serve.log'),
       evidence,
-      (line) => {
-        const replay = line.match(/sse\.replay_(started|finished)\s+session_id=([\w-]+)\s+(.*)/)
-        if (replay?.[2] === fixture.sessionId) {
-          emit('sse_replay', {
-            phase: replay[1],
-            details: Object.fromEntries(
-              [...replay[3].matchAll(/(\w+)=(\S+)/g)].map((field) => field.slice(1))
-            ),
-          })
-        }
-        const marker = line.indexOf(PRODUCT_LOG_PREFIX)
-        if (marker < 0) return
-        let row
-        try {
-          row = JSON.parse(line.slice(marker + PRODUCT_LOG_PREFIX.length))
-        } catch {
-          return
-        }
-        if (row.event === 'loop_stall')
-          triggerSample('loop_stall', {
-            loopStallId: row.loop_stall_id,
-            processLoopLagMs: row.process_loop_lag_ms,
-          })
-        if (
-          row.event === 'loop_stall' ||
-          row.event === 'loop_recovered' ||
-          row.event === 'loop_lag'
-        )
-          emit('serve_loop', { phase: row.event, record: row })
-        const ingress = active.get(row.request_id)
-        if (row.event === 'received')
-          active.set(row.request_id, {
-            requestId: row.request_id,
-            method: row.method,
-            startedAt: row.started_at,
-            ingressObservedAt: Date.now(),
-          })
-        if (row.event === 'headers')
-          active.set(row.request_id, {
-            requestId: row.request_id,
-            method: row.method,
-            route: row.route,
-            startedAt: row.started_at,
-            headersMs: row.headers_ms,
-            handlerPhasesMs: row.handler_phases_ms,
-          })
-        if (row.event === 'finished') active.delete(row.request_id)
-        if (
-          row.route?.includes('/history/') ||
-          row.route?.endsWith('/sources') ||
-          row.route?.endsWith('/events') ||
-          row.route === '/api/serve/sessions/open'
-        ) {
-          if (row.event === 'headers' && ingress)
-            emit('serve_ingress_matched', { ...ingress, route: row.route })
-          emit('serve_request', { phase: row.event, record: row })
-        }
-      }
+      (line) => serveDiagnostic(line, fixture.sessionId, active, emit, triggerSample)
     )
     const health = await waitFor(
       evidence.signal,
@@ -667,7 +661,7 @@ async function run(options, fixture, artifact) {
     await cdp.send('Network.enable')
     emit('renderer_observer_attached', { origin: new URL(page.url()).origin })
     const deadline = desktopStartedAt + options.timeoutMs
-    const remaining = () => Math.max(1, deadline - Date.now())
+    const remaining = () => observationTimeLeft(deadline, 'Desktop recovery')
     const landing = page.getByTestId('landing-skip')
     const homeTask = page.getByTestId(`home-task-${fixture.sessionId}`)
     const skipGuide = page
@@ -709,44 +703,19 @@ async function run(options, fixture, artifact) {
       )
       prepared = true
     }
-    const historyVisible = page
-      .waitForFunction(
-        (tail) => {
-          const turn = tail ? `[data-message-turn-id="${tail}"]` : '[data-message-turn-id]'
-          const selector = `.conversation-stream ${turn}[data-message-kind="agent"] > div`
-          const visible = [...document.querySelectorAll(selector)].some((element) => {
-            const { left, right, top, bottom } = element.getBoundingClientRect()
-            const x = (Math.max(0, left) + Math.min(innerWidth, right)) / 2
-            const y = (Math.max(0, top) + Math.min(innerHeight, bottom)) / 2
-            return element.contains(document.elementFromPoint(x, y)) && !!element.textContent.trim()
-          })
-          return visible ? Date.now() : false
-        },
-        fixture.lastTurnId ?? null,
-        { timeout: remaining() }
-      )
-      .then((handle) => handle.jsonValue())
-    const captureFirstScreen = historyVisible.then(async (at) => {
-      visibleAt = at
-      emit('history_visible', { elapsedMs: visibleAt - desktopStartedAt })
-      if (options.profileHistory) {
-        firstInteraction = await measureHistoryClick(
-          page,
-          fixture.lastTurnId,
-          'firstClick',
-          remaining()
-        )
-        emit('first_history_interaction', firstInteraction)
-      }
-      await page.screenshot({
-        path: join(
-          artifact,
-          options.profileHistory ? 'history-after-first-click.png' : 'history-visible.png'
-        ),
-        timeout: 10_000,
-      })
-    })
-    await Promise.all([captureFirstScreen, dismissLanding])
+    const firstScreenCapture = captureFirstScreen(
+      page,
+      {
+        lastTurnId: fixture.lastTurnId,
+        desktopStartedAt,
+        artifact,
+        profileHistory: options.profileHistory,
+        emit,
+        deadline,
+      },
+      firstScreen
+    )
+    await Promise.all([firstScreenCapture, dismissLanding])
     if (!options.prepare) {
       try {
         await waitFor(evidence.signal, firstHeartbeat, remaining(), 'first session SSE heartbeat')
@@ -761,70 +730,12 @@ async function run(options, fixture, artifact) {
       timeout: 10_000,
     })
     if (options.oldTurn && !options.prepare) {
-      const stream = page.locator('.conversation-stream')
-      emit('older_turn_scroll_started', { turnId: options.oldTurn })
-      await stream.hover({ timeout: Math.min(SCROLL_LOCATOR_TIMEOUT_MS, remaining()) })
-      const oldTurn = stream.locator(`[data-message-turn-id="${options.oldTurn}"]`).first()
-      const intersectsViewport = async () => {
-        const [viewport, row] = await Promise.all([stream.boundingBox(), oldTurn.boundingBox()])
-        return (
-          viewport &&
-          row &&
-          viewport.height > 0 &&
-          row.height > 0 &&
-          row.y + row.height > viewport.y &&
-          row.y < viewport.y + viewport.height
-        )
-      }
-      // Scroll using native wheel input to exercise the production viewport observer.
-      for (let count = 0; count < MAX_SCROLL_ATTEMPTS; count++) {
-        if (await intersectsViewport()) break
-        await page.mouse.wheel(0, SCROLL_DELTA_Y_PX)
-        await delay(SCROLL_SETTLE_MS)
-      }
-      await oldTurn.waitFor({ state: 'visible', timeout: SCROLL_LOCATOR_TIMEOUT_MS })
-      if (!(await intersectsViewport())) {
-        throw new Error(`Older turn ${options.oldTurn} did not enter the viewport`)
-      }
-      const oldVisibleAt = Date.now()
-      emit('older_turn_visible', { turnId: options.oldTurn })
-      await page.screenshot({ path: join(artifact, 'older-turn.png'), timeout: 10_000 })
-      if (options.checkOldSources) {
-        if (options.profileHistory) {
-          const interaction = await measureHistoryClick(
-            page,
-            options.oldTurn,
-            'olderClick',
-            remaining()
-          )
-          emit('older_turn_sources_opened', {
-            turnId: options.oldTurn,
-            ...interaction,
-            elapsedSinceVisibleMs: interaction.visibleAt - oldVisibleAt,
-          })
-        } else {
-          const answer = stream
-            .locator(`[data-message-turn-id="${options.oldTurn}"][data-message-kind="agent"]`)
-            .last()
-          const trigger = answer.locator('[data-answer-source-list]').getByRole('button').first()
-          await trigger.click({ timeout: remaining() })
-          const panel = page.locator('[data-citation-source-panel]').last()
-          await panel
-            .locator('[data-citation-source-entry]')
-            .first()
-            .waitFor({ state: 'visible', timeout: remaining() })
-          emit('older_turn_sources_opened', {
-            turnId: options.oldTurn,
-            elapsedSinceVisibleMs: Date.now() - oldVisibleAt,
-          })
-        }
-        await page.screenshot({ path: join(artifact, 'older-sources.png'), timeout: 10_000 })
-      }
+      await observeOldTurn(page, options, artifact, emit, deadline)
     }
   } catch (error) {
-    runFailure = evidence.signal.reason ?? error
-    emit('run_failed', { message: runFailure.message })
+    recordFailure(evidence.signal.reason ?? error)
   } finally {
+    const { visibleAt, firstInteraction } = firstScreen
     healthStopped = true
     if (stopMemory)
       memory = await stopMemory(firstInteraction?.visibleAt).catch((error) => evidence.abort(error))
@@ -839,166 +750,36 @@ async function run(options, fixture, artifact) {
     const serveExit = await stop(serve)
     emit('desktop_exit', desktopExit ?? {})
     emit('serve_exit', serveExit ?? {})
-    exitFailed = Boolean(desktopExit?.error || serveExit?.error)
     process.removeListener('SIGINT', stopOnInterrupt)
     process.removeListener('SIGTERM', stopOnInterrupt)
     evidence.signal.removeEventListener('abort', stopChildren)
-    if (!runFailure && evidence.signal.aborted) {
-      runFailure = evidence.signal.reason
-      emit('run_failed', { message: runFailure.message })
-    }
-    const counts = Object.fromEntries(
-      ['history', 'sources', 'session-sse'].map((kind) => [
-        kind,
-        records.filter((row) => row.event === 'renderer_request' && row.kind === kind).length,
-      ])
-    )
-    const sources = records.filter(
-      (row) =>
-        row.event === 'serve_request' &&
-        row.phase === 'headers' &&
-        row.record.route?.endsWith('/sources')
-    )
-    const fromStart = (at) =>
-      at === null || desktopStartedAt === null ? null : Math.round(at - desktopStartedAt)
-    const open = records.find((row) => row.event === 'sse_attempt' && row.stage === 'live')
-    const countSourcesStartedBy = (cutoffMs) => {
-      if (cutoffMs === null) return null
-      return sources.filter(
-        ({ record }) => Number.isFinite(record.started_at) && record.started_at * 1000 <= cutoffMs
-      ).length
-    }
-    const observerArmed = records.find((row) => row.event === 'renderer_observer_attached')
-    rendererObservationComplete = Boolean(
-      observerArmed &&
-      counts.history > 0 &&
-      !records.some(
-        (row) =>
-          row.event === 'renderer_api_timing' &&
-          row.diagnosticEvent === 'fetch_started' &&
-          row.timestamp_ms < observerArmed.observedAt
-      )
-    )
-    rendererSourcesBeforeHeartbeat =
-      heartbeatAt === null || !rendererObservationComplete
-        ? null
-        : records.filter(
-            (row) =>
-              row.event === 'renderer_request' &&
-              row.kind === 'sources' &&
-              row.startedAt <= heartbeatAt
-          ).length
-    let outcome
-    if (options.prepare)
-      outcome = prepared && visibleAt !== null ? 'profile_prepared' : 'prepare_failed'
-    else if (heartbeatAt !== null) outcome = 'heartbeat_observed'
-    else outcome = visibleAt !== null ? 'history_observed' : 'history_unobserved'
-    const report = {
-      revision: options.revision,
+    recordFailure(evidence.signal.reason)
+    await finish()
+    recordFailure(evidence.signal.reason)
+    report = buildRecoveryReport(options, records, {
       rendererSha256,
-      outcome,
       desktopStartedAt,
-      historyVisibleMs: fromStart(visibleAt),
-      ...(options.profileHistory
-        ? {
-            historyProfile: {
-              memory,
-              clientReads: records
-                .filter(
-                  (row) =>
-                    row.event === 'renderer_api_timing' && row.diagnosticEvent === 'body_decoded'
-                )
-                .map((row) => {
-                  const transfer = records.find(
-                    (event) =>
-                      event.event === 'renderer_history_downloaded' &&
-                      event.serverRequestId === row.server_request_id
-                  )
-                  return {
-                    caller: row.caller,
-                    responseReadAndDecodeMs: row.body_elapsed_ms,
-                    requestId: row.server_request_id,
-                    encodedBytes: transfer?.encodedBytes ?? null,
-                    decodedAt: row.timestamp_ms,
-                    downloadedAt: transfer?.at ?? null,
-                  }
-                }),
-              projectionPhases,
-              olderSource: oldSourceTimings(records, options.oldTurn),
-              failure: records.find((row) => row.event === 'run_failed')?.message ?? null,
-              firstClickAfterStartMs: fromStart(firstInteraction?.inputAt ?? null),
-              firstClickResponseAfterStartMs: fromStart(firstInteraction?.visibleAt ?? null),
-              firstClickResponseMs: firstInteraction
-                ? firstInteraction.visibleAt - firstInteraction.inputAt
-                : null,
-            },
-          }
-        : {}),
-      onOpenMs: fromStart(open?.observedAt ?? null),
-      firstHeartbeatMs: fromStart(heartbeatAt),
-      rendererObservationComplete,
-      rendererSourcesBeforeHeartbeat,
-      serveSourcesWithHeadersBeforeHeartbeat: countSourcesStartedBy(heartbeatAt),
-      serveSourcesWithHeadersAtObservationEnd: countSourcesStartedBy(observationEndedAt),
-      counts,
-      backendSources: sources.length,
-      healthMaxMs: Math.max(
-        0,
-        ...records
-          .filter((row) => row.event === 'health' || row.event === 'health_error')
-          .map((row) => row.elapsedMs)
-      ),
-      sseAttempts: records
-        .filter((row) => row.event === 'sse_attempt')
-        .map(({ stage, sequence, attempt, observedAt }) => ({
-          stage,
-          sequence,
-          attempt,
-          elapsedMs: fromStart(observedAt),
-        })),
+      visibleAt,
+      heartbeatAt,
+      observationEndedAt,
+      prepared,
+      firstInteraction,
+      memory,
+      projectionPhases,
       runtime: paths.root,
-      ownedProcessesExited: !exitFailed,
+      ownedProcessesExited: !desktopExit?.error && !serveExit?.error,
       samples: sampling.length,
-      successfulSamples: records.filter(
-        (row) => row.event === 'sample_finished' && row.code === 0 && row.bytes > 0
-      ).length,
-    }
+    })
     await writeFile(join(artifact, 'summary.json'), `${JSON.stringify(report, null, 2)}\n`, {
       mode: 0o600,
     }).catch((error) => evidence.abort(error))
   }
   if (runFailure) throw runFailure
   evidence.signal.throwIfAborted()
-  if (exitFailed) throw new Error('Owned Desktop or Serve process did not exit')
-  if (
-    options.profileHistory &&
-    (!firstInteraction ||
-      (options.checkOldSources &&
-        !Number.isFinite(oldSourceTimings(records, options.oldTurn)?.serveHeadersMs)) ||
-      !memory?.rendererPeakKiB ||
-      !memory.processPeaks.some((row) => row.role === 'serve') ||
-      !projectionPhases?.some(
-        (row) => row.caller === 'transcript' && row.phase === 'projectionToCommit'
-      ) ||
-      !projectionPhases?.some((row) => row.caller === 'resume' && row.phase === 'projection') ||
-      !['transcript', 'resume'].every((caller) =>
-        records.some(
-          (row) =>
-            row.event === 'renderer_api_timing' &&
-            row.caller === caller &&
-            row.diagnosticEvent === 'body_decoded'
-        )
-      ))
-  )
-    throw new Error('Incomplete renderer history profile; inspect the timeline and summary')
+  if (!report.ownedProcessesExited) throw new Error('Owned Desktop or Serve process did not exit')
+  verifyHistoryProfile(report, options.checkOldSources)
   verifyGeneratedFixture(options.python, fixture)
-  if (
-    options.maxSources !== undefined &&
-    (rendererSourcesBeforeHeartbeat === null || rendererSourcesBeforeHeartbeat > options.maxSources)
-  )
-    throw new Error(
-      `Expected complete renderer observation and at most ${options.maxSources} source requests before the first heartbeat`
-    )
+  verifySourceLimit(report, options.maxSources)
   if (prepared) {
     await cp(paths.profile, fixture.profile, {
       recursive: true,
