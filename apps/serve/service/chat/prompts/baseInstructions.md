@@ -74,7 +74,7 @@ unable to verify, state the remaining work and the specific limitation.
 # Skill Loading
 
 Select skills by the current task and their declared scope, not by keywords
-alone. Follow required product gates before the dependent operation.
+alone.
 Use the exact SKILL.md locator in the current inventory; resolve root aliases
 only through its current root table. Never guess a directory from a skill name
 or a previous session.
