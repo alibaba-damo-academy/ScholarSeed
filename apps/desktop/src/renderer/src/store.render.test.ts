@@ -1207,6 +1207,99 @@ async function openReadyRecoverySession(page: Page, sessionId: string): Promise<
 const manualRecoveryCalls = (page: Page): Promise<[string, string | null, string?][]> =>
   page.evaluate(() => Reflect.get(window, 'manualRecoveryCalls'))
 
+for (const scope of ['project', 'literature'] as const) {
+  test(
+    `${scope} continuity cannot reopen or acknowledge the skipped startup task`,
+    { timeout: 60_000 },
+    async () => {
+      await fixture(
+        async (page) => {
+          await page.evaluate((scope) => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            localStorage.setItem(
+              'scholarseed.lastConversations',
+              JSON.stringify({
+                [scope === 'project' ? 'project-a' : 'literature']: 'recovery-target',
+                'project-b': 'ordinary-first',
+              })
+            )
+            probe.patch({
+              workbenchReady: true,
+              workspaceLoadState: 'ready',
+              projectsLoaded: true,
+              projects: [
+                { id: 'project-a', path: '/project-a', name: 'Project A' },
+                { id: 'project-b', path: '/project-b', name: 'Project B' },
+              ],
+              sessions: [
+                {
+                  id: 'recovery-target',
+                  title: 'Prior task',
+                  projectPath: scope === 'project' ? '/project-a' : null,
+                  status: 'dormant',
+                },
+                {
+                  id: 'ordinary-first',
+                  title: 'Unrelated project task',
+                  projectPath: '/project-b',
+                  status: 'dormant',
+                },
+              ],
+            })
+          }, scope)
+          await expect.poll(() => manualRecoveryCalls(page)).toEqual([['status', null]])
+          await page.evaluate((scope) => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            if (scope === 'project') probe.project('project-a')
+            probe.view(scope === 'project' ? 'resource' : 'literature')
+          }, scope)
+          assert.equal(
+            await page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.activeSession),
+            null
+          )
+          assert.deepEqual(await manualRecoveryCalls(page), [['status', null]])
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').project('project-b'))
+          assert.equal(
+            await page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.activeSession),
+            'ordinary-first'
+          )
+          await page.evaluate(() => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            probe.patch((state: AppState) => ({
+              ...state,
+              threads: {
+                ...state.threads,
+                'ordinary-first': { ...state.threads['ordinary-first'], resumeState: 'ready' },
+              },
+            }))
+          })
+          await expect
+            .poll(() =>
+              page.evaluate(
+                () => Reflect.get(window, 'preferenceProbe').disk.lastLocation?.sessionId
+              )
+            )
+            .toBe('ordinary-first')
+          assert.deepEqual(await manualRecoveryCalls(page), [['status', null]])
+          await openReadyRecoverySession(page, 'recovery-target')
+          await expect
+            .poll(() => manualRecoveryCalls(page))
+            .toEqual([
+              ['status', null],
+              ['manual-open', 'recovery-target', 'recovery-target'],
+            ])
+        },
+        (page) =>
+          installRecoveryBridge(page, {
+            status: scope === 'project' ? 'eligible' : 'home',
+            skippedSessionId: 'recovery-target',
+            needsManualAcknowledgement: scope === 'literature',
+          })
+      )
+    }
+  )
+}
+
 for (const needsManualAcknowledgement of [false, true]) {
   test(
     `persisted task recovery follows the session ID after other opens and dismissal (forced Home=${needsManualAcknowledgement})`,

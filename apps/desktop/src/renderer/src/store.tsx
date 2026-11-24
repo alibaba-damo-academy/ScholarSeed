@@ -613,6 +613,7 @@ export interface AppState {
   mainView: MainView
   navigationObservation?: NavigationObservation
   activeSession: string | null
+  explicitSessionSelection: string | null
   threads: Record<string, Thread>
   capGallery: CapKind | null
   /** 首页/对话「添加技能」上传弹窗 (复用技能页的 SkillAdd)。true = 打开。 */
@@ -932,6 +933,7 @@ const INITIAL: AppState = {
   // 进项目 / 进文献中心都由首页卡片承接。
   mainView: 'home',
   activeSession: null,
+  explicitSessionSelection: null,
   threads: {},
   capGallery: null,
   skillUploadOpen: false,
@@ -1042,6 +1044,7 @@ function assistantScopeReset(current: AppState): Partial<AppState> {
   return {
     ...COMPOSER_RESET,
     activeSession: null,
+    explicitSessionSelection: null,
     turnLaunch: null,
     aiPanel: {
       ...INITIAL_AI_PANEL_STATE,
@@ -1057,6 +1060,7 @@ const HOME_RESET: Partial<AppState> = {
   ...SURFACE_RESET,
   ...COMPOSER_RESET,
   activeSession: null,
+  explicitSessionSelection: null,
   mainView: 'home',
   newChooser: false,
   modelMenuOpen: false,
@@ -1231,6 +1235,7 @@ function activateSession(current: AppState, node: SessionNode, surface: SessionS
     ...current,
     ...COMPOSER_RESET,
     activeSession: node.id,
+    explicitSessionSelection: null,
     sessions,
     sessionActivitySeen,
     threads,
@@ -1321,10 +1326,13 @@ function rememberOpenedConversation(
 function restoreScopeConversation(
   current: AppState,
   scopeKey: string,
-  expectedProjectPath: string | null
+  expectedProjectPath: string | null,
+  canRestoreSession: (sessionId: string) => boolean
 ): AppState {
   const storage = window.localStorage
   const record = readContinuityRecord(storage)
+  const sessionId = record[scopeKey]
+  if (sessionId && !canRestoreSession(sessionId)) return current
   const candidate = restoreContinuityCandidate(
     record,
     scopeKey,
@@ -1761,6 +1769,18 @@ export function StoreProvider({
   const startupSearchesLoaded = useRef(false)
   const initialTaskRecovery = useRef<Promise<TaskRecoverySnapshot> | null>(null)
   const [manualRecovery, setManualRecovery] = useState<ManualRecoveryMarker | null>(null)
+  const markerClaimPending = useRef(false)
+  const locallySkippedSession = useRef<string | null>(null)
+  const canRestoreScopeSession = useCallback(
+    (sessionId: string): boolean => {
+      if (locallySkippedSession.current === sessionId) return false
+      if (!manualRecovery) return !window.scholarseed?.getTaskRecoveryStatus
+      return manualRecovery.skippedSessionId
+        ? manualRecovery.skippedSessionId !== sessionId
+        : !manualRecovery.needsManualAcknowledgement
+    },
+    [manualRecovery]
+  )
   const startupTask = useRef<{
     attempt: StartupTaskRecovery
     presenting: boolean
@@ -1928,6 +1948,7 @@ export function StoreProvider({
     (keepView: boolean): void => {
       const recovery = stateRef.current.startupTaskRecovery
       if (recovery !== 'waiting' && recovery !== 'presenting') return
+      if (startupTaskSessionId) locallySkippedSession.current = startupTaskSessionId
       const candidate = startupTask.current
       if (candidate) {
         candidate.keepView = keepView
@@ -1941,7 +1962,7 @@ export function StoreProvider({
         }))
       }
     },
-    [setState]
+    [setState, startupTaskSessionId]
   )
   useLayoutEffect(() => {
     if (state.navigationRestored) cancelStartupTask(true)
@@ -3397,6 +3418,7 @@ export function StoreProvider({
             )
             return {
               ...current,
+              explicitSessionSelection: id,
               recentSessions: touchRecentSession(current.recentSessions, {
                 id,
                 openedAt: Date.now(),
@@ -3455,6 +3477,7 @@ export function StoreProvider({
             ...current,
             ...COMPOSER_RESET,
             activeSession: id,
+            explicitSessionSelection: id,
             composerRefs: draft?.refs ?? [],
             mainView: assistantSessionView(current),
             aiPanel: {
@@ -3489,6 +3512,7 @@ export function StoreProvider({
           const activated = activateSession(current, node, 'assistant')
           return {
             ...activated,
+            explicitSessionSelection: node.id,
             recentSessions: touchRecentSession(activated.recentSessions, {
               id: node.id,
               openedAt: Date.now(),
@@ -3583,7 +3607,12 @@ export function StoreProvider({
               runtimePreparationTarget: null,
             }
             if (!nextProject) return next
-            return restoreScopeConversation(next, projectId, nextProject.path)
+            return restoreScopeConversation(
+              next,
+              projectId,
+              nextProject.path,
+              canRestoreScopeSession
+            )
           },
           { action: 'project' }
         )
@@ -3636,7 +3665,7 @@ export function StoreProvider({
             ...current,
             ...(surface === 'conversation' ? SURFACE_RESET : {}),
             turnLaunch: null,
-            ...(!detached ? { activeSession: sessionId } : {}),
+            ...(!detached ? { activeSession: sessionId, explicitSessionSelection: sessionId } : {}),
             ...(surface === 'conversation'
               ? { homeSelectedProjectId: null, homeProjectLocked: false }
               : {}),
@@ -3822,7 +3851,7 @@ export function StoreProvider({
               activeTab,
             }
             return view === LITERATURE_SCOPE_KEY && next.homeSelectedProjectId === null
-              ? restoreScopeConversation(next, LITERATURE_SCOPE_KEY, null)
+              ? restoreScopeConversation(next, LITERATURE_SCOPE_KEY, null, canRestoreScopeSession)
               : next
           },
           { action: 'workbench' }
@@ -7160,6 +7189,7 @@ export function StoreProvider({
       assistantSources,
       beginNavigation,
       cancelStartupTask,
+      canRestoreScopeSession,
       literatureText,
       persistAssistantContext,
       draftKey,
@@ -7215,14 +7245,21 @@ export function StoreProvider({
     navigationRestoreStarted.current = true
     const refreshMarker = async (): Promise<void> => {
       const snapshot = await host?.getTaskRecoveryStatus?.(startupTaskSessionId)
-      if (snapshot) setManualRecovery(manualRecoveryMarker(snapshot))
+      if (snapshot) {
+        markerClaimPending.current = false
+        setManualRecovery(manualRecoveryMarker(snapshot))
+      }
     }
     const finishMarker = async (claimed: string, outcome: TaskRecoveryOutcome): Promise<void> => {
-      const written = await host?.finishTaskRecovery?.(claimed, outcome)
+      const written = await host?.finishTaskRecovery?.(claimed, outcome).catch((error: unknown) => {
+        console.error(error)
+        return false
+      })
       if (!written) {
         await refreshMarker()
         return
       }
+      markerClaimPending.current = false
       setManualRecovery({
         skippedSessionId: outcome === TASK_RECOVERY_OUTCOME.skipped ? startupTaskSessionId : null,
         needsManualAcknowledgement: false,
@@ -7230,6 +7267,9 @@ export function StoreProvider({
     }
     const attempt = new StartupTaskRecovery((outcome) => {
       const restored = outcome === 'restored'
+      if (!restored && (token || outcome !== 'skipped')) {
+        locallySkippedSession.current = startupTaskSessionId
+      }
       if (!restored && candidate.presenting && !candidate.keepView) {
         actRef.current.returnHome()
       }
@@ -7260,8 +7300,8 @@ export function StoreProvider({
           attempt.finish('skipped')
           return
         }
-        // Do not act on an older skip marker while the owner is claiming this one.
-        setManualRecovery(null)
+        // Keep the known marker for continuity, but do not acknowledge it during a claim.
+        markerClaimPending.current = true
         try {
           token = await host.beginTaskRecovery(startupTaskSessionId)
         } finally {
@@ -7600,17 +7640,30 @@ export function StoreProvider({
   ])
 
   const currentThread = activeThread(state)
+  const acknowledgeOwner = Boolean(
+    manualRecovery?.needsManualAcknowledgement ||
+    (manualRecovery?.skippedSessionId && manualRecovery.skippedSessionId === state.activeSession)
+  )
   const manuallyOpenedSession =
     state.navigationRestored &&
+    state.activeSession === state.explicitSessionSelection &&
     currentThread.resumeState === 'ready' &&
     !currentThread.startupHistoryLoaded &&
-    (manualRecovery?.needsManualAcknowledgement ||
-      (manualRecovery?.skippedSessionId && manualRecovery.skippedSessionId === state.activeSession))
+    !markerClaimPending.current &&
+    (acknowledgeOwner || locallySkippedSession.current === state.activeSession)
       ? state.activeSession
       : null
   useEffect(() => {
     const host = window.scholarseed
-    if (!manuallyOpenedSession || !host?.clearTaskRecoveryOnManualOpen) return
+    if (!manuallyOpenedSession) return
+    if (!acknowledgeOwner) {
+      if (manualRecovery !== null || !host?.getTaskRecoveryStatus) {
+        locallySkippedSession.current = null
+        actRef.current.dismissStartupTaskRecovery()
+      }
+      return
+    }
+    if (!host?.clearTaskRecoveryOnManualOpen) return
     let current = true
     void (async () => {
       const snapshot = stateRef.current
@@ -7625,8 +7678,18 @@ export function StoreProvider({
         { lastLocation: location },
         PREFERENCE_SUBMISSION_SOURCE.navigation
       )
-      if (!current || !confirmed || stateRef.current.activeSession !== manuallyOpenedSession) return
+      if (
+        !current ||
+        !confirmed ||
+        markerClaimPending.current ||
+        stateRef.current.activeSession !== manuallyOpenedSession ||
+        stateRef.current.explicitSessionSelection !== manuallyOpenedSession
+      )
+        return
       if (!(await host.clearTaskRecoveryOnManualOpen?.(manuallyOpenedSession))) return
+      if (locallySkippedSession.current === manuallyOpenedSession) {
+        locallySkippedSession.current = null
+      }
       setManualRecovery(
         (previous) =>
           previous && {
@@ -7643,7 +7706,7 @@ export function StoreProvider({
     return () => {
       current = false
     }
-  }, [manuallyOpenedSession])
+  }, [acknowledgeOwner, manualRecovery, manuallyOpenedSession])
 
   const reloadSearchesInLiterature =
     startupTabNeedsLookup &&
