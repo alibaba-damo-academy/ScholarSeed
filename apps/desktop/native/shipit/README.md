@@ -64,6 +64,19 @@ the preparation record using the just-committed move and the installed bundle's 
 Ready reuse validates identities and never substitutes for final signature checks.
 Three preparation attempts are independent of the original installation counter.
 
+After an authorized restart, macOS may report that a sealed resource is missing
+from a private candidate whose bundle and Contents directories are still intact.
+Before moving the installed app, ShipIt records one rebuild attempt for that
+request and copies the candidate again from its bound source. The new copy goes
+through quarantine handling, ownership checks and full signature verification
+against the installed app's designated requirement. A successful check continues
+the same installation. A failed rebuild or verification enters the existing
+recovery path, which reopens the restored app under the user's restart grant.
+
+用户点击重启后，如果 macOS 验签发现私有候选副本缺少签名资源，ShipIt 会先在本次请求中记下重建次数，
+再从原请求绑定的来源复制一次。新副本通过完整验签后继续本次安装。复制或再次验签失败时，
+助手沿用原有恢复流程，确认旧版已恢复后自动打开旧版。
+
 The small source-parent readiness acknowledgement is readable by the initiating
 user even when ShipIt runs privileged. It controls exit timing only: it cannot
 supply the installer candidate path or authorize installation. Squirrel waits
@@ -137,8 +150,8 @@ The pre-termination listener observes only the applications present at subscript
 signature validation. `admission.h` waits for transient reentry under one monotonic
 deadline. The preparation owner rechecks source, target, candidate and private-directory
 identities after verification. Reentry during verification waits and repeats only
-that verification, not candidate copying or the transaction. Without reentry the
-candidate signature is still checked only once. Rename, acquisition and
+that verification, not candidate copying or the transaction. An intact candidate
+passes a single final signature check when the target stays closed. Rename, acquisition and
 replacement are outside its retry/timeout boundary and retain their existing rollback
 semantics. The original final running-instance check remains. A rare reentry after
 rename records the actual target in the existing private preparation journal before
@@ -172,6 +185,11 @@ ShipIt 先持久化失败结果，再请求 macOS 打开旧版。用户正常退
 `relaunch.test.m` drives ShipIt's two request reads with an isolated journal
 and an injected installation error. It observes dispatch to the old bundle's
 helper on failure, then exercises replay, ordinary quit, and a mismatched request.
+
+`sealed.test.m` removes a signed resource from an isolated candidate after readiness.
+It exercises the installer's full signature checks and records the running fixture
+app's bundle identity after installation or recovery. Replaying a terminal failure
+must leave the launch count at one.
 
 The existing NSWorkspace default schedules launches asynchronously, allowing the
 child and its transaction-owning parent to exit before Desktop admission. An exact

@@ -185,6 +185,74 @@ function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
   }
 }
 
+function verifySealedInstallation(directory, compiler, sources, squirrel, frameworks) {
+  const executable = path.join(directory, 'sealed-test')
+  const preferences = ['CopyValue', 'SetValue', 'Synchronize', 'GetAppIntegerValue']
+    .map(name => `-DCFPreferences${name}=SSFixture${name}`)
+  command('/usr/bin/xcrun', [...compiler, ...preferences, '-UNDEBUG', `-I${path.join(squirrel, 'Squirrel')}`,
+    `-Wl,-rpath,${frameworks}`, '-o', executable, ...sources, path.join(OWNER, 'sealed.test.m')], directory)
+  const template = path.join(directory, 'sealed-template', 'Fixture.app')
+  const contents = path.join(template, 'Contents')
+  for (const child of ['MacOS', 'Resources', 'Frameworks']) fs.mkdirSync(path.join(contents, child), { recursive: true })
+  const framework = path.join(contents, 'Frameworks', 'Squirrel.framework')
+  const copy = (from, to) => fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true })
+  copy(path.join(frameworks, 'Squirrel.framework'), framework)
+  fs.copyFileSync(executable, path.join(framework, 'Resources', 'ShipIt'))
+  fs.copyFileSync(executable, path.join(contents, 'MacOS', 'Fixture'))
+  fs.writeFileSync(path.join(contents, 'Resources', 'sealed.txt'), '')
+  fs.writeFileSync(path.join(contents, 'Resources', 'other.txt'), 'original')
+  const plist = path.join(contents, 'Info.plist')
+  fs.writeFileSync(plist, JSON.stringify({
+    CFBundleName: 'Fixture', CFBundleExecutable: 'Fixture', CFBundlePackageType: 'APPL',
+    CFBundleIdentifier: 'org.scholarseed.test.sealed', CFBundleVersion: '1',
+    CFBundleShortVersionString: '1.0', LSBackgroundOnly: true,
+  }))
+  command('/usr/bin/plutil', ['-convert', 'xml1', plist], directory)
+  for (const item of [framework, template])
+    command('/usr/bin/codesign', ['--force', '--sign', '-', item], directory)
+  const verify = application => command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', application], directory)
+  verify(template)
+  for (const scenario of ['rebuild', 'damaged-source', 'mixed', 'added', 'altered', 'cancel']) {
+    const root = path.join(directory, `sealed-${scenario}`)
+    for (const child of ['download', 'CandidatePreparation', 'DeferredCleanup'])
+      fs.mkdirSync(path.join(root, child), { recursive: true, mode: 0o700 })
+    const target = path.join(root, 'Fixture.app')
+    copy(template, target)
+    copy(template, path.join(root, 'download', 'Fixture.app'))
+    const previous = fs.statSync(target).ino
+    fs.writeFileSync(path.join(root, 'previous-inode'), String(previous))
+    const modes = scenario === 'damaged-source' ? [scenario, 'replay', 'replay'] : [scenario]
+    for (const [attempt, mode] of modes.entries()) {
+      const result = spawnSync(executable, [mode, root], {
+        cwd: directory, env: { ...process.env, TMPDIR: root }, encoding: 'utf8', timeout: 30_000,
+      })
+      recordContract(directory, `sealed-${scenario}-${attempt + 1}`, result)
+      if (result.error || result.status !== 0) throw new Error(`ShipIt sealed ${mode}: ${describeResult(result)}`)
+      const rebuilt = [...result.stderr.matchAll(/\[shipit-preparation\] event=candidate-rebuilt/g)].length
+      if (rebuilt !== (mode === 'rebuild' || mode === 'damaged-source' ? 1 : 0))
+        throw new Error(`ShipIt sealed ${mode} performed ${rebuilt} rebuilds`)
+      const signatures = [...result.stderr.matchAll(/stage=verify-signature event=end result=(\w+)/g)].map(match => match[1])
+      const expected = mode === 'replay' || mode === 'cancel' ? [] : ['error']
+      if (rebuilt) expected.push(mode === 'rebuild' ? 'success' : 'error')
+      if (signatures.join(',') !== expected.join(','))
+        throw new Error(`ShipIt sealed ${mode} signature results: ${signatures.join(',')}`)
+      const current = fs.statSync(target).ino
+      const launchFile = path.join(root, 'launches.jsonl')
+      if ((current !== previous) !== (scenario === 'rebuild'))
+        throw new Error(`ShipIt sealed ${mode} left an unexpected target`)
+      if (mode === 'cancel') {
+        if (fs.existsSync(launchFile)) throw new Error('ShipIt reopened the application without authorization')
+      } else {
+        const launched = fs.readFileSync(launchFile, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+        if (launched.length !== 1 || launched[0].inode !== current || launched[0].application !== target ||
+            !launched[0].pid || launched[0].version !== '1.0')
+          throw new Error(`ShipIt sealed ${mode} launched an unexpected application`)
+      }
+      verify(target)
+    }
+  }
+}
+
 function verifyPreparation(directory) {
   for (const [name, configuration] of Object.entries(PREPARATION_CONTRACTS)) {
     const external = configuration.external === true
@@ -285,6 +353,7 @@ async function buildShipIt({ directory, electronDist, arch, sourceCache }) {
   verifyAdmission(directory, frameworks, headers)
   verifyBinding(directory, frameworks, headers, dependencies.squirrel)
   verifyRelaunch(directory, compiler, sources, dependencies.squirrel, frameworks)
+  verifySealedInstallation(directory, compiler, sources, dependencies.squirrel, frameworks)
   verifyCleanup(directory)
   verifyPreparation(directory)
   const licenses = []

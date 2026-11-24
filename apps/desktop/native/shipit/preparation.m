@@ -37,6 +37,7 @@ static const double SSPreparationMilliseconds = 1000;
 static const NSUInteger SSPreparationPublicationFields = 8;
 static int SSPreparationFD = -1, SSPreparationLockFD = -1;
 static NSMutableDictionary *SSPreparationRecord;
+static NSMutableDictionary *SSPreparationOwnershipRecord;
 static BOOL SSPreparationReadOnly;
 static NSDictionary *SSPreparationObservation;
 static NSString *SSPreparationObservedDirectory;
@@ -124,6 +125,24 @@ static BOOL StrictCapture(NSDictionary *capture, BOOL contents) {
     }
     return YES;
 }
+// A rebuild keeps its other private directory reachable across a crash. An
+// empty dictionary means the single rebuild was charged and cleanup finished.
+static BOOL ValidRebuild(NSDictionary *record) {
+  NSDictionary *rebuild = record[@"rebuild"];
+  if (!rebuild) return YES;
+  if (![rebuild isKindOfClass:NSDictionary.class] || ![record[@"state"] isEqual:SSPreparationReady] ||
+      !SSBindingValid(record[@"binding"])) return NO;
+  if (!rebuild.count) return YES;
+  NSDictionary *directory = rebuild[@"directory"], *candidate = rebuild[@"candidate"], *active = record[@"directory"];
+  return rebuild.count == (candidate ? 2u : 1u) && StrictCapture(directory, NO) &&
+    [[directory[@"path"] lastPathComponent] hasPrefix:SSPreparationPrefix] &&
+    ![directory[@"path"] isEqual:active[@"path"]] && ![directory[@"item"] isEqual:active[@"item"]] &&
+    [[directory[@"path"] stringByDeletingLastPathComponent] isEqual:[active[@"path"] stringByDeletingLastPathComponent]] &&
+    [directory[@"parent"] isEqual:active[@"parent"]] &&
+    (candidate ? (StrictCapture(candidate, YES) && [candidate[@"parent"] isEqual:directory[@"item"]] &&
+      [candidate[@"path"] isEqual:[directory[@"path"] stringByAppendingPathComponent:[record[@"source"][@"path"] lastPathComponent]]]) :
+      (record[@"ownership"] || record[@"failure"]));
+}
 static NSDictionary *TerminalPublication(NSDictionary *record) {
     NSDictionary *failure = record[@"failure"];
     if (![record[@"terminalVersion"] isEqual:SSPreparationTerminalVersion] || ![record[@"state"] isEqual:SSPreparationReady] || record[@"ownership"] ||
@@ -187,6 +206,7 @@ BOOL SSPreparationCloseChecked(NSError **error) {
         if (closing >= 0 && close(closing) != 0) return UncertainIO(error, errno);
     }
     SSPreparationRecord = nil;
+    SSPreparationOwnershipRecord = nil;
     SSPreparationReadOnly = NO;
     SSPreparationObservation = nil;
     SSPreparationObservedDirectory = nil;
@@ -234,7 +254,7 @@ static BOOL SSPreparationOpenDirectoryMode(NSString *directory, BOOL readOnly, B
             ([record[@"state"] isEqual:SSPreparationCopying] || (ValidCapture(record[@"candidate"], YES) &&
                 [record[@"candidate"][@"path"] isEqual:[record[@"directory"][@"path"] stringByAppendingPathComponent:[record[@"source"][@"path"] lastPathComponent]] ]));
     }
-    if (valid) valid = ValidTerminalRecord(record);
+    if (valid) valid = ValidTerminalRecord(record) && ValidRebuild(record);
     if (!valid) { SSPreparationClose(); return Fail(error, EINVAL); }
     SSPreparationRecord = [record count] ? record : nil;
     if (readOnly) SSPreparationObservation = observation[@"snapshot"];
@@ -350,9 +370,9 @@ static BOOL RemoveChildren(int fd, dev_t device) {
     }
     closedir(stream); errno = code; return ok;
 }
-static BOOL Discard(NSDictionary *source, NSDictionary *target, NSError **error) {
+static BOOL DiscardDirectory(NSDictionary *source, NSDictionary *target, NSDictionary *copy, NSError **error) {
     if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
-    NSDictionary *directory = SSPreparationRecord[@"directory"];
+    NSDictionary *directory = copy[@"directory"];
     if (!directory) return YES;
     NSString *path = directory[@"path"];
     for (NSString *protectedPath in @[source[@"path"], target[@"path"], SSPreparationRecord[@"source"][@"path"], SSPreparationRecord[@"target"][@"path"]])
@@ -368,9 +388,9 @@ static BOOL Discard(NSDictionary *source, NSDictionary *target, NSError **error)
     struct stat opened; BOOL ok = child >= 0 && fstat(child, &opened) == 0; int code = errno;
     if (ok && ![Identity(opened) isEqual:directory[@"item"]]) { ok = NO; code = ESTALE; }
     // A ready candidate may have moved to the installed target. Never follow that move.
-    if (ok && SSPreparationRecord[@"candidate"]) {
+    if (ok && copy[@"candidate"]) {
         if (fstatat(child, [SSPreparationRecord[@"source"][@"path"] lastPathComponent].UTF8String, &item, AT_SYMLINK_NOFOLLOW) == 0) {
-            if (![Identity(item) isEqual:SSPreparationRecord[@"candidate"][@"item"]]) { ok = NO; code = ESTALE; }
+            if (![Identity(item) isEqual:copy[@"candidate"][@"item"]]) { ok = NO; code = ESTALE; }
         } else if (errno != ENOENT) { ok = NO; code = errno; }
     }
     if (ok && !RemoveChildren(child, opened.st_dev)) { ok = NO; code = errno; }
@@ -379,6 +399,9 @@ static BOOL Discard(NSDictionary *source, NSDictionary *target, NSError **error)
     if (ok && ![Identity(item) isEqual:directory[@"item"]]) { ok = NO; code = ESTALE; }
     if (ok && (unlinkat(parent, path.lastPathComponent.fileSystemRepresentation, AT_REMOVEDIR) != 0 || fsync(parent) != 0)) { ok = NO; code = errno; }
     close(parent); return ok ? YES : Fail(error, code);
+}
+static BOOL Discard(NSDictionary *source, NSDictionary *target, NSError **error) {
+  return DiscardDirectory(source, target, SSPreparationRecord, error);
 }
 static BOOL FailureTargetRestored(void) {
     if (SSPreparationCloseUncertain) return NO;
@@ -543,6 +566,51 @@ BOOL SSPreparationReconcile(NSURL *source, NSURL *target, NSDictionary *binding,
   NSLog(@"[shipit-preparation] event=orphan-superseded journal=%@", SSObservationDigest(observed[@"data"]));
   return YES;
 }
+static NSDictionary *NewPreparationDirectory(NSDictionary *store, NSError **error) {
+    NSString *leaf = [SSPreparationPrefix stringByAppendingString:NSUUID.UUID.UUIDString];
+    if (mkdirat(SSPreparationFD, leaf.fileSystemRepresentation, S_IRWXU) != 0) { Fail(error, errno); return nil; }
+    NSDictionary *directory = Capture([SSPreparationObservedDirectory stringByAppendingPathComponent:leaf], NO);
+    if (!directory) { Fail(error, errno); return nil; }
+    if (![directory[@"parent"] isEqual:store[@"directory"]]) { Fail(error, ESTALE); return nil; }
+    return directory;
+}
+static NSDictionary *CopyCandidate(NSDictionary *source, NSDictionary *target, NSDictionary *directory,
+    NSURL *sourceURL, NSURL *targetURL, NSError **error) {
+    NSString *candidatePath = [directory[@"path"] stringByAppendingPathComponent:[source[@"path"] lastPathComponent]];
+    NSURL *candidateURL = [NSURL fileURLWithPath:candidatePath isDirectory:YES];
+    NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
+    unsigned long long identifier = mach_absolute_time();
+    @try { NSLog(@"[shipit-timing] schema=1 id=%llu stage=copy-candidate event=start", identifier); } @catch (__unused NSException *exception) {}
+    BOOL copied = [NSFileManager.defaultManager copyItemAtURL:[NSURL fileURLWithPath:source[@"path"]] toURL:candidateURL error:error];
+    @try { NSLog(@"[shipit-timing] schema=1 id=%llu stage=copy-candidate event=end result=%@ elapsedMs=%.3f errorCode=%ld", identifier, copied ? @"success" : @"error", (NSProcessInfo.processInfo.systemUptime - start) * SSPreparationMilliseconds, (long)(copied ? 0 : (error ? (*error).code : EIO))); } @catch (__unused NSException *exception) {}
+    if (!copied) return nil;
+    NSDictionary *candidate = Capture(candidatePath, YES);
+    if (!candidate) { Fail(error, errno); return nil; }
+    if (![source isEqual:Capture(sourceURL.path, YES)] || ![target isEqual:Capture(targetURL.path, YES)] || ![directory isEqual:Capture(directory[@"path"], NO)]) { Fail(error, ESTALE); return nil; }
+    // Persist candidate directory entries before acknowledging readiness. Signature
+    // validation remains authoritative if storage loses copied content on recovery.
+    for (NSString *path in @[candidatePath, directory[@"path"]]) {
+        int fd = OpenDirectory(path);
+        if (fd < 0) { Fail(error, errno); return nil; }
+        BOOL synced = fsync(fd) == 0; int code = errno; close(fd);
+        if (!synced) { Fail(error, code); return nil; }
+    }
+    return candidate;
+}
+static BOOL DiscardRebuildDirectory(NSDictionary *source, NSDictionary *target, NSError **error) {
+  NSDictionary *rebuild = SSPreparationRecord[@"rebuild"];
+  if (!rebuild.count) return YES;
+  NSDictionary *store = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
+  if (!store) return NO;
+  NSDictionary *directory = rebuild[@"directory"];
+  if (![directory[@"parent"] isEqual:store[@"directory"]] ||
+      ![[directory[@"path"] stringByDeletingLastPathComponent] isEqual:SSPreparationObservedDirectory]) return Fail(error, ESTALE);
+  if (!DiscardDirectory(source, target, rebuild, error)) return NO;
+  SSPreparationRecord[@"rebuild"] = @{};
+  if (Save(error)) return YES;
+  SSPreparationRecord[@"rebuild"] = rebuild;
+  return NO;
+}
 NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSError **error) {
     if (SSPreparationCloseUncertain) { Fail(error, SSPreparationUncertaintyCode()); return nil; }
     if (SSPreparationReadOnly) { Fail(error, EROFS); return nil; }
@@ -582,6 +650,7 @@ NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bindi
         NSDictionary *candidate = directory ? Capture(candidatePath, YES) : nil;
         if ([candidate isEqual:SSPreparationRecord[@"candidate"]]) {
             if (!legacy) {
+                if (!DiscardRebuildDirectory(source, target, error)) return nil;
                 NSLog(@"[shipit-preparation] event=reused attempt=%lu", (unsigned long)[SSPreparationRecord[@"attempts"] unsignedIntegerValue]);
                 return [NSURL fileURLWithPath:candidatePath isDirectory:YES];
             }
@@ -593,42 +662,22 @@ NSURL *SSPreparationCopy(NSURL *sourceURL, NSURL *targetURL, NSDictionary *bindi
             attempt = [SSPreparationRecord[@"attempts"] unsignedIntegerValue];
         }
     }
-    if (attempt > SSPreparationAttempts) { Fail(error, ELOOP); return nil; }
-    if (!Discard(source, target, error)) return nil;
-    NSString *leaf = [SSPreparationPrefix stringByAppendingString:NSUUID.UUID.UUIDString];
-    if (mkdirat(SSPreparationFD, leaf.fileSystemRepresentation, S_IRWXU) != 0) { Fail(error, errno); return nil; }
-    NSDictionary *directory = Capture([SSPreparationObservedDirectory stringByAppendingPathComponent:leaf], NO);
-    if (!directory) { Fail(error, errno); return nil; }
-    if (![directory[@"parent"] isEqual:store[@"directory"]]) { Fail(error, ESTALE); return nil; }
+    if ((same && SSPreparationRecord[@"rebuild"]) || attempt > SSPreparationAttempts) { Fail(error, ELOOP); return nil; }
+    if (!DiscardRebuildDirectory(source, target, error) || !Discard(source, target, error)) return nil;
+    NSDictionary *directory = NewPreparationDirectory(store, error);
+    if (!directory) return nil;
     SSPreparationRecord = [@{@"source":source, @"target":target, @"directory":directory, @"state":SSPreparationCopying, @"attempts":@(attempt), @"terminalVersion":SSPreparationTerminalVersion} mutableCopy];
     if (binding) SSPreparationRecord[@"binding"] = binding;
     // Persist the owned destination and charge this preparation attempt before copying.
     if (!Save(error)) return nil;
-    candidatePath = [directory[@"path"] stringByAppendingPathComponent:[SSPreparationRecord[@"source"][@"path"] lastPathComponent]];
-    NSURL *candidateURL = [NSURL fileURLWithPath:candidatePath isDirectory:YES];
-    NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
-    unsigned long long identifier = mach_absolute_time();
-    @try { NSLog(@"[shipit-timing] schema=1 id=%llu stage=copy-candidate event=start", identifier); } @catch (__unused NSException *exception) {}
-    BOOL copied = [NSFileManager.defaultManager copyItemAtURL:[NSURL fileURLWithPath:source[@"path"]] toURL:candidateURL error:error];
-    @try { NSLog(@"[shipit-timing] schema=1 id=%llu stage=copy-candidate event=end result=%@ elapsedMs=%.3f errorCode=%ld", identifier, copied ? @"success" : @"error", (NSProcessInfo.processInfo.systemUptime - start) * SSPreparationMilliseconds, (long)(copied ? 0 : (error ? (*error).code : EIO))); } @catch (__unused NSException *exception) {}
-    if (!copied) return nil;
-    NSDictionary *candidate = Capture(candidatePath, YES);
-    if (!candidate) { Fail(error, errno); return nil; }
-    if (![source isEqual:Capture(sourceURL.path, YES)] || ![target isEqual:Capture(targetURL.path, YES)] || ![directory isEqual:Capture(directory[@"path"], NO)]) { Fail(error, ESTALE); return nil; }
-    // Persist candidate directory entries before acknowledging readiness. Signature
-    // validation remains authoritative if storage loses copied content on recovery.
-    for (NSString *path in @[candidatePath, directory[@"path"]]) {
-        int fd = OpenDirectory(path);
-        if (fd < 0) { Fail(error, errno); return nil; }
-        BOOL synced = fsync(fd) == 0; int code = errno; close(fd);
-        if (!synced) { Fail(error, code); return nil; }
-    }
+    NSDictionary *candidate = CopyCandidate(source, target, directory, sourceURL, targetURL, error);
+    if (!candidate) return nil;
     // The normal installer still validates the candidate signature after termination.
     SSPreparationRecord[@"candidate"] = candidate;
     SSPreparationRecord[@"state"] = SSPreparationReady;
     if (!Save(error)) { SSPreparationRecord[@"state"] = SSPreparationCopying; [SSPreparationRecord removeObjectForKey:@"candidate"]; return nil; }
     NSLog(@"[shipit-preparation] event=ready attempt=%lu", (unsigned long)attempt);
-    return candidateURL;
+    return [NSURL fileURLWithPath:candidate[@"path"] isDirectory:YES];
 }
 static BOOL ValidatePreparation(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSError **error) {
     if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
@@ -675,9 +724,62 @@ BOOL SSPreparationBeginOwnership(NSURL *source, NSURL *target, NSDictionary *bin
     if (!SSPreparationValidate(source, target, binding, candidate, error)) return NO;
     if (SSPreparationRecord[@"ownership"]) return Fail(error, ECANCELED);
     SSPreparationRecord[@"ownership"] = @YES;
-    if (Save(error)) return YES;
+    if (Save(error)) { SSPreparationOwnershipRecord = SSPreparationRecord; return YES; }
     [SSPreparationRecord removeObjectForKey:@"ownership"];
     return NO;
+}
+static NSDictionary *RebuildJournal(NSError **error) {
+  NSDictionary *entry = SSObservationReadAt(SSPreparationFD, SSPreparationJournal, (NSUInteger)SSPreparationMaximumBytes, YES, NO, error);
+  if (!entry) return nil;
+  id journal = [NSPropertyListSerialization propertyListWithData:entry[@"data"] options:0 format:NULL error:error];
+  if (![journal isEqual:@{@"schema":SSPreparationSchema, @"record":SSPreparationRecord}]) { Fail(error, ESTALE); return nil; }
+  return entry[@"snapshot"];
+}
+NSURL *SSPreparationRebuildCandidate(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
+  if (SSPreparationReadOnly) { Fail(error, EROFS); return nil; }
+  if (!candidateURL.isFileURL || !SSBindingValid(binding)) { Fail(error, EINVAL); return nil; }
+  if (!ValidatePreparation(sourceURL, targetURL, binding, error)) return nil;
+  if (SSPreparationRecord[@"rebuild"]) { Fail(error, ELOOP); return nil; }
+  if (SSPreparationOwnershipRecord != SSPreparationRecord || !SSPreparationRecord[@"ownership"]) { Fail(error, EPERM); return nil; }
+  NSDictionary *oldCandidate = Capture(candidateURL.path, YES);
+  if (!CandidateOwnershipMatches(SSPreparationRecord[@"candidate"], oldCandidate)) { Fail(error, ESTALE); return nil; }
+  NSDictionary *store = SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error);
+  if (!store || !RebuildJournal(error)) return nil;
+  NSDictionary *source = SSPreparationRecord[@"source"], *target = SSPreparationRecord[@"target"], *oldDirectory = SSPreparationRecord[@"directory"];
+  if (![oldDirectory[@"parent"] isEqual:store[@"directory"]] ||
+      ![oldDirectory[@"path"] isEqual:[SSPreparationObservedDirectory stringByAppendingPathComponent:[oldDirectory[@"path"] lastPathComponent]]] ||
+      Overlaps(source[@"path"], target[@"path"]) || Overlaps(SSPreparationObservedDirectory, source[@"path"]) ||
+      Overlaps(SSPreparationObservedDirectory, target[@"path"]) ||
+      SSReadinessReadBound(sourceURL, targetURL, binding, NULL) == SSReadinessFailed) { Fail(error, ESTALE); return nil; }
+
+  // Charge the extra copy before it starts. Keep the old ready bundle and its
+  // ownership intent available for terminal restoration if copying is interrupted.
+  NSDictionary *directory = NewPreparationDirectory(store, error);
+  if (!directory) return nil;
+  SSPreparationRecord[@"rebuild"] = @{@"directory":directory};
+  if (!Save(error)) return nil;
+  NSDictionary *journal = RebuildJournal(error);
+  if (!journal) return nil;
+  NSDictionary *candidate = CopyCandidate(source, target, directory, sourceURL, targetURL, error);
+  if (!candidate) return nil;
+  if (![store isEqual:SSObservationDirectorySnapshot(SSPreparationFD, SSPreparationLockFD, SSPreparationLock, SSPreparationObservedDirectory, error)] ||
+      ![journal isEqual:RebuildJournal(error)] || !ValidatePreparation(sourceURL, targetURL, binding, error) ||
+      ![oldCandidate isEqual:Capture(candidateURL.path, YES)] || SSReadinessReadBound(sourceURL, targetURL, binding, NULL) == SSReadinessFailed) {
+    Fail(error, ESTALE); return nil;
+  }
+
+  // Switch the complete copy and the directory to discard in one journal write.
+  // An interruption on either side leaves exactly one authoritative candidate.
+  NSMutableDictionary *before = SSPreparationRecord;
+  SSPreparationRecord = [before mutableCopy];
+  SSPreparationRecord[@"candidate"] = candidate;
+  SSPreparationRecord[@"directory"] = directory;
+  SSPreparationRecord[@"rebuild"] = @{@"directory":oldDirectory, @"candidate":oldCandidate};
+  [SSPreparationRecord removeObjectForKey:@"ownership"];
+  if (!Save(error)) { SSPreparationRecord = before; return nil; }
+  if (!DiscardRebuildDirectory(source, target, error)) return nil;
+  NSLog(@"[shipit-preparation] event=candidate-rebuilt");
+  return [NSURL fileURLWithPath:candidate[@"path"] isDirectory:YES];
 }
 BOOL SSPreparationAcceptOwnership(NSURL *sourceURL, NSURL *targetURL, NSDictionary *binding, NSURL *candidateURL, NSError **error) {
     if (SSPreparationCloseUncertain) return Fail(error, SSPreparationUncertaintyCode());
@@ -1094,6 +1196,7 @@ BOOL SSPreparationRetire(NSURL *sourceURL, NSURL *targetURL, NSError **error) {
   BOOL renamed = [target[@"item"] isEqual:candidate[@"item"]] && [target[@"contents"] isEqual:candidate[@"contents"]];
   if (!renamed && (SSPreparationRecord[@"ownership"] ||
       !SSCleanupConfirmsCopiedCandidate(source, candidate, target, originalTarget))) return Fail(error, ESTALE);
+  if (!DiscardRebuildDirectory(source, target, error)) return NO;
   NSMutableDictionary *record = SSPreparationRecord;
   SSPreparationRecord = nil;
   if (!Save(error)) { SSPreparationRecord = record; return NO; }
