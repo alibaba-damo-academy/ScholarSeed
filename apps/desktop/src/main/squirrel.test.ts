@@ -16,7 +16,7 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { promisify } from 'node:util'
+import { isDeepStrictEqual, promisify } from 'node:util'
 import {
   SquirrelInstallation,
   discardOnTerminalSquirrelFailure,
@@ -132,22 +132,18 @@ test(
     await writeFile(state, 'native request present')
     assert.equal(await inspectSquirrelIdle(cache, bundle, application, prior), false)
     const updater = new Updater()
-    const installation = new SquirrelInstallation(
-      updater,
-      f.record,
-      () => {},
-      2_000,
-      undefined,
-      undefined,
-      () => squirrelNativeRequestAbsent(f.directory, bundle)
-    )
+    const installation = new SquirrelInstallation(updater, f.record, () => {}, 2_000)
     const authorize = async () => () => {}
-    await assert.rejects(installation.prepare(f.archive, identity, authorize), /already exists/)
+    const prepare = () =>
+      installation.prepare(f.archive, identity, authorize, false, () =>
+        squirrelNativeRequestAbsent(f.directory, bundle)
+      )
+    await assert.rejects(prepare(), /already exists/)
     assert.deepEqual(readSquirrelHandoff(f.record), prior)
     await rm(state)
     assert.equal(await inspectSquirrelIdle(cache, bundle, application, prior), true)
     updater.check = () => updater.emit('error', new Error('fixture ends after publication'))
-    await assert.rejects(installation.prepare(f.archive, identity, authorize))
+    await assert.rejects(prepare())
     assert.equal(updater.checks, 1)
     assert.equal(readSquirrelHandoff(f.record)?.candidate, identity.candidate)
   }
@@ -172,28 +168,28 @@ test('a legacy request without a PID can be replaced only after publisher and na
   const state = join(directory, 'ShipItState.plist')
   const updater = new Updater()
   let publisherAbsent = false
-  const installation = new SquirrelInstallation(
-    updater,
-    f.record,
-    () => {},
-    2_000,
-    undefined,
-    undefined,
-    (current) =>
-      abandonedSquirrelRequest(current, () => publisherAbsent) &&
-      squirrelNativeRequestAbsent(f.directory, bundle)
-  )
+  const installation = new SquirrelInstallation(updater, f.record, () => {}, 2_000)
   const authorize = async () => () => {}
+  const prepare = () =>
+    installation.prepare(
+      f.archive,
+      identity,
+      authorize,
+      false,
+      (current) =>
+        abandonedSquirrelRequest(current, () => publisherAbsent) &&
+        squirrelNativeRequestAbsent(f.directory, bundle)
+    )
   assert.equal(abandonedSquirrelRequest(prior), false)
-  await assert.rejects(installation.prepare(f.archive, identity, authorize), /already exists/)
+  await assert.rejects(prepare(), /already exists/)
   publisherAbsent = true
   await writeFile(state, 'original native state survived')
-  await assert.rejects(installation.prepare(f.archive, identity, authorize), /already exists/)
+  await assert.rejects(prepare(), /already exists/)
   assert.deepEqual(readSquirrelHandoff(f.record), prior)
   assert.equal(updater.checks, 0)
   await rm(state)
   updater.check = () => updater.emit('error', new Error('fixture ends after publication'))
-  await assert.rejects(installation.prepare(f.archive, identity, authorize))
+  await assert.rejects(prepare())
   assert.equal(updater.checks, 1)
   assert.equal(readSquirrelHandoff(f.record)?.sourcePid, process.pid)
 })
@@ -230,17 +226,15 @@ test('a second installation cannot replace an active handoff, even with replacem
   const live = { ...identity, state: 'requested' }
   await writeFile(f.record, JSON.stringify(live))
   const updater = new Updater()
-  const installation = new SquirrelInstallation(
-    updater,
-    f.record,
-    () => {},
-    undefined,
-    undefined,
-    undefined,
-    () => true
-  )
+  const installation = new SquirrelInstallation(updater, f.record, () => {})
   await assert.rejects(
-    installation.prepare(f.archive, identity, async () => () => {}),
+    installation.prepare(
+      f.archive,
+      identity,
+      async () => () => {},
+      true,
+      () => true
+    ),
     /already exists/
   )
   assert.equal(updater.checks, 0)
@@ -261,27 +255,21 @@ test(
     await writeFile(f.record, JSON.stringify(prior))
     const updater = new Updater()
     let approved = true
-    const installation = new SquirrelInstallation(
-      updater,
-      f.record,
-      () => {},
-      undefined,
-      undefined,
-      undefined,
-      () => approved
-    )
+    const installation = new SquirrelInstallation(updater, f.record, () => {})
     const authorize = async () => () => {}
-    await assert.rejects(installation.prepare(f.archive, identity, authorize), /already exists/)
+    const prepare = () =>
+      installation.prepare(f.archive, identity, authorize, false, () => approved)
+    await assert.rejects(prepare(), /already exists/)
     assert.equal(updater.checks, 0)
     const exited = once(child, 'exit')
     child.kill()
     await exited
     approved = false
-    await assert.rejects(installation.prepare(f.archive, identity, authorize), /already exists/)
+    await assert.rejects(prepare(), /already exists/)
     assert.deepEqual(readSquirrelHandoff(f.record), prior)
     approved = true
     updater.check = () => updater.emit('error', new Error('fixture stopped after publication'))
-    await assert.rejects(installation.prepare(f.archive, identity, authorize), /installation error/)
+    await assert.rejects(prepare(), /installation error/)
     assert.equal(updater.checks, 1)
     assert.equal(readSquirrelHandoff(f.record)?.sourcePid, process.pid)
   }
@@ -299,16 +287,16 @@ for (const approved of [false, true]) {
       assert.equal(pending?.candidate, identity.candidate)
       updater.emit('error', new Error('fixture stopped after publication'))
     }
-    const installation = new SquirrelInstallation(
-      updater,
-      f.record,
-      () => {},
-      undefined,
-      undefined,
-      undefined,
-      () => approved
+    const installation = new SquirrelInstallation(updater, f.record, () => {})
+    await assert.rejects(
+      installation.prepare(
+        f.archive,
+        identity,
+        async () => () => {},
+        false,
+        () => approved
+      )
     )
-    await assert.rejects(installation.prepare(f.archive, identity, async () => () => {}))
     assert.equal(updater.checks, approved ? 1 : 0)
     if (!approved) assert.deepEqual(readSquirrelHandoff(f.record), failed)
   })
@@ -332,6 +320,74 @@ class InstallationFixture extends SquirrelInstallation {
     super(updater, record, diagnostic, timeout, bind)
   }
 }
+
+test('retry of a restored installation requires a manual attempt, live proof and fresh activation', async (t) => {
+  const { archive, record } = await fixture(t)
+  const previousUpdater = new Updater()
+  previousUpdater.check = () => previousUpdater.emit('update-downloaded')
+  const previous = new InstallationFixture(previousUpdater, record, () => {})
+  const authorize = async () => () => {}
+  await previous.prepare(archive, identity, authorize)
+  previous.quitAndInstall()
+  const installing = readSquirrelHandoff(record)!
+  assert.equal(installing.state, 'installing')
+
+  const updater = new Updater()
+  updater.check = () => updater.emit('update-downloaded')
+  const retry = new InstallationFixture(updater, record, () => {})
+  await assert.rejects(
+    retry.prepare(archive, identity, authorize, true, () => true),
+    /already exists/
+  )
+  assert.deepEqual(readSquirrelHandoff(record), installing)
+
+  const exited = await run(process.execPath, ['-p', 'process.pid'])
+  const restored = { ...installing, sourcePid: Number(exited.stdout.trim()) }
+  const proof = (current: SquirrelHandoff) => isDeepStrictEqual(current, restored)
+  const unbound = { ...restored, nativeRequest: undefined }
+  await writeFile(record, JSON.stringify(unbound))
+  await assert.rejects(
+    retry.prepare(archive, identity, authorize, true, () => true),
+    /already exists/
+  )
+  await writeFile(record, JSON.stringify(restored))
+  await assert.rejects(retry.prepare(archive, identity, authorize, false, proof), /already exists/)
+  await assert.rejects(retry.prepare(archive, identity, authorize, true), /already exists/)
+  await assert.rejects(
+    retry.prepare(archive, identity, authorize, true, () => false),
+    /already exists/
+  )
+  const refused = async () => () => {
+    throw new Error('activation refused')
+  }
+  await assert.rejects(retry.prepare(archive, identity, refused, true, proof), /activation refused/)
+  assert.deepEqual(readSquirrelHandoff(record), restored)
+
+  const competing = { ...restored, at: restored.at + 1 }
+  const replaceDuringAuthorization = async () => {
+    await writeFile(record, JSON.stringify(competing))
+    return () => {}
+  }
+  await assert.rejects(
+    retry.prepare(archive, identity, replaceDuringAuthorization, true, proof),
+    /already exists/
+  )
+  assert.deepEqual(readSquirrelHandoff(record), competing)
+  await rm(record)
+  await assert.rejects(retry.prepare(archive, identity, authorize, true, proof), /disappeared/)
+  assert.equal(readSquirrelHandoff(record), null)
+  assert.equal(updater.checks, 0)
+
+  await writeFile(record, JSON.stringify(restored))
+  await retry.prepare(archive, identity, authorize, true, proof)
+  assert.equal(updater.checks, 1)
+  assert.equal(updater.quits, 0)
+  assert.equal(retry.matches(archive, identity), true)
+  const replacement = readSquirrelHandoff(record)!
+  assert.equal(replacement.state, 'downloaded')
+  assert.notEqual(replacement.binding?.requestId, restored.binding?.requestId)
+  assert.deepEqual(replacement.nativeRequest?.binding, replacement.binding)
+})
 
 test('loopback feed pins the archive and rejects wrong capability and browser origins', async (t) => {
   const { archive, bytes } = await fixture(t)

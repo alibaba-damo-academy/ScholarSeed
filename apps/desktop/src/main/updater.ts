@@ -66,6 +66,7 @@ import {
   settleSquirrelStartup,
   inspectSquirrelIdle,
   inspectCancelledSquirrelPreparation,
+  inspectRestoredSquirrelInstallation,
   inspectLegacySquirrelPublisher,
   squirrelPreparedDevice,
   squirrelNativeRequestAbsent,
@@ -2238,6 +2239,56 @@ function canPrepareMacUpdateWithoutInteraction(): boolean {
   }
 }
 
+/** Qualify the previous transaction before acquiring the handoff writer lock. */
+async function macHandoffReplacement(
+  startup: MacStartupAdmission | undefined,
+  allowInteraction: boolean,
+  log: LogSink
+): Promise<((current: SquirrelHandoff) => boolean) | undefined> {
+  const evidence = startup?.evidence
+  if (startup?.admission !== 'failed' || !evidence?.record) return undefined
+  const { home, record } = evidence
+  const prior = decodeSquirrelHandoff(record.bytes)
+  let recheck: (() => boolean) | null = null
+  if (prior.state === 'failed') {
+    recheck = () => true
+  } else if (prior.state !== 'installing' || allowInteraction) {
+    const cache = systemCacheDir()
+    const bundle = resolveDesktopConfig(log).bundleId
+    const application = realpathSync(resolve(dirname(process.execPath), '..', '..'))
+    const publisherAbsent = () => app.hasSingleInstanceLock() && inspectLegacySquirrelPublisher()
+    if (prior.state === 'installing') {
+      recheck = await inspectRestoredSquirrelInstallation(
+        cache,
+        bundle,
+        application,
+        prior,
+        publisherAbsent
+      )
+    } else {
+      recheck = await inspectCancelledSquirrelPreparation(cache, bundle, application, prior)
+      if (
+        !recheck &&
+        abandonedSquirrelRequest(prior, publisherAbsent) &&
+        (await inspectSquirrelIdle(cache, bundle, application, prior))
+      ) {
+        recheck = () =>
+          abandonedSquirrelRequest(prior, publisherAbsent) &&
+          squirrelNativeRequestAbsent(cache, bundle)
+      }
+    }
+  }
+  // A retry replaces exactly the record admitted at startup. Missing or changed
+  // evidence must keep the old transaction intact, even after online authorization.
+  return (current) =>
+    current.state === prior.state &&
+    home === desktopHome() &&
+    sameRecord(squirrelHandoffPath(), record, TERMINAL_RECORD_LIMITS.handoff, [
+      process.getuid!(),
+    ]) &&
+    recheck?.() === true
+}
+
 /** Verify the staged candidate and obtain the bound, unauthorized native receipt. */
 export async function prepareMacUpdate(
   expectedId: string,
@@ -2302,31 +2353,7 @@ export async function prepareMacUpdate(
     // The pinned feed verifies the full final ZIP before and during every transfer.
     // A receipt grants no installation authorization.
     signal?.throwIfAborted()
-    const failureRecord = startup?.admission === 'failed' ? startup.evidence?.record : null
-    const prior = failureRecord ? decodeSquirrelHandoff(failureRecord.bytes) : null
-    const legacyPublisherAbsent = () =>
-      app.hasSingleInstanceLock() && inspectLegacySquirrelPublisher()
-    const recoveryCache =
-      prior && abandonedSquirrelRequest(prior, legacyPublisherAbsent) ? systemCacheDir() : null
-    const recoveryBundle = recoveryCache ? resolveDesktopConfig(log).bundleId : null
-    const unstarted =
-      recoveryCache && recoveryBundle
-        ? await inspectSquirrelIdle(
-            recoveryCache,
-            recoveryBundle,
-            realpathSync(resolve(dirname(process.execPath), '..', '..')),
-            prior
-          )
-        : false
-    const cancelled =
-      prior && (prior.state === 'requested' || prior.state === 'downloaded')
-        ? await inspectCancelledSquirrelPreparation(
-            systemCacheDir(),
-            resolveDesktopConfig(log).bundleId,
-            realpathSync(resolve(dirname(process.execPath), '..', '..')),
-            prior
-          )
-        : null
+    const mayReplace = await macHandoffReplacement(startup, allowInteraction, log)
     signal?.throwIfAborted()
     squirrel ??= new SquirrelInstallation(
       autoUpdater,
@@ -2364,25 +2391,6 @@ export async function prepareMacUpdate(
         } finally {
           writer.close()
         }
-      },
-      (current) => {
-        const evidence = startup?.evidence
-        return (
-          startup?.admission === 'failed' &&
-          (current.state === 'failed' ||
-            ((current.state === 'requested' || current.state === 'downloaded') &&
-              cancelled?.() === true) ||
-            (unstarted &&
-              !!recoveryCache &&
-              !!recoveryBundle &&
-              abandonedSquirrelRequest(current, legacyPublisherAbsent) &&
-              squirrelNativeRequestAbsent(recoveryCache, recoveryBundle))) &&
-          evidence?.home === desktopHome() &&
-          !!evidence.record &&
-          sameRecord(squirrelHandoffPath(), evidence.record, TERMINAL_RECORD_LIMITS.handoff, [
-            process.getuid!(),
-          ])
-        )
       }
     )
     installation.step('helper')
@@ -2405,7 +2413,8 @@ export async function prepareMacUpdate(
           guard()
         }
       },
-      allowInteraction
+      allowInteraction,
+      mayReplace
     )
     if (!macPreparationReady(staged.meta))
       throw new Error('Mac update native readiness is required')

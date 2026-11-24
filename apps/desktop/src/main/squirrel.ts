@@ -207,6 +207,23 @@ export function squirrelPublisherExited(pid: number): boolean {
   }
 }
 
+function replaceableHandoff(prior: SquirrelHandoff, allowInteraction: boolean): boolean {
+  switch (prior.state) {
+    case 'installing':
+      return (
+        allowInteraction &&
+        sameSquirrelBinding(prior.binding, prior.nativeRequest?.binding) &&
+        (!prior.sourcePid || squirrelPublisherExited(prior.sourcePid))
+      )
+    case 'downloaded':
+      return !!prior.sourcePid && squirrelPublisherExited(prior.sourcePid)
+    case 'requested':
+      return prior.sourcePid ? abandonedSquirrelRequest(prior) : unstartedSquirrelRequest(prior)
+    case 'failed':
+      return true
+  }
+}
+
 /** Serve a verified, pinned archive only to the capability supplied to Squirrel. */
 export async function squirrelFeed(
   archive: SquirrelArchive,
@@ -365,8 +382,7 @@ export class SquirrelInstallation {
     ) => Promise<SquirrelNativeRequest>,
     private readonly mutateRecord: (
       operation: (write: (handoff: SquirrelHandoff) => void) => void
-    ) => void = (operation) => operation((handoff) => writeJson(recordPath, handoff)),
-    private readonly mayReplaceHandoff?: (prior: SquirrelHandoff) => boolean
+    ) => void = (operation) => operation((handoff) => writeJson(recordPath, handoff))
   ) {
     // A late error revokes readiness without restoring candidate replacement.
     // The durable handoff remains consumed until startup reconciles the installed build.
@@ -411,14 +427,15 @@ export class SquirrelInstallation {
     archive: SquirrelArchive,
     identity: SquirrelHandoff,
     authorize: HandoffAuthorization,
-    allowInteraction = false
+    allowInteraction = false,
+    mayReplaceHandoff?: (prior: SquirrelHandoff) => boolean
   ): Promise<void> {
     if (this.running) return this.running
     if (this.handedOff)
       return this.matches(archive, identity)
         ? Promise.resolve()
         : Promise.reject(new Error('Squirrel handoff already consumed'))
-    this.running = this.start(archive, identity, authorize, allowInteraction)
+    this.running = this.start(archive, identity, authorize, allowInteraction, mayReplaceHandoff)
       .catch((error) => {
         if (this.handedOff) this.nativeFailed = true
         throw error
@@ -432,7 +449,8 @@ export class SquirrelInstallation {
     archive: SquirrelArchive,
     identity: SquirrelHandoff,
     authorize: HandoffAuthorization,
-    allowInteraction: boolean
+    allowInteraction: boolean,
+    mayReplaceHandoff?: (prior: SquirrelHandoff) => boolean
   ): Promise<void> {
     this.nativeFailed = false
     identity = {
@@ -468,18 +486,8 @@ export class SquirrelInstallation {
         if (this.nativeFailed) throw new Error('Squirrel initialization failed')
         this.mutateRecord((write) => {
           const prior = readSquirrelHandoff(this.recordPath)
-          if (
-            prior &&
-            !(
-              (prior.state === 'failed' ||
-                (prior.state === 'downloaded' &&
-                  !!prior.sourcePid &&
-                  squirrelPublisherExited(prior.sourcePid)) ||
-                (unstartedSquirrelRequest(prior) &&
-                  (!prior.sourcePid || abandonedSquirrelRequest(prior)))) &&
-              this.mayReplaceHandoff?.(prior)
-            )
-          )
+          if (!prior && mayReplaceHandoff) throw new Error('Squirrel handoff disappeared')
+          if (prior && !(replaceableHandoff(prior, allowInteraction) && mayReplaceHandoff?.(prior)))
             throw new Error('Squirrel handoff already exists')
           guard()
           write({ ...identity, state: 'requested', sourcePid: process.pid })

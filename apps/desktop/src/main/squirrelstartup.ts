@@ -142,6 +142,32 @@ export function squirrelLaunchSuperseded(
   )
 }
 
+function squirrelProcessPaths(
+  processes: string,
+  uid: number,
+  executables: readonly string[],
+  refuseUnboundHelpers = false
+): Set<string> | null {
+  if (!processes.trim() || !executables.length || executables.some((path) => !isAbsolute(path)))
+    return null
+  const paths = new Set<string>()
+  for (const line of processes.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line)
+    if (!match) return null
+    if (![0, uid].includes(Number(match[1]))) continue
+    const path = match[2]
+    if (refuseUnboundHelpers && basename(path) === SHIPIT_NAME) return null
+    if (executables.includes(path)) return null
+    if (!isAbsolute(path)) {
+      if (basename(path) === SHIPIT_NAME) return null
+      continue
+    }
+    paths.add(path)
+  }
+  return paths
+}
+
 export async function squirrelHelpersAbsent(
   processes: string,
   uid: number,
@@ -149,20 +175,9 @@ export async function squirrelHelpersAbsent(
   canonicalize: (path: string) => Promise<string> = realpath,
   refuseUnboundHelpers = false
 ): Promise<boolean> {
-  if (!processes.trim() || !executables.length || executables.some((path) => !isAbsolute(path)))
-    return false
-  for (const line of processes.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    const match = /^\s*(\d+)\s+(.+)$/.exec(line)
-    if (!match) return false
-    if (![0, uid].includes(Number(match[1]))) continue
-    const path = match[2]
-    if (refuseUnboundHelpers && basename(path) === SHIPIT_NAME) return false
-    if (executables.includes(path)) return false
-    if (!isAbsolute(path)) {
-      if (basename(path) === SHIPIT_NAME) return false
-      continue
-    }
+  const paths = squirrelProcessPaths(processes, uid, executables, refuseUnboundHelpers)
+  if (!paths) return false
+  for (const path of paths) {
     try {
       const canonical = await canonicalize(path)
       if (!isAbsolute(canonical) || executables.includes(canonical)) return false
@@ -195,7 +210,7 @@ export async function inspectSquirrelIdle(
   application: string,
   handoff: SquirrelHandoff | null,
   verifyReplacement?: (application: string) => Promise<void>,
-  cancelledPreparation = false,
+  terminalRequest: boolean | 'restored' = false,
   orphanedLaunch?: {
     candidate: string
     observedLaunch(source: string, target: string): boolean
@@ -258,7 +273,7 @@ export async function inspectSquirrelIdle(
       native?.source.path
     )
     const before = snapshot()
-    if (cancelledPreparation && !before.bytes) return false
+    if (terminalRequest && !before.bytes) return false
     const options = {
       timeout: PROBE_TIMEOUT_MS,
       maxBuffer: PROBE_MAX_BYTES,
@@ -267,7 +282,7 @@ export async function inspectSquirrelIdle(
     const helpersAbsent = async () => {
       const processes = await run('/bin/ps', ['-ww', '-axo', 'uid=,comm='], options)
       // Without a bound candidate, a user/root ShipIt may belong to this update.
-      return squirrelHelpersAbsent(processes.stdout, uid, executables, realpath, handoff === null)
+      return squirrelHelpersAbsent(processes.stdout, uid, executables, undefined, handoff === null)
     }
     if (!(await helpersAbsent())) return false
     const replacement = captureDirectory(target)
@@ -294,8 +309,9 @@ export async function inspectSquirrelIdle(
         if (
           !sameSquirrelBinding(request.binding, native.binding) ||
           source !== native.source.path ||
-          (cancelledPreparation &&
-            (request.installationAuthorized || request.launchAfterInstallation)) ||
+          (terminalRequest &&
+            (request.installationAuthorized !== (terminalRequest === 'restored') ||
+              request.launchAfterInstallation !== (terminalRequest === 'restored'))) ||
           (request.installationAuthorized && !request.launchAfterInstallation)
         )
           return false
@@ -306,7 +322,7 @@ export async function inspectSquirrelIdle(
             target,
             native,
             verifyReplacement ? replacement : undefined,
-            cancelledPreparation ? osConstants.errno.ECANCELED : undefined
+            terminalRequest === true ? osConstants.errno.ECANCELED : undefined
           )
       } else {
         if (
@@ -341,18 +357,46 @@ export async function inspectCancelledSquirrelPreparation(
   application: string,
   handoff: SquirrelHandoff
 ): Promise<(() => boolean) | null> {
+  if (!['requested', 'downloaded'].includes(handoff.state)) return null
+  return inspectTerminalSquirrelRequest(cache, bundle, application, handoff, 'cancelled')
+}
+
+export async function inspectRestoredSquirrelInstallation(
+  cache: string,
+  bundle: string,
+  application: string,
+  handoff: SquirrelHandoff,
+  legacyPublisherAbsent?: () => boolean
+): Promise<(() => boolean) | null> {
+  if (handoff.state !== 'installing') return null
+  return inspectTerminalSquirrelRequest(
+    cache,
+    bundle,
+    application,
+    handoff,
+    'restored',
+    legacyPublisherAbsent
+  )
+}
+
+async function inspectTerminalSquirrelRequest(
+  cache: string,
+  bundle: string,
+  application: string,
+  handoff: SquirrelHandoff,
+  terminalRequest: 'cancelled' | 'restored',
+  legacyPublisherAbsent?: () => boolean
+): Promise<(() => boolean) | null> {
   const { sourcePid } = handoff
   const owner = join(cache, `${bundle}.ShipIt`)
-  if (
-    process.platform !== 'darwin' ||
-    !process.getuid ||
-    !/^[A-Za-z0-9.-]+$/.test(bundle) ||
-    !['requested', 'downloaded'].includes(handoff.state) ||
-    !sourcePid ||
-    !squirrelPublisherExited(sourcePid)
-  )
+  if (process.platform !== 'darwin' || !process.getuid || !/^[A-Za-z0-9.-]+$/.test(bundle))
     return null
+  const publisherExited = () =>
+    sourcePid === undefined
+      ? legacyPublisherAbsent?.() === true
+      : squirrelPublisherExited(sourcePid)
   try {
+    if (!publisherExited()) return null
     // A process can exit after ShipIt received the request but before the
     // downloaded event let Desktop persist its capture.
     const nativeRequest =
@@ -360,18 +404,27 @@ export async function inspectCancelledSquirrelPreparation(
         ? await bindSquirrelRequest(cache, bundle, application, handoff)
         : handoff.nativeRequest
     if (!nativeRequest || dirname(dirname(nativeRequest.source.path)) !== owner) return null
-    const owners = [0, process.getuid()]
+    const uid = process.getuid()
+    const owners = [0, uid]
     const statePath = join(owner, SHIPIT_STATE)
     const ackPath = join(dirname(nativeRequest.source.path), TERMINAL_ACK)
     const state = captureRecord(statePath, PROBE_MAX_BYTES, owners)
     const ack = captureRecord(ackPath, TERMINAL_ACK_LIMIT, owners)
+    const ownerIdentity = captureDirectory(owner)
+    const contents = captureDirectory(join(application, 'Contents'))
     const bound = { ...handoff, nativeRequest }
-    if (!(await inspectSquirrelIdle(cache, bundle, application, bound, undefined, true)))
+    const requiredRequest = terminalRequest === 'cancelled' ? true : terminalRequest
+    if (!(await inspectSquirrelIdle(cache, bundle, application, bound, undefined, requiredRequest)))
       return null
     const current = (): boolean => {
       try {
         return (
-          squirrelPublisherExited(sourcePid) &&
+          publisherExited() &&
+          squirrelCaptureMatches(ownerIdentity, captureDirectory(owner)) &&
+          [cache, owner, dirname(nativeRequest.source.path)].every(
+            (path) => (lstatSync(path).mode & UNSAFE_WRITE_MODE) === 0
+          ) &&
+          squirrelCaptureMatches(contents, captureDirectory(contents.path)) &&
           sameRecord(statePath, state, PROBE_MAX_BYTES, owners) &&
           sameRecord(ackPath, ack, TERMINAL_ACK_LIMIT, owners) &&
           squirrelCaptureMatches(
@@ -384,9 +437,41 @@ export async function inspectCancelledSquirrelPreparation(
         return false
       }
     }
-    return current() ? current : null
+    if (!current()) return null
+    if (terminalRequest === 'cancelled') return current
+    return () => restoredHelpersAbsent(application, nativeRequest.source.path, uid) && current()
   } catch {
     return null
+  }
+}
+
+// Only a committed retry runs this second process check synchronously under the handoff lock.
+function restoredHelpersAbsent(application: string, source: string, uid: number): boolean {
+  try {
+    const candidate = join(source, ...SHIPIT_EXECUTABLE)
+    const helpers = [realpathSync.native(join(application, ...SHIPIT_EXECUTABLE)), candidate]
+    try {
+      helpers.push(realpathSync.native(candidate))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const processes = execFileSync('/bin/ps', ['-ww', '-axo', 'uid=,comm='], {
+      timeout: PROBE_TIMEOUT_MS,
+      maxBuffer: PROBE_MAX_BYTES,
+      encoding: 'utf8',
+    })
+    const paths = squirrelProcessPaths(processes, uid, helpers)
+    if (!paths) return false
+    for (const path of paths) {
+      try {
+        if (helpers.includes(realpathSync.native(path))) return false
+      } catch {
+        if (basename(path) === SHIPIT_NAME) return false
+      }
+    }
+    return true
+  } catch {
+    return false
   }
 }
 

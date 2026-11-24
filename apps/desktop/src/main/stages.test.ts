@@ -5,6 +5,11 @@ import test from 'node:test'
 import ts from 'typescript'
 import { InstallationProgress } from './installation.ts'
 import {
+  abandonedSquirrelRequest,
+  decodeSquirrelHandoff,
+  type SquirrelHandoff,
+} from './squirrel.ts'
+import {
   commitWithActivation,
   ActivationCandidateChanged,
   ActivationExpired,
@@ -32,6 +37,7 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
   const nativeSpaceChecks: boolean[] = []
   let ready = false
   let committed = false
+  const handoff: { current?: SquirrelHandoff } = {}
   const controller = new AbortController()
   const exports: Record<string, Function> = {}
   const prepared = {
@@ -65,10 +71,19 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
     get ready() {
       return ready
     },
-    prepare: async (_archive: unknown, _identity: unknown, authorize: Function) => {
+    dispose: () => {},
+    prepare: async (
+      _archive: unknown,
+      _identity: unknown,
+      authorize: Function,
+      allowInteraction: boolean,
+      mayReplace?: (current: SquirrelHandoff) => boolean
+    ) => {
       if (ready) return
       events.push('helper')
       const guard = await authorize()
+      if (handoff.current && (!allowInteraction || !mayReplace?.(handoff.current)))
+        throw new Error('handoff exists')
       guard()
       committed = true
       if (failHelper) throw new Error('native refused')
@@ -119,6 +134,7 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
   runInNewContext(
     updaterFunctions([
       'prepareMacUpdate',
+      'macHandoffReplacement',
       'installStagedUpdate',
       'macArchiveReady',
       'macPreparationReady',
@@ -126,13 +142,13 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
     ]),
     environment
   )
-  const prepare = (allowInteraction = false) =>
+  const prepare = (allowInteraction = false, startup?: unknown) =>
     exports.prepareMacUpdate(
       staged.meta.id,
       (value: (typeof progress)[number]) => progress.push(value),
       () => {},
       controller.signal,
-      undefined,
+      startup,
       allowInteraction
     )
   const install = () =>
@@ -147,8 +163,81 @@ function fixture(failHelper = false, failFinalGrant = false, writable = true) {
         return () => events.push('discard-context')
       }
     )
-  return { prepare, install, events, progress, nativeSpaceChecks }
+  return { prepare, install, events, progress, nativeSpaceChecks, handoff, environment }
 }
+
+test('preparation retries a restored installation only with a manual request and current failure evidence', async () => {
+  const prior: SquirrelHandoff = {
+    version: '0.3.1',
+    buildNumber: '202611100001',
+    candidate: 'candidate',
+    state: 'installing',
+    at: 1,
+  }
+  const evidence = { home: '/home', record: { bytes: Buffer.from(JSON.stringify(prior)) } }
+  for (const [outcome, expectedChecks] of [
+    ['restored', ['inspect', 'recheck']],
+    ['background', []],
+    ['wrong-home', ['inspect']],
+    ['withdrawn', ['inspect', 'recheck']],
+    ['record-changed', ['inspect']],
+  ] as const) {
+    const current = fixture()
+    current.handoff.current = prior
+    const inspected: string[] = []
+    let nativeProof = true
+    let recordMatches = true
+    const grant = current.environment.authorizeActivation
+    Object.assign(current.environment, {
+      process: {
+        platform: 'darwin',
+        execPath: '/App.app/Contents/MacOS/ScholarSeed',
+        getuid: () => 501,
+      },
+      decodeSquirrelHandoff,
+      abandonedSquirrelRequest,
+      dirname,
+      resolve,
+      realpathSync: (path: string) => path,
+      systemCacheDir: () => '/cache',
+      resolveDesktopConfig: () => ({ bundleId: 'fixture.bundle' }),
+      desktopHome: () => '/home',
+      squirrelHandoffPath: () => '/home/updates/squirrel.json',
+      TERMINAL_RECORD_LIMITS: { handoff: 4096 },
+      inspectRestoredSquirrelInstallation: async (
+        cache: string,
+        bundle: string,
+        app: string,
+        captured: SquirrelHandoff
+      ) => {
+        assert.deepEqual(
+          [cache, bundle, app, captured],
+          ['/cache', 'fixture.bundle', '/App.app', prior]
+        )
+        inspected.push('inspect')
+        return () => {
+          inspected.push('recheck')
+          return nativeProof
+        }
+      },
+      sameRecord: (_path: string, record: unknown) => record === evidence.record && recordMatches,
+      authorizeActivation: async () => {
+        if (outcome === 'withdrawn') nativeProof = false
+        if (outcome === 'record-changed') recordMatches = false
+        return grant()
+      },
+    })
+    const startup = {
+      admission: 'failed',
+      evidence: { ...evidence, home: outcome === 'wrong-home' ? '/other' : evidence.home },
+    }
+    const result = await current.prepare(outcome !== 'background', startup)
+    assert.equal(result.ok, outcome === 'restored', `${outcome}: ${result.error ?? ''}`)
+    assert.equal(current.events.includes('grant'), true, outcome)
+    assert.equal(current.events.includes('ready'), outcome === 'restored', outcome)
+    assert.deepEqual(inspected, expectedChecks, outcome)
+  }
+})
 
 test('background preparation proves native readiness before activation can quiesce writers', async () => {
   const current = fixture()

@@ -277,6 +277,21 @@ proof. Recovery does not automatically clear the user's retained update context 
 handoff. Both source helper and framework must contain this protocol; updating only
 the target does not retrofit a running old helper.
 
+After a failed installation, the restored application can show **Retry preparation**
+while the Desktop handoff still says `installing`. A manual retry checks the
+authorized native request and its bound failure acknowledgement against the restored
+bundle. Under the handoff lock it rechecks those files, the target identity and
+the absence of the update helpers. With fresh activation authorization, Desktop
+can then replace the old handoff with a new request. Squirrel preserves the source
+directory referenced by the native request during retry cleanup, so ShipIt can
+still verify the old failure acknowledgement. Installing the newly prepared
+update still requires an explicit restart.
+
+安装失败并恢复旧版后，桌面端的交接记录可能仍显示 `installing`。用户点击“重试准备”时，
+桌面端会核对原生安装请求、失败回执和恢复后的应用，并在持有交接锁时复核文件身份及更新助手的退出状态。
+取得新的更新授权后，桌面端才用新请求替换旧记录。重试时，Squirrel 清理缓存会保留原生请求指向的目录，
+以便 ShipIt 复核其中的失败回执。新副本准备好后，仍由用户点击重启来安装。
+
 `binding.test.m` checks actual NSData digests, real request serialization, immutable
 controls, private journal binding and bound terminal recovery. `grant.test.m` loads
 the replacement dylib and exercises its real restart-request entry against isolated

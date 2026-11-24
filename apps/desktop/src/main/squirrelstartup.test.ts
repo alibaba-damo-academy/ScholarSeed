@@ -17,6 +17,7 @@ import {
   bindSquirrelRequest,
   inspectSquirrelIdle,
   inspectCancelledSquirrelPreparation,
+  inspectRestoredSquirrelInstallation,
   verifySquirrelReplacement,
   squirrelHelpersAbsent,
   squirrelLaunchSuperseded,
@@ -624,6 +625,10 @@ test(
     await writeFile(statePath, JSON.stringify(request))
     await writeFile(ackPath, JSON.stringify({ ...ack, code: osConstants.errno.EIO }))
     assert.equal(await inspect(), null)
+    assert.equal(
+      await inspectSquirrelIdle(cache, bundle, application, current, undefined, true),
+      false
+    )
   }
 )
 
@@ -755,7 +760,7 @@ test(
   'native probe distinguishes terminal restoration from installation without admitting a live helper',
   { skip: process.platform !== 'darwin', timeout: 30_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'squirrel-probe-'))
+    const directory = realpathSync(await mkdtemp(join(tmpdir(), 'squirrel-probe-')))
     const owned: { helper?: ReturnType<typeof spawn> } = {}
     t.after(async () => {
       const helper = owned.helper
@@ -781,22 +786,20 @@ test(
     const bundle = 'org.scholarseed.probe'
     const cache = join(directory, `${bundle}.ShipIt`)
     await mkdir(cache)
-    const source = join(directory, 'request', 'Example.app')
+    const source = join(cache, 'request', 'Example.app')
     await mkdir(source, { recursive: true })
     await chmod(dirname(source), 0o700)
-    await writeFile(
-      join(cache, 'ShipItState.plist'),
-      JSON.stringify({
-        targetBundleURL: pathToFileURL(application).href,
-        updateBundleURL: pathToFileURL(source).href,
-        binding: protocolBinding,
-        bundleIdentifier: bundle,
-        installationAuthorized: true,
-        launchAfterInstallation: true,
-        useUpdateBundleName: true,
-      }),
-      { mode: 0o600 }
-    )
+    const statePath = join(cache, 'ShipItState.plist')
+    const request = {
+      targetBundleURL: pathToFileURL(application).href,
+      updateBundleURL: pathToFileURL(source).href,
+      binding: protocolBinding,
+      bundleIdentifier: bundle,
+      installationAuthorized: true,
+      launchAfterInstallation: true,
+      useUpdateBundleName: true,
+    }
+    await writeFile(statePath, JSON.stringify(request), { mode: 0o600 })
     const acknowledgement = join(dirname(source), '.scholarseed-prepare.plist')
     await writeFile(acknowledgement, JSON.stringify(terminalRecord(source, application)), {
       mode: 0o600,
@@ -806,12 +809,19 @@ test(
     })
     owned.helper = helper
     await once(helper, 'spawn')
-    const current = {
+    const publisher = spawn('/usr/bin/true')
+    await once(publisher, 'exit')
+    assert.ok(publisher.pid)
+    const current: SquirrelHandoff = {
       ...handoff,
+      sourcePid: publisher.pid,
       at: Date.now(),
       nativeRequest: terminalRecord(source, application),
     }
+    const inspect = (entry = current) =>
+      inspectRestoredSquirrelInstallation(directory, bundle, application, entry)
     assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'restoring')
+    assert.equal(await inspect(), null)
     assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
     await rm(acknowledgement)
     assert.equal(
@@ -826,6 +836,33 @@ test(
     await exited
     assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'failed')
     assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
+    const proof = await inspect()
+    assert.equal(proof?.(), true)
+    assert.equal(await inspect({ ...current, sourcePid: process.pid }), null)
+    assert.equal(await inspect({ ...current, state: 'downloaded' }), null)
+    const legacy = { ...current, sourcePid: undefined }
+    assert.equal(await inspect(legacy), null)
+    let publisherAbsent = true
+    const legacyProof = await inspectRestoredSquirrelInstallation(
+      directory,
+      bundle,
+      application,
+      legacy,
+      () => publisherAbsent
+    )
+    assert.equal(legacyProof?.(), true)
+    publisherAbsent = false
+    assert.equal(legacyProof?.(), false)
+    assert.equal(
+      await inspectRestoredSquirrelInstallation(
+        directory,
+        bundle,
+        application,
+        legacy,
+        () => publisherAbsent
+      ),
+      null
+    )
     for (const [root, expected] of [
       [join(directory, 'Other App.app'), true],
       [source, false],
@@ -836,6 +873,7 @@ test(
       const active = spawn(other, [], { stdio: 'ignore' })
       owned.helper = active
       await once(active, 'spawn')
+      assert.equal(proof?.(), expected)
       assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), expected)
       assert.equal(
         await inspectSquirrelStartup(current, directory, bundle, application),
@@ -854,11 +892,37 @@ test(
       await stopped
       assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'failed')
     }
+    const failure = readFileSync(acknowledgement)
     await rm(acknowledgement)
+    assert.equal(proof?.(), false)
+    assert.equal(await inspect(), null)
     assert.equal(
       await inspectSquirrelStartup(current, directory, bundle, application),
       'unconfirmed'
     )
+    await writeFile(acknowledgement, failure, { mode: 0o600 })
+    assert.equal(proof?.(), false)
+    for (const changed of [
+      { installationAuthorized: false },
+      { launchAfterInstallation: false },
+      { binding: { ...request.binding, requestId: 'f'.repeat(64) } },
+    ]) {
+      await writeFile(statePath, JSON.stringify({ ...request, ...changed }))
+      assert.equal(await inspect(), null)
+    }
+    await writeFile(statePath, JSON.stringify(request))
+    const restored = await inspect()
+    assert.equal(restored?.(), true)
+    await rename(join(application, 'Contents'), join(application, 'PreviousContents'))
+    await mkdir(dirname(executable), { recursive: true })
+    await symlink('Versions/A/Resources', join(framework, 'Resources'))
+    await copyFile(executable.replace('/Contents/', '/PreviousContents/'), executable)
+    assert.equal(restored?.(), false)
+    await rename(application, application + '.previous')
+    await mkdir(dirname(executable), { recursive: true })
+    await symlink('Versions/A/Resources', join(framework, 'Resources'))
+    await copyFile(executable.replace(application, application + '.previous'), executable)
+    assert.equal(await inspect(), null)
   }
 )
 
