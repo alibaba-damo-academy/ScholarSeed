@@ -22,6 +22,19 @@ const SHELL_COMMAND_NOT_FOUND =
 const SHELL_PERMISSION_DENIED = /(?:^|\n)(?:zsh:\d+:|bash: line \d+:)[^\n]*\bpermission denied\b/i
 const MISSING_FILE = /(?:^|\n)(?:rg|grep):[^\n]*\b(?:no such file or directory|not a directory)\b/i
 
+export function commandInputText(input: unknown): string | undefined {
+  if (typeof input === 'string' && input.trimStart().startsWith('{')) {
+    try {
+      input = JSON.parse(input)
+    } catch {
+      return undefined
+    }
+  }
+  if (!input || typeof input !== 'object') return undefined
+  const { command } = input as { command?: unknown }
+  return typeof command === 'string' && command.trim() ? command : undefined
+}
+
 export function commandOutcome(item: CommandTool): CommandOutcome {
   if (item.status !== 'error') return 'none'
   const input =

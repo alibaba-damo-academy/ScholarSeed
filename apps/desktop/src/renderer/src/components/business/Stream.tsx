@@ -83,7 +83,7 @@ import { useSkillNames, type SkillNames } from './skillnames'
 import { MessageActions, UserMessageText } from './Message'
 import { userMessageTime } from './utils'
 import { LoginPrompt } from './LoginPrompt'
-import { commandOutcome } from '../../command'
+import { commandInputText, commandOutcome } from '../../command'
 import { activeThread, useApp, type ComposerReference } from '../../store'
 import type {
   ConvCard,
@@ -3066,6 +3066,7 @@ function ToolStep({
     item.status === 'error' ? conversation(outcomeKey[outcome], { code: item.exitCode ?? 0 }) : ''
   const summary = item.status !== 'error' ? toolInputSummary(item) : ''
   const action = activityAction(item)
+  const command = action === 'command' ? commandInputText(item.input) : undefined
   const duration = compactDurationLabel(
     item.startedAt,
     item.status === 'running' ? now : item.completedAt,
@@ -3106,7 +3107,7 @@ function ToolStep({
           : undefined,
         preview: item.status === 'done' ? toolPreview(item) : undefined,
         duration: duration ?? undefined,
-        input: item.input != null ? toolValue(item.input) : undefined,
+        input: command ?? (item.input != null ? toolValue(item.input) : undefined),
         output: item.result != null && item.result !== '' ? item.result : undefined,
         exitCode: typeof item.exitCode === 'number' ? item.exitCode : undefined,
       }}
