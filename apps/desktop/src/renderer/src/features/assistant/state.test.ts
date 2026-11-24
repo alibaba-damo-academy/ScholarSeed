@@ -257,6 +257,9 @@ test('context save errors retain server diagnostics and only fall back when abse
     detail: 'http_422',
   })
   assert.deepEqual(assistantContextSaveError(), { key: 'contextErrors.saveRetry' })
+  assert.deepEqual(assistantContextSaveError({ receiptUnknown: true }), {
+    key: 'contextErrors.saveUnconfirmed',
+  })
 })
 
 test('adding a second PDF quote leaves only the unsent quote visible and preserves the sent quote', () => {

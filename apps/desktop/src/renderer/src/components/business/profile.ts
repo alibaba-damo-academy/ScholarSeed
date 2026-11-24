@@ -33,6 +33,7 @@ export function modelApiKeyShowsSavedMask(draft: ModelApiKeyDraft): boolean {
 const PROFILE_ERROR_KEYS = {
   authentication_required: 'request.authentication',
   http_failure: 'request.http',
+  invalid_response: 'request.invalidResponse',
   network_failure: 'request.network',
   request_timeout: 'request.timeout',
 } as const
@@ -101,6 +102,7 @@ export type ProbeFailureKind =
   | 'notFound'
   | 'status'
   | 'network'
+  | 'invalidResponse'
   | 'timeout'
   | 'protocol'
   | 'baseUrl'
@@ -127,6 +129,7 @@ export const PROBE_REASON_KEYS = {
   notFound: 'accountPanel.modelsPage.probeReasonNotFound',
   status: 'accountPanel.modelsPage.probeReasonStatus',
   network: 'accountPanel.modelsPage.probeReasonNetwork',
+  invalidResponse: 'accountPanel.modelsPage.probeReasonInvalidResponse',
   timeout: 'accountPanel.modelsPage.probeReasonTimeout',
   protocol: 'accountPanel.modelsPage.probeReasonProtocol',
   baseUrl: 'accountPanel.modelsPage.probeReasonBaseUrl',
@@ -141,6 +144,7 @@ export const PROBE_SUGGESTION_KEYS = {
   notFound: 'accountPanel.modelsPage.probeSuggestionNotFound',
   status: 'accountPanel.modelsPage.probeSuggestionStatus',
   network: 'accountPanel.modelsPage.probeSuggestionNetwork',
+  invalidResponse: 'accountPanel.modelsPage.probeSuggestionInvalidResponse',
   timeout: 'accountPanel.modelsPage.probeSuggestionTimeout',
   protocol: 'accountPanel.modelsPage.probeSuggestionProtocol',
   baseUrl: 'accountPanel.modelsPage.probeSuggestionBaseUrl',
@@ -182,6 +186,8 @@ export function probeFailureDetail(
   }
   if (failure.code === 'request_timeout') return { kind: 'timeout' }
   if (failure.code === 'network_failure') return { kind: 'network' }
+  if (failure.code === 'invalid_response')
+    return { kind: 'invalidResponse', params: { status: failure.status } }
   const detail = failure.detail
   if (detail?.code === CONNECTION_VALIDATION_FAILED) {
     const byClass = classifyErrorClass(detail.error_class ?? '')

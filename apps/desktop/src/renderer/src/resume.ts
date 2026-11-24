@@ -28,7 +28,9 @@ export async function prepareStartupSession(
 
   const runtimeRoot = opened.runtime_workdir || opened.workdir
   if (runtimeRoot) {
-    const authorized = await window.scholarseed.addAuthorizedRoot('session', runtimeRoot)
+    const authorized = await window.scholarseed
+      .addAuthorizedRoot('session', runtimeRoot)
+      .catch(() => false)
     if (signal.aborted) return null
     if (!authorized) {
       console.warn(

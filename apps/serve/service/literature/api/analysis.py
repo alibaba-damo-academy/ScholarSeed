@@ -207,10 +207,6 @@ def register_analysis_routes(
             return None
         return results.joined_attempt(owner, attempt_id)
 
-    def canonical_task(owner: str, task_id: str) -> str:
-        alias = joined_attempt(owner, task_id)
-        return alias[0] if alias else task_id
-
     def snapshot(owner: str, task_id: str, *, accepted_join: bool = False) -> dict:
         key = (owner, task_id)
         if key in states:
@@ -1535,9 +1531,10 @@ def register_analysis_routes(
     @app.post(f"{PREFIX}/tasks/{{task_id}}/timing", dependencies=admission)
     async def observe_timing(task_id: str, payload: ReadingTiming, request: Request) -> dict:
         owner = request_user_id(request)
-        task_id = canonical_task(owner, task_id)
+        alias = joined_attempt(owner, task_id)
+        task_id = alias[0] if alias else task_id
         key = (owner, task_id)
-        state = snapshot(owner, task_id)
+        state = snapshot(owner, task_id, accepted_join=alias is not None)
         result = state.get("result")
         previous = state.get("ui_timing") or (result or {}).get("metadata", {}).get("ui_timing", {})
         measured = dict(previous)
@@ -1566,7 +1563,8 @@ def register_analysis_routes(
                     results.publish(result, record.invocation_id)
                 if state["status"] == "completed":
                     tasks.save(replace(record, output_text=json.dumps(result, ensure_ascii=False)))
-        states[key] = state
+        if state["status"] != ModelInvocationStatus.UNKNOWN.value:
+            states[key] = state
         return {"ui_timing": measured}
 
     @app.post(f"{PREFIX}/tasks/{{task_id}}/cancel")

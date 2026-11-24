@@ -358,6 +358,8 @@
     "loading": "Context is still loading. Try again shortly.",
     "updated": "Context was updated in another window. The latest version is now synchronized.",
     "saveFailed": "Could not save context: {{detail}}",
+    "saveReconciled": "The save was not confirmed. Review the selection reloaded from the service.",
+    "saveUnconfirmed": "The save could not be confirmed. Reload the context to check the current selection.",
     "syncFailed": "Resources were updated, but context synchronization failed: {{detail}}",
     "loadFailed": "Could not load context. Try again.",
     "initializeFailed": "Could not initialize context for the new session. Try again.",

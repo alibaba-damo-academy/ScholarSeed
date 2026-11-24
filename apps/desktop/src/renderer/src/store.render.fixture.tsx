@@ -54,6 +54,7 @@ const probe = {
   openDraftSession: (...args: Parameters<Store['act']['openDraftSession']>) =>
     flushSync(() => store.act.openDraftSession(...args)),
   loadContext: (id: string) => store.act.loadAiContext(id),
+  reloadResourceTree: () => store.act.reloadResourceTree(),
   forkSession: (id: string, turnId?: string) => store.act.forkSession(id, turnId),
   draft: (text?: string) => {
     if (text !== undefined) store.composerDraft.set(text)

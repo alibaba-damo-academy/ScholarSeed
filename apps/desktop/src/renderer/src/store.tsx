@@ -318,7 +318,6 @@ import {
   finishResourceTreeReload,
   linkMountNameFromSource,
   materializeResourcePath,
-  resourceTreeChangedDuringReload,
   prepareResourceOpening,
   relocateExpandedResourcePaths,
   relocateResourcePath,
@@ -1827,6 +1826,7 @@ export function StoreProvider({
     keepView: boolean
     task?: boolean
     disposed?: boolean
+    serviceInstanceId?: string | null
   } | null>(null)
   const [state, updateState] = useState<AppState>(() => ({
     ...INITIAL,
@@ -2832,6 +2832,11 @@ export function StoreProvider({
       setState((value) => {
         if (value.activeSession !== sessionId) return value
         const selection = result.context ?? result.latest
+        if (
+          value.aiPanel.sessionId !== sessionId ||
+          (selection?.revision ?? panel.revision) < value.aiPanel.revision
+        )
+          return value
         if (selection) {
           return {
             ...value,
@@ -2839,22 +2844,13 @@ export function StoreProvider({
               ...value.aiPanel,
               sessionId,
               contextState: 'ready',
-              revision: selection.revision,
-              projectPolicy: selection.project_policy,
-              searchScope: selection.search_scope,
-              refs: selection.refs,
-              submittedRefIds: submittedContextRefIds(
-                selection.refs,
-                selection.claimed_ref_ids ?? [],
-                value.aiPanel.submittedRefIds
-              ),
-              capabilities: selection.capabilities,
+              ...assistantContextProjection(selection, value.aiPanel.submittedRefIds),
               contextError:
                 result.ok || result.error === ASSISTANT_CLAIMED_REFS_IMMUTABLE
                   ? null
                   : result.error === ASSISTANT_CONTEXT_REVISION_CONFLICT
                     ? { key: 'contextErrors.updated' }
-                    : { key: 'contextErrors.saveFailed', detail: assistantFailureDetail(result) },
+                    : assistantContextSaveError(result),
             },
           }
         }
@@ -2863,10 +2859,7 @@ export function StoreProvider({
           aiPanel: {
             ...value.aiPanel,
             contextState: 'error',
-            contextError: {
-              key: 'contextErrors.saveFailed',
-              detail: assistantFailureDetail(result),
-            },
+            contextError: assistantContextSaveError(result),
           },
         }
       })
@@ -2943,7 +2936,11 @@ export function StoreProvider({
           )
           return true
         }
-        if (result.latest && attempt + 1 < RESOURCE_CONTEXT_SYNC_ATTEMPTS) {
+        if (
+          result.latest &&
+          !result.receiptUnknown &&
+          attempt + 1 < RESOURCE_CONTEXT_SYNC_ATTEMPTS
+        ) {
           selection = result.latest
           continue
         }
@@ -2964,10 +2961,12 @@ export function StoreProvider({
                       }
                     : {}),
                   contextState: authoritative ? 'ready' : 'error',
-                  contextError: {
-                    key: 'contextErrors.syncFailed',
-                    detail: assistantFailureDetail(result),
-                  },
+                  contextError: result.receiptUnknown
+                    ? assistantContextSaveError(result)
+                    : {
+                        key: 'contextErrors.syncFailed',
+                        detail: assistantFailureDetail(result),
+                      },
                 },
               }
         )
@@ -4184,6 +4183,10 @@ export function StoreProvider({
         resourceTreeReload.current?.abort()
         const operation = new AbortController()
         resourceTreeReload.current = operation
+        const projectSignal = resourceProjectRead.current?.signal
+        const cancellation = projectSignal
+          ? AbortSignal.any([operation.signal, projectSignal])
+          : operation.signal
         const signal = resourceReadSignal(operation.signal)
         const generation = ++resourceTreeReloadSeq.current
         const previous = stateRef.current.resource
@@ -4202,29 +4205,30 @@ export function StoreProvider({
         )
         const finish = (result: Awaited<ReturnType<typeof fetchResourceTree>>): boolean => {
           if (!ownsResult(stateRef.current)) return false
-          const complete = signal.aborted ? null : result
-          setState((current) =>
-            ownsResult(current)
-              ? {
-                  ...current,
-                  resource: finishResourceTreeReload(current.resource, complete, previous),
-                }
-              : current
+          const complete = cancellation.aborted ? null : result
+          // A successful receipt acknowledges the tree React actually published.
+          flushSync(() =>
+            setState((current) =>
+              ownsResult(current)
+                ? {
+                    ...current,
+                    resource: finishResourceTreeReload(current.resource, complete, previous),
+                  }
+                : current
+            )
           )
           return (
             complete !== null &&
-            !resourceTreeChangedDuringReload(stateRef.current.resource, previous)
+            ownsResult(stateRef.current) &&
+            stateRef.current.resource.tree === complete.nodes
           )
         }
-        try {
-          let [result, roots] = await Promise.all([
-            fetchResourceTree(project, undefined, 0, signal),
-            listExternalRoots(project, signal).catch(() => null),
-          ])
-          if (!ownsResult(stateRef.current) || !result || !roots) return finish(null)
+        const readTree = async (): Promise<Awaited<ReturnType<typeof fetchResourceTree>>> => {
+          let result = await fetchResourceTree(project, undefined, 0, signal)
+          if (!ownsResult(stateRef.current) || !result) return null
           while (result.nodes.length < Math.min(previousTree.length, result.total)) {
             const page = await fetchResourceTree(project, undefined, result.nodes.length, signal)
-            if (!ownsResult(stateRef.current) || !page?.nodes.length) return finish(null)
+            if (!ownsResult(stateRef.current) || !page?.nodes.length) return null
             result = { ...result, nodes: [...result.nodes, ...page.nodes], total: page.total }
           }
           // Rebuild already expanded subtrees on the new snapshot before publishing it.
@@ -4235,9 +4239,16 @@ export function StoreProvider({
             signal,
             previousTree
           )
-          return finish(
-            patches ? { ...result, nodes: applyChildrenPatches(result.nodes, patches) } : null
-          )
+          return patches && !signal.aborted
+            ? { ...result, nodes: applyChildrenPatches(result.nodes, patches) }
+            : null
+        }
+        try {
+          const [result, roots] = await Promise.all([
+            readTree(),
+            listExternalRoots(project, cancellation).catch(() => null),
+          ])
+          return finish(roots ? result : null)
         } finally {
           if (resourceTreeReload.current === operation) resourceTreeReload.current = null
         }
@@ -5596,17 +5607,27 @@ export function StoreProvider({
         await persistAssistantContext({ searchScope: scope })
       },
       prepareAiContext: async (sessionId) => {
-        const desired = stateRef.current.aiPanel
+        const owner = stateRef.current
+        const desired = owner.aiPanel
+        const ownsPanel = (current: AppState) =>
+          current.activeSession === owner.activeSession &&
+          current.aiPanel.sessionId === desired.sessionId &&
+          current.homeSelectedProjectId === owner.homeSelectedProjectId
         const initial = await getAssistantContext(sessionId)
+        if (!ownsPanel(stateRef.current)) return null
         if (!initial) {
-          setState((current) => ({
-            ...current,
-            aiPanel: {
-              ...current.aiPanel,
-              contextState: 'error',
-              contextError: { key: 'contextErrors.initializeFailed' },
-            },
-          }))
+          setState((current) =>
+            !ownsPanel(current)
+              ? current
+              : {
+                  ...current,
+                  aiPanel: {
+                    ...current.aiPanel,
+                    contextState: 'error',
+                    contextError: { key: 'contextErrors.initializeFailed' },
+                  },
+                }
+          )
           return null
         }
         const result = await patchAssistantContext(sessionId, {
@@ -5615,33 +5636,47 @@ export function StoreProvider({
           search_scope: desired.searchScope,
           refs: desired.refs,
         })
+        if (!ownsPanel(stateRef.current)) return null
         const selection = result.context ?? result.latest
-        if (!result.ok || !selection) {
-          setState((current) => ({
-            ...current,
-            aiPanel: {
-              ...current.aiPanel,
-              contextState: 'error',
-              contextError: { key: 'contextErrors.newSaveFailed' },
-            },
-          }))
+        if (
+          !selection ||
+          (!result.ok && !(result.receiptUnknown && owner.activeSession === sessionId))
+        ) {
+          setState((current) =>
+            !ownsPanel(current)
+              ? current
+              : {
+                  ...current,
+                  aiPanel: {
+                    ...current.aiPanel,
+                    contextState: 'error',
+                    contextError: result.receiptUnknown
+                      ? assistantContextSaveError(result)
+                      : { key: 'contextErrors.newSaveFailed' },
+                  },
+                }
+          )
           return null
         }
-        setState((current) => ({
-          ...current,
-          aiPanel: {
-            ...current.aiPanel,
-            sessionId,
-            contextState: 'ready',
-            revision: selection.revision,
-            projectPolicy: selection.project_policy,
-            searchScope: selection.search_scope,
-            refs: selection.refs,
-            capabilities: selection.capabilities,
-            contextError: null,
-          },
-        }))
-        return selection.revision
+        setState((current) =>
+          !ownsPanel(current)
+            ? current
+            : {
+                ...current,
+                aiPanel: {
+                  ...current.aiPanel,
+                  sessionId,
+                  contextState: 'ready',
+                  revision: selection.revision,
+                  projectPolicy: selection.project_policy,
+                  searchScope: selection.search_scope,
+                  refs: selection.refs,
+                  capabilities: selection.capabilities,
+                  contextError: result.ok ? null : assistantContextSaveError(result),
+                },
+              }
+        )
+        return result.ok ? selection.revision : null
       },
       askAiFromPanel: (text, taskType) => {
         if (text.trim()) composerDraft.current!.set(text)
@@ -7315,6 +7350,21 @@ export function StoreProvider({
   }, [finishTaskMarker, recoverHome, savedTaskSessionId, updateRecoveryMarker])
 
   useEffect(() => {
+    const existing = startupTask.current
+    if (existing?.task) {
+      // A launched task keeps its one attempt across effect rerenders.
+      if (state.navigationRestored) {
+        existing.keepView = true
+        existing.attempt.finish('skipped')
+      } else if (
+        state.workspaceLoadState !== 'ready' ||
+        !state.projectsLoaded ||
+        state.serviceInstanceId !== existing.serviceInstanceId
+      ) {
+        existing.attempt.finish('failed')
+      }
+      return
+    }
     if (
       !startupTaskSessionId ||
       navigationRestoreStarted.current ||
@@ -7368,13 +7418,30 @@ export function StoreProvider({
         )
       console.info('[startup-task-recovery]', outcome)
     })
-    const candidate = { attempt, presenting: false, keepView: false, task: true, disposed: false }
+    const candidate = {
+      attempt,
+      presenting: false,
+      keepView: false,
+      task: true,
+      disposed: false,
+      serviceInstanceId,
+    }
     startupTask.current = candidate
+    const ownsRecovery = (): boolean => {
+      if (!attempt.current) return false
+      const current = stateRef.current
+      return (
+        !current.navigationRestored &&
+        current.workspaceLoadState === 'ready' &&
+        current.projectsLoaded &&
+        current.serviceInstanceId === serviceInstanceId
+      )
+    }
 
     void (async () => {
       if (initialTaskRecovery.current && host?.beginTaskRecovery && host.finishTaskRecovery) {
         const snapshot = await initialTaskRecovery.current
-        if (!attempt.current) return
+        if (!ownsRecovery()) return
         if (snapshot.status !== TASK_RECOVERY_STATUS.eligible) {
           attempt.finish('skipped')
           return
@@ -7391,6 +7458,7 @@ export function StoreProvider({
           if (token && !candidate.disposed) finishTaskMarker(token, TASK_RECOVERY_OUTCOME.skipped)
           return
         }
+        if (!ownsRecovery()) return
         if (!token) {
           attempt.finish('skipped')
           return
@@ -7409,7 +7477,7 @@ export function StoreProvider({
       const metadata = existing
         ? null
         : await readNavigationSession(startupTaskSessionId, attempt.signal)
-      if (!attempt.current) return
+      if (!ownsRecovery()) return
       const node: SessionNode | null =
         existing ??
         (metadata && 'session_id' in metadata && metadata.session_id === startupTaskSessionId
@@ -7431,13 +7499,9 @@ export function StoreProvider({
         return
       }
       const opened = await prepareStartupSession(startupTaskSessionId, attempt.signal)
-      if (!attempt.current) return
-      if (!opened || stateRef.current.serviceInstanceId !== serviceInstanceId) {
+      if (!ownsRecovery()) return
+      if (!opened) {
         attempt.finish('failed')
-        return
-      }
-      if (stateRef.current.navigationRestored) {
-        attempt.finish('skipped')
         return
       }
       const view = location.view === 'home' ? 'conversation' : location.view

@@ -22,6 +22,8 @@ import {
 } from './runtime.ts'
 import {
   submitProjectCreation,
+  renameProject,
+  removeProject,
   serviceErrorDetail,
   openSession,
   loadSessionCatalog,
@@ -947,6 +949,42 @@ test('project creation exposes a busy folder rejection', async () => {
   }
 })
 
+test('project mutations distinguish explicit empty success from an unreadable receipt', async (t) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => '', syncAuthorizedRoots: async () => {} } },
+  })
+  t.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  const writes: string[] = []
+  const receipts = [
+    new Response(null, { status: 204 }),
+    new Response(null, { status: 205 }),
+    Response.json({ id: 'p' }),
+    new Response('{'),
+    Response.json({ detail: 'project_busy' }, { status: 409 }),
+  ]
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    if (!init.method || init.method === 'GET') {
+      return Response.json({ projects: [{ id: 'p', root: '/p' }], workspaceRoot: '/' })
+    }
+    writes.push(init.method)
+    return receipts.shift()
+  })
+  assert.deepEqual(await removeProject('/p'), { ok: true })
+  assert.deepEqual(await renameProject('/p', 'renamed'), { ok: true })
+  assert.deepEqual(await renameProject('/p', 'confirmed'), { ok: true })
+  assert.deepEqual(await renameProject('/p', 'unknown'), {
+    ok: false,
+    error: 'content_operation_unknown',
+  })
+  assert.deepEqual(await removeProject('/p'), { ok: false, error: 'project_busy' })
+  assert.deepEqual(writes, ['DELETE', 'PATCH', 'PATCH', 'PATCH', 'DELETE'])
+})
+
 test('project writes with expired receipts remain unconfirmed and are never replayed', async (context) => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   Object.defineProperty(globalThis, 'window', {
@@ -1716,10 +1754,14 @@ test('model profile requests preserve auth events and raw HTTP diagnostics witho
       code: 'http_failure',
       status: 400,
     })
-    for (const body of ['{', 'null', '[]']) {
+    for (const body of ['{', '', 'null', '[]', '"model"']) {
       globalThis.fetch = async () => new Response(body)
       const receipt = await createSubscriptionProfile()
-      assert.equal(receipt.ok, false, body)
+      assert.deepEqual(
+        receipt,
+        { ok: false, code: 'invalid_response', status: 200, error: 'HTTP 200' },
+        body
+      )
     }
     globalThis.fetch = async () => new Response('<html>', { status: 502 })
     assert.deepEqual(await createSubscriptionProfile(), {

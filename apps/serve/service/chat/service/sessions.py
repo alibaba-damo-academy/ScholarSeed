@@ -1356,22 +1356,33 @@ class SessionService:
                 self._logger.warning(
                     "Cancelled session close interrupted session_id=%s", session_id, exc_info=True
                 )
-        except Exception:
-            self._logger.warning(
-                "Cancelled session close failed session_id=%s", session_id, exc_info=True
-            )
 
     async def _discard_failed_open(self, session_id: str, live: LiveSession) -> None:
+        def retain_owner() -> None:
+            # Keep the uncertain owner visible to shutdown and block reopening.
+            live.terminating = True
+            self._sessions[session_id] = live
+
         async def close() -> None:
             try:
                 await live.aclose()
-            except BaseException:
-                # Keep the uncertain owner visible to shutdown and block reopening.
-                live.terminating = True
-                self._sessions[session_id] = live
-                raise
+            except BaseException as error:
+                retain_owner()
+                if not isinstance(error, (Exception, asyncio.CancelledError)):
+                    raise
+                self._logger.warning(
+                    "Session close failed during open cleanup session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
-        await self._activities.finish(ActivityDomain.RUNTIME, close)
+        try:
+            await self._activities.finish(ActivityDomain.RUNTIME, close)
+        except Exception:
+            retain_owner()
+            self._logger.warning(
+                "Session cleanup did not finish session_id=%s", session_id, exc_info=True
+            )
 
     def fork_origin(
         self, session_id: str, principal: SessionPrincipal

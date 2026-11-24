@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 import { createLocalization } from '../../localization/engine'
@@ -95,17 +95,20 @@ function LiveFixture(): null {
   return null
 }
 
+const Mode = Reflect.get(window, 'strictQueueReceiptFixture') ? StrictMode : Fragment
 createRoot(document.getElementById('root')!).render(
-  <I18nextProvider i18n={localization}>
-    <ToastProvider>
-      <StoreProvider assistantSources={[]}>
-        <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
-          <InteractionPolicyProvider policies={[fileRecovery]}>
-            {Reflect.get(window, 'liveSessionFixture') === true && <LiveFixture />}
-            <Fixture />
-          </InteractionPolicyProvider>
-        </DocumentWorkspaceContext.Provider>
-      </StoreProvider>
-    </ToastProvider>
-  </I18nextProvider>
+  <Mode>
+    <I18nextProvider i18n={localization}>
+      <ToastProvider>
+        <StoreProvider assistantSources={[]}>
+          <DocumentWorkspaceContext.Provider value={documentWorkspaces.forProject(null)}>
+            <InteractionPolicyProvider policies={[fileRecovery]}>
+              {Reflect.get(window, 'liveSessionFixture') === true && <LiveFixture />}
+              <Fixture />
+            </InteractionPolicyProvider>
+          </DocumentWorkspaceContext.Provider>
+        </StoreProvider>
+      </ToastProvider>
+    </I18nextProvider>
+  </Mode>
 )

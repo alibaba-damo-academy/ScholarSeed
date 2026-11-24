@@ -11,6 +11,141 @@ import { STARTUP_TASK_RECOVERY_MS } from './startup.ts'
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 
 test(
+  'a resource tree waits for authorization independently of its completed read',
+  { timeout: 60_000 },
+  async () =>
+    fixture(async (page) => {
+      await page.evaluate(() =>
+        Reflect.get(window, 'preferenceProbe').patch({ homeSelectedProjectId: 'auth-project' })
+      )
+      await expect
+        .poll(() =>
+          page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.homeSelectedProjectId)
+        )
+        .toBe('auth-project')
+      const outcomes = await page.evaluate(async () => {
+        const originalFetch = window.fetch
+        const originalTimeout = AbortSignal.timeout
+        const originalSync = window.scholarseed.syncAuthorizedRoots
+        const probe = Reflect.get(window, 'preferenceProbe')
+        try {
+          const results = []
+          for (const approved of [true, false]) {
+            const deadlines: AbortController[] = []
+            const synced = Promise.withResolvers<boolean>()
+            const syncStarted = Promise.withResolvers<void>()
+            const treeRead = Promise.withResolvers<void>()
+            AbortSignal.timeout = (ms) => {
+              if (ms !== 15_000 && ms !== 10_000) return originalTimeout(ms)
+              const deadline = new AbortController()
+              deadlines.push(deadline)
+              return deadline.signal
+            }
+            window.scholarseed.syncAuthorizedRoots = async (_scope, roots) => {
+              if (roots.length === 0) return true
+              syncStarted.resolve()
+              return synced.promise
+            }
+            window.fetch = async (input, options) => {
+              if (String(input).includes('/api/content/roots?'))
+                return Response.json({ roots: [], writableRoots: ['/linked'] })
+              if (!String(input).includes('/api/resource/tree?'))
+                return originalFetch(input, options)
+              const path = approved ? 'acknowledged.md' : 'not-authorized.md'
+              const response = Response.json({
+                root: '/fixture',
+                resource_root: '/fixture/resources',
+                nodes: [{ path, name: path, kind: 'file' }],
+                total: 1,
+              })
+              const json = response.json.bind(response)
+              response.json = async () => {
+                const payload = await json()
+                treeRead.resolve()
+                return payload
+              }
+              return response
+            }
+            const pending = probe.reloadResourceTree()
+            await Promise.all([treeRead.promise, syncStarted.promise])
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            const before = probe.state.resource.tree[0]?.path ?? null
+            deadlines[0].abort()
+            synced.resolve(approved)
+            const applied = await pending
+            results.push([before, applied, probe.state.resource.tree[0]?.path ?? null])
+          }
+          return results
+        } finally {
+          window.fetch = originalFetch
+          AbortSignal.timeout = originalTimeout
+          window.scholarseed.syncAuthorizedRoots = originalSync
+        }
+      })
+      assert.deepEqual(outcomes, [
+        [null, true, 'acknowledged.md'],
+        ['acknowledged.md', false, 'acknowledged.md'],
+      ])
+    })
+)
+
+test(
+  'a stale resource reload reports that a newer tree queued with it won publication',
+  { timeout: 60_000 },
+  async () =>
+    fixture(async (page) => {
+      await page.evaluate(() => {
+        Reflect.get(window, 'preferenceProbe').patch({ homeSelectedProjectId: 'resource-project' })
+      })
+      const treePath = () =>
+        page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.resource.tree[0]?.path)
+      await page.evaluate(() => {
+        const probe = Reflect.get(window, 'preferenceProbe')
+        probe.patch((current: AppState) => ({
+          ...current,
+          resource: {
+            ...current.resource,
+            loadState: 'ready',
+            tree: [{ path: 'old.md', name: 'old.md', kind: 'file' }],
+          },
+        }))
+      })
+      await expect.poll(treePath).toBe('old.md')
+      const reloaded = await page.evaluate(async () => {
+        const originalFetch = window.fetch
+        window.fetch = async (input, options) => {
+          if (String(input).includes('/api/content/roots?'))
+            return Response.json({ roots: [], writableRoots: [] })
+          if (String(input).includes('/api/resource/tree?'))
+            return Response.json({
+              root: '/fixture',
+              resource_root: '/fixture/resources',
+              nodes: [{ path: 'stale.md', name: 'stale.md', kind: 'file' }],
+              total: 1,
+            })
+          return originalFetch(input, options)
+        }
+        try {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          const result = probe.reloadResourceTree()
+          probe.patch((current: AppState) => ({
+            ...current,
+            resource: {
+              ...current.resource,
+              tree: [{ path: 'newer.md', name: 'newer.md', kind: 'file' }],
+            },
+          }))
+          return await result
+        } finally {
+          window.fetch = originalFetch
+        }
+      })
+      await expect.poll(treePath).toBe('newer.md')
+      assert.equal(reloaded, false)
+    })
+)
+
+test(
   'project menu batched navigation preserves draft text, references and persisted owners',
   { timeout: 60_000 },
   async () =>
@@ -1623,6 +1758,114 @@ test(
   }
 )
 
+for (const loss of ['workspace readiness', 'service generation', 'startup deadline'] as const) {
+  test(
+    `${loss === 'startup deadline' ? 'the startup deadline' : `losing ${loss}`} cancels the owned startup task without a second claim`,
+    { timeout: 60_000 },
+    async (context) => {
+      const history = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      try {
+        await fixture(
+          async (page) => {
+            const started = performance.now()
+            await readyForRecovery(page)
+            const claim = [
+              ['status', 'recovery-target'],
+              ['begin', 'recovery-target'],
+            ]
+            await expect.poll(() => manualRecoveryCalls(page)).toEqual(claim)
+            await page.evaluate(() => Reflect.get(window, 'releaseRecoveryClaim')())
+            await history.promise
+            if (loss !== 'startup deadline') {
+              await page.evaluate((loss) => {
+                Reflect.get(window, 'preferenceProbe').patch(
+                  loss === 'workspace readiness'
+                    ? { workspaceLoadState: 'loading' }
+                    : { serviceInstanceId: 'replacement' }
+                )
+              }, loss)
+            }
+            await expect
+              .poll(() => page.evaluate(() => Reflect.get(window, 'startupTaskReadAborted')), {
+                timeout: loss === 'startup deadline' ? STARTUP_TASK_RECOVERY_MS + 2_000 : 5_000,
+              })
+              .toBe(true)
+            if (loss === 'startup deadline') {
+              const elapsed = performance.now() - started
+              assert.ok(elapsed >= STARTUP_TASK_RECOVERY_MS)
+              context.diagnostic(`Held startup history aborted in ${Math.round(elapsed)} ms`)
+            }
+            const finished = [...claim, ['finish', 'token-from-main', 'skipped']]
+            await expect.poll(() => manualRecoveryCalls(page)).toEqual(finished)
+            release.resolve()
+            await readyForRecovery(page)
+            await expect
+              .poll(() =>
+                page.evaluate(() => Reflect.get(window, 'startupTaskLateHistoryReceived'))
+              )
+              .toBe(true)
+            await expect
+              .poll(() =>
+                page.evaluate(() => {
+                  const { state } = Reflect.get(window, 'preferenceProbe')
+                  return [
+                    state.startupTaskRecovery,
+                    state.activeSession,
+                    Boolean(state.threads['recovery-target']),
+                  ]
+                })
+              )
+              .toEqual(['skipped', null, false])
+            assert.deepEqual(await manualRecoveryCalls(page), finished)
+          },
+          async (page) => {
+            await installRecoveryBridge(
+              page,
+              { status: 'eligible', skippedSessionId: null, needsManualAcknowledgement: false },
+              true
+            )
+            await page.addInitScript(() => {
+              const fetch = window.fetch
+              window.fetch = (input, init) => {
+                if (String(input).includes('/api/serve/history/recovery-target')) {
+                  init?.signal?.addEventListener('abort', () =>
+                    Reflect.set(window, 'startupTaskReadAborted', true)
+                  )
+                  return fetch(input, { ...init, signal: undefined }).then((response) => {
+                    Reflect.set(window, 'startupTaskLateHistoryReceived', true)
+                    return response
+                  })
+                }
+                return fetch(input, init)
+              }
+            })
+            await page.route('**/api/serve/sessions/open', (route) =>
+              route.fulfill({
+                json: {
+                  session_id: 'recovery-target',
+                  running: false,
+                  last_seq: 3,
+                  active_turn_id: null,
+                  unknown_outcome: false,
+                  uncertain_operations: [],
+                },
+              })
+            )
+            await page.route('**/api/serve/history/recovery-target?**', async (route) => {
+              history.resolve()
+              await release.promise
+              await route.fulfill({ json: { turns: [] } })
+            })
+          }
+        )
+      } finally {
+        release.resolve()
+      }
+    }
+  )
+}
+
 test(
   'disposing a document restore when the workspace loses readiness does not settle navigation',
   { timeout: 60_000 },
@@ -2600,6 +2843,73 @@ for (const scenario of [
     }
   )
 }
+
+test(
+  'a lost context receipt restores the server revision and preserves unsent text',
+  { timeout: 60_000 },
+  async () => {
+    const session = 'receipt-session'
+    const ref = {
+      ref_id: 'ref',
+      kind: 'file',
+      source_id: 'a.md',
+      label: 'a.md',
+      origin: 'explicit',
+      retention: 'session',
+    }
+    let selection = {
+      session_id: session,
+      revision: 4,
+      project_policy: 'explicit_only',
+      search_scope: 'web',
+      capabilities: [],
+      refs: [ref],
+      updated_at: 0,
+    }
+    const methods: string[] = []
+    await fixture(
+      async (page) => {
+        await page.evaluate(
+          (id) => Reflect.get(window, 'preferenceProbe').patch({ activeSession: id }),
+          session
+        )
+        const state = () =>
+          page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.aiPanel)
+        await expect.poll(async () => (await state()).revision).toBe(4)
+        methods.length = 0
+        const accepted = await page.evaluate(async () => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          probe.draft('keep this draft')
+          return probe.detachContext('ref')
+        })
+        assert.equal(accepted, false)
+        await expect.poll(async () => (await state()).contextState).toBe('ready')
+        const panel = await state()
+        assert.deepEqual(
+          [panel.sessionId, panel.revision, panel.refs, panel.contextError.key],
+          [session, 5, [], 'contextErrors.saveReconciled']
+        )
+        assert.deepEqual(methods, ['PATCH', 'GET'])
+        assert.equal(
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').draft()),
+          'keep this draft'
+        )
+      },
+      async (page) => {
+        await page.route('**/api/assistant/sessions/receipt-session/context', async (route) => {
+          methods.push(route.request().method())
+          if (route.request().method() === 'PATCH') {
+            assert.equal(route.request().postDataJSON().expected_revision, 4)
+            selection = { ...selection, revision: 5, refs: [] }
+            await route.abort('connectionreset')
+          } else {
+            await route.fulfill({ json: selection })
+          }
+        })
+      }
+    )
+  }
+)
 
 test(
   'context batch and single additions serialize without losing refs or draft, and retries deduplicate',

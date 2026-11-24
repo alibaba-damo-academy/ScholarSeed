@@ -17,6 +17,7 @@ import { mergedSessionTitle, openedSessionTitle, sessionTitleFallback } from './
 import { feedback } from './contracts/feedback'
 import { useTranslation } from 'react-i18next'
 import { useCallback, useEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 
 import type { AspEnvelope, ServeSession } from './api'
 import {
@@ -122,6 +123,7 @@ import {
 // The renderer consumes only ScholarSeed product events. Codex JSON-RPC method names
 // and DamoAgent Harness event names stop at the Service projector boundary.
 const BACKGROUND_SESSION_REFRESH_INTERVAL_MS = 2_000
+const QUEUE_SNAPSHOT_RETRY_MS = 500
 const SESSION_CATALOG_APPEARANCE_GRACE_SECONDS = 5
 const SESSION_RESUME_INITIAL_DELAY_MS = 1_000
 const SESSION_RESUME_MAX_DELAY_MS = 30_000
@@ -303,6 +305,11 @@ function upsertArtifact(items: SessionArtifact[], artifact: SessionArtifact): Se
   return next
 }
 
+interface QueueEventContext {
+  acknowledgeOutbox: boolean
+  threadAtReceipt: Thread | undefined
+}
+
 export function onEvent(
   threadId: string,
   event: AspEnvelope,
@@ -314,9 +321,7 @@ export function onEvent(
   invalidateScopes: (scopes: string[]) => void,
   refreshAssistantContext: (sessionId: string) => void,
   refreshArtifactLinks: (sessionId: string) => void,
-  acknowledgeOutbox: boolean,
-  threadAtReceipt: Thread | undefined,
-  acceptedQueueSequence: number | undefined
+  { acknowledgeOutbox, threadAtReceipt }: QueueEventContext
 ): void {
   switch (event.type) {
     case 'generation_preview':
@@ -588,10 +593,7 @@ export function onEvent(
     case 'send_now_submitted':
     case 'send_now_rejected':
     case 'send_now_outcome_unknown': {
-      if (
-        event.seq <= Math.max(threadAtReceipt?.queueSnapshotSeq ?? -1, acceptedQueueSequence ?? -1)
-      )
-        return
+      if (event.seq <= (threadAtReceipt?.queueSnapshotSeq ?? -1)) return
       const incoming = queuedMessageFromPayload(event.data)
       const message = acknowledgeQueuedOutboxMessage(
         event.session_id,
@@ -609,9 +611,7 @@ export function onEvent(
     }
     case 'message_removed':
     case 'send_now_accepted': {
-      if (
-        event.seq > Math.max(threadAtReceipt?.queueSnapshotSeq ?? -1, acceptedQueueSequence ?? -1)
-      ) {
+      if (event.seq > (threadAtReceipt?.queueSnapshotSeq ?? -1)) {
         if (acknowledgeOutbox) releaseQueuedOutbox(event.session_id, event.data.queued_message_id)
         patchThread(threadId, (thread) => {
           if (event.seq <= (thread.queueSnapshotSeq ?? -1)) return thread
@@ -1084,7 +1084,6 @@ export function useLiveSession(): void {
   const metadataRequest = useRef(0)
   const metadataPollInFlight = useRef<{ dirty: boolean } | null>(null)
   const summarySequences = useRef(new Map<string, number>())
-  const acceptedQueueSequences = useRef(new Map<string, number>())
   const bodySequences = useRef(new Map<string, number>())
   const metadataSessions = useRef<ServeSession[] | null>(null)
   const metadataRetryAttempt = useRef(0)
@@ -1402,9 +1401,10 @@ export function useLiveSession(): void {
                     void act.reloadArtifactLinks(activeSessionId)
                   }
                 },
-                stateRef.current.workbenchReady,
-                getSnapshot().threads[threadId],
-                acceptedQueueSequences.current.get(sessionId)
+                {
+                  acknowledgeOutbox: stateRef.current.workbenchReady,
+                  threadAtReceipt: getSnapshot().threads[threadId],
+                }
               )
               bodySequences.current.set(sessionId, event.seq)
               patchThread(threadId, { lastSeq: event.seq })
@@ -1963,7 +1963,7 @@ export function useLiveSession(): void {
   useEffect(() => {
     if (!state.backendReady || !state.workbenchReady || state.runtimeQuiescing) return
     summarySequences.current.clear()
-    acceptedQueueSequences.current.clear()
+    let queueRetry: ReturnType<typeof setTimeout> | undefined
     const refresh = new DirtyRefresh(
       async (signal) => {
         const snapshot = getSnapshot()
@@ -1998,6 +1998,7 @@ export function useLiveSession(): void {
         )
           return
         let queueInvalidated = false
+        const queuePublications: { publish: () => void; acknowledge: () => void }[] = []
         let catalogInvalidated = sessionIds.some(
           (sessionId) => !snapshots.some((snapshot) => snapshot.session_id === sessionId)
         )
@@ -2042,56 +2043,91 @@ export function useLiveSession(): void {
           const terminal = new Set(
             snapshot.acknowledged_queue_ids.filter((identity) => !visible.has(identity))
           )
-          for (const identity of terminal) releaseQueuedOutbox(snapshot.session_id, identity)
+          const authoritative = snapshot.queued_messages.map(queuedMessageFromPayload)
+          const known = (threadAtReceipt.queuedMessages ?? []).filter(
+            (message) => !terminal.has(message.queuedMessageId)
+          )
           const queuedMessages = mergeQueuedOutbox(
             snapshot.session_id,
-            snapshot.queued_messages.map(queuedMessageFromPayload),
-            current.workbenchReady,
-            (threadAtReceipt.queuedMessages ?? []).filter(
-              (message) => !terminal.has(message.queuedMessageId)
-            )
-          )
-          acceptedQueueSequences.current.set(snapshot.session_id, snapshot.summary_seq)
+            authoritative,
+            false,
+            known
+          ).filter((message) => !terminal.has(message.queuedMessageId))
           const timestamp = Date.now()
-          patchThread(threadId, (thread) => {
-            if (snapshot.summary_seq < Math.max(thread.lastSeq ?? 0, thread.queueSnapshotSeq ?? 0))
-              return thread
-            if (
-              thread.sessionId !== snapshot.session_id ||
-              thread.queuedMessages !== queueAtRequest
-            )
-              return thread
-            // The active transcript consumes runtime changes through SSE. Only its
-            // queue uses this independently refreshed, sequence-checked snapshot.
-            if (active) return { queuedMessages, queueSnapshotSeq: snapshot.summary_seq }
-            const projected = reconcileThreadRuntime({ [threadId]: thread }, [
-              { ...snapshot, last_seq: snapshot.summary_seq },
-            ])[threadId]
-            return {
-              ...projected,
-              ...projectSessionRecovery(projected, {
-                sessionId: snapshot.session_id,
-                running: Boolean(snapshot.running),
-                activeTurnId: snapshot.active_turn_id,
-                unknownOutcome: snapshot.unknown_outcome,
-                pendingHil: snapshot.pending_hil ?? [],
-                uncertainOperations: snapshot.uncertain_operations,
-                timestamp,
-              }),
-              interrupting: Boolean(snapshot.interrupting),
-              queuedMessages,
-              queueSnapshotSeq: snapshot.summary_seq,
-              turnOutcomes:
-                snapshot.last_turn_id && snapshot.last_turn_status
-                  ? {
-                      ...thread.turnOutcomes,
-                      [snapshot.last_turn_id]: recoveredTurnOutcome(snapshot.last_turn_status),
-                    }
-                  : thread.turnOutcomes,
-            }
+          const publish = () =>
+            patchThread(threadId, (thread) => {
+              if (
+                snapshot.summary_seq < Math.max(thread.lastSeq ?? 0, thread.queueSnapshotSeq ?? 0)
+              )
+                return thread
+              if (
+                thread.sessionId !== snapshot.session_id ||
+                thread.queuedMessages !== queueAtRequest
+              )
+                return thread
+              // The active transcript consumes runtime changes through SSE. Only its
+              // queue uses this independently refreshed, sequence-checked snapshot.
+              if (active) return { queuedMessages, queueSnapshotSeq: snapshot.summary_seq }
+              const projected = reconcileThreadRuntime({ [threadId]: thread }, [
+                { ...snapshot, last_seq: snapshot.summary_seq },
+              ])[threadId]
+              return {
+                ...projected,
+                ...projectSessionRecovery(projected, {
+                  sessionId: snapshot.session_id,
+                  running: Boolean(snapshot.running),
+                  activeTurnId: snapshot.active_turn_id,
+                  unknownOutcome: snapshot.unknown_outcome,
+                  pendingHil: snapshot.pending_hil ?? [],
+                  uncertainOperations: snapshot.uncertain_operations,
+                  timestamp,
+                }),
+                interrupting: Boolean(snapshot.interrupting),
+                queuedMessages,
+                queueSnapshotSeq: snapshot.summary_seq,
+                turnOutcomes:
+                  snapshot.last_turn_id && snapshot.last_turn_status
+                    ? {
+                        ...thread.turnOutcomes,
+                        [snapshot.last_turn_id]: recoveredTurnOutcome(snapshot.last_turn_status),
+                      }
+                    : thread.turnOutcomes,
+              }
+            })
+          queuePublications.push({
+            publish,
+            acknowledge: () => {
+              const latest = getSnapshot()
+              if (
+                !latest.workbenchReady ||
+                latest.runtimeQuiescing ||
+                latest.serviceInstanceId !== current.serviceInstanceId
+              )
+                return
+              const thread = latest.threads[threadId]
+              if (thread?.sessionId !== snapshot.session_id) return
+              if (thread.queuedMessages !== queuedMessages) {
+                queueInvalidated = true
+                return
+              }
+              for (const identity of terminal) releaseQueuedOutbox(snapshot.session_id, identity)
+              mergeQueuedOutbox(snapshot.session_id, authoritative, true, known)
+            },
           })
         }
-        if (queueInvalidated) refresh.invalidate()
+        if (queuePublications.length > 0) {
+          // Queue stream events trust only the committed snapshot cursor.
+          flushSync(() => {
+            for (const publication of queuePublications) publication.publish()
+          })
+          for (const publication of queuePublications) publication.acknowledge()
+        }
+        if (queueInvalidated && queueRetry === undefined) {
+          queueRetry = setTimeout(() => {
+            queueRetry = undefined
+            refresh.invalidate()
+          }, QUEUE_SNAPSHOT_RETRY_MS)
+        }
         if (catalogInvalidated) pollMetadata()
       },
       (error) => console.warn('[session-status] refresh unavailable', error)
@@ -2129,6 +2165,7 @@ export function useLiveSession(): void {
     refresh.invalidate()
     return () => {
       refreshStatusRef.current = () => undefined
+      clearTimeout(queueRetry)
       refresh.stop()
       unsubscribe()
       resources()

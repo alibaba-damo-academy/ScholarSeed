@@ -9,6 +9,7 @@ import {
   type FeedbackDescriptor,
 } from '../../contracts/feedback'
 import React from 'react'
+import { flushSync } from 'react-dom'
 import { ComposerConfirmationContext } from './confirmation'
 import { saveFollowUpPreference, useFollowUpPreference } from './followup'
 import { useTranslation } from 'react-i18next'
@@ -264,6 +265,8 @@ function plusMenuSourceIcon(icon: IconName): React.JSX.Element {
 // 需求文档 2.1.2 ④: 菜单只展示三档权限；完全访问权限需二次确认。
 type ModeTone = 'neutral' | 'accent' | 'danger'
 type ModeMeta = { label: string; hint: string; tone: ModeTone }
+type QueuedReceiptCheck =
+  { status: 'observed' | 'absent' | 'unknown' } | { status: 'failed'; message: QueuedMessage }
 
 const PERMISSION_MODE_OPTIONS: GlobalPermissionMode[] = ['ask', 'safe_auto', 'bypassPermissions']
 const PERMISSION_MODE_ICON_TYPES: Record<string, string> = {
@@ -2720,14 +2723,18 @@ export function Composer({
     sessionId: string,
     messages: NonNullable<Awaited<ReturnType<typeof listQueuedMessages>>>
   ): void => {
-    patchThread(sessionId, (current) => ({
-      queuedMessages: mergeQueuedOutbox(
-        sessionId,
-        messages.map(queuedMessageFromPayload),
-        true,
-        current.queuedMessages ?? []
-      ),
-    }))
+    const thread = getSnapshot().threads[sessionId]
+    if (!thread) return
+    const previous = thread.queuedMessages
+    const authoritative = messages.map(queuedMessageFromPayload)
+    const queuedMessages = mergeQueuedOutbox(sessionId, authoritative, false, previous)
+    flushSync(() => {
+      patchThread(sessionId, (current) =>
+        current.queuedMessages === previous ? { queuedMessages } : current
+      )
+    })
+    if (getSnapshot().threads[sessionId]?.queuedMessages === queuedMessages)
+      mergeQueuedOutbox(sessionId, authoritative, true, previous)
   }
 
   const refreshQueuedMessages = async (sessionId: string): Promise<boolean> => {
@@ -2737,47 +2744,59 @@ export function Composer({
     return true
   }
 
+  const publishQueuedReceipt = (
+    sessionId: string,
+    previous: QueuedMessage,
+    next: QueuedMessage
+  ): boolean => {
+    flushSync(() => {
+      patchThread(sessionId, (current) => {
+        const messages = current.queuedMessages ?? []
+        return messages.includes(previous)
+          ? { queuedMessages: upsertQueuedMessage(messages, next) }
+          : current
+      })
+    })
+    return getSnapshot().threads[sessionId]?.queuedMessages?.includes(next) === true
+  }
+
   const checkQueuedSendReceipt = async (
     sessionId: string,
     pending: QueuedMessage
-  ): Promise<'observed' | 'absent' | 'unknown' | QueuedMessage> => {
+  ): Promise<QueuedReceiptCheck> => {
     const authoritative = await listQueuedMessages(sessionId)
-    if (authoritative === null) return 'unknown'
+    if (authoritative === null) return { status: 'unknown' }
     const observed = authoritative.find(
       (item) => item.queued_message_id === pending.queuedMessageId
     )
-    if (!observed) return 'absent'
+    if (!observed) return { status: 'absent' }
     const receipt = queuedMessageFromPayload(observed)
-    if (queuedSendStillUnconfirmed(pending, receipt))
-      return confirmedQueuedSendFailure(pending, receipt) ?? 'unknown'
-    patchThread(sessionId, (current) => {
-      const messages = current.queuedMessages ?? []
-      const local = messages.find((message) => message.queuedMessageId === pending.queuedMessageId)
-      if (!local || !queuedSendReceiptUnknown(local)) return current
-      return {
-        queuedMessages: upsertQueuedMessage(
-          messages,
-          acknowledgeQueuedOutboxMessage(sessionId, receipt, local, true)
-        ),
-      }
-    })
-    return 'observed'
+    if (queuedSendStillUnconfirmed(pending, receipt)) {
+      const failed = confirmedQueuedSendFailure(pending, receipt)
+      return failed ? { status: 'failed', message: failed } : { status: 'unknown' }
+    }
+    const local = getSnapshot().threads[sessionId]?.queuedMessages?.find(
+      (message) => message.queuedMessageId === pending.queuedMessageId
+    )
+    if (local && queuedSendReceiptUnknown(local)) {
+      const acknowledged = acknowledgeQueuedOutboxMessage(sessionId, receipt, local, false)
+      if (publishQueuedReceipt(sessionId, local, acknowledged) && acknowledged === receipt)
+        releaseQueuedOutbox(sessionId, acknowledged.queuedMessageId)
+    }
+    return { status: 'observed' }
   }
 
   const acceptQueuedReceiptReview = (): void => {
     const review = queuedReceiptReview
+    const snapshot = getSnapshot()
     setQueuedReceiptReview(null)
-    if (!review || !queueSurfaceCurrent(getSnapshot(), review.sessionId)) return
-    patchThread(review.sessionId, (current) => {
-      const messages = current.queuedMessages ?? []
-      const confirmed = confirmedQueuedSendFailure(
-        messages.find((message) => message.queuedMessageId === review.observed.queuedMessageId),
-        review.observed
-      )
-      if (!confirmed) return current
+    if (!review || !queueSurfaceCurrent(snapshot, review.sessionId)) return
+    const local = snapshot.threads[review.sessionId]?.queuedMessages?.find(
+      (message) => message.queuedMessageId === review.observed.queuedMessageId
+    )
+    const confirmed = confirmedQueuedSendFailure(local, review.observed)
+    if (local && confirmed && publishQueuedReceipt(review.sessionId, local, confirmed))
       releaseQueuedOutbox(review.sessionId, confirmed.queuedMessageId)
-      return { queuedMessages: upsertQueuedMessage(messages, confirmed) }
-    })
   }
 
   const steerQueued = async (message: QueuedMessage): Promise<void> => {
@@ -2966,7 +2985,7 @@ export function Composer({
         )
         if (!result?.ok) {
           if (result?.unknownOutcome) {
-            if ((await checkQueuedSendReceipt(sessionId, pending)) !== 'observed') {
+            if ((await checkQueuedSendReceipt(sessionId, pending)).status !== 'observed') {
               showQueueFeedback(sessionId, feedback('components', 'composer.queueCheckUnknown'))
             }
             return
@@ -3014,18 +3033,18 @@ export function Composer({
         )
       const pending = latestQueuedMessage()
       if (pending && queuedSendReceiptUnknown(pending)) {
-        const status = await checkQueuedSendReceipt(sessionId, pending)
-        if (status === 'observed') {
+        const receipt = await checkQueuedSendReceipt(sessionId, pending)
+        if (receipt.status === 'observed') {
           void act.loadAiContext(sessionId)
           return
         }
-        if (status === 'unknown') {
+        if (receipt.status === 'unknown') {
           showQueueFeedback(sessionId, feedback('components', 'composer.queueCheckUnknown'))
           return
         }
-        if (status !== 'absent') {
+        if (receipt.status === 'failed') {
           if (queueSurfaceCurrent(getSnapshot(), sessionId))
-            setQueuedReceiptReview({ sessionId, observed: status })
+            setQueuedReceiptReview({ sessionId, observed: receipt.message })
           return
         }
       }

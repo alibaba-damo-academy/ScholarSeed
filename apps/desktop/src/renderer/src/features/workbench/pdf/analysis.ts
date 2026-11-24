@@ -305,7 +305,7 @@ export async function recoverPdfAiTask(
 export async function submitPdfAiTask(
   request: PdfAiRequest & PdfAiSubmission,
   signal: AbortSignal,
-  delays: readonly number[] = PDF_AI_RECOVERY_DELAYS
+  delays?: readonly number[]
 ): Promise<PdfAiTask> {
   const cancel = (): void => {
     void cancelPdfAiTask(request.client_attempt_id, delays).catch((cause) =>
@@ -315,7 +315,10 @@ export async function submitPdfAiTask(
   signal.throwIfAborted()
   signal.addEventListener('abort', cancel, { once: true })
   try {
-    return await submitPdfAiReceipt<PdfAiTask>(request, signal, delays)
+    return await submitPdfAiReceipt<PdfAiTask>(request, signal, {
+      allowJoinedTaskId: request.kind === 'interpretation',
+      delays,
+    })
   } finally {
     signal.removeEventListener('abort', cancel)
   }

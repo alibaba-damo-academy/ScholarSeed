@@ -656,8 +656,16 @@ test('probe failure detail classifies backend error codes and transport failures
     }).kind,
     'auth'
   )
+  assert.deepEqual(
+    probeFailureDetail({ ok: false, code: 'invalid_response', status: 200, error: 'HTTP 200' }),
+    {
+      kind: 'invalidResponse',
+      params: { status: 200 },
+    }
+  )
   // 每个分类都必须有原因与建议文案 key, 否则弹窗渲染空字符串
   const kinds: ProbeFailureKind[] = [
+    'invalidResponse',
     'missingKey',
     'auth',
     'notFound',

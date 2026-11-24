@@ -52,6 +52,7 @@ from service.chat.persistence.catalog import (  # noqa: E402
 )
 from service.chat.persistence.events import ProductEventStore  # noqa: E402
 from service.chat.persistence.notifications import observe_chat  # noqa: E402
+from service.chat.service.models import SessionModelUnavailableError  # noqa: E402
 from service.chat.service.sessions import SessionService, workspace_allows  # noqa: E402
 from service.chat.service.workspaces import SessionWorkspaceService  # noqa: E402
 from service.content.persistence.catalog import ContentCatalog  # noqa: E402 -- after home isolation
@@ -1138,17 +1139,51 @@ class ResumeIOContracts(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(status, 409)
 
-    async def test_failed_cleanup_retains_owner_and_blocks_duplicate_runtime(self) -> None:
-        with (
-            patch.object(_Live, "activate", side_effect=RuntimeError("activation failed")),
-            patch.object(_Live, "aclose", side_effect=OSError("close failed")),
-            self.assertRaisesRegex(OSError, "close failed"),
+    async def test_failed_cleanup_retains_owner_and_structured_open_failure(self) -> None:
+        for operation, priority_error in (
+            ("create", RuntimeError("activation failed")),
+            ("create", SessionModelUnavailableError("selected model unavailable")),
+            ("resume", RuntimeError("activation failed")),
         ):
-            await self.resume()
-        self.assertTrue(self.sessions[self.session_id].closing)
-        _, status = await self.resume()
-        self.assertEqual(status, 409)
-        self.assertEqual(len(self.runtime.opens), 1)
+            with self.subTest(operation=operation, error=type(priority_error).__name__):
+                opened_ids = []
+
+                async def fail_activation(live):
+                    opened_ids.append(live.id)
+                    raise priority_error
+
+                before = len(self.runtime.opens)
+                with (
+                    patch.object(_Live, "activate", fail_activation),
+                    patch.object(_Live, "aclose", side_effect=OSError("close failed")),
+                    self.assertLogs(self.service._logger.name, level="WARNING") as diagnostics,
+                ):
+                    if operation == "resume":
+                        payload, status = await self.resume()
+                    else:
+                        payload, status = await self.service.open(
+                            {}, self.owner, actor_id=self.owner.user_id
+                        )
+                (session_id,) = opened_ids
+                self.assertTrue(self.sessions[session_id].closing)
+                self.assertIn("close failed", "\n".join(diagnostics.output))
+                if isinstance(priority_error, SessionModelUnavailableError):
+                    self.assertEqual(
+                        (payload, status), ({"ok": False, "error": str(priority_error)}, 400)
+                    )
+                else:
+                    expected_code = (
+                        f"harness_session_{'resume' if operation == 'resume' else 'open'}_failed"
+                    )
+                    self.assertEqual(status, 500)
+                    self.assertEqual(payload["error"], expected_code)
+                    self.assertEqual(payload["failure_type"], "RuntimeError")
+                    self.assertIn(expected_code, "\n".join(diagnostics.output))
+                _, duplicate_status = await self.service.open(
+                    {"resume_session_id": session_id}, self.owner, actor_id=self.owner.user_id
+                )
+                self.assertEqual(duplicate_status, 409)
+                self.assertEqual(len(self.runtime.opens), before + 1)
 
     async def test_denied_owner_and_unregistered_project_do_not_open_runtime(self) -> None:
         denied, denied_status = await self.resume(SessionPrincipal("foreign"))

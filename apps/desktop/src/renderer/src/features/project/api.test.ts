@@ -204,6 +204,44 @@ test('external root listing waits until Electron has replaced its authorization 
   })
 })
 
+test('authorization acknowledgment gets its own deadline and a timed-out update never grants a listing', async (context) => {
+  const deadlines: AbortController[] = []
+  const reply = Promise.withResolvers<boolean>()
+  const started = Promise.withResolvers<void>()
+  context.mock.method(AbortSignal, 'timeout', () => {
+    const deadline = new AbortController()
+    deadlines.push(deadline)
+    return deadline.signal
+  })
+  Object.assign(globalThis, {
+    window: {
+      scholarseed: {
+        getApiBase: () => 'http://serve.test',
+        syncAuthorizedRoots: async (_scope: string, roots: string[]) => {
+          if (roots.length === 0) return true
+          started.resolve()
+          return reply.promise
+        },
+      },
+    },
+    fetch: async () => Response.json(payload('project-phase-budget', '/external/source.txt')),
+  })
+  selectExternalRootProject('project-phase-budget')
+  const listing = listExternalRoots('project-phase-budget')
+  await started.promise
+  assert.equal(deadlines.length, 2)
+  let settled = false
+  void listing.then(() => {
+    settled = true
+  })
+  deadlines[0].abort()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(settled, false)
+  deadlines[1].abort()
+  assert.equal(await listing, null)
+  reply.resolve(true)
+})
+
 test('a stale project response cannot replace the newer project authorization snapshot', async () => {
   let finishFirst: ((response: Response) => void) | undefined
   const firstResponse = new Promise<Response>((resolve) => {

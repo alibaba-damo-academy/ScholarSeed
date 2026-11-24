@@ -69,7 +69,9 @@ test('failed refresh keeps the complete snapshot and clears its error after retr
   assert.equal(failed.tree, nodes)
   assert.equal(failed.rootTotal, 1)
   assert.equal(failed.root, '/project')
-  assert.equal(beginResourceTreeReload(failed).loadState, 'refreshing')
+  const retry = beginResourceTreeReload(failed)
+  assert.equal(retry.loadState, 'refreshing')
+  assert.equal(retry.treeRefreshFailed, false)
   assert.equal(
     finishResourceTreeReload(beginResourceTreeReload(failed), { nodes, total: 1, root: '/project' })
       .treeRefreshFailed,

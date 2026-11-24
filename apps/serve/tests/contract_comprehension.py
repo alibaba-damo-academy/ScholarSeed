@@ -2048,6 +2048,11 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         second = (await self.client.get("/api/literature/ai/tasks/second")).json()
         self.assertEqual(second["task_id"], "second")
         self.assertEqual(second["status"], "completed")
+        timing = {"first_seconds": 1, "reading_seconds": 2, "total_seconds": 3}
+        observed = await self.client.post("/api/literature/ai/tasks/second/timing", json=timing)
+        self.assertEqual(observed.json(), {"ui_timing": timing})
+        saved = AnalysisStore(self.repository.database).summary("paper", self.revision)
+        self.assertEqual(saved["metadata"]["ui_timing"], timing)
         events = await self.client.get("/api/literature/ai/tasks/second/events")
         self.assertEqual(json.loads(events.text.removeprefix("data: "))["task_id"], "second")
         replay = await self.client.post("/api/literature/ai/tasks", json=duplicate)
@@ -2073,6 +2078,31 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("summary", state["results"])
         self.assertIsNone(state["task"])
         self.assertEqual(self.actions.invoke_compiled.await_count, 1)
+
+    async def test_joined_attempt_timing_accepts_an_unrecorded_root_without_creating_state(self):
+        store = AnalysisStore(self.repository.database)
+        store.remember_joined_attempt("owner", "joined", "canonical", "selected")
+        async with self.analysis_client(Activities()) as reopened:
+            tasks = "/api/literature/ai/tasks"
+            timing = {"first_seconds": 1, "reading_seconds": 2, "total_seconds": 3}
+            response = await reopened.post(f"{tasks}/joined/timing", json=timing)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"ui_timing": timing})
+            direct = await reopened.get(f"{tasks}/canonical")
+            self.assertEqual(direct.status_code, 404)
+            alias = await reopened.get(f"{tasks}/joined")
+            self.assertEqual(
+                alias.json(), {"task_id": "joined", "model_key": "selected", "status": "unknown"}
+            )
+            invalid = await reopened.post(
+                f"{tasks}/joined/timing", json={"first_seconds": 3, "total_seconds": 1}
+            )
+            self.assertEqual(invalid.status_code, 422)
+            with patch("service.literature.api.analysis.request_user_id", return_value="other"):
+                denied = await reopened.post(f"{tasks}/joined/timing", json=timing)
+                self.assertEqual(denied.status_code, 404)
+        self.assertIsNone(self.tasks.get_attempt("canonical", "owner"))
+        self.actions.invoke_compiled.assert_not_awaited()
 
     async def test_cancelling_joined_attempt_cancels_the_shared_running_task(self):
         started = asyncio.Event()

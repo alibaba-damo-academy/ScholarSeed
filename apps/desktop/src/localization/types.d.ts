@@ -600,6 +600,8 @@ declare module 'i18next' {
             "loading": "上下文仍在加载，请稍后再试。",
             "updated": "上下文已被其他窗口更新，已同步最新版本。",
             "saveFailed": "上下文保存失败：{{detail}}",
+            "saveReconciled": "未收到保存确认。已重新读取上下文，请核对当前选择。",
+            "saveUnconfirmed": "未能确认保存结果，请重新读取上下文。",
             "syncFailed": "资料已更新，但当前上下文同步失败：{{detail}}",
             "loadFailed": "上下文加载失败，请重试。",
             "initializeFailed": "新会话上下文初始化失败，请重试。",
@@ -2565,6 +2567,8 @@ declare module 'i18next' {
                 "probeSuggestionNoModels": "请手动填写模型名，或确认服务地址支持模型列表接口。",
                 "probeReasonModelRejected": "模型 {{model}} 在该端点调用失败，上游返回：{{upstream}}",
                 "probeSuggestionModelRejected": "请更换模型后重试，或确认该端点与模型支持 Responses 协议。",
+                "probeReasonInvalidResponse": "模型配置服务返回了无效响应（HTTP {{status}}）",
+                "probeSuggestionInvalidResponse": "请稍后重新读取模型配置。",
                 "probeReasonGeneric": "连接测试未通过",
                 "probeSuggestionGeneric": "请检查服务地址与 API Key 后重试。",
                 "apiNo": "不修改则留空"
@@ -8610,6 +8614,7 @@ declare module 'i18next' {
             "authentication": "请登录后重试。",
             "http": "模型连接请求失败（HTTP {{status}}）。",
             "timeout": "请求超时。",
+            "invalidResponse": "模型配置服务返回了无效响应。",
             "network": "无法连接模型配置服务，请稍后重试。"
         },
         "listSeparator": "、",

@@ -27,6 +27,7 @@ export interface ResourceTreePage {
 export function beginResourceTreeReload(resource: ResourceState): ResourceState {
   return {
     ...resource,
+    treeRefreshFailed: false,
     loadState:
       resource.loadState === 'ready' || resource.loadState === 'refreshing'
         ? 'refreshing'
@@ -59,7 +60,7 @@ export function finishResourceTreeReload(
   }
 }
 
-export function resourceTreeChangedDuringReload(
+function resourceTreeChangedDuringReload(
   resource: ResourceState,
   previous: ResourceState
 ): boolean {

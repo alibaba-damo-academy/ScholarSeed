@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { ASSISTANT_TRANSLATION_TARGETS } from '../../../contracts/assistant.ts'
-import { pdfAiApi, PdfAiRequestError } from '../../../app/api/pdf.ts'
+import {
+  pdfAiApi,
+  PdfAiRequestError,
+  PdfAiUnconfirmedSubmission,
+  queryPdfAiTask,
+  submitPdfAiReceipt,
+} from '../../../app/api/pdf.ts'
 import {
   invokeFigure,
   loadPdfVisualRegionImage,
@@ -305,6 +311,67 @@ test('artifact selection tasks preserve publication and member identity without 
   try {
     const task = await submitPdfAiTask(artifactRequest, new AbortController().signal, [0])
     assert.equal(task.task_id, request.client_attempt_id)
+  } finally {
+    restore()
+  }
+})
+
+test('default submission schedules only its four reachable recovery intervals', async (context) => {
+  const delays: number[] = []
+  const deadlines: number[] = []
+  const realTimer = globalThis.setTimeout
+  context.mock.method(globalThis, 'setTimeout', (callback: () => void, delay: number) => {
+    delays.push(delay)
+    return realTimer(callback, 0)
+  })
+  context.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+    deadlines.push(milliseconds)
+    return new AbortController().signal
+  })
+  const methods: string[] = []
+  const restore = installFetch(async (_url, init) => {
+    methods.push(init?.method ?? 'GET')
+    const response = new Response()
+    response.text = async () => {
+      throw new TypeError('response body lost')
+    }
+    return response
+  })
+  try {
+    await assert.rejects(submitPdfAiTask(request, new AbortController().signal), {
+      attemptId: request.client_attempt_id,
+    })
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000])
+    assert.deepEqual(methods, ['POST', 'GET', 'GET', 'GET', 'GET'])
+    assert.deepEqual(deadlines, [30_000, 10_000, 10_000, 10_000, 10_000, 10_000])
+  } finally {
+    restore()
+  }
+})
+
+test('only explicit alias permission applies to submission and never to a status GET', async () => {
+  const pending = { task_id: 'shared', status: 'pending' }
+  const submitted: unknown[] = []
+  const restore = installFetch(async (_url, init) => {
+    if (init?.method === 'POST') submitted.push(JSON.parse(String(init.body)))
+    return Response.json(pending)
+  })
+  const signal = new AbortController().signal
+  const interpretation = { ...request, kind: 'interpretation' } as const
+  try {
+    await assert.rejects(
+      submitPdfAiReceipt(interpretation, signal, { delays: [] }),
+      PdfAiUnconfirmedSubmission
+    )
+    const newAction = { ...request, kind: 'join-capable-action' }
+    assert.deepEqual(
+      await submitPdfAiReceipt(newAction, signal, { allowJoinedTaskId: true }),
+      pending
+    )
+    assert.deepEqual(await submitPdfAiTask(interpretation, signal, []), pending)
+    await assert.rejects(submitPdfAiTask(request, signal, []), PdfAiUnconfirmedSubmission)
+    await assert.rejects(queryPdfAiTask('attempt', signal), { code: 'pdf_ai_invalid_response' })
+    assert.deepEqual(submitted, [interpretation, newAction, interpretation, request])
   } finally {
     restore()
   }

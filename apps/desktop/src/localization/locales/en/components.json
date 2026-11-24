@@ -1450,6 +1450,8 @@
       "probeSuggestionNoModels": "Enter model names manually, or confirm the service address supports a model listing endpoint.",
       "probeReasonModelRejected": "Model {{model}} failed on this endpoint. Upstream returned: {{upstream}}",
       "probeSuggestionModelRejected": "Switch to a different model, or confirm the endpoint and model support the Responses protocol.",
+      "probeReasonInvalidResponse": "The model configuration service returned an invalid response (HTTP {{status}})",
+      "probeSuggestionInvalidResponse": "Reload the model configuration in a moment.",
       "probeReasonGeneric": "The connection test did not pass",
       "probeSuggestionGeneric": "Check the service address and API key, then try again.",
       "apiNo": "Leave empty to keep unchanged"

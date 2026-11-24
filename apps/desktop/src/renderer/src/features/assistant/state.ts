@@ -34,6 +34,8 @@ export type AssistantContextError =
         | 'contextErrors.loading'
         | 'contextErrors.updated'
         | 'contextErrors.saveFailed'
+        | 'contextErrors.saveUnconfirmed'
+        | 'contextErrors.saveReconciled'
         | 'contextErrors.syncFailed'
         | 'contextErrors.loadFailed'
         | 'contextErrors.initializeFailed'
@@ -51,7 +53,14 @@ export type AssistantContextError =
 
 export const ASSISTANT_CLAIMED_REFS_IMMUTABLE = 'assistant_claimed_refs_immutable'
 
-export function assistantContextSaveError(failure?: AssistantFailure): AssistantContextError {
+export function assistantContextSaveError(
+  failure?: AssistantFailure & { receiptUnknown?: true; latest?: AssistantContextSelection }
+): AssistantContextError {
+  if (failure?.receiptUnknown) {
+    return {
+      key: failure.latest ? 'contextErrors.saveReconciled' : 'contextErrors.saveUnconfirmed',
+    }
+  }
   const detail = failure ? assistantFailureDetail(failure) : undefined
   return detail ? { key: 'contextErrors.saveFailed', detail } : { key: 'contextErrors.saveRetry' }
 }

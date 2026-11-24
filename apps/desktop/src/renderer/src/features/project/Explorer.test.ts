@@ -36,6 +36,22 @@ interface ElementProps {
 
 type Element = React.ReactElement<ElementProps>
 
+test('a rejected directory read settles the coordinator without publishing partial pages', async () => {
+  type ExplorerModule = typeof import('./Explorer.tsx')
+  const loaded = { exports: {} as ExplorerModule }
+  runInNewContext(compiled, { module: loaded, exports: loaded.exports, require: () => ({}) })
+  const refresh = loaded.exports.createDirectoryRefresh()
+  const signal = new AbortController().signal
+  const ready = refresh.include(
+    Promise.resolve({ root: '', nodes: [], offset: 0, total: 0 }),
+    signal
+  )
+  const failed = refresh.include(Promise.reject(new Error('directory read rejected')), signal)
+  assert.equal((await ready).page, null)
+  assert.equal((await ready).failed, false)
+  assert.equal((await failed).failed, true)
+})
+
 function descendants(element: Element): Element[] {
   return [
     element,

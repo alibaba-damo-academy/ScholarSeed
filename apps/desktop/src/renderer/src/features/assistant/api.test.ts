@@ -419,9 +419,43 @@ test('incomplete context receipts release reads and keep a patch unconfirmed', a
       refs: [],
     })
     assert.equal(result.ok, false)
-    assert.deepEqual(methods, ['GET', 'GET', 'PATCH'])
+    assert.equal(result.receiptUnknown, true)
+    assert.equal(result.latest, undefined)
+    assert.deepEqual(methods, ['GET', 'GET', 'PATCH', 'GET'])
   } finally {
     restore()
+  }
+})
+
+test('an uncertain context PATCH reconciles once without resubmitting or treating the GET as a receipt', async () => {
+  for (const [latest, usable] of [
+    [{ ...CONTEXT, revision: 3, search_scope: 'web' }, true],
+    [CONTEXT, true],
+    [{ ...CONTEXT, revision: 1 }, false],
+    [{ ...CONTEXT, session_id: 'other' }, false],
+    [{ ...CONTEXT, refs: null }, false],
+    [null, false],
+  ] as const) {
+    const methods: string[] = []
+    const restore = installBrowser(async (_url, init) => {
+      methods.push(init?.method ?? 'GET')
+      if (init?.method === 'PATCH') throw new DOMException('receipt lost', 'TimeoutError')
+      return Response.json(latest)
+    })
+    try {
+      const result = await patchAssistantContext(CONTEXT.session_id, {
+        expected_revision: CONTEXT.revision,
+        project_policy: CONTEXT.project_policy,
+        search_scope: 'web',
+        refs: [],
+      })
+      assert.equal(result.ok, false)
+      assert.equal(result.receiptUnknown, true)
+      assert.deepEqual(result.latest, usable ? latest : undefined)
+      assert.deepEqual(methods, ['PATCH', 'GET'])
+    } finally {
+      restore()
+    }
   }
 })
 
@@ -1638,8 +1672,12 @@ test('assistant mutation adapters identify every locally generated request fallb
       for (const call of calls) {
         const result = await call()
         assert.equal(result.ok, false)
+        const { receiptUnknown, ...diagnostic } = result as typeof result & {
+          receiptUnknown?: boolean
+        }
+        if (receiptUnknown !== undefined) assert.equal(receiptUnknown, true)
         assert.deepEqual(
-          result,
+          diagnostic,
           cause instanceof Error
             ? { ok: false, error: cause.message }
             : { ok: false, error: 'request_failed', applicationFailure: { code: 'request_failed' } }

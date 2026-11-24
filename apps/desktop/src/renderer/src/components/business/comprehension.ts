@@ -77,7 +77,7 @@ export function generateReading(
     client_attempt_id: crypto.randomUUID(),
     service_instance_id: serviceInstanceId ?? undefined,
   }
-  return submitPdfAiReceipt<ReadingTask>(request, signal)
+  return submitPdfAiReceipt<ReadingTask>(request, signal, { allowJoinedTaskId: true })
 }
 export function cancelReading(taskId: string, signal = NEVER_ABORT): Promise<ReadingTask> {
   return readPdfAiTask(`${PREFIX}/${encodeURIComponent(taskId)}/cancel`, {}, signal)

@@ -39,30 +39,36 @@ function useTestRequests(context: TestContext, fetch: typeof globalThis.fetch): 
   })
 }
 
-test('startup reports the denied session root and stops before reading history or the queue', async (context) => {
-  const runtimeRoot = '/fixture/session workspace'
-  const requests: string[] = []
-  useTestRequests(context, async (input) => {
-    requests.push(String(input))
-    return Response.json({ ...OPENED, last_turn_status: 'completed', runtime_workdir: runtimeRoot })
+for (const result of ['denied', 'rejected'] as const)
+  test(`startup reports the ${result} session root and stops before reading history or the queue`, async (context) => {
+    const runtimeRoot = '/fixture/session workspace'
+    const requests: string[] = []
+    useTestRequests(context, async (input) => {
+      requests.push(String(input))
+      return Response.json({
+        ...OPENED,
+        last_turn_status: 'completed',
+        runtime_workdir: runtimeRoot,
+      })
+    })
+    window.scholarseed.addAuthorizedRoot = async (scope, root) => {
+      assert.equal(scope, 'session')
+      assert.equal(root, runtimeRoot)
+      if (result === 'rejected') throw new Error('IPC unavailable')
+      return false
+    }
+    const warning = context.mock.method(console, 'warn', () => {})
+    assert.equal(await prepareStartupSession(SESSION_ID, new AbortController().signal), null)
+    assert.deepEqual(requests, ['/api/serve/sessions/open'])
+    assert.equal(warning.mock.callCount(), 1)
+    const [prefix, detail] = warning.mock.calls[0].arguments
+    assert.equal(prefix, '[session-recovery]')
+    assert.deepEqual(JSON.parse(detail), {
+      stage: 'startup-root-denied',
+      sessionId: SESSION_ID,
+      runtimeRoot,
+    })
   })
-  window.scholarseed.addAuthorizedRoot = async (scope, root) => {
-    assert.equal(scope, 'session')
-    assert.equal(root, runtimeRoot)
-    return false
-  }
-  const warning = context.mock.method(console, 'warn', () => {})
-  assert.equal(await prepareStartupSession(SESSION_ID, new AbortController().signal), null)
-  assert.deepEqual(requests, ['/api/serve/sessions/open'])
-  assert.equal(warning.mock.callCount(), 1)
-  const [prefix, detail] = warning.mock.calls[0].arguments
-  assert.equal(prefix, '[session-recovery]')
-  assert.deepEqual(JSON.parse(detail), {
-    stage: 'startup-root-denied',
-    sessionId: SESSION_ID,
-    runtimeRoot,
-  })
-})
 
 for (const [running, lastTurnStatus, expectedStatus] of [
   [false, 'failed', 'failed'],

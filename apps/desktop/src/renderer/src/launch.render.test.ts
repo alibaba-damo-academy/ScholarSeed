@@ -1097,6 +1097,19 @@ async function openQueueStatusThread(page: Page, queuedMessages: QueuedMessage[]
   )
 }
 
+async function observeQueueReceiptWrites(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Reflect.set(window, 'strictQueueReceiptFixture', true)
+    Reflect.set(window, 'queueReceiptWrites', 0)
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'scholarseed.queue-outbox.v1')
+        Reflect.set(window, 'queueReceiptWrites', Reflect.get(window, 'queueReceiptWrites') + 1)
+      return setItem.call(this, key, value)
+    }
+  })
+}
+
 test('an unconfirmed queue resend requires explicit review before restoring the failed row', async (context) => {
   const id = 'failed-resend'
   const failed = { ...queueStatusMessage(id, 1), state: 'failed', operation_seq: 3 }
@@ -1171,17 +1184,25 @@ test('an unconfirmed queue resend requires explicit review before restoring the 
         const review = page.getByTestId('queued-receipt-review')
         await expect(review).toBeVisible()
         await expect(review).toContainText('本次重发结果尚未确认')
+        const writesBeforeApproval = await page.evaluate(() =>
+          Reflect.get(window, 'queueReceiptWrites')
+        )
         await page.getByTestId('queued-receipt-review-accept').click()
         await expect(review).toBeHidden()
         await expect(withdraw).toBeEnabled()
         await expect(action).toBeEnabled()
         assert.equal(sends, 1)
         assert.equal(withdrawals, 0)
+        assert.equal(
+          await page.evaluate(() => Reflect.get(window, 'queueReceiptWrites')),
+          writesBeforeApproval + 1
+        )
       } finally {
         release.resolve()
       }
     },
     async (page) => {
+      await observeQueueReceiptWrites(page)
       await page.route('**/api/serve/sessions/*/queue', (route) =>
         route.fulfill({ json: { messages: [failed] } })
       )
@@ -1195,6 +1216,57 @@ test('an unconfirmed queue resend requires explicit review before restoring the 
         withdrawals++
         await route.fulfill({ json: { ok: true } })
       })
+    }
+  )
+})
+
+test('a newly observed queue resend receipt acknowledges the durable row once', async (context) => {
+  const id = 'confirmed-resend'
+  await fixture(
+    context,
+    async (page) => {
+      await openQueueStatusThread(page, [
+        {
+          queuedMessageId: id,
+          enqueueSeq: 1,
+          operationSeq: 3,
+          state: 'failed',
+          submissionMode: 'queued',
+          text: id,
+          input: [{ type: 'text', text: id }],
+          assistantReferences: [],
+          serverPresent: true,
+        },
+      ])
+      const previous = await page.evaluate(() => Reflect.get(window, 'queueReceiptWrites'))
+      await page.getByTestId('queued-send-' + id).click()
+      await expect
+        .poll(() =>
+          page.evaluate((id) => {
+            const { state } = Reflect.get(window, 'launchProbe')
+            return state.threads[state.activeSession].queuedMessages.find(
+              (message: QueuedMessage) => message.queuedMessageId === id
+            ).state
+          }, id)
+        )
+        .toBe('waiting_resources')
+      assert.equal(
+        await page.evaluate(() => Reflect.get(window, 'queueReceiptWrites')),
+        previous + 2
+      )
+    },
+    async (page) => {
+      await observeQueueReceiptWrites(page)
+      await page.route('**/api/serve/sessions/*/queue/*/send', (route) => route.abort('failed'))
+      await page.route('**/api/serve/sessions/*/queue', (route) =>
+        route.fulfill({
+          json: {
+            messages: [
+              { ...queueStatusMessage(id, 1), state: 'waiting_resources', operation_seq: 4 },
+            ],
+          },
+        })
+      )
     }
   )
 })

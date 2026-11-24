@@ -3573,6 +3573,7 @@ async function mutateProject(
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     response = await resolveContentResponse(response)
+    if (response.status === 204 || response.status === 205) return { ok: true }
     const payload = (
       response.ok ? await response.json() : await response.json().catch(() => ({}))
     ) as {
@@ -3753,7 +3754,11 @@ export interface PersonalApiProbeResult {
 }
 
 export type ProfileRequestErrorCode =
-  'authentication_required' | 'http_failure' | 'network_failure' | 'request_timeout'
+  | 'authentication_required'
+  | 'http_failure'
+  | 'invalid_response'
+  | 'network_failure'
+  | 'request_timeout'
 /**
  * 保存校验失败时后端回传的结构化原因。`code` 固定为 connection_validation_failed;
  * `model` 只在「真的调用了某个已选模型」时非空, `upstream` 是截断后的上游原文。
@@ -3818,7 +3823,10 @@ export async function profileRequest<T>(
       window.dispatchEvent(new CustomEvent('scholarseed:auth-required'))
       return { ok: false, error: '', code: 'authentication_required', status: r.status }
     }
-    const payload: unknown = r.ok ? await r.json() : await r.json().catch(() => null)
+    const payload: unknown = await r.json().catch((cause: unknown) => {
+      if (!r.ok || cause instanceof SyntaxError) return null
+      throw cause
+    })
     if (!r.ok) {
       const rawDetail = isRecord(payload) ? payload.detail : undefined
       // 保存校验失败回结构化 detail（含失败模型与上游原文）; 其余错误仍是不带结构的字符串。
@@ -3831,7 +3839,9 @@ export async function profileRequest<T>(
         ...(detail ? { detail } : {}),
       }
     }
-    if (!isRecord(payload)) return { ok: false, error: '', code: 'network_failure' }
+    if (!isRecord(payload)) {
+      return { ok: false, error: `HTTP ${r.status}`, code: 'invalid_response', status: r.status }
+    }
     return { ok: true, data: payload as T }
   } catch (cause) {
     return {

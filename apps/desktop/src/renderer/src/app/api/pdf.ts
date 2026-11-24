@@ -5,6 +5,10 @@ export interface PdfAiSubmission {
   client_attempt_id: string
   service_instance_id?: string
 }
+interface PdfAiSubmissionOptions {
+  allowJoinedTaskId?: boolean
+  delays?: readonly number[]
+}
 export interface PdfAiTaskReceipt {
   task_id: string
   status: string
@@ -27,6 +31,7 @@ export const PDF_AI_TASK_STATUSES = new Set([
   ...PDF_AI_TERMINAL_STATUSES,
 ])
 export const PDF_AI_RECOVERY_DELAYS = [1000, 2000, 4000, 8000, 16000, 16000, 16000] as const
+const PDF_AI_SUBMISSION_DELAYS = [1000, 2000, 4000, 8000] as const
 export const PDF_AI_STREAM_INTERRUPTED = 'pdf_ai_stream_interrupted'
 const PDF_AI_RECOVERY_REQUEST_TIMEOUT_MS = 10_000
 const PDF_AI_SUBMISSION_TIMEOUT_MS = 30_000
@@ -189,14 +194,15 @@ function pdfAiInstanceChanged(cause: unknown): boolean {
 
 async function postPdfAiTask<T extends PdfAiTaskReceipt>(
   request: PdfAiSubmission,
-  signal: AbortSignal
+  signal: AbortSignal,
+  allowJoinedTaskId: boolean
 ): Promise<T> {
   const task = await readPdfAiTask<T>(`${PDF_AI_PREFIX}/tasks`, request, signal)
   if (
     !task ||
     typeof task.task_id !== 'string' ||
     !task.task_id ||
-    (task.task_id !== request.client_attempt_id && request.kind !== 'interpretation') ||
+    (task.task_id !== request.client_attempt_id && !allowJoinedTaskId) ||
     !PDF_AI_TASK_STATUSES.has(task.status)
   ) {
     throw new PdfAiRequestError({ code: PDF_AI_INVALID_RESPONSE, diagnostic: '' })
@@ -216,12 +222,12 @@ function uncertainPdfSubmission(cause: unknown): boolean {
 export async function submitPdfAiReceipt<T extends PdfAiTaskReceipt>(
   request: PdfAiSubmission,
   signal: AbortSignal,
-  delays: readonly number[] = PDF_AI_RECOVERY_DELAYS
+  options: PdfAiSubmissionOptions = {}
 ): Promise<T> {
   signal.throwIfAborted()
   const deadline = AbortSignal.timeout(PDF_AI_SUBMISSION_TIMEOUT_MS)
   try {
-    return await submitPdfAiAttempt<T>(request, AbortSignal.any([signal, deadline]), delays)
+    return await submitPdfAiAttempt<T>(request, AbortSignal.any([signal, deadline]), options)
   } catch (cause) {
     signal.throwIfAborted()
     if (cause === deadline.reason) {
@@ -234,11 +240,11 @@ export async function submitPdfAiReceipt<T extends PdfAiTaskReceipt>(
 async function submitPdfAiAttempt<T extends PdfAiTaskReceipt>(
   request: PdfAiSubmission,
   signal: AbortSignal,
-  delays: readonly number[]
+  { allowJoinedTaskId = false, delays = PDF_AI_SUBMISSION_DELAYS }: PdfAiSubmissionOptions
 ): Promise<T> {
   signal.throwIfAborted()
   try {
-    return await postPdfAiTask<T>(request, signal)
+    return await postPdfAiTask<T>(request, signal, allowJoinedTaskId)
   } catch (cause) {
     if (!uncertainPdfSubmission(cause)) throw cause
     signal.throwIfAborted()
@@ -252,7 +258,7 @@ async function submitPdfAiAttempt<T extends PdfAiTaskReceipt>(
       if (pdfAiTaskMissing(cause)) {
         if (!request.service_instance_id) break
         try {
-          return await postPdfAiTask<T>(request, signal)
+          return await postPdfAiTask<T>(request, signal, allowJoinedTaskId)
         } catch (retryCause) {
           if (pdfAiInstanceChanged(retryCause)) break
           if (!uncertainPdfSubmission(retryCause)) throw retryCause

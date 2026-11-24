@@ -131,14 +131,15 @@ export function createDirectoryRefresh(): DirectoryRefresh {
       return (deadline ??= AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS))
     },
     include(read, cancellation) {
-      reads.push(read.then((page) => ({ page, cancellation })))
+      const result = read.catch(() => null)
+      reads.push(result.then((page) => ({ page, cancellation })))
       // All mounted directories register in the same commit before a new tree can be shown.
       complete ??= Promise.resolve()
         .then(() => Promise.all(reads))
         .then((results) =>
           results.every(({ page, cancellation }) => page !== null || cancellation.aborted)
         )
-      return Promise.all([read, complete]).then(([page, ready]) => ({
+      return Promise.all([result, complete]).then(([page, ready]) => ({
         page: ready && !cancellation.aborted ? page : null,
         failed: page === null && !cancellation.aborted,
       }))
@@ -239,12 +240,13 @@ export function Directory({
       }
       return replacement
     }
-    const reading = refresh().catch(() => null)
+    const reading = refresh()
     if (sharedRefresh)
-      void sharedRefresh
-        .include(reading, controller.signal)
-        .then(({ page, failed }) => settle(page, failed))
-    else void reading.then(settle)
+      void sharedRefresh.include(reading, controller.signal).then(
+        ({ page, failed }) => settle(page, failed),
+        () => settle(null)
+      )
+    else void reading.then(settle, () => settle(null))
     return () => {
       generation.current += 1
       controller.abort()

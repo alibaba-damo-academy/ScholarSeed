@@ -22,6 +22,7 @@ const FAILURE_CODES = {
   networkError: 'network_error',
 } as const
 const PROJECT_FILE_SEARCH_TIMEOUT_MS = 60_000
+const EXTERNAL_ROOT_SYNC_TIMEOUT_MS = 10_000
 
 /** 项目列表 + 当前项目 + 生效工作区根。 */
 export interface ProjectListing {
@@ -413,8 +414,8 @@ export function listExternalRoots(
     if (!synchronize) return listing
     if (projectId !== externalRootProject || externalRootSyncOperation !== operation) return null
     const synchronized = await waitForRootRead(
-      window.scholarseed.syncAuthorizedRoots('external', payload.writableRoots),
-      deadline
+      window.scholarseed.syncAuthorizedRoots('external', payload.writableRoots).catch(() => false),
+      AbortSignal.timeout(EXTERNAL_ROOT_SYNC_TIMEOUT_MS)
     )
     if (!synchronized || externalRootSyncOperation !== operation) return null
     return listing

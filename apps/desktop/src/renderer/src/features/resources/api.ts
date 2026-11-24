@@ -738,9 +738,7 @@ export async function fetchVersionCapability(
       { credentials: 'include', cache: 'no-store', signal }
     )
     if (!response.ok) return null
-    const capability = (await response.json()) as ResourceCapability
-    signal.throwIfAborted()
-    return capability
+    return (await response.json()) as ResourceCapability
   } catch {
     return null
   }
@@ -754,7 +752,10 @@ export function observeResourceFileEvent(
 ): Promise<ResourceCapability | null> {
   const existing = fileEventObservations.get(event)
   if (existing) return existing
-  const observation = fetchVersionCapability(project, event.path)
+  const observation = fetchVersionCapability(project, event.path).then((capability) => {
+    if (capability === null) fileEventObservations.delete(event)
+    return capability
+  })
   fileEventObservations.set(event, observation)
   return observation
 }
