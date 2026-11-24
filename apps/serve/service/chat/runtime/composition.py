@@ -1870,6 +1870,7 @@ class LiveSessionService:
         permission = live.permission_intent(RuntimePermissionMode(mode))
         base = base_instructions()
         instructions = developer_instructions(
+            auto=model_state.selected_model_id == "auto",
             output_directory=(
                 ""
                 if live.project_path == live.runtime_workdir
