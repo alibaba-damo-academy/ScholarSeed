@@ -62,6 +62,7 @@ function verifyGrant(directory, common, executable, frameworks, fixtureFramework
     path.join(OWNER, 'grant.test.m'), executable,
     ...FRAMEWORKS.flatMap(name => ['-framework', name]),
     `-Wl,-rpath,${fixtureFrameworks}`, `-Wl,-rpath,${frameworks}`], directory)
+  command('/usr/bin/codesign', ['--force', '--sign', '-', testExecutable], directory)
   command(testExecutable, [path.join(directory, 'grant-fixture')], directory)
 }
 
