@@ -6,8 +6,10 @@
   },
   "taskRecovery": {
     "restoring": "Reopening your previous task…",
+    "restoringView": "Reopening your previous page…",
     "skip": "Skip recovery",
-    "skipped": "Previous task recovery skipped. You can reopen it from the task list."
+    "skipped": "Previous task recovery skipped. You can reopen it from the task list.",
+    "skippedView": "Previous page recovery skipped. You can reopen it manually."
   },
   "errorBoundary": {
     "title": "Something went wrong on this page",

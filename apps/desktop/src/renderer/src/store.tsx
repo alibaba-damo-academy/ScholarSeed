@@ -328,6 +328,8 @@ import {
 } from './features/resources/search'
 import { runWebSearchRoute } from './features/resources/driver'
 import {
+  isDocumentLoadFailure,
+  loadDocument,
   resolveDocumentLocation,
   resolveDocumentRevealPath,
   type DocumentSource,
@@ -637,6 +639,7 @@ export interface AppState {
   projectsLoaded: boolean
   navigationRestored: boolean
   startupTaskRecovery: 'waiting' | 'presenting' | 'skipped' | null
+  startupViewRecovery: boolean
   /** First-turn admission before a durable session exists. */
   turnLaunch: TurnLaunch | null
   collapsedSessionIds: Record<string, boolean>
@@ -948,6 +951,7 @@ const INITIAL: AppState = {
   projectsLoaded: false,
   navigationRestored: false,
   startupTaskRecovery: null,
+  startupViewRecovery: false,
   turnLaunch: null,
   collapsedSessionIds: {},
   resourceRevision: 0,
@@ -1728,7 +1732,15 @@ export function StoreProvider({
   const { t: assistantText } = useTranslation('assistant')
   const { t: literatureText } = useTranslation('literature')
   const preferenceWriter = useRef<PreferenceWriter | null>(null)
-  const startupTaskSessionId = recoverHome ? null : INITIAL_PREFERENCES.lastLocation?.sessionId
+  const startupLocation = recoverHome ? null : INITIAL_PREFERENCES.lastLocation
+  const startupTaskSessionId = startupLocation?.sessionId
+  const startupTabNeedsLookup = Boolean(
+    !startupTaskSessionId &&
+    startupLocation?.target?.kind === 'tab' &&
+    !restoredWorkbenchTab(startupLocation.target.id, [], startupLocation.projectId)
+  )
+  const startupViewRecovery = Boolean(startupLocation && !startupTaskSessionId)
+  const startupSearchesLoaded = useRef(false)
   const startupTask = useRef<{
     attempt: StartupTaskRecovery
     presenting: boolean
@@ -1737,7 +1749,8 @@ export function StoreProvider({
   const [state, updateState] = useState<AppState>(() => ({
     ...INITIAL,
     navigationRestored: recoverHome,
-    startupTaskRecovery: startupTaskSessionId ? 'waiting' : null,
+    startupTaskRecovery: startupTaskSessionId || startupViewRecovery ? 'waiting' : null,
+    startupViewRecovery,
     aiPanel: {
       ...INITIAL.aiPanel,
       contextPickerSource: assistantSources[0]?.id ?? '',
@@ -7283,28 +7296,41 @@ export function StoreProvider({
     )
       return
     navigationRestoreStarted.current = true
+    if (!startupLocation) {
+      setState((current) => ({ ...current, navigationRestored: true }))
+      return
+    }
     const epoch = navigationRecoveryEpoch.current
     let active = true
-    const currentRestore = (): boolean => active && epoch === navigationRecoveryEpoch.current
+    let restored = false
+    const currentNavigation = (): boolean => active && epoch === navigationRecoveryEpoch.current
+    const attempt = new StartupTaskRecovery((outcome) => {
+      if (startupTask.current?.attempt === attempt) startupTask.current = null
+      if (!currentNavigation()) return
+      if (outcome === 'restored') {
+        restored = true
+        return
+      }
+      if (outcome === 'failed' || outcome === 'timeout') actRef.current.returnHome()
+      setState((current) => ({
+        ...current,
+        navigationRestored: true,
+        startupTaskRecovery: 'skipped',
+      }))
+      console.info('[startup-view-recovery]', outcome)
+    })
+    startupTask.current = { attempt, presenting: false, keepView: false }
+    const currentRestore = (): boolean => currentNavigation() && attempt.current
     const navigation = beginNavigation('restore')
     void (async () => {
       const status = await window.scholarseed?.getTaskRecoveryStatus?.(null)
       if (!currentRestore()) return
       if (status === 'home') {
-        setState((current) => ({
-          ...current,
-          navigationRestored: true,
-          startupTaskRecovery: 'skipped',
-        }))
+        attempt.finish('skipped')
         return
       }
-      const saved = INITIAL_PREFERENCES.lastLocation
       const snapshot = stateRef.current
-      if (!saved) {
-        setState((current) => ({ ...current, navigationRestored: true }))
-        return
-      }
-      const location = resolveNavigationLocation(saved, snapshot.projects, (id) =>
+      const location = resolveNavigationLocation(startupLocation, snapshot.projects, (id) =>
         findSessionNode(snapshot.sessions, id)
       )
       const workspace = documentWorkspaces.forProject(location.projectId)
@@ -7320,16 +7346,23 @@ export function StoreProvider({
         ? projectLiterature.tabs.find((entry) => entry.id === projectLiterature.activeTab)!
         : (fixed ?? OVERVIEW_TAB)
       let documentTabId: string | null = null
+      let searches: LiteratureSearchTask[] | undefined
       const target = location.target
       if (target?.kind === 'document') {
-        documentTabId = await workspace.open(target.source, target.viewKind, target.title)
+        const prepared = await loadDocument(target.source, attempt.signal)
         if (!currentRestore()) return
-        const documents = workspace.getSnapshot()
-        const documentTab = documents.tabs[documentTabId]
-        const document = documentTab ? documents.sessions[documentTab.sessionId] : undefined
-        if (!document || document.loadFailure) {
+        if (isDocumentLoadFailure(prepared)) {
+          attempt.finish('failed')
+          return
+        }
+        documentTabId = await workspace.openLoadedDocument(
+          target.source,
+          target.viewKind,
+          target.title,
+          prepared
+        )
+        if (!currentRestore()) {
           workspace.closeCleanTab(documentTabId)
-          actRef.current.returnHome()
           return
         }
         workspace.setTabNavigationView(
@@ -7337,31 +7370,66 @@ export function StoreProvider({
           navigationView === 'literature' ? 'literature' : 'resource'
         )
       } else if (target?.kind === 'tab') {
-        const restored =
-          restoredWorkbenchTab(target.id, [], location.projectId) ??
-          restoredWorkbenchTab(target.id, await listLiteratureSearches(), location.projectId)
+        let restoredTab = restoredWorkbenchTab(target.id, [], location.projectId)
+        if (!restoredTab) {
+          searches = await listLiteratureSearches(attempt.signal)
+          restoredTab = restoredWorkbenchTab(target.id, searches, location.projectId)
+        }
         if (!currentRestore()) return
         if (
-          !restored ||
-          (restored.projectId !== undefined && restored.projectId !== location.projectId)
+          !restoredTab ||
+          (restoredTab.projectId !== undefined && restoredTab.projectId !== location.projectId)
         ) {
-          actRef.current.returnHome()
+          attempt.finish('failed')
           return
         }
-        tab = projectLiterature && restored.kind === 'literature' ? tab : restored
+        tab = projectLiterature && restoredTab.kind === 'literature' ? tab : restoredTab
+      }
+      attempt.finish('restored')
+      if (!restored) {
+        if (documentTabId) workspace.closeCleanTab(documentTabId)
+        return
+      }
+      if (searches) {
+        startupSearchesLoaded.current = true
+        actRef.current.restoreLiteratureSearches(searches)
       }
       const settings = settingsSurface.current!.project({
         accountSettingsPage: location.settingsPage,
         browserSettingsSection: location.browserSettingsSection,
       })
       setState((current) => {
-        if (!currentRestore()) return current
+        if (!currentNavigation() || current.navigationRestored) return current
+        const revealWorkbench = documentTabId !== null || tab.kind === 'literature_search'
+        const savedLayout = location.projectId
+          ? (current.projectLayouts[location.projectId] ?? DEFAULT_PROJECT_LAYOUT)
+          : current.workbenchLayout
+        const restoredLayout = {
+          ...savedLayout,
+          open: true,
+          full: savedLayout.full || !savedLayout.open,
+          taskTab: false,
+          conversationFull: false,
+        }
         const next: AppState = {
           ...current,
           mainView: navigationView,
           homeSelectedProjectId: location.projectId,
           tabs: openWorkbenchTab(current.tabs, navigationView, tab),
           activeTab: documentTabId ?? tab.id,
+          ...(revealWorkbench
+            ? {
+                workbenchLayout: restoredLayout,
+                ...(location.projectId
+                  ? {
+                      projectLayouts: {
+                        ...current.projectLayouts,
+                        [location.projectId]: restoredLayout,
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
           ...settings,
           resource: {
             ...current.resource,
@@ -7374,21 +7442,27 @@ export function StoreProvider({
         return {
           ...next,
           navigationRestored: true,
-          aiPanel: { ...next.aiPanel, open: location.aiPanelOpen, cover: location.aiPanelCover },
+          startupTaskRecovery: null,
+          aiPanel: {
+            ...next.aiPanel,
+            open: location.aiPanelOpen,
+            cover: location.aiPanelCover && !(revealWorkbench && location.aiPanelOpen),
+          },
         }
       }, navigation)
     })().catch((error: unknown) => {
       if (!currentRestore()) return
       console.error('Navigation restoration failed', error)
-      actRef.current.returnHome()
+      attempt.finish('failed')
     })
     return () => {
+      attempt.finish('skipped')
       active = false
-      if (epoch === navigationRecoveryEpoch.current) navigationRestoreStarted.current = false
     }
   }, [
     beginNavigation,
     setState,
+    startupLocation,
     startupTaskSessionId,
     state.navigationRestored,
     state.workspaceLoadState,
@@ -7466,17 +7540,27 @@ export function StoreProvider({
     }
   }, [manuallyOpenedSession])
 
+  const reloadSearchesInLiterature =
+    startupTabNeedsLookup &&
+    state.navigationRestored &&
+    (state.mainView === 'literature' ||
+      (state.mainView === 'resource' &&
+        state.tabs.some(
+          (tab) => tab.id === state.activeTab && tab.libraryCategory === 'literature'
+        )))
   useEffect(() => {
-    let active = true
-    listLiteratureSearches()
+    if (startupTabNeedsLookup && (!reloadSearchesInLiterature || startupSearchesLoaded.current))
+      return
+    const controller = new AbortController()
+    listLiteratureSearches(controller.signal)
       .then((tasks) => {
-        if (active) act.restoreLiteratureSearches(tasks)
+        if (controller.signal.aborted) return
+        startupSearchesLoaded.current = true
+        act.restoreLiteratureSearches(tasks)
       })
       .catch(() => undefined)
-    return () => {
-      active = false
-    }
-  }, [act])
+    return () => controller.abort()
+  }, [act, reloadSearchesInLiterature, startupTabNeedsLookup])
 
   useEffect(() => {
     void actRef.current.reloadLiterature()

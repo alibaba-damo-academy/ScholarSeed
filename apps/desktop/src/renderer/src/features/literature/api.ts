@@ -198,8 +198,10 @@ export async function createLiteratureSearch(query: string): Promise<LiteratureS
   return payload.task
 }
 
-export async function listLiteratureSearches(): Promise<LiteratureSearchTask[]> {
-  const payload = await searchRequest<{ items: LiteratureSearchTask[] }>()
+export async function listLiteratureSearches(
+  signal?: AbortSignal
+): Promise<LiteratureSearchTask[]> {
+  const payload = await searchRequest<{ items: LiteratureSearchTask[] }>('', { signal })
   return payload.items
 }
 

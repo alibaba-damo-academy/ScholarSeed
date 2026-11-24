@@ -955,13 +955,23 @@ export class DocumentWorkspace {
     }
   }
 
+  openLoadedDocument(
+    source: DocumentSource,
+    viewKind: DocumentViewKind,
+    title: string,
+    loaded: LoadedDocument
+  ): Promise<string> {
+    return this.openDocument(source, viewKind, title, undefined, undefined, {}, loaded)
+  }
+
   private async openDocument(
     source: DocumentSource,
     viewKind: DocumentViewKind,
     title: string,
     area?: DockArea,
     titleFallback?: DocumentTab['titleFallback'],
-    options: Pick<DocumentTab, 'embedded' | 'hostTabId'> = {}
+    options: Pick<DocumentTab, 'embedded' | 'hostTabId'> = {},
+    prepared?: LoadedDocument
   ): Promise<string> {
     const documentId = documentIdFor(source)
     const existingSession = this.sessionFor(source)
@@ -1065,7 +1075,7 @@ export class DocumentWorkspace {
     })
 
     if (!existingSession) {
-      const loaded = await this.loader.load(source)
+      const loaded = prepared ?? (await this.loader.load(source))
       const current = this.state.sessions[sessionId]
       if (!current) return tabId
       if (isDocumentLoadFailure(loaded)) {

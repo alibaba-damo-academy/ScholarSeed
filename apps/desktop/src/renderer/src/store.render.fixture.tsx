@@ -31,6 +31,7 @@ const probe = {
   get state() {
     return store.state
   },
+  documentTabs: () => Object.keys(documentWorkspaces.forProject(null).getSnapshot().tabs),
   get pending() {
     return pending.length
   },

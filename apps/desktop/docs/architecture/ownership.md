@@ -166,6 +166,8 @@ On macOS and Windows, main can offer a native action to reopen Home when Electro
 
 Manual reopening makes the transcript interactive as soon as history is ready. Queue hydration uses the independent session status snapshot. The queue tracks its snapshot sequence separately from transcript replay and rejects responses overtaken by a local queue edit.
 
+Restoring a saved document or literature search also starts on the interactive home screen. Automatic reads for that view share a 15-second deadline. The workspace publishes the restored tab after the reads succeed and while the user is still waiting. Manual document opening and saving retain their own lifecycle.
+
 The first main-window document has a separate 45-second deadline for loading and becoming ready to show. Queue reads, edits, and withdrawals have 10-second deadlines, as do assistant context requests. Turn submission, interruption, and queue-send receipts have a 45-second deadline. Losing a write receipt can leave the outcome unknown. The client keeps the message identity and checks existing state. If the server still shows the previous failed send, the user can explicitly accept that record to recover the row controls.
 
 Project creation, adoption, and metadata edits allow 15 seconds for the write receipt. An accepted creation with an operation ID keeps the existing 90-second status polling budget. Personal model discovery and connection validation each have a 40-second upstream deadline. The renderer allows 50 seconds per personal model settings request, including the response body.

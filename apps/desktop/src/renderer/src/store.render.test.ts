@@ -6,6 +6,7 @@ import { expect, type Page, chromium } from '@playwright/test'
 import { renderFixture } from '../../test-helpers/render.ts'
 import type { ModelInfo } from './api.ts'
 import type { AppState } from './store'
+import { STARTUP_TASK_RECOVERY_MS } from './startup.ts'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 
@@ -1124,6 +1125,177 @@ async function fixture(
   }
 }
 
+test(
+  'startup document body times out without opening a late document tab',
+  { timeout: 60_000 },
+  async () => {
+    const requested = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    try {
+      await fixture(
+        async (page) => {
+          await page.evaluate(() =>
+            Reflect.get(window, 'preferenceProbe').patch({
+              workspaceLoadState: 'ready',
+              projectsLoaded: true,
+            })
+          )
+          await requested.promise
+          await expect
+            .poll(() =>
+              page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.startupTaskRecovery)
+            )
+            .toBe('waiting')
+          assert.deepEqual(
+            await page.evaluate(() => Reflect.get(window, 'preferenceProbe').documentTabs()),
+            []
+          )
+          await page.clock.fastForward(STARTUP_TASK_RECOVERY_MS)
+          await expect
+            .poll(() => page.evaluate(() => Reflect.get(window, 'restoreReadAborted')))
+            .toBe(true)
+          await expect
+            .poll(() =>
+              page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.startupTaskRecovery)
+            )
+            .toBe('skipped')
+          await page.evaluate(() => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            probe.openSettings()
+            probe.draft('New home draft')
+          })
+          release.resolve()
+          await expect
+            .poll(() => page.evaluate(() => Reflect.get(window, 'lateDocumentRead')))
+            .toBe(true)
+          assert.deepEqual(
+            await page.evaluate(() => {
+              const probe = Reflect.get(window, 'preferenceProbe')
+              return [
+                probe.state.mainView,
+                probe.state.accountSettingsPage,
+                probe.draft(),
+                probe.documentTabs(),
+              ]
+            }),
+            ['home', 'preferences', 'New home draft', []]
+          )
+        },
+        async (page) => {
+          await page.clock.install()
+          await page.addInitScript(() => {
+            localStorage.setItem(
+              'scholarseed.web.preferences',
+              JSON.stringify({
+                lastLocation: {
+                  view: 'resource',
+                  target: {
+                    kind: 'document',
+                    viewKind: 'edit',
+                    title: 'Previous Markdown',
+                    source: { kind: 'project', project: null, path: 'previous.md' },
+                  },
+                },
+              })
+            )
+            const original = window.fetch
+            window.fetch = async (input, init) => {
+              if (!String(input).includes('/api/workbench/content?')) return original(input, init)
+              init?.signal?.addEventListener('abort', () =>
+                Reflect.set(window, 'restoreReadAborted', true)
+              )
+              const response = await original(input, { ...init, signal: undefined })
+              Reflect.set(window, 'lateDocumentRead', true)
+              return response
+            }
+          })
+          await page.route('**/api/workbench/open?**', (route) =>
+            route.fulfill({
+              json: {
+                project_id: null,
+                viewer: 'markdown',
+                capabilities: { can_edit: true },
+                revision: 'test-revision',
+                media_type: 'text/markdown',
+                content_kind: 'text',
+              },
+            })
+          )
+          await page.route('**/api/workbench/content?**', async (route) => {
+            requested.resolve()
+            await release.promise
+            await route.fulfill({ body: '# Old document' })
+          })
+        }
+      )
+    } finally {
+      release.resolve()
+    }
+  }
+)
+
+test(
+  'a skipped search restore can reload the search list when the user enters Literature',
+  { timeout: 60_000 },
+  async () => {
+    let reads = 0
+    await fixture(
+      async (page) => {
+        await page.evaluate(() =>
+          Reflect.get(window, 'preferenceProbe').patch({
+            workspaceLoadState: 'ready',
+            projectsLoaded: true,
+          })
+        )
+        await expect
+          .poll(() =>
+            page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.startupTaskRecovery)
+          )
+          .toBe('skipped')
+        assert.equal(reads, 1)
+        await page.evaluate(() => Reflect.get(window, 'preferenceProbe').view('literature'))
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              Reflect.get(window, 'preferenceProbe').state.tabs.some(
+                (tab: { id: string }) => tab.id === 'literature-search:previous-search'
+              )
+            )
+          )
+          .toBe(true)
+        assert.equal(reads, 2)
+        assert.equal(
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.activeTab),
+          'literature'
+        )
+      },
+      async (page) => {
+        await page.addInitScript(() => {
+          localStorage.setItem(
+            'scholarseed.web.preferences',
+            JSON.stringify({
+              lastLocation: {
+                view: 'literature',
+                target: { kind: 'tab', id: 'literature-search:previous-search' },
+              },
+            })
+          )
+        })
+        await page.route('**/api/literature/searches', (route) => {
+          reads += 1
+          return reads === 1
+            ? route.fulfill({ status: 503, json: { detail: 'unavailable' } })
+            : route.fulfill({
+                json: {
+                  items: [{ id: 'previous-search', query: 'Previous search', created_at: 1 }],
+                },
+              })
+        })
+      }
+    )
+  }
+)
+
 test('render failure can return home without reloading the store', { timeout: 60_000 }, async () =>
   fixture(async (page) => {
     await page.evaluate(() =>
@@ -1265,14 +1437,13 @@ for (const scenario of [
           assert.equal(state.view, 'home')
           assert.equal(state.session, null)
           assert.equal(state.restored, true)
-          assert.equal(state.recovery, target === 'session' ? 'skipped' : null)
+          assert.equal(state.recovery, 'skipped')
           assert.equal(state.settings, expectedSettings)
           assert.equal(state.draft, intervention === 'typing' ? 'New startup draft' : '')
           assert.equal(state.load, 'ready')
           assert.equal(state.location.view, 'home')
-          if (target === 'session') {
-            assert.equal(await page.evaluate(() => Reflect.get(window, 'restoreReadAborted')), true)
-          }
+          assert.equal(await page.evaluate(() => Reflect.get(window, 'restoreReadAborted')), true)
+          assert.equal(requestCount, 1)
         },
         async (page) => {
           await page.addInitScript(
@@ -1317,7 +1488,7 @@ for (const scenario of [
           )
           await page.route(`**${scenario.route}*`, async (route) => {
             requestCount += 1
-            if (target !== 'tab' || requestCount >= 2) requested()
+            requested()
             await held
             await route.fulfill({
               status: outcome === 'success' ? 200 : outcome === 'missing' ? 404 : 503,

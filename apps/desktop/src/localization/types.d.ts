@@ -7738,8 +7738,10 @@ declare module 'i18next' {
         },
         "taskRecovery": {
             "restoring": "正在恢复上次的任务…",
+            "restoringView": "正在恢复上次打开的页面…",
             "skip": "跳过恢复",
-            "skipped": "已跳过上次任务的恢复，可从任务列表重新打开。"
+            "skipped": "已跳过上次任务的恢复，可从任务列表重新打开。",
+            "skippedView": "已跳过上次页面的恢复，可手动重新打开。"
         },
         "errorBoundary": {
             "title": "页面遇到了一些问题",

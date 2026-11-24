@@ -446,17 +446,23 @@ async function responseFailure(response: Response): Promise<DocumentLoadFailure>
   }
 }
 
-export async function loadDocument(source: DocumentSource): Promise<DocumentLoadResult> {
+export async function loadDocument(
+  source: DocumentSource,
+  signal?: AbortSignal
+): Promise<DocumentLoadResult> {
   try {
+    signal?.throwIfAborted()
     if (source.kind === 'builtin') return await loadBuiltinDocument(source)
     if (source.kind === 'project') {
       const params = paramsFor(source)
       const opened = await fetch(`${base()}/api/workbench/open?${params.toString()}`, {
         credentials: 'include',
         cache: 'no-store',
+        signal,
       })
       if (!opened.ok) return responseFailure(opened)
       const projection = (await opened.json()) as OpenDocumentResult
+      signal?.throwIfAborted()
       let bytes = new Uint8Array()
       if (projection.viewer !== 'unsupported') {
         if (
@@ -469,6 +475,7 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
         const content = await fetch(`${base()}/api/workbench/content?${params.toString()}`, {
           credentials: 'include',
           cache: 'no-store',
+          signal,
         })
         if (!content.ok) return responseFailure(content)
         bytes = new Uint8Array(await content.arrayBuffer())
@@ -506,10 +513,12 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
         {
           credentials: 'include',
           cache: 'no-store',
+          signal,
         }
       )
       if (!opened.ok) return responseFailure(opened)
       const projection = (await opened.json()) as AttachmentProjection
+      signal?.throwIfAborted()
       let bytes = new Uint8Array()
       // Legacy Office sources cannot be previewed in-app but their exact bytes
       // remain available for an explicit export.
@@ -524,6 +533,7 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
         const content = await fetch(contentUrl, {
           credentials: 'include',
           cache: 'no-store',
+          signal,
         })
         if (!content.ok) return responseFailure(content)
         bytes = new Uint8Array(await content.arrayBuffer())
@@ -546,7 +556,7 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
         versioning: null,
       }
     }
-    const response = await fetch(`${base()}${rawUrl(source)}`, { credentials: 'include' })
+    const response = await fetch(`${base()}${rawUrl(source)}`, { credentials: 'include', signal })
     if (!response.ok) return responseFailure(response)
     const bytes = new Uint8Array(await response.arrayBuffer())
     const mediaType =

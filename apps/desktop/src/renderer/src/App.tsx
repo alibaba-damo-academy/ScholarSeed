@@ -1085,7 +1085,9 @@ function AppMain({
               role="status"
               className={recoveryAlertClass}
               data-testid="startup-task-restoring"
-              description={t('taskRecovery.restoring')}
+              description={t(
+                state.startupViewRecovery ? 'taskRecovery.restoringView' : 'taskRecovery.restoring'
+              )}
               action={
                 <Button size="sm" variant="secondary" onClick={act.skipStartupTaskRecovery}>
                   {t('taskRecovery.skip')}
@@ -1099,7 +1101,9 @@ function AppMain({
               className={recoveryAlertClass}
               data-testid="startup-task-skipped"
               closable
-              description={t('taskRecovery.skipped')}
+              description={t(
+                state.startupViewRecovery ? 'taskRecovery.skippedView' : 'taskRecovery.skipped'
+              )}
               onClose={act.dismissStartupTaskRecovery}
             />
           )}
