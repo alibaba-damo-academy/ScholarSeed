@@ -36,6 +36,34 @@ test('boot without a saved task cannot create a marker or grant an automatic cla
   assert.equal(existsSync(marker), false)
 })
 
+test('an interrupted launch bypasses the guest landing before any recovery status request', (context) => {
+  const { marker, launch } = fixture(context)
+  const first = launch()
+  assert.equal(first.skipsColdLanding(null), false)
+  first.prepare('old-task', 1)
+  assert.equal(first.skipsColdLanding('old-task'), false)
+  const restarted = launch()
+  assert.equal(restarted.skipsColdLanding('old-task'), true)
+  assert.equal(restarted.skipsColdLanding('other-task'), true)
+  assert.equal(restarted.skipsColdLanding(null), true)
+  assert.equal(JSON.parse(readFileSync(marker, 'utf8')).state, 'pending')
+})
+
+test('a saved skip bypasses the guest landing only when it suppresses the saved task', (context) => {
+  const { launch } = fixture(context)
+  const first = launch()
+  const token = begin(first, 'old-task')
+  assert.ok(token)
+  assert.equal(first.finish(token, 'skipped'), true)
+
+  const restarted = launch()
+  assert.equal(restarted.skipsColdLanding('old-task'), true)
+  assert.equal(restarted.skipsColdLanding('other-task'), false)
+  assert.equal(restarted.skipsColdLanding(null), false)
+  assert.equal(restarted.manualOpened('old-task'), true)
+  assert.equal(launch().skipsColdLanding('old-task'), false)
+})
+
 test('boot persists the candidate before status or attempt IPC can run', (context) => {
   const { marker, launch } = fixture(context)
   const first = launch()

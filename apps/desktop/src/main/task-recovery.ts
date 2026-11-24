@@ -74,6 +74,11 @@ export class TaskRecovery {
     }
   }
 
+  skipsColdLanding(sessionId: string | null): boolean {
+    if (this.marker?.state === RECOVERY_RECORD.pending) return this.forceHome
+    return this.marker?.state === RECOVERY_RECORD.skipped && this.marker.sessionId === sessionId
+  }
+
   status(sessionId: string | null): TaskRecoveryStatus {
     // The first renderer to see an interrupted launch stays home, then the
     // durable skip applies only to that task on subsequent launches.

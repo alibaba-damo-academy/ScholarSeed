@@ -2987,6 +2987,12 @@ function dismissLanding(): void {
   landingResolved = true
 }
 
+function dismissLandingForTaskRecovery(): void {
+  if (landingResolved) return
+  const handoff = desktopHandoff.current()
+  if (handoff.phase !== 'failed' || !handoff.terminal) dismissLanding()
+}
+
 const workbenchHealth = new WorkbenchHealth()
 let backgroundUpdateCheckDeferred = false
 
@@ -3419,7 +3425,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     const productConfig = resolveProductConfig(pushLog)
     const preferences = loadRendererPreferences()
     if (isTaskRecoverySender(e)) {
-      taskRecovery().prepare(preferences.lastLocation?.sessionId, mainRendererNavigationEpoch)
+      const recovery = taskRecovery()
+      const sessionId = preferences.lastLocation?.sessionId ?? null
+      if (recovery.skipsColdLanding(sessionId)) dismissLandingForTaskRecovery()
+      recovery.prepare(sessionId, mainRendererNavigationEpoch)
     }
     e.returnValue = {
       apiBase,
@@ -4639,7 +4648,10 @@ async function createWindow(
     startupState.snapshot().generation === generation
   const recoverRendererExit = installTaskRecoveryFallback(browserWindow, taskRecovery(), {
     canPresent: () => windowCurrent() && windowPresentationAllowed(),
-    reopen: () => browserWindow.loadURL(rendererUrl),
+    reopen: () => {
+      dismissLandingForTaskRecovery()
+      return browserWindow.loadURL(rendererUrl)
+    },
     prompt: async (signal) => {
       const t = mainLocalization().getFixedT(null, 'native')
       const result = await dialog.showMessageBox(browserWindow, {
