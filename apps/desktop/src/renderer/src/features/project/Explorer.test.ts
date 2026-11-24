@@ -5,8 +5,7 @@ import { runInNewContext } from 'node:vm'
 import * as React from 'react'
 import { transformSync } from 'esbuild'
 
-import type { createDirectoryRefresh } from './Explorer'
-import { CONTENT_TREE_READ_TIMEOUT_MS } from '../../app/api/content.ts'
+import { createDirectoryRefresh } from './directory-refresh.ts'
 
 const compiled = transformSync(readFileSync(new URL('./Explorer.tsx', import.meta.url), 'utf8'), {
   loader: 'tsx',
@@ -38,18 +37,30 @@ interface ElementProps {
 type Element = React.ReactElement<ElementProps>
 
 test('a rejected directory read settles the coordinator without publishing partial pages', async () => {
-  const loaded = { exports: {} as { createDirectoryRefresh: typeof createDirectoryRefresh } }
-  runInNewContext(compiled, { module: loaded, exports: loaded.exports, require: () => ({}) })
-  const refresh = loaded.exports.createDirectoryRefresh()
+  const refresh = createDirectoryRefresh()
   const signal = new AbortController().signal
   const ready = refresh.include(
-    Promise.resolve({ root: '', nodes: [], offset: 0, total: 0 }),
+    () => Promise.resolve({ root: '', nodes: [], offset: 0, total: 0 }),
     signal
   )
-  const failed = refresh.include(Promise.reject(new Error('directory read rejected')), signal)
+  const failed = refresh.include(() => Promise.reject(new Error('directory read rejected')), signal)
+  assert.ok(ready && failed)
   assert.equal((await ready).page, null)
   assert.equal((await ready).failed, false)
   assert.equal((await failed).failed, true)
+})
+
+test('a mount after the refresh commit cannot join the original batch while it is backpressured', async () => {
+  const refresh = createDirectoryRefresh()
+  const signal = new AbortController().signal
+  const pending = Promise.withResolvers<null>()
+  const original = refresh.include(() => pending.promise, signal)
+
+  await Promise.resolve()
+  const late = refresh.include(() => assert.fail('A sealed batch must not start a read'), signal)
+  pending.resolve(null)
+  await original
+  assert.equal(late, undefined)
 })
 
 function descendants(element: Element): Element[] {
@@ -95,7 +106,7 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
       useState: (initial: unknown) => {
         const index = cursor++
         if (!(index in hooks)) hooks[index] = typeof initial === 'function' ? initial() : initial
-        if (index === 5) hooks[index] = 'document'
+        if (index === 4) hooks[index] = 'document'
         return [
           hooks[index],
           (value: unknown) => {
@@ -105,9 +116,9 @@ test('explorer creates entries on blur or Enter and cancels only empty drafts or
       },
     },
     'react-i18next': { useTranslation: () => ({ t: (key: string) => key }) },
+    './directory-refresh': { useDirectoryRefresh: () => [createDirectoryRefresh(), () => {}] },
     'lucide-react': new Proxy({}, { get: (_target, name) => String(name) }),
     '../../assets/finder.svg': { default: 'finder.svg' },
-    '../../app/api/content': { CONTENT_TREE_READ_TIMEOUT_MS },
     '../../api': {
       revealSystemPath: async (path: string) => {
         revealed.push(path)

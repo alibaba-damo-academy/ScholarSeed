@@ -5,6 +5,7 @@ import test from 'node:test'
 
 import {
   DOCUMENT_LOAD_FAILURE_KIND,
+  DOCUMENT_SAVE_TIMEOUT_MS,
   documentIdFor,
   recordTargetFor,
   isDocumentLoadFailure,
@@ -1077,6 +1078,82 @@ test('an expired save delegate releases the document without dispatching any wri
   assert.equal(session.dirty, true)
   assert.equal(session.text, '# Keep this draft')
   assert.equal(commits, 0)
+})
+
+test('manual save shares one deadline across preparation, serialization and the PUT receipt', async (context) => {
+  const deadline = new AbortController()
+  const sent = Promise.withResolvers<void>()
+  const applied = Promise.withResolvers<{ ok: true; revision: string }>()
+  const stages: string[] = []
+  const timeout = context.mock.method(AbortSignal, 'timeout', (ms: number) => {
+    assert.equal(ms, DOCUMENT_SAVE_TIMEOUT_MS)
+    return deadline.signal
+  })
+  const workspace = new DocumentWorkspace({
+    ...loader(),
+    async commit(_source, _bytes, _revision, signal) {
+      assert.equal(signal, deadline.signal)
+      stages.push('put')
+      sent.resolve()
+      return applied.promise
+    },
+  })
+  const tab = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tab].sessionId
+  workspace.updateText(sessionId, '# Keep the pending save')
+  workspace.registerSaveDelegate(sessionId, {
+    beforeSave: async (signal) => {
+      assert.equal(signal, deadline.signal)
+      stages.push('prepare')
+    },
+    serialize: async (signal) => {
+      assert.equal(signal, deadline.signal)
+      stages.push('serialize')
+      return new TextEncoder().encode('# Keep the pending save')
+    },
+  })
+
+  const save = workspace.save(sessionId)
+  await sent.promise
+  deadline.abort()
+  assert.equal(await save, false)
+  applied.resolve({ ok: true, revision: 'late' })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  const session = workspace.getSnapshot().sessions[sessionId]
+  assert.deepEqual(stages, ['prepare', 'serialize', 'put'])
+  assert.equal(timeout.mock.callCount(), 1)
+  assert.equal(session.saveState, 'unconfirmed')
+  assert.equal(session.text, '# Keep the pending save')
+})
+
+test('save preparation finishing past the deadline cannot dispatch before the timer callback', async (context) => {
+  let now = 0
+  context.mock.method(performance, 'now', () => now)
+  const deadline = new AbortController()
+  context.mock.method(AbortSignal, 'timeout', () => deadline.signal)
+  let writes = 0
+  const workspace = new DocumentWorkspace({
+    ...loader(),
+    async commit() {
+      writes++
+      return { ok: true, revision: 'unexpected-commit' }
+    },
+  })
+  const tab = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tab].sessionId
+  workspace.updateText(sessionId, '# Keep the draft')
+  workspace.registerSaveDelegate(sessionId, {
+    beforeSave: async () => {
+      now = DOCUMENT_SAVE_TIMEOUT_MS + 1
+    },
+    serialize: async () => new TextEncoder().encode('# Keep the draft'),
+  })
+  assert.equal(await workspace.save(sessionId), false)
+  assert.equal(deadline.signal.aborted, false)
+  assert.equal(writes, 0)
+  const session = workspace.getSnapshot().sessions[sessionId]
+  assert.equal(session.saveState, 'error')
+  assert.equal(session.text, '# Keep the draft')
 })
 
 test('a save finishing after the user cancels a close keeps the document open', async () => {

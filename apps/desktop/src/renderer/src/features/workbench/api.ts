@@ -32,6 +32,7 @@ import { fetchVersionCapability, type ResourceCapability } from '../../contracts
 const FAILURE_CODES = {
   networkError: 'network_error',
   unavailable: 'unavailable',
+  failed: 'failed',
   unconfirmed: 'unconfirmed',
   http: (status: number) => `http_${status}`,
 } as const
@@ -625,13 +626,15 @@ export async function commitDocument(
   ) {
     return { ok: false, error: 'unavailable' }
   }
+  let receipt: Promise<Response> | undefined
   try {
     signal.throwIfAborted()
     const target =
       source.kind === 'project'
         ? `/api/workbench/content?${paramsFor(source).toString()}`
         : rawUrl(source)
-    const response = await fetch(`${base()}${target}`, {
+    const url = `${base()}${target}`
+    const options: RequestInit = {
       method: 'PUT',
       credentials: 'include',
       headers: {
@@ -640,7 +643,10 @@ export async function commitDocument(
       },
       body: new Uint8Array(bytes),
       signal,
-    })
+    }
+    signal.throwIfAborted()
+    receipt = fetch(url, options)
+    const response = await receipt
     signal.throwIfAborted()
     if (response.status === 412) return { ok: false, error: 'conflict' }
     if (!response.ok) {
@@ -650,17 +656,23 @@ export async function commitDocument(
         path: source.path,
         status: response.status,
       })
-      return { ok: false, error: response.status >= 500 ? FAILURE_CODES.unconfirmed : 'failed' }
+      return {
+        ok: false,
+        error: response.status >= 500 ? FAILURE_CODES.unconfirmed : FAILURE_CODES.failed,
+      }
     }
     const next = response.headers.get('etag')?.replace(/^"|"$/g, '')
     return next ? { ok: true, revision: next } : { ok: false, error: FAILURE_CODES.unconfirmed }
   } catch (error) {
-    console.warn('Document commit request failed', {
-      source: source.kind,
-      path: source.path,
-      error,
-    })
-    return { ok: false, error: FAILURE_CODES.unconfirmed }
+    console.warn(
+      receipt ? 'Document commit request failed' : 'Document commit preparation failed',
+      {
+        source: source.kind,
+        path: source.path,
+        error,
+      }
+    )
+    return { ok: false, error: receipt ? FAILURE_CODES.unconfirmed : FAILURE_CODES.failed }
   }
 }
 

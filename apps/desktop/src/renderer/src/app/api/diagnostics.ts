@@ -5,6 +5,7 @@ import {
   MODEL_PROVIDERS_PATH,
   AUTH_ME_PATH,
   CONTENT_OPERATIONS_PATH,
+  CONTENT_PROJECTS_PATH,
   SESSION_CATALOG_PATH,
 } from '../../../../requests.ts'
 
@@ -22,7 +23,13 @@ const SCHEMA_FAILURE = 'invalid-schema'
 const PROJECTION_FAILURE = 'client-projection-error'
 const UNKNOWN_ROUTE = '/api/:resource'
 // Privacy allowlist, not a backend inventory: never retain dynamic paths or query strings.
-const ROUTES = [MODEL_PROFILES_PATH, MODEL_PROVIDERS_PATH, AUTH_ME_PATH, CONTENT_OPERATIONS_PATH]
+const ROUTES = [
+  MODEL_PROFILES_PATH,
+  MODEL_PROVIDERS_PATH,
+  AUTH_ME_PATH,
+  CONTENT_OPERATIONS_PATH,
+  CONTENT_PROJECTS_PATH,
+]
 // Keep catalog polling distinct from per-session operations.
 const EXACT_ROUTES = [SESSION_CATALOG_PATH]
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
@@ -47,9 +54,9 @@ function classifyFailure(phase: FailurePhase, error: unknown): string {
   if (phase === 'encode') return ENCODE_FAILURE
   const errorName = error instanceof Error ? error.name : ''
   if (phase === 'http') return HTTP_FAILURE
-  if (phase === 'decode') return errorName === 'SyntaxError' ? PARSE_FAILURE : READ_FAILURE
   if (errorName === REQUEST_TIMEOUT_ERROR_NAME) return TIMEOUT_FAILURE
   if (errorName === 'AbortError') return ABORT_FAILURE
+  if (phase === 'decode') return errorName === 'SyntaxError' ? PARSE_FAILURE : READ_FAILURE
   if (errorName === 'TypeError') return NETWORK_FAILURE
   return UNKNOWN_FAILURE
 }

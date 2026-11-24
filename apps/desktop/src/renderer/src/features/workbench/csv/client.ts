@@ -57,9 +57,13 @@ export class CsvClient {
       this.pending.delete(requestId)
     }
     return new Promise<CsvResponse>((resolve, reject) => {
-      signal?.addEventListener('abort', abort, { once: true })
       this.pending.set(requestId, { resolve, reject })
       try {
+        signal?.addEventListener('abort', abort, { once: true })
+        if (signal?.aborted) {
+          abort()
+          return
+        }
         this.worker.postMessage(message)
       } catch (error) {
         this.pending.delete(requestId)

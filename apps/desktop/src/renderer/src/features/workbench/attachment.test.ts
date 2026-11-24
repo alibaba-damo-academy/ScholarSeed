@@ -61,7 +61,43 @@ test('a late document save receipt cannot confirm an expired write', async (cont
   assert.equal(writes, 1)
 })
 
-test('the version capability JSON shares its read deadline and a late reply is ignored', async (context) => {
+for (const issue of ['pre-aborted', 'cancelled while building', 'invalid local target'] as const)
+  test(`a ${issue} document commit fails without a PUT`, async (context) => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    context.after(() => {
+      if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+      else Reflect.deleteProperty(globalThis, 'window')
+    })
+    const deadline = new AbortController()
+    if (issue === 'pre-aborted') deadline.abort()
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        scholarseed: {
+          getApiBase: () => {
+            if (issue === 'cancelled while building') deadline.abort()
+            if (issue === 'invalid local target') throw new TypeError('invalid local target')
+            return 'http://test'
+          },
+        },
+      },
+    })
+    const request = context.mock.method(
+      globalThis,
+      'fetch',
+      async () => new Response(null, { status: 204 })
+    )
+    const result = await commitDocument(
+      { kind: 'project', path: 'notes.md' },
+      new Uint8Array([42]),
+      'old',
+      deadline.signal
+    )
+    assert.deepEqual(result, { ok: false, error: 'failed' })
+    assert.equal(request.mock.callCount(), 0)
+  })
+
+test('the version capability deadline stops an incomplete JSON body', async (context) => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   context.after(() => {
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
@@ -95,7 +131,7 @@ test('the version capability JSON shares its read deadline and a late reply is i
   const loading = loadVersionCapability({ kind: 'project', path: 'notes.md' })
   await decoderEntered.promise
   deadline.abort()
-  body.resolve({ can_version: true })
+  body.reject(deadline.signal.reason)
   assert.equal(await loading, null)
 })
 

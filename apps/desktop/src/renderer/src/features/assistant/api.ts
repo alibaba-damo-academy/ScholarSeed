@@ -637,9 +637,11 @@ export async function importArtifactToLiterature(
 function contextSelection(value: unknown, sessionId: string): AssistantContextSelection | null {
   if (!value || typeof value !== 'object') return null
   const selection = value as Partial<AssistantContextSelection>
+  const { revision } = selection
   return selection.session_id === sessionId &&
-    Number.isSafeInteger(selection.revision) &&
-    (selection.revision ?? -1) >= 0 &&
+    typeof revision === 'number' &&
+    Number.isSafeInteger(revision) &&
+    revision >= 0 &&
     (selection.project_policy === 'explicit_only' || selection.project_policy === 'auto_project') &&
     (selection.search_scope === 'web' ||
       selection.search_scope === 'academic' ||

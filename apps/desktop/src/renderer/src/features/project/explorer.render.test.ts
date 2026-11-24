@@ -53,7 +53,7 @@ async function settleRender(page: Page): Promise<void> {
   )
 }
 
-for (const departure of ['unmount', 'failed-peer'] as const) {
+for (const departure of ['unmount', 'failed-peer', 'late-expansion'] as const) {
   test(
     'coordinated directory refresh preserves active results and retry after ' + departure,
     { timeout: 60_000 },
@@ -70,12 +70,17 @@ for (const departure of ['unmount', 'failed-peer'] as const) {
       try {
         const page = await browser.newPage()
         const candidatePending = Promise.withResolvers<void>()
+        const peerPending = Promise.withResolvers<Route>()
         let refreshing = false
         let retry = false
         await page.route(TREE, async (route) => {
           const directory = new URL(route.request().url()).searchParams.get('path')
           if (departure === 'unmount' && refreshing && directory === 'candidate') {
             candidatePending.resolve()
+            return
+          }
+          if (departure === 'late-expansion' && refreshing && directory === 'peer') {
+            peerPending.resolve(route)
             return
           }
           if (
@@ -107,12 +112,12 @@ for (const departure of ['unmount', 'failed-peer'] as const) {
         )
         const toggle = page.getByTestId('explorer-select-candidate')
         const candidateError = page.getByTestId('explorer-directory-error-candidate')
-        await toggle.click()
+        if (departure !== 'late-expansion') await toggle.click()
         await page.getByTestId('explorer-select-peer').click()
         await expect(page.getByTestId('explorer-node-peer/old.md')).toBeVisible()
         if (departure === 'unmount') {
           await expect(page.getByTestId('explorer-node-candidate/old.md')).toBeVisible()
-        } else {
+        } else if (departure === 'failed-peer') {
           await expect(candidateError).toBeVisible()
         }
 
@@ -124,7 +129,7 @@ for (const departure of ['unmount', 'failed-peer'] as const) {
           await toggle.click()
           await expect(page.getByTestId('explorer-node-peer/new.md')).toBeVisible()
           await expect(candidateError).toHaveCount(0)
-        } else {
+        } else if (departure === 'failed-peer') {
           await expect(page.getByTestId('explorer-directory-error-peer')).toBeVisible()
           await expect(candidateError).toBeVisible()
           await expect(page.getByTestId('explorer-node-candidate/new.md')).toHaveCount(0)
@@ -133,6 +138,15 @@ for (const departure of ['unmount', 'failed-peer'] as const) {
           await page.getByTestId('explorer-directory-retry-candidate').click()
           await expect(page.getByTestId('explorer-node-candidate/new.md')).toBeVisible()
           await expect(page.getByTestId('explorer-node-peer/new.md')).toBeVisible()
+          await expect(candidateError).toHaveCount(0)
+        } else {
+          const pending = await peerPending.promise
+          await toggle.click()
+          await expect(page.getByTestId('explorer-node-candidate/new.md')).toBeVisible()
+          await expect(page.getByTestId('explorer-node-peer/old.md')).toBeVisible()
+          await pending.fulfill({ status: 503, json: {} })
+          await expect(page.getByTestId('explorer-directory-error-peer')).toBeVisible()
+          await expect(page.getByTestId('explorer-node-candidate/new.md')).toBeVisible()
           await expect(candidateError).toHaveCount(0)
         }
       } finally {

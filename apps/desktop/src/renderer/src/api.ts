@@ -4,7 +4,8 @@ import {
   PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
   queryContentOperation,
   readContentReceipt,
-  resolveContentResponse,
+  requestProjectWrite,
+  requestProjectRename,
 } from './app/api/content.ts'
 import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import { apiBase, apiFetch, getJson, postJson, LIVE_CATALOG_REQUEST } from './app/api/client.ts'
@@ -3547,7 +3548,7 @@ export interface ProjectMutation {
 export async function renameProject(path: string, name: string): Promise<ProjectMutation> {
   const id = await projectIdForPath(path)
   if (!id) return { ok: false, error: 'unknown_project' }
-  return mutateProject('PATCH', '/api/content/projects', { id, name })
+  return projectMutationResult(await requestProjectRename(id, name))
 }
 
 /**
@@ -3557,35 +3558,17 @@ export async function renameProject(path: string, name: string): Promise<Project
 export async function removeProject(path: string): Promise<ProjectMutation> {
   const id = await projectIdForPath(path)
   if (!id) return { ok: false, error: 'unknown_project' }
-  return mutateProject('DELETE', `/api/content/projects/${encodeURIComponent(id)}`, undefined)
+  return projectMutationResult(
+    await requestProjectWrite('DELETE', `/api/content/projects/${encodeURIComponent(id)}`)
+  )
 }
 
-async function mutateProject(
-  method: string,
-  path: string,
-  body: unknown
-): Promise<ProjectMutation> {
-  try {
-    let response = await apiFetch(path, {
-      method,
-      timeoutMs: PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
-      headers: { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    response = await resolveContentResponse(response)
-    if (response.status === 204 || response.status === 205) return { ok: true }
-    const payload = (
-      response.ok ? await response.json() : await response.json().catch(() => ({}))
-    ) as {
-      detail?: string | { message?: string }
-    }
-    if (response.ok) return { ok: true }
-    const detail = payload?.detail
-    const message = typeof detail === 'string' ? detail : detail?.message
-    return { ok: false, error: message || `HTTP ${response.status}` }
-  } catch {
-    return { ok: false, error: CONTENT_OPERATION_UNKNOWN }
-  }
+function projectMutationResult(
+  result: Awaited<ReturnType<typeof requestProjectWrite>>
+): ProjectMutation {
+  return result.ok
+    ? { ok: true }
+    : { ok: false, error: result.error ?? result.httpFailure?.diagnostic }
 }
 
 export interface ModelInfo {

@@ -2500,6 +2500,7 @@ export class DocumentWorkspace {
   private async commitSession(sessionId: string, overwrite: boolean): Promise<boolean> {
     const initial = this.state.sessions[sessionId]
     if (!initial) return true
+    const expiresAt = performance.now() + DOCUMENT_SAVE_TIMEOUT_MS
     const signal = AbortSignal.timeout(DOCUMENT_SAVE_TIMEOUT_MS)
     const unresolved = this.unconfirmedSaves.get(sessionId)
     if (unresolved) return this.reconcileSave(sessionId, unresolved, signal)
@@ -2564,6 +2565,9 @@ export class DocumentWorkspace {
         text: proposed.text,
       }
       const result = await waitForSavePhase(signal, () => {
+        // An editor phase can occupy the renderer past the deadline before the timer runs.
+        if (performance.now() >= expiresAt)
+          throw new DOMException('Document save deadline expired', 'TimeoutError')
         dispatched = attempt
         return this.loader.commit(target.source, bytes, expectedRevision, signal)
       })

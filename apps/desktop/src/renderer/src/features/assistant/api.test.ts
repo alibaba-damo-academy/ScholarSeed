@@ -427,6 +427,27 @@ test('incomplete context receipts release reads and keep a patch unconfirmed', a
   }
 })
 
+test('Assistant context reads require a non-negative safe integer revision', async () => {
+  for (const [revision, accepted] of [
+    [0, true],
+    [Number.MAX_SAFE_INTEGER, true],
+    [undefined, false],
+    [null, false],
+    ['2', false],
+    [-1, false],
+    [1.5, false],
+    [Number.MAX_SAFE_INTEGER + 1, false],
+  ] as const) {
+    const selection = { ...CONTEXT, revision }
+    const restore = installBrowser(async () => Response.json(selection))
+    try {
+      assert.deepEqual(await getAssistantContext(CONTEXT.session_id), accepted ? selection : null)
+    } finally {
+      restore()
+    }
+  }
+})
+
 test('an uncertain context PATCH reconciles once without resubmitting or treating the GET as a receipt', async () => {
   for (const [latest, usable] of [
     [{ ...CONTEXT, revision: 3, search_scope: 'web' }, true],

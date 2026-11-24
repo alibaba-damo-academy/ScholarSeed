@@ -959,6 +959,10 @@ test('project mutations distinguish explicit empty success from an unreadable re
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
     else Reflect.deleteProperty(globalThis, 'window')
   })
+  flushApiDiagnostics()
+  t.after(flushApiDiagnostics)
+  const diagnostics: string[] = []
+  t.mock.method(console, 'info', (...args: unknown[]) => diagnostics.push(args.join(' ')))
   const writes: string[] = []
   const receipts = [
     new Response(null, { status: 204 }),
@@ -966,6 +970,7 @@ test('project mutations distinguish explicit empty success from an unreadable re
     Response.json({ id: 'p' }),
     new Response('{'),
     Response.json({ detail: 'project_busy' }, { status: 409 }),
+    new Response(null, { status: 403 }),
   ]
   t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
     if (!init.method || init.method === 'GET') {
@@ -982,7 +987,20 @@ test('project mutations distinguish explicit empty success from an unreadable re
     error: 'content_operation_unknown',
   })
   assert.deepEqual(await removeProject('/p'), { ok: false, error: 'project_busy' })
-  assert.deepEqual(writes, ['DELETE', 'PATCH', 'PATCH', 'PATCH', 'DELETE'])
+  assert.deepEqual(await removeProject('/p'), { ok: false, error: 'HTTP 403' })
+  assert.deepEqual(writes, ['DELETE', 'PATCH', 'PATCH', 'PATCH', 'DELETE', 'DELETE'])
+  const failures = diagnostics
+    .filter((record) => record.startsWith('[api-request] '))
+    .map((record) => JSON.parse(record.slice('[api-request] '.length)))
+  assert.deepEqual(
+    failures.map(({ route, method, status, reason }) => [route, method, status, reason]),
+    [
+      ['/api/content/projects', 'PATCH', 200, 'invalid-json'],
+      ['/api/content/projects', 'DELETE', 409, 'http-error'],
+      ['/api/content/projects', 'DELETE', 403, 'http-error'],
+    ]
+  )
+  assert.ok(!JSON.stringify(failures).includes('project_busy'))
 })
 
 test('project writes with expired receipts remain unconfirmed and are never replayed', async (context) => {

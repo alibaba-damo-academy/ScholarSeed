@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useMemo, useState } from 'react'
+import { StrictMode, useCallback, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 
@@ -8,7 +8,8 @@ import enLayout from '../../../../localization/locales/en/layout.json'
 import zhUi from '../../../../localization/locales/zh/ui.json'
 import enUi from '../../../../localization/locales/en/ui.json'
 import { Button } from '../../components/ui'
-import { createDirectoryRefresh, Directory } from './Explorer'
+import { Directory } from './Explorer'
+import { useDirectoryRefresh } from './directory-refresh'
 import '../../styles.css'
 
 const localization = createLocalization(
@@ -21,9 +22,7 @@ Object.assign(window, { scholarseed: { getApiBase: () => window.location.origin 
 export function Fixture(): React.JSX.Element {
   const [project, setProject] = useState('first')
   const [path, setPath] = useState('')
-  const [revision, setRevision] = useState(0)
-  const revisionRefresh = useMemo(createDirectoryRefresh, [project, revision])
-  const refreshDirectory = useCallback(() => setRevision((value) => value + 1), [])
+  const [revisionRefresh, refreshDirectory] = useDirectoryRefresh()
   const [mounted, setMounted] = useState(true)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -59,7 +58,6 @@ export function Fixture(): React.JSX.Element {
         <Directory
           project={project}
           path={path}
-          revision={revision}
           revisionRefresh={revisionRefresh}
           onRetryRefresh={refreshDirectory}
           expanded={expanded}

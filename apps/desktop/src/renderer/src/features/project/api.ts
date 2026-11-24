@@ -9,11 +9,14 @@
  */
 
 import {
-  CONTENT_OPERATION_UNKNOWN,
   CONTENT_TREE_READ_TIMEOUT_MS,
-  PROJECT_WRITE_RECEIPT_TIMEOUT_MS,
+  CONTENT_OPERATION_UNKNOWN,
+  isProjectReceipt,
+  requestProjectRename,
   resolveContentResponse,
+  requestProjectWrite,
 } from '../../app/api/content.ts'
+import { CONTENT_PROJECTS_PATH } from '../../../../requests.ts'
 import { apiFetch, LIVE_CATALOG_REQUEST } from '../../app/api/client.ts'
 
 import type { ContentErrorCode, ExternalRootRef, ProjectRef } from '../../contracts/content'
@@ -94,11 +97,18 @@ export interface ProjectTreePage {
   offset: number
 }
 
+export function projectTreeReadSignal(
+  cancellation?: AbortSignal,
+  deadline = AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)
+): AbortSignal {
+  return cancellation ? AbortSignal.any([cancellation, deadline]) : deadline
+}
+
 export async function readProjectTree(
   project: string,
   path = '',
   offset = 0,
-  signal = AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS)
+  signal = projectTreeReadSignal()
 ): Promise<ProjectTreePage | null> {
   const query = new URLSearchParams({ path, offset: String(offset) })
   return readJson<ProjectTreePage>(
@@ -124,11 +134,7 @@ export async function listProjectFiles(
     visited.add(directory)
     let offset = 0
     while (!signal.aborted) {
-      const pageSignal = AbortSignal.any([
-        signal,
-        AbortSignal.timeout(CONTENT_TREE_READ_TIMEOUT_MS),
-      ])
-      const page = await readProjectTree(project, directory, offset, pageSignal)
+      const page = await readProjectTree(project, directory, offset, projectTreeReadSignal(signal))
       if (!page || signal.aborted) return null
       for (const node of page.nodes) {
         if (node.kind === 'file') files.set(node.path, node)
@@ -198,6 +204,7 @@ async function readJson<T>(
     const response = await apiFetch(path, options)
     if (!response.ok) return null
     const result = (await response.json()) as T
+    // An already buffered body can finish parsing after its caller cancels the read.
     return options?.signal?.aborted ? null : result
   } catch {
     return null
@@ -207,21 +214,16 @@ async function readJson<T>(
 async function sendJson(
   path: string,
   method: 'POST' | 'PATCH' | 'PUT',
-  body: Record<string, unknown>,
-  timeoutMs?: number
+  body: Record<string, unknown>
 ): Promise<{ ok: boolean; error?: string; payload?: unknown }> {
   try {
     let response = await apiFetch(path, {
       method,
-      timeoutMs,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     response = await resolveContentResponse(response)
-    const payload =
-      response.ok && timeoutMs !== undefined
-        ? await response.json()
-        : await response.json().catch(() => null)
+    const payload = await response.json().catch(() => null)
     if (!response.ok) {
       const detail =
         payload && typeof payload === 'object' && 'detail' in payload
@@ -231,8 +233,6 @@ async function sendJson(
     }
     return { ok: true, payload }
   } catch (error) {
-    // A transport error can arrive after the server applied the write.
-    if (timeoutMs !== undefined) return { ok: false, error: CONTENT_OPERATION_UNKNOWN }
     return { ok: false, error: error instanceof Error ? error.message : FAILURE_CODES.networkError }
   }
 }
@@ -277,13 +277,7 @@ export async function forgetProject(id: string): Promise<ProjectMutation> {
 
 /** 新建项目：只填名字。 */
 export async function createProject(name: string): Promise<ProjectMutation> {
-  const result = await sendJson(
-    '/api/content/projects',
-    'POST',
-    { name },
-    PROJECT_WRITE_RECEIPT_TIMEOUT_MS
-  )
-  return { ok: result.ok, error: result.error, project: result.payload as ProjectRef | undefined }
+  return projectMutationResult(await requestProjectWrite('POST', CONTENT_PROJECTS_PATH, { name }))
 }
 
 /** 改显示名：目录名不跟随，已开会话与关联登记都不受影响。 */
@@ -292,13 +286,19 @@ export async function renameProject(
   name: string,
   metadata: { description?: string; pinned?: boolean } = {}
 ): Promise<ProjectMutation> {
-  const result = await sendJson(
-    '/api/content/projects',
-    'PATCH',
-    { id, name, ...metadata },
-    PROJECT_WRITE_RECEIPT_TIMEOUT_MS
-  )
-  return { ok: result.ok, error: result.error, project: result.payload as ProjectRef | undefined }
+  return projectMutationResult(await requestProjectRename(id, name, metadata))
+}
+
+function projectMutationResult(
+  result: Awaited<ReturnType<typeof requestProjectWrite>>
+): ProjectMutation {
+  const project = isProjectReceipt(result.payload) ? result.payload : undefined
+  if (result.ok && project) return { ok: true, project }
+  return {
+    ok: false,
+    error: result.error ?? result.httpFailure?.code ?? CONTENT_OPERATION_UNKNOWN,
+    project: undefined,
+  }
 }
 
 export async function loadWorkspaceRoot(): Promise<WorkspaceRootState | null> {
