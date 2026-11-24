@@ -22,6 +22,11 @@ interface RecoveryRecord {
   sessionId: string
 }
 
+interface RecoveryClaim {
+  sessionId: string
+  token: string
+}
+
 export function isRecoverySessionId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= SESSION_ID_MAX_LENGTH
 }
@@ -51,7 +56,9 @@ export class TaskRecovery {
   private marker: RecoveryRecord | null | undefined
   private forceHome = false
   private attempted = false
-  private active: { token: string; sessionId: string } | null = null
+  private prepared:
+    (RecoveryClaim & { epoch: number; previousSkippedSessionId: string | null }) | null = null
+  private active: RecoveryClaim | null = null
   private readonly attemptListeners = new Set<(token: string | null) => void>()
 
   constructor(
@@ -76,7 +83,7 @@ export class TaskRecovery {
     if (
       this.forceHome ||
       this.marker === undefined ||
-      (this.marker?.state === RECOVERY_RECORD.skipped && this.marker.sessionId === sessionId)
+      (sessionId !== null && this.skippedSessionId() === sessionId)
     )
       return TASK_RECOVERY_STATUS.home
     return this.attempted ? TASK_RECOVERY_STATUS.attempted : TASK_RECOVERY_STATUS.eligible
@@ -86,25 +93,48 @@ export class TaskRecovery {
     const status = this.status(sessionId)
     return {
       status,
-      skippedSessionId:
-        this.marker?.state === RECOVERY_RECORD.skipped ? this.marker.sessionId : null,
+      skippedSessionId: this.skippedSessionId(),
       needsManualAcknowledgement: this.forceHome || this.marker === undefined,
+      ...(this.prepared?.sessionId === sessionId ? { preparedToken: this.prepared.token } : {}),
+    }
+  }
+
+  prepare(sessionId: unknown, epoch: number): void {
+    if (this.prepared) {
+      if (this.prepared.epoch !== epoch) this.reopenHome(this.prepared.token)
+      return
+    }
+    if (
+      !isRecoverySessionId(sessionId) ||
+      this.forceHome ||
+      this.attempted ||
+      this.marker === undefined ||
+      (this.marker?.state === RECOVERY_RECORD.skipped && this.marker.sessionId === sessionId)
+    )
+      return
+    const previousSkippedSessionId = this.marker?.sessionId ?? null
+    if (this.write({ sessionId, state: RECOVERY_RECORD.pending })) {
+      this.prepared = { sessionId, token: randomUUID(), epoch, previousSkippedSessionId }
     }
   }
 
   begin(sessionId: string): string | null {
-    if (this.status(sessionId) !== TASK_RECOVERY_STATUS.eligible) return null
+    const prepared = this.prepared
+    if (!prepared || prepared.sessionId !== sessionId) return null
     this.attempted = true
-    if (!this.write({ sessionId, state: RECOVERY_RECORD.pending })) return null
-    const token = randomUUID()
-    this.active = { sessionId, token }
-    for (const listener of this.attemptListeners) listener(token)
+    this.prepared = null
+    this.active = { sessionId, token: prepared.token }
+    for (const listener of this.attemptListeners) listener(prepared.token)
     this.log('started')
-    return token
+    return prepared.token
   }
 
   pendingToken(): string | null {
     return this.active?.token ?? null
+  }
+
+  reopenToken(): string | null {
+    return this.pendingToken() ?? this.prepared?.token ?? null
   }
 
   subscribeAttempt(listener: (token: string | null) => void): () => void {
@@ -113,28 +143,35 @@ export class TaskRecovery {
   }
 
   finish(token: string, outcome: TaskRecoveryOutcome): boolean {
-    const active = this.active
-    if (!active || active.token !== token) return false
+    const claim = this.active ?? this.prepared
+    if (
+      !claim ||
+      claim.token !== token ||
+      (!this.active && outcome !== TASK_RECOVERY_OUTCOME.skipped)
+    )
+      return false
+    this.attempted = true
     this.active = null
+    this.prepared = null
     for (const listener of this.attemptListeners) listener(null)
     const written = this.write(
       outcome === TASK_RECOVERY_OUTCOME.restored
         ? null
-        : { sessionId: active.sessionId, state: RECOVERY_RECORD.skipped }
+        : { sessionId: claim.sessionId, state: RECOVERY_RECORD.skipped }
     )
     if (written) this.log(outcome)
     return written
   }
 
   reopenHome(token: string): boolean {
-    if (this.pendingToken() !== token) return false
-    this.forceHome = true
+    if (this.reopenToken() !== token) return false
     this.finish(token, TASK_RECOVERY_OUTCOME.skipped)
+    this.forceHome = true
     return true
   }
 
   manualOpened(sessionId: string): boolean {
-    if (this.active) return false
+    if (this.active || this.prepared) return false
     if (
       this.marker === null ||
       (this.marker?.state === RECOVERY_RECORD.skipped && this.marker.sessionId !== sessionId)
@@ -153,6 +190,12 @@ export class TaskRecovery {
       this.log('manual open acknowledged')
     }
     return written
+  }
+
+  private skippedSessionId(): string | null {
+    return this.marker?.state === RECOVERY_RECORD.skipped
+      ? this.marker.sessionId
+      : (this.prepared?.previousSkippedSessionId ?? null)
   }
 
   private write(marker: RecoveryRecord | null): boolean {
@@ -207,7 +250,7 @@ export function installTaskRecoveryFallback(
   }
 
   const offer = async (watchdogExpired = false): Promise<void> => {
-    const token = recovery.pendingToken()
+    const token = watchdogExpired ? recovery.pendingToken() : recovery.reopenToken()
     if (!token || offered || !canPresent()) return
     // An unparented macOS message box blocks main and cannot be aborted.
     // Wait for the user to bring the workbench back before presenting its sheet.
@@ -264,7 +307,7 @@ export function installTaskRecoveryFallback(
     if (reopenJob) clearImmediate(reopenJob)
     reopenJob = null
     dialog?.abort()
-    const token = recovery.pendingToken()
+    const token = recovery.reopenToken()
     if (token) recovery.reopenHome(token)
   }
   const presentDeferred = (): void => {

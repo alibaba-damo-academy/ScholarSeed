@@ -1758,6 +1758,7 @@ export function StoreProvider({
   const { t: assistantText } = useTranslation('assistant')
   const { t: literatureText } = useTranslation('literature')
   const preferenceWriter = useRef<PreferenceWriter | null>(null)
+  const savedTaskSessionId = INITIAL_PREFERENCES.lastLocation?.sessionId ?? null
   const startupLocation = recoverHome ? null : INITIAL_PREFERENCES.lastLocation
   const startupTaskSessionId = startupLocation?.sessionId
   const startupTabNeedsLookup = Boolean(
@@ -1770,6 +1771,8 @@ export function StoreProvider({
   const initialTaskRecovery = useRef<Promise<TaskRecoverySnapshot> | null>(null)
   const [manualRecovery, setManualRecovery] = useState<ManualRecoveryMarker | null>(null)
   const markerClaimPending = useRef(false)
+  const preparedTaskToken = useRef<string | null>(null)
+  const settlingTaskToken = useRef<string | null>(null)
   const locallySkippedSession = useRef<string | null>(null)
   const canRestoreScopeSession = useCallback(
     (sessionId: string): boolean => {
@@ -1944,6 +1947,38 @@ export function StoreProvider({
   const navigationRequest = useRef(0)
   const navigationRestoreStarted = useRef(false)
   const navigationRecoveryEpoch = useRef(0)
+  const refreshTaskMarker = useCallback(async (): Promise<void> => {
+    const snapshot = await window.scholarseed?.getTaskRecoveryStatus?.(savedTaskSessionId)
+    if (snapshot) {
+      markerClaimPending.current = false
+      setManualRecovery(manualRecoveryMarker(snapshot))
+    }
+  }, [savedTaskSessionId])
+  const finishTaskMarker = useCallback(
+    (token: string, outcome: TaskRecoveryOutcome): void => {
+      if (settlingTaskToken.current === token) return
+      settlingTaskToken.current = token
+      markerClaimPending.current = true
+      void (async () => {
+        const written = await window.scholarseed
+          ?.finishTaskRecovery?.(token, outcome)
+          .catch((error: unknown) => {
+            console.error(error)
+            return false
+          })
+        if (!written) {
+          await refreshTaskMarker()
+          return
+        }
+        markerClaimPending.current = false
+        setManualRecovery({
+          skippedSessionId: outcome === TASK_RECOVERY_OUTCOME.skipped ? savedTaskSessionId : null,
+          needsManualAcknowledgement: false,
+        })
+      })().catch(console.error)
+    },
+    [refreshTaskMarker, savedTaskSessionId]
+  )
   const cancelStartupTask = useCallback(
     (keepView: boolean): void => {
       const recovery = stateRef.current.startupTaskRecovery
@@ -1954,6 +1989,8 @@ export function StoreProvider({
         candidate.keepView = keepView
         candidate.attempt.finish('skipped')
       } else {
+        if (preparedTaskToken.current)
+          finishTaskMarker(preparedTaskToken.current, TASK_RECOVERY_OUTCOME.skipped)
         navigationRestoreStarted.current = true
         setState((current) => ({
           ...current,
@@ -1962,7 +1999,7 @@ export function StoreProvider({
         }))
       }
     },
-    [setState, startupTaskSessionId]
+    [finishTaskMarker, setState, startupTaskSessionId]
   )
   useLayoutEffect(() => {
     if (state.navigationRestored) cancelStartupTask(true)
@@ -7214,19 +7251,25 @@ export function StoreProvider({
   useEffect(() => {
     const host = window.scholarseed
     if (!host?.getTaskRecoveryStatus) return
-    const initial = (initialTaskRecovery.current ??= host.getTaskRecoveryStatus(
-      startupTaskSessionId ?? null
-    ))
+    const initial = (initialTaskRecovery.current ??= host.getTaskRecoveryStatus(savedTaskSessionId))
     let current = true
     void initial
       .then((snapshot) => {
-        if (current) setManualRecovery(manualRecoveryMarker(snapshot))
+        if (!current) return
+        if (snapshot.preparedToken) {
+          preparedTaskToken.current = snapshot.preparedToken
+          if (recoverHome || locallySkippedSession.current === savedTaskSessionId) {
+            finishTaskMarker(snapshot.preparedToken, TASK_RECOVERY_OUTCOME.skipped)
+            return
+          }
+        }
+        setManualRecovery(manualRecoveryMarker(snapshot))
       })
       .catch(console.error)
     return () => {
       current = false
     }
-  }, [startupTaskSessionId])
+  }, [finishTaskMarker, recoverHome, savedTaskSessionId])
 
   useEffect(() => {
     if (
@@ -7243,28 +7286,6 @@ export function StoreProvider({
     const serviceInstanceId = state.serviceInstanceId
     let token: string | null = null
     navigationRestoreStarted.current = true
-    const refreshMarker = async (): Promise<void> => {
-      const snapshot = await host?.getTaskRecoveryStatus?.(startupTaskSessionId)
-      if (snapshot) {
-        markerClaimPending.current = false
-        setManualRecovery(manualRecoveryMarker(snapshot))
-      }
-    }
-    const finishMarker = async (claimed: string, outcome: TaskRecoveryOutcome): Promise<void> => {
-      const written = await host?.finishTaskRecovery?.(claimed, outcome).catch((error: unknown) => {
-        console.error(error)
-        return false
-      })
-      if (!written) {
-        await refreshMarker()
-        return
-      }
-      markerClaimPending.current = false
-      setManualRecovery({
-        skippedSessionId: outcome === TASK_RECOVERY_OUTCOME.skipped ? startupTaskSessionId : null,
-        needsManualAcknowledgement: false,
-      })
-    }
     const attempt = new StartupTaskRecovery((outcome) => {
       const restored = outcome === 'restored'
       if (!restored && (token || outcome !== 'skipped')) {
@@ -7282,11 +7303,12 @@ export function StoreProvider({
         navigationRestored: true,
         startupTaskRecovery: restored ? null : 'skipped',
       }))
-      if (token)
-        void finishMarker(
-          token,
+      const markerToken = token ?? (!restored ? preparedTaskToken.current : null)
+      if (markerToken)
+        finishTaskMarker(
+          markerToken,
           restored ? TASK_RECOVERY_OUTCOME.restored : TASK_RECOVERY_OUTCOME.skipped
-        ).catch(console.error)
+        )
       console.info('[startup-task-recovery]', outcome)
     })
     const candidate = { attempt, presenting: false, keepView: false }
@@ -7305,10 +7327,10 @@ export function StoreProvider({
         try {
           token = await host.beginTaskRecovery(startupTaskSessionId)
         } finally {
-          if (!token) void refreshMarker().catch(console.error)
+          if (!token && !preparedTaskToken.current) void refreshTaskMarker().catch(console.error)
         }
         if (!attempt.current) {
-          if (token) await finishMarker(token, TASK_RECOVERY_OUTCOME.skipped)
+          if (token) finishTaskMarker(token, TASK_RECOVERY_OUTCOME.skipped)
           return
         }
         if (!token) {
@@ -7405,6 +7427,8 @@ export function StoreProvider({
     })
   }, [
     beginNavigation,
+    finishTaskMarker,
+    refreshTaskMarker,
     rememberSessionDraft,
     setState,
     startupTaskSessionId,

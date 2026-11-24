@@ -158,11 +158,11 @@ The TeX receipt and AI execution gate remain independent. The probe is a startup
 
 ### Startup Task Recovery / 启动任务恢复
 
-Main owns the task recovery marker in the selected Desktop profile. The approved main renderer must claim its one automatic session attempt through preload and receive an acknowledgment after the pending marker is committed. An interrupted attempt opens Home on the next launch. Skipping suppresses automatic reopening for that task until a successful manual open. The renderer owns the foreground deadline, cancellation, and the readiness of the visible conversation.
+Main owns the task recovery marker in the selected Desktop profile. While loading the approved main window's startup preferences, it durably prepares the saved task before the renderer can accept actions. The renderer claims its one automatic attempt through preload before reading the task. An interruption before or after that claim opens Home on the next launch. Skipping suppresses automatic reopening for that task until a successful manual open. The renderer owns the foreground deadline, cancellation, and the readiness of the visible conversation.
 
-On macOS and Windows, main can offer a native action to reopen Home when Electron reports the renderer unresponsive or exited during the attempt. A main-process watchdog also offers the action if the attempt is still pending after the 15-second renderer deadline and a one-second acknowledgment window. After the user confirms, main suppresses the old task and reloads the renderer in the same window, retaining the Serve process. Real Desktop acceptance covers the native dialog and the replacement renderer on each platform.
+On macOS and Windows, main can offer a native action to reopen Home when Electron reports the renderer unresponsive or exited with a prepared or claimed task. The main-process watchdog starts on claim and also offers the action if the attempt remains pending after the 15-second renderer deadline and a one-second acknowledgment window. After the user confirms, main suppresses the old task and reloads the renderer in the same window, retaining the Serve process. Real Desktop acceptance covers the native dialog and the replacement renderer on each platform.
 
-主进程在已选定的桌面配置目录中管理任务恢复标记。受信任的主窗口渲染进程通过 preload 申请一次自动恢复，等待待恢复标记提交后再读取任务。恢复中断后，下次启动进入首页。跳过后，成功手动打开该任务即可恢复其自动打开资格。渲染进程负责前台期限、取消操作和会话正文的可用状态。
+主进程在已选定的桌面配置目录中管理任务恢复标记。受信任的主窗口读取启动偏好时，主进程在渲染进程可接受操作前持久记录待恢复任务。渲染进程通过 preload 申请一次自动恢复后才读取任务。申请前后发生中断，下次启动都进入首页。跳过后，成功手动打开该任务即可恢复其自动打开资格。渲染进程负责前台期限、取消操作和会话正文的可用状态。
 
 Manual reopening makes the transcript interactive as soon as history is ready. Queue hydration uses the independent session status snapshot. The queue tracks its snapshot sequence separately from transcript replay and rejects responses overtaken by a local queue edit.
 
@@ -174,7 +174,7 @@ Project creation, adoption, and metadata edits allow 15 seconds for the write re
 
 手动重开时，历史读完即可操作正文。队列通过独立的会话状态请求补齐，单独记录快照序号。请求发出后若用户修改了队列，渲染器会丢弃旧快照并重新读取。
 
-在 macOS 和 Windows 上，若 Electron 报告恢复中的渲染进程无响应或退出，主进程可通过系统对话框提供重新打开到首页的入口。渲染进程的 15 秒预算和额外 1 秒确认时间结束后，主进程也会为仍未完成的恢复提供此入口。用户确认后，主进程跳过旧任务，在同一个窗口中重载渲染进程，Serve 进程继续运行。两个平台均需在真实桌面验证系统对话框和重载后的窗口。
+在 macOS 和 Windows 上，若 Electron 报告渲染进程无响应或退出，主进程可为已记录或已申请恢复的任务提供重新打开到首页的系统入口。主进程在渲染进程申请恢复后开始监测，渲染进程的 15 秒预算和额外 1 秒确认时间结束后，也会为仍未完成的恢复提供此入口。用户确认后，主进程跳过旧任务，在同一个窗口中重载渲染进程，Serve 进程继续运行。两个平台均需在真实桌面验证系统对话框和重载后的窗口。
 
 <a id="基础健康与-ai-就绪"></a>
 ### Baseline Health and AI Readiness

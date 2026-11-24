@@ -714,7 +714,9 @@ function logTaskRecovery(message: string): void {
   logWindowLifecycle(`[task-recovery] ${message}\n`)
 }
 
-function isTaskRecoverySender(event: Electron.IpcMainInvokeEvent): boolean {
+function isTaskRecoverySender(
+  event: Pick<Electron.IpcMainInvokeEvent, 'sender' | 'senderFrame'>
+): boolean {
   const frame = event.senderFrame
   return (
     !appQuitting &&
@@ -3415,6 +3417,10 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.on('scholarseed:boot', (e) => {
     const desktopConfig = updater.resolveDesktopConfig(pushLog)
     const productConfig = resolveProductConfig(pushLog)
+    const preferences = loadRendererPreferences()
+    if (isTaskRecoverySender(e)) {
+      taskRecovery().prepare(preferences.lastLocation?.sessionId, mainRendererNavigationEpoch)
+    }
     e.returnValue = {
       apiBase,
       startup: startupState.snapshot(),
@@ -3431,7 +3437,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       browserAgentNavigationEnabled: productConfig.features.browserAgentNavigation,
       browserAdvancedSettingsEnabled: productConfig.features.browserAdvancedSettings,
       feedbackRecorderEnabled: productConfig.features.feedbackRecorder,
-      preferences: loadRendererPreferences(),
+      preferences,
     }
   })
   ipcMain.handle(FEEDBACK_DIAGNOSTICS_CHANNEL, async (event) => {

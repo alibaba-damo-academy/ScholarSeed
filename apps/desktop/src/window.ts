@@ -24,6 +24,7 @@ export interface TaskRecoverySnapshot {
   status: TaskRecoveryStatus
   skippedSessionId: string | null
   needsManualAcknowledgement: boolean
+  preparedToken?: string
 }
 export const TASK_RECOVERY_OUTCOME = { restored: 'restored', skipped: 'skipped' } as const
 export type TaskRecoveryOutcome = (typeof TASK_RECOVERY_OUTCOME)[keyof typeof TASK_RECOVERY_OUTCOME]

@@ -1133,18 +1133,22 @@ async function installRecoveryBridge(
     status: 'eligible' | 'home'
     skippedSessionId: string | null
     needsManualAcknowledgement: boolean
+    preparedToken?: string
   },
-  holdClaim = false
+  holdClaim = false,
+  holdStatus = false
 ): Promise<void> {
   await page.addInitScript(
-    ({ marker, holdClaim }) => {
+    ({ marker, holdClaim, holdStatus }) => {
       const calls: [string, string | null, string?][] = []
       const claim = Promise.withResolvers<string>()
       const finished = Promise.withResolvers<boolean>()
+      const initial = Promise.withResolvers<typeof marker>()
       Reflect.set(window, 'manualRecoveryCalls', calls)
       Reflect.set(window, 'releaseRecoveryClaim', () => claim.resolve('token-from-main'))
       Reflect.set(window, 'releaseRecoveryFinish', () => finished.resolve(true))
-      if (holdClaim) {
+      Reflect.set(window, 'releaseRecoveryStatus', () => initial.resolve(marker))
+      if (holdClaim || holdStatus) {
         localStorage.setItem(
           'scholarseed.web.preferences',
           JSON.stringify({ lastLocation: { view: 'conversation', sessionId: 'recovery-target' } })
@@ -1153,7 +1157,7 @@ async function installRecoveryBridge(
       Reflect.set(window, 'taskRecoveryBridgeFixture', {
         getTaskRecoveryStatus: async (sessionId: string | null) => {
           calls.push(['status', sessionId])
-          return marker
+          return holdStatus ? initial.promise : marker
         },
         beginTaskRecovery: async (sessionId: string) => {
           calls.push(['begin', sessionId])
@@ -1170,7 +1174,7 @@ async function installRecoveryBridge(
         },
       })
     },
-    { marker, holdClaim }
+    { marker, holdClaim, holdStatus }
   )
 }
 
@@ -1373,6 +1377,41 @@ test(
 )
 
 test(
+  'a skip before initial recovery status settles before a matching manual open can acknowledge it',
+  { timeout: 60_000 },
+  async () =>
+    fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        const pending = [['status', 'recovery-target']]
+        await expect.poll(() => manualRecoveryCalls(page)).toEqual(pending)
+        await page.evaluate(() => Reflect.get(window, 'preferenceProbe').skipStartupRecovery())
+        await openReadyRecoverySession(page, 'recovery-target')
+        assert.deepEqual(await manualRecoveryCalls(page), pending)
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryStatus')())
+        const skipped = [...pending, ['finish', 'token-from-main', 'skipped']]
+        await expect.poll(() => manualRecoveryCalls(page)).toEqual(skipped)
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryFinish')())
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([...skipped, ['manual-open', 'recovery-target', 'recovery-target']])
+      },
+      (page) =>
+        installRecoveryBridge(
+          page,
+          {
+            status: 'eligible',
+            skippedSessionId: null,
+            needsManualAcknowledgement: false,
+            preparedToken: 'token-from-main',
+          },
+          false,
+          true
+        )
+    )
+)
+
+test(
   'a late startup claim can be acknowledged only after its skip and a matching manual open',
   { timeout: 60_000 },
   async () => {
@@ -1407,7 +1446,12 @@ test(
       (page) =>
         installRecoveryBridge(
           page,
-          { status: 'eligible', skippedSessionId: null, needsManualAcknowledgement: false },
+          {
+            status: 'eligible',
+            skippedSessionId: null,
+            needsManualAcknowledgement: false,
+            preparedToken: 'token-from-main',
+          },
           true
         )
     )

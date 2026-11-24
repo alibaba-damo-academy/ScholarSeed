@@ -68,6 +68,7 @@ const probe = {
   panel: () => flushSync(() => store.act.openPanel('context_added')),
   project: (projectId: string) => flushSync(() => store.act.selectProject(projectId)),
   returnHome: () => store.act.returnHome(),
+  skipStartupRecovery: () => store.act.skipStartupTaskRecovery(),
   dismissStartupRecovery: () => store.act.dismissStartupTaskRecovery(),
   openSettings: () => store.act.openSettings('preferences'),
   center: () => flushSync(() => store.act.openProjectCenter()),
