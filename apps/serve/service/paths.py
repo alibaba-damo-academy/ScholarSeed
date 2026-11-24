@@ -146,6 +146,12 @@ TASK_PYTHON_PARTS = (PROJECT_STATE_DIRNAME, "python", "venv")
 TASK_PYTHON_COMMAND_PARTS = (*TASK_PYTHON_PARTS[:-1], "commands")
 SERVICE_SKILL_STATE_FILE: Path = SERVICE_DIR / "skills.json"
 SERVICE_COMPONENTS_DATABASE: Path = SERVICE_DIR / "components.sqlite3"
+
+
+def component_storage_root(database: Path) -> Path:
+    return database.with_suffix(".data")
+
+
 SERVICE_PROJECTS_FILE: Path = SERVICE_DIR / "projects.json"
 SERVICE_CASES_DIR: Path = SCHOLARSEED_HOME / "test_sessions"
 
@@ -259,6 +265,7 @@ def service_deny_read_roots() -> tuple[Path, ...]:
         RESOURCE_SEARCH_PROFILES_DIR,
         SESSION_BODIES_DIR,
         SESSION_BLOCKS_DIR,
+        component_storage_root(SERVICE_COMPONENTS_DATABASE),
     ]
     for database in sorted(databases):
         roots.append(database)
