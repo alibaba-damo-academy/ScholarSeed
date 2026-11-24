@@ -1024,7 +1024,8 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
       // Publishing a second format for this build does not supersede a live native receipt.
       const sameReadyBuild =
         process.platform === MACOS_PLATFORM &&
-        ready?.id === latest.id &&
+        ready !== undefined &&
+        ready.id === latest.id &&
         ready.version === latest.version &&
         ready.build_number === latest.build_number &&
         !samePreviewArtifact(ready, latest) &&
@@ -1570,11 +1571,10 @@ const updatePreparation = new UpdatePreparation(
       }
       return publishMacReady(staged.ready.meta)
     } catch (error) {
-      record(
-        'finish',
-        isCurrent() ? 'failed' : 'interrupted',
-        windows ? { stage: windowsStage, diagnostic: redactDiagnosticError(error) } : undefined
-      )
+      record('finish', isCurrent() ? 'failed' : 'interrupted', {
+        stage: windows ? windowsStage : undefined,
+        diagnostic: redactDiagnosticError(error),
+      })
       if (isCurrent()) {
         if (retainedCandidate) return retainMacReadyAfterFailure(retainedCandidate)
         const retained = preparationPolicy ? retainedUpdateReady() : null

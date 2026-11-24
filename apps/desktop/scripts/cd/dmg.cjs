@@ -66,12 +66,13 @@ function verifyLayout(directory) {
   })
   const filesystem = field('FilesystemType', 'string')
   const writable = field('WritableVolume', 'bool')
-  if (fs.realpathSync(field('MountPoint', 'string')) !== fs.realpathSync(directory) || filesystem !== INSTALL_FILESYSTEM || writable !== 'false')
+  const readOnly = writable === 'false'
+  if (fs.realpathSync(field('MountPoint', 'string')) !== fs.realpathSync(directory) || filesystem !== INSTALL_FILESYSTEM || !readOnly)
     throw new Error(`DMG must mount as a read-only APFS volume: filesystem=${filesystem} writable=${writable}`)
   const link = path.join(directory, path.basename(APPLICATIONS))
   if (!fs.lstatSync(link, {throwIfNoEntry: false})?.isSymbolicLink() || fs.readlinkSync(link) !== APPLICATIONS)
     throw new Error(`DMG Applications must link to ${APPLICATIONS}`)
-  return {filesystem, read_only: true, applications_link: APPLICATIONS}
+  return {filesystem, read_only: readOnly, applications_link: APPLICATIONS}
 }
 
 async function verifyImage(installer, source, frozen, verifyApplication, dependencies = {}) {

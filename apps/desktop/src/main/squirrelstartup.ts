@@ -33,6 +33,7 @@ export const SQUIRREL_INSTALLATION_WINDOW_MS = 10 * 60_000
 const NATIVE_SETTLE_TIMEOUT_MS = 5000
 const NATIVE_SETTLE_INTERVAL_MS = 100
 const PROBE_TIMEOUT_MS = 2000
+const LOCKED_PROCESS_PROBE_TIMEOUT_MS = 250
 const PROBE_MAX_BYTES = 1024 * 1024
 const SHIPIT_NAME = 'ShipIt'
 const SHIPIT_EXECUTABLE = ['Contents', 'Frameworks', 'Squirrel.framework', 'Resources', SHIPIT_NAME]
@@ -500,7 +501,8 @@ async function inspectTerminalSquirrelRequest(
   }
 }
 
-// Only a committed retry runs this second process check synchronously under the handoff lock.
+// The async admission already inspected all processes. Bound the repeat scan under the
+// handoff lock; a slow or unavailable process inventory leaves the previous request intact.
 function restoredHelpersAbsent(application: string, source: string, uid: number): boolean {
   try {
     const candidate = join(source, ...SHIPIT_EXECUTABLE)
@@ -511,7 +513,7 @@ function restoredHelpersAbsent(application: string, source: string, uid: number)
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
     const processes = execFileSync('/bin/ps', ['-ww', '-axo', 'uid=,comm='], {
-      timeout: PROBE_TIMEOUT_MS,
+      timeout: LOCKED_PROCESS_PROBE_TIMEOUT_MS,
       maxBuffer: PROBE_MAX_BYTES,
       encoding: 'utf8',
     })

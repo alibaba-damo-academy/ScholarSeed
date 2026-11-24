@@ -114,6 +114,8 @@ test('installation requires explicit confirmation for the same ready candidate',
 
 test('ready retains its install action while explicit newer download binds the observed identity', async () => {
   const calls: string[] = []
+  const reported: unknown[] = []
+  const callbackError = new Error('Update panel action callback failed')
   const original = globalThis.window
   let current: UpdateSnapshot = {
     phase: 'ready',
@@ -123,6 +125,7 @@ test('ready retains its install action while explicit newer download binds the o
   }
   Object.assign(globalThis, {
     window: {
+      reportError: (error: unknown) => reported.push(error),
       scholarseed: {
         getUpdateState: async () => current,
         startUpdate: async (id: string) => {
@@ -134,7 +137,11 @@ test('ready retains its install action while explicit newer download binds the o
   })
   try {
     assert.equal(updateActionOf(current), 'install')
-    await runLatestUpdateAction(current)
+    await runLatestUpdateAction(current, () => {
+      throw callbackError
+    })
+    assert.deepEqual(reported, [callbackError])
+    assert.deepEqual(calls, ['newest'])
     await runLatestUpdateAction(current)
     assert.deepEqual(calls, ['newest'])
     const previous = current

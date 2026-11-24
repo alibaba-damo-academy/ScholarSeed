@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { spawn, execFileSync } from 'node:child_process'
+import childProcess, { spawn, execFileSync } from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, chmod, copyFile, symlink, writeFile, rm, rename } from 'node:fs/promises'
 import { constants as osConstants, tmpdir } from 'node:os'
@@ -947,6 +948,20 @@ test(
     assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'failed')
     assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
     const proof = await inspect()
+    assert.equal(proof?.(), true)
+    const slowInventory = t.mock.method(childProcess, 'execFileSync', () => {
+      throw Object.assign(new Error('process probe timed out'), { code: 'ETIMEDOUT' })
+    })
+    syncBuiltinESMExports()
+    try {
+      assert.equal(proof?.(), false)
+      const [command, , options] = slowInventory.mock.calls[0].arguments
+      assert.equal(command, '/bin/ps')
+      assert.equal(options?.timeout, 250)
+    } finally {
+      slowInventory.mock.restore()
+      syncBuiltinESMExports()
+    }
     assert.equal(proof?.(), true)
     assert.equal(await inspect({ ...current, sourcePid: process.pid }), null)
     assert.equal(await inspect({ ...current, state: 'downloaded' }), null)

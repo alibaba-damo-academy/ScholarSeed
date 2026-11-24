@@ -82,6 +82,45 @@ test('successor rejects feed headers and releases a failed native disposal only 
   assert.throws(() => updater.quitAndInstall(), /unavailable/)
 })
 
+test('successor consumes only a successful install and keeps its handle for disposal', () => {
+  const installations: number[] = []
+  const disposed: number[] = []
+  let complete!: (error: string | null) => void
+  const port = new SuccessorUpdater(
+    {
+      prepareSuccessor(_url, _alternate, callback) {
+        complete = callback
+        return 19
+      },
+      installSuccessor(handle) {
+        installations.push(handle)
+        if (installations.length === 1) throw new Error('grant refused')
+        assert.throws(() => port.quitAndInstall(), /Successor installation unavailable/)
+      },
+      disposeSuccessor(handle) {
+        disposed.push(handle)
+      },
+    },
+    false
+  )
+  let downloaded = 0
+  port.on('update-downloaded', () => downloaded++)
+  port.setFeedURL({ url: 'local' })
+  port.checkForUpdates()
+  complete(null)
+  assert.equal(downloaded, 1)
+  assert.throws(() => port.quitAndInstall(), /grant refused/)
+  port.quitAndInstall()
+  assert.throws(() => port.quitAndInstall(), /Successor installation unavailable/)
+  assert.throws(() => port.checkForUpdates(), /Successor preparation unavailable/)
+  complete(null)
+  assert.equal(downloaded, 1)
+  port.dispose()
+  port.dispose()
+  assert.deepEqual(installations, [19, 19])
+  assert.deepEqual(disposed, [19])
+})
+
 test('a successor only replaces the selected slot after its native receipt and an uncontested commit', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'update-successor-retirement-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -105,6 +144,8 @@ test('a successor only replaces the selected slot after its native receipt and a
     'active-references-D',
     'different-publisher',
     'changed-ZIP',
+    'missing-archive-before-cleanup',
+    'missing-archive-during-cleanup',
     'release-failed',
     'invalid-sidecar',
   ] as const) {
@@ -189,6 +230,7 @@ test('a successor only replaces the selected slot after its native receipt and a
         if (outcome === 'invalid-sidecar') writeFileSync(sidecar, '{')
         if (outcome === 'active-references-D') writeJson(readyPath(alternate), next)
         if (outcome === 'changed-ZIP') writeFileSync(next.archive.path, 'another ZIP')
+        if (outcome === 'missing-archive-before-cleanup') rmSync(next.archive.path)
         if (
           [
             'native-failed',
@@ -196,6 +238,8 @@ test('a successor only replaces the selected slot after its native receipt and a
             'active-references-D',
             'different-publisher',
             'changed-ZIP',
+            'missing-archive-before-cleanup',
+            'missing-archive-during-cleanup',
             'release-failed',
             'invalid-sidecar',
           ].includes(outcome)
@@ -278,7 +322,10 @@ test('a successor only replaces the selected slot after its native receipt and a
       stagedInstallerPath: installer,
       preparedApplicationDirectory: workspace,
       readyStatePath: readyPath,
-      removeStaleInstaller: (path: string) => rmSync(path),
+      removeStaleInstaller: (path: string) => {
+        if (outcome === 'missing-archive-during-cleanup') rmSync(next.archive.path)
+        rmSync(path)
+      },
       rmSync,
       rmdirSync,
       existsSync,
@@ -306,7 +353,7 @@ test('a successor only replaces the selected slot after its native receipt and a
     runInNewContext(
       updaterFunctions([
         'prepareMacSuccessor',
-        'successorFileIdentity',
+        'captureSuccessorFiles',
         'macZipSourceVerifier',
         'discardUnselectedSuccessor',
       ]),

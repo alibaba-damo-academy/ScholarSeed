@@ -229,6 +229,7 @@ for (const outcome of ['ready', 'manual-ready', 'missing-receipt', 'candidate-re
 for (const outcome of [
   'promoted',
   'failed',
+  'exception',
   'receipt-lost',
   'archive-limit',
   'restart-active',
@@ -240,6 +241,7 @@ for (const outcome of [
     let receiptLost = false
     let snapshot: UpdateSnapshot = { phase: 'ready', currentVersion: '0.2.0', candidate: first }
     const publications: string[] = []
+    const events: { event: string; result?: string; diagnostic?: { message: string } }[] = []
     let began!: () => void, finish!: () => void
     const started = new Promise<void>((resolve) => {
       began = resolve
@@ -253,6 +255,7 @@ for (const outcome of [
       MACOS_PLATFORM: 'darwin',
       WINDOWS_PLATFORM: 'win32',
       process: { platform: 'darwin' },
+      redactDiagnosticError,
       app: { getVersion: () => snapshot.currentVersion },
       pushLog: () => {},
       currentUpdateSnapshot: () => snapshot,
@@ -270,7 +273,7 @@ for (const outcome of [
       macMaintenanceUncertain: false,
       previewPolicyChanging: false,
       updater: {
-        logUpdateEvent: () => {},
+        logUpdateEvent: (_log: unknown, event: (typeof events)[number]) => events.push(event),
         resolveDesktopConfig: () => ({ buildNumber: '202610120900' }),
         validatePreviewCandidate: async () => {},
         macPreparationReady: (candidate: LatestVersionMeta) =>
@@ -288,6 +291,8 @@ for (const outcome of [
           progress({ phase: 'downloading' })
           began()
           await waiting
+          if (outcome === 'exception')
+            throw new Error('Transfer failed for https://updates.test/private')
           if (outcome === 'receipt-lost') {
             receiptLost = true
             throw new Error('Active native receipt lost')
@@ -325,6 +330,11 @@ for (const outcome of [
     }
     finish()
     await queue.settled()
+    if (outcome === 'exception') {
+      const failure = events.find((event) => event.event === 'finish' && event.result === 'failed')
+      assert.equal(failure?.diagnostic?.message, 'Transfer failed for <URL>')
+      assert.doesNotMatch(JSON.stringify(failure), /updates\.test\/private/)
+    }
     if (receiptLost) {
       assert.equal(snapshot.phase, 'failed')
       assert.equal(snapshot.errorFallback, 'activation_recovery_required')

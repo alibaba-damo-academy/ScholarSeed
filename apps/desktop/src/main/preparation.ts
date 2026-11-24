@@ -603,15 +603,15 @@ export class UpdatePreparation {
       // cancel that generation and pin the exact candidate synchronously.
       if (this.committed || this.stopped || !this.desired) return false
       const generation = this.generation + 1
-      const admission = {
-        ...this.admission,
-        inFlight: null,
-        pending:
-          this.admission.pending ??
-          (this.desired.id !== candidate.id
-            ? { candidate: this.desired, since: this.admission.inFlight?.startedAt ?? this.now() }
-            : null),
+      let pending = this.admission.pending
+      // Keep the cancelled successor pending unless a newer release is already waiting.
+      if (!pending && this.desired.id !== candidate.id) {
+        pending = {
+          candidate: this.desired,
+          since: this.admission.inFlight?.startedAt ?? this.now(),
+        }
       }
+      const admission = { ...this.admission, inFlight: null, pending }
       if (!this.checkpoint(candidate, generation, candidate.id, admission)) return false
       this.generation = generation
       this.desired = candidate

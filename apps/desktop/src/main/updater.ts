@@ -1787,17 +1787,17 @@ export async function prepareMacSuccessor(
     const { ready, prepared } = staged
     const workspace = prepared?.workspace
     if (workspace && ready.archive) {
-      const archivePath = ready.archive.path
-      const snapshot = () => successorFileIdentity(ready.path, workspace, archivePath)
-      const initial = snapshot()
+      const remainingFiles = captureSuccessorFiles(ready.path, workspace, ready.archive.path)
       discardStaged = () => {
         mutateMacRecord(canonical)(() => {
-          if (snapshot() === initial)
+          const present = remainingFiles()
+          if (present)
             discardUnselectedSuccessor(
               canonical,
               previous,
               ready,
               workspace,
+              present,
               readyWriteAttempted,
               log
             )
@@ -1909,18 +1909,29 @@ export async function prepareMacSuccessor(
   }
 }
 
-function successorFileIdentity(installer: string, workspace: string, archive: string): string {
-  return [...new Set([installer, workspace, archive])]
-    .map((path) => {
-      const stat = lstatSync(path, { bigint: true })
-      const directory = path === workspace
-      if (directory ? !stat.isDirectory() : !stat.isFile())
-        throw new Error('Unexpected successor artifact type')
-      // Creating the handoff sidecar changes the directory timestamps. The two
-      // staged files must also retain the exact content revision we observed.
-      return `${stat.dev}:${stat.ino}:${directory ? stat.birthtimeNs : stat.ctimeNs}`
-    })
-    .join('/')
+function captureSuccessorFiles(installer: string, workspace: string, archive: string) {
+  const identity = (path: string, allowMissing: boolean) => {
+    const directory = path === workspace
+    const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false })
+    if (!stat && allowMissing && !directory) return undefined
+    if (!stat || (directory ? !stat.isDirectory() : !stat.isFile()))
+      throw new Error('Unexpected successor artifact type')
+    // Creating the handoff sidecar changes directory timestamps.
+    return `${stat.dev}:${stat.ino}:${directory ? stat.birthtimeNs : stat.ctimeNs}`
+  }
+  const captured = new Map(
+    [...new Set([workspace, installer, archive])].map((path) => [path, identity(path, false)])
+  )
+  return () => {
+    const present = new Set<string>()
+    for (const [path, expected] of captured) {
+      const current = identity(path, true)
+      if (current === undefined) continue
+      if (current !== expected) return undefined
+      present.add(path)
+    }
+    return present
+  }
 }
 
 function discardUnselectedSuccessor(
@@ -1928,6 +1939,7 @@ function discardUnselectedSuccessor(
   previous: SquirrelHandoff,
   ready: ReadyState,
   workspace: string,
+  present: ReadonlySet<string>,
   readyWriteAttempted: boolean,
   log: LogSink
 ): void {
@@ -1977,8 +1989,9 @@ function discardUnselectedSuccessor(
       if (!standby || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
   }
-  removeStaleInstaller(ready.path, log)
-  if (ready.archive.path !== ready.path) rmSync(ready.archive.path)
+  if (present.has(ready.path)) removeStaleInstaller(ready.path, log)
+  if (ready.archive.path !== ready.path && present.has(ready.archive.path))
+    rmSync(ready.archive.path, { force: true })
   // Native preparation uses a separate record lock in this workspace. Its
   // control files follow normal cache retirement; only remove an empty root.
   if (!owner) rmdirSync(workspace)

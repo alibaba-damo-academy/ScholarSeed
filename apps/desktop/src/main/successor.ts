@@ -11,8 +11,11 @@ export interface SuccessorBridge {
   disposeSuccessor(handle: number): void
 }
 
-/** A separate native updater keeps its own downloaded request and event subscription. */
-export class SuccessorUpdater extends EventEmitter implements SquirrelUpdater {
+/** The native successor reports an empty check as an error. Only a ready download succeeds. */
+export class SuccessorUpdater
+  extends EventEmitter<{ error: [Error]; 'update-downloaded': [] }>
+  implements SquirrelUpdater
+{
   private url?: string
   private handle?: number
   private detached = false
@@ -43,7 +46,14 @@ export class SuccessorUpdater extends EventEmitter implements SquirrelUpdater {
   quitAndInstall(): void {
     if (this.detached || this.handle === undefined)
       throw new Error('Successor installation unavailable')
-    this.bridge.installSuccessor(this.handle)
+    // AppKit can synchronously notify quit listeners. Keep the handle for disposal.
+    this.detached = true
+    try {
+      this.bridge.installSuccessor(this.handle)
+    } catch (error) {
+      if (this.handle !== undefined) this.detached = false
+      throw error
+    }
   }
 
   dispose(): void {

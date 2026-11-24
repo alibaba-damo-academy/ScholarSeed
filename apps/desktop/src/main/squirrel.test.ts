@@ -371,6 +371,8 @@ test('successor publication preserves the downloaded update until a guarded exac
     assert.equal(request.binding?.candidate, candidate.candidate)
   })
   assert.equal(next.checks, 1)
+  assert.equal(successor.ready, false)
+  assert.equal(successor.matches(archive, candidate), true)
   const second = readSquirrelHandoff(sidecar)!
   const mutate = (fn: (write: (value: SquirrelHandoff) => void) => void) =>
     fn((value) => writeJson(record, value))
@@ -392,6 +394,7 @@ test('successor publication preserves the downloaded update until a guarded exac
   )
   assert.deepEqual(readSquirrelHandoff(record), first)
   successor.promoteTo(record, mutate, first, () => {})
+  assert.equal(successor.ready, true)
   previous.detach()
   assert.equal(source.listenerCount('error'), 0)
   assert.deepEqual(readSquirrelHandoff(record), second)
@@ -406,6 +409,8 @@ for (const fault of [
   'before-write',
   'before-rename',
   'after-rename',
+  'interrupted-read',
+  'unreadable',
   'release',
   'replaced',
   'reformatted',
@@ -459,6 +464,9 @@ for (const fault of [
       throw error
     }
     let reads = 0
+    const readError = Object.assign(new Error('readback unavailable'), {
+      code: fault === 'interrupted-read' ? 'EINTR' : 'EACCES',
+    })
     const promote = () =>
       successor.promoteTo(
         record,
@@ -467,14 +475,27 @@ for (const fault of [
         () => {},
         () => {
           reads++
+          if ((fault === 'interrupted-read' && reads === 1) || fault === 'unreadable')
+            throw readError
           return readFileSync(record)
         }
       )
-    if (fault === 'after-rename' || fault === 'release') {
+    if (fault === 'after-rename' || fault === 'release' || fault === 'interrupted-read') {
       promote()
       assert.ok(events.includes('handoff-promotion-observed-after-writer-error'))
       assert.throws(() => successor.quitAndInstall(), /process exit/)
       assert.deepEqual(readSquirrelHandoff(record), published)
+      assert.deepEqual(readFileSync(record), verifiedBytes)
+    } else if (fault === 'unreadable') {
+      assert.throws(
+        promote,
+        (actual) =>
+          actual instanceof AggregateError && isDeepStrictEqual(actual.errors, [error, readError])
+      )
+      assert.ok(events.includes('handoff-promotion-requires-startup-reconciliation'))
+      assert.equal(successor.ready, false)
+      assert.equal(original.matches(archive, identity), false)
+      assert.throws(() => successor.quitAndInstall(), /not ready/)
       assert.deepEqual(readFileSync(record), verifiedBytes)
     } else {
       assert.throws(promote, (actual) => actual === error)
@@ -482,7 +503,8 @@ for (const fault of [
       if (fault === 'before-write' || fault === 'before-rename')
         assert.deepEqual(readSquirrelHandoff(record), prior)
     }
-    assert.equal(reads, fault === 'before-write' || fault === 'unknown' ? 0 : 1)
+    const expectedReads = fault === 'interrupted-read' ? 2 : 1
+    assert.equal(reads, fault === 'before-write' || fault === 'unknown' ? 0 : expectedReads)
     assert.equal(next.quits, 0)
     assert.equal(primary.quits, 0)
     assert.deepEqual(readSquirrelHandoff(sidecar), published)

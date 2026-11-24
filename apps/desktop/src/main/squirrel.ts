@@ -17,6 +17,7 @@ const LOOPBACK = '127.0.0.1'
 const HANDOFF_TIMEOUT_MS = 10 * 60_000
 const INTERACTION_HEADER = 'X-ScholarSeed-Update-Interaction'
 const RECORD_MAX_BYTES = 4096
+const TRANSIENT_READ_ERRORS = new Set(['EINTR', 'EAGAIN', 'EBUSY'])
 export const UPDATE_STATE_DIRECTORY = 'updates'
 const HANDOFF_FILE = 'squirrel.json'
 
@@ -358,6 +359,16 @@ export function squirrelRecordWriter(replace: (bytes: Buffer) => void): Squirrel
   }
 }
 
+function readPublishedHandoff(read: () => Buffer): Buffer {
+  try {
+    return read()
+  } catch (error) {
+    if (!TRANSIENT_READ_ERRORS.has((error as NodeJS.ErrnoException | null)?.code ?? '')) throw error
+    // Repeat only the qualified observation. The publication itself is never replayed.
+    return read()
+  }
+}
+
 export class SquirrelSourceVerificationRetry extends Error {}
 
 export type SquirrelSourceVerifier = (
@@ -429,12 +440,15 @@ export class SquirrelInstallation {
   get committed(): boolean {
     return this.handedOff
   }
-  get ready(): boolean {
+  private get nativeReady(): boolean {
     return this.downloaded && !this.nativeFailed && !this.detached
+  }
+  get ready(): boolean {
+    return this.nativeReady && !this.requiresPromotion
   }
 
   preparedCandidate(): SquirrelNativeCapture | undefined {
-    if (!this.ready) return undefined
+    if (!this.nativeReady) return undefined
     const request = readSquirrelHandoff(this.recordPath)?.nativeRequest
     return request && sameSquirrelBinding(request.binding, this.binding)
       ? request.prepared
@@ -445,7 +459,7 @@ export class SquirrelInstallation {
     archive: SquirrelArchive,
     identity: Pick<SquirrelHandoff, 'candidate' | 'version' | 'buildNumber'>
   ): boolean {
-    if (!this.ready || !this.binding) return false
+    if (!this.nativeReady || !this.binding) return false
     const handoff = readSquirrelHandoff(this.recordPath)
     return (
       !!handoff &&
@@ -696,7 +710,7 @@ export class SquirrelInstallation {
     } finally {
       await feed.close()
     }
-    if (!this.ready) throw new Error('Squirrel installation outcome unknown')
+    if (!this.nativeReady) throw new Error('Squirrel installation outcome unknown')
   }
   dispose(): void {
     if (this.handedOff) throw new Error('Cannot dispose a consumed Squirrel handoff')
@@ -714,7 +728,7 @@ export class SquirrelInstallation {
     guard: () => void,
     readPublished?: () => Buffer
   ): void {
-    if (!this.requiresPromotion || this.recordPath === recordPath || !this.ready)
+    if (!this.requiresPromotion || this.recordPath === recordPath || !this.nativeReady)
       throw new Error('Squirrel successor is not ready for promotion')
     let attempted: Buffer | undefined
     let written = false
@@ -753,8 +767,9 @@ export class SquirrelInstallation {
       // Keep the selected handle only after a qualified read of its exact bytes.
       let current: Buffer
       try {
-        current = readPublished()
+        current = readPublishedHandoff(readPublished)
       } catch (readError) {
+        this.diagnostic('handoff-promotion-requires-startup-reconciliation', code)
         throw new AggregateError([error, readError], 'Squirrel promotion could not be confirmed')
       }
       if (!current.equals(attempted)) throw error
@@ -767,7 +782,7 @@ export class SquirrelInstallation {
     this.requiresPromotion = false
   }
   quitAndInstall(): void {
-    if (!this.ready || this.requiresPromotion) throw new Error('Squirrel installation is not ready')
+    if (!this.ready) throw new Error('Squirrel installation is not ready')
     try {
       this.mutateRecord((write) => {
         const handoff = readSquirrelHandoff(this.recordPath)

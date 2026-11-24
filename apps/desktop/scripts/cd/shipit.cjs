@@ -175,10 +175,15 @@ function verifyBinding(directory, frameworks, headers, source) {
   if (result.error || result.status !== 0) throw new Error(`ShipIt binding contract failed: ${describeResult(result)}`)
 }
 
+function compileContractTest(directory, compiler, sources, squirrel, frameworks, name, extraFlags = []) {
+  const executable = path.join(directory, `${name}-test`)
+  command('/usr/bin/xcrun', [...compiler, ...extraFlags, '-UNDEBUG', `-I${path.join(squirrel, 'Squirrel')}`,
+    `-Wl,-rpath,${frameworks}`, '-o', executable, ...sources, path.join(OWNER, `${name}.test.m`)], directory)
+  return executable
+}
+
 function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
-  const executable = path.join(directory, 'relaunch-test')
-  command('/usr/bin/xcrun', [...compiler, '-UNDEBUG', `-I${path.join(squirrel, 'Squirrel')}`,
-    `-Wl,-rpath,${frameworks}`, '-o', executable, ...sources, path.join(OWNER, 'relaunch.test.m')], directory)
+  const executable = compileContractTest(directory, compiler, sources, squirrel, frameworks, 'relaunch')
   const fixtures = path.join(directory, 'relaunch-fixture')
   const run = (mode, root) => {
     const result = spawnSync(executable, [mode, root], {
@@ -201,11 +206,9 @@ function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
 }
 
 async function verifySealedInstallation(directory, compiler, sources, squirrel, frameworks, workspace) {
-  const executable = path.join(directory, 'sealed-test')
   const preferences = ['CopyValue', 'SetValue', 'Synchronize', 'GetAppIntegerValue']
     .map(name => `-DCFPreferences${name}=SSFixture${name}`)
-  command('/usr/bin/xcrun', [...compiler, ...preferences, '-UNDEBUG', `-I${path.join(squirrel, 'Squirrel')}`,
-    `-Wl,-rpath,${frameworks}`, '-o', executable, ...sources, path.join(OWNER, 'sealed.test.m')], directory)
+  const executable = compileContractTest(directory, compiler, sources, squirrel, frameworks, 'sealed', preferences)
   const template = path.join(directory, 'sealed-template', 'Fixture.app')
   const contents = path.join(template, 'Contents')
   for (const child of ['MacOS', 'Resources', 'Frameworks']) fs.mkdirSync(path.join(contents, child), { recursive: true })

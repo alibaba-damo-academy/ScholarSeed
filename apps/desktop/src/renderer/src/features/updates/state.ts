@@ -228,9 +228,13 @@ export async function runLatestUpdateAction(
   }
   latestAttempt = attempt
   emit()
-  let result: 'prepared' | UpdateFailure | undefined
   try {
     onAction?.()
+  } catch (error) {
+    window.reportError(error)
+  }
+  let result: 'prepared' | UpdateFailure | undefined
+  try {
     const current = await window.scholarseed.getUpdateState()
     if (
       latestAttempt === attempt &&
