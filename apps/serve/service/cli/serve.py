@@ -43,6 +43,7 @@ from service.bootstrap import (  # noqa: E402
     PRODUCT_ALL,
     PRODUCT_CHOICES,
     create_app,
+    maintain_component_storage_offline,
     maintain_session_storage_offline,
 )
 
@@ -89,6 +90,11 @@ from service.platform.toolchain import ToolchainReadiness  # noqa: E402
 from service.platform.vocabulary import INTERNAL_BASE_URL_ENV  # noqa: E402
 
 startup_checkpoint("serve.imports_ready")
+
+STORAGE_MAINTENANCE_COMMANDS = {
+    "maintain-session-storage": ("Session", maintain_session_storage_offline),
+    "maintain-component-storage": ("Component", maintain_component_storage_offline),
+}
 
 
 def _find_skill_python_launcher() -> Path | None:
@@ -229,28 +235,30 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     if argv and argv[0] == "client":
         return _client_main(argv[1:])
-    if argv and argv[0] == "maintain-session-storage":
+    if argv and argv[0] in STORAGE_MAINTENANCE_COMMANDS:
+        command = argv[0]
+        domain, maintain = STORAGE_MAINTENANCE_COMMANDS[command]
         parser = argparse.ArgumentParser(
-            prog="scholarseed-serve maintain-session-storage",
-            description="Maintain local session storage after all users of the data directory exit.",
+            prog=f"scholarseed-serve {command}",
+            description=f"Maintain local {domain.lower()} storage after all users of the data directory exit.",
         )
         parser.parse_args(argv[1:])
         logging.basicConfig(level=logging.INFO)
         try:
-            pending = maintain_session_storage_offline()
+            pending = maintain()
         except Exception as error:
-            print(f"Session storage maintenance failed: {error}", file=sys.stderr)
+            print(f"{domain} storage maintenance failed: {error}", file=sys.stderr)
             return 1
         if pending is None:
             print(
-                "Session storage probe was busy or exceeded its budget. Retry later.",
+                f"{domain} storage probe was busy or exceeded its budget. Retry later.",
                 file=sys.stderr,
             )
             return 1
         print(
-            "Session storage maintenance pending; run again."
+            f"{domain} storage maintenance pending; run again."
             if pending
-            else "Session storage maintenance complete."
+            else f"{domain} storage maintenance complete."
         )
         return 0
 
