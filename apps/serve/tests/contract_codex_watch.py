@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -928,6 +929,7 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(self.state.watched_paths, expected)
 
+    @unittest.skipUnless(shutil.which("git"), "Requires the Git executable")
     async def test_git_turn_observes_dirty_paths_and_only_the_bound_ignored_output(self):
         workspace = self.workspace.resolve()
 
@@ -988,7 +990,9 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
             (sibling / "other.txt").write_text("ignore")
             await self.host._watcher.finish_turn(self.state)
         self.assertEqual(
-            [call.kwargs["directory"] for call in scan.call_args_list], [output, output]
+            [call.kwargs.get("directory") for call in scan.call_args_list],
+            [output, output],
+            "Expected Git status to limit both scans to the bound output directory",
         )
         self.assertEqual(
             self.state.watched_paths,

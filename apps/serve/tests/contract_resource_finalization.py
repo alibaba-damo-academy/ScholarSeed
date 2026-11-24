@@ -345,10 +345,10 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         forbidden = {resources.resolve(), nested.resolve()}
         scandir = os.scandir
 
-        def scan(path):
-            if isinstance(path, (str, os.PathLike)):
-                self.assertNotIn(Path(path).resolve(), forbidden)
-            return scandir(path)
+        def scan(directory):
+            if isinstance(directory, (str, os.PathLike)):
+                self.assertNotIn(Path(directory).resolve(), forbidden)
+            return scandir(directory)
 
         with patch("os.scandir", side_effect=scan):
             await self.deliveries.begin_turn("session", "turn", self.project.root)
@@ -362,7 +362,29 @@ class FinalizationContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.paths, (path,))
         plain, repositories = self.content.scan_resource_inventory(self.project.id)
         self.assertIn("resources/notes.md", {entry.path for entry in plain})
-        self.assertIsNotNone(repositories[f"{grant.mount_path}/repo/git.md"])
+        git_path = f"{grant.mount_path}/repo/git.md"
+        self.assertIn(git_path, repositories)
+        self.assertIsNotNone(repositories[git_path])
+
+    def test_inventory_prunes_alias_into_a_git_repository(self) -> None:
+        resources = self.target.parent
+        repository = resources / "repository"
+        docs = repository / "docs"
+        docs.mkdir(parents=True)
+        (repository / ".git").mkdir()
+        (docs / "git.md").touch()
+        try:
+            (resources / "alias").symlink_to(docs, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows symlink creation requires permission")
+            raise
+
+        entries, repositories = self.content.scan_resource_inventory(
+            self.project.id, exclude_git=True
+        )
+        self.assertEqual([entry.path for entry in entries], ["resources/notes.md"])
+        self.assertEqual(repositories, {"resources/notes.md": None})
 
     def test_adopted_git_root_qualifies_missing_baselines_without_walking(self) -> None:
         root = Path(self.temporary.name) / "worktree"

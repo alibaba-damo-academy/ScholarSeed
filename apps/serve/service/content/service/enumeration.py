@@ -10,7 +10,7 @@ from typing import Callable
 from service.content.domain.model import IGNORED_NAMES, ContentError, resolve_root
 from service.content.service.space import ProjectSpace, normalize
 from service.platform.content import ResourceEntry, ResourcePage, ResourceScanObserver, RootKind
-from service.platform.storage import WINDOWS_PLATFORM
+from service.platform.storage import FILE_ATTRIBUTE_REPARSE_POINT, WINDOWS_PLATFORM
 
 GITIGNORE_FILENAME = ".gitignore"
 BIRTH_TIME_ATTRIBUTE = "st_birthtime"
@@ -106,11 +106,20 @@ def scan_files(
     found: dict[str, ResourceEntry] = {}
     visited: set[tuple[int, int]] = set()
 
-    def descend(directory: Path) -> bool:
+    def descend(directory: Path, child_name: str | None = None) -> bool:
         if include_directory is None:
             return True
         try:
-            resolved = directory.resolve()
+            if child_name is None:
+                resolved = directory.resolve()
+            else:
+                # The parent was resolved on this walk step. Only links need a new realpath.
+                resolved = directory / child_name
+                info = resolved.lstat()
+                if not stat.S_ISDIR(info.st_mode) or (
+                    getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT
+                ):
+                    resolved = resolved.resolve()
             logical = space.relative_resolved(resolved)
         except (ContentError, OSError):
             return False
@@ -161,7 +170,7 @@ def scan_files(
                 continue
             visited.add(directory_key)
             directories[:] = sorted(
-                name for name in directories if _scan_name(name) and descend(current_path / name)
+                name for name in directories if _scan_name(name) and descend(resolved_current, name)
             )
             for name in sorted(name for name in filenames if _scan_name(name)):
                 if check is not None:
