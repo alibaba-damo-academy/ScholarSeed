@@ -43,6 +43,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
     latestId: string
     failure?: UpdateFailure
   } | null>(null)
+  const preparingLatest = useRef<typeof latestAttempt>(null)
   const responding = useRef(false)
   const requestedKey = updateCandidateKey(requested?.candidate)
   const followNativePromotion = window.scholarseed.platform === 'darwin'
@@ -56,8 +57,11 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
       : undefined
 
   const prepareLatest = async (): Promise<void> => {
-    if (!state?.candidate || !state.latestCandidate) return
+    if (responding.current || !state?.candidate || !state.latestCandidate) return
     const attempt = { readyId: state.candidate.id, latestId: state.latestCandidate.id }
+    const active = preparingLatest.current
+    if (active?.readyId === attempt.readyId && active.latestId === attempt.latestId) return
+    preparingLatest.current = attempt
     setLatestAttempt(attempt)
     let failure: UpdateFailure | undefined
     try {
@@ -67,9 +71,9 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
       failure = { origin: 'preparation', rolledBack: false }
     }
     // A restart or a newer request may have taken ownership during preparation.
-    setLatestAttempt((active) =>
-      active !== attempt ? active : failure ? { ...attempt, failure } : null
-    )
+    if (preparingLatest.current !== attempt) return
+    preparingLatest.current = null
+    setLatestAttempt(failure ? { ...attempt, failure } : null)
   }
 
   const execute = async (confirmedKey?: string): Promise<void> => {
@@ -79,7 +83,10 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
     setFailed(false)
     try {
       onAction?.()
-      if (confirmedKey) setLatestAttempt(null)
+      if (confirmedKey) {
+        preparingLatest.current = null
+        setLatestAttempt(null)
+      }
       if (
         (await runUpdateAction(
           confirmedKey ? requested : state,
@@ -124,7 +131,9 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
           className="max-w-full whitespace-normal"
           disabled={
             pending ||
-            (latestAttempt?.latestId === state.latestCandidate.id && !latestAttempt.failure)
+            (latestAttempt?.readyId === state.candidate?.id &&
+              latestAttempt?.latestId === state.latestCandidate.id &&
+              !latestAttempt.failure)
           }
           data-testid="update-download-latest"
           onClick={() => void prepareLatest()}

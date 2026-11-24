@@ -965,6 +965,16 @@ function retainedUpdateReady(): ReturnType<typeof updater.readReadyState> {
     : null
 }
 
+function installationBlocksUpdateCheck(): boolean {
+  return (
+    Boolean(updateInstallAbort) ||
+    updateInstallationInProgress ||
+    updateRestartRequested ||
+    macMaintenanceUncertain ||
+    (updater.macHandoffCommitted() && !updater.canPrepareMacSuccessor())
+  )
+}
+
 function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
   if (
     previewPolicyChanging ||
@@ -978,11 +988,7 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
   }
   const snapshot = currentUpdateSnapshot()
   if (
-    updateInstallAbort ||
-    updateInstallationInProgress ||
-    updateRestartRequested ||
-    macMaintenanceUncertain ||
-    (updater.macHandoffCommitted() && !updater.canPrepareMacSuccessor()) ||
+    installationBlocksUpdateCheck() ||
     snapshot.phase === 'manual' ||
     snapshot.errorFallback === 'activation_recovery_required'
   )
@@ -1419,6 +1425,7 @@ const updatePreparation = new UpdatePreparation(
         }
         const replacement = await updater.prepareMacSuccessor(
           candidate,
+          // Keep the current ready release installable until its successor has native readiness.
           () => {},
           pushLog,
           signal,
@@ -3698,14 +3705,13 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
               const retained = preparationPolicy ? retainedUpdateReady() : null
               if (retained) {
                 updatePreparation.adopt(retained.meta)
+                const current = currentUpdateSnapshot()
                 publishUpdateSnapshot({
                   phase: 'ready',
                   currentVersion: app.getVersion(),
                   candidate: retained.meta,
                   readyOrigin:
-                    currentUpdateSnapshot().candidate?.id === retained.meta.id
-                      ? currentUpdateSnapshot().readyOrigin
-                      : undefined,
+                    current.candidate?.id === retained.meta.id ? current.readyOrigin : undefined,
                 })
               }
               if (currentUpdateSnapshot().candidate && currentUpdateSnapshot().phase !== 'ready')
@@ -5412,13 +5418,7 @@ function armBackgroundUpdateCheck(): void {
       nextPeriodicUpdateCheckAt,
       Date.now() + ACTIVE_UPDATE_CHECK_INTERVAL_MS
     )
-  const blocked =
-    updateInstallAbort ||
-    updateInstallationInProgress ||
-    updateRestartRequested ||
-    macMaintenanceUncertain ||
-    (updater.macHandoffCommitted() && !updater.canPrepareMacSuccessor())
-  if (blocked) return
+  if (installationBlocksUpdateCheck()) return
   const decision = preparationPolicy
     ? updatePreparation.decision(loadRendererPreferences().autoDownloadUpdates)
     : undefined

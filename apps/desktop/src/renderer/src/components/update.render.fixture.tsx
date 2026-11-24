@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 import { createLocalization } from '../../../localization/engine'
 import { resources } from '../../../localization/resources'
-import { updateCandidateKey, type UpdateSnapshot } from '../../../updates'
+import { updateCandidateKey, type StartUpdateResult, type UpdateSnapshot } from '../../../updates'
 import { UpdateEntry } from './business/UpdateEntry'
 import { UpdateOverlay } from './business/UpdateOverlay'
 import { AccountPanel } from './business/AccountPanel'
@@ -60,9 +60,10 @@ Object.assign(window, {
       return { ok: true }
     },
     refreshUpdate: async () => snapshot,
-    startUpdate: async (candidateId: string) => {
+    startUpdate: async (candidateId: string): Promise<StartUpdateResult> => {
       recordAction(`download:${candidateId}`)
       publish({ ...snapshot, phase: 'downloading', percent: 40, errorFallback: undefined })
+      return { ok: true }
     },
     installUpdate: async () => {
       recordAction('install')

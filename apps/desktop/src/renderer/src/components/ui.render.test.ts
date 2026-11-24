@@ -1232,11 +1232,12 @@ test('update popover restart confirmation survives real pointer clicks on portal
 
 test('a ready update remains clickable during successor preparation and rejected actions show feedback', async () => {
   await withFixture(async (page) => {
-    let finishPreparation!: (value: { ok: boolean }) => void
-    const prepared = new Promise<{ ok: boolean }>((resolve) => {
-      finishPreparation = resolve
+    const requests: string[] = []
+    const finish = new Map<string, (value: { ok: boolean }) => void>()
+    await page.exposeFunction('prepareSuccessor', (id: string) => {
+      requests.push(id)
+      return new Promise<{ ok: boolean }>((resolve) => finish.set(id, resolve))
     })
-    await page.exposeFunction('prepareSuccessor', () => prepared)
     await page.evaluate(async () => {
       const { candidate } = await window.scholarseed.getUpdateState()
       Object.assign(window.scholarseed, {
@@ -1252,11 +1253,27 @@ test('a ready update remains clickable during successor preparation and rejected
     await page.getByTestId('activity-update').click()
     const latest = page.getByTestId('update-download-latest')
     const restart = page.getByTestId('update-panel-action')
-    await latest.click()
+    await latest.evaluate((button: HTMLButtonElement) => {
+      button.click()
+      button.click()
+    })
     await expect(latest).toBeDisabled()
     await expect(restart).toBeEnabled()
-    finishPreparation({ ok: false })
-    await expect(page.getByRole('alert').filter({ hasText: '无法准备更新' })).toBeVisible()
+    await expect.poll(() => requests).toEqual(['next'])
+    await page.evaluate(async () => {
+      const { latestCandidate } = await window.scholarseed.getUpdateState()
+      Reflect.get(window, 'updateFixture').publish({
+        latestCandidate: { ...latestCandidate, id: 'newer', build_number: '3' },
+      })
+    })
+    await latest.click()
+    await expect.poll(() => requests).toEqual(['next', 'newer'])
+    const preparationError = page.getByRole('alert').filter({ hasText: '无法准备更新' })
+    finish.get('next')!({ ok: false })
+    await expect(latest).toBeDisabled()
+    await expect(preparationError).toHaveCount(0)
+    finish.get('newer')!({ ok: false })
+    await expect(preparationError).toBeVisible()
     await expect(latest).toBeEnabled()
     await restart.click()
     await page.getByTestId('update-restart-confirm').click()

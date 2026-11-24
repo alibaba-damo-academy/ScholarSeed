@@ -806,7 +806,7 @@ test('discovery keeps newer builds available without discarding a macOS ready pa
   )
   assert.match(
     SHELL_SOURCE,
-    /if\s*\(\s*updateInstallAbort\s*\|\|\s*updateInstallationInProgress\s*\|\|\s*updateRestartRequested\s*\|\|\s*macMaintenanceUncertain\s*\|\|\s*\(updater\.macHandoffCommitted\(\)\s*&&\s*!updater\.canPrepareMacSuccessor\(\)\)\s*\|\|\s*snapshot\.phase === 'manual'\s*\|\|\s*snapshot\.errorFallback === 'activation_recovery_required'\s*\)\s*return snapshot/
+    /if\s*\(\s*installationBlocksUpdateCheck\(\)\s*\|\|\s*snapshot\.phase === 'manual'\s*\|\|\s*snapshot\.errorFallback === 'activation_recovery_required'\s*\)\s*return snapshot/
   )
 
   // 推进判定只此一份：启动期检查、周期复查、手动「检查更新」三个入口共用，才不会一个能

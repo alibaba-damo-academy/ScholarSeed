@@ -1864,15 +1864,11 @@ export async function prepareMacSuccessor(
   } catch (error) {
     logUpdateLine(log, `[update] successor preparation failed: ${String(error)}\n`)
     if (signal.aborted) return { ok: false, cancelled: true }
-    return {
-      ok: false,
-      errorFallback:
-        error instanceof UpdateVerifyError
-          ? updateInstallFallback(error)
-          : error instanceof UpdateArchiveLimitError
-            ? 'install_archive_limit'
-            : 'preparation_failed',
-    }
+    if (error instanceof UpdateVerifyError)
+      return { ok: false, errorFallback: updateInstallFallback(error) }
+    if (error instanceof UpdateArchiveLimitError)
+      return { ok: false, errorFallback: 'install_archive_limit' }
+    return { ok: false, errorFallback: 'preparation_failed' }
   } finally {
     signal.removeEventListener('abort', cancel)
     if (!promoted) {

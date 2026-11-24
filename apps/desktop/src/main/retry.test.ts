@@ -21,9 +21,12 @@ const handlers = ['scholarseed:update-check', 'scholarseed:update-start']
 function visit(node: ts.Node): void {
   if (
     ts.isFunctionDeclaration(node) &&
-    ['publishUpdateSnapshot', 'publishUpdateCheckResult', 'armBackgroundUpdateCheck'].includes(
-      node.name?.text ?? ''
-    )
+    [
+      'publishUpdateSnapshot',
+      'installationBlocksUpdateCheck',
+      'publishUpdateCheckResult',
+      'armBackgroundUpdateCheck',
+    ].includes(node.name?.text ?? '')
   )
     declarations.push(node.getText(source))
   if (
@@ -36,7 +39,7 @@ function visit(node: ts.Node): void {
   ts.forEachChild(node, visit)
 }
 visit(source)
-assert.equal(declarations.length, 5)
+assert.equal(declarations.length, 6)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText

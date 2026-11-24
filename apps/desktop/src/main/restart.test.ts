@@ -32,6 +32,7 @@ function visit(node: ts.Node): void {
   if (
     ts.isFunctionDeclaration(node) &&
     [
+      'installationBlocksUpdateCheck',
       'publishUpdateCheckResult',
       'installWindowsPreparedUpdate',
       'recoverUpdateConflict',
@@ -50,7 +51,7 @@ function visit(node: ts.Node): void {
   ts.forEachChild(node, visit)
 }
 visit(source)
-assert.equal(declarations.length, 6)
+assert.equal(declarations.length, 7)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
