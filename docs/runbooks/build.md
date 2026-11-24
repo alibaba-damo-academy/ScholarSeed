@@ -348,9 +348,12 @@ on each architecture, verify the ordinary DMG-to-ZIP path and this historical
 route, including a previously failed update and the original workspace after
 restart.
 
-CI checks the archive budget and verifies the Developer ID signature, stapled
-ticket and identity on the app extracted from the final ZIP. It records the
-size and digests in `artifacts.macos_update_zip`. The desktop verifies the app
+CI first measures the level 1 ZIP that older clients create from the DMG.
+For distribution it then creates the level 6 update ZIP from the same mounted
+app. Both archives must meet Squirrel's size and structure limits. CI verifies
+the Developer ID signature, stapled ticket and identity on the app extracted
+from the level 6 ZIP and records that ZIP's size and digests in
+`artifacts.macos_update_zip`. The desktop verifies the app
 and ticket on Squirrel's existing extraction. If ticket verification is
 temporarily inconclusive, it can retry the same bound request. Installation
 requires a fresh online grant.
@@ -364,8 +367,10 @@ arm64 和 x86_64 上的 Release 构建 `202611181656` 是已有过渡规则的�
 再通过普通 DMG 获得 ZIP 更新能力。两个架构的正式签名验收都应覆盖普通 DMG 到 ZIP 的
 路径和这条历史路径，包括曾经更新失败的客户端以及重启后原工作区是否可用。
 
-CI 检查 ZIP 归档限制，解包校验 Developer ID 签名、公证票据及应用身份，并在
-`artifacts.macos_update_zip` 记录大小和摘要。客户端复用 Squirrel 解出的应用校验身份和
+CI 先按旧客户端的方式从 DMG 中的应用生成 1 级 ZIP 并实测大小。正式分发时，再从同一份
+应用生成 6 级更新 ZIP。两份归档均须通过 Squirrel 的大小和结构检查。CI 解开 6 级 ZIP，
+校验 Developer ID 签名、公证票据及应用身份，并在 `artifacts.macos_update_zip` 记录这份
+ZIP 的大小和摘要。客户端复用 Squirrel 解出的应用校验身份和
 票据。票据暂无法判定时可以重试同一笔已绑定的请求。正式安装仍需重新获取在线授权。
 
 <a id="cicd-渠道与发布职责"></a>
