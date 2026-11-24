@@ -61,6 +61,7 @@ from service.chat.constants import (
     PRODUCT_REFERENCE_SKILL,
     QUEUED_ASSISTANT_REFERENCES,
     QUEUED_DISPLAY_TEXT,
+    QUEUED_GUIDE_ATTACHMENTS,
     QUEUED_REFERENCES,
     RESOURCE_BASELINE_FAILED,
     RUNTIME_CAPABILITY_UNAVAILABLE,
@@ -124,7 +125,7 @@ from service.chat.service.titles import SessionTitles
 from service.chat.service.utils import is_resource_finalizing
 from service.content.domain.model import ContentReadPermissionError
 from service.identity.service.skill_credentials import CredentialAdmissionError
-from service.inference.auto import decide
+from service.inference.auto import PendingGuideQuery, decide, guide_query, message_text
 from service.paths import session_attachment_root
 from service.platform.activity import (
     Activities,
@@ -290,6 +291,7 @@ class TurnService:
     ) -> None:
         self._sessions = sessions
         self._activities = activities
+        self._pending_guides: dict[tuple[str, str], PendingGuideQuery] = {}
         self._auto_accounts = auto_accounts
         self._queue_waiters: dict[str, asyncio.Task[None]] = {}
         self._resource_resume_callbacks: dict[
@@ -886,6 +888,8 @@ class TurnService:
         if queued is None:
             return TurnResult(request_id, TurnStatus.FAILED, error=QUEUED_MESSAGE_NOT_SENDABLE)
         recovery_cancelled = False
+        pending_guide = None
+        task = None
 
         async def on_wait(_receipt: ResourceReceipt, deadline: float) -> None:
             async with live.lifecycle_lock:
@@ -922,6 +926,24 @@ class TurnService:
                     await self._fail_queued(live, request_id, RECOVERY_STALE, unknown=False)
                     return TurnResult(request_id, TurnStatus.INTERRUPTED, error=RECOVERY_STALE)
             if self._prepare is not None:
+                if (
+                    self._auto_accounts is not None
+                    and live.runtime_session is None
+                    and queued.purpose == QUEUE_PURPOSE_TURN
+                    and CONTINUE_TURN_ID not in queued.body
+                    and request_id not in live.retained_guide_decisions
+                    and QUEUED_GUIDE_ATTACHMENTS in queued.body
+                    and (token := self._auto_accounts.current(live.user_id))
+                ):
+                    query = guide_query(
+                        live,
+                        request_id,
+                        message_text(queued.body),
+                        queued.body[QUEUED_GUIDE_ATTACHMENTS],
+                        token,
+                        auto=live.catalog.model_state(live.id).selected_model_id == "auto",
+                    )
+                    pending_guide = PendingGuideQuery(query, asyncio.create_task(query.fetch()))
                 with (
                     preparation.renewal.capture()
                     if preparation is not None and preparation.renewal is not None
@@ -1000,6 +1022,8 @@ class TurnService:
                     queued_message_payload(submitting),
                     idempotency_key=f"queue:{request_id}:submitted:{submitting.operation_seq}",
                 )
+                if pending_guide is not None:
+                    self._pending_guides[live.id, request_id] = pending_guide
                 payload, _status, task = await self._admit_turn_locked(
                     live,
                     submitting.body,
@@ -1070,6 +1094,20 @@ class TurnService:
             await self._fail_queued(live, request_id, error, unknown=unknown)
             return TurnResult(request_id, TurnStatus.FAILED, error=error)
         finally:
+            if pending_guide is not None:
+                key = (live.id, request_id)
+
+                def discard_pending(_task=None):
+                    if self._pending_guides.get(key) is pending_guide:
+                        self._pending_guides.pop(key)
+
+                # A cancelled queue waiter may leave the admitted, shielded turn running.
+                if task is not None and not task.done():
+                    task.add_done_callback(discard_pending)
+                else:
+                    pending_guide.result.cancel()
+                    discard_pending()
+                await asyncio.gather(pending_guide.result, return_exceptions=True)
             self._clear_resource_task(live, request_id)
             if recovery_cancelled:
                 self._defer_queue(live)
@@ -1365,6 +1403,7 @@ class TurnService:
                 for key, value in existing.body.items()
                 if key
                 not in (
+                    QUEUED_GUIDE_ATTACHMENTS,
                     QUEUED_ASSISTANT_SNAPSHOT_ID,
                     QUEUED_ASSISTANT_REFERENCES,
                     QUEUED_DISPLAY_TEXT,
@@ -1408,6 +1447,10 @@ class TurnService:
             else display_text if display_text is not None else admission.display_text
         )
         queued_body[QUEUED_REFERENCES] = list(admission.references)
+        routing_input = self._with_context(admission, context) if context is not None else admission
+        queued_body[QUEUED_GUIDE_ATTACHMENTS] = [
+            item.path.name for item in routing_input.turn_input.items if item.path
+        ]
         try:
             record = live.catalog.enqueue_message(
                 live.id,
@@ -1839,7 +1882,12 @@ class TurnService:
         if cached is not None and cached[0] == intent:
             return cached[1]
         return await decide(
-            live, turn_input, self._auto_accounts, auto=intent[1] == "auto", body=body
+            live,
+            turn_input,
+            self._auto_accounts,
+            auto=intent[1] == "auto",
+            body=body,
+            pending=self._pending_guides.pop((live.id, turn_input.client_user_message_id), None),
         )
 
     async def _submit_steer(

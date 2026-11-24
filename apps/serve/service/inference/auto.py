@@ -127,15 +127,46 @@ class AutoRoute(GuideDecision):
         return next(row for row in GATEWAY_MODEL_CATALOG if row["key"] == self.model)
 
 
-async def decide(live, turn_input, accounts, *, auto=True, body=None):
-    token = accounts.current(live.user_id)
-    if not auto and not token:
-        return None
-    turn = turn_input.client_user_message_id
-    if body is None:
-        body = live.catalog.queued_message(live.id, turn).body
-    text = "\n".join(str(i.get("text") or "") for i in body["input"] if i.get("type") == "text")
-    attachments = [item.path.name for item in turn_input.items if item.path]
+@dataclass(frozen=True)
+class GuideQuery:
+    session: str
+    turn: str
+    user: str
+    token: str = field(repr=False)
+    state: dict
+    questions: dict
+
+    async def fetch(self):
+        if not self.token:
+            return {}, "missing_account"
+        headers = {
+            "Authorization": "Bearer " + self.token,
+            CONV_MESSAGE_ID_HEADER: self.session,
+            CONV_TURN_ID_HEADER: self.turn,
+        }
+        start = time.time()
+        async with httpx.AsyncClient() as client:
+            answers, _, status = await request(
+                client, headers, json.dumps(self.state, ensure_ascii=False), self.questions
+            )
+        logger.info(
+            "guide_request session=%s turn=%s started_at=%.6f finished_at=%.6f status=%s",
+            self.session,
+            self.turn,
+            start,
+            time.time(),
+            status,
+        )
+        return answers, status
+
+
+@dataclass(frozen=True)
+class PendingGuideQuery:
+    query: GuideQuery
+    result: asyncio.Task
+
+
+def guide_query(live, turn, text, attachments, token, *, auto):
     recent = live.auto_history
     # Only expand an elliptical follow-up. A self-contained new task gets fresh routing.
     effective = bounded_task(text, 6000)
@@ -180,20 +211,34 @@ async def decide(live, turn_input, accounts, *, auto=True, body=None):
             "instructions": INSTRUCTIONS,
             "criteria": options,
         }
-    answers, status = {}, "missing_account"
+    return GuideQuery(live.id, turn, live.user_id, token, state, questions)
+
+
+def message_text(body):
+    return "\n".join(str(i.get("text") or "") for i in body["input"] if i.get("type") == "text")
+
+
+async def decide(live, turn_input, accounts, *, auto=True, body=None, pending=None):
+    token = accounts.current(live.user_id)
+    if not auto and not token:
+        return None
+    turn = turn_input.client_user_message_id
+    if body is None:
+        body = live.catalog.queued_message(live.id, turn).body
+    text = message_text(body)
+    attachments = [item.path.name for item in turn_input.items if item.path]
+    query = guide_query(live, turn, text, attachments, token, auto=auto)
     start = time.monotonic()
-    if token:
-        headers = {
-            "Authorization": "Bearer " + token,
-            CONV_MESSAGE_ID_HEADER: live.id,
-            CONV_TURN_ID_HEADER: turn,
-        }
-        async with httpx.AsyncClient() as client:
-            answers, _, status = await request(
-                client, headers, json.dumps(state, ensure_ascii=False), questions
-            )
-        if token != accounts.current(live.user_id):
-            answers, status = {}, "account_changed"
+    if pending is None:
+        answers, status = await query.fetch()
+    elif pending.query == query:
+        answers, status = await pending.result
+    else:
+        # The queued input or its owner changed during activation. Use the existing
+        # fallback for this turn without applying stale answers or issuing another POST.
+        answers, status = {}, "routing_input_changed"
+    if query.user != live.user_id or token != accounts.current(live.user_id):
+        answers, status = {}, "account_changed"
     if auto:
         choice = answers.get("selection")
         choice = choice.get("choice") if isinstance(choice, dict) else None
@@ -237,7 +282,7 @@ async def decide(live, turn_input, accounts, *, auto=True, body=None):
     context = {
         "turn": turn,
         "user": bounded_task(text, 1000),
-        "effective_task": bounded_task(effective, 2400),
+        "effective_task": bounded_task(query.state["latest_user"], 2400),
         "attachments": attachments,
         "route": {
             **({"model": model, "effort": effort} if auto else {}),
