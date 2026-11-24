@@ -6,6 +6,7 @@ const path = require('node:path')
 const {execFileSync} = require('node:child_process')
 const {build} = require('../../../package.json')
 const {inventory, verifyImage} = require('../dmg.cjs')
+const {publishedZipArguments} = require('../verify.cjs')
 const {developmentPython} = require('../../../../../scripts/shared/python.cjs')
 
 for (const scenario of ['valid', 'missing', 'tampered', 'signature', 'detach', 'attach']) {
@@ -55,6 +56,38 @@ test('DMG adapter checks copy, detach recovery and occupancy diagnostics', {skip
   const python = developmentPython(path.resolve(__dirname, '../../../../..'), process.env.VENV)
   execFileSync(python, ['-I', '-B', path.join(__dirname, 'image_test.py')], {stdio: 'pipe'})
 })
+
+for (const hasResourceFork of [false, true]) {
+  const scenario = hasResourceFork ? 'retains a nonempty resource fork' : 'omits host metadata'
+  test(`published update ZIP ${scenario}`, {skip: process.platform !== 'darwin'}, t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'published-zip-'))
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}))
+    const source = path.join(root, 'ScholarSeed.app')
+    const member = path.join('Contents', 'MacOS', 'ScholarSeed')
+    const binary = path.join(source, member)
+    const content = Buffer.from('fixture executable')
+    fs.mkdirSync(path.dirname(binary), {recursive: true})
+    fs.writeFileSync(binary, content, {mode: 0o755})
+    fs.symlinkSync(path.basename(binary), binary + '-link')
+    execFileSync('/usr/bin/xattr', ['-w', 'org.scholarseed.fixture', 'host metadata', binary])
+    const fork = Buffer.from([0, 1, 127, 128, 254, 255])
+    const forkName = path.join('..namedfork', 'rsrc')
+    if (hasResourceFork) fs.writeFileSync(path.join(binary, forkName), fork)
+
+    const archive = path.join(root, 'update.zip')
+    execFileSync('/usr/bin/ditto', publishedZipArguments(source, archive))
+    const entries = execFileSync('/usr/bin/zipinfo', ['-1', archive], {encoding: 'utf8'}).trimEnd().split('\n')
+    assert.ok(entries.includes('ScholarSeed.app/' + member))
+    if (!hasResourceFork) assert.ok(entries.every(name => !name.startsWith('__MACOSX/')))
+    const unpacked = path.join(root, 'unpacked')
+    execFileSync('/usr/bin/ditto', ['-x', '-k', archive, unpacked])
+    const installed = path.join(unpacked, 'ScholarSeed.app', member)
+    assert.deepEqual(fs.readFileSync(installed), content)
+    assert.equal(fs.statSync(installed).mode & 0o777, fs.statSync(binary).mode & 0o777)
+    assert.equal(fs.readlinkSync(installed + '-link'), path.basename(binary))
+    if (hasResourceFork) assert.deepEqual(fs.readFileSync(path.join(installed, forkName)), fork)
+  })
+}
 
 // Exercise the actual macOS builder and mounted volume, including its Finder drop target.
 test('configured DMG preserves a dense resource directory on read-only APFS', {skip: process.platform !== 'darwin'}, async t => {
