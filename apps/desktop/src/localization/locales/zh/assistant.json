@@ -354,6 +354,8 @@
     "loading": "上下文仍在加载，请稍后再试。",
     "updated": "上下文已被其他窗口更新，已同步最新版本。",
     "saveFailed": "上下文保存失败：{{detail}}",
+    "saveReconciled": "未收到保存确认。已重新读取上下文，请核对当前选择。",
+    "saveUnconfirmed": "未能确认保存结果，请重新读取上下文。",
     "syncFailed": "资料已更新，但当前上下文同步失败：{{detail}}",
     "loadFailed": "上下文加载失败，请重试。",
     "initializeFailed": "新会话上下文初始化失败，请重试。",

@@ -62,3 +62,4 @@ class TurnInput:
     submission_attempts: int = 0
     retry_observer: Callable[[SubmissionRetry], Awaitable[Callable[[], bool]]] | None = None
     output_schema: dict[str, RuntimeValue] | None = None
+    artifact_directory: Path | None = None

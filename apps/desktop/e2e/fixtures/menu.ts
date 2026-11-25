@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test'
+import { PORTAL_URL } from '../../src/portal'
 import { showProductWindow } from './electron'
 
 /** Locate the actual menu surface, including the native WebContentsView. */
@@ -21,9 +22,25 @@ export async function openAccountMenu(page: Page): Promise<Page> {
   return surface
 }
 
-export async function openAccountSettings(page: Page): Promise<void> {
-  if (await page.getByTestId('account-settings-shell').isVisible()) return
+async function settingsSurface(page: Page): Promise<Page | undefined> {
+  for (const candidate of page.context().pages()) {
+    if (candidate.isClosed() || (candidate !== page && candidate.url() !== PORTAL_URL)) continue
+    if (await candidate.getByTestId('account-settings-shell').isVisible().catch(() => false))
+      return candidate
+  }
+}
+
+export async function openAccountSettings(page: Page): Promise<Page> {
+  const existing = await settingsSurface(page)
+  if (existing) return existing
   const menu = await openAccountMenu(page)
   await menu.getByTestId('account-menu-settings').click()
-  await expect(page.getByRole('dialog', { name: /设置|Settings/, exact: true })).toBeVisible()
+  let surface: Page | undefined
+  await expect.poll(async () => {
+    surface = await settingsSurface(page)
+    return !!surface
+  }).toBe(true)
+  if (!surface) throw new Error('account settings surface unavailable')
+  await expect(surface.getByRole('dialog', { name: /设置|Settings/, exact: true })).toBeVisible()
+  return surface
 }

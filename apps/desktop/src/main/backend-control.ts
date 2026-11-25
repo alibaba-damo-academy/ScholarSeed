@@ -1,6 +1,7 @@
 import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { UPDATE_PREFLIGHT_FAILURE, type UpdatePreflightFailure } from '../updates.ts'
 import type { CompilerResources } from './toolchain.ts'
 
 const MAX_BYTES = 33 // Status byte plus the exact maintenance generation.
@@ -10,6 +11,10 @@ const MAX_COMMAND_BYTES = 4096
 const SKILL_PYTHON_OPERATION = 'skill-python'
 const IDLE_OPERATION = 'quiesce_if_idle'
 const UPDATE_OPERATION = 'prepare_update'
+const UPDATE_REFUSAL_REASONS: ReadonlyMap<number, UpdatePreflightFailure> = new Map([
+  [1, UPDATE_PREFLIGHT_FAILURE.storageFull],
+  [2, UPDATE_PREFLIGHT_FAILURE.importStoreUnavailable],
+])
 type ControlCloseReason = 'closed' | 'connection_timeout' | 'response_timeout' | 'startup_timeout'
 type ControlCommand =
   | {
@@ -46,7 +51,14 @@ export interface BackendConnectionDiagnostic {
 }
 
 // Only an exact refusal receipt proves this request retained no maintenance.
-export class BackendMaintenanceRejected extends Error {}
+export class BackendMaintenanceRejected extends Error {
+  constructor(
+    message: string,
+    readonly reason?: UpdatePreflightFailure
+  ) {
+    super(message)
+  }
+}
 
 // Capability delivered only on the child's inherited stdin, never argv/env/logs.
 // This main-process connection carries no renderer or HTTP request surface.
@@ -237,6 +249,10 @@ export class BackendControl {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     if (response[0] !== 1) {
+      const updateReason =
+        response.length === 2 && response[0] === 0 && pending.operation === UPDATE_OPERATION
+          ? UPDATE_REFUSAL_REASONS.get(response[1])
+          : undefined
       const knownRefusal =
         response.length === 1 &&
         response[0] === 0 &&
@@ -244,8 +260,10 @@ export class BackendControl {
           pending.operation === IDLE_OPERATION ||
           pending.operation === UPDATE_OPERATION)
       response.fill(0)
-      if (knownRefusal)
-        pending.reject(new BackendMaintenanceRejected('private backend maintenance refused'))
+      if (knownRefusal || updateReason)
+        pending.reject(
+          new BackendMaintenanceRejected('private backend maintenance refused', updateReason)
+        )
       else {
         this.close()
         pending.reject(new Error('private backend request outcome unavailable'))
@@ -409,6 +427,7 @@ export interface BackendControlEvent {
     | 'quiesce_unknown'
     | 'prepare_update_refused'
     | 'prepare_update_unknown'
+    | UpdatePreflightFailure
     | 'resume_unknown'
   readonly elapsedMs: number
 }
@@ -450,7 +469,7 @@ export function observeBackendControl(
       if (stage === 'resume') {
         errorCode = 'resume_unknown'
       } else if (stage === 'prepare-update') {
-        errorCode = refused ? 'prepare_update_refused' : 'prepare_update_unknown'
+        errorCode = refused ? (error.reason ?? 'prepare_update_refused') : 'prepare_update_unknown'
       } else {
         errorCode = refused ? 'quiesce_refused' : 'quiesce_unknown'
       }

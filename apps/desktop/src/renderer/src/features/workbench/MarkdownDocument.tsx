@@ -1405,7 +1405,7 @@ function MarkdownVisualEditor({
         if (readOnly || !crepeReadyRef.current || crepeRef.current !== crepe) return
         commitVisualEdit(crepe.getMarkdown())
       },
-      beforeSave: async () => {
+      beforeSave: async (signal) => {
         if (readOnly || !formatOnSave) return
         const current = workspace.getSnapshot().sessions[sessionId]
         if (!current || current.text === null) return
@@ -1416,6 +1416,7 @@ function MarkdownVisualEditor({
           text: source,
           savedBytes: current.savedBytes,
         })
+        if (signal?.aborted || crepeRef.current !== crepe) return
         if (result.status === 'failed') {
           toast({ title: t('formatOnSaveFailed'), tone: 'warning' })
           return

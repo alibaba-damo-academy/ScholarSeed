@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
+import { pdfAiFailure } from '../../../app/api/pdf.ts'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { createInstance } from 'i18next'
 
 import {
   pdfAiCaughtFailure,
-  pdfAiFailure,
   pdfAiFailureRecovery,
   pdfAiFailureText,
 } from '../../../components/business/diagnostic.ts'

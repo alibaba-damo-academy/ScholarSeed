@@ -76,6 +76,7 @@ from service.platform.inference import (
 )
 from service.workbench.service.extraction import extract
 
+READING_CONTRACT_TIMEOUT_SECONDS = 5
 QUOTE = "The method improves accuracy on the evaluated benchmark."
 CLASSIFICATION = {"registry_type": "method"}
 EXTRACTION = {
@@ -1417,20 +1418,22 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
+        self.activities = Activities()
+        self.client = self.analysis_client(self.activities)
+        self.addAsyncCleanup(self.client.aclose)
+
+    def analysis_client(self, activities: Activities) -> httpx.AsyncClient:
         app = FastAPI()
         register_analysis_routes(
             app,
-            activities=Activities(),
+            activities=activities,
             actions=self.actions,
             tasks=self.tasks,
             models=self.models,
             pdf=self.pdf,
             indexes=self.indexes,
         )
-        self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        )
-        self.addAsyncCleanup(self.client.aclose)
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
     async def invoke(self, **kwargs):
         item = record(kwargs["client_attempt_id"], self.outputs.pop(0))
@@ -2013,35 +2016,143 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
             return await original(**kwargs)
 
         self.actions.invoke_compiled.side_effect = held
-        await self.submit("first")
-        await started.wait()
-        state = (await self.client.get("/api/literature/paper/ai/state")).json()
-        self.assertEqual(state["task"]["task_id"], "first")
-        self.assertEqual(state["attachment_id"], "attachment")
-        response = await self.client.post(
-            "/api/literature/ai/tasks",
+        try:
+            async with asyncio.timeout(READING_CONTRACT_TIMEOUT_SECONDS):
+                await self.submit("first")
+                await started.wait()
+                state = (await self.client.get("/api/literature/paper/ai/state")).json()
+                self.assertEqual(state["task"]["task_id"], "first")
+                self.assertEqual(state["attachment_id"], "attachment")
+                duplicate = {
+                    "literature_id": "paper",
+                    "attachment_id": "attachment",
+                    "model_key": "different",
+                    "kind": "interpretation",
+                    "client_action_id": "second",
+                    "client_attempt_id": "second",
+                    "service_instance_id": self.activities.instance_id,
+                }
+                response = await self.client.post("/api/literature/ai/tasks", json=duplicate)
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(response.json()["task_id"], "first")
+                self.assertEqual(response.json()["model_key"], "selected")
+                joined = await self.client.get("/api/literature/ai/tasks/second")
+                self.assertEqual(joined.status_code, 200)
+                self.assertEqual(joined.json()["task_id"], "second")
+                self.assertIn(joined.json()["status"], {"pending", "running"})
+                with patch("service.literature.api.analysis.request_user_id", return_value="other"):
+                    self.assertEqual(
+                        (await self.client.get("/api/literature/ai/tasks/second")).status_code, 404
+                    )
+        finally:
+            release.set()
+        async with asyncio.timeout(READING_CONTRACT_TIMEOUT_SECONDS):
+            self.assertEqual((await self.terminal("first"))["status"], "completed")
+            second = (await self.client.get("/api/literature/ai/tasks/second")).json()
+            self.assertEqual(second["task_id"], "second")
+            self.assertEqual(second["status"], "completed")
+            timing = {"first_seconds": 1, "reading_seconds": 2, "total_seconds": 3}
+            observed = await self.client.post("/api/literature/ai/tasks/second/timing", json=timing)
+            self.assertEqual(observed.json(), {"ui_timing": timing})
+            saved = AnalysisStore(self.repository.database).summary("paper", self.revision)
+            self.assertEqual(saved["metadata"]["ui_timing"], timing)
+            events = await self.client.get("/api/literature/ai/tasks/second/events")
+            self.assertEqual(json.loads(events.text.removeprefix("data: "))["task_id"], "second")
+            replay = await self.client.post("/api/literature/ai/tasks", json=duplicate)
+            self.assertEqual(replay.json()["task_id"], "first")
+            self.assertEqual(replay.json()["status"], "completed")
+            self.assertEqual(self.actions.invoke_compiled.await_count, 1)
+            restarted = Activities()
+            async with self.analysis_client(restarted) as reopened:
+                receipt = await reopened.get(
+                    "/api/literature/ai/tasks/second",
+                    params={"service_instance_id": restarted.instance_id},
+                )
+                self.assertEqual(receipt.status_code, 200)
+                self.assertEqual(receipt.json()["task_id"], "second")
+                self.assertEqual(receipt.json()["status"], "completed")
+                retry = await reopened.post(
+                    "/api/literature/ai/tasks",
+                    json={**duplicate, "service_instance_id": restarted.instance_id},
+                )
+                self.assertEqual(retry.json()["task_id"], "first")
+                self.assertEqual(retry.json()["status"], "completed")
+            state = (await self.client.get("/api/literature/paper/ai/state")).json()
+            self.assertIn("summary", state["results"])
+            self.assertIsNone(state["task"])
+            self.assertEqual(self.actions.invoke_compiled.await_count, 1)
+
+    async def test_joined_attempt_timing_accepts_an_unrecorded_root_without_creating_state(self):
+        store = AnalysisStore(self.repository.database)
+        store.remember_joined_attempt("owner", "joined", "canonical", "selected")
+        async with self.analysis_client(Activities()) as reopened:
+            tasks = "/api/literature/ai/tasks"
+            timing = {"first_seconds": 1, "reading_seconds": 2, "total_seconds": 3}
+            response = await reopened.post(f"{tasks}/joined/timing", json=timing)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"ui_timing": timing})
+            direct = await reopened.get(f"{tasks}/canonical")
+            self.assertEqual(direct.status_code, 404)
+            alias = await reopened.get(f"{tasks}/joined")
+            self.assertEqual(
+                alias.json(), {"task_id": "joined", "model_key": "selected", "status": "unknown"}
+            )
+            invalid = await reopened.post(
+                f"{tasks}/joined/timing", json={"first_seconds": 3, "total_seconds": 1}
+            )
+            self.assertEqual(invalid.status_code, 422)
+            with patch("service.literature.api.analysis.request_user_id", return_value="other"):
+                denied = await reopened.post(f"{tasks}/joined/timing", json=timing)
+                self.assertEqual(denied.status_code, 404)
+        self.assertIsNone(self.tasks.get_attempt("canonical", "owner"))
+        self.actions.invoke_compiled.assert_not_awaited()
+
+    async def test_cancelling_joined_attempt_cancels_the_shared_running_task(self):
+        started = asyncio.Event()
+
+        async def held(**_kwargs):
+            started.set()
+            await asyncio.Future()
+
+        async def cancel_canonical():
+            async with asyncio.timeout(READING_CONTRACT_TIMEOUT_SECONDS):
+                await self.client.post("/api/literature/ai/tasks/canonical/cancel")
+
+        self.actions.invoke_compiled.side_effect = held
+        self.addAsyncCleanup(cancel_canonical)
+        async with asyncio.timeout(READING_CONTRACT_TIMEOUT_SECONDS):
+            await self.submit("canonical")
+            await started.wait()
+            await self.submit("joined")
+            response = await self.client.post("/api/literature/ai/tasks/joined/cancel")
+            self.assertEqual(response.json()["task_id"], "joined")
+            self.assertEqual(response.json()["status"], "cancelled")
+            self.assertEqual((await self.terminal("canonical"))["status"], "cancelled")
+
+    async def test_stale_instance_cannot_admit_or_reconcile_a_pdf_attempt(self):
+        task_path = "/api/literature/ai/tasks"
+        old_instance = "previous-instance"
+        posted = await self.client.post(
+            task_path,
             json={
                 "literature_id": "paper",
                 "attachment_id": "attachment",
-                "model_key": "different",
+                "model_key": "selected",
                 "kind": "interpretation",
-                "client_action_id": "second",
-                "client_attempt_id": "second",
+                "client_action_id": "stale",
+                "client_attempt_id": "stale",
+                "service_instance_id": old_instance,
             },
         )
-        self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.json()["task_id"], "first")
-        self.assertEqual(response.json()["model_key"], "selected")
-        self.assertEqual(
-            (await self.client.get("/api/literature/ai/tasks/second")).status_code, 404
+        queried = await self.client.get(
+            task_path + "/stale", params={"service_instance_id": old_instance}
         )
-        release.set()
-        self.assertEqual((await self.terminal("first"))["status"], "completed")
-        self.assertEqual(self.actions.invoke_compiled.await_count, 1)
-        state = (await self.client.get("/api/literature/paper/ai/state")).json()
-        self.assertIn("summary", state["results"])
-        self.assertIsNone(state["task"])
-        self.assertEqual(self.actions.invoke_compiled.await_count, 1)
+        for response in (posted, queried):
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["detail"]["code"], "pdf_ai_service_instance_changed")
+        self.assertEqual((await self.client.get(task_path + "/stale")).status_code, 404)
+        self.models.inference_connection.assert_not_called()
+        self.actions.invoke_compiled.assert_not_awaited()
 
     async def test_saved_l1_reuses_one_call_without_indexing_and_preserves_organized_body(self):
         await self.submit("initial")
@@ -2589,7 +2700,7 @@ class ReadingApiContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 202, response.text)
 
     async def terminal(self, attempt):
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(READING_CONTRACT_TIMEOUT_SECONDS):
             while True:
                 state = (await self.client.get(f"/api/literature/ai/tasks/{attempt}")).json()
                 if state["status"] not in ("pending", "running"):

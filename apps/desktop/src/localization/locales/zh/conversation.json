@@ -106,7 +106,7 @@
     "commandNotFound": "命令中的程序或语句不存在。",
     "permissionDenied": "当前步骤没有执行权限。",
     "fileMissing": "要查找的文件或目录不存在。",
-    "nonzero": "命令未成功完成（退出码 {{code}}）。",
+    "nonzero": "命令未成功完成。",
     "unknown": "命令未成功完成，原因尚不明确。",
     "toolFailed": "此工具步骤未成功完成。",
     "failedHelp": "此步骤可能影响任务结果；AI 可以继续尝试处理。原始信息仅供排查。",
@@ -298,6 +298,10 @@
     "capability": {
       "message": "ChatGPT 订阅连接不支持此请求使用的能力。",
       "action": "请切换到支持该能力的模型来源，或新建不使用该能力的任务；保持当前请求不变并点击继续仍会失败。任务历史已保留。"
+    },
+    "historyContent": {
+      "message": "当前模型无法接收这段对话中的部分历史内容。",
+      "action": "请切换模型，或通过「降级接续」将可见文字带入新任务。"
     },
     "subscriptionLimit": {
       "message": "ChatGPT 订阅额度已用完，本次生成已停止。",

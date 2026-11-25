@@ -1,9 +1,11 @@
 #import "handoff.h"
 #import "readinesswait.h"
 #import "SQRLUpdater.h"
+#import "SQRLShipItRequest.h"
 #import "SQRLZipArchiver.h"
 #include <dlfcn.h>
 #include <assert.h>
+#include <objc/runtime.h>
 
 @interface SQRLUpdater (HandoffContract)
 - (RACSignal *)unarchiveAndPrepareData:(NSData *)data withName:(NSString *)name intoDirectory:(NSURL *)directory;
@@ -20,6 +22,45 @@ static void awaitSignal(RACSignal *signal, BOOL expected) {
     assert(finished && succeeded == expected);
 }
 
+static void CheckRetryHousekeeping(NSString *root) {
+  NSURL *cache = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"retry-cache"] isDirectory:YES];
+  NSURL *source = [cache URLByAppendingPathComponent:@"update.failed/ScholarSeed.app" isDirectory:YES];
+  NSURL *orphan = [cache URLByAppendingPathComponent:@"update.orphan" isDirectory:YES];
+  NSURL *target = [cache URLByAppendingPathComponent:@"installed.app" isDirectory:YES];
+  NSFileManager *manager = NSFileManager.defaultManager;
+  for (NSURL *directory in @[source, target, orphan])
+    assert([manager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL]);
+  NSDictionary *binding = @{@"schema":@1, @"requestId":[@"a" stringByPaddingToLength:64 withString:@"a" startingAtIndex:0],
+    @"sha512":[@"b" stringByPaddingToLength:128 withString:@"b" startingAtIndex:0], @"candidate":@"failed-update", @"size":@1};
+  SQRLShipItRequest *request = [[SQRLShipItRequest alloc] initWithUpdateBundleURL:source targetBundleURL:target
+    bundleIdentifier:@"fixture.retry" launchAfterInstallation:YES useUpdateBundleName:YES binding:binding installationAuthorized:YES];
+  NSURL *state = [cache URLByAppendingPathComponent:@"ShipItState.plist"];
+  awaitSignal([request writeUsingURL:[RACSignal return:state]], YES);
+  assert(SSReadinessPublishBound(source, target, binding, NO, EIO, NULL));
+  NSData *stateBytes = [NSData dataWithContentsOfURL:state];
+  assert(stateBytes);
+
+  // Isolate only the directory resolver. Run the framework's real update check,
+  // terminating at the missing local feed after its housekeeping has finished.
+  assert(setenv("FORCE_APP_IDENTIFIER", "fixture.retry", 1) == 0);
+  Method resolver = class_getInstanceMethod(SQRLDirectoryManager.class, @selector(storageURL));
+  IMP isolated = imp_implementationWithBlock(^RACSignal *(id self) { return [RACSignal return:cache]; });
+  IMP original = method_setImplementation(resolver, isolated);
+  NSURLRequest *feed = [NSURLRequest requestWithURL:[cache URLByAppendingPathComponent:@"missing-feed"]];
+  SQRLUpdater *updater = [[SQRLUpdater alloc] initWithUpdateRequest:feed];
+  [updater setValue:@(SQRLUpdaterStateAwaitingRelaunch) forKey:@"state"];
+  awaitSignal([updater.checkForUpdatesCommand execute:nil], NO);
+  assert([manager fileExistsAtPath:orphan.path] && SSReadinessFailedRequestBound(source, target, binding));
+  assert(updater.state == SQRLUpdaterStateIdle);
+  awaitSignal([updater.checkForUpdatesCommand execute:nil], NO);
+  assert(![manager fileExistsAtPath:orphan.path]);
+  assert(SSReadinessFailedRequestBound(source, target, binding));
+  assert([[NSData dataWithContentsOfURL:state] isEqual:stateBytes]);
+  method_setImplementation(resolver, original);
+  imp_removeBlock(isolated);
+  NSLog(@"[squirrel-retry-test] pending relaunch skips cleanup; idle retry preserves exact failed source/ack and removes orphan PASS");
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         assert(argc == 2);
@@ -28,6 +69,7 @@ int main(int argc, const char *argv[]) {
         assert(dladdr((__bridge const void *)SQRLUpdater.class, &loaded));
         assert([@(loaded.dli_fname) hasPrefix:root]);
         assert(!NSBundle.mainBundle.bundleIdentifier); // never write a real application's cache
+        CheckRetryHousekeeping(root);
         NSError *expected = [NSError errorWithDomain:@"fixture" code:42 userInfo:nil];
         __block NSError *received = nil;
         [SSSquirrelTiming(@"contract-error", [RACSignal error:expected], NO)

@@ -2,7 +2,7 @@ import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { beginDomains, ensureDirectories, type DomainNative } from '../../native/domains.cjs'
 import { REGISTRY_DIRECTORY } from '../../native/registry.cjs'
-import { writeRecord, type QualifiedRecordWriter } from './journal.ts'
+import { uncertainRecordWriteCode, writeRecord, type QualifiedRecordWriter } from './journal.ts'
 
 export interface DirectoryWriter {
   close(): void
@@ -100,11 +100,7 @@ export function acquireDirectoryWriter(
         lock = native.acquireAt(pin, name, true)
         operation()
       } catch (error) {
-        if (
-          ['ERR_LEASE_SYNC', 'ERR_LEASE_RELEASE', 'ERR_DOMAIN_RELEASE'].includes(
-            (error as NodeJS.ErrnoException).code ?? ''
-          )
-        ) {
+        if (uncertainRecordWriteCode(error)) {
           closed = true
           retainUncertainDirectoryOwnership(lock, pin, domains)
         }
@@ -164,14 +160,25 @@ export function writePrivateRecord(path: string, bytes: string | Uint8Array): vo
   }
 }
 
+export function desktopDirectoryNative(): DomainNative {
+  return require('./lease.node') as DomainNative
+}
+
 /** Scope to the actual persistence directory, never a broad home lease. */
 export function desktopDirectoryWriter(root: string): RecordWriter {
-  const native = require('./lease.node') as DomainNative
-  return acquireDirectoryWriter(native, join(userInfo().homedir, REGISTRY_DIRECTORY), root)
+  return acquireDirectoryWriter(
+    desktopDirectoryNative(),
+    join(userInfo().homedir, REGISTRY_DIRECTORY),
+    root
+  )
 }
 
 /** Exclusive maintenance refuses active ancestors, descendants and family owners. */
 export function desktopDirectoryMaintenance(root: string): RecordWriter {
-  const native = require('./lease.node') as DomainNative
-  return acquireDirectoryWriter(native, join(userInfo().homedir, REGISTRY_DIRECTORY), root, true)
+  return acquireDirectoryWriter(
+    desktopDirectoryNative(),
+    join(userInfo().homedir, REGISTRY_DIRECTORY),
+    root,
+    true
+  )
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CsvProcessor, CsvQueue } from './protocol.ts'
+import { CsvClient } from './client.ts'
+import { CsvProcessor, CsvQueue, type CsvRequest, type CsvResponse } from './protocol.ts'
 
 test('worker owner rejects stale identity and mutations without expected version', () => {
   const owner = new CsvProcessor()
@@ -132,4 +133,48 @@ test('worker owns TSV paste and copy, preserving FIFO versions and one undo tran
   await queue.request({ command: 'undo' })
   const snapshot = (await queue.request({ command: 'serialize' })).value as { bytes: Uint8Array }
   assert.equal(new TextDecoder().decode(snapshot.bytes), 'a,b\nc,d\n')
+})
+
+test('a timed-out CSV save read releases the worker queue and ignores its late state', async (t) => {
+  const sent: CsvRequest[] = []
+  let respond!: (request: CsvRequest, version: number) => void
+  class TestWorker {
+    onmessage?: (event: { data: CsvResponse }) => void
+    constructor() {
+      respond = (request, version) =>
+        this.onmessage?.({
+          data: { ...request, version, ok: true, value: { dirty: false, rowCount: 2 } },
+        })
+    }
+    postMessage(request: CsvRequest): void {
+      sent.push(request)
+    }
+    terminate(): void {}
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
+  Object.defineProperty(globalThis, 'Worker', { configurable: true, value: TestWorker })
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'Worker', descriptor)
+    else Reflect.deleteProperty(globalThis, 'Worker')
+  })
+  const received: boolean[] = []
+  const client = new CsvClient('document', (state) => received.push(state.dirty))
+  t.after(() => client.dispose())
+  const controller = new AbortController()
+  const read = client.readForSave('state', controller.signal)
+  await Promise.resolve()
+  assert.equal(sent.length, 1)
+  controller.abort()
+  await assert.rejects(read, { name: 'AbortError' })
+  const next = client.readForSave('serialize')
+  await Promise.resolve()
+  assert.deepEqual(
+    sent.map(({ command }) => command),
+    ['state', 'serialize']
+  )
+  respond(sent[0], 7)
+  assert.deepEqual(received, [])
+  respond(sent[1], 1)
+  assert.equal((await next).version, 1)
+  assert.equal(client.currentVersion, 1)
 })

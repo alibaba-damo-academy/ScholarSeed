@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import type { FileEvent } from '../../contracts/content.ts'
+import {
+  fetchVersionCapability,
+  observeResourceFileEvent,
+  resourceFileEventObservation,
+} from './api.ts'
 import {
   applyResourceListingChanges,
   createResourceListingRefresh,
@@ -15,6 +21,53 @@ import {
 async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve))
 }
+
+test('a decoded capability remains usable when its deadline has just fired', async (context) => {
+  const deadline = new AbortController()
+  context.mock.method(AbortSignal, 'timeout', () => deadline.signal)
+  const capability = { file_id: 'complete' }
+  context.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => {
+      deadline.abort()
+      return capability
+    },
+  }))
+  Object.assign(globalThis, { window: { scholarseed: { getApiBase: () => '' } } })
+  context.after(() => Reflect.deleteProperty(globalThis, 'window'))
+  assert.equal(await fetchVersionCapability('project', 'note.md'), capability)
+})
+
+test('a file event shares its pending lookup and can retry after a failed capability read', async (context) => {
+  const event: FileEvent = {
+    epoch: 'one',
+    seq: 1,
+    project_id: 'project',
+    root: 'resources',
+    kind: 'modified',
+    path: 'note.md',
+    source: 'external',
+    previous_path: null,
+  }
+  const capability = { file_id: 'available' }
+  const firstResponse = Promise.withResolvers<Response>()
+  let calls = 0
+  context.mock.method(globalThis, 'fetch', () =>
+    ++calls === 1 ? firstResponse.promise : Promise.resolve(Response.json(capability))
+  )
+  Object.assign(globalThis, { window: { scholarseed: { getApiBase: () => '' } } })
+  context.after(() => Reflect.deleteProperty(globalThis, 'window'))
+  const first = observeResourceFileEvent('project', event)
+  assert.equal(observeResourceFileEvent('project', event), first)
+  assert.equal(resourceFileEventObservation(event), first)
+  firstResponse.resolve(new Response(null, { status: 503 }))
+  assert.equal(await first, null)
+  assert.equal(resourceFileEventObservation(event), undefined)
+  const retry = observeResourceFileEvent('project', event)
+  assert.deepEqual(await retry, capability)
+  assert.equal(observeResourceFileEvent('project', event), retry)
+  assert.equal(calls, 2)
+})
 
 test('reachable directory groups ignore closed and removed parents and deduplicate aliases', () => {
   const alias = { path: 'alias', name: 'alias', kind: 'dir' } as const

@@ -2,7 +2,7 @@
 
 渲染端对 `POST /api/serve/sessions/open` (以及复用同一常量的 history 拉取) 施加固定硬截止。
 若该截止早于服务端冷恢复自身的预算 (readiness 预检 + 整体恢复), 一次合法但耗时较长的冷恢复
-会先被客户端 abort, 报「signal timed out」并在全局 _open_lock 后盲目重试, 把正常慢恢复呈现为
+会先被客户端 abort, 报「signal timed out」并对同一会话盲目重试, 把正常慢恢复呈现为
 失败——这是 Aone #87119853 的根因。本守卫把渲染端常量钉到服务端权威预算上, 使两侧无法再各自漂移。
 """
 

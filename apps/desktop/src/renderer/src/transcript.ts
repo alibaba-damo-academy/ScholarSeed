@@ -7,6 +7,7 @@ import type {
   ProductEvent,
   TurnActivitySnapshot,
 } from './api'
+import type { HistoryProjectionCaller } from './app/api/timing'
 import {
   isTurnBoundary,
   USER_INTERRUPT_REASON,
@@ -2179,7 +2180,7 @@ export function recordHistoryCommit(items: ConvItem[]): void {
 export function projectHistorySnapshot(
   history: HistoryResult,
   current: ConvItem[],
-  caller?: 'transcript' | 'resume' | 'resume_fallback'
+  caller?: HistoryProjectionCaller
 ): ConvItem[] {
   const started = caller ? historyProfileStart() : undefined
   const completedTurnIds = history.turn_activity.flatMap((turn) =>

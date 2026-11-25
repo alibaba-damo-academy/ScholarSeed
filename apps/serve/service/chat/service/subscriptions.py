@@ -8,6 +8,7 @@ import logging
 import re
 import sqlite3
 import time
+from itertools import groupby
 from typing import Any, Awaitable, Callable, Mapping
 
 import httpx
@@ -60,6 +61,7 @@ SUBSCRIPTION_UNAVAILABLE_STATE = "unavailable"
 SUBSCRIPTION_STORAGE_ERROR = "oauth_storage_unavailable"
 MODEL_VISIBILITY_LIST = "list"
 SUBSCRIPTION_TRUST_ENV = True
+CODEX_ULTRA_REASONING_EFFORT = "ultra"
 #: 传输层失败日志里错误详情的截断长度。
 TRANSPORT_ERROR_DETAIL_LIMIT = 200
 #: 订阅模型目录本地缓存 TTL。renderer 高频重拉 catalog，每次都打上游既慢又易触发限流 500。
@@ -80,6 +82,8 @@ _SUBSCRIPTION_SECRET_PATTERN = re.compile(
 LOGGER = logging.getLogger(__name__)
 RESPONSE_ITEM_REFERENCE = "item_reference"
 RESPONSE_ITEM_ID = "id"
+TEXT_PART_FIELDS = frozenset({"type", "text", "annotations", "logprobs"})
+MESSAGE_TEXT_TYPES = ("input_text", "output_text")
 UNSUPPORTED_SUBSCRIPTION_INPUT_TYPES = frozenset(
     {"agent_message", "multi_agent_call", "multi_agent_call_output"}
 )
@@ -107,6 +111,41 @@ SUBSCRIPTION_WEB_SEARCH_TOOLS = frozenset({READ_ONLY_WEB_SEARCH, "web_search_pre
 SUPPORTED_RESPONSE_TOOLS = (
     frozenset({"function", "custom", "namespace"}) | SUBSCRIPTION_WEB_SEARCH_TOOLS
 )
+
+
+def _plain_text_shape(part: Any) -> tuple[str, frozenset[str]] | None:
+    if (
+        not isinstance(part, Mapping)
+        or part.get("type") not in MESSAGE_TEXT_TYPES
+        or not isinstance(part.get("text"), str)
+        or not part.keys() <= TEXT_PART_FIELDS
+        or part.get("annotations", []) != []
+        or part.get("logprobs", []) != []
+    ):
+        return None
+    return part["type"], frozenset(part)
+
+
+def _subscription_history_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    # Provider item IDs are local to a connection. Preserve tool call_id links.
+    result = {key: value for key, value in item.items() if key != RESPONSE_ITEM_ID}
+    parts = item.get("content")
+    if (
+        item.get("role") == "assistant"
+        and item.get("type", "message") == "message"
+        and isinstance(parts, list)
+        and len(parts) > 1
+    ):
+        content = []
+        for shape, run in groupby(parts, key=_plain_text_shape):
+            if shape is None:
+                content.extend(run)
+            else:
+                first = next(run)
+                text = "".join(part["text"] for part in run)
+                content.append({**first, "text": first["text"] + text})
+        result["content"] = content
+    return result
 
 
 def _upstream_error_code(response: httpx.Response) -> str:
@@ -742,6 +781,9 @@ class SubscriptionService:
         if self.credentials.read(owner_id, connection_id).state != CredentialState.CONNECTED:
             raise OAuthFailure(REAUTH_REQUIRED_CODE)
         policy = OAUTH_PROVIDERS[profile[OAUTH_PROVIDER_KEY]]
+        # Codex resolves the logical Ultra preset against its native model catalog.
+        # Keep its resulting Responses parameters instead of reapplying the preset name.
+        native_ultra = reasoning_effort == CODEX_ULTRA_REASONING_EFFORT
 
         def request_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
             requested = str(payload.get("model") or "")
@@ -812,14 +854,21 @@ class SubscriptionService:
             request_policy=request_policy,
             model_routes=model_routes,
             trust_env=SUBSCRIPTION_TRUST_ENV,
-            reasoning_effort=reasoning_effort,
+            reasoning_effort=None if native_ultra else reasoning_effort,
             reasoning_options=reasoning_options,
             turn_id_provider=turn_id_provider,
             provider=OPENAI_PROVIDER,
             allow_tools=allow_tools,
             renewal_source=renewal_source,
             resume_scope=(
-                json.dumps({"model": model_id, "catalog": catalog_identity}, sort_keys=True)
+                json.dumps(
+                    {
+                        "model": model_id,
+                        "catalog": catalog_identity,
+                        **({"native_ultra": True} if native_ultra else {}),
+                    },
+                    sort_keys=True,
+                )
                 if session_id
                 else ""
             ),
@@ -864,17 +913,7 @@ class SubscriptionService:
                 raise OAuthFailure("oauth_capability_unsupported")
             if item.get("type") == "additional_tools":
                 validate_tools(item.get("tools", []))
-        if isinstance(items, list):
-            # Inline history is self-contained. Provider-generated item IDs are not
-            # portable across providers; tool call_id links remain untouched.
-            result["input"] = [
-                (
-                    {key: value for key, value in item.items() if key != RESPONSE_ITEM_ID}
-                    if isinstance(item, Mapping) and item.get("type") != RESPONSE_ITEM_REFERENCE
-                    else item
-                )
-                for item in items
-            ]
+        result["input"] = [_subscription_history_item(item) for item in items]
         return result
 
     async def close(self) -> None:

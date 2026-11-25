@@ -669,45 +669,83 @@ export function runtimeStoreRoot(): string {
     : computeRuntimeStoreRoot(desktopHome())
 }
 
+function healthTimer(timeoutMs: number, parent?: AbortSignal) {
+  const controller = new AbortController()
+  const signal = parent ? AbortSignal.any([parent, controller.signal]) : controller.signal
+  let settle!: () => void
+  const elapsed = new Promise<undefined>((resolve) => {
+    settle = () => resolve(undefined)
+  })
+  if (signal.aborted) settle()
+  else signal.addEventListener('abort', settle, { once: true })
+  const timer = setTimeout(() => controller.abort(), Math.ceil(timeoutMs))
+  return {
+    signal,
+    elapsed,
+    close: () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', settle)
+    },
+  }
+}
+
+async function readHealth(
+  url: string,
+  signal: AbortSignal,
+  deadline: number
+): Promise<{ ok?: boolean } | undefined> {
+  const response = await fetch(url, { signal })
+  signal.throwIfAborted()
+  if (response.ok) {
+    const health = (await response.json()) as { ok?: boolean }
+    return performance.now() < deadline ? health : undefined
+  }
+  await response.body?.cancel()
+}
+
 export async function waitForHealth(
   baseUrl: string,
   timeoutMs: number,
   log: LogSink,
-  mode: 'managed' | 'attach' = 'managed'
+  mode: 'managed' | 'attach' = 'managed',
+  signal?: AbortSignal
 ): Promise<boolean> {
+  const deadline = performance.now() + timeoutMs
   const browserEnabled = resolveProductConfig(log).features.browser
-  const deadline = Date.now() + timeoutMs
+  const url = baseUrl + (mode === 'managed' ? BACKEND_HEALTH_PATH : RUNTIME_HEALTH_PATH)
   let attempt = 0
   let interval = HEALTH_PROBE_INITIAL_INTERVAL_MS
-  while (Date.now() < deadline) {
+  while (!signal?.aborted) {
+    const startedAt = performance.now()
+    if (startedAt >= deadline) break
+    const probeDeadline = Math.min(deadline, startedAt + HEALTH_PROBE_TIMEOUT_MS)
+    const probe = healthTimer(probeDeadline - startedAt, signal)
     attempt++
     try {
-      const ctl = new AbortController()
-      const t = setTimeout(() => ctl.abort(), HEALTH_PROBE_TIMEOUT_MS)
-      const r = await fetch(
-        baseUrl + (mode === 'managed' ? BACKEND_HEALTH_PATH : RUNTIME_HEALTH_PATH),
-        {
-          signal: ctl.signal,
-        }
-      )
-      clearTimeout(t)
-      if (r.ok) {
-        const j = (await r.json()) as { ok?: boolean }
-        if (j.ok) {
-          const remote = validateBrowserFeatureReadiness(j, browserEnabled, mode)
-          if (remote === null)
-            log(
-              '[shell] legacy attach browser projection missing; remote unknown, local browser disabled\n'
-            )
-          log(`[shell] backend healthy after ${attempt} probe(s)\n`)
-          return true
-        }
+      const health = await Promise.race([readHealth(url, probe.signal, probeDeadline), probe.elapsed])
+      if (!probe.signal.aborted && health?.ok) {
+        const remote = validateBrowserFeatureReadiness(health, browserEnabled, mode)
+        if (remote === null)
+          log(
+            '[shell] legacy attach browser projection missing; remote unknown, local browser disabled\n'
+          )
+        log(`[shell] backend healthy after ${attempt} probe(s)\n`)
+        return true
       }
     } catch (error) {
       if (error instanceof BrowserFeatureReadinessError) throw error
       /* not up yet */
+    } finally {
+      probe.close()
     }
-    await new Promise((res) => setTimeout(res, interval))
+    const remaining = deadline - performance.now()
+    if (remaining <= 0 || signal?.aborted) break
+    const pause = healthTimer(Math.min(interval, remaining), signal)
+    try {
+      await pause.elapsed
+    } finally {
+      pause.close()
+    }
     interval = Math.min(interval * HEALTH_PROBE_BACKOFF_FACTOR, HEALTH_PROBE_MAX_INTERVAL_MS)
   }
   return false
@@ -1445,10 +1483,14 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     const firstRun = isFirstRun(desktopHome(), applicationIdentity)
     const healthBudget = resolveStartupBudgetMs(firstRun, false, SKILL_PYTHON_PROBE_TIMEOUT_MS)
     persist(`[shell] health budget=${healthBudget}ms (first-run=${firstRun})\n`)
+    const healthStop = new AbortController()
     const startup = await Promise.race([
-      waitForHealth(baseUrl, healthBudget, log).then((ok) => ({ kind: 'health' as const, ok })),
       handle.exited.then((exit) => ({ kind: 'exit' as const, exit })),
-    ])
+      waitForHealth(baseUrl, healthBudget, log, 'managed', healthStop.signal).then((ok) => ({
+        kind: 'health' as const,
+        ok,
+      })),
+    ]).finally(() => healthStop.abort())
     if (startup.kind === 'exit') {
       // Exit can precede the final exception line. Join only the pipe barrier:
       // preparation cleanup may depend on ready and must not hide this cause.

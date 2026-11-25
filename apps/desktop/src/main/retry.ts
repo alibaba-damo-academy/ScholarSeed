@@ -40,7 +40,7 @@ export function transientUpdateFailure(error: unknown): boolean {
 export async function retryUpdate<Result>(
   operation: () => Promise<Result>,
   signal?: AbortSignal,
-  onRetry?: (attempt: number) => void
+  onRetry?: (attempt: number, error: unknown) => void
 ): Promise<Result> {
   for (let attempt = 1; ; attempt++) {
     signal?.throwIfAborted()
@@ -49,7 +49,7 @@ export async function retryUpdate<Result>(
     } catch (error) {
       signal?.throwIfAborted()
       if (attempt >= UPDATE_ATTEMPTS || !transientUpdateFailure(error)) throw error
-      onRetry?.(attempt)
+      onRetry?.(attempt, error)
       await delay(UPDATE_BACKOFF_MS[attempt - 1], undefined, { signal })
     }
   }

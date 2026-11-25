@@ -56,7 +56,7 @@ import {
   effectiveReadiness,
   formatRuntimeStatus,
   formatTurnUnknown,
-  hasCurrentTurnCapabilityFailure,
+  currentTurnNeedsCompatibleContinuation,
   permissionModeFailure,
   permissionModeNeedsConfirmation,
   permissionModeShowsNextTurn,
@@ -856,7 +856,41 @@ test('subscription capability incident explains the terminal rejection in both l
   )
 })
 
-test('composer header continuation blocks only the current capability failure', async () => {
+test('history rejection status uses the error card reason in both languages', async () => {
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const code = 'model_history_content_unsupported'
+  const failure = describeTurnFailure({ code })
+  const update = reportRuntimeIncident(
+    thread(),
+    {
+      ...incident('detected'),
+      scope: 'turn',
+      kind: 'rpc_rejected',
+      strategy: 'none',
+      retryability: 'terminal',
+      safe_error: "The selected model cannot accept part of this conversation's history.",
+      provider_error_code: code,
+    },
+    'history-turn'
+  )
+  const status = update.conversation?.find((item) => item.kind === 'status')
+  assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
+  for (const language of ['zh', 'en']) {
+    const t = locale.getFixedT(language, 'conversation')
+    const detail = formatTurnFailure(failure, t).message
+    assert.equal(
+      formatRuntimeStatus(status.text, t),
+      t('runtime.detected') + t('runtime.detail', { detail })
+    )
+  }
+})
+
+test('composer header continuation blocks the current incompatible request', async () => {
   const source = readFileSync(
     new URL('./components/business/Composer.tsx', import.meta.url),
     'utf8'
@@ -883,15 +917,26 @@ test('composer header continuation blocks only the current capability failure', 
     ...describeTurnFailure({ code: 'subscription_sharing_unsupported_capability' }),
     turnId: 'capability-turn',
   }
+  const history = {
+    ...describeTurnFailure({
+      code: 'codex_provider_failed',
+      provider_error_code: 'model_history_content_unsupported',
+      retryable: true,
+    }),
+    turnId: 'history-turn',
+  }
+  assert.equal(history.failure?.kind, 'history_content')
+  assert.equal(history.runtimeAction, undefined)
   for (const [conversation, blocked] of [
     [[capability], true],
+    [[history], true],
     [[capability, { kind: 'user', text: 'new task', turnId: 'next-turn' }], false],
     [[{ ...describeTurnFailure({ retryable: true }), turnId: 'ordinary-turn' }], false],
   ] as [ConvItem[], boolean][]) {
     let submissions = 0
     let controls: { continueTurn: () => Promise<boolean>; continueDisabled: boolean } | undefined
     runInNewContext(script, {
-      hasCurrentTurnCapabilityFailure,
+      currentTurnNeedsCompatibleContinuation,
       thread: { ...thread(), running: false, status: 'failed', conversation },
       continueDisabled: false,
       header: (value: typeof controls) => {
@@ -919,6 +964,15 @@ test('classified turn failures keep a distinct reason in their complete guidance
   })
   const display = (item: ReturnType<typeof describeTurnFailure>) =>
     formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+
+  const history = describeTurnFailure({
+    code: 'model_history_content_unsupported',
+    retryable: true,
+  })
+  assert.equal(history.failure?.kind, 'history_content')
+  assert.equal(history.runtimeAction, undefined)
+  assert.equal(display(history).message, zh.failure.historyContent.message)
+  assert.equal(display(history).action, zh.failure.historyContent.action)
 
   // 适配器 _AUTH_CODES 里有这个码，渲染层曾漏登记，于是塌缩成 unknown 并只剩英文脱敏原文。
   const bridge = describeTurnFailure({
@@ -958,6 +1012,8 @@ test('classified turn failures keep a distinct reason in their complete guidance
 
   await locale.changeLanguage('en')
   assert.equal(display(bridge).message, 'Model service authentication failed.')
+  assert.equal(display(history).message, en.failure.historyContent.message)
+  assert.equal(display(history).action, en.failure.historyContent.action)
   assert.equal(display(rateLimit).message, en.failure.rateLimit.message)
   assert.equal(display(rateLimit).action, en.failure.rateLimit.action)
   assert.match(display(rateLimit).action, /Too many requests.*429/)
@@ -1287,7 +1343,7 @@ test('resource finalization projects separately from blocked recovery', () => {
   assert.equal('resourceFinalizing' in incremental, false)
 })
 
-test('assistant copy action requires text, a stopped turn and no pending confirmation', () => {
+test('assistant copy requires text and an eligible answer in a stopped turn without pending confirmation', () => {
   const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
   const syntax = ts.createSourceFile(
     'Stream.tsx',
@@ -1332,24 +1388,27 @@ test('assistant copy action requires text, a stopped turn and no pending confirm
   const contentScript = ts.transpileModule(`Boolean(${contentGates[0].getText(syntax)})`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText
-  for (const awaitingConfirmation of [false, true]) {
-    for (const turnOutcome of [
-      'running',
-      'completed',
-      'failed',
-      'interrupted',
-      'unknown',
-      undefined,
-    ]) {
-      const copyEnabled = runInNewContext(gateScript, { awaitingConfirmation, turnOutcome })
-      const expected = !awaitingConfirmation && turnOutcome !== 'running'
-      assert.equal(copyEnabled, expected, `${turnOutcome}/${awaitingConfirmation}`)
-      for (const text of ['', '完整回答']) {
-        assert.equal(
-          runInNewContext(contentScript, { item: { text }, copyEnabled }),
-          Boolean(text) && expected,
-          `${turnOutcome}/${awaitingConfirmation}/${text}`
-        )
+  for (const [turnOutcome, allowsFragment, allowsFinal] of [
+    ['running', false, false],
+    ['completed', false, true],
+    ['failed', true, true],
+    ['interrupted', true, true],
+    ['unknown', true, true],
+    [undefined, true, true],
+  ] as const) {
+    for (const finalAnswer of [false, true]) {
+      for (const awaitingConfirmation of [false, true]) {
+        const row = { turnOutcome, finalAnswer, awaitingConfirmation }
+        const copyEnabled = runInNewContext(gateScript, row)
+        const expected = !awaitingConfirmation && (finalAnswer ? allowsFinal : allowsFragment)
+        assert.equal(copyEnabled, expected, JSON.stringify(row))
+        for (const text of ['', '完整回答']) {
+          assert.equal(
+            runInNewContext(contentScript, { item: { text }, copyEnabled }),
+            Boolean(text) && expected,
+            JSON.stringify({ ...row, text })
+          )
+        }
       }
     }
   }
@@ -2843,20 +2902,18 @@ test('application status descriptors can be redrawn in either language', async (
   const locale = createInstance()
   await locale.init({
     lng: 'zh',
+    fallbackLng: false,
     resources: { zh: { conversation: zh }, en: { conversation: en } },
     defaultNS: 'conversation',
   })
   const t = locale.getFixedT(null, 'conversation')
   const compacted = { key: 'context.compacted' } as const
   const missing = { key: 'artifactFailure.missing' } as const
-  assert.equal(formatRuntimeStatus(compacted, t), '上下文已压缩，正在继续执行')
-  assert.equal(formatRuntimeStatus(missing, t), '文件不存在，未能展示产物。')
+  assert.equal(formatRuntimeStatus(compacted, t), zh.context.compacted)
+  assert.equal(formatRuntimeStatus(missing, t), zh.artifactFailure.missing)
   await locale.changeLanguage('en')
-  assert.equal(formatRuntimeStatus(compacted, t), 'Context compacted. Continuing execution.')
-  assert.equal(
-    formatRuntimeStatus(missing, t),
-    'The file does not exist, so the artifact could not be displayed.'
-  )
+  assert.equal(formatRuntimeStatus(compacted, t), en.context.compacted)
+  assert.equal(formatRuntimeStatus(missing, t), en.artifactFailure.missing)
   assert.deepEqual(compacted, { key: 'context.compacted' })
 })
 

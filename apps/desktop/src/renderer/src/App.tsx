@@ -1007,9 +1007,20 @@ function AppMain({
   }, [])
 
   const workspaceReady = state.workspaceLoadState === 'ready' && state.navigationRestored
+  const startupTaskPending =
+    state.startupTaskRecovery === 'waiting' || state.startupTaskRecovery === 'presenting'
   const homeAvailable =
-    state.navigationRestored && state.projectsLoaded && state.mainView === 'home'
-  const workspaceVisible = workspaceReady || homeAvailable
+    (state.navigationRestored || startupTaskPending) &&
+    state.projectsLoaded &&
+    state.mainView === 'home'
+  const workspaceVisible =
+    workspaceReady || homeAvailable || state.startupTaskRecovery === 'presenting'
+  const stopRecoveryForComposition =
+    state.startupTaskRecovery === 'waiting' ? act.skipStartupTaskRecovery : undefined
+  const recoveryAlertClass =
+    window.scholarseed?.platform === 'darwin'
+      ? '!pl-[calc(var(--vds-layout-window-controls-end)+var(--vds-space-3))]'
+      : undefined
   useUpdateHealth(workspaceReady && state.backendReady && state.runtimeReadiness !== null)
   const workspaceFailed = state.workspaceLoadState === 'error'
   const needsLogin = workspaceFailed && authRequired
@@ -1036,6 +1047,7 @@ function AppMain({
 
   return (
     <div
+      onCompositionStart={stopRecoveryForComposition}
       className={`vds-app-shell h-[var(--vds-app-shell-viewport-height)] min-h-[var(--vds-app-shell-viewport-height)] flex flex-col relative overflow-hidden bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] has-[.vds-workbench]:before:hidden before:fixed before:inset-x-0 before:top-0 before:z-[var(--vds-app-shell-drag-region-z-index)] before:h-[var(--vds-app-shell-drag-region-height)] before:content-[''] before:[-webkit-app-region:drag]${!state.sidebarOpen ? ' is-sidebar-collapsed' : ''}`}
     >
       {/* PRD 2.1.1: no full-width titlebar — the sidebar owns the window row
@@ -1068,6 +1080,33 @@ function AppMain({
         />
       ) : (
         <div className="vds-workspace-body flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          {startupTaskPending && (
+            <Alert
+              role="status"
+              className={recoveryAlertClass}
+              data-testid="startup-task-restoring"
+              description={t(
+                state.startupViewRecovery ? 'taskRecovery.restoringView' : 'taskRecovery.restoring'
+              )}
+              action={
+                <Button size="sm" variant="secondary" onClick={act.skipStartupTaskRecovery}>
+                  {t('taskRecovery.skip')}
+                </Button>
+              }
+            />
+          )}
+          {state.startupTaskRecovery === 'skipped' && (
+            <Alert
+              role="status"
+              className={recoveryAlertClass}
+              data-testid="startup-task-skipped"
+              closable
+              description={t(
+                state.startupViewRecovery ? 'taskRecovery.skippedView' : 'taskRecovery.skipped'
+              )}
+              onClose={act.dismissStartupTaskRecovery}
+            />
+          )}
           {workspaceFailed && (
             <Alert
               tone="error"
@@ -1095,7 +1134,7 @@ function AppMain({
         </div>
       )}
 
-      {workspaceReady && (
+      {workspaceVisible && (
         <NativeSettingsPortal
           open={Boolean(state.accountSettingsPage)}
           onFailure={() => act.openSettings(null)}

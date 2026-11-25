@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
@@ -13,7 +14,13 @@ from uuid import uuid4
 
 from service.content.domain.model import ContentError
 from service.persistence.project import StorageFailureKind, classify_storage_failure
-from service.platform.activity import Activities, ActivityDomain, MaintenanceActive
+from service.platform.activity import (
+    Activities,
+    ActivityDomain,
+    ActivityPhase,
+    MaintenanceActive,
+    MaintenanceStale,
+)
 from service.platform.content import (
     DISK_FULL_ERROR,
     IMPORT_CANCELLED_ERROR,
@@ -34,10 +41,16 @@ from service.resources.domain.jobs import (
     ImportSourceStatus,
     VersionInitializationProgress,
 )
-from service.resources.persistence.jobs import ImportJobStore
+from service.resources.persistence.jobs import (
+    ImportJobStore,
+    ImportJournalModeError,
+    ImportPollUnavailable,
+)
 from service.resources.service.listing import ResourceListing
 
 IMPORT_POLL_SECONDS = 0.1
+IMPORT_POLL_RETRY_INITIAL_SECONDS = 0.25
+IMPORT_POLL_RETRY_MAX_SECONDS = 4.0
 IMPORT_IDLE_SECONDS = 0.25
 IMPORT_LEASE_SECONDS = 30.0
 IMPORT_PROGRESS_FLUSH_SECONDS = 2.0
@@ -45,6 +58,7 @@ LOCAL_SOURCE_FALLBACK = "本地来源"
 RESOURCE_IMPORT_PARTIAL = "resource_import_partial"
 RESOURCE_IMPORT_FAILED = "resource_import_failed"
 STORAGE_IO_FAILED_ERROR = "storage_io_failed"
+RESOURCE_IMPORT_WORKER_UNAVAILABLE = "resource_import_worker_unavailable"
 
 _log = logging.getLogger("scholarseed.resources.imports")
 
@@ -53,6 +67,18 @@ class ResourceImportError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _log_storage_failure(event: str, error: BaseException) -> None:
+    sqlite_code = getattr(error, "sqlite_errorcode", None)
+    os_errno = error.errno if isinstance(error, OSError) else None
+    _log.warning(
+        "%s error_type=%s sqlite_code=%s os_errno=%s",
+        event,
+        type(error).__name__,
+        sqlite_code if isinstance(sqlite_code, int) else None,
+        os_errno if isinstance(os_errno, int) else None,
+    )
 
 
 class ResourceImportService:
@@ -65,6 +91,7 @@ class ResourceImportService:
         self._worker_id = uuid4().hex
         self._task: asyncio.Task[None] | None = None
         self._waiter: asyncio.Future[None] | None = None
+        self._poll_lock = asyncio.Lock()
         self._stopping = False
         self._linker: Callable[[ImportJob], Awaitable[None]] | None = None
         self._version_initializer: (
@@ -150,6 +177,36 @@ class ResourceImportService:
     async def start(self) -> None:
         self._stopping = False
         self._task = asyncio.create_task(self._run(), name="resource-import-worker")
+        self._task.add_done_callback(self._observe_worker_exit)
+
+    @staticmethod
+    def _observe_worker_exit(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            _log_storage_failure("resource_import_worker_failed", error)
+
+    def _require_update_worker(self, generation: str) -> None:
+        snapshot = self._activities.snapshot()
+        if snapshot.phase is not ActivityPhase.DRAINING or snapshot.generation != generation:
+            raise MaintenanceStale("update_maintenance_stale")
+        if self._stopping or self._task is None or self._task.done():
+            raise ResourceImportError(RESOURCE_IMPORT_WORKER_UNAVAILABLE)
+
+    async def prepare_for_update_shutdown(self, generation: str) -> None:
+        self._require_update_worker(generation)
+        async with self._poll_lock:
+            self._require_update_worker(generation)
+            # The lock serializes only polling and the storage probe. Active job
+            # completion can require open admission and remains owned by aclose.
+            try:
+                await self._activities.finish_observed_thread(self._store.verify_writable)
+            except (sqlite3.InterfaceError, sqlite3.ProgrammingError):
+                raise
+            except (sqlite3.Error, OSError, ImportJournalModeError) as error:
+                _log_storage_failure("resource_import_update_probe_failed", error)
+                if classify_storage_failure(error) is StorageFailureKind.FULL:
+                    raise ResourceImportError(DISK_FULL_ERROR) from None
+                raise ResourceImportError(STORAGE_IO_FAILED_ERROR) from None
+            self._require_update_worker(generation)
 
     async def aclose(self) -> None:
         self._stopping = True
@@ -157,7 +214,8 @@ class ResourceImportService:
         # worker. Wake idle admission/timer waits, then join the actual work.
         if self._waiter is not None:
             self._waiter.cancel()
-        task = self._task
+        async with self._poll_lock:
+            task = self._task
         if task is None:
             return
         try:
@@ -262,6 +320,7 @@ class ResourceImportService:
             await asyncio.sleep(IMPORT_POLL_SECONDS)
 
     async def _run(self) -> None:
+        retry_delay = 0.0
         while not self._stopping:
             if not await self._wait(self._activities.wait_open()):
                 return
@@ -269,21 +328,45 @@ class ResourceImportService:
                 lease = self._activities.enter(ActivityDomain.IMPORT, root=True)
             except MaintenanceActive:
                 continue
+            poll_error = None
+            job = None
             with lease:
-                interrupted = await self._activities.to_thread(
-                    ActivityDomain.IMPORT, self._store.interrupt_expired
-                )
-                if self._stopping:
-                    return
-                if interrupted:
-                    _log.warning("Marked %d expired resource import jobs interrupted", interrupted)
-                job = await self._activities.to_thread(
-                    ActivityDomain.IMPORT, self._store.claim, self._worker_id, IMPORT_LEASE_SECONDS
-                )
+                async with self._poll_lock:
+                    try:
+                        interrupted = await self._activities.to_thread(
+                            ActivityDomain.IMPORT, self._store.interrupt_expired
+                        )
+                        if self._stopping:
+                            return
+                        if interrupted:
+                            _log.warning(
+                                "Marked %d expired resource import jobs interrupted", interrupted
+                            )
+                        job = await self._activities.to_thread(
+                            ActivityDomain.IMPORT,
+                            self._store.claim,
+                            self._worker_id,
+                            IMPORT_LEASE_SECONDS,
+                        )
+                    except ImportPollUnavailable as error:
+                        poll_error = error.error
+                    else:
+                        if retry_delay:
+                            _log.info("resource_import_poll_recovered")
+                            retry_delay = 0.0
                 if job is not None and job.mode is ImportMode.COPY:
                     await self._execute(job)
             if self._stopping:
                 return
+            if poll_error is not None:
+                if retry_delay:
+                    retry_delay = min(2 * retry_delay, IMPORT_POLL_RETRY_MAX_SECONDS)
+                else:
+                    _log_storage_failure("resource_import_poll_unavailable", poll_error)
+                    retry_delay = IMPORT_POLL_RETRY_INITIAL_SECONDS
+                if not await self._wait(asyncio.sleep(retry_delay)):
+                    return
+                continue
             if job is not None and job.mode is ImportMode.LINK:
                 failure = None
                 try:

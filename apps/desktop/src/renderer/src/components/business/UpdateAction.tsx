@@ -3,9 +3,12 @@ import { useTranslation } from 'react-i18next'
 
 import { updateCandidateKey, type UpdateSnapshot } from '../../../../updates'
 import {
+  matchesRestartConfirmation,
   runLatestUpdateAction,
   runUpdateAction,
   updateActionOf,
+  updateFailureText,
+  useLatestUpdateAttempt,
 } from '../../features/updates/state'
 import {
   AlertDialog,
@@ -29,27 +32,41 @@ interface UpdateActionProps extends Omit<ButtonProps, 'onClick'> {
 
 export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): React.JSX.Element {
   const { t } = useTranslation('components')
+  const { t: accountText } = useTranslation('account')
   const titleId = useId()
   const descriptionId = useId()
   const [requested, setRequested] = useState<UpdateSnapshot | null>(null)
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
+  const currentAttempt = useLatestUpdateAttempt(state)
   const responding = useRef(false)
   const requestedKey = updateCandidateKey(requested?.candidate)
-  const valid =
-    updateActionOf(state) === 'install' &&
-    requestedKey === updateCandidateKey(state?.candidate) &&
-    requested?.candidate?.id === state?.candidate?.id
+  const followNativePromotion = window.scholarseed.platform === 'darwin'
+  const valid = matchesRestartConfirmation(requested, state, followNativePromotion)
 
-  const execute = async (confirmedKey?: string, latest = false): Promise<void> => {
+  const canRestart = updateActionOf(state) === 'install'
+  const latestFailure =
+    typeof currentAttempt?.result === 'object' ? currentAttempt.result : undefined
+  const showPromotionHint =
+    followNativePromotion &&
+    valid &&
+    (state?.latestCandidate || state?.candidate?.id !== requested?.candidate?.id)
+
+  const execute = async (confirmedKey?: string): Promise<void> => {
     if (responding.current) return
     responding.current = true
     setPending(true)
     setFailed(false)
     try {
       onAction?.()
-      if (latest) await runLatestUpdateAction(state)
-      else await runUpdateAction(confirmedKey ? requested : state, confirmedKey)
+      if (
+        (await runUpdateAction(
+          confirmedKey ? requested : state,
+          confirmedKey,
+          followNativePromotion
+        )) === 'candidate-changed'
+      )
+        return
       setRequested(null)
     } catch {
       setFailed(true)
@@ -64,7 +81,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
       {...props}
       disabled={props.disabled || pending}
       onClick={() => {
-        if (updateActionOf(state) === 'install') {
+        if (canRestart) {
           setFailed(false)
           setRequested(state)
         } else void execute()
@@ -79,24 +96,25 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
         if (!open && !responding.current) setRequested(null)
       }}
     >
-      {state?.latestCandidate && updateActionOf(state) === 'install' && (
+      {state?.latestCandidate && canRestart && (
         <Button
           size="sm"
           variant="outline"
           className="max-w-full whitespace-normal"
-          disabled={pending}
+          disabled={pending || (!!currentAttempt && !latestFailure)}
           data-testid="update-download-latest"
-          onClick={() => void execute(undefined, true)}
+          onClick={() => {
+            if (!responding.current) void runLatestUpdateAction(state, onAction)
+          }}
         >
           {t('update.downloadLatest', { build: state.latestCandidate.build_number })}
         </Button>
       )}
-      {/* Link the portal to its trigger so ancestor popovers retain it through pointerdown. */}
-      {updateActionOf(state) === 'install' ? (
-        <AlertDialogTrigger asChild>{button}</AlertDialogTrigger>
-      ) : (
-        button
+      {latestFailure && (
+        <span role="alert">{updateFailureText(latestFailure, t, accountText)}</span>
       )}
+      {/* Link the portal to its trigger so ancestor popovers retain it through pointerdown. */}
+      {canRestart ? <AlertDialogTrigger asChild>{button}</AlertDialogTrigger> : button}
 
       {failed && requested === null && <span role="alert">{t('update.confirmRestartFailed')}</span>}
       <AlertDialogPortal>
@@ -110,6 +128,7 @@ export function UpdateAction({ state, onAction, ...props }: UpdateActionProps): 
           <AlertDialogHeader>
             <AlertDialogTitle id={titleId}>{t('update.confirmRestartTitle')}</AlertDialogTitle>
             <AlertDialogDescription id={descriptionId}>
+              {showPromotionHint && <>{t('update.confirmRestartLatestReady')} </>}
               {t('update.confirmRestartDetail')}
             </AlertDialogDescription>
           </AlertDialogHeader>

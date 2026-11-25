@@ -41,6 +41,7 @@ import { createPreviewBridge, readPreviewAccountState } from './bridge.ts'
 import {
   submitFeedback,
   listQueuedMessages,
+  DEFAULT_FOLLOW_UP_MODE,
   getBackendHealth,
   deleteSession,
   setSessionArchived,
@@ -5700,6 +5701,17 @@ test('project list current identity is independent of newest creation and empty 
     assert.deepEqual(empty.body.projects, [])
     assert.equal(empty.body.current, '')
   } finally { runtime.close() }
+})
+
+test('the preview supplies the default follow-up preference when the workspace opens', async () => {
+  const runtime = await fixture()
+  try {
+    const preference = await runtime.request('/api/serve/settings/follow-up')
+    assert.equal(preference.status, 200)
+    assert.deepEqual(preference.body, { mode: DEFAULT_FOLLOW_UP_MODE, revision: 0 })
+  } finally {
+    runtime.close()
+  }
 })
 
 test('instances isolate projects, settings, resets and unknown requests fail closed', async () => {

@@ -58,6 +58,11 @@ const hooks = registerHooks({
 })
 const backend = await import('./backend.ts')
 
+function mockHealthClock(context: TestContext): void {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  context.mock.method(performance, 'now', () => Date.now())
+}
+
 test('Desktop exports its canonical Skill launcher to the receipt-gated backend', () => {
   const source = readFileSync(new URL('./backend.ts', import.meta.url), 'utf8')
   assert.match(source, /const SCHOLARSEED_SKILL_PYTHON_ENV = 'SCHOLARSEED_SKILL_PYTHON'/)
@@ -72,7 +77,7 @@ test('same-build startup survives slow preparation beyond the former overall dea
   assert.equal(firstRun, false)
   const originalFetch = globalThis.fetch
   const logs: string[] = []
-  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  mockHealthClock(context)
   try {
     globalThis.fetch = async () =>
       ({
@@ -102,7 +107,7 @@ test('same-build startup still fails when preparation and readiness exhaust the 
   const identity = { version: '0.3.0', buildNumber: '202611021300' }
   writeStartupMarker(home, identity)
   const originalFetch = globalThis.fetch
-  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  mockHealthClock(context)
   try {
     globalThis.fetch = async () => ({ ok: false }) as Response
     const budget = resolveStartupBudgetMs(isFirstRun(home, identity), false, 90_000)
@@ -125,6 +130,127 @@ test('same-build startup still fails when preparation and readiness exhaust the 
     globalThis.fetch = originalFetch
     context.mock.timers.reset()
   }
+})
+
+test('a response whose health JSON stalls uses only the remaining startup budget', async (context) => {
+  mockHealthClock(context)
+  let probeSignal: AbortSignal | null | undefined
+  let reachedBody = false
+  context.mock.method(globalThis, 'fetch', async (_input: unknown, init?: RequestInit) => {
+    probeSignal = init?.signal
+    return {
+      ok: true,
+      json: () => {
+        reachedBody = true
+        return new Promise(() => {})
+      },
+    } as Response
+  })
+  let result: boolean | undefined
+  const ready = backend.waitForHealth('http://127.0.0.1', 100, () => {}).then((value) => {
+    result = value
+  })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(reachedBody, true)
+  context.mock.timers.tick(99)
+  assert.equal(result, undefined)
+  context.mock.timers.tick(1)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(result, false)
+  assert.equal(probeSignal?.aborted, true)
+  await ready
+})
+
+test('a health probe respects both its own cap and the remaining startup budget', async (context) => {
+  mockHealthClock(context)
+  const probes: AbortSignal[] = []
+  context.mock.method(globalThis, 'fetch', (_input: unknown, init?: RequestInit) => {
+    assert.ok(init?.signal)
+    probes.push(init.signal)
+    return new Promise<Response>(() => {})
+  })
+  let result: boolean | undefined
+  const ready = backend.waitForHealth('http://127.0.0.1', 25_250, () => {}).then((value) => {
+    result = value
+  })
+  context.mock.timers.tick(25_000)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(probes.map((probe) => probe.aborted), [true])
+  context.mock.timers.tick(150)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(probes.map((probe) => probe.aborted), [true, false])
+  context.mock.timers.tick(100)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(probes.map((probe) => probe.aborted), [true, true])
+  assert.equal(result, false)
+  await ready
+})
+
+test('health retry sleeps only for the remaining budget and wakes on cancellation', async (context) => {
+  mockHealthClock(context)
+  const fetch = context.mock.method(globalThis, 'fetch', async () => ({ ok: false }) as Response)
+  let result: boolean | undefined
+  const ready = backend.waitForHealth('http://127.0.0.1', 50, () => {}).then((value) => {
+    result = value
+  })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  context.mock.timers.tick(50)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(result, false)
+  assert.equal(fetch.mock.callCount(), 1)
+  await ready
+
+  const caller = new AbortController()
+  const cancelled = backend.waitForHealth('http://127.0.0.1', 500, () => {}, 'attach', caller.signal)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  caller.abort()
+  assert.equal(await cancelled, false)
+  context.mock.timers.tick(500)
+  assert.equal(fetch.mock.callCount(), 2)
+})
+
+test('an on-time health body stays valid when the caller resumes past its deadline', async (context) => {
+  let now = 0
+  let deliverBody!: (value: unknown) => void
+  context.mock.method(performance, 'now', () => now)
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async () =>
+      ({
+        ok: true,
+        json: () =>
+          new Promise((resolve) => {
+            deliverBody = resolve
+          }),
+      }) as Response
+  )
+  const ready = backend.waitForHealth('http://127.0.0.1', 100, () => {})
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  now = 99
+  deliverBody({ ok: true, features: { browser: false } })
+  queueMicrotask(() => {
+    now = 101
+  })
+  assert.equal(await ready, true)
+})
+
+test('health JSON that finishes after the deadline cannot mark the backend ready', async (context) => {
+  let now = 0
+  let deliverBody!: (value: unknown) => void
+  context.mock.method(performance, 'now', () => now)
+  context.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: () =>
+      new Promise((resolve) => {
+        deliverBody = resolve
+      }),
+  }) as Response)
+  const ready = backend.waitForHealth('http://127.0.0.1', 100, () => {})
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  now = 101
+  deliverBody({ ok: true, features: { browser: false } })
+  assert.equal(await ready, false)
 })
 
 test('Skill Python probe rejects missing executables and does not launch after cancellation', async () => {
@@ -566,12 +692,14 @@ test('backend preserves the default project seed and independently decodes UTF-8
     stderr: { value: stderr },
   })
   let releaseHealth!: (response: Response) => void
+  let healthSignal: AbortSignal | null | undefined
   context.mock.method(
     globalThis,
     'fetch',
-    () =>
+    (_input: unknown, init?: RequestInit) =>
       new Promise<Response>((resolve) => {
         releaseHealth = resolve
+        healthSignal = init?.signal
       })
   )
   const spawning = context.mock.method(
@@ -606,6 +734,7 @@ test('backend preserves the default project seed and independently decodes UTF-8
     while (!handle.proc && !handle.error)
       await new Promise<void>((resolve) => setImmediate(resolve))
     assert.equal(handle.proc, child, output.join(''))
+    assert.ok(healthSignal)
     assert.equal(serveEnvironment?.SCHOLARSEED_PYTHON, process.execPath)
     assert.equal(serveEnvironment?.SCHOLARSEED_BUNDLED_SKILL_LOCK, '')
     const seedFlag = serveArgs.indexOf('--default-project-name')
@@ -653,6 +782,7 @@ test('backend preserves the default project seed and independently decodes UTF-8
     assert.doesNotMatch(expected, /\uFFFD/)
     child.emit('close', 7, null)
     assert.equal(await handle.ready, false)
+    assert.equal(healthSignal.aborted, true)
     assert.equal(handle.error?.kind, 'schemaUpgradeRequired')
     assert.equal(
       handle.error && 'detail' in handle.error ? handle.error.detail : null,

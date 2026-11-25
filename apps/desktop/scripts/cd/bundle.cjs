@@ -171,7 +171,12 @@ async function bundle(context, target, environment) {
     else context.pythonInstallation = await assembly.stageSync(uv, python, requirements, wheelsRoot, environment,
       context.verificationRoot || undefined, prepared.source_builds)
   } else {
-    await assembly.installSources(uv, python, requirements, wheelsRoot, wheelsRoot, environment, prepared.source_builds)
+    // Clang debug symbols in fastcdc embed pip's random source and object paths.
+    // The source-wheel cache identity includes CFLAGS.
+    const sourceEnvironment = process.platform === 'darwin'
+      ? {...environment, CFLAGS: [environment.CFLAGS, '-g0'].filter(Boolean).join(' ')}
+      : environment
+    await assembly.installSources(uv, python, requirements, wheelsRoot, wheelsRoot, sourceEnvironment, prepared.source_builds)
     assembly.synchronize(uv, python, requirements, wheelsRoot, environment)
   }
   run(python, ['-I', '-B', helper, 'snapshot', '--plan', plan, '--requirements', requirements, '--output', inventory,

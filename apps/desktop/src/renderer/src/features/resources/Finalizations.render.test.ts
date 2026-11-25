@@ -53,11 +53,13 @@ const plugin: Plugin = {
       import {resources} from '/../../localization/resources.ts'
       import {Finalizations} from '/features/resources/Finalizations.tsx'
       const localization = createLocalization('zh', resources, {report() {}})
-      createRoot(document.getElementById('root')).render(
+      const root = createRoot(document.getElementById('root'))
+      window.renderFinalizations = (revision) => root.render(
         <I18nextProvider i18n={localization}>
-          <Finalizations project="project" sessionId="session" running={false} revision={0} />
+          <Finalizations project="project" sessionId="session" running={false} revision={revision} />
         </I18nextProvider>
       )
+      window.renderFinalizations(0)
     `
         : modules[name]
     return (
@@ -84,7 +86,7 @@ const plugin: Plugin = {
   },
 }
 
-test('finalization paths wrap within the warning and preserve keyboard file opening', async () => {
+test('pending finalizations clear on settlement and earlier warnings keep accessible paths', async () => {
   const server = await servers.create({
     configFile: false,
     root: ROOT,
@@ -96,10 +98,22 @@ test('finalization paths wrap within the warning and preserve keyboard file open
   const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL })
   try {
     const page = await browser.newPage()
+    const checking = {
+      session_id: 'session',
+      turn_id: 'checking',
+      terminal_outcome: 'completed',
+      error: null,
+      paths: [],
+      created_at_ms: 2,
+      snapshot_available: false,
+      retryable: false,
+    }
+    let checkingFiles = true
     await page.route('**/api/resource/finalizations?*', (route) =>
       route.fulfill({
         json: {
           entries: [
+            ...(checkingFiles ? [checking] : []),
             {
               session_id: 'session',
               turn_id: 'turn',
@@ -117,6 +131,14 @@ test('finalization paths wrap within the warning and preserve keyboard file open
     )
     await page.goto(new URL('/__finalizations', server.resolvedUrls!.local[0]).href)
     const warning = page.getByTestId('resource-finalization-warning')
+    const progress = page.getByText('正在检查文件变更…', { exact: true })
+    await expect(progress).toBeVisible()
+    await expect(warning).toHaveCount(1)
+    checkingFiles = false
+    await page.evaluate(() =>
+      (window as unknown as { renderFinalizations(revision: number): void }).renderFinalizations(1)
+    )
+    await expect(progress).toHaveCount(0)
     await expect(warning).toBeVisible()
     await expect(warning.getByRole('button', { name: PATHS[1], exact: true })).toHaveCSS(
       'white-space',

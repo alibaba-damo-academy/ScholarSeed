@@ -8,15 +8,16 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync
 } from 'fs'
-import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
-import { seedRendererPreferences } from './fixtures/runtime'
+import { runtimeHomeRoot, seedRendererPreferences } from './fixtures/runtime'
 import { skipQuarantined } from './fixtures/quarantine'
 
 test.beforeEach(async ({}, testInfo) => { skipQuarantined(testInfo) })
@@ -88,13 +89,11 @@ test('local lane skips update checks and still offers the read-only diagnosis', 
 
   const appRoot = testInfo.outputPath('desktop-app')
   const artifacts = testInfo.outputPath('artifacts')
-  // serve 会在 home 下绑 AF_UNIX socket（home/.scholarseed/… + endpoint-<8 随机> + api.sock，
-  // 约再拼 35 字符），macOS 上限 104；而 macOS 的 tmpdir() 自身就 49 字符。所以标签必须
-  // 压到最短，playwright 输出目录那种哈希路径更是必然超限、后端直接 OSError 起不来。
-  const runTag = `su${process.pid}`
-  const home = join(tmpdir(), `${runTag}-h`)
-  const workspace = join(tmpdir(), `${runTag}-w`)
-  const userData = join(tmpdir(), `${runTag}-u`)
+  // Use a short physical root for the Unix socket and no-follow storage leases.
+  const root = realpathSync.native(mkdtempSync(join(runtimeHomeRoot(), 'su-')))
+  const home = join(root, 'h')
+  const workspace = join(root, 'w')
+  const userData = join(root, 'u')
   for (const directory of [appRoot, home, workspace, userData, artifacts]) {
     mkdirSync(directory, { recursive: true })
   }
@@ -166,30 +165,28 @@ test('local lane skips update checks and still offers the read-only diagnosis', 
     expect(checkRequests).toBe(0)
 
     // 工作台进设置页的真实路径：头像菜单 → 设置 → 左侧导航。
-    await openAccountSettings(page)
-    await page.getByTestId('account-settings-nav-about').click()
-    await expect(page.getByTestId('about-settings-page')).toBeVisible()
-    await expect(page.getByTestId('version-current')).toContainText(`当前版本：${currentVersion}`)
-    await expect(page.getByTestId('version-status')).toContainText('开发构建不检查更新')
-    await expect(page.getByTestId('version-diagnose')).toHaveText('诊断更新链路')
+    const settings = await openAccountSettings(page)
+    await settings.getByTestId('account-settings-nav-about').click()
+    await expect(settings.getByTestId('about-settings-page')).toBeVisible()
+    await expect(settings.getByTestId('version-current')).toContainText(`当前版本：${currentVersion}`)
+    await expect(settings.getByTestId('version-status')).toContainText('开发构建不检查更新')
+    await expect(settings.getByTestId('version-diagnose')).toHaveText('诊断更新链路')
     // 版权行是 PRD「关于书深」第 6 条，此前页面缺失。
-    await expect(page.getByTestId('about-copyright')).toContainText('书深')
+    await expect(settings.getByTestId('about-copyright')).toContainText('书深')
     // 检查更新入口在 local lane 下不出现，否则用户点了只会拿到一个恒不通过的身份门。
-    await expect(page.getByTestId('version-check')).toHaveCount(0)
-    await page.screenshot({ path: join(artifacts, '关于书深-local-lane.png') })
+    await expect(settings.getByTestId('version-check')).toHaveCount(0)
+    await settings.screenshot({ path: join(artifacts, '关于书深-local-lane.png') })
 
     // 只读诊断通道仍可用：它是 local lane 唯一被保留的更新面能力。
-    await page.getByTestId('version-diagnose').click()
-    const diagnosis = page.getByTestId('version-diagnosis')
+    await settings.getByTestId('version-diagnose').click()
+    const diagnosis = settings.getByTestId('version-diagnosis')
     await expect(diagnosis).toBeVisible()
     await expect(diagnosis).toContainText(UPDATE_VERSION)
     expect(checkRequests).toBeGreaterThan(0)
-    await page.screenshot({ path: join(artifacts, '关于书深-诊断.png') })
+    await settings.screenshot({ path: join(artifacts, '关于书深-诊断.png') })
   } finally {
     await app.close().catch(() => undefined)
     await closeServer(server)
-    for (const directory of [home, workspace, userData]) {
-      rmSync(directory, { recursive: true, force: true })
-    }
+    rmSync(root, { recursive: true, force: true })
   }
 })

@@ -735,7 +735,7 @@ async def test_directory_preparation_yields_and_keeps_lock(workspace: Path) -> N
             await asyncio.sleep(0.02)
             check(
                 "cancelled create retains serialization until disk work ends",
-                not opened.done() and service._open_lock.locked(),
+                not opened.done() and service._operations._active == 1,
             )
         finally:
             release.set()
@@ -743,7 +743,7 @@ async def test_directory_preparation_yields_and_keeps_lock(workspace: Path) -> N
                 await opened
             except asyncio.CancelledError:
                 pass
-        check("directory completion releases serialization", not service._open_lock.locked())
+        check("directory completion releases serialization", service._operations._active == 0)
 
 
 def main() -> int:

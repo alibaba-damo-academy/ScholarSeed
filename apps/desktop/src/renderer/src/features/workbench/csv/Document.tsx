@@ -53,7 +53,6 @@ interface WindowData {
 interface SavedSnapshot {
   bytes: Uint8Array
   version: number
-  revision: string
 }
 const CSV_COLUMN_WIDTH = 180
 const CSV_ROW_HEIGHT = 24
@@ -95,7 +94,8 @@ export function CsvDocument(props: Props): React.JSX.Element {
   const owner = props.sessionId || `${props.title}:${props.revision}`
   const root = useRef<HTMLDivElement>(null)
   const client = useRef<CsvClient | null>(null)
-  const source = useRef<{ owner: string; bytes: Uint8Array } | null>(null)
+  const savedBytes = session?.savedBytes
+  const source = useRef<{ owner: string; bytes: Uint8Array; savedBytes?: Uint8Array } | null>(null)
   const saved = useRef(new Map<number, SavedSnapshot>())
   const generation = useRef(0)
   const editGeneration = useRef(0)
@@ -131,14 +131,14 @@ export function CsvDocument(props: Props): React.JSX.Element {
   useEffect(() => {
     const current = client.current
     if (source.current?.owner === owner && current) {
-      const snapshot = [...saved.current.values()].find((item) =>
-        equalBytes(item.bytes, props.bytes)
-      )
+      // A receipt can advance the saved baseline while newer edits stay in the worker.
+      const snapshot =
+        savedBytes && savedBytes !== source.current.savedBytes
+          ? [...saved.current.values()].reverse().find((item) => equalBytes(item.bytes, savedBytes))
+          : undefined
+      source.current.savedBytes = savedBytes
       if (snapshot) {
         source.current.bytes = props.bytes
-        // Workspace publishes serialized bytes before HTTP finishes. Preserve the
-        // model during that stage; only a new revision acknowledges persistence.
-        if (snapshot.revision === props.revision) return
         initialDraft.current = false
         void current
           .request({
@@ -159,7 +159,7 @@ export function CsvDocument(props: Props): React.JSX.Element {
     generation.current++
     editGeneration.current++
     saved.current.clear()
-    source.current = { owner, bytes: props.bytes }
+    source.current = { owner, bytes: props.bytes, savedBytes }
     setFailure(null)
     setState(null)
     setData(null)
@@ -201,7 +201,16 @@ export function CsvDocument(props: Props): React.JSX.Element {
           if (client.current === instance) reportError(error)
         }
       )
-  }, [owner, props.bytes, props.revision, props.sessionId, controller, attempt, reportError])
+  }, [
+    owner,
+    props.bytes,
+    props.revision,
+    props.sessionId,
+    savedBytes,
+    controller,
+    attempt,
+    reportError,
+  ])
   useEffect(
     () => () => {
       generation.current++
@@ -247,23 +256,26 @@ export function CsvDocument(props: Props): React.JSX.Element {
       prepare: () => {
         void commitRef.current().catch(() => undefined)
       },
-      beforeSave: async () => {
+      beforeSave: async (signal) => {
+        const instance = client.current
         await commitRef.current()
-        await client.current?.request({ command: 'state' })
+        signal?.throwIfAborted()
+        if (instance === client.current) await instance?.readForSave('state', signal)
       },
-      serialize: async () => {
+      serialize: async (signal) => {
         const instance = client.current
         if (!instance || mutationFailure.current) return null
         try {
           await commitRef.current()
+          signal?.throwIfAborted()
           if (client.current !== instance) return null
-          const response = await instance.request({ command: 'serialize' })
+          const response = await instance.readForSave('serialize', signal)
+          if (signal?.aborted || client.current !== instance) return null
           const snapshot = response.value as { bytes: Uint8Array; version: number }
-          const live = controller.getSnapshot().sessions[props.sessionId!]
-          saved.current.set(snapshot.version, { ...snapshot, revision: live.revision })
+          saved.current.set(snapshot.version, snapshot)
           return snapshot.bytes
         } catch (error) {
-          if (client.current === instance) reportError(error)
+          if (!signal?.aborted && client.current === instance) reportError(error)
           return null
         }
       },

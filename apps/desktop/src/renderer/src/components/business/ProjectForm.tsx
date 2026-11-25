@@ -4,6 +4,7 @@ import { Folder, Info } from 'lucide-react'
 
 import type { Project } from '../../api'
 import { reportProjectCreation, submitProjectCreation } from '../../api'
+import { CONTENT_OPERATION_UNKNOWN } from '../../app/api/content'
 import { PROJECT_DESCRIPTION_MAX, PROJECT_NAME_MAX } from '../../contracts/content'
 import { previewProjectDirectory, renameProject as updateProject } from '../../features/project/api'
 import {
@@ -93,7 +94,11 @@ export function ProjectForm({
   const [error, setError] = React.useState<
     | {
         messageKey:
-          'project.required' | 'project.createFailed' | 'project.folderBusy' | 'project.saveFailed'
+          | 'project.required'
+          | 'project.createFailed'
+          | 'project.folderBusy'
+          | 'project.saveFailed'
+          | 'project.outcomeUnconfirmed'
       }
     | { text: string }
     | null
@@ -149,6 +154,7 @@ export function ProjectForm({
         if (result.kind === 'unknown') {
           current.operation = result.operation
           current.blocked = !result.operation
+          setError({ messageKey: 'project.outcomeUnconfirmed' })
           return
         }
         created = createdProject.current = result.project
@@ -174,7 +180,12 @@ export function ProjectForm({
           ...(metadata.ok ? {} : { code: 'metadata_update_failed' }),
         })
         if (!metadata.ok) {
-          setError({ messageKey: 'project.saveFailed' })
+          setError({
+            messageKey:
+              metadata.error === CONTENT_OPERATION_UNKNOWN
+                ? 'project.outcomeUnconfirmed'
+                : 'project.saveFailed',
+          })
           return
         }
         created = createdProject.current = {
@@ -211,7 +222,11 @@ export function ProjectForm({
     })
     setBusy(false)
     if (!result.ok) {
-      setError(result.error ? { text: result.error } : { messageKey: 'project.saveFailed' })
+      if (result.error === CONTENT_OPERATION_UNKNOWN) {
+        setError({ messageKey: 'project.outcomeUnconfirmed' })
+      } else {
+        setError(result.error ? { text: result.error } : { messageKey: 'project.saveFailed' })
+      }
       return
     }
     await onDone(t('project.renamed', { name: next }))

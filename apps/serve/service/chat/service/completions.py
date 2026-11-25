@@ -36,6 +36,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
+from starlette.types import Message, Receive, Scope, Send
+
+from scholarseed_runtime.contract.incident import MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
 from service.chat.service.namespaces import NAMESPACE_TOOL_TYPE, NamespaceTools
 from service.chat.service.provenance import ProvenanceStream, response_provenance
@@ -81,7 +84,7 @@ from service.inference.source import (
     accepts_source,
     attach_source,
 )
-from starlette.types import Message, Receive, Scope, Send
+from service.settings.capabilities import REASONING_EFFORT_LEVELS
 
 MODEL_BRIDGE_ROUTE_PREFIX = "/api/internal/model-bridge/"
 BRIDGE_ROUTE = f"{MODEL_BRIDGE_ROUTE_PREFIX}{{bridge_id}}/v1/responses"
@@ -122,6 +125,8 @@ RESPONSES_SUFFIX = "/responses"
 MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED = "model_bridge_native_tools_unsupported"
 MODEL_BRIDGE_CLOSED = "model_bridge_closed"
 UPSTREAM_ERROR_MESSAGE_LIMIT = 500
+UPSTREAM_ARRAY_LIMIT_CODE = "array_above_max_length"
+UPSTREAM_INVALID_REQUEST_TYPE = "invalid_request_error"
 MODEL_FIELD = "model"
 RESPONSE_FIELD = "response"
 SSE_DATA_PREFIX = b"data:"
@@ -1598,8 +1603,10 @@ class CompletionBridge:
         )
         call.diagnostic.routed_model = str(chat_request["model"])
         call.diagnostic.wire_protocol = protocol.value
+        reasoning = chat_request.get("reasoning") if native_response else None
+        wire_effort = reasoning.get("effort") if isinstance(reasoning, Mapping) else None
         logger.info(
-            "model_bridge_reasoning session_id=%s model=%s effort=%s wire=%s",
+            "model_bridge_reasoning session_id=%s model=%s effort=%s wire=%s wire_effort=%s",
             upstream.session_id,
             chat_request["model"],
             (
@@ -1608,6 +1615,7 @@ class CompletionBridge:
                 else "not_overridden"
             ),
             protocol.value,
+            wire_effort if wire_effort in REASONING_EFFORT_LEVELS else "-",
         )
         call.diagnostic.observe_output_format(chat_request)
         request_bytes_before = _json_size(chat_request)
@@ -1960,6 +1968,18 @@ class CompletionBridge:
                         summary["code"],
                     )
                 code = revocation_code or product_code or summary["code"]
+                if (
+                    upstream.credential_resolver is not None
+                    and native_response
+                    and response.status_code == HTTPStatus.BAD_REQUEST
+                    and code == UPSTREAM_ARRAY_LIMIT_CODE
+                    and summary["type"] == UPSTREAM_INVALID_REQUEST_TYPE
+                    and call.diagnostic.observe_rejected_content(chat_request, summary["param"])
+                ):
+                    code = MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE
+                elif code.casefold() == MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE:
+                    # Only the final request shape can establish this local diagnosis.
+                    product_code = code = MODEL_UPSTREAM_REJECTED
                 policy = (
                     rate_limit_policy(code)
                     if response.status_code == UPSTREAM_RATE_LIMIT_STATUS

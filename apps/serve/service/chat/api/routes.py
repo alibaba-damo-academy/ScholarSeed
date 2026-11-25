@@ -133,9 +133,11 @@ def create_chat_app(
     async def lifespan(_app: FastAPI):
         failures: list[BaseException] = []
 
-        async def close(operation: Callable[[], Awaitable[None]]) -> None:
+        async def close(
+            operation: Callable[[], Awaitable[None]], *, stage: str | None = None
+        ) -> None:
             try:
-                with _app.state.shutdown.stage(operation.__qualname__):
+                with _app.state.shutdown.stage(stage or operation.__qualname__):
                     await operation()
             except BaseException as error:
                 # A failed/cancelled close is not a drain receipt. Keep cleaning
@@ -203,6 +205,15 @@ def create_chat_app(
             except BaseException as error:
                 failures.append(error)
             finally:
+
+                async def drain_session_operations() -> None:
+                    shutdown = _app.state.shutdown
+                    await session_service.stop_session_operations(shutdown.deadline)
+
+                await close(
+                    drain_session_operations,
+                    stage=session_service.stop_session_operations.__qualname__,
+                )
                 if deferred_mcp is not None:
 
                     async def close_deferred_mcp() -> None:
@@ -316,7 +327,9 @@ def create_chat_app(
 
     def manual_skill_turn(session_id: str, turn: str) -> bool:
         live = sessions.get(session_id)
-        return bool(turn and live and live.active_product_turn_id == turn and live.auto_route is None)
+        return bool(
+            turn and live and live.active_product_turn_id == turn and live.auto_route is None
+        )
 
     completion_bridge = CompletionBridge(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),

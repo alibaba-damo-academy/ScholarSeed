@@ -220,10 +220,19 @@ test('only an exact no-maintenance refusal permits retry', { timeout: 10_000 }, 
     ['quiesce_if_idle', 'quiesceIfIdle'],
     ['prepare_update', 'prepareUpdate'],
   ] as const) {
-    for (const [name, response, retryable] of [
-      ['refused', Buffer.from([0]), true],
-      ['retained', Buffer.from([2]), false],
-      ['malformed', Buffer.from([0, 0]), false],
+    for (const [name, response, retryable, reason] of [
+      ['refused', Buffer.from([0]), true, undefined],
+      ['storage full', Buffer.from([0, 1]), operation === 'prepare_update', 'update_storage_full'],
+      [
+        'import store unavailable',
+        Buffer.from([0, 2]),
+        operation === 'prepare_update',
+        'update_import_store_unavailable',
+      ],
+      ['retained', Buffer.from([2]), false, undefined],
+      ['malformed', Buffer.from([0, 0]), false, undefined],
+      ['unregistered refusal code', Buffer.from([0, 3]), false, undefined],
+      ['overlong', Buffer.from([0, 1, 0]), false, undefined],
     ] as const) {
       await t.test(`${operation}: ${name}`, async (t) => {
         const control = new BackendControl()
@@ -249,9 +258,11 @@ test('only an exact no-maintenance refusal permits retry', { timeout: 10_000 }, 
         })
         await assert.rejects(control[method](), (error: unknown) => {
           assert.equal(error instanceof BackendMaintenanceRejected, retryable)
+          if (error instanceof BackendMaintenanceRejected) assert.equal(error.reason, reason)
           return true
         })
         if (retryable) await assert.rejects(control[method](), BackendMaintenanceRejected)
+        else await assert.rejects(control.whenAuthenticated(), /control unavailable/)
       })
     }
   }

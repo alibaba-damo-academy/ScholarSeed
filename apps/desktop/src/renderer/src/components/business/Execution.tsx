@@ -293,7 +293,7 @@ const STATUS_ICONS: Record<ExecutionStatusKind, string> = {
 }
 
 export interface ToolExecutionData {
-  name: string
+  name?: string
   label: string
   status: ExecutionStatusKind
   statusLabel: string
@@ -387,8 +387,10 @@ export function ToolExecution({
   useEffect(() => {
     if (reveal) setOpen(true)
   }, [reveal])
+  const { exitCode } = data
+  const showExitCode = typeof exitCode === 'number' && exitCode !== 0
   const hasBody = Boolean(
-    data.failure || data.input !== undefined || data.output !== undefined || actions
+    data.failure || data.input !== undefined || data.output !== undefined || showExitCode || actions
   )
   return (
     <div
@@ -460,15 +462,15 @@ export function ToolExecution({
               ) : null}
               {!data.failure || technicalOpen ? (
                 <>
-                  <div className={TOOL_RUN_IO_LABEL_CLASS}>{data.name}</div>
-                  {typeof data.exitCode === 'number' ? (
-                    <div>{conversation('toolOutcome.exitCode', { code: data.exitCode })}</div>
-                  ) : null}
+                  {data.name ? <div className={TOOL_RUN_IO_LABEL_CLASS}>{data.name}</div> : null}
                   {data.input !== undefined ? (
                     <ExecutionIO label={t('stream.input')} text={data.input} />
                   ) : null}
                   {data.output !== undefined ? (
                     <ExecutionIO label={t('stream.output')} text={data.output} />
+                  ) : null}
+                  {showExitCode ? (
+                    <div>{conversation('toolOutcome.exitCode', { code: exitCode })}</div>
                   ) : null}
                 </>
               ) : null}

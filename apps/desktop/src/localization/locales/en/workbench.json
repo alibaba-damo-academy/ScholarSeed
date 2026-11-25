@@ -145,6 +145,8 @@
     "unsaved": "Unsaved",
     "filePath": "File path",
     "saving": "Saving…",
+    "saveUnconfirmed": "Save result unconfirmed. Your edits are preserved.",
+    "checkSave": "Check save result",
     "externalChange": "File modified externally",
     "saveFailed": "Save failed",
     "ignored": "Not managed by version history",

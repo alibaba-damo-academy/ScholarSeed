@@ -86,25 +86,27 @@ import {
   writeTranslationTarget,
 } from '../../../components/business/Language'
 import {
+  PDF_AI_TASK_UNRESOLVED,
+  pdfAiFailure,
+  PDF_AI_PREFIX,
+  PDF_AI_INVALID_RESPONSE,
+  pdfAiApi,
+  pdfAiTaskFinished,
+  type PdfAiFailure,
+} from '../../../app/api/pdf.ts'
+import {
   PDF_AI_IMAGE_INPUT_UNSUPPORTED,
   PDF_AI_MODEL_UNAVAILABLE,
-  PDF_AI_TASK_UNRESOLVED,
   pdfAiCaughtFailure,
-  pdfAiFailure,
   pdfAiFailureRecovery,
   pdfAiFailureText,
-  type PdfAiFailure,
 } from '../../../components/business/diagnostic'
 import { mergeTranslationResult, nextTranslationPage, translationResultForTarget } from './sequence'
 import { PdfPanel } from './Panel'
 import type { PdfSelection, TranslationDirection, TranslationSentence } from './analysis'
 import {
-  PDF_AI_PREFIX,
-  PDF_AI_INVALID_RESPONSE,
   cancelPdfAiTask,
   invokeFigure,
-  pdfAiApi,
-  pdfAiTaskFinished,
   pdfResponseLanguage,
   pdfSelectionRefreshPending,
   recoverPdfAiTask,
@@ -414,12 +416,14 @@ export function usePdfAnalysis({
   const stopJob = (kind: PdfAction, cancelRemote = true): void => {
     serviceControllers.current[kind]?.abort()
     delete serviceControllers.current[kind]
-    submissionControllers.current[kind]?.abort()
+    const submission = submissionControllers.current[kind]
+    submission?.abort()
     subscriptionControllers.current[kind]?.abort()
     const task = jobsRef.current[kind]?.task
     const taskId = task?.task_id || requests.current[kind]?.client_attempt_id
     if (
       cancelRemote &&
+      !submission &&
       kind !== 'figure_explanation' &&
       taskId &&
       task?.status !== 'completed' &&
@@ -985,8 +989,12 @@ export function usePdfAnalysis({
       const submission = replaceSubmission(
         previous,
         isCurrent,
-        () => submitPdfAiTask(request, submissionController.signal),
-        (taskId) => pdfAiApi<PdfAiTask>(`${PDF_AI_PREFIX}/tasks/${taskId}/cancel`, {})
+        () =>
+          submitPdfAiTask(
+            { ...request, service_instance_id: state.serviceInstanceId ?? undefined },
+            submissionController.signal
+          ),
+        cancelPdfAiTask
       )
       submissions.current[kind] = submission
       const next = await submission
@@ -1013,6 +1021,9 @@ export function usePdfAnalysis({
       }
     } finally {
       if (isCurrent()) updateJob(kind, { pending: false })
+      if (submissionControllers.current[kind] === submissionController) {
+        delete submissionControllers.current[kind]
+      }
       if (kind === 'figure_explanation' && figureAbort.current === figureController)
         figureAbort.current = null
     }

@@ -5,11 +5,92 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { runInNewContext } = require('node:vm')
+const { createRequire } = require('node:module')
+const { execFileSync } = require('node:child_process')
+const { createHash } = require('node:crypto')
+const { developmentPython } = require('../../../../../scripts/shared/python.cjs')
+const { hostArch } = require('../../shared/target.cjs')
 const { removeTemporary } = require('../../shared/temporary-cleanup.cjs')
 
 const source = fs.readFileSync(path.join(__dirname, '../verify.cjs'), 'utf8')
 const content = source.slice(source.indexOf('async function verifyContent('), source.indexOf('\n/** Static checks'))
 const hook = source.slice(source.indexOf('async function verify(builderContext)'), source.indexOf('\nmodule.exports = verify'))
+
+for (const scenario of ['distribution', 'resource fork', 'local', 'oversized legacy ZIP']) {
+  test(`macOS installer hook measures its update archives: ${scenario}`, {skip: process.platform !== 'darwin'}, async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-update-compression-'))
+    t.after(() => removeTemporary(directory))
+    const app = path.join(directory, 'ScholarSeed.app')
+    const installer = path.join(directory, 'ScholarSeed.dmg')
+    fs.mkdirSync(app)
+    fs.writeFileSync(path.join(app, 'payload'), Buffer.alloc(128 * 1024, 'abc'))
+    const hasFork = scenario === 'resource fork'
+    if (hasFork) fs.writeFileSync(path.join(app, 'payload', '..namedfork', 'rsrc'), 'fork')
+    fs.writeFileSync(installer, 'fixture')
+    fs.writeFileSync(path.join(directory, 'app.json'), JSON.stringify({path: app}))
+    const lane = scenario === 'local' ? 'local' : 'distribution'
+    const frozen = {
+      platform: 'darwin', arch: hostArch(), installer: 'dmg', stage: 'dmg', productName: 'ScholarSeed',
+      runDirectory: directory, signingRequired: lane === 'distribution', lane,
+    }
+    const packed = []
+    let publishedSize
+    const nativeRequire = createRequire(require.resolve('../verify.cjs'))
+    const verify = runInNewContext(`${source}
+      context = () => frozen
+      command = runCommand
+      verifyApplication = async () => ({signature_valid: true, trust: {stapled: true}})
+      verify`, {
+      module: {exports: {}}, __dirname: path.dirname(require.resolve('../verify.cjs')), process, frozen,
+      require: name => name === './dmg.cjs' ? {
+        verifyImage: async (_image, mounted, context, check) => ({
+          checked: await check(mounted, context, true), installed_check: {},
+        }),
+      } : nativeRequire(name),
+      runCommand(executable, args) {
+        if (executable === 'hdiutil') return
+        if (executable === path.join(app, 'Contents/Resources/backend/python/bin/python3')) {
+          const python = developmentPython(path.resolve(__dirname, '../../../../..'), process.env.VENV)
+          execFileSync(python, args)
+          publishedSize = fs.statSync(args.at(-1)).size
+          return
+        }
+        const result = execFileSync(executable, args, {encoding: 'utf8'}).trim()
+        if (args[0] !== '-c') return result
+        const level = Number(args[args.indexOf('--zlibCompressionLevel') + 1])
+        const archive = args.at(-1)
+        if (scenario === 'oversized legacy ZIP' && level === 1) fs.truncateSync(archive, 1024 ** 3)
+        packed.push({level, resourceMode: args.find(arg => ['--norsrc', '--sequesterRsrc'].includes(arg)), size: fs.statSync(archive).size})
+      },
+    })
+    const verifying = verify({artifactPaths: [installer]})
+    if (scenario === 'oversized legacy ZIP') {
+      await assert.rejects(verifying, /smaller than 1 GiB/)
+      assert.deepEqual(packed.map(x => x.level), [1])
+      assert.ok(!fs.existsSync(path.join(directory, 'installer.json')))
+      return
+    }
+    await verifying
+    const read = name => JSON.parse(fs.readFileSync(path.join(directory, name)))
+    if (lane === 'local') {
+      assert.deepEqual(packed, [])
+      assert.ok(!fs.existsSync(path.join(directory, 'scholarseed-update.zip')))
+      assert.ok(!fs.existsSync(path.join(directory, 'macos-update-zip.json')))
+      return
+    }
+    assert.deepEqual(packed.map(x => x.level), [1, 6])
+    assert.deepEqual(packed.map(x => x.resourceMode), ['--sequesterRsrc', hasFork ? '--sequesterRsrc' : '--norsrc'])
+    assert.equal(read('installer.json').installed_check.update_archive.size, packed[0].size)
+    const zip = read('macos-update-zip.json')
+    const bytes = fs.readFileSync(path.join(directory, 'scholarseed-update.zip'))
+    assert.ok(packed[1].size < packed[0].size)
+    assert.equal(zip.archive_budget.size, publishedSize)
+    assert.equal(zip.size, bytes.length)
+    assert.equal(zip.size, publishedSize)
+    for (const hash of ['sha256', 'sha512'])
+      assert.equal(zip[hash], createHash(hash).update(bytes).digest('hex'))
+  })
+}
 
 test('signed Velopack receipt failure preserves the primary failure and cleans retired sandboxes', async () => {
   const mainError = new Error('installed application check failed')

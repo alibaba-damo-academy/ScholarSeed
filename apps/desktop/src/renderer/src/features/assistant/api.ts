@@ -36,6 +36,7 @@ import type {
 } from '../../contracts/assistant'
 import type { ResourceLocationRef, ResourceMutation, ResourceNode } from '../../contracts/resources'
 
+const CONTEXT_REQUEST_TIMEOUT_MS = 10_000
 const SESSION_REFERENCE_PREVIEW_FAILED = 'assistant_session_preview_failed'
 const CITATION_UNVERIFIABLE_CODES = new Set([
   'answer_revision_conflict',
@@ -335,6 +336,7 @@ function resourceFileKindLabel(name: string): string {
 
 export interface AssistantContextMutationResult extends AssistantFailure {
   ok: boolean
+  receiptUnknown?: true
   context?: AssistantContextSelection
   latest?: AssistantContextSelection
   error?: string
@@ -374,17 +376,17 @@ function annotationError(
   }
 }
 
-export async function listAnswerAnnotations(sessionId: string): Promise<AnswerAnnotation[]> {
+export async function listAnswerAnnotations(sessionId: string): Promise<AnswerAnnotation[] | null> {
   try {
     const response = await fetch(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/annotations`,
-      { credentials: 'include' }
+      { credentials: 'include', signal: AbortSignal.timeout(CONTEXT_REQUEST_TIMEOUT_MS) }
     )
-    if (!response.ok) return []
+    if (!response.ok) return null
     const payload = (await response.json()) as { annotations?: AnswerAnnotation[] }
-    return payload.annotations ?? []
+    return Array.isArray(payload.annotations) ? payload.annotations : null
   } catch {
-    return []
+    return null
   }
 }
 
@@ -632,16 +634,34 @@ export async function importArtifactToLiterature(
   }
 }
 
+function contextSelection(value: unknown, sessionId: string): AssistantContextSelection | null {
+  if (!value || typeof value !== 'object') return null
+  const selection = value as Partial<AssistantContextSelection>
+  const { revision } = selection
+  return selection.session_id === sessionId &&
+    typeof revision === 'number' &&
+    Number.isSafeInteger(revision) &&
+    revision >= 0 &&
+    (selection.project_policy === 'explicit_only' || selection.project_policy === 'auto_project') &&
+    (selection.search_scope === 'web' ||
+      selection.search_scope === 'academic' ||
+      selection.search_scope === 'disabled') &&
+    Array.isArray(selection.refs) &&
+    Array.isArray(selection.capabilities)
+    ? (selection as AssistantContextSelection)
+    : null
+}
+
 export async function getAssistantContext(
   sessionId: string
 ): Promise<AssistantContextSelection | null> {
   try {
     const response = await fetch(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/context`,
-      { credentials: 'include' }
+      { credentials: 'include', signal: AbortSignal.timeout(CONTEXT_REQUEST_TIMEOUT_MS) }
     )
     if (!response.ok) return null
-    return (await response.json()) as AssistantContextSelection
+    return contextSelection(await response.json(), sessionId)
   } catch {
     return null
   }
@@ -656,12 +676,15 @@ export async function patchAssistantContext(
       `${base()}/api/assistant/sessions/${encodeURIComponent(sessionId)}/context`,
       {
         method: 'PATCH',
+        signal: AbortSignal.timeout(CONTEXT_REQUEST_TIMEOUT_MS),
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
       }
     )
-    const payload = (await response.json().catch(() => null)) as
+    const payload = (
+      response.ok ? await response.json() : await response.json().catch(() => null)
+    ) as
       | AssistantContextSelection
       | {
           detail?:
@@ -673,19 +696,41 @@ export async function patchAssistantContext(
         }
       | null
     if (!response.ok) {
-      const detail = payload && 'detail' in payload ? payload.detail : undefined
+      const detail =
+        payload && typeof payload === 'object' && 'detail' in payload ? payload.detail : undefined
       return {
         ok: false,
         error: typeof detail === 'string' ? detail : (detail?.error ?? `http_${response.status}`),
-        latest: typeof detail === 'object' ? detail.latest : undefined,
+        latest:
+          detail && typeof detail === 'object'
+            ? (contextSelection(detail.latest, sessionId) ?? undefined)
+            : undefined,
       }
     }
-    return { ok: true, context: payload as AssistantContextSelection }
+    const selection = contextSelection(payload, sessionId)
+    if (selection) return { ok: true, context: selection }
   } catch (error) {
-    return {
-      ok: false,
-      ...assistantRequestFailure(error),
-    }
+    return reconcileAssistantContext(
+      sessionId,
+      patch.expected_revision,
+      assistantRequestFailure(error)
+    )
+  }
+  return reconcileAssistantContext(sessionId, patch.expected_revision)
+}
+
+// A GET can restore the editing revision, but cannot acknowledge a lost PATCH receipt.
+async function reconcileAssistantContext(
+  sessionId: string,
+  expectedRevision: number,
+  failure?: AssistantFailure
+): Promise<AssistantContextMutationResult> {
+  const latest = await getAssistantContext(sessionId)
+  return {
+    ok: false,
+    receiptUnknown: true,
+    ...failure,
+    ...(latest && latest.revision >= expectedRevision ? { latest } : {}),
   }
 }
 

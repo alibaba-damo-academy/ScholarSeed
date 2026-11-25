@@ -18,6 +18,17 @@ export interface QualifiedRecordWriter {
   create(name: string, bytes: Buffer): void
 }
 
+const UNCERTAIN_RECORD_WRITE_CODES = new Set([
+  'ERR_LEASE_SYNC',
+  'ERR_LEASE_RELEASE',
+  'ERR_DOMAIN_RELEASE',
+])
+
+export function uncertainRecordWriteCode(error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return code && UNCERTAIN_RECORD_WRITE_CODES.has(code) ? code : undefined
+}
+
 export interface QualifiedRecordConsumer {
   consume(path: string, expected: Buffer, device: string, inode: string): void
 }

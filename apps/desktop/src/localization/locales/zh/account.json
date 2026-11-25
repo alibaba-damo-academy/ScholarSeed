@@ -56,6 +56,7 @@
     "markAllRead": "全部标为已读"
   },
   "models": {
+    "saveUnconfirmed": "保存结果尚未确认。请先核对连接列表再决定是否重新保存，当前编辑内容已保留。",
     "loadFailed": "模型服务加载失败，请重试。",
     "deleteFailed": "删除该端点失败",
     "enabledCount": "{{enabled}} / {{total}} 已启用",
@@ -157,6 +158,8 @@
     "launcherMaintenanceRequired": "已安装的启动器需要升级。请正常退出书深，从官方渠道下载最新安装器并安装到原目录，然后重新打开。应用内更新不能替换此启动器。",
     "preparationConnectionClosed": "更新准备连接已断开，请重试准备。",
     "preparationFailed": "无法准备更新，请重试准备。",
+    "preflightStorageFull": "磁盘空间不足，无法检查本地导入任务。请释放磁盘空间后重试更新。",
+    "preflightImportStoreUnavailable": "书深无法检查本地导入任务数据库。请检查磁盘剩余空间和数据目录写入权限，再重试更新。若仍失败，请重启书深。",
     "installationInProgress": "更新正在安装。书深将自动退出以完成安装，请稍候再打开。",
     "installationFailed": "更新安装失败。请退出并重新打开书深；若仍无法启动，请重新安装最新版本，并在反馈中附上更新诊断日志。",
     "activationRecoveryRequired": "更新交接结果尚未确认。请退出并重新打开书深；若仍出现此提示，请从官网下载最新版本重新安装，并在反馈中附上更新诊断日志。",

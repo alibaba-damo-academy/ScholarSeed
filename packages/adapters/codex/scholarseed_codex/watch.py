@@ -3,15 +3,16 @@
 import asyncio
 import logging
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from scholarseed_codex.files import (
     FILE_CHANGE_ADD,
     FILE_CHANGE_UPDATE,
-    FileStamp,
+    TurnFiles,
     is_artifact_candidate,
+    turn_files,
     workspace_relative_path,
-    workspace_snapshot,
 )
 from scholarseed_codex.protocol.session import CodexSessionOpenRequest
 from scholarseed_codex.protocol.state import (
@@ -47,7 +48,7 @@ class WorkspaceWatch:
         self._request = request
         self._report = report
         self._routes: dict[str, WatchTarget] = {}
-        self._baselines: dict[str, dict[str, FileStamp]] = {}
+        self._baselines: dict[str, TurnFiles] = {}
         self._scans: dict[str, object] = {}
         self._ambiguous_turns: set[str] = set()
 
@@ -57,7 +58,7 @@ class WorkspaceWatch:
             "codex_workspace_snapshot_incomplete", extra={"error_type": type(error).__name__}
         )
 
-    async def begin_turn(self, state: WatchTarget) -> None:
+    async def begin_turn(self, state: WatchTarget, artifact_directory: Path | None = None) -> None:
         workspace = state.request.cwd.expanduser().resolve()
         for other in self._routes.values():
             if (
@@ -68,7 +69,9 @@ class WorkspaceWatch:
                 self._ambiguous_turns.update((state.thread_id, other.thread_id))
         token = object()
         self._scans[state.thread_id] = token
-        snapshot = await asyncio.to_thread(workspace_snapshot, state.request.cwd, self._scan_error)
+        snapshot = await asyncio.to_thread(
+            turn_files, workspace, self._scan_error, artifact_directory
+        )
         if self._scans.get(state.thread_id) is token:
             self._baselines[state.thread_id] = snapshot
 
@@ -77,16 +80,18 @@ class WorkspaceWatch:
         previous = self._baselines.pop(state.thread_id, None)
         if previous is None:
             return
-        current = await asyncio.to_thread(workspace_snapshot, state.request.cwd, self._scan_error)
+        current = await asyncio.to_thread(
+            turn_files, state.request.cwd, self._scan_error, previous=previous
+        )
         if self._scans.get(state.thread_id) is not token:
             return
         self._scans.pop(state.thread_id, None)
         if state.thread_id in self._ambiguous_turns:
             self._ambiguous_turns.discard(state.thread_id)
             return
-        for path, stamp in current.items():
-            if previous.get(path) != stamp:
-                change = FILE_CHANGE_UPDATE if path in previous else FILE_CHANGE_ADD
+        for path, stamp in current.stamps.items():
+            if previous.stamps.get(path) != stamp:
+                change = previous.change_kind(path, current)
                 if path not in state.watched_paths or change == FILE_CHANGE_ADD:
                     state.watched_paths[path] = change
 
@@ -175,11 +180,7 @@ class WorkspaceWatch:
             if not is_artifact_candidate(relative):
                 continue
             baseline = self._baselines.get(state.thread_id)
-            change = (
-                FILE_CHANGE_ADD
-                if baseline is not None and relative not in baseline
-                else FILE_CHANGE_UPDATE
-            )
+            change = baseline.change_kind(relative) if baseline else FILE_CHANGE_UPDATE
             state.watched_paths.setdefault(relative, change)
             accepted += 1
         logger.info(

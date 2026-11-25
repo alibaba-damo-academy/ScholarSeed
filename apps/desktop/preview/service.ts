@@ -11,6 +11,7 @@ import type { RendererPreferences } from '../src/preferences.ts'
 import type {
   HealthResp,
   FilesResp,
+  FollowUpPreference,
   RuntimePreparation,
   HistoryResult,
   ModelsResp,
@@ -3330,6 +3331,10 @@ export function createPreviewService() {
       return
     }
     const setting = path.match(/^\/api\/serve\/settings\/([^/]+)$/)?.[1]
+    if (setting === 'follow-up' && method === 'GET') {
+      send({ mode: 'queue', revision: 0 } satisfies FollowUpPreference)
+      return
+    }
     if (setting === 'file-versions') {
       if (method === 'POST') {
         const controller = new AbortController()

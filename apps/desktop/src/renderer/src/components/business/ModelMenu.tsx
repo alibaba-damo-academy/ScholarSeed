@@ -336,7 +336,8 @@ export function ModelMenu({
     model: ModelInfo,
     selectionCurrent: () => boolean
   ): Promise<boolean> => {
-    const result = await setDefaultModel(model.key)
+    let result = await setDefaultModel(model.key)
+    if (!result && selectionCurrent()) result = await getModels()
     if (!selectionCurrent()) return false
     set({ model: model.key })
     if (result?.current_model !== model.key) {

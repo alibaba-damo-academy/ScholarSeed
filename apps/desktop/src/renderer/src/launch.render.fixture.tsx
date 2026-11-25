@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 import { createLocalization } from '../../localization/engine'
@@ -95,7 +95,7 @@ function LiveFixture(): null {
   return null
 }
 
-createRoot(document.getElementById('root')!).render(
+const fixture = (
   <I18nextProvider i18n={localization}>
     <ToastProvider>
       <StoreProvider assistantSources={[]}>
@@ -108,4 +108,7 @@ createRoot(document.getElementById('root')!).render(
       </StoreProvider>
     </ToastProvider>
   </I18nextProvider>
+)
+createRoot(document.getElementById('root')!).render(
+  Reflect.get(window, 'strictQueueReceiptFixture') ? <StrictMode>{fixture}</StrictMode> : fixture
 )
