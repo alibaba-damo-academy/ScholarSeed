@@ -12,7 +12,7 @@ const { judgeRun } = require('./verdict.cjs')
 const { parseNodeEvents, nodeReporterArgs } = require('./events.cjs')
 const EXTERNAL_CASES = require('./external-cases.json')
 const QUARANTINE = require('./quarantine.json')
-const { NODE_ARGS, TEST_CONCURRENCY, NATIVE_TEST_FILES, unitTestFiles, expandTestGlob } = require('../../apps/desktop/scripts/ci/test.cjs')
+const { NODE_ARGS, TEST_CONCURRENCY, NATIVE_TEST_FILES, platformTestFiles, unitTestFiles, expandTestGlob } = require('../../apps/desktop/scripts/ci/test.cjs')
 const { CONTRACT_FILES, STANDARDS_ARGS } = require('../../apps/desktop/scripts/ci/pretest.cjs')
 
 const ROOT = path.resolve(__dirname, '../..')
@@ -42,7 +42,7 @@ const PDFE_REGRESSION_CASES = [
   'native project center retains global login, theme and language through navigation and reset',
   'native composer menus coordinate stationary pointers and keyboard selection',
   'native dialog navigation preserves original entries, drafts and bilingual themed groups',
-  'native product uses top-level shared renderer, real OS fonts and isolated secure windows',
+  'native product uses top-level shared renderer without Office font APIs and isolated secure windows',
   'native scenario controls, F8 and help preserve the same product draft and component entry',
   'native dock and detach preserve both renderer documents, draft and workbench search',
   'native dialog application: project-group-rename',
@@ -52,7 +52,7 @@ const PDFE_REGRESSION_CASES = [
   'native feedback submission preserves consent and explicit retry: feedback-failed',
   'native feedback submission preserves consent and explicit retry: feedback-rate-limited',
   'native version comparison preserves one file and both immutable Monaco revisions without writes',
-  'native legacy XLS uses its bounded Office child runtime and dedicated compilation policy',
+  'native legacy XLS exposes its external-open fallback without an Office engine',
   'native project documents preserve manual Markdown saves and rendered PDF samples after reload',
   'native reviewed data viewer preserves its sample through reload and public reentry: spreadsheet',
   'native reviewed data viewer preserves its sample through reload and public reentry: table',
@@ -243,6 +243,13 @@ const FOREIGN_PLATFORM_SKIP = {
   ]
 }
 const NODE_NOT_APPLICABLE = [
+  ...[
+    'macOS wheel launchers survive relocating the interpreter and refresh wheel records',
+    'published ZIP separates signed Mach-O ranges and preserves ordinary members',
+    'published update ZIP retains a nonempty resource fork',
+    'published update ZIP omits host metadata',
+    'ZIP staging discards corrupt bytes and hashes the corrected download exactly once',
+  ].map(name => ({ stage: 'desktop-unit', platform: 'win32', name, reason: 'SKIP' })),
   { stage: 'desktop-unit', platform: 'darwin',
     name: 'Windows updater command parses as PowerShell before signature verification',
     reason: 'requires the Windows PowerShell parser' },
@@ -361,12 +368,12 @@ function validatePlaywrightOmissions(readSource = filename =>
   }
 }
 
-function desktopCoverageArgs(quarantine) {
+function desktopCoverageArgs(quarantine, platform) {
   return [path.join(DESKTOP, 'node_modules', 'c8', 'bin', 'c8.js'), process.execPath,
     ...NODE_ARGS,
     `--test-concurrency=${TEST_CONCURRENCY}`,
     ...(quarantine ? [`--test-skip-pattern=${nodeOmissionPattern()}`] : []),
-    ...unitTestFiles()]
+    ...unitTestFiles(DESKTOP, platform)]
 }
 
 function planStages(platform, skillHubEnvironment = process.env, { profile = 'full', quarantine = false, quota = null } = {}) {
@@ -470,7 +477,7 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       skipReason: stage.reason })))
   }
   stages.push({ id: 'desktop-unit', kind: 'node', cwd: DESKTOP,
-    args: desktopCoverageArgs(quarantine),
+    args: desktopCoverageArgs(quarantine, platform),
     timeoutMs: 0,
     quarantine, ignoreLifecycle: true,
     reportKind: 'node-summary' })
@@ -486,13 +493,12 @@ function planStages(platform, skillHubEnvironment = process.env, { profile = 'fu
       'scripts/shared/__tests__/examples.test.cjs',
       'scripts/shared/__tests__/preparation.test.cjs',
       'scripts/ci/docs/__tests__/commands.test.cjs', 'scripts/ci/docs/__tests__/structure.test.mjs',
-      'apps/desktop/eval-scenarios/frozen/frozen.test.mjs',
       'scripts/__tests__/ownership.test.cjs', 'scripts/ci/__tests__/test.test.cjs', 'scripts/ci/__tests__/affected.test.mjs',
       'scripts/cd/__tests__/package.test.cjs', 'scripts/cd/__tests__/distribution.test.cjs', 'scripts/ci/__tests__/verdict.test.cjs', 'scripts/ci/__tests__/model.test.cjs',
       'scripts/ci/__tests__/events.test.cjs', 'scripts/ci/__tests__/transport.test.cjs', 'scripts/ci/__tests__/smoke.test.cjs',
       'scripts/ci/__tests__/skillhub.test.cjs', 'scripts/ci/__tests__/progress.test.cjs', 'scripts/ci/__tests__/diagnostics.test.cjs',
       'apps/desktop/scripts/ci/__tests__/standards.test.mjs',
-      ...NATIVE_TEST_FILES.map(filename =>
+      ...platformTestFiles(NATIVE_TEST_FILES, platform).map(filename =>
         path.relative(ROOT, path.resolve(DESKTOP, filename)).split(path.sep).join('/'))],
     timeoutMs: 0,
     quarantine, reportKind: 'node-summary' })

@@ -1,9 +1,10 @@
 import type { TFunction } from 'i18next'
-
-export interface PdfAiFailure {
-  code?: string
-  diagnostic: string
-}
+import {
+  PDF_AI_SERVICE_INSTANCE_CHANGED,
+  PDF_AI_TASK_UNRESOLVED,
+  pdfAiFailure,
+  type PdfAiFailure,
+} from '../../app/api/pdf.ts'
 
 export interface PdfAiFailureRecovery {
   configure: boolean
@@ -13,7 +14,6 @@ export interface PdfAiFailureRecovery {
 
 export const PDF_AI_IMAGE_INPUT_UNSUPPORTED = 'pdf_ai_image_input_unsupported'
 export const PDF_AI_MODEL_UNAVAILABLE = 'pdf_ai_model_unavailable'
-export const PDF_AI_TASK_UNRESOLVED = 'pdf_ai_task_unresolved'
 
 const MODEL_CONFIGURATION_CODES = new Set([
   'pdf_ai_preparation_failed',
@@ -61,6 +61,7 @@ const ERROR_KEYS = {
   pdf_ai_translation_sentence_incomplete: 'reading.errors.translation_sentence_incomplete',
   pdf_ai_task_missing: 'reading.errors.task_missing',
   [PDF_AI_TASK_UNRESOLVED]: 'reading.errors.task_unresolved',
+  [PDF_AI_SERVICE_INSTANCE_CHANGED]: 'reading.errors.service_instance_changed',
   pdf_ai_pdf_input_unsupported: 'reading.errors.pdf_input_unsupported',
   pdf_ai_image_input_unsupported: 'reading.errors.image_input_unsupported',
   pdf_ai_generation_failed: 'reading.errors.generation_failed',
@@ -72,30 +73,6 @@ const ERROR_KEYS = {
   pdf_ai_operation_busy: 'reading.errors.operation_busy',
   pdf_ai_figure_stream_required: 'reading.errors.figure_stream_required',
 } as const
-
-/** HTTP details, live tasks and restored tasks retain error identity independently of language. */
-export function pdfAiFailure(value: unknown): PdfAiFailure | undefined {
-  if (typeof value === 'string') return value ? { diagnostic: value } : undefined
-  if (!value || typeof value !== 'object') return undefined
-  const source = value as Record<string, unknown>
-  const code =
-    typeof source.error_code === 'string' && source.error_code
-      ? source.error_code
-      : typeof source.code === 'string'
-        ? source.code
-        : ''
-  const detail =
-    typeof source.error_detail === 'string'
-      ? source.error_detail
-      : typeof source.diagnostic === 'string'
-        ? source.diagnostic
-        : typeof source.message === 'string'
-          ? source.message
-          : ''
-  const legacy = typeof source.error === 'string' ? source.error : ''
-  const diagnostic = detail || (legacy && legacy !== code ? legacy : '')
-  return code || diagnostic ? { ...(code ? { code } : {}), diagnostic } : undefined
-}
 
 /** Catch boundaries retain legacy String(cause) diagnostics without treating normal empty tasks as errors. */
 export function pdfAiCaughtFailure(cause: unknown): PdfAiFailure {

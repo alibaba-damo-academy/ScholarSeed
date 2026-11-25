@@ -39,10 +39,15 @@ export class CsvQueue {
   version = 0
   constructor(
     readonly identity: string,
-    private readonly dispatch: (request: CsvRequest) => Promise<CsvResponse>
+    private readonly dispatch: (request: CsvRequest, signal?: AbortSignal) => Promise<CsvResponse>
   ) {}
-  request(command: CsvCommand, expectedVersion?: number): Promise<CsvResponse> {
+  request(
+    command: CsvCommand,
+    expectedVersion?: number,
+    signal?: AbortSignal
+  ): Promise<CsvResponse> {
     const operation = this.tail.then(async () => {
+      signal?.throwIfAborted()
       if (this.closed) throw new Error('csv_client_closed')
       const mutation = ['edit', 'paste', 'undo', 'redo', 'serialize'].includes(command.command)
       const request = {
@@ -51,7 +56,7 @@ export class CsvQueue {
         requestId: ++this.sequence,
         expectedVersion: expectedVersion ?? (mutation ? this.version : undefined),
       } as CsvRequest
-      const response = await this.dispatch(request)
+      const response = await this.dispatch(request, signal)
       if (response.identity !== this.identity) throw new Error('csv_identity_stale')
       if (!response.ok) throw new Error(response.error ?? 'csv_request_failed')
       this.version = Math.max(this.version, response.version)

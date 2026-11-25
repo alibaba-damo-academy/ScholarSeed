@@ -177,6 +177,36 @@ test('submitted refs include claimed running-turn refs without hiding fresh refs
   assert.deepEqual(submittedContextRefIds(refs, [], []), [])
 })
 
+test('an unavailable queue or annotation list preserves only same-session context', () => {
+  const selection: AssistantContextSelection = {
+    session_id: 'session',
+    revision: 2,
+    project_policy: 'explicit_only',
+    search_scope: 'web',
+    refs: [ref('queued', 'paper.pdf', 'explicit')],
+    capabilities: [],
+    updated_at: 0,
+  }
+  const panel = {
+    ...INITIAL_AI_PANEL_STATE,
+    sessionId: 'session',
+    submittedRefIds: ['queued'],
+    annotations: [{ annotation_id: 'note', session_id: 'session' }] as AnswerAnnotation[],
+  }
+  const partial = loadedAssistantContext(panel, selection, null, null)
+  assert.equal(partial.contextState, 'ready')
+  assert.deepEqual(partial.submittedRefIds, ['queued'])
+  assert.deepEqual(partial.annotations, panel.annotations)
+  for (const refreshed of [
+    loadedAssistantContext(partial, selection, [], []),
+    loadedAssistantContext(partial, { ...selection, session_id: 'other' }, null, null),
+  ]) {
+    assert.equal(refreshed.contextState, 'ready')
+    assert.deepEqual(refreshed.submittedRefIds, [])
+    assert.deepEqual(refreshed.annotations, [])
+  }
+})
+
 test('context receipts hide claimed and locally submitted refs while preserving new annotations', () => {
   const claimed = { ...ref('claimed', 'sent-note', 'explicit'), kind: 'note' as const }
   const fresh = { ...ref('fresh', 'fresh-note', 'explicit'), kind: 'note' as const }
@@ -227,6 +257,9 @@ test('context save errors retain server diagnostics and only fall back when abse
     detail: 'http_422',
   })
   assert.deepEqual(assistantContextSaveError(), { key: 'contextErrors.saveRetry' })
+  assert.deepEqual(assistantContextSaveError({ receiptUnknown: true }), {
+    key: 'contextErrors.saveUnconfirmed',
+  })
 })
 
 test('adding a second PDF quote leaves only the unsent quote visible and preserves the sent quote', () => {

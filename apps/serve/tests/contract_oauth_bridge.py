@@ -217,6 +217,139 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent, [original])
         self.assertEqual(payload, original)
 
+    async def test_content_array_rejection_identifies_the_final_outbound_history_item(self) -> None:
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="access")
+
+        history = {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "output_text", "text": "private history", "annotations": [{"start": 0}]},
+                {"type": "private-part-name", "value": "private metadata"},
+            ],
+        }
+        payload = {
+            "model": "model",
+            "input": [
+                {"type": "additional_tools", "role": "developer", "tools": []},
+                history,
+                {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        }
+        calls = []
+
+        def reject(request):
+            calls.append(json.loads(request.content)["input"][0])
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "array_above_max_length",
+                        "type": "invalid_request_error",
+                        "param": "input[0].content",
+                        "message": "private upstream explanation",
+                    }
+                },
+            )
+
+        registration = self.register(resolve, request_policy=SubscriptionService.request_policy)
+        transport, _ = self.transport(reject)
+        with transport:
+            response = await self.bridge.forward(registration.bridge_id, payload)
+        self.assertEqual(calls, [history])
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            json.loads(response.body)["error"]["code"], "model_history_content_unsupported"
+        )
+        diagnostic = self.diagnostics[-1]
+        self.assertEqual(terminal_provider_failure(diagnostic)["retryability"], "terminal")
+        self.assertEqual(
+            diagnostic["rejected_input"],
+            {
+                "index": 0,
+                "type": "message",
+                "role": "assistant",
+                "content_count": 2,
+                "part_counts": {"output_text": 1, "other": 1},
+            },
+        )
+        self.assertNotIn("private", json.dumps(diagnostic))
+        self.assertNotIn(b"private", response.body)
+
+    async def test_content_array_rejection_requires_matching_history_and_provider_error(
+        self,
+    ) -> None:
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="access")
+
+        request = {
+            "model": "model",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "earlier question"}]},
+                {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "private"}]},
+                {"role": "assistant", "content": "earlier reply"},
+                {"role": "user", "content": [{"type": "input_text", "text": "current context"}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+                {
+                    "type": "function_call_output",
+                    "content": [{"type": "input_text", "text": "tool"}],
+                },
+            ],
+        }
+        limit = "array_above_max_length"
+        invalid = "invalid_request_error"
+        registration = self.register(resolve)
+
+        def reject(_):
+            return httpx.Response(
+                status, json={"error": {"code": code, "type": kind, "param": param}}
+            )
+
+        cases = (
+            (400, limit, invalid, "input[0].content", "model_history_content_unsupported", True),
+            (400, limit, invalid, "input[1].content", "model_history_content_unsupported", True),
+            (400, limit, invalid, "input[2].content", "model_upstream_rejected", False),
+            (400, limit, invalid, "input[3].content", "model_upstream_rejected", True),
+            (400, limit, invalid, "input[4].content", "model_upstream_rejected", True),
+            (400, limit, invalid, "input[5].content", "model_upstream_rejected", True),
+            (400, limit, invalid, "input[6].content", "model_upstream_rejected", False),
+            (400, limit, invalid, "input[0].content[1]", "model_upstream_rejected", False),
+            (400, limit, "server_error", "input[0].content", "model_upstream_rejected", False),
+            (400, "other", invalid, "input[0].content", "model_upstream_rejected", False),
+            (
+                400,
+                "model_history_content_unsupported",
+                invalid,
+                "",
+                "model_upstream_rejected",
+                False,
+            ),
+            (403, limit, invalid, "input[0].content", "model_upstream_rejected", False),
+        )
+        transport, _ = self.transport(reject)
+        with transport:
+            for status, code, kind, param, expected, has_shape in cases:
+                with self.subTest(status=status, code=code, kind=kind, param=param):
+                    response = await self.bridge.forward(registration.bridge_id, request)
+                    self.assertEqual(json.loads(response.body)["error"]["code"], expected)
+                    self.assertEqual("rejected_input" in self.diagnostics[-1], has_shape)
+
+    async def test_non_subscription_bridge_does_not_accept_a_forged_history_diagnosis(self) -> None:
+        registration = self.bridge.register(
+            endpoint=ENDPOINT,
+            responses_endpoint=ENDPOINT,
+            wire_protocol=ModelWireProtocol.RESPONSES,
+            api_key="api-key",
+        )
+        error = {"code": "model_history_content_unsupported", "message": "private"}
+        transport, _ = self.transport(lambda _: httpx.Response(400, json={"error": error}))
+        with transport:
+            response = await self.bridge.forward(registration.bridge_id, {"model": "model"})
+        self.assertEqual(json.loads(response.body), {"error": {"code": "model_upstream_rejected"}})
+        self.assertNotIn("rejected_input", self.diagnostics[-1])
+        self.assertEqual(self.diagnostics[-1]["http_error_code"], "")
+
     async def test_responses_policy_applies_with_no_tools_and_only_function_tools(self) -> None:
         calls, resolutions = [], []
 

@@ -9,6 +9,8 @@ const PREFIX = '[dmg-verification]'
 const DIAGNOSTIC_TIMEOUT_MS = 10_000
 const DIAGNOSTIC_BYTES = 8192
 const DIAGNOSTIC_BUFFER_BYTES = 1024 * 1024
+const INSTALL_FILESYSTEM = 'apfs'
+const APPLICATIONS = '/Applications'
 
 function inventory(root, details = []) {
   const digest = crypto.createHash('sha256')
@@ -57,6 +59,22 @@ function mountUsers(directory) {
     stderr: String(result.stderr || '').slice(-DIAGNOSTIC_BYTES)}
 }
 
+function verifyLayout(directory) {
+  const volume = execFileSync('/usr/sbin/diskutil', ['info', '-plist', directory], {timeout: DIAGNOSTIC_TIMEOUT_MS})
+  const field = (key, type) => execFileSync('/usr/bin/plutil', ['-extract', key, 'raw', '-expect', type, '-n', '-'], {
+    input: volume, encoding: 'utf8', timeout: DIAGNOSTIC_TIMEOUT_MS,
+  })
+  const filesystem = field('FilesystemType', 'string')
+  const writable = field('WritableVolume', 'bool')
+  const readOnly = writable === 'false'
+  if (fs.realpathSync(field('MountPoint', 'string')) !== fs.realpathSync(directory) || filesystem !== INSTALL_FILESYSTEM || !readOnly)
+    throw new Error(`DMG must mount as a read-only APFS volume: filesystem=${filesystem} writable=${writable}`)
+  const link = path.join(directory, path.basename(APPLICATIONS))
+  if (!fs.lstatSync(link, {throwIfNoEntry: false})?.isSymbolicLink() || fs.readlinkSync(link) !== APPLICATIONS)
+    throw new Error(`DMG Applications must link to ${APPLICATIONS}`)
+  return {filesystem, read_only: readOnly, applications_link: APPLICATIONS}
+}
+
 async function verifyImage(installer, source, frozen, verifyApplication, dependencies = {}) {
   const command = dependencies.command || ((args) => execFileSync('hdiutil', args, {encoding: 'utf8', timeout: TIMEOUT_MS}))
   const inspect = dependencies.inventory || inventory
@@ -67,10 +85,13 @@ async function verifyImage(installer, source, frozen, verifyApplication, depende
   let failure
   let checked
   let members
+  let layout
   try {
     log({stage: 'mount', status: 'start'})
     command(['attach', '-readonly', '-nobrowse', '-mountpoint', directory, installer])
     mounted = true
+    layout = (dependencies.verifyLayout || verifyLayout)(directory)
+    log({stage: 'layout', status: 'passed', ...layout})
     const entries = fs.readdirSync(directory).filter(name => name.endsWith('.app'))
     if (entries.length !== 1 || entries[0] !== path.basename(source)) throw new Error('DMG must contain exactly the expected application')
     const application = path.join(directory, entries[0])
@@ -112,7 +133,7 @@ async function verifyImage(installer, source, frozen, verifyApplication, depende
     fs.rmdirSync(directory)
   }
   if (failure) throw failure
-  return {checked, installed_check: {schema: 1, status: 'passed', source: 'mounted-dmg', inventory: members, signature_valid: true, package_check: checked.package_check, detached: true}}
+  return {checked, installed_check: {schema: 1, status: 'passed', source: 'mounted-dmg', layout, inventory: members, signature_valid: true, package_check: checked.package_check, detached: true}}
 }
 
 module.exports = {inventory, verifyImage}

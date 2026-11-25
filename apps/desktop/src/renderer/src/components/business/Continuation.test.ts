@@ -7,6 +7,7 @@ import { createInstance } from 'i18next'
 import ts from 'typescript'
 import zh from '../../../../localization/locales/zh/conversation.json' with { type: 'json' }
 import en from '../../../../localization/locales/en/conversation.json' with { type: 'json' }
+import { needsCompatibleContinuation } from '../../failures.ts'
 
 const sourcePath = new URL('./Continuation.tsx', import.meta.url)
 const failure = {
@@ -15,7 +16,7 @@ const failure = {
   failure: { kind: 'capability' },
 }
 
-function stateFixture() {
+function stateFixture(item = failure) {
   return {
     backendReady: true,
     serviceInstanceId: 'service-one',
@@ -40,7 +41,7 @@ function stateFixture() {
         status: 'failed',
         lastSeq: 9,
         runtime: { model_id: 'subscription/model' },
-        conversation: [failure],
+        conversation: [item],
         turnOutcomes: { 'failed-turn': 'failed' },
       },
     },
@@ -72,7 +73,7 @@ function previewFixture() {
   }
 }
 
-async function createHarness(language = 'zh') {
+async function createHarness(language = 'zh', item = failure) {
   const locale = createInstance()
   await locale.init({
     lng: language,
@@ -80,7 +81,7 @@ async function createHarness(language = 'zh') {
     resources: { zh: { conversation: zh }, en: { conversation: en } },
   })
   const translator = locale.getFixedT(null, 'conversation')
-  let state = stateFixture()
+  let state = stateFixture(item)
   let draft = ''
   let revision = 0
   const slots: unknown[] = []
@@ -174,6 +175,7 @@ async function createHarness(language = 'zh') {
     AbortController,
     require: (name: string) => {
       if (name === 'react') return react
+      if (name === '../../failures') return { needsCompatibleContinuation }
       if (name === 'react-i18next') return { useTranslation: () => ({ t: translator }) }
       if (name === '../../store')
         return {
@@ -194,7 +196,7 @@ async function createHarness(language = 'zh') {
   })
   const render = () => {
     cursor = 0
-    return module.exports.Continuation({ item: failure }) as React.ReactElement
+    return module.exports.Continuation({ item }) as React.ReactElement
   }
   return {
     render,
@@ -253,6 +255,14 @@ test('compatible continuation prepares a localized editable draft without execut
       submit: false,
     })
   }
+})
+
+test('incompatible history can start an editable visible-text draft', async () => {
+  const harness = await createHarness('en', { ...failure, failure: { kind: 'history_content' } })
+  await find(harness.render(), 'turn-compatible-continuation')!.props.onClick()
+  find(harness.render(), 'continuation-confirm')!.props.onClick()
+  assert.equal(harness.starts.length, 1)
+  assert.equal((harness.starts[0] as { submit: boolean }).submit, false)
 })
 
 test('only the latest stable writable capability failure offers compatible continuation', async () => {

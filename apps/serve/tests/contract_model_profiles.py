@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +29,7 @@ os.environ["SCHOLARSEED_HOME"] = TEST_HOME.name
 from service.chat.api.settings import mount_setting_routes  # noqa: E402
 from service.chat.schema import PersonalApiRequest  # noqa: E402
 from service.chat.service import models as model_module  # noqa: E402
+from service.chat.service import probe as probe_module  # noqa: E402
 from service.chat.service.completions import CompletionBridge  # noqa: E402
 from service.chat.service.models import (  # noqa: E402
     GATEWAY_LOGIN_REQUIRED_ERROR,
@@ -608,8 +610,10 @@ def test_unsaved_model_api_probe() -> None:
     service, _selected = build_service(store)
     before = store.list()["profiles"]
     # 指向本机一个未监听端口: 断言探测真的发了请求并把失败归类, 且不出网。
-    result = service.probe_profile(
-        profile_values(base_url="http://127.0.0.1:9/v1", model_name="probe-model")
+    result = asyncio.run(
+        service.probe_profile(
+            profile_values(base_url="http://127.0.0.1:9/v1", model_name="probe-model")
+        )
     )
     after = store.list()["profiles"]
     check("unreachable endpoint probe fails closed", result["ok"] is False, str(result))
@@ -620,7 +624,7 @@ def test_unsaved_model_api_probe() -> None:
     )
     check("probe does not write a model profile", before == after)
     try:
-        service.probe_profile(profile_values(provider="anthropic"))
+        asyncio.run(service.probe_profile(profile_values(provider="anthropic")))
     except ValueError:
         refused_anthropic = True
     else:
@@ -1080,15 +1084,17 @@ def test_model_listing_does_not_persist() -> None:
     store = ModelProfileStore()
     service, _selected = build_service(store)
     before = store.path.read_text(encoding="utf-8") if store.path.exists() else ""
-    result = service.profile_models(
-        {
-            "provider": PERSONAL_PROVIDER,
-            "wire_api": "chat_completions",
-            # 拉列表发生在用户选模型**之前**, 所以这里必须允许空模型名。
-            "model_name": "",
-            "base_url": "http://127.0.0.1:9/v1",
-            "api_key": "listing-test-key",
-        }
+    result = asyncio.run(
+        service.profile_models(
+            {
+                "provider": PERSONAL_PROVIDER,
+                "wire_api": "chat_completions",
+                # 拉列表发生在用户选模型**之前**, 所以这里必须允许空模型名。
+                "model_name": "",
+                "base_url": "http://127.0.0.1:9/v1",
+                "api_key": "listing-test-key",
+            }
+        )
     )
     after = store.path.read_text(encoding="utf-8") if store.path.exists() else ""
     check("unreachable endpoint listing fails closed", result["ok"] is False, str(result))
@@ -1100,7 +1106,7 @@ def test_model_listing_does_not_persist() -> None:
         str(result),
     )
     try:
-        service.profile_models({"provider": "anthropic", "base_url": "https://x/v1"})
+        asyncio.run(service.profile_models({"provider": "anthropic", "base_url": "https://x/v1"}))
     except ValueError:
         refused = True
     else:
@@ -1112,8 +1118,10 @@ def test_model_listing_classifies_missing_base_url() -> None:
     """缺服务地址时拉取返回结构化错误码, 界面才能按类给中文原因而不是透传原文。"""
     store = ModelProfileStore()
     service, _selected = build_service(store)
-    result = service.profile_models(
-        {"provider": PERSONAL_PROVIDER, "wire_api": "chat_completions", "model_name": ""}
+    result = asyncio.run(
+        service.profile_models(
+            {"provider": PERSONAL_PROVIDER, "wire_api": "chat_completions", "model_name": ""}
+        )
     )
     check("missing base_url listing fails closed", result["ok"] is False, str(result))
     check(
@@ -1144,8 +1152,10 @@ def test_connection_probe_uses_model_directory() -> None:
     app = FastAPI()
     mount_setting_routes(app, models=service, settings=SimpleNamespace(), runtime=SimpleNamespace())
 
+    real_client = httpx.AsyncClient
+
     async def probe(values: dict, profile_id: str = "") -> dict:
-        async with httpx.AsyncClient(
+        async with real_client(
             transport=httpx.ASGITransport(app), base_url="http://test"
         ) as client:
             response = await client.post(
@@ -1154,9 +1164,8 @@ def test_connection_probe_uses_model_directory() -> None:
         assert response.status_code == 200, response.text
         return response.json()
 
-    real_client = httpx.Client
     with patch(
-        "service.chat.service.probe.httpx.Client",
+        "service.chat.service.probe.httpx.AsyncClient",
         side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
     ):
         for wire_api in ("chat_completions", "responses"):
@@ -2280,6 +2289,110 @@ def test_save_rejection_names_the_model_and_upstream() -> None:
         store.delete(existing["id"])
 
 
+def test_model_endpoint_deadline_closes_read_and_prevents_persistence() -> None:
+    """A provider sending bytes indefinitely must release both front-end operations."""
+    store = ModelProfileStore(Path(tempfile.mkdtemp(dir=TEST_HOME.name)) / "profiles.json")
+    service, _selected = build_service(store)
+    app = FastAPI()
+    mount_setting_routes(app, models=service, settings=SimpleNamespace(), runtime=SimpleNamespace())
+
+    async def verify() -> None:
+        stall = True
+        requests: list[tuple[bytes, bytes]] = []
+        closed: asyncio.Queue[bool] = asyncio.Queue()
+
+        async def upstream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                start, *headers, _ = (await reader.readuntil(b"\r\n\r\n")).split(b"\r\n")
+                method, route, _ = start.split(b" ")
+                requests.append((method, route))
+                for header in headers:
+                    if header.lower().startswith(b"content-length:"):
+                        await reader.readexactly(int(header.split(b":", 1)[1]))
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                )
+                if stall:
+                    for _ in range(90):
+                        writer.write(b" ")
+                        await writer.drain()
+                        try:
+                            disconnected = not await asyncio.wait_for(reader.read(1), timeout=0.01)
+                        except TimeoutError:
+                            continue
+                        closed.put_nowait(disconnected)
+                        return
+                    closed.put_nowait(False)
+                writer.write(b'{"data":[{"id":"personal-model"}]}')
+                await writer.drain()
+            except ConnectionError:
+                if stall:
+                    closed.put_nowait(True)
+            finally:
+                writer.close()
+                with suppress(ConnectionError):
+                    await writer.wait_closed()
+
+        server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        values = profile_values(base_url=f"http://127.0.0.1:{port}/v1", wire_api="chat_completions")
+        async with (
+            server,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://test", timeout=3
+            ) as client,
+        ):
+            with patch.object(probe_module, "PROBE_TOTAL_TIMEOUT_SECONDS", 0.3):
+                for route in ("models", "probe"):
+                    result = await client.post(f"/api/serve/model-profiles/{route}", json=values)
+                    details = result.json()
+                    check(
+                        f"{route} fails after the deadline despite ongoing provider bytes",
+                        result.status_code == 200
+                        and details.get("ok") is False
+                        and details.get("error_class") == "TimeoutError",
+                        str(details),
+                    )
+                    check(
+                        f"{route} cancels the provider response",
+                        await asyncio.wait_for(closed.get(), timeout=2),
+                    )
+                result = await client.post("/api/serve/model-profiles", json=values)
+                detail = result.json().get("detail", {})
+                check(
+                    "save returns a structured pre-persistence deadline failure",
+                    result.status_code == 422
+                    and detail.get("code") == "connection_validation_failed"
+                    and detail.get("error_class") == "TimeoutError"
+                    and detail.get("model") == "personal-model",
+                    str(result.json()),
+                )
+                check("save cancels the provider response", await asyncio.wait_for(closed.get(), 2))
+                check("timed-out save does not write a profile file", not store.path.exists())
+                check(
+                    "directory reads and inference validation issue one request each",
+                    requests
+                    == [
+                        (b"GET", b"/v1/models"),
+                        (b"GET", b"/v1/models"),
+                        (b"POST", b"/v1/chat/completions"),
+                    ],
+                    str(requests),
+                )
+
+            stall = False
+            directory = await client.post("/api/serve/model-profiles/models", json=values)
+            saved = await client.post("/api/serve/model-profiles", json=values)
+            check("manual retry reads the recovered provider", directory.json().get("ok") is True)
+            check(
+                "manual retry saves the recovered connection",
+                saved.status_code == 200 and bool(saved.json().get("profile")),
+                str(saved.json()),
+            )
+
+    asyncio.run(verify())
+
+
 def main() -> int:
     test_title_model_preserves_personal_providers_and_signed_out_selection()
     print("file-backed personal API profiles contract")
@@ -2293,6 +2406,7 @@ def main() -> int:
     test_inference_sends_turn_and_session_metering_headers()
     test_unsaved_model_api_probe()
     test_connection_probe_uses_model_directory()
+    test_model_endpoint_deadline_closes_read_and_prevents_persistence()
     test_personal_profile_is_a_catalog_source()
     test_catalog_and_selection_preserve_the_owning_service_instance()
     test_execution_catalog_groups_only_compatible_connections()

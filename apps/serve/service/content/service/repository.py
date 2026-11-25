@@ -69,12 +69,12 @@ class RepositoryLookup:
 
         return self._for_target(target, self._resource_root, is_directory=is_directory)
 
-    def for_scanned_file(self, path: str, target: Path) -> str | None:
-        """Reuse a checked local file, and keep live resolution for mount aliases."""
+    def for_scanned_path(self, path: str, target: Path, *, is_directory: bool) -> str | None:
+        """Reuse a checked local path, and keep live resolution for mount aliases."""
 
         if "\\" in path or self._scope.mount_for(path) is not None:
             return self.for_path(path)
-        return self.for_resolved_local_path(target, is_directory=False)
+        return self.for_resolved_local_path(target, is_directory=is_directory)
 
     def _for_target(
         self, target: Path, boundary: Path, *, is_directory: bool | None = None

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { spawn, execFileSync } from 'node:child_process'
+import childProcess, { spawn, execFileSync } from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, chmod, copyFile, symlink, writeFile, rm, rename } from 'node:fs/promises'
 import { constants as osConstants, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import {
   classifySquirrelStartup,
   inspectSquirrelStartup,
@@ -17,6 +18,7 @@ import {
   bindSquirrelRequest,
   inspectSquirrelIdle,
   inspectCancelledSquirrelPreparation,
+  inspectRestoredSquirrelInstallation,
   verifySquirrelReplacement,
   squirrelHelpersAbsent,
   squirrelLaunchSuperseded,
@@ -433,11 +435,11 @@ test(
     skip: process.platform !== 'darwin',
   },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'squirrel-binding-'))
+    const directory = realpathSync(await mkdtemp(join(tmpdir(), 'squirrel-binding-')))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const target = join(directory, 'live', 'Example.app')
-    const source = join(directory, 'request', 'Example.app')
     const bundle = 'org.scholarseed.binding'
+    const source = join(directory, `${bundle}.ShipIt`, 'request', 'Example.app')
     const binding = {
       schema: 1 as const,
       requestId: 'a'.repeat(64),
@@ -465,6 +467,8 @@ test(
         updateBundleURL: pathToFileURL(source).href,
         targetBundleURL: pathToFileURL(target).href,
         binding,
+        bundleIdentifier: bundle,
+        launchAfterInstallation: false,
         installationAuthorized: false,
       })
     )
@@ -484,6 +488,61 @@ test(
       /request changed during app verification/
     )
     await writeFile(state, stateBeforeVerification)
+    const alternateOwner = join(directory, `${bundle}.ShipIt.next`)
+    await mkdir(alternateOwner, { mode: 0o700 })
+    const alternateState = join(alternateOwner, 'ShipItState.plist')
+    const primaryBytes = readFileSync(state)
+    await writeFile(alternateState, primaryBytes)
+    const next = { ...current, alternate: true as const }
+    await assert.rejects(bindSquirrelRequest(directory, bundle, target, next), /source differs/)
+    const alternateSource = join(alternateOwner, 'request', 'Example.app')
+    await mkdir(join(alternateSource, 'Contents', 'Resources'), { recursive: true })
+    for (const file of ['Contents/Resources/product.json', 'Contents/Info.plist'])
+      await copyFile(join(source, file), join(alternateSource, file))
+    const nextState = {
+      ...JSON.parse(primaryBytes.toString()),
+      updateBundleURL: pathToFileURL(alternateSource).href,
+    }
+    await writeFile(alternateState, JSON.stringify(nextState))
+    const nextBound = await bindSquirrelRequest(directory, bundle, target, next)
+    assert.equal(nextBound.source.path, realpathSync(alternateSource))
+    const nextPreparation = join(alternateOwner, 'CandidatePreparation')
+    const nextCandidate = join(nextPreparation, 'shipit-candidate.fixture', 'Example.app')
+    await mkdir(nextCandidate, { recursive: true, mode: 0o700 })
+    const nextCapture = (path: string) => {
+      const { dev, ino, uid } = lstatSync(path)
+      return { dev, ino, uid }
+    }
+    const receipt = (path: string) =>
+      JSON.stringify({
+        schema: '1',
+        record: {
+          state: 'ready',
+          binding,
+          source: nextBound.source,
+          target: nextBound.target,
+          candidate: { path, item: nextCapture(path), parent: nextCapture(dirname(path)) },
+        },
+      })
+    const nextJournal = join(nextPreparation, 'journal.plist')
+    await writeFile(nextJournal, receipt(source), { mode: 0o600 })
+    assert.equal(
+      (await bindSquirrelRequest(directory, bundle, target, next, directory)).prepared,
+      undefined
+    )
+    await writeFile(nextJournal, receipt(nextCandidate))
+    assert.equal(
+      (await bindSquirrelRequest(directory, bundle, target, next, directory)).prepared?.path,
+      nextCandidate
+    )
+    for (const [changes, expected] of [
+      [{ bundleIdentifier: bundle + '.next' }, /bundle identifier differs/],
+      [{ launchAfterInstallation: true }, /launch flag differs/],
+      [{ installationAuthorized: true }, /installation authorization differs/],
+    ] as const) {
+      await writeFile(alternateState, JSON.stringify({ ...nextState, ...changes }))
+      await assert.rejects(bindSquirrelRequest(directory, bundle, target, next), expected)
+    }
     const owner = join(dirname(state), 'CandidatePreparation')
     const prepared = join(directory, 'native-copy', 'Example.app')
     await mkdir(owner, { mode: 0o700 })
@@ -639,6 +698,10 @@ test(
     await writeFile(statePath, JSON.stringify(request))
     await writeFile(ackPath, JSON.stringify({ ...ack, code: osConstants.errno.EIO }))
     assert.equal(await inspect(), null)
+    assert.equal(
+      await inspectSquirrelIdle(cache, bundle, application, current, undefined, true),
+      false
+    )
   }
 )
 
@@ -650,14 +713,14 @@ test(
     t.after(() => rm(directory, { recursive: true, force: true }))
     const application = join(directory, 'Example App.app')
     const helper = join(application, 'Contents/Frameworks/Squirrel.framework/Resources/ShipIt')
-    const source = join(directory, 'request', 'Example.app')
     const bundle = 'org.scholarseed.failure'
     const cache = join(directory, `${bundle}.ShipIt`)
+    const source = join(cache, 'request', 'Example.app')
     await mkdir(dirname(helper), { recursive: true })
     await writeFile(helper, 'fixture: never executed')
     await mkdir(source, { recursive: true })
     await chmod(dirname(source), 0o700)
-    await mkdir(cache, { mode: 0o700 })
+    await chmod(cache, 0o700)
     const state = join(cache, 'ShipItState.plist')
     const ack = join(dirname(source), '.scholarseed-prepare.plist')
     const native = terminalRecord(source, application)
@@ -697,6 +760,44 @@ test(
     assert.equal(await inspectOrphan(native.binding.candidate, true), true)
     assert.equal(await inspectOrphan(native.binding.candidate, false), false)
     assert.equal(await inspectOrphan('another-candidate', true), false)
+    const alternateOwner = cache + '.next'
+    const alternateSource = join(alternateOwner, 'request', 'Example.app')
+    const alternateState = join(alternateOwner, 'ShipItState.plist')
+    await mkdir(alternateSource, { recursive: true, mode: 0o700 })
+    const alternateRequest = JSON.stringify({
+      ...request,
+      updateBundleURL: pathToFileURL(alternateSource).href,
+    })
+    await writeFile(alternateState, alternateRequest, { mode: 0o600 })
+    const orphan = (
+      observedLaunch: (source: string, target: string, alternate: boolean) => boolean,
+      verifyReplacement?: (path: string) => Promise<void>
+    ) =>
+      inspectSquirrelIdle(directory, bundle, application, null, verifyReplacement, false, {
+        candidate: native.binding.candidate,
+        observedLaunch,
+      })
+    assert.equal(await orphan(() => true), false)
+    const observedAlternate = (value: string, _: string, slot: boolean) =>
+      slot && value === alternateSource
+    const verifyBothSlots = t.mock.fn(async (path: string) => {
+      assert.equal(path, application)
+    })
+    assert.equal(await orphan(observedAlternate, verifyBothSlots), true)
+    assert.equal(verifyBothSlots.mock.callCount(), 1)
+    const failedVerification = t.mock.fn(async () => {
+      throw new Error('untrusted replacement')
+    })
+    assert.equal(await orphan(observedAlternate, failedVerification), false)
+    assert.equal(failedVerification.mock.callCount(), 1)
+    assert.equal(
+      await orphan((_, __, slot) => {
+        if (!slot) writeFileSync(alternateState, alternateRequest + '\n')
+        return !slot
+      }),
+      false
+    )
+    await rm(alternateOwner, { recursive: true })
     await writeFile(state, JSON.stringify({ ...request, installationAuthorized: false }))
     assert.equal(await inspectOrphan(native.binding.candidate, true), false)
     await writeFile(state, original[0])
@@ -796,22 +897,20 @@ test(
     const bundle = 'org.scholarseed.probe'
     const cache = join(directory, `${bundle}.ShipIt`)
     await mkdir(cache)
-    const source = join(directory, 'request', 'Example.app')
+    const source = join(cache, 'request', 'Example.app')
     await mkdir(source, { recursive: true })
     await chmod(dirname(source), 0o700)
-    await writeFile(
-      join(cache, 'ShipItState.plist'),
-      JSON.stringify({
-        targetBundleURL: pathToFileURL(application).href,
-        updateBundleURL: pathToFileURL(source).href,
-        binding: protocolBinding,
-        bundleIdentifier: bundle,
-        installationAuthorized: true,
-        launchAfterInstallation: true,
-        useUpdateBundleName: true,
-      }),
-      { mode: 0o600 }
-    )
+    const statePath = join(cache, 'ShipItState.plist')
+    const request = {
+      targetBundleURL: pathToFileURL(application).href,
+      updateBundleURL: pathToFileURL(source).href,
+      binding: protocolBinding,
+      bundleIdentifier: bundle,
+      installationAuthorized: true,
+      launchAfterInstallation: true,
+      useUpdateBundleName: true,
+    }
+    await writeFile(statePath, JSON.stringify(request), { mode: 0o600 })
     const acknowledgement = join(dirname(source), '.scholarseed-prepare.plist')
     await writeFile(acknowledgement, JSON.stringify(terminalRecord(source, application)), {
       mode: 0o600,
@@ -821,12 +920,19 @@ test(
     })
     owned.helper = helper
     await once(helper, 'spawn')
-    const current = {
+    const publisher = spawn('/usr/bin/true')
+    await once(publisher, 'exit')
+    assert.ok(publisher.pid)
+    const current: SquirrelHandoff = {
       ...handoff,
+      sourcePid: publisher.pid,
       at: Date.now(),
       nativeRequest: terminalRecord(source, application),
     }
+    const inspect = (entry = current) =>
+      inspectRestoredSquirrelInstallation(directory, bundle, application, entry)
     assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'restoring')
+    assert.equal(await inspect(), null)
     assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), false)
     await rm(acknowledgement)
     assert.equal(
@@ -841,6 +947,47 @@ test(
     await exited
     assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'failed')
     assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), true)
+    const proof = await inspect()
+    assert.equal(proof?.(), true)
+    const slowInventory = t.mock.method(childProcess, 'execFileSync', () => {
+      throw Object.assign(new Error('process probe timed out'), { code: 'ETIMEDOUT' })
+    })
+    syncBuiltinESMExports()
+    try {
+      assert.equal(proof?.(), false)
+      const [command, , options] = slowInventory.mock.calls[0].arguments
+      assert.equal(command, '/bin/ps')
+      assert.equal(options?.timeout, 250)
+    } finally {
+      slowInventory.mock.restore()
+      syncBuiltinESMExports()
+    }
+    assert.equal(proof?.(), true)
+    assert.equal(await inspect({ ...current, sourcePid: process.pid }), null)
+    assert.equal(await inspect({ ...current, state: 'downloaded' }), null)
+    const legacy = { ...current, sourcePid: undefined }
+    assert.equal(await inspect(legacy), null)
+    let publisherAbsent = true
+    const legacyProof = await inspectRestoredSquirrelInstallation(
+      directory,
+      bundle,
+      application,
+      legacy,
+      () => publisherAbsent
+    )
+    assert.equal(legacyProof?.(), true)
+    publisherAbsent = false
+    assert.equal(legacyProof?.(), false)
+    assert.equal(
+      await inspectRestoredSquirrelInstallation(
+        directory,
+        bundle,
+        application,
+        legacy,
+        () => publisherAbsent
+      ),
+      null
+    )
     for (const [root, expected] of [
       [join(directory, 'Other App.app'), true],
       [source, false],
@@ -851,6 +998,7 @@ test(
       const active = spawn(other, [], { stdio: 'ignore' })
       owned.helper = active
       await once(active, 'spawn')
+      assert.equal(proof?.(), expected)
       assert.equal(await inspectSquirrelIdle(directory, bundle, application, current), expected)
       assert.equal(
         await inspectSquirrelStartup(current, directory, bundle, application),
@@ -869,11 +1017,37 @@ test(
       await stopped
       assert.equal(await inspectSquirrelStartup(current, directory, bundle, application), 'failed')
     }
+    const failure = readFileSync(acknowledgement)
     await rm(acknowledgement)
+    assert.equal(proof?.(), false)
+    assert.equal(await inspect(), null)
     assert.equal(
       await inspectSquirrelStartup(current, directory, bundle, application),
       'unconfirmed'
     )
+    await writeFile(acknowledgement, failure, { mode: 0o600 })
+    assert.equal(proof?.(), false)
+    for (const changed of [
+      { installationAuthorized: false },
+      { launchAfterInstallation: false },
+      { binding: { ...request.binding, requestId: 'f'.repeat(64) } },
+    ]) {
+      await writeFile(statePath, JSON.stringify({ ...request, ...changed }))
+      assert.equal(await inspect(), null)
+    }
+    await writeFile(statePath, JSON.stringify(request))
+    const restored = await inspect()
+    assert.equal(restored?.(), true)
+    await rename(join(application, 'Contents'), join(application, 'PreviousContents'))
+    await mkdir(dirname(executable), { recursive: true })
+    await symlink('Versions/A/Resources', join(framework, 'Resources'))
+    await copyFile(executable.replace('/Contents/', '/PreviousContents/'), executable)
+    assert.equal(restored?.(), false)
+    await rename(application, application + '.previous')
+    await mkdir(dirname(executable), { recursive: true })
+    await symlink('Versions/A/Resources', join(framework, 'Resources'))
+    await copyFile(executable.replace(application, application + '.previous'), executable)
+    assert.equal(await inspect(), null)
   }
 )
 

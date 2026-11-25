@@ -510,6 +510,7 @@ export function ResourcePanel(): React.JSX.Element {
   const { t: uiText } = useTranslation('ui')
   const { state, set, act } = useApp()
   const resource = state.resource
+  const treeBusy = resource.loadState === 'loading' || resource.loadState === 'refreshing'
   const project = state.homeSelectedProjectId
   const revealedSelection = useRef<{ project: string | null; path: string } | null>(null)
   const projectRevision = useSyncExternalStore(subscribeResourceRevisions, () =>
@@ -847,6 +848,8 @@ export function ResourcePanel(): React.JSX.Element {
               label={uiText('refresh')}
               title={uiText('refresh')}
               data-testid="resource-refresh"
+              aria-busy={treeBusy}
+              disabled={treeBusy}
               icon={<RotateCw size={14} strokeWidth={1.8} />}
               onClick={() => void act.reloadResourceTree()}
             />
@@ -920,10 +923,19 @@ export function ResourcePanel(): React.JSX.Element {
           </div>
         </div>
 
+        {resource.treeRefreshFailed && (
+          <Alert
+            tone="error"
+            className="mx-2 mb-[var(--vds-space-2)]"
+            description={t('panel.loadFailed')}
+            data-testid="resource-tree-refresh-failed"
+          />
+        )}
         <div
           className={`vds-tree min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[var(--vds-space-3)]${dropTarget === RESOURCE_ROOT_DIRECTORY ? " relative after:pointer-events-none after:absolute after:inset-0 after:z-[var(--vds-z-content)] after:rounded-[var(--vds-radius-4)] after:ring-2 after:ring-inset after:ring-[var(--vds-accent-light-border)] after:content-['']" : ''}`}
           data-drop-active={dropTarget === RESOURCE_ROOT_DIRECTORY ? 'true' : 'false'}
           data-testid="resource-tree-root"
+          aria-busy={treeBusy}
           onDragOver={(event) => {
             const source = dragSource || event.dataTransfer.getData(RESOURCE_DRAG_MIME)
             if (!source) return

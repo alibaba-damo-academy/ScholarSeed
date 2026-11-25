@@ -20,6 +20,7 @@ import {
   commitDocument,
   createManagedCopy,
   documentIdFor,
+  DOCUMENT_SAVE_TIMEOUT_MS,
   isDocumentLoadFailure,
   loadDocument,
   loadVersionCapability,
@@ -69,7 +70,7 @@ const SPLIT_PROJECTION_SUFFIX = ':split'
 export type DocumentViewKind = 'preview' | 'edit' | 'source'
 export type DocumentNavigationView = 'resource' | 'literature'
 export type DocumentLoadState = 'loading' | 'ready' | 'error'
-export type DocumentSaveState = 'clean' | 'dirty' | 'saving' | 'conflict' | 'error'
+export type DocumentSaveState = 'clean' | 'dirty' | 'saving' | 'conflict' | 'error' | 'unconfirmed'
 export type CloseChoice = 'save' | 'overwrite' | 'discard' | 'cancel'
 export type TabCloseScope = 'current' | 'others' | 'left' | 'right' | 'all'
 export type TabSplitDirection = 'right' | 'bottom'
@@ -229,12 +230,13 @@ export interface FocusedSelectionPresentation {
 }
 
 export interface DocumentLoader {
-  load(source: DocumentSource): Promise<DocumentLoadResult>
+  load(source: DocumentSource, signal?: AbortSignal): Promise<DocumentLoadResult>
   versioning?(source: DocumentSource): Promise<NonNullable<LoadedDocument['versioning']> | null>
   commit(
     source: DocumentSource,
     bytes: Uint8Array,
-    revision: string
+    revision: string,
+    signal?: AbortSignal
   ): ReturnType<typeof commitDocument>
   createManagedCopy?(
     source: DocumentSource,
@@ -245,8 +247,17 @@ export interface DocumentLoader {
 
 export interface DocumentSaveDelegate {
   prepare?: () => void
-  beforeSave?: () => Promise<void>
-  serialize: () => Promise<Uint8Array | null>
+  beforeSave?: (signal?: AbortSignal) => Promise<void>
+  serialize: (signal?: AbortSignal) => Promise<Uint8Array | null>
+}
+
+interface DocumentSaveAttempt {
+  documentId: string
+  source: DocumentSource
+  baseRevision: string
+  changeVersion: number
+  bytes: Uint8Array
+  text: string | null
 }
 
 export interface RestoredProjectFile {
@@ -375,6 +386,27 @@ function copyBytes(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(bytes)
 }
 
+async function waitForSavePhase<T>(signal: AbortSignal, phase: () => Promise<T>): Promise<T> {
+  signal.throwIfAborted()
+  let abort!: () => void
+  const expired = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+  })
+  try {
+    const pending = new Promise<T>((resolve) => resolve(phase()))
+    const result = await Promise.race([pending, expired])
+    signal.throwIfAborted()
+    return result
+  } finally {
+    signal.removeEventListener('abort', abort)
+  }
+}
+
+function equalSaveBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index])
+}
+
 function cleanByteState(bytes: Uint8Array): Pick<DocumentSession, 'bytes' | 'savedBytes'> {
   const snapshot = copyBytes(bytes)
   return { bytes: snapshot, savedBytes: snapshot }
@@ -410,6 +442,16 @@ export function tabIdsForClose(
   return [...tabIds]
 }
 
+function saveStateAfterEdit(
+  current: DocumentSaveState,
+  unconfirmed: boolean,
+  dirty: boolean
+): DocumentSaveState {
+  if (current === 'saving') return current
+  if (unconfirmed) return 'unconfirmed'
+  return dirty ? 'dirty' : 'clean'
+}
+
 export function hasDirtyProjectPath(
   sessions: readonly DocumentSession[],
   project: string | null,
@@ -441,6 +483,7 @@ export class DocumentWorkspace {
   private nextId = 1
   private readonly saveDelegates = new Map<string, Map<symbol, DocumentSaveDelegate>>()
   private readonly saves = new Map<string, PendingSave>()
+  private readonly unconfirmedSaves = new Map<string, DocumentSaveAttempt>()
   private readonly textHistories = new Map<string, TextHistoryState>()
   private readonly openings = new Map<string, Promise<string>>()
   private nextHistorySequence = 0
@@ -955,13 +998,23 @@ export class DocumentWorkspace {
     }
   }
 
+  openLoadedDocument(
+    source: DocumentSource,
+    viewKind: DocumentViewKind,
+    title: string,
+    loaded: LoadedDocument
+  ): Promise<string> {
+    return this.openDocument(source, viewKind, title, undefined, undefined, {}, loaded)
+  }
+
   private async openDocument(
     source: DocumentSource,
     viewKind: DocumentViewKind,
     title: string,
     area?: DockArea,
     titleFallback?: DocumentTab['titleFallback'],
-    options: Pick<DocumentTab, 'embedded' | 'hostTabId'> = {}
+    options: Pick<DocumentTab, 'embedded' | 'hostTabId'> = {},
+    prepared?: LoadedDocument
   ): Promise<string> {
     const documentId = documentIdFor(source)
     const existingSession = this.sessionFor(source)
@@ -1065,7 +1118,7 @@ export class DocumentWorkspace {
     })
 
     if (!existingSession) {
-      const loaded = await this.loader.load(source)
+      const loaded = prepared ?? (await this.loader.load(source))
       const current = this.state.sessions[sessionId]
       if (!current) return tabId
       if (isDocumentLoadFailure(loaded)) {
@@ -1162,7 +1215,8 @@ export class DocumentWorkspace {
 
   private replaceText(session: DocumentSession, text: string): void {
     const contentChanged = text !== session.text
-    const dirty = text !== session.savedText
+    const unconfirmed = this.unconfirmedSaves.has(session.id)
+    const dirty = unconfirmed || text !== session.savedText
     const bytes = UTF8_ENCODER.encode(text)
     this.publish({
       ...this.state,
@@ -1182,7 +1236,7 @@ export class DocumentWorkspace {
           selection: contentChanged
             ? this.invalidateSelection(session.selection)
             : session.selection,
-          saveState: dirty ? 'dirty' : 'clean',
+          saveState: saveStateAfterEdit(session.saveState, unconfirmed, dirty),
         },
       },
     })
@@ -1207,6 +1261,7 @@ export class DocumentWorkspace {
   setExternalDirty(sessionId: string, dirty: boolean): void {
     const session = this.state.sessions[sessionId]
     if (!session) return
+    const unconfirmed = this.unconfirmedSaves.has(sessionId)
     this.publish({
       ...this.state,
       selectionPresentations: dirty
@@ -1216,10 +1271,10 @@ export class DocumentWorkspace {
         ...this.state.sessions,
         [sessionId]: {
           ...session,
-          dirty,
+          dirty: unconfirmed || dirty,
           changeVersion: dirty ? session.changeVersion + 1 : session.changeVersion,
           selection: dirty ? this.invalidateSelection(session.selection) : session.selection,
-          saveState: dirty ? 'dirty' : 'clean',
+          saveState: saveStateAfterEdit(session.saveState, unconfirmed, dirty),
         },
       },
     })
@@ -1227,7 +1282,7 @@ export class DocumentWorkspace {
 
   markConflict(sessionId: string): void {
     const session = this.state.sessions[sessionId]
-    if (!session) return
+    if (!session || this.unconfirmedSaves.has(sessionId)) return
     this.publish({
       ...this.state,
       sessions: {
@@ -1441,6 +1496,7 @@ export class DocumentWorkspace {
       !current ||
       this.versioningRefreshes.get(sessionId) !== request ||
       current.documentId !== expectedDocumentId ||
+      current.revision !== session.revision ||
       documentIdFor(current.source) !== sourceId
     ) {
       if (this.versioningRefreshes.get(sessionId) === request) {
@@ -1512,9 +1568,9 @@ export class DocumentWorkspace {
   private acceptLoaded(sessionId: string, loaded: LoadedDocument): boolean {
     const session = this.state.sessions[sessionId]
     if (!session) return false
+    this.retireDocumentSave(sessionId)
     const text = TEXT_VIEWERS.has(loaded.viewer) ? UTF8.decode(loaded.bytes) : null
     this.textHistories.delete(sessionId)
-    this.versioningRefreshes.delete(sessionId)
     this.publish({
       ...this.state,
       tabs:
@@ -1561,6 +1617,7 @@ export class DocumentWorkspace {
     const session = this.state.sessions[sessionId]
     if (!session) return
     const source: DocumentSource = { kind: 'project', project, path: file.path }
+    this.retireDocumentSave(sessionId)
     this.publish({
       ...this.state,
       tabs:
@@ -1588,6 +1645,7 @@ export class DocumentWorkspace {
     const session = this.state.sessions[sessionId]
     if (!session) return
     const source: DocumentSource = { kind: 'project', project, path: file.path }
+    this.retireDocumentSave(sessionId)
     this.textHistories.delete(sessionId)
     this.publish({
       ...this.state,
@@ -1632,16 +1690,7 @@ export class DocumentWorkspace {
   async overwriteDisk(sessionId: string): Promise<boolean> {
     const session = this.state.sessions[sessionId]
     if (!session || !session.dirty) return false
-    const disk = await this.loader.load(session.source)
-    if (isDocumentLoadFailure(disk)) return false
-    this.publish({
-      ...this.state,
-      sessions: {
-        ...this.state.sessions,
-        [sessionId]: { ...session, revision: disk.revision, saveState: 'dirty' },
-      },
-    })
-    return this.save(sessionId)
+    return this.save(sessionId, true)
   }
 
   async discardMemory(sessionId: string): Promise<boolean> {
@@ -2137,9 +2186,8 @@ export class DocumentWorkspace {
     for (const sessionId of discardedSessionIds) {
       if (liveSessionIds.has(sessionId)) continue
       this.saveDelegates.delete(sessionId)
-      this.saves.delete(sessionId)
+      this.retireDocumentSave(sessionId)
       this.textHistories.delete(sessionId)
-      this.versioningRefreshes.delete(sessionId)
     }
     const selectionPresentations = Object.fromEntries(
       Object.entries(this.state.selectionPresentations).filter(
@@ -2225,12 +2273,17 @@ export class DocumentWorkspace {
             ? documentIdFor(nextSource)
             : session.documentId
         relocated.push({ sessionId: id, documentId: nextDocumentId })
+        this.retireDocumentSave(id)
+        let saveState = session.saveState
+        if (saveState === 'saving' || saveState === 'unconfirmed')
+          saveState = session.dirty ? 'dirty' : 'clean'
         return [
           id,
           {
             ...session,
             documentId: nextDocumentId,
             source: nextSource,
+            saveState,
             title: session.source.path === previousPath && title ? title : session.title,
             // Version capability is path-bound even when the document keeps a stable
             // asset identity. Keeping the old projection makes a renamed pending file
@@ -2276,10 +2329,16 @@ export class DocumentWorkspace {
     }
     if (choice === 'save' || choice === 'overwrite') {
       const saved = await this.save(pending.sessionId, choice === 'overwrite')
-      if (!saved) return
+      if (
+        !saved ||
+        this.state.pendingClose !== pending ||
+        this.state.sessions[pending.sessionId]?.dirty
+      )
+        return
     } else {
       const session = this.state.sessions[pending.sessionId]
       if (session) {
+        this.retireDocumentSave(pending.sessionId)
         this.publish({
           ...this.state,
           sessions: {
@@ -2312,7 +2371,7 @@ export class DocumentWorkspace {
       return active.promise
     const saving = active
       ? active.promise.then((saved) => {
-          if (!saved && !overwrite) return false
+          if (!saved) return false
           return this.commitSession(sessionId, overwrite)
         })
       : this.commitSession(sessionId, overwrite)
@@ -2358,113 +2417,186 @@ export class DocumentWorkspace {
     return true
   }
 
-  private async commitSession(sessionId: string, overwrite: boolean): Promise<boolean> {
-    let session = this.state.sessions[sessionId]
-    if (!session) return true
-    const delegate = Array.from(this.saveDelegates.get(sessionId)?.values() ?? []).at(-1)
-    delegate?.prepare?.()
-    session = this.state.sessions[sessionId]
-    if (!session || !session.dirty) return true
-    if (delegate?.beforeSave) {
-      try {
-        await delegate.beforeSave()
-      } catch (error) {
-        console.warn('Document before-save preparation failed', error)
-      }
-      delegate.prepare?.()
-      session = this.state.sessions[sessionId]
-      if (!session || !session.dirty) return true
-    }
-    const committedChangeVersion = session.changeVersion
-    const committedText = session.text
+  private retireDocumentSave(sessionId: string): void {
+    this.saves.delete(sessionId)
+    this.unconfirmedSaves.delete(sessionId)
+    this.versioningRefreshes.delete(sessionId)
+  }
+
+  private publishSave(session: DocumentSession, updates: Partial<DocumentSession>): void {
     this.publish({
       ...this.state,
-      selectionPresentations: this.withoutSessionPresentations(sessionId),
-      sessions: {
-        ...this.state.sessions,
-        [sessionId]: {
-          ...session,
-          selection: this.invalidateSelection(session.selection),
-          saveState: 'saving',
-        },
-      },
+      sessions: { ...this.state.sessions, [session.id]: { ...session, ...updates } },
     })
-    if (delegate) {
-      const bytes = await delegate.serialize()
-      session = this.state.sessions[sessionId]
-      if (!bytes || !session) {
-        if (session) {
-          this.publish({
-            ...this.state,
-            sessions: { ...this.state.sessions, [sessionId]: { ...session, saveState: 'error' } },
-          })
-        }
+  }
+
+  private saveSession(
+    sessionId: string,
+    attempt: Pick<DocumentSaveAttempt, 'documentId' | 'source' | 'baseRevision'>
+  ): DocumentSession | undefined {
+    const session = this.state.sessions[sessionId]
+    return session?.documentId === attempt.documentId &&
+      session.revision === attempt.baseRevision &&
+      session.source === attempt.source
+      ? session
+      : undefined
+  }
+
+  private acceptSave(
+    session: DocumentSession,
+    attempt: DocumentSaveAttempt,
+    revision: string
+  ): boolean {
+    this.unconfirmedSaves.delete(session.id)
+    const newerEdit = session.changeVersion !== attempt.changeVersion
+    this.publishSave(session, {
+      revision,
+      versioning: null,
+      ...(newerEdit ? {} : { bytes: attempt.bytes }),
+      savedBytes: attempt.bytes,
+      savedText: attempt.text,
+      dirty: newerEdit,
+      saveState: newerEdit ? 'dirty' : 'clean',
+    })
+    void this.refreshVersioning(session.id, session.documentId).catch((error) =>
+      console.warn('Version state refresh failed after disk save', error)
+    )
+    return !newerEdit
+  }
+
+  private async reconcileSave(
+    sessionId: string,
+    attempt: DocumentSaveAttempt,
+    signal: AbortSignal
+  ): Promise<boolean> {
+    const initial = this.saveSession(sessionId, attempt)
+    if (!initial) return false
+    this.publishSave(initial, { saveState: 'saving' })
+    try {
+      const disk = await waitForSavePhase(signal, () => this.loader.load(attempt.source, signal))
+      const current = this.saveSession(sessionId, attempt)
+      if (!current || this.unconfirmedSaves.get(sessionId) !== attempt) return false
+      if (isDocumentLoadFailure(disk) || !disk.revision) {
+        this.publishSave(current, { saveState: 'unconfirmed' })
         return false
       }
-      session = { ...session, bytes: copyBytes(bytes) }
-      this.publish({
-        ...this.state,
-        sessions: { ...this.state.sessions, [sessionId]: session },
+      if (equalSaveBytes(disk.bytes, attempt.bytes)) {
+        return this.acceptSave(current, attempt, disk.revision)
+      }
+      this.unconfirmedSaves.delete(sessionId)
+      const conflict = disk.revision !== attempt.baseRevision
+      this.publishSave(current, {
+        saveState: conflict ? 'conflict' : 'dirty',
+        externalChange: conflict || current.externalChange,
       })
+    } catch {
+      const current = this.saveSession(sessionId, attempt)
+      if (current && this.unconfirmedSaves.get(sessionId) === attempt)
+        this.publishSave(current, { saveState: 'unconfirmed' })
     }
-    const committedBytes = copyBytes(session.bytes)
-    let expectedRevision = session.revision
-    if (overwrite) {
-      const latest = await this.loader.load(session.source)
-      if (isDocumentLoadFailure(latest)) {
-        const current = this.state.sessions[sessionId]
-        if (current) {
-          this.publish({
-            ...this.state,
-            sessions: { ...this.state.sessions, [sessionId]: { ...current, saveState: 'error' } },
-          })
-        }
-        return false
-      }
-      expectedRevision = latest.revision
+    return false
+  }
+
+  private async commitSession(sessionId: string, overwrite: boolean): Promise<boolean> {
+    const initial = this.state.sessions[sessionId]
+    if (!initial) return true
+    const expiresAt = performance.now() + DOCUMENT_SAVE_TIMEOUT_MS
+    const signal = AbortSignal.timeout(DOCUMENT_SAVE_TIMEOUT_MS)
+    const unresolved = this.unconfirmedSaves.get(sessionId)
+    if (unresolved) return this.reconcileSave(sessionId, unresolved, signal)
+    const delegate = Array.from(this.saveDelegates.get(sessionId)?.values() ?? []).at(-1)
+    const target = {
+      documentId: initial.documentId,
+      source: initial.source,
+      baseRevision: initial.revision,
     }
-    const result = await this.loader.commit(session.source, committedBytes, expectedRevision)
-    const current = this.state.sessions[sessionId]
-    if (!current) return false
-    if (!result.ok) {
+    let dispatched: DocumentSaveAttempt | undefined
+    try {
+      delegate?.prepare?.()
+      let session = this.saveSession(sessionId, target)
+      if (!session) return false
+      if (!session.dirty) return true
+      this.versioningRefreshes.delete(sessionId)
       this.publish({
         ...this.state,
-        pendingClose: this.state.pendingClose,
+        selectionPresentations: this.withoutSessionPresentations(sessionId),
         sessions: {
           ...this.state.sessions,
           [sessionId]: {
-            ...current,
-            saveState: result.error === 'conflict' ? 'conflict' : 'error',
+            ...session,
+            selection: this.invalidateSelection(session.selection),
+            saveState: 'saving',
           },
         },
       })
-      return false
-    }
-    this.publish({
-      ...this.state,
-      sessions: {
-        ...this.state.sessions,
-        [sessionId]: {
-          ...current,
-          revision: result.revision,
-          versioning: null,
-          ...(current.changeVersion === committedChangeVersion
-            ? { bytes: committedBytes, savedBytes: committedBytes }
-            : { savedBytes: committedBytes }),
-          savedText: committedText,
-          dirty: current.changeVersion !== committedChangeVersion,
-          saveState: current.changeVersion === committedChangeVersion ? 'clean' : 'dirty',
-        },
-      },
-    })
-    try {
-      await this.refreshVersioning(sessionId, current.documentId)
+      if (delegate?.beforeSave) {
+        try {
+          await waitForSavePhase(signal, () => delegate.beforeSave!(signal))
+        } catch (error) {
+          signal.throwIfAborted()
+          console.warn('Document before-save preparation failed', error)
+        }
+        delegate.prepare?.()
+        session = this.saveSession(sessionId, target)
+        if (!session) return false
+        if (!session.dirty) {
+          this.publishSave(session, { saveState: 'clean' })
+          return true
+        }
+      }
+      const proposed = session
+      const serialized = delegate
+        ? await waitForSavePhase(signal, () => delegate.serialize(signal))
+        : proposed.bytes
+      if (!serialized) throw new Error('document_save_serialization_missing')
+      const bytes = copyBytes(serialized)
+      let expectedRevision = proposed.revision
+      if (overwrite) {
+        const latest = await waitForSavePhase(signal, () => this.loader.load(target.source, signal))
+        if (isDocumentLoadFailure(latest) || !latest.revision)
+          throw new Error('document_save_revision_unavailable')
+        expectedRevision = latest.revision
+      }
+      if (!this.saveSession(sessionId, target)) return false
+      const attempt = {
+        ...target,
+        changeVersion: proposed.changeVersion,
+        bytes,
+        text: proposed.text,
+      }
+      const result = await waitForSavePhase(signal, () => {
+        // An editor phase can occupy the renderer past the deadline before the timer runs.
+        if (performance.now() >= expiresAt)
+          throw new DOMException('Document save deadline expired', 'TimeoutError')
+        dispatched = attempt
+        return this.loader.commit(target.source, bytes, expectedRevision, signal)
+      })
+      const current = this.saveSession(sessionId, target)
+      if (!current) return false
+      if (result.ok) {
+        this.acceptSave(current, attempt, result.revision)
+        return true
+      }
+      if (result.error === 'unconfirmed') this.unconfirmedSaves.set(sessionId, attempt)
+      this.publishSave(current, {
+        ...(result.error === 'unconfirmed'
+          ? { dirty: true, saveState: 'unconfirmed' }
+          : {
+              saveState: result.error === 'conflict' ? 'conflict' : 'error',
+            }),
+      })
     } catch (error) {
-      // The bytes are already committed. A failed metadata read must not report
-      // a failed disk save or retain the previous "saved version" capability.
-      console.warn('Version state refresh failed after disk save', error)
+      const current = this.saveSession(sessionId, target)
+      if (current) {
+        if (dispatched) this.unconfirmedSaves.set(sessionId, dispatched)
+        this.publishSave(
+          current,
+          dispatched ? { dirty: true, saveState: 'unconfirmed' } : { saveState: 'error' }
+        )
+      }
+      console.warn('Document save did not finish', error)
     }
-    return true
+    return false
   }
 
   private leafForTab(tabId: string): FocusedLeaf | null {
@@ -2538,7 +2670,12 @@ export class DocumentWorkspace {
         const references = Object.values(this.state.tabs).filter(
           (candidate) => candidate.sessionId === tab.sessionId
         ).length
-        if (session?.viewer === 'markdown' && this.autoSave && references === 1) {
+        if (
+          session?.viewer === 'markdown' &&
+          this.autoSave &&
+          references === 1 &&
+          !this.unconfirmedSaves.has(session.id)
+        ) {
           try {
             const delegate = Array.from(this.saveDelegates.get(session.id)?.values() ?? []).at(-1)
             delegate?.prepare?.()
@@ -2583,9 +2720,8 @@ export class DocumentWorkspace {
     if (!Object.values(tabs).some((candidate) => candidate.sessionId === tab.sessionId)) {
       delete sessions[tab.sessionId]
       this.saveDelegates.delete(tab.sessionId)
-      this.saves.delete(tab.sessionId)
+      this.retireDocumentSave(tab.sessionId)
       this.textHistories.delete(tab.sessionId)
-      this.versioningRefreshes.delete(tab.sessionId)
     }
     let layout = removeTabFromLayout(this.state.layout, tabId)
     const previousFocusedArea = this.state.focusedLeaf?.area

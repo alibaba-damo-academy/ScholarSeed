@@ -2,7 +2,9 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
-const { spawnSync } = require('node:child_process')
+const { execFileSync, spawnSync } = require('node:child_process')
+const { performance } = require('node:perf_hooks')
+const { setTimeout: delay } = require('node:timers/promises')
 const { sha256 } = require('../shared/digest.cjs')
 const { fingerprint } = require('../../native/shipit/fingerprint.cjs')
 const { ensureArtifact } = require('../../../../scripts/shared/artifacts.cjs')
@@ -19,14 +21,21 @@ const COMPILE_UNITS = [
   'NSBundle+SQRLVersionExtensions', 'NSError+SQRLVerbosityExtensions',
   'NSProcessInfo+SQRLVersionExtensions', 'RACSignal+SQRLTransactionExtensions',
   'SQRLCodeSignature', 'SQRLInstaller', 'SQRLInstallerOwnedBundle',
-  'SQRLShipItRequest', 'SQRLTerminationListener', 'ShipIt-main',
+  'SQRLShipItRequest', 'SQRLTerminationListener',
 ]
 const FRAMEWORKS = ['Mantle', 'ReactiveObjC', 'Foundation', 'AppKit', 'IOKit', 'Security']
 const RPATHS = ['@executable_path/../..', '@executable_path/../../../..']
 const TIMING_TEST_SPANS = 7
 const CONTRACT_RESULT_SCHEMA = 1
+const CONTRACT_TIMEOUT_MS = 60_000
+const SEALED_CONTRACT_TIMEOUT_MS = 30_000
+const WORKSPACE_LAUNCH_TIMEOUT_MS = 10_000
+const WORKSPACE_LAUNCH_POLL_MS = 100
+const VOLUME_COMMAND_TIMEOUT_MS = 60_000
+// The second volume holds only the preparation test's tiny Contents/data bundles and HFS+ metadata.
+const PREPARATION_VOLUME_SIZE = '16m'
 const PREPARATION_CONTRACTS = {
-  preparation: { units: SUPPORT_UNITS },
+  preparation: { units: SUPPORT_UNITS, separateVolume: true },
   readiness: { units: ['readiness.m'] },
   terminal: { units: SUPPORT_UNITS },
   publication: { units: ['cleanup.m', 'readiness.m'] },
@@ -166,6 +175,205 @@ function verifyBinding(directory, frameworks, headers, source) {
   if (result.error || result.status !== 0) throw new Error(`ShipIt binding contract failed: ${describeResult(result)}`)
 }
 
+function compileContractTest(directory, compiler, sources, squirrel, frameworks, name, extraFlags = []) {
+  const executable = path.join(directory, `${name}-test`)
+  command('/usr/bin/xcrun', [...compiler, ...extraFlags, '-UNDEBUG', `-I${path.join(squirrel, 'Squirrel')}`,
+    `-Wl,-rpath,${frameworks}`, '-o', executable, ...sources, path.join(OWNER, `${name}.test.m`)], directory)
+  return executable
+}
+
+function verifyRelaunch(directory, compiler, sources, squirrel, frameworks) {
+  const executable = compileContractTest(directory, compiler, sources, squirrel, frameworks, 'relaunch')
+  const fixtures = path.join(directory, 'relaunch-fixture')
+  const run = (mode, root) => {
+    const result = spawnSync(executable, [mode, root], {
+      cwd: directory, encoding: 'utf8', timeout: CONTRACT_TIMEOUT_MS, env: { ...process.env, TMPDIR: directory },
+    })
+    recordContract(directory, `relaunch-${mode}`, result)
+    const launched = mode === 'authorized' || mode === 'replay'
+    const expectedStatus = mode === 'mismatch' ? 1 : 0
+    const expectedTerminalFailure = mode !== 'mismatch'
+    if (result.error || result.status !== expectedStatus ||
+        fs.existsSync(path.join(root, 'launched')) !== launched ||
+        result.stderr.includes('[shipit-admission] event=terminal-failure') !== expectedTerminalFailure)
+      throw new Error(`ShipIt relaunch ${mode} contract failed: ${describeResult(result)}`)
+  }
+  // Replay the consumed authorization against the same helper, journal and launch marker.
+  const authorized = path.join(fixtures, 'authorized')
+  run('authorized', authorized)
+  run('replay', authorized)
+  for (const mode of ['cancel', 'mismatch']) run(mode, path.join(fixtures, mode))
+}
+
+async function verifySealedInstallation(directory, compiler, sources, squirrel, frameworks, workspace) {
+  const preferences = ['CopyValue', 'SetValue', 'Synchronize', 'GetAppIntegerValue']
+    .map(name => `-DCFPreferences${name}=SSFixture${name}`)
+  const executable = compileContractTest(directory, compiler, sources, squirrel, frameworks, 'sealed', preferences)
+  const template = path.join(directory, 'sealed-template', 'Fixture.app')
+  const contents = path.join(template, 'Contents')
+  for (const child of ['MacOS', 'Resources', 'Frameworks']) fs.mkdirSync(path.join(contents, child), { recursive: true })
+  const framework = path.join(contents, 'Frameworks', 'Squirrel.framework')
+  const copy = (from, to) => fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true })
+  copy(path.join(frameworks, 'Squirrel.framework'), framework)
+  fs.copyFileSync(executable, path.join(framework, 'Resources', 'ShipIt'))
+  fs.copyFileSync(executable, path.join(contents, 'MacOS', 'Fixture'))
+  fs.writeFileSync(path.join(contents, 'Resources', 'sealed.txt'), '')
+  fs.writeFileSync(path.join(contents, 'Resources', 'other.txt'), 'original')
+  const plist = path.join(contents, 'Info.plist')
+  fs.writeFileSync(plist, JSON.stringify({
+    CFBundleName: 'Fixture', CFBundleExecutable: 'Fixture', CFBundlePackageType: 'APPL',
+    CFBundleIdentifier: 'org.scholarseed.test.sealed', CFBundleVersion: '1',
+    CFBundleShortVersionString: '1.0', LSBackgroundOnly: true,
+  }))
+  // plutil preserves the JSON boolean type for Launch Services' LSBackgroundOnly key.
+  command('/usr/bin/plutil', ['-convert', 'xml1', plist], directory)
+  // Seal the modified framework first so the app signature covers the final nested signature.
+  for (const item of [framework, template])
+    command('/usr/bin/codesign', ['--force', '--sign', '-', item], directory)
+  const verify = application => command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', application], directory)
+  verify(template)
+  for (const scenario of ['rebuild', 'busy-cleanup', 'damaged-source', 'mixed', 'added', 'altered', 'cancel']) {
+    const root = path.join(directory, `sealed-${scenario}`)
+    for (const child of ['download', 'CandidatePreparation', 'DeferredCleanup'])
+      fs.mkdirSync(path.join(root, child), { recursive: true, mode: 0o700 })
+    const target = path.join(root, 'Fixture.app')
+    copy(template, target)
+    copy(template, path.join(root, 'download', 'Fixture.app'))
+    const previous = fs.statSync(target).ino
+    const modes = scenario === 'damaged-source' ? [scenario, 'replay', 'replay'] : [scenario]
+    for (const [attempt, mode] of modes.entries()) {
+      const result = spawnSync(executable, [mode, root], {
+        cwd: directory, env: { ...process.env, TMPDIR: root, SHIPIT_TEST_WORKSPACE: workspace ? '1' : '0' },
+        encoding: 'utf8', timeout: SEALED_CONTRACT_TIMEOUT_MS,
+      })
+      const receipt = `sealed-${scenario}-${attempt + 1}`
+      try {
+        recordContract(directory, receipt, result)
+        if (result.error || result.status !== 0) throw new Error(describeResult(result))
+        // Only a missing sealed resource permits one rebuild and a second full signature check.
+        const rebuilt = [...result.stderr.matchAll(/\[shipit-preparation\] event=candidate-rebuilt/g)].length
+        const expectReplacement = mode === 'rebuild' || mode === 'busy-cleanup'
+        const expectedRebuilds = expectReplacement || mode === 'damaged-source' ? 1 : 0
+        if (rebuilt !== expectedRebuilds) throw new Error(`Expected ${expectedRebuilds} rebuilds, observed ${rebuilt}`)
+        const signatures = [...result.stderr.matchAll(/stage=verify-signature event=end result=(\w+)/g)].map(match => match[1])
+        const expected = mode === 'replay' || mode === 'cancel' ? [] : ['error']
+        if (expectedRebuilds) expected.push(expectReplacement ? 'success' : 'error')
+        if (signatures.join(',') !== expected.join(',')) throw new Error(`Unexpected signature results: ${signatures.join(',')}`)
+        const current = fs.statSync(target).ino
+        const targetReplaced = current !== previous
+        if (targetReplaced !== expectReplacement) throw new Error('Unexpected installed target')
+        if (mode === 'busy-cleanup' &&
+            (!result.stderr.includes('event=superseded-directory-retained') ||
+             !result.stderr.includes('event=retired'))) throw new Error('Superseded directory cleanup was not deferred and retired')
+        await verifySealedLaunch(root, mode, target, current, workspace ? result.stderr : undefined)
+        verify(target)
+      } catch (error) {
+        throw new Error(`ShipIt ${receipt} (${mode}) failed: ${error.message}`, { cause: error })
+      }
+    }
+  }
+}
+
+async function verifySealedLaunch(root, mode, target, inode, workspaceLog) {
+  const launchFile = path.join(root, 'launches.jsonl')
+  if (workspaceLog !== undefined) {
+    const expected = mode === 'cancel' || mode === 'replay' ? 0 : 1
+    const launches = [...workspaceLog.matchAll(/Successfully launched application at/g)].length
+    if (launches !== expected) throw new Error(`Expected ${expected} successful NSWorkspace launches, observed ${launches}`)
+    if (expected) {
+      // Launch Services may return before the application has written its receipt.
+      const deadline = performance.now() + WORKSPACE_LAUNCH_TIMEOUT_MS
+      while (!fs.statSync(launchFile, { throwIfNoEntry: false })?.size && performance.now() < deadline)
+        await delay(WORKSPACE_LAUNCH_POLL_MS)
+    }
+  }
+  let contents
+  try {
+    contents = fs.readFileSync(launchFile, 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    if (mode === 'cancel') return
+    throw new Error(`ShipIt sealed ${mode} has no application launch record at ${launchFile}`, { cause: error })
+  }
+  if (mode === 'cancel') throw new Error('ShipIt reopened the application without authorization')
+  const launched = contents.trim().split('\n').map(line => JSON.parse(line))
+  if (launched.length !== 1 || launched[0].inode !== inode || launched[0].application !== target ||
+      !launched[0].pid || launched[0].version !== '1.0')
+    throw new Error(`ShipIt sealed ${mode} launched an unexpected application`)
+}
+
+function withPreparationVolume(directory, run) {
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(directory), 'preparation-volume-'))
+  const image = path.join(root, 'fixture.dmg')
+  const mount = path.join(root, 'mount')
+  fs.mkdirSync(mount, { mode: 0o700 })
+  const sourceDevice = fs.statSync(root).dev
+  const hdiutil = args => execFileSync('/usr/bin/hdiutil', args, { timeout: VOLUME_COMMAND_TIMEOUT_MS, stdio: 'pipe' })
+  const mounted = () => {
+    const entry = fs.statSync(mount, { throwIfNoEntry: false })
+    return entry && entry.dev !== sourceDevice
+  }
+  const errors = []
+  let attachAttempted = false
+  try {
+    hdiutil(['create', '-size', PREPARATION_VOLUME_SIZE, '-fs', 'HFS+', '-volname', 'ShipIt Preparation', image])
+    attachAttempted = true
+    hdiutil(['attach', '-nobrowse', '-owners', 'on', '-mountpoint', mount, image])
+    if (fs.statSync(mount).dev === sourceDevice) throw new Error('ShipIt preparation requires a separate test volume')
+    run(mount)
+  } catch (error) {
+    errors.push(error)
+  }
+  let detached = false
+  try {
+    if (mounted()) {
+      hdiutil(['detach', mount])
+      detached = true
+    }
+  } catch (error) {
+    errors.push(error)
+  }
+  let removable = false
+  try {
+    // A failed attach or detach can leave a disk image attached without a mount point.
+    if (mounted()) throw new Error(`Test volume is still mounted at ${mount}`)
+    if (attachAttempted && !detached) {
+      const inventory = hdiutil(['info', '-plist'])
+      const extract = (key, type) => execFileSync('/usr/bin/plutil', ['-extract', key, 'raw', '-expect', type, '-n', '-'], {
+        input: inventory, timeout: VOLUME_COMMAND_TIMEOUT_MS, encoding: 'utf8',
+      })
+      // Other images may contain plist data fields that cannot be converted to JSON.
+      const count = extract('images', 'array')
+      if (!/^\d+$/.test(count)) throw new Error('Invalid disk image count in hdiutil inventory')
+      const target = fs.statSync(image)
+      for (let index = 0; index < Number(count); index++) {
+        const name = extract(`images.${index}.image-path`, 'string')
+        if (!name) throw new Error('Missing disk image path in hdiutil inventory')
+        const other = fs.statSync(name, { throwIfNoEntry: false })
+        if (name === image || (other && other.dev === target.dev && other.ino === target.ino))
+          throw new Error('Test image is still attached')
+      }
+    }
+    removable = true
+  } catch (error) {
+    errors.push(new Error(`Retained ${image}. Verify the disk with hdiutil info and detach it before removing ${root}: ${error.message}`, { cause: error }))
+  }
+  if (removable) {
+    // The mount directory and image can be removed independently once detached.
+    for (const item of [mount, image, root]) {
+      try {
+        if (item === image) fs.rmSync(item, { force: true })
+        else fs.rmdirSync(item)
+      } catch (error) {
+        if (error.code !== 'ENOENT') errors.push(error)
+      }
+    }
+  }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1)
+    throw new AggregateError(errors, `ShipIt preparation volume ${root}: ${errors.map(error => error.message).join('\n')}`)
+}
+
 function verifyPreparation(directory) {
   for (const [name, configuration] of Object.entries(PREPARATION_CONTRACTS)) {
     const external = configuration.external === true
@@ -175,11 +383,15 @@ function verifyPreparation(directory) {
     command('/usr/bin/xcrun', ['clang', '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror',
       ...(configuration.flags || []), ...(configuration.sources || []).map(source => path.join(OWNER, source)),
       '-framework', 'Foundation', ...configuration.units.map(unit => path.join(directory, unit)), fixture, '-o', executable], directory)
-    const result = spawnSync(executable, [path.join(directory, `${name}-fixture`)], {
-      encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: 60_000,
-    })
-    recordContract(directory, name, result)
-    if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${describeResult(result)}`)
+    const run = (...volumes) => {
+      const result = spawnSync(executable, [path.join(directory, `${name}-fixture`), ...volumes], {
+        encoding: 'utf8', env: { ...process.env, TMPDIR: directory }, timeout: CONTRACT_TIMEOUT_MS,
+      })
+      recordContract(directory, name, result)
+      if (result.error || result.status !== 0) throw new Error(`ShipIt ${name} contract failed: ${describeResult(result)}`)
+    }
+    if (configuration.separateVolume) withPreparationVolume(directory, run)
+    else run()
   }
 }
 
@@ -247,7 +459,7 @@ async function buildShipIt({ directory, electronDist, arch, sourceCache }) {
   for (const name of ['binding.patch', 'authorization.patch', 'recovery.patch', 'metadata.patch'])
     command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, name)], directory, dependencies.squirrel)
   const executable = path.join(directory, 'ShipIt')
-  const args = [
+  const compiler = [
     'clang', '-arch', ARCHITECTURES[arch], `-mmacosx-version-min=${MINIMUM_MACOS_VERSION}`,
     '-O2', '-DNDEBUG',
     '-fobjc-arc', '-fobjc-weak', '-Wno-deprecated-declarations', '-Wno-block-capture-autoreleasing',
@@ -255,15 +467,18 @@ async function buildShipIt({ directory, electronDist, arch, sourceCache }) {
     `-I${directory}`, `-F${frameworks}`,
     ...FRAMEWORKS.flatMap(name => ['-framework', name]),
     ...RPATHS.map(value => `-Wl,-rpath,${value}`),
-    '-o', executable,
+  ]
+  const sources = [
     ...COMPILE_UNITS.map(name => path.join(dependencies.squirrel, 'Squirrel', `${name}.m`)),
     path.join(directory, 'cleanup.m'), path.join(directory, 'preparation.m'), path.join(directory, 'readiness.m'),
   ]
-  command('/usr/bin/xcrun', args, directory)
+  command('/usr/bin/xcrun', [...compiler, '-o', executable, ...sources, path.join(dependencies.squirrel, 'Squirrel', 'ShipIt-main.m')], directory)
   command('/usr/bin/codesign', ['--force', '--sign', '-', executable], directory)
   verifyNativeTiming(directory, frameworks, headers)
   verifyAdmission(directory, frameworks, headers)
   verifyBinding(directory, frameworks, headers, dependencies.squirrel)
+  verifyRelaunch(directory, compiler, sources, dependencies.squirrel, frameworks)
+  await verifySealedInstallation(directory, compiler, sources, dependencies.squirrel, frameworks, process.env.SHIPIT_TEST_WORKSPACE === '1')
   verifyCleanup(directory)
   verifyPreparation(directory)
   const licenses = []

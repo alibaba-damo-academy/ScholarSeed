@@ -65,11 +65,13 @@ import { setFileDragPreview } from '../../components/business/DragPreview'
 import { writeProjectEntryDrag } from '../../drag'
 import { DocumentView } from '../workbench/feature'
 import { useDocumentWorkspace, useWorkspaceController } from '../workbench/workspace'
+import { type DirectoryRefresh, useDirectoryRefresh } from './directory-refresh'
 import { subscribeFileEvents } from './events'
 import {
   importProjectFiles,
   listProjectFiles,
   mutateProjectNode,
+  projectTreeReadSignal,
   readProjectTree,
   type ProjectTreeNode,
   type ProjectTreePage,
@@ -113,7 +115,8 @@ function useLoadingDirectories(): [ReadonlySet<string>, (path: string, loading: 
 export function Directory({
   project,
   path,
-  revision,
+  revisionRefresh,
+  onRetryRefresh,
   expanded,
   selected,
   dragTarget,
@@ -128,7 +131,8 @@ export function Directory({
 }: {
   project: string
   path: string
-  revision: number
+  revisionRefresh?: DirectoryRefresh
+  onRetryRefresh?: () => void
   expanded: ReadonlySet<string>
   selected: string | null
   dragTarget: string | null
@@ -149,7 +153,9 @@ export function Directory({
   })
   const page = snapshot.identity === identity ? snapshot.page : null
   const pageRef = useRef(page)
-  pageRef.current = page
+  useLayoutEffect(() => {
+    pageRef.current = page
+  }, [page])
   const [loading, setLoading] = useState(true)
   const [readFailed, setReadFailed] = useState(false)
   const [retry, setRetry] = useState(0)
@@ -157,10 +163,21 @@ export function Directory({
   const [moreError, setMoreError] = useState(false)
   const [loadingDirectories, updateLoading] = useLoadingDirectories()
   const generation = useRef(0)
+  const previousRead = useRef({ identity, revisionRefresh })
+  const failedRefresh = useRef(false)
+  const directoryRead = useRef<AbortController | null>(null)
   const morePending = useRef(false)
   const directoryId = path || '/'
   useLayoutEffect(() => {
     const requestGeneration = ++generation.current
+    const controller = new AbortController()
+    directoryRead.current = controller
+    const previous = previousRead.current
+    previousRead.current = { identity, revisionRefresh }
+    const sharedRefresh =
+      previous.identity === identity && previous.revisionRefresh !== revisionRefresh
+        ? revisionRefresh
+        : undefined
     const loadedCount = pageRef.current?.nodes.length ?? 0
     setLoading(true)
     setReadFailed(false)
@@ -168,39 +185,55 @@ export function Directory({
     morePending.current = false
     setMore(false)
     setMoreError(false)
-    const settle = (value: ProjectTreePage | null): void => {
+    const settle = (
+      value: ProjectTreePage | null,
+      failed = value === null,
+      coordinated = false
+    ): void => {
       if (generation.current !== requestGeneration) return
+      const unavailable = failed || (!value && !pageRef.current)
+      failedRefresh.current = unavailable && coordinated
       if (value) setSnapshot({ identity, page: value })
-      setReadFailed(value === null)
+      setReadFailed(unavailable)
       setLoading(false)
       onLoadingChange?.(path, false)
     }
-    const refresh = async (): Promise<ProjectTreePage | null> => {
-      let replacement = await readProjectTree(project, path)
+    const refresh = async (signal: AbortSignal): Promise<ProjectTreePage | null> => {
+      let replacement = await readProjectTree(project, path, 0, signal)
       if (!replacement || generation.current !== requestGeneration) return null
       // Replace the loaded range atomically, keeping existing rows mounted while reading.
       while (replacement.nodes.length < Math.min(loadedCount, replacement.total)) {
-        const next = await readProjectTree(project, path, replacement.nodes.length)
+        const next = await readProjectTree(project, path, replacement.nodes.length, signal)
         if (generation.current !== requestGeneration || !next || !next.nodes.length) return null
         replacement = { ...next, nodes: [...replacement.nodes, ...next.nodes] }
       }
       return replacement
     }
-    void refresh().then(settle, () => settle(null))
+    const coordinated = sharedRefresh?.include(refresh, controller.signal)
+    if (coordinated)
+      void coordinated.then(
+        ({ page, failed }) => settle(page, failed, true),
+        () => settle(null, true, true)
+      )
+    else void refresh(projectTreeReadSignal(controller.signal)).then(settle, () => settle(null))
     return () => {
       generation.current += 1
+      controller.abort()
       morePending.current = false
       onLoadingChange?.(path, false)
     }
-  }, [identity, project, path, revision, retry, onLoadingChange])
+  }, [identity, project, path, revisionRefresh, retry, onLoadingChange])
   const loadMore = async (): Promise<void> => {
-    if (!page || loading || morePending.current || page.nodes.length >= page.total) return
+    const controller = directoryRead.current
+    if (!controller || !page || loading || morePending.current || page.nodes.length >= page.total)
+      return
     const requestGeneration = generation.current
     morePending.current = true
     setMore(true)
     setMoreError(false)
     try {
-      const next = await readProjectTree(project, path, page.nodes.length)
+      const signal = projectTreeReadSignal(controller.signal)
+      const next = await readProjectTree(project, path, page.nodes.length, signal)
       if (generation.current !== requestGeneration) return
       if (next) {
         setSnapshot((current) =>
@@ -232,7 +265,10 @@ export function Directory({
         <Button
           variant="ghost"
           data-testid={`explorer-directory-retry-${directoryId}`}
-          onClick={() => setRetry((value) => value + 1)}
+          onClick={() => {
+            if (failedRefresh.current && onRetryRefresh) onRetryRefresh()
+            else setRetry((value) => value + 1)
+          }}
         >
           {t('retry')}
         </Button>
@@ -350,7 +386,8 @@ export function Directory({
               <Directory
                 project={project}
                 path={node.path}
-                revision={revision}
+                revisionRefresh={revisionRefresh}
+                onRetryRefresh={onRetryRefresh}
                 expanded={expanded}
                 selected={selected}
                 dragTarget={dragTarget}
@@ -402,7 +439,7 @@ export function Explorer({
   const stateKey = JSON.stringify([projectId, tabId])
   const workspace = useWorkspaceController()
   const documents = useDocumentWorkspace()
-  const [revision, setRevision] = useState(0)
+  const [revisionRefresh, refreshDirectory] = useDirectoryRefresh()
   const [modeControlHost, setModeControlHost] = useState<HTMLDivElement | null>(null)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(
     () => explorerStates.get(stateKey)?.expanded ?? new Set()
@@ -453,12 +490,14 @@ export function Explorer({
   const searchButtonRef = useRef<HTMLButtonElement>(null)
   const [searchFiles, setSearchFiles] = useState<{
     project: string
-    revision: number
+    refresh: DirectoryRefresh
     nodes: ProjectTreeNode[] | null
   } | null>(null)
   const searching = searchOpen && searchQuery.trim().length > 0
   const currentSearch =
-    searchFiles?.project === projectId && searchFiles.revision === revision ? searchFiles : null
+    searchFiles?.project === projectId && searchFiles.refresh === revisionRefresh
+      ? searchFiles
+      : null
   const matches = currentSearch?.nodes?.filter((node) =>
     node.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
   )
@@ -467,10 +506,12 @@ export function Explorer({
     if (!searching || !projectId) return
     const controller = new AbortController()
     void listProjectFiles(projectId, controller.signal).then((nodes) => {
-      if (!controller.signal.aborted) setSearchFiles({ project: projectId, revision, nodes })
+      if (!controller.signal.aborted) {
+        setSearchFiles({ project: projectId, refresh: revisionRefresh, nodes })
+      }
     })
     return () => controller.abort()
-  }, [searching, projectId, revision])
+  }, [searching, projectId, revisionRefresh])
   useLayoutEffect(() => {
     const container = breadcrumbRef.current
     const measurement = breadcrumbMeasureRef.current
@@ -528,15 +569,12 @@ export function Explorer({
     }
   }, [projectId, stateKey])
   useEffect(
-    () =>
-      projectId
-        ? subscribeFileEvents(projectId, () => setRevision((value) => value + 1))
-        : undefined,
-    [projectId]
+    () => (projectId ? subscribeFileEvents(projectId, refreshDirectory) : undefined),
+    [projectId, refreshDirectory]
   )
   useEffect(() => {
-    setRevision((value) => value + 1)
-  }, [state.resource.tree])
+    refreshDirectory()
+  }, [state.resource.tree, refreshDirectory])
   useEffect(() => {
     const hosted = tabId
       ? Object.values(documents.tabs).find(
@@ -672,7 +710,7 @@ export function Explorer({
     } else setExpanded((current) => new Set([...current, creationParent]))
     setSelected({ ...result.node, available: true })
     setNameAction(null)
-    setRevision((current) => current + 1)
+    refreshDirectory()
     if (nameAction === 'create_document') choose({ ...result.node, available: true, count: null })
   }
   const move = async (source: string, destination: string): Promise<void> => {
@@ -699,7 +737,7 @@ export function Explorer({
       setPreviewPath(`${result.node.path}${previewPath.slice(source.length)}`)
     setSelected({ ...result.node, available: true })
     setExpanded((current) => new Set([...current, destination]))
-    setRevision((current) => current + 1)
+    refreshDirectory()
   }
   const importFiles = async (target: string): Promise<void> => {
     if (importPending.current || busy) return
@@ -721,7 +759,7 @@ export function Explorer({
       }
       setRootExpanded(true)
       setExpanded((current) => new Set([...current, target]))
-      setRevision((current) => current + 1)
+      refreshDirectory()
     } catch (error) {
       toast({
         title: t('explorerFailed'),
@@ -775,7 +813,7 @@ export function Explorer({
       toast({ title: t('explorerFailed'), description: result.error, tone: 'error' })
       return
     }
-    await act.reloadResourceTree()
+    await act.reloadResourceTree(undefined, project.id)
     toast({ title: t('explorerImportedToLibrary'), tone: 'success' })
   }
   const selectMenu = (node: TreeNode, x: number, y: number): void => {
@@ -884,7 +922,7 @@ export function Explorer({
             id: 'explorer-refresh',
             label: t('explorerRefresh'),
             icon: <RotateCw />,
-            onClick: () => setRevision((value) => value + 1),
+            onClick: refreshDirectory,
           },
         ].map(({ id, label, icon, onClick }) => (
           <Tooltip key={id} content={label}>
@@ -897,6 +935,7 @@ export function Explorer({
               ref={id === 'explorer-search' ? searchButtonRef : undefined}
               aria-expanded={id === 'explorer-search' ? searchOpen : undefined}
               aria-controls={id === 'explorer-search' ? 'explorer-search-input' : undefined}
+              aria-busy={id === 'explorer-refresh' ? loadingDirectories.size > 0 : undefined}
               data-testid={id}
               onClick={onClick}
             />
@@ -952,7 +991,7 @@ export function Explorer({
                 tone="error"
                 title={t('readFailed')}
                 action={
-                  <Button variant="ghost" onClick={() => setRevision((value) => value + 1)}>
+                  <Button variant="ghost" onClick={refreshDirectory}>
                     {t('retry')}
                   </Button>
                 }
@@ -1034,7 +1073,8 @@ export function Explorer({
             <Directory
               project={project.id}
               path=""
-              revision={revision}
+              revisionRefresh={revisionRefresh}
+              onRetryRefresh={refreshDirectory}
               expanded={expanded}
               selected={breadcrumbPath}
               dragTarget={dragTarget}

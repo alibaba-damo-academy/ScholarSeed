@@ -4,7 +4,7 @@ import { readdirSync } from 'node:fs'
 import { constants } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { DomainNative, Domains } from '../../native/domains.cjs'
-import type { QualifiedRecordConsumer } from './journal.ts'
+import { uncertainRecordWriteCode, type QualifiedRecordConsumer } from './journal.ts'
 import {
   acquireUpdateLaunchRecordLock,
   consumeUpdateLaunchContext,
@@ -208,12 +208,10 @@ function proof(qualification: Qualification): unknown {
 }
 
 function uncertain(error: unknown): boolean {
-  return [
-    'ERR_LEASE_RELEASE',
-    'ERR_LEASE_SYNC',
-    'ERR_DOMAIN_RELEASE',
-    'ERR_TERMINAL_RELEASE',
-  ].includes(String((error as { code?: unknown })?.code))
+  return (
+    uncertainRecordWriteCode(error) !== undefined ||
+    (error as NodeJS.ErrnoException | null)?.code === 'ERR_TERMINAL_RELEASE'
+  )
 }
 
 function optionalRecord(

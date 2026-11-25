@@ -4,6 +4,13 @@
     "returnHome": "返回项目中心",
     "skipToContent": "跳转到主要内容"
   },
+  "taskRecovery": {
+    "restoring": "正在恢复上次的任务…",
+    "restoringView": "正在恢复上次打开的页面…",
+    "skip": "跳过恢复",
+    "skipped": "已跳过上次任务的恢复，可从任务列表重新打开。",
+    "skippedView": "已跳过上次页面的恢复，可手动重新打开。"
+  },
   "errorBoundary": {
     "title": "页面遇到了一些问题",
     "description": "书深没有正常完成页面渲染，但你的项目和本地文件不会因此丢失。",

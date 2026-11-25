@@ -12,6 +12,7 @@ from service.literature.persistence.store import chunk_ids, connect
 
 TABLE = "literature_ai_results"
 SEGMENT_TABLE = "literature_ai_segments"
+JOINED_ATTEMPT_TABLE = "literature_ai_joined_attempts"
 TRANSIENT_MODULES = frozenset(("figure_explanation", "formula_latex"))
 DOCUMENT_TRANSLATION_MODULE = "document_translation"
 INTERPRETATION_KIND = "interpretation"
@@ -62,9 +63,42 @@ class AnalysisStore:
                 f"CREATE TABLE IF NOT EXISTS {SEGMENT_TABLE} (literature_id TEXT, revision TEXT, kind TEXT, prompt_version TEXT, model_key TEXT, segment_hash TEXT, result TEXT NOT NULL, invocation_id TEXT NOT NULL, PRIMARY KEY(literature_id,revision,kind,prompt_version,model_key,segment_hash))"
             )
             connection.execute(
+                f"CREATE TABLE IF NOT EXISTS {JOINED_ATTEMPT_TABLE} ("
+                "owner_id TEXT NOT NULL, attempt_id TEXT NOT NULL, "
+                "task_id TEXT NOT NULL, model_key TEXT NOT NULL, PRIMARY KEY(owner_id,attempt_id))"
+            )
+            connection.execute(
                 f"DELETE FROM {TABLE} WHERE module IN ({','.join('?' for _ in TRANSIENT_MODULES)})",
                 tuple(TRANSIENT_MODULES),
             )
+
+    def joined_attempt(self, owner_id: str, attempt_id: str) -> tuple[str, str] | None:
+        with closing(connect(self.database)) as connection:
+            row = connection.execute(
+                f"SELECT task_id,model_key FROM {JOINED_ATTEMPT_TABLE} "
+                "WHERE owner_id=? AND attempt_id=?",
+                (owner_id, attempt_id),
+            ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def remember_joined_attempt(
+        self, owner_id: str, attempt_id: str, task_id: str, model_key: str
+    ) -> tuple[str, str]:
+        """Persist the accepted dispatch receipt before acknowledging a join."""
+        with closing(connect(self.database)) as connection, connection:
+            row = connection.execute(
+                f"INSERT INTO {JOINED_ATTEMPT_TABLE} (owner_id,attempt_id,task_id,model_key) "
+                "VALUES (?,?,?,?) ON CONFLICT(owner_id,attempt_id) DO NOTHING "
+                "RETURNING task_id,model_key",
+                (owner_id, attempt_id, task_id, model_key),
+            ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    f"SELECT task_id,model_key FROM {JOINED_ATTEMPT_TABLE} "
+                    "WHERE owner_id=? AND attempt_id=?",
+                    (owner_id, attempt_id),
+                ).fetchone()
+            return (row[0], row[1])
 
     def publish(self, result: dict, invocation_id: str) -> None:
         values = result.get("modules") or {result["kind"]: result}

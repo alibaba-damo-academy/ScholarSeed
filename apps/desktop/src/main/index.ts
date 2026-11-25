@@ -114,6 +114,9 @@ import { PreferenceDiagnostics, parsePreferenceSubmission } from '../preference-
 import { PreferenceQuiescence, PREFERENCE_SHUTDOWN_CHANNEL } from '../quiescence.ts'
 import {
   LOGIN_WINDOW_CHANNEL,
+  TASK_RECOVERY_CHANNEL,
+  TASK_RECOVERY_OUTCOME,
+  TASK_RECOVERY_STATUS,
   WINDOW_CLOSE_REQUEST_CHANNEL,
   WINDOW_CLOSE_REPLY_CHANNEL,
   WINDOW_FULLSCREEN_CHANNEL,
@@ -125,6 +128,7 @@ import {
   createWorkspaceWindowOptions,
   WINDOWS_PLATFORM,
 } from './window'
+import { TaskRecovery, installTaskRecoveryFallback, isRecoverySessionId } from './task-recovery'
 import {
   BROWSER_DOWNLOAD_NOTICE_CHANNEL,
   BROWSER_FIND_CHANNEL,
@@ -336,6 +340,7 @@ import {
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy, savePathCopy, SAVE_COPY_SENDER_ERROR } from './save'
 import { blocksRendererReload, prepareRendererLoad } from './reload'
+import { loadStartupWindow, waitForStartupWindow } from './loading'
 import { acquireRemoteImage, readSelectedImage } from './images'
 import {
   REMOTE_IMAGE_CHANNEL,
@@ -602,6 +607,7 @@ const startupState = new StartupState((snapshot) => sendToMainWindow(STARTUP_CHA
 let backendManaged = false
 let mainRendererOrigin: string | null = null
 let mainRendererNavigationEpoch = 0
+let taskRecoveryOwner: TaskRecovery | undefined
 let appQuitting = false
 let startupFailureReports = 0
 let startupAdmissionResolved = process.platform !== MACOS_PLATFORM || !app.isPackaged
@@ -686,7 +692,7 @@ function aliveMainWindow(): BrowserWindow | null {
 
 function sendToMainWindow(channel: string, ...args: unknown[]): boolean {
   const win = aliveMainWindow()
-  if (!win) return false
+  if (!win || win.webContents.isCrashed()) return false
   win.webContents.send(channel, ...args)
   return true
 }
@@ -698,6 +704,26 @@ function isMainWindowSender(
   const win = aliveMainWindow()
   if (!win || sender !== win.webContents) return false
   return senderFrame === undefined || senderFrame === win.webContents.mainFrame
+}
+
+function taskRecovery(): TaskRecovery {
+  return (taskRecoveryOwner ??= new TaskRecovery(desktopStorage().userData, logTaskRecovery))
+}
+
+function logTaskRecovery(message: string): void {
+  logWindowLifecycle(`[task-recovery] ${message}\n`)
+}
+
+function isTaskRecoverySender(
+  event: Pick<Electron.IpcMainInvokeEvent, 'sender' | 'senderFrame'>
+): boolean {
+  const frame = event.senderFrame
+  return (
+    !appQuitting &&
+    !!frame &&
+    isMainWindowSender(event.sender, frame) &&
+    URL.parse(frame.url)?.origin === mainRendererOrigin
+  )
 }
 
 function logWindowLifecycle(line: string): void {
@@ -965,6 +991,16 @@ function retainedUpdateReady(): ReturnType<typeof updater.readReadyState> {
     : null
 }
 
+function installationBlocksUpdateCheck(): boolean {
+  return (
+    Boolean(updateInstallAbort) ||
+    updateInstallationInProgress ||
+    updateRestartRequested ||
+    macMaintenanceUncertain ||
+    (updater.macHandoffCommitted() && !updater.canPrepareMacSuccessor())
+  )
+}
+
 function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
   if (
     previewPolicyChanging ||
@@ -978,11 +1014,7 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
   }
   const snapshot = currentUpdateSnapshot()
   if (
-    updateInstallAbort ||
-    updateInstallationInProgress ||
-    updateRestartRequested ||
-    macMaintenanceUncertain ||
-    updater.macHandoffCommitted() ||
+    installationBlocksUpdateCheck() ||
     snapshot.phase === 'manual' ||
     snapshot.errorFallback === 'activation_recovery_required'
   )
@@ -1013,9 +1045,18 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
     )
       return snapshot
     if (preparationPolicy) {
-      if (snapshot.phase === 'ready' && snapshot.candidate)
-        updatePreparation.adopt(snapshot.candidate)
-      updatePreparation.observe(latest)
+      const ready = snapshot.phase === 'ready' ? snapshot.candidate : undefined
+      if (ready) updatePreparation.adopt(ready)
+      // Publishing a second format for this build does not supersede a live native receipt.
+      const sameReadyBuild =
+        process.platform === MACOS_PLATFORM &&
+        ready !== undefined &&
+        ready.id === latest.id &&
+        ready.version === latest.version &&
+        ready.build_number === latest.build_number &&
+        !samePreviewArtifact(ready, latest) &&
+        updater.macPreparationReady(ready)
+      updatePreparation.observe(sameReadyBuild ? ready : latest)
       latestUpdateCandidate = updatePreparation.latest
       const enabled = loadRendererPreferences().autoDownloadUpdates
       const started = updatePreparation.background(enabled)
@@ -1290,13 +1331,15 @@ async function installWindowsPreparedUpdate(): Promise<StartUpdateResult> {
       pushLog(`[update] runtime recovery failed: ${String(recovery)}\n`)
     }
     const cancelled = controller.signal.aborted || error instanceof WindowsHandoffCancelled
+    const maintenanceFailure =
+      error instanceof BackendMaintenanceRejected ? error.reason : undefined
     const errorFallback = recoveryFailed
       ? 'activation_recovery_required'
       : candidateChanged
         ? 'activation_candidate_changed'
         : cancelled
           ? undefined
-          : (installationFailure(error) ?? 'install_failed')
+          : (maintenanceFailure ?? installationFailure(error) ?? 'install_failed')
     const result: StartUpdateResult = errorFallback
       ? { ok: false, errorFallback }
       : { ok: false, cancelled: true }
@@ -1356,15 +1399,87 @@ const updatePreparation = new UpdatePreparation(
       updateId,
     })
     const windows = process.platform === WINDOWS_PLATFORM
+    const snapshot = currentUpdateSnapshot()
+    const retainedCandidate =
+      snapshot.phase === 'ready' &&
+      process.platform === MACOS_PLATFORM &&
+      snapshot.candidate?.id !== candidate.id
+        ? snapshot.candidate
+        : undefined
     let windowsStage: WindowsPreparationStage | 'preview-candidate' = 'preview-candidate'
     let errorOrigin: 'download' | 'preparation' = windows ? 'preparation' : 'download'
     const progress = (next: UpdateProgress): void => {
       if (next.phase === 'preparing') errorOrigin = 'preparation'
       if (isCurrent()) publishUpdateProgress(next)
     }
+    const publishMacReady = (ready: LatestVersionMeta, readyOrigin?: string): true => {
+      record('finish', 'ready')
+      publishUpdateSnapshot({
+        ...currentUpdateSnapshot(),
+        phase: 'ready',
+        candidate: ready,
+        readyOrigin,
+        percent: 100,
+        receivedBytes: ready.file_size,
+        error: undefined,
+        errorOrigin: undefined,
+        errorFallback: undefined,
+        resumable: undefined,
+        installation: undefined,
+      })
+      runBackgroundUpdateCheck()
+      return true
+    }
+    const retainMacReadyAfterFailure = (
+      active: LatestVersionMeta,
+      reason?: StartUpdateResult['errorFallback']
+    ): false | 'archive-limit' => {
+      if (!updater.macPreparationReady(active)) {
+        publishUpdateSnapshot({
+          ...currentUpdateSnapshot(),
+          phase: 'failed',
+          errorFallback: 'activation_recovery_required',
+          errorOrigin: 'preparation',
+        })
+      } else if (reason === 'install_archive_limit') {
+        publishUpdateSnapshot(currentUpdateSnapshot(), candidate.id)
+        return 'archive-limit'
+      }
+      return false
+    }
     try {
       await updater.validatePreviewCandidate(candidate, pushLog, signal)
       if (!isCurrent()) return false
+      if (retainedCandidate) {
+        const canPromote = (): boolean => {
+          const current = currentUpdateSnapshot()
+          return (
+            isCurrent() &&
+            !appQuitting &&
+            !previewPolicyChanging &&
+            !updateInstallAbort &&
+            !updateRestartRequested &&
+            !updateInstallationInProgress &&
+            !macMaintenanceUncertain &&
+            current.phase === 'ready' &&
+            current.candidate?.id === retainedCandidate.id
+          )
+        }
+        const replacement = await updater.prepareMacSuccessor(
+          candidate,
+          // Keep the current ready release installable until its successor has native readiness.
+          () => {},
+          pushLog,
+          signal,
+          canPromote
+        )
+        if (!isCurrent()) return false
+        if (!replacement.ok || !updater.macPreparationReady(candidate)) {
+          record('finish', replacement.errorFallback ?? 'failed')
+          return retainMacReadyAfterFailure(retainedCandidate, replacement.errorFallback)
+        }
+        return publishMacReady(candidate, snapshot.readyOrigin ?? retainedCandidate.id)
+      }
       if (windows) {
         await windowsPrepared?.update.close()
         if (!isCurrent()) return false
@@ -1482,26 +1597,14 @@ const updatePreparation = new UpdatePreparation(
         }
         return native.errorFallback === 'install_archive_limit' ? 'archive-limit' : false
       }
-      record('finish', 'ready')
-      publishUpdateSnapshot({
-        ...currentUpdateSnapshot(),
-        phase: 'ready',
-        candidate: staged.ready.meta,
-        percent: 100,
-        receivedBytes: staged.ready.meta.file_size,
-        error: undefined,
-        errorFallback: undefined,
-        installation: undefined,
-      })
-      runBackgroundUpdateCheck()
-      return true
+      return publishMacReady(staged.ready.meta)
     } catch (error) {
-      record(
-        'finish',
-        isCurrent() ? 'failed' : 'interrupted',
-        windows ? { stage: windowsStage, diagnostic: redactDiagnosticError(error) } : undefined
-      )
+      record('finish', isCurrent() ? 'failed' : 'interrupted', {
+        stage: windows ? windowsStage : undefined,
+        diagnostic: redactDiagnosticError(error),
+      })
       if (isCurrent()) {
+        if (retainedCandidate) return retainMacReadyAfterFailure(retainedCandidate)
         const retained = preparationPolicy ? retainedUpdateReady() : null
         publishUpdateSnapshot({
           ...currentUpdateSnapshot(),
@@ -2966,6 +3069,12 @@ function dismissLanding(): void {
   landingResolved = true
 }
 
+function dismissLandingForTaskRecovery(): void {
+  if (landingResolved) return
+  const handoff = desktopHandoff.current()
+  if (handoff.phase !== 'failed' || !handoff.terminal) dismissLanding()
+}
+
 const workbenchHealth = new WorkbenchHealth()
 let backgroundUpdateCheckDeferred = false
 
@@ -3276,6 +3385,29 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     if (!isMainWindowSender(event.sender) || typeof visible !== 'boolean') return
     setLoginWindowVisible?.(visible)
   })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.status, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || (sessionId !== null && !isRecoverySessionId(sessionId)))
+      return {
+        status: TASK_RECOVERY_STATUS.home,
+        skippedSessionId: null,
+        needsManualAcknowledgement: false,
+      }
+    return taskRecovery().snapshot(sessionId)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.begin, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || !isRecoverySessionId(sessionId)) return null
+    return taskRecovery().begin(sessionId)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.finish, (event, token: unknown, outcome: unknown) => {
+    if (!isTaskRecoverySender(event) || typeof token !== 'string') return false
+    if (outcome !== TASK_RECOVERY_OUTCOME.restored && outcome !== TASK_RECOVERY_OUTCOME.skipped)
+      return false
+    return taskRecovery().finish(token, outcome)
+  })
+  ipcMain.handle(TASK_RECOVERY_CHANNEL.manualOpen, (event, sessionId: unknown) => {
+    if (!isTaskRecoverySender(event) || !isRecoverySessionId(sessionId)) return false
+    return taskRecovery().manualOpened(sessionId)
+  })
 
   ipcMain.handle(UPDATE_HEALTH_CHANNEL, async (event) => {
     const { currentBackend, isCurrent } = workbenchObservation(event)
@@ -3373,6 +3505,13 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.on('scholarseed:boot', (e) => {
     const desktopConfig = updater.resolveDesktopConfig(pushLog)
     const productConfig = resolveProductConfig(pushLog)
+    const preferences = loadRendererPreferences()
+    if (isTaskRecoverySender(e)) {
+      const recovery = taskRecovery()
+      const sessionId = preferences.lastLocation?.sessionId ?? null
+      if (recovery.skipsColdLanding(sessionId)) dismissLandingForTaskRecovery()
+      recovery.prepare(sessionId, mainRendererNavigationEpoch)
+    }
     e.returnValue = {
       apiBase,
       startup: startupState.snapshot(),
@@ -3389,7 +3528,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       browserAgentNavigationEnabled: productConfig.features.browserAgentNavigation,
       browserAdvancedSettingsEnabled: productConfig.features.browserAdvancedSettings,
       feedbackRecorderEnabled: productConfig.features.feedbackRecorder,
-      preferences: loadRendererPreferences(),
+      preferences,
     }
   })
   ipcMain.handle(FEEDBACK_DIAGNOSTICS_CHANNEL, async (event) => {
@@ -3636,6 +3775,19 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
           ) {
             if (!saved.autoDownloadUpdates) {
               await updatePreparation.pause()
+              if (
+                updateInstallAbort ||
+                updateInstallationInProgress ||
+                updateRestartRequested ||
+                macMaintenanceUncertain
+              )
+                return saved
+              const current = currentUpdateSnapshot()
+              if (
+                current.errorOrigin === 'install' ||
+                current.errorFallback === 'activation_recovery_required'
+              )
+                return saved
               const retained = preparationPolicy ? retainedUpdateReady() : null
               if (retained) {
                 updatePreparation.adopt(retained.meta)
@@ -3643,14 +3795,16 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
                   phase: 'ready',
                   currentVersion: app.getVersion(),
                   candidate: retained.meta,
+                  readyOrigin:
+                    current.candidate?.id === retained.meta.id ? current.readyOrigin : undefined,
                 })
-              }
-              if (currentUpdateSnapshot().candidate && currentUpdateSnapshot().phase !== 'ready')
+              } else if (current.candidate && current.phase !== 'ready') {
                 publishUpdateSnapshot({
-                  ...currentUpdateSnapshot(),
+                  ...current,
                   phase: 'available',
                   installation: undefined,
                 })
+              }
             } else {
               runBackgroundUpdateCheck()
             }
@@ -3703,8 +3857,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.handle('scholarseed:authorized-root-add', (_event, scope: unknown, root: unknown) => {
     if (!isAuthorizationScope(scope)) return false
     if (typeof root !== 'string') return false
-    pathAuthorizer.add(scope, root)
-    return true
+    return pathAuthorizer.add(scope, root)
   })
   ipcMain.handle('scholarseed:open-external', (_e, url: unknown) => {
     requireDesktopWorkbench()
@@ -4182,6 +4335,9 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       !requestedCandidate ||
       !['available', 'failed', 'ready'].includes(snapshot.phase) ||
       (snapshot.phase === 'ready' && requestedCandidate.id === snapshot.candidate?.id) ||
+      (snapshot.phase === 'ready' &&
+        process.platform === MACOS_PLATFORM &&
+        !updater.canPrepareMacSuccessor()) ||
       updateInstallAbort ||
       updateInstallationInProgress ||
       updateRestartRequested
@@ -4191,26 +4347,54 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     if (!updatePreparation.request(requestedCandidate)) return { ok: false }
     await updatePreparation.settled()
     const prepared = currentUpdateSnapshot()
-    return { ok: prepared.phase === 'ready' && prepared.candidate?.id === id }
+    const result: StartUpdateResult = {
+      ok:
+        prepared.phase === 'ready' &&
+        !!prepared.candidate &&
+        samePreviewArtifact(prepared.candidate, requestedCandidate),
+    }
+    if (!result.ok && snapshot.phase === 'ready' && process.platform === MACOS_PLATFORM) {
+      result.errorFallback = updatePreparation.isArchiveLimited(requestedCandidate)
+        ? 'install_archive_limit'
+        : (prepared.errorFallback ?? 'preparation_failed')
+    }
+    return result
   })
 
   // 安装并重启：只在「已就绪」可发起。换掉正在运行的客户端必然中断用户手头的活，所以
   // 这一步等用户自己挑时间，不由下载完成自动触发。
   ipcMain.handle(
     'scholarseed:update-install',
-    async (_event, expectedId: string): Promise<StartUpdateResult> => {
+    async (
+      _event,
+      confirmedId: string,
+      followNativePromotion?: boolean
+    ): Promise<StartUpdateResult> => {
       requireDesktopWorkbench()
+      const snapshot = currentUpdateSnapshot()
       if (
         previewPolicyChanging ||
-        currentUpdateSnapshot().phase !== 'ready' ||
-        currentUpdateSnapshot().errorFallback === 'activation_recovery_required' ||
+        snapshot.phase !== 'ready' ||
+        snapshot.errorFallback === 'activation_recovery_required' ||
         updateInstallAbort ||
         updateRestartRequested
       ) {
         return { ok: false, error: updater.NO_STAGED_UPDATE }
       }
-      const candidate = currentUpdateSnapshot().candidate
-      if (!candidate || candidate.id !== expectedId)
+      const candidate = snapshot.candidate
+      if (!candidate) return { ok: false, error: updater.NO_STAGED_UPDATE }
+      const expectedId = candidate.id
+      // Only an explicit latest-ready confirmation can follow a native promotion
+      // between the renderer's final read and this synchronous restart claim.
+      if (
+        confirmedId !== expectedId &&
+        !(
+          followNativePromotion === true &&
+          process.platform === MACOS_PLATFORM &&
+          typeof confirmedId === 'string' &&
+          snapshot.readyOrigin === confirmedId
+        )
+      )
         return { ok: false, error: updater.NO_STAGED_UPDATE }
       if (process.platform === MACOS_PLATFORM && !updater.macPreparationReady(candidate)) {
         publishUpdateSnapshot({
@@ -4226,7 +4410,12 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       }
       if (process.platform === MACOS_PLATFORM && macShutdownReady && updater.macHandoffReady())
         return finishMacUpdateHandoff()
-      if (!updatePreparation.claim(candidate)) return { ok: false, error: updater.NO_STAGED_UPDATE }
+      const liveReceipt =
+        process.platform === MACOS_PLATFORM
+          ? () => updater.macPreparationReady(candidate)
+          : undefined
+      if (!updatePreparation.claim(candidate, liveReceipt))
+        return { ok: false, error: updater.NO_STAGED_UPDATE }
       if (process.platform === WINDOWS_PLATFORM) return installWindowsPreparedUpdate()
       const controller = new AbortController()
       updateInstallAbort = controller
@@ -4235,6 +4424,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       const maintenanceBackend = backend
       let maintenance: ReturnType<typeof backendUpdateControl> | null = null
       let maintenanceGeneration: string | null = null
+      let maintenanceFailure: BackendMaintenanceRejected['reason']
       let preferencesRequested = false
       const resumeMaintenance = async (): Promise<void> => {
         if (!maintenance || !maintenanceGeneration) return
@@ -4299,6 +4489,15 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
                 if (error instanceof BackendMaintenanceRejected) {
                   macMaintenanceUncertain = false
                   macUpdateMaintenanceActive = false
+                  maintenanceFailure = error.reason
+                  if (maintenanceFailure) {
+                    updater.logUpdateEvent(pushLog, {
+                      phase: 'macos-install',
+                      event: 'prepare-update-rejected',
+                      result: 'failed',
+                      errorCode: maintenanceFailure,
+                    })
+                  }
                 }
                 throw error
               }
@@ -4371,6 +4570,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         })
         return result
       }
+      if (!result.ok && !result.cancelled && maintenanceFailure)
+        result = { ok: false, errorFallback: maintenanceFailure }
       if (result.ok && result.mode === 'auto') {
         updateRestartRequested = true
         // Keep the durable handoff until a subsequent process observes the installed build.
@@ -4430,7 +4631,11 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         // 暂存包还在 → 留在「已就绪」并带上错误，用户重试的是安装这一步；暂存包已经没了
         // （校验不过被删掉）→ 退回失败态，下一次重试是重新下载。
         const stillStaged = updater.macPreparationReady(candidate)
-        if (updatePreparation.running) {
+        if (
+          updatePreparation.running &&
+          updatePreparation.candidate?.id !== candidate.id &&
+          !stillStaged
+        ) {
           publishUpdateSnapshot(currentUpdateSnapshot())
           return result
         }
@@ -4583,9 +4788,36 @@ async function createWindow(
     if (details.isMainFrame) mainRendererNavigationEpoch += 1
   })
   const browserWindow = mainWindow
+  const startupWindow = new AbortController()
+  let firstHandoffPending = true
   if (!headless) windowController.ensureTray(browserWindow)
   const windowCurrent = (): boolean =>
-    aliveMainWindow() === browserWindow && startupState.snapshot().generation === generation
+    !startupWindow.signal.aborted &&
+    aliveMainWindow() === browserWindow &&
+    startupState.snapshot().generation === generation
+  const recoverRendererExit = installTaskRecoveryFallback(browserWindow, taskRecovery(), {
+    canPresent: () => windowCurrent() && windowPresentationAllowed(),
+    reopen: () => {
+      dismissLandingForTaskRecovery()
+      return browserWindow.loadURL(rendererUrl)
+    },
+    prompt: async (signal) => {
+      const t = mainLocalization().getFixedT(null, 'native')
+      const result = await dialog.showMessageBox(browserWindow, {
+        type: 'warning',
+        title: t('taskRecovery.title'),
+        message: t('taskRecovery.message'),
+        detail: t('taskRecovery.detail'),
+        buttons: [t('taskRecovery.reopen'), t('taskRecovery.wait')],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+        signal,
+      })
+      return result.response === 0
+    },
+    log: logTaskRecovery,
+  })
   const windowHiding = createWindowHiding(
     browserWindow,
     () => !appQuitting && !headless && !preferenceQuiescence.isPreparing(),
@@ -4699,12 +4931,6 @@ async function createWindow(
         })
     }
   )
-  const windowVisible = new Promise<void>((resolve) => {
-    browserWindow.once('ready-to-show', () => {
-      handoff.painted()
-      resolve()
-    })
-  })
   void componentsReused.then((reused) => {
     if (reused) handoff.reused()
   })
@@ -4715,6 +4941,15 @@ async function createWindow(
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     workbenchHealth.invalidate()
+    if (firstHandoffPending) {
+      startupWindow.abort(
+        new Error(
+          `Main window renderer exited during startup: ${details.reason} (${details.exitCode})`
+        )
+      )
+    } else {
+      recoverRendererExit()
+    }
     pushLog(
       `[shell] renderer process gone reason=${details.reason} exit-code=${details.exitCode}\n`
     )
@@ -4751,6 +4986,7 @@ async function createWindow(
   })
 
   mainWindow.on('closed', () => {
+    if (firstHandoffPending) startupWindow.abort(new Error('Main window closed during startup'))
     desktopReminders?.stop()
     desktopReminders = null
     attentionRendererReady = false
@@ -4772,30 +5008,49 @@ async function createWindow(
   mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => {
     if (isMainFrame) attentionRendererReady = false
   })
-  if (devUrl) {
-    const rendererSession = mainWindow.webContents.session
-    await prepareRendererLoad(devUrl, () => rendererSession.clearCache())
-    await mainWindow.loadURL(devUrl)
-    if (developerToolsEnabled) {
+  try {
+    await loadStartupWindow(
+      browserWindow,
+      startupWindow.signal,
+      async (signal) => {
+        if (devUrl) {
+          const rendererSession = browserWindow.webContents.session
+          await prepareRendererLoad(devUrl, () => rendererSession.clearCache())
+        }
+        signal.throwIfAborted()
+        await browserWindow.loadURL(rendererUrl)
+      },
+      handoff.painted
+    )
+    if (devUrl && developerToolsEnabled) {
       browserVaultIpc?.lock()
-      mainWindow.webContents.openDevTools({ mode: MAIN_DEVTOOLS_DOCK_MODE })
+      browserWindow.webContents.openDevTools({ mode: MAIN_DEVTOOLS_DOCK_MODE })
     }
-  } else {
-    await mainWindow.loadURL(rendererUrl)
-  }
 
-  if (!(await backendReady)) {
-    await windowVisible
-    handoff.settled()
-    return
-  }
-  const expectedBackend = backend
-  if (!currentStartup(generation, expectedBackend, browserWindow)) return
-  await initializeWindowServices(browserWindow, rendererUrl, devUrl, storageWindowGeneration)
-  if (currentStartup(generation, expectedBackend, browserWindow)) {
-    startupState.complete(generation, apiBase)
-    await windowVisible
-    if (currentStartup(generation, expectedBackend, browserWindow)) handoff.settled()
+    if (!(await waitForStartupWindow(startupWindow.signal, () => backendReady))) {
+      handoff.settled()
+      return
+    }
+    const expectedBackend = backend
+    if (!currentStartup(generation, expectedBackend, browserWindow)) return
+    await waitForStartupWindow(startupWindow.signal, () =>
+      initializeWindowServices(browserWindow, rendererUrl, devUrl, storageWindowGeneration)
+    )
+    if (currentStartup(generation, expectedBackend, browserWindow)) {
+      startupState.complete(generation, apiBase)
+      handoff.settled()
+    }
+  } catch (error) {
+    startupWindow.abort(error)
+    if (!browserWindow.isDestroyed()) {
+      const contents = browserWindow.webContents
+      if (!contents.isDestroyed() && !contents.isCrashed()) contents.stop()
+      // Keep the window owned until quit so Windows can display the startup failure.
+      browserWindow.hide()
+    }
+    if (!appQuitting) throw error
+  } finally {
+    firstHandoffPending = false
   }
 }
 
@@ -5312,13 +5567,7 @@ function armBackgroundUpdateCheck(): void {
       nextPeriodicUpdateCheckAt,
       Date.now() + ACTIVE_UPDATE_CHECK_INTERVAL_MS
     )
-  const blocked =
-    updateInstallAbort ||
-    updateInstallationInProgress ||
-    updateRestartRequested ||
-    macMaintenanceUncertain ||
-    updater.macHandoffCommitted()
-  if (blocked) return
+  if (installationBlocksUpdateCheck()) return
   const decision = preparationPolicy
     ? updatePreparation.decision(loadRendererPreferences().autoDownloadUpdates)
     : undefined
@@ -5969,7 +6218,12 @@ async function startDesktop(): Promise<void> {
   let logsQuitPending = false
   let logsQuitFinished = false
   const PREPARATION_QUIT_TIMEOUT_MS = 15_000
-  autoUpdater.on('error', () => {
+  // Electron can emit a late error after its update has been superseded.
+  // Keep its error event handled; only the active installation can revoke readiness.
+  autoUpdater.on('error', (error) => {
+    pushLog(`[update] Electron updater error: ${redactDiagnosticError(error)}\n`)
+  })
+  updater.onActiveMacUpdateFailure(() => {
     if (!updater.macHandoffCommitted()) return
     setUpdateInstallationInProgress(false)
     publishUpdateSnapshot({

@@ -28,7 +28,12 @@ int main(int argc, const char **argv) {
     assert([NSFileManager.defaultManager createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL]);
     NSString *helper = [directory stringByAppendingPathComponent:@"ShipIt"];
     assert([@"fixture" writeToFile:helper atomically:YES encoding:NSUTF8StringEncoding error:NULL]);
-    NSString *label = @"com.scholarseed.fixture.ShipIt", *state = [directory stringByAppendingPathComponent:@"state"];
+    NSString *label = @"com.scholarseed.fixture.ShipIt.next", *owner = [directory stringByAppendingPathComponent:label];
+    assert([NSFileManager.defaultManager createDirectoryAtPath:owner withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:NULL]);
+    NSString *state = [owner stringByAppendingPathComponent:@"ShipItState.plist"];
+    assert([SSSuccessionStateLabel(@"com.scholarseed.fixture", state) isEqual:label]);
+    assert(!SSSuccessionStateLabel(@"different.bundle", state));
+    assert(!SSSuccessionStateLabel(@"com.scholarseed.fixture", [state stringByAppendingString:@".other"]));
     NSDictionary *job = @{@"Label":label, @"ProgramArguments":@[helper, label, state]};
     assert(SSParkingMatches(job, helper, label, state));
     assert(!SSParkingMatches(job, helper, @"other.job", state));

@@ -9,6 +9,7 @@ import type { PreparationCheckpoint } from './preparation.ts'
 import { nextUpdateCheckAt } from './checks.ts'
 import { samePreviewArtifact } from './preview.ts'
 import { isNewerRelease } from './version.ts'
+import { updateCandidateKey } from '../updates.ts'
 import type { LatestVersionMeta, UpdateSnapshot } from '../updates.ts'
 
 const source = ts.createSourceFile(
@@ -18,13 +19,22 @@ const source = ts.createSourceFile(
   true
 )
 const declarations: string[] = []
-const handlers = ['scholarseed:update-check', 'scholarseed:update-start']
+const handlers = [
+  'scholarseed:update-check',
+  'scholarseed:update-start',
+  'scholarseed:update-announce-ack',
+]
 function visit(node: ts.Node): void {
   if (
     ts.isFunctionDeclaration(node) &&
-    ['publishUpdateSnapshot', 'publishUpdateCheckResult', 'armBackgroundUpdateCheck'].includes(
-      node.name?.text ?? ''
-    )
+    [
+      'publishUpdateSnapshot',
+      'withAnnouncedKey',
+      'currentUpdateSnapshot',
+      'installationBlocksUpdateCheck',
+      'publishUpdateCheckResult',
+      'armBackgroundUpdateCheck',
+    ].includes(node.name?.text ?? '')
   )
     declarations.push(node.getText(source))
   if (
@@ -37,7 +47,7 @@ function visit(node: ts.Node): void {
   ts.forEachChild(node, visit)
 }
 visit(source)
-assert.equal(declarations.length, 5)
+assert.equal(declarations.length, 9)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
@@ -47,6 +57,7 @@ const newer = { ...first, id: 'newer', build_number: '202610160100' }
 async function harness(platform: 'win32' | 'darwin' = 'win32') {
   const ipc = new Map<string, (...args: unknown[]) => Promise<unknown>>()
   let prepares = 0
+  let announcedKey: string | null = null
   const timers: number[] = []
   const platformPolicy = backgroundPreparationPolicy(platform)
   assert.ok(platformPolicy)
@@ -63,6 +74,7 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
   await preparation.settled()
   const context = {
     MACOS_PLATFORM: 'darwin',
+    WINDOWS_PLATFORM: 'win32',
     updateStartupVerification: undefined as UpdateSnapshot['startupVerification'],
     latest: first,
     process: { platform },
@@ -73,10 +85,10 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     preparationPolicy: policy,
     lastPreparationDeferral: null,
     latestUpdateCandidate: null,
-    withAnnouncedKey: (s: UpdateSnapshot) => s,
-    sendToMainWindow: () => {},
+    updateAnnouncedKey: null,
+    updateCandidateKey,
+    sendToMainWindow: (_channel: string, _snapshot: UpdateSnapshot) => {},
     updateSnapshot: { phase: 'ready', currentVersion: '0.2.0', candidate: first } as UpdateSnapshot,
-    currentUpdateSnapshot: (): UpdateSnapshot => context.updateSnapshot,
     updateInstallAbort: null as AbortController | null,
     updateRestartRequested: false,
     updateInstallationInProgress: false,
@@ -103,9 +115,14 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     samePreviewArtifact,
     isNewerRelease,
     updater: {
+      readAnnouncedKey: () => announcedKey,
+      writeAnnouncedKey: (key: string) => {
+        announcedKey = key
+      },
       isCurrentPreviewResult: () => true,
       previewPolicyRevision: () => 0,
       macHandoffCommitted: () => false,
+      canPrepareMacSuccessor: () => false,
       macPreparationReady: () => true,
       updateLaneUnsupported: () => false,
       archType: () => 'windows-amd64',
@@ -119,7 +136,8 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     },
   }
   runInNewContext(code, context)
-  const invoke = (name: string, ...args: unknown[]) => ipc.get('scholarseed:update-' + name)!(null, ...args)
+  const invoke = (name: string, ...args: unknown[]) =>
+    ipc.get('scholarseed:update-' + name)!(null, ...args)
   const check = (latest = first) => {
     context.latest = latest
     return runInNewContext('publishUpdateCheckResult({has_update: true, latest})', context)
@@ -128,10 +146,63 @@ async function harness(platform: 'win32' | 'darwin' = 'win32') {
     context,
     invoke,
     check,
+    snapshot: () => runInNewContext('currentUpdateSnapshot()', context) as UpdateSnapshot,
     counts: () => ({ prepares }),
     schedule: () => runInNewContext('armBackgroundUpdateCheck()', context),
     timers,
   }
+}
+
+for (const enabled of [false, true]) {
+  test(`a reserved macOS release keeps checking for newer builds (automatic=${enabled})`, async () => {
+    const h = await harness('darwin')
+    const { context } = h
+    context.updater.macHandoffCommitted = () => true
+    context.loadRendererPreferences = () => ({ autoDownloadUpdates: enabled })
+    h.schedule()
+    h.check(newer)
+    assert.equal(h.timers.length, 0)
+    assert.equal(context.updateSnapshot.latestCandidate, undefined)
+    context.updater.canPrepareMacSuccessor = () => true
+    h.schedule()
+    assert.equal(h.timers.length, 1)
+    let finish!: () => void
+    const waiting = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const attempts: string[] = []
+    context.updatePreparation = new UpdatePreparation(
+      async ({ origin, candidate }) => {
+        attempts.push(origin)
+        await waiting
+        if (enabled) context.updateSnapshot = { ...context.updateSnapshot, candidate }
+        return enabled
+      },
+      undefined,
+      context.preparationPolicy
+    )
+    h.check(newer)
+    await Promise.resolve()
+    assert.equal(context.updateSnapshot.phase, 'ready')
+    assert.equal(context.updateSnapshot.candidate?.id, first.id)
+    assert.equal(h.snapshot().latestCandidate?.id, newer.id)
+    assert.deepEqual(attempts, enabled ? ['background'] : [])
+    let answered = false
+    const response = h.invoke('start', newer.id).then((value) => {
+      answered = true
+      return value as { ok: boolean; errorFallback?: string }
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(answered, false, 'accepting the request does not establish readiness')
+    assert.deepEqual(attempts, [enabled ? 'background' : 'manual'])
+    assert.equal(context.updateSnapshot.candidate?.id, first.id)
+    finish()
+    const result = await response
+    assert.equal(result.ok, enabled)
+    assert.equal(result.errorFallback, enabled ? undefined : 'preparation_failed')
+    assert.equal(context.updateSnapshot.phase, 'ready')
+    assert.equal(context.updateSnapshot.candidate?.id, enabled ? newer.id : first.id)
+  })
 }
 
 test('a persisted archive limit projects the failure on the first cold update check', async () => {
@@ -176,19 +247,86 @@ test('a persisted archive limit projects the failure on the first cold update ch
   }
 })
 
+test('offering a ZIP for the natively ready build preserves its DMG receipt and restart action', async () => {
+  const h = await harness('darwin')
+  h.context.updater.macHandoffCommitted = () => true
+  h.context.updater.canPrepareMacSuccessor = () => true
+  const zip: LatestVersionMeta = {
+    ...first,
+    artifact_kind: 'macos-zip',
+    file_size: 100,
+    sha512: 'b'.repeat(128),
+  }
+  h.check(zip)
+  await h.context.updatePreparation.settled()
+  assert.equal(h.counts().prepares, 1)
+  assert.deepEqual(h.context.updateSnapshot.candidate, first)
+  assert.equal(h.context.updateSnapshot.phase, 'ready')
+  assert.equal(h.context.updateSnapshot.latestCandidate, undefined)
+  assert.equal(h.context.updatePreparation.decision(true).reason, 'already-ready')
+})
+
+test('a ready release stays selectable as an oversized successor is retried with its published ZIP', async () => {
+  const h = await harness('darwin')
+  const { context } = h
+  context.updater.macHandoffCommitted = () => true
+  context.updater.canPrepareMacSuccessor = () => true
+  const zip: LatestVersionMeta = {
+    ...newer,
+    artifact_kind: 'macos-zip',
+    file_size: 100,
+    sha512: 'b'.repeat(128),
+  }
+  let complete!: () => void
+  const verifying = new Promise<void>((resolve) => {
+    complete = resolve
+  })
+  const attempts: LatestVersionMeta[] = []
+  context.updatePreparation = new UpdatePreparation(
+    async ({ candidate }) => {
+      attempts.push(candidate)
+      if (!candidate.artifact_kind) return 'archive-limit'
+      await verifying
+      context.updateSnapshot = { ...context.updateSnapshot, candidate }
+      return true
+    },
+    undefined,
+    context.preparationPolicy
+  )
+  h.check(newer)
+  await context.updatePreparation.settled()
+  h.check(newer)
+  assert.equal(context.updateSnapshot.latestCandidate, undefined)
+  h.check(zip)
+  const response = h.invoke('start', zip.id)
+  assert.equal(context.updateSnapshot.phase, 'ready')
+  assert.deepEqual(context.updateSnapshot.candidate, first)
+  complete()
+  assert.equal(((await response) as { ok: boolean }).ok, true)
+  assert.deepEqual(attempts, [newer, zip])
+  assert.deepEqual(context.updateSnapshot.candidate, zip)
+})
+
 test('manual download becomes available when a ZIP replaces the same build’s oversized DMG', async () => {
   const h = await harness('darwin')
   const dmg = { ...newer, file_size: 200, sha512: 'a'.repeat(128) }
   const zip: LatestVersionMeta = {
-    ...dmg, artifact_kind: 'macos-zip', file_size: 100, sha512: 'b'.repeat(128),
+    ...dmg,
+    artifact_kind: 'macos-zip',
+    file_size: 100,
+    sha512: 'b'.repeat(128),
   }
   const attempts: LatestVersionMeta[] = []
-  h.context.updatePreparation = new UpdatePreparation(async ({ candidate }) => {
-    attempts.push(candidate)
-    if (!candidate.artifact_kind) return 'archive-limit'
-    h.context.updateSnapshot = { phase: 'ready', candidate, currentVersion: first.version }
-    return true
-  }, undefined, h.context.preparationPolicy)
+  h.context.updatePreparation = new UpdatePreparation(
+    async ({ candidate }) => {
+      attempts.push(candidate)
+      if (!candidate.artifact_kind) return 'archive-limit'
+      h.context.updateSnapshot = { phase: 'ready', candidate, currentVersion: first.version }
+      return true
+    },
+    undefined,
+    h.context.preparationPolicy
+  )
   h.context.loadRendererPreferences = () => ({ autoDownloadUpdates: false })
   h.context.updateSnapshot = { phase: 'idle', currentVersion: first.version }
   h.context.updatePreparation.request(dmg)
@@ -205,7 +343,7 @@ test('manual download becomes available when a ZIP replaces the same build’s o
     assert.equal(state.resumable, undefined)
   }
   assert.deepEqual(attempts, [dmg])
-  const result = await h.invoke('start', zip.id) as { ok: boolean }
+  const result = (await h.invoke('start', zip.id)) as { ok: boolean }
   assert.equal(result.ok, true)
   assert.deepEqual(attempts, [dmg, zip])
 })
@@ -228,6 +366,47 @@ for (const platform of ['win32', 'darwin'] as const)
     await h.context.updatePreparation.settled()
     assert.equal(h.counts().prepares, 2, 'safe failure must still allow a genuinely newer release')
   })
+
+test('the shell publishes, returns and restores the acknowledged announcement', async () => {
+  const h = await harness()
+  const events: UpdateSnapshot[] = []
+  h.context.sendToMainWindow = (channel, snapshot) => {
+    assert.equal(channel, 'scholarseed:update-state')
+    events.push(snapshot)
+  }
+  const key = updateCandidateKey(first)
+  assert.ok(key)
+  assert.equal(await h.invoke('announce-ack'), true)
+  assert.equal(events.length, 1)
+  assert.equal(events[0].announcedKey, key)
+  assert.equal(h.snapshot(), events[0])
+
+  h.context.updateStartupVerification = 'verified'
+  h.context.latest = newer
+  const available = runInNewContext(
+    "publishUpdateSnapshot({phase: 'available', currentVersion: '0.2.0', candidate: latest})",
+    h.context
+  )
+  assert.equal(events.length, 2)
+  assert.equal(events[1], available)
+  assert.equal(available, h.snapshot())
+  assert.equal(available.startupVerification, undefined)
+  assert.equal(available.announcedKey, key)
+  runInNewContext('updateSnapshot = undefined; updateAnnouncedKey = null', h.context)
+  assert.equal(h.snapshot().announcedKey, key)
+})
+
+test('manual preparation rejects a ready snapshot for a different artifact of the requested build', async () => {
+  const h = await harness('darwin')
+  const zip: LatestVersionMeta = { ...newer, artifact_kind: 'macos-zip' }
+  h.context.updateSnapshot = { phase: 'available', currentVersion: first.version, candidate: zip }
+  h.context.updatePreparation = new UpdatePreparation(async () => {
+    h.context.updateSnapshot = { ...h.context.updateSnapshot, phase: 'ready', candidate: newer }
+    return true
+  })
+  const result = (await h.invoke('start', zip.id)) as { ok: boolean }
+  assert.equal(result.ok, false)
+})
 
 test('a new candidate consumes the previous success receipt before it is published', async () => {
   const { context } = await harness('darwin')

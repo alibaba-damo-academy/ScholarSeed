@@ -12,6 +12,7 @@ anything nor changes the active selection.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Mapping
 
@@ -29,6 +30,8 @@ PROBE_PROMPT = "Say pong and nothing else."
 PROBE_MAX_TOKENS = 16
 PROBE_CONNECT_TIMEOUT_SECONDS = 10.0
 PROBE_READ_TIMEOUT_SECONDS = 30.0
+PROBE_TOTAL_TIMEOUT_SECONDS = 40.0
+PROBE_TIMEOUT_MESSAGE = "模型端点未在时限内完成响应"
 RESPONSES_PATH = "/responses"
 MODELS_PATH = "/models"
 BEARER_PREFIX = "Bearer "
@@ -84,7 +87,19 @@ def _timeout() -> httpx.Timeout:
     return httpx.Timeout(PROBE_READ_TIMEOUT_SECONDS, connect=PROBE_CONNECT_TIMEOUT_SECONDS)
 
 
-def probe_personal_connection(
+async def _request_endpoint(
+    method: str, url: str, headers: Mapping[str, str], body: dict[str, Any] | None = None
+) -> httpx.Response:
+    """Bound the whole upstream exchange, including a response that keeps sending bytes."""
+    try:
+        async with asyncio.timeout(PROBE_TOTAL_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(timeout=_timeout()) as client:
+                return await client.request(method, url, headers=headers, json=body)
+    except TimeoutError as error:
+        raise TimeoutError(PROBE_TIMEOUT_MESSAGE) from error
+
+
+async def probe_personal_connection(
     values: Mapping[str, Any], existing: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
     """Issue one minimal request against a candidate connection without saving it.
@@ -93,7 +108,7 @@ def probe_personal_connection(
     its credential: an empty ``api_key`` keeps the stored one.
     """
 
-    started = time.time()
+    started = time.monotonic()
     try:
         connection = prepare_personal_connection(values, existing=existing)
         url, body = _request(connection)
@@ -101,28 +116,27 @@ def probe_personal_connection(
         return {
             "ok": False,
             "message": str(error),
-            "latency_ms": int((time.time() - started) * 1000),
+            "latency_ms": int((time.monotonic() - started) * 1000),
             "error_class": PROBE_UNSUPPORTED_PROTOCOL_ERROR,
         }
     try:
-        with httpx.Client(timeout=_timeout()) as client:
-            response = client.post(url, json=body, headers=_headers(connection))
+        response = await _request_endpoint("POST", url, _headers(connection), body)
         ok = response.is_success
         message = PROBE_OK_MESSAGE if ok else response.text[:PROBE_ERROR_BODY_LIMIT]
         result: dict[str, Any] = {"ok": ok, "message": message}
         if not ok:
             result["error_class"] = f"{PROBE_HTTP_ERROR}_{response.status_code}"
-    except httpx.HTTPError as error:
+    except (httpx.HTTPError, TimeoutError) as error:
         result = {
             "ok": False,
             "message": str(error)[:PROBE_ERROR_BODY_LIMIT],
             "error_class": type(error).__name__,
         }
-    result["latency_ms"] = int((time.time() - started) * 1000)
+    result["latency_ms"] = int((time.monotonic() - started) * 1000)
     return result
 
 
-def list_upstream_models(
+async def list_upstream_models(
     values: Mapping[str, Any], existing: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
     """Read the model ids a candidate endpoint advertises, without saving anything.
@@ -136,7 +150,7 @@ def list_upstream_models(
     user wants candidates.
     """
 
-    started = time.time()
+    started = time.monotonic()
     base_url = str(values.get("base_url") or "").strip().rstrip("/")
     if not base_url:
         return {
@@ -144,29 +158,28 @@ def list_upstream_models(
             "models": [],
             "message": "base_url is required",
             "error_class": PROBE_BASE_URL_REQUIRED_ERROR,
-            "latency_ms": int((time.time() - started) * 1000),
+            "latency_ms": int((time.monotonic() - started) * 1000),
         }
     api_key, custom_headers = resolve_personal_credential(values, existing)
     headers = _headers({"api_key": api_key, "headers": custom_headers})
     try:
-        with httpx.Client(timeout=_timeout()) as client:
-            response = client.get(f"{base_url}{MODELS_PATH}", headers=headers)
+        response = await _request_endpoint("GET", f"{base_url}{MODELS_PATH}", headers)
         if not response.is_success:
             return {
                 "ok": False,
                 "models": [],
                 "message": response.text[:PROBE_ERROR_BODY_LIMIT],
                 "error_class": f"{PROBE_HTTP_ERROR}_{response.status_code}",
-                "latency_ms": int((time.time() - started) * 1000),
+                "latency_ms": int((time.monotonic() - started) * 1000),
             }
         payload = response.json()
-    except (httpx.HTTPError, ValueError) as error:
+    except (httpx.HTTPError, TimeoutError, ValueError) as error:
         return {
             "ok": False,
             "models": [],
             "message": str(error)[:PROBE_ERROR_BODY_LIMIT],
             "error_class": type(error).__name__,
-            "latency_ms": int((time.time() - started) * 1000),
+            "latency_ms": int((time.monotonic() - started) * 1000),
         }
     rows = payload.get(MODELS_DATA_KEY) if isinstance(payload, dict) else None
     models = sorted(
@@ -182,5 +195,5 @@ def list_upstream_models(
         "message": (
             MODELS_OK_MESSAGE.format(count=len(models)) if models else MODELS_EMPTY_MESSAGE
         ),
-        "latency_ms": int((time.time() - started) * 1000),
+        "latency_ms": int((time.monotonic() - started) * 1000),
     }

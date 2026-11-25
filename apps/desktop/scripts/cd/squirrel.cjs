@@ -62,6 +62,7 @@ function verifyGrant(directory, common, executable, frameworks, fixtureFramework
     path.join(OWNER, 'grant.test.m'), executable,
     ...FRAMEWORKS.flatMap(name => ['-framework', name]),
     `-Wl,-rpath,${fixtureFrameworks}`, `-Wl,-rpath,${frameworks}`], directory)
+  command('/usr/bin/codesign', ['--force', '--sign', '-', testExecutable], directory)
   command(testExecutable, [path.join(directory, 'grant-fixture')], directory)
 }
 
@@ -95,7 +96,7 @@ async function buildSquirrel({ directory, electronDist, arch, sourceCache }) {
     overlays[name] = await sha256(filename)
   }
   command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, 'readiness.patch')], directory, dependencies.squirrel)
-  for (const name of ['binding.patch', 'transfer.patch', 'interaction.patch'])
+  for (const name of ['binding.patch', 'transfer.patch', 'interaction.patch', 'successor.patch'])
     command('/usr/bin/patch', ['--batch', '--fuzz=0', '-p1', '-i', path.join(directory, name)], directory, dependencies.squirrel)
   const executable = path.join(directory, 'Squirrel.dylib')
   const common = [
@@ -109,7 +110,7 @@ async function buildSquirrel({ directory, electronDist, arch, sourceCache }) {
     ...FRAMEWORKS.flatMap(name => ['-framework', name]),
     '-o', executable,
     ...COMPILE_UNITS.map(name => path.join(dependencies.squirrel, 'Squirrel', `${name}.m`)),
-    path.join(directory, 'readiness.m'),
+    path.join(directory, 'readiness.m'), path.join(directory, 'successor.m'),
   ], directory)
   command('/usr/bin/codesign', ['--force', '--sign', '-', executable], directory)
   const exported = filename => exportsFromNm(command('/usr/bin/nm', ['-gU', filename], directory))

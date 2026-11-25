@@ -10,7 +10,7 @@ from typing import Callable
 from service.content.domain.model import IGNORED_NAMES, ContentError, resolve_root
 from service.content.service.space import ProjectSpace, normalize
 from service.platform.content import ResourceEntry, ResourcePage, ResourceScanObserver, RootKind
-from service.platform.storage import WINDOWS_PLATFORM
+from service.platform.storage import FILE_ATTRIBUTE_REPARSE_POINT, WINDOWS_PLATFORM
 
 GITIGNORE_FILENAME = ".gitignore"
 BIRTH_TIME_ATTRIBUTE = "st_birthtime"
@@ -87,8 +87,9 @@ def scan_files(
     check: Callable[[], None] | None = None,
     paths: tuple[str, ...] | None = None,
     observe_resolved: Callable[[ResourceEntry, Path], None] | None = None,
+    include_directory: Callable[[str, Path], bool] | None = None,
 ) -> tuple[ResourceEntry, ...]:
-    """Enumerate every authorized logical resource file exactly once."""
+    """Enumerate authorized files, optionally pruning directories before listing them."""
 
     resource_root = resolve_root(space.project, RootKind.RESOURCES).absolute.resolve()
     linked_roots = tuple(mount.source.resolve() for mount in space.mounts)
@@ -104,6 +105,29 @@ def scan_files(
     )
     found: dict[str, ResourceEntry] = {}
     visited: set[tuple[int, int]] = set()
+
+    def descend(directory: Path, child_name: str | None = None) -> bool:
+        if include_directory is None:
+            return True
+        try:
+            if child_name is None:
+                resolved = directory.resolve()
+            else:
+                # The parent was resolved on this walk step. Only links need a new realpath.
+                resolved = directory / child_name
+                info = resolved.lstat()
+                if not stat.S_ISDIR(info.st_mode) or (
+                    getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT
+                ):
+                    resolved = resolved.resolve()
+            logical = space.relative_resolved(resolved)
+        except (ContentError, OSError):
+            return False
+        return (
+            _inside(resolved, allowed_roots)
+            and not space.excluded(logical)
+            and include_directory(logical, resolved)
+        )
 
     def discover(target: Path) -> None:
         qualified = _entry(space, target, allowed_roots)
@@ -124,7 +148,7 @@ def scan_files(
             if _scan_name(start.name):
                 discover(start)
             continue
-        if not start.is_dir():
+        if not start.is_dir() or not descend(start):
             continue
         for current, directories, filenames in os.walk(start, followlinks=True):
             if check is not None:
@@ -145,7 +169,9 @@ def scan_files(
                 directories[:] = []
                 continue
             visited.add(directory_key)
-            directories[:] = sorted(name for name in directories if _scan_name(name))
+            directories[:] = sorted(
+                name for name in directories if _scan_name(name) and descend(resolved_current, name)
+            )
             for name in sorted(name for name in filenames if _scan_name(name)):
                 if check is not None:
                     check()

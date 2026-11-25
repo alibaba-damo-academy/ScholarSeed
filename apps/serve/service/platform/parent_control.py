@@ -56,6 +56,11 @@ class ParentControlError(RuntimeError):
     pass
 
 
+class UpdateStorageRefusal(Enum):
+    DISK_FULL = b"\x00\x01"
+    IMPORT_UNAVAILABLE = b"\x00\x02"
+
+
 def _object(pairs):
     result = {}
     for key, value in pairs:
@@ -85,13 +90,15 @@ class ParentControl:
         skill_python_complete: Callable[[bool], None] | None = None,
         prepare_update: Callable[[str], Awaitable[None]] | None = None,
         resume_update: Callable[[str], None] | None = None,
+        check_update_storage: Callable[[str], Awaitable[UpdateStorageRefusal | None]] | None = None,
     ) -> None:
         self._activities = activities
         self._interrupt_running = interrupt_running
         self._drain_attachments = drain_attachments
         self._prepare_update = prepare_update
         self._resume_update = resume_update
-        self._update_preparation: asyncio.Task[None] | None = None
+        self._check_update_storage = check_update_storage
+        self._update_preparation: asyncio.Task[UpdateStorageRefusal | None] | None = None
         self._toolchain_complete = toolchain_complete
         self._skill_python_complete = skill_python_complete
         self._preparations = {
@@ -281,14 +288,19 @@ class ParentControl:
             generation = self._activities.begin_restart()
             self._generation = generation
 
-            async def prepare() -> None:
+            async def prepare() -> UpdateStorageRefusal | None:
+                if self._check_update_storage is not None:
+                    refusal = await self._check_update_storage(generation)
+                    if refusal is not None:
+                        return refusal
                 await prepare_update(generation)
+                return None
 
             preparation = asyncio.create_task(prepare(), name="update-shutdown-preparation")
             self._update_preparation = preparation
             started = monotonic()
 
-            def report_preparation(finished: asyncio.Task[None]) -> None:
+            def report_preparation(finished: asyncio.Task[UpdateStorageRefusal | None]) -> None:
                 if finished.cancelled():
                     return
                 error = finished.exception()
@@ -313,7 +325,7 @@ class ParentControl:
                 if not completed:
                     raise ParentControlError("update shutdown preparation timed out")
                 try:
-                    preparation.result()
+                    refusal = preparation.result()
                 except BaseExceptionGroup as error:
                     cancelled, failures = error.split(asyncio.CancelledError)
                     current = asyncio.current_task()
@@ -324,6 +336,16 @@ class ParentControl:
                     ):
                         raise
                     raise ParentControlError("update shutdown preparation failed") from error
+                if refusal is not None:
+                    # The probe has settled and no session has begun preparing.
+                    # Resuming a restart takeover may restore an older owner's fence.
+                    self._activities.resume(generation, expected_phase=ActivityPhase.DRAINING)
+                    self._update_preparation = None
+                    self._generation = None
+                    if self._activities.snapshot().phase is not ActivityPhase.OPEN:
+                        raise ParentControlError("update storage refused with maintenance retained")
+                    _LOGGER.warning("update_storage_refused reason=%s", refusal.name)
+                    return refusal.value
             except BaseException:
                 if not preparation.done() and not preparation.cancelling():
                     preparation.cancel()

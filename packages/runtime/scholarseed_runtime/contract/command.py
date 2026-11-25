@@ -237,6 +237,8 @@ class TurnRequest:
     submission_attempts: int = 0
     retry_authorizer: Callable[[SubmissionRetryProof], Awaitable[Callable[[], bool]]] | None = None
     output_schema: dict[str, RuntimeValue] | None = None
+    #: Host-bound output directory within this turn's working directory.
+    artifact_directory: Path | None = None
 
 
 @dataclass(frozen=True)

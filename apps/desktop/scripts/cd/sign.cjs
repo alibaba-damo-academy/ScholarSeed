@@ -128,9 +128,9 @@ async function sign(builderContext) {
   // legitimately rewrites Mach-O metadata, so later gates compare the code seal.
   await verify(builderContext)
   if (verify.unsignedPackageCheck(frozen)) return
-  const native = nativeSignatureGuard(app, frozen.native)
-  const ignore = filename => native.ignore(filename) || shouldIgnore(filename)
   if (!frozen.signingRequired) {
+    const native = nativeSignatureGuard(app, frozen.native)
+    const ignore = filename => native.ignore(filename) || shouldIgnore(filename)
     const restore = await trackSignProgress(app, ignore)
     try {
       await signAsync(adHocOptions(app, ignore))
@@ -142,10 +142,8 @@ async function sign(builderContext) {
     verify.atomicJSON(path.join(frozen.runDirectory, 'app.json'), signed)
     return
   }
-  // Distribution signing runs through scripts/cd/signer.cjs via the builder's
-  // `mac.sign` hook after this returns; install the counter against the same
-  // Mach-O/bundle rule so its `Signing...` stream carries an accurate `[i/N]`.
-  await trackSignProgress(app, ignore)
+  // The distribution mac.sign hook counts its remaining targets after restoring
+  // any verified runtime signatures.
 }
 
 module.exports = sign

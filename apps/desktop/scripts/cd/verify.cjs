@@ -132,6 +132,16 @@ function command(executable, args, options = {}) {
   return execFileSync(executable, args, { encoding: 'utf8', ...options }).trim()
 }
 
+function publishedZipArguments(application, archive) {
+  // ditto can add an AppleDouble entry for every ordinary file. Preserve that
+  // representation for bundles carrying resource forks or extended-attribute code signatures.
+  const metadataMember = command('/usr/bin/find', [
+    '-P', application, '(', '-xattrname', 'com.apple.ResourceFork', '-o',
+    '-xattrname', 'com.apple.cs.CodeDirectory', ')', '-print', '-quit',
+  ], { timeout: MACOS_ARCHIVE_TIMEOUT_MS })
+  return archiveApplicationArguments(application, archive, 6, metadataMember ? '--sequesterRsrc' : '--norsrc')
+}
+
 // Forward only structured timing fields; raw child diagnostics remain in the file.
 function nativeStageRecords(child, label) {
   const records = []
@@ -1010,6 +1020,26 @@ async function verifyVelopackInstaller(installer, frozen) {
   })
 }
 
+async function measureApplicationArchive(archive) {
+  const size = fs.statSync(archive).size
+  assertSquirrelArchiveSize(size)
+  return { size, ...await verifyApplicationArchive(archive) }
+}
+
+async function createPublishedApplicationArchive(application, archive, python) {
+  const original = archive + '.ditto'
+  try {
+    command(MACOS_DITTO, publishedZipArguments(application, original), {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
+    await measureApplicationArchive(original)
+    command(python, ['-I', '-S', '-B', path.join(__dirname, 'maczip.py'), original, archive], {
+      timeout: MACOS_ARCHIVE_TIMEOUT_MS,
+    })
+    return await measureApplicationArchive(archive)
+  } finally {
+    fs.rmSync(original, {force: true})
+  }
+}
+
 async function verify(builderContext) {
   const frozen = context()
   if (builderContext.appOutDir) {
@@ -1054,7 +1084,7 @@ async function verify(builderContext) {
     verifyWindowsSignature(installer, frozen.product.config.expected_windows_publisher)
   }
   const application = JSON.parse(fs.readFileSync(path.join(frozen.runDirectory, 'app.json')))
-  let archiveBudget = null
+  let dmgArchiveBudget = null
   let updateZip = null
   const image = frozen.platform === 'darwin'
     ? await verifyImage(installer, application.path, frozen, async (mounted, context, runtimeCheck) => {
@@ -1064,11 +1094,12 @@ async function verify(builderContext) {
           const directory = fs.mkdtempSync(path.join(context.runDirectory, 'update-archive-'))
           const archive = path.join(directory, 'application.zip')
           try {
+            // Measure the exact archive produced by a DMG-only client.
             command(MACOS_DITTO, archiveApplicationArguments(mounted, archive), {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
-            const size = fs.statSync(archive).size
-            assertSquirrelArchiveSize(size)
-            archiveBudget = { size, ...await verifyApplicationArchive(archive) }
+            dmgArchiveBudget = await measureApplicationArchive(archive)
             if (context.lane === 'distribution') {
+              fs.unlinkSync(archive)
+              const zipBudget = await createPublishedApplicationArchive(mounted, archive, layout(mounted, context).python)
               const unpacked = path.join(directory, 'unpacked')
               fs.mkdirSync(unpacked)
               command(MACOS_DITTO, ['-x', '-k', archive, unpacked], {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
@@ -1081,8 +1112,8 @@ async function verify(builderContext) {
                 path: destination,
                 sha256: await sha256(destination),
                 sha512: await sha512(destination),
-                size,
-                archive_budget: archiveBudget,
+                size: zipBudget.size,
+                archive_budget: zipBudget,
                 signature_valid: true,
                 stapled: true,
               }
@@ -1109,7 +1140,7 @@ async function verify(builderContext) {
     trust: checked.trust,
   }
   if (image) evidence.installed_check.sha256 = evidence.sha256
-  if (archiveBudget) evidence.installed_check.update_archive = archiveBudget
+  if (dmgArchiveBudget) evidence.installed_check.update_archive = dmgArchiveBudget
   atomicJSON(path.join(frozen.runDirectory, 'app.json'), image
     ? await verifyApplication(application.path, frozen, false)
     : checked)
@@ -1130,6 +1161,8 @@ module.exports.RUNTIME_PROBE_SCRIPT = RUNTIME_PROBE_SCRIPT
 module.exports.sha256 = sha256
 module.exports.sha512 = sha512
 module.exports.verifyApplication = verifyApplication
+module.exports.publishedZipArguments = publishedZipArguments
+module.exports.createPublishedApplicationArchive = createPublishedApplicationArchive
 module.exports.unsignedPackageCheck = unsignedPackageCheck
 module.exports.runPackageCheck = runPackageCheck
 module.exports.packageCheckEnvironment = packageCheckEnvironment

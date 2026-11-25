@@ -1,0 +1,31 @@
+--- a/Squirrel/SQRLUpdater.m
++++ b/Squirrel/SQRLUpdater.m
+@@ -371,0 +372,4 @@
++- (Class)ss_launcherClass {
++  return SQRLShipItLauncher.class;
++}
++
+@@ -376 +380 @@
+-	return [SQRLShipItLauncher launchPrivileged:privileged];
++	return [self.ss_launcherClass launchPrivileged:privileged];
+@@ -582 +586 @@
+-			SQRLDirectoryManager *directoryManager = [[SQRLDirectoryManager alloc] initWithApplicationIdentifier:SQRLShipItLauncher.shipItJobLabel];
++			SQRLDirectoryManager *directoryManager = [[SQRLDirectoryManager alloc] initWithApplicationIdentifier:[self.ss_launcherClass shipItJobLabel]];
+@@ -658 +662 @@
+-			SQRLDirectoryManager *directoryManager = [[SQRLDirectoryManager alloc] initWithApplicationIdentifier:SQRLShipItLauncher.shipItJobLabel];
++			SQRLDirectoryManager *directoryManager = [[SQRLDirectoryManager alloc] initWithApplicationIdentifier:[self.ss_launcherClass shipItJobLabel]];
+@@ -723 +727 @@
+-			SQRLDirectoryManager *directoryManager = [[SQRLDirectoryManager alloc] initWithApplicationIdentifier:SQRLShipItLauncher.shipItJobLabel];
++			SQRLDirectoryManager *directoryManager = [[SQRLDirectoryManager alloc] initWithApplicationIdentifier:[self.ss_launcherClass shipItJobLabel]];
+@@ -855,2 +859,2 @@
+-- (RACSignal *)relaunchToInstallUpdate {
+-	return [[[[[[[[SQRLShipItRequest
++- (RACSignal *)ss_authorizeRelaunch {
++	return [[[SQRLShipItRequest
+@@ -871 +875,5 @@
+-		}]
++		}];
++}
++
++- (RACSignal *)relaunchToInstallUpdate {
++	return [[[[[[self ss_authorizeRelaunch]

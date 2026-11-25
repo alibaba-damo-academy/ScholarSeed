@@ -31,6 +31,7 @@ const probe = {
   get state() {
     return store.state
   },
+  documentTabs: () => Object.keys(documentWorkspaces.forProject(null).getSnapshot().tabs),
   get pending() {
     return pending.length
   },
@@ -53,6 +54,7 @@ const probe = {
   openDraftSession: (...args: Parameters<Store['act']['openDraftSession']>) =>
     flushSync(() => store.act.openDraftSession(...args)),
   loadContext: (id: string) => store.act.loadAiContext(id),
+  reloadResourceTree: () => store.act.reloadResourceTree(),
   forkSession: (id: string, turnId?: string) => store.act.forkSession(id, turnId),
   draft: (text?: string) => {
     if (text !== undefined) store.composerDraft.set(text)
@@ -67,6 +69,9 @@ const probe = {
   panel: () => flushSync(() => store.act.openPanel('context_added')),
   project: (projectId: string) => flushSync(() => store.act.selectProject(projectId)),
   returnHome: () => store.act.returnHome(),
+  skipStartupRecovery: () => store.act.skipStartupTaskRecovery(),
+  dismissStartupRecovery: () => store.act.dismissStartupTaskRecovery(),
+  openSettings: () => store.act.openSettings('preferences'),
   center: () => flushSync(() => store.act.openProjectCenter()),
   view: (view: Parameters<Store['act']['openWorkbenchView']>[0]) =>
     flushSync(() => store.act.openWorkbenchView(view)),
@@ -78,6 +83,7 @@ const probe = {
   fail: () => pending.shift()!.reject(),
 }
 Object.assign(window, { preferenceProbe: probe })
+Object.assign(window.scholarseed, Reflect.get(window, 'taskRecoveryBridgeFixture'))
 Object.assign(window.scholarseed, {
   reconcilePreferences: async () => structuredClone(disk),
   savePreferences: (value: RendererPreferences) => {

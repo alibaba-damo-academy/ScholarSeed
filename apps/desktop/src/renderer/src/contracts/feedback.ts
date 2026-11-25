@@ -151,6 +151,8 @@ const FEEDBACK_KEYS = {
     'contextErrors.projectLoading': 'none',
     'contextErrors.removeFailed': 'detail',
     'contextErrors.saveFailed': 'detail',
+    'contextErrors.saveReconciled': 'none',
+    'contextErrors.saveUnconfirmed': 'none',
     'contextErrors.saveRetry': 'none',
     'contextErrors.sourcePending': 'none',
     'contextErrors.sourceUnavailable': 'none',

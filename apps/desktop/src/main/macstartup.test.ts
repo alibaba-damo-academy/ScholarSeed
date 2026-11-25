@@ -27,6 +27,7 @@ import {
 } from './squirrel.ts'
 import { captureRecord, sameRecord, TERMINAL_RECORD_LIMITS } from './terminal.ts'
 import {
+  inspectCancelledSquirrelPreparation,
   inspectSquirrelStartup,
   inspectSquirrelIdle,
   settleSquirrelStartup,
@@ -235,6 +236,7 @@ function harness(home: string, recordPath: string, channel: string, platform = '
     squirrelAdmission,
     squirrelLaunchSuperseded,
     settleSquirrelStartup,
+    inspectCancelledSquirrelPreparation,
     inspectSquirrelStartup,
     inspectSquirrelIdle,
     verifySquirrelReplacement: async () => undefined,
@@ -380,7 +382,8 @@ function harness(home: string, recordPath: string, channel: string, platform = '
 
 async function restoredRecord(home: string, bytes: string) {
   const handoff = JSON.parse(bytes) as SquirrelHandoff
-  const source = join(home, 'request', 'source.app')
+  const cache = join(home, 'fixture.ShipIt')
+  const source = join(cache, 'request', 'source.app')
   const target = join(home, 'target.app')
   const executable = join(
     target,
@@ -405,11 +408,11 @@ async function restoredRecord(home: string, bytes: string) {
     target: capture(target),
     binding: handoff.binding,
   }
-  const cache = join(home, 'fixture.ShipIt')
-  await mkdir(cache)
   await writeFile(
     join(cache, 'ShipItState.plist'),
     JSON.stringify({
+      bundleIdentifier: 'fixture',
+      binding: handoff.binding,
       targetBundleURL: pathToFileURL(target).href,
       updateBundleURL: pathToFileURL(source).href,
     })
@@ -513,7 +516,7 @@ async function sourceRecovery(context: test.TestContext) {
   await mkdir(selection.userData)
   await mkdir(selection.workspace)
   const identity = {
-    uid: 501,
+    uid: userInfo().uid,
     application: join(fixture.home, 'target.app'),
     bundleId: 'fixture',
     build: '202611030001',

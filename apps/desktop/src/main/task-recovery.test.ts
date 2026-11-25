@@ -1,0 +1,485 @@
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import type { BrowserWindow } from 'electron'
+import {
+  installTaskRecoveryFallback,
+  TaskRecovery,
+  TASK_RECOVERY_FILENAME,
+} from './task-recovery.ts'
+import { STARTUP_TASK_RECOVERY_MS } from '../window.ts'
+
+function fixture(context: { after: (cleanup: () => void) => void }) {
+  const profile = mkdtempSync(join(tmpdir(), 'scholarseed-task-recovery-'))
+  context.after(() => rmSync(profile, { force: true, recursive: true }))
+  const messages: string[] = []
+  return {
+    marker: join(profile, TASK_RECOVERY_FILENAME),
+    launch: () => new TaskRecovery(profile, (message) => messages.push(message)),
+    messages,
+  }
+}
+
+function begin(recovery: TaskRecovery, sessionId: string): string | null {
+  recovery.prepare(sessionId, 1)
+  return recovery.begin(sessionId)
+}
+
+test('boot without a saved task cannot create a marker or grant an automatic claim', (context) => {
+  const { marker, launch } = fixture(context)
+  const recovery = launch()
+  recovery.prepare(null, 1)
+  assert.equal(recovery.begin('unprepared-task'), null)
+  assert.equal(existsSync(marker), false)
+})
+
+test('an interrupted launch bypasses the guest landing before any recovery status request', (context) => {
+  const { marker, launch } = fixture(context)
+  const first = launch()
+  assert.equal(first.skipsColdLanding(null), false)
+  first.prepare('old-task', 1)
+  assert.equal(first.skipsColdLanding('old-task'), false)
+  const restarted = launch()
+  assert.equal(restarted.skipsColdLanding('old-task'), true)
+  assert.equal(restarted.skipsColdLanding('other-task'), true)
+  assert.equal(restarted.skipsColdLanding(null), true)
+  assert.equal(JSON.parse(readFileSync(marker, 'utf8')).state, 'pending')
+})
+
+test('a saved skip bypasses the guest landing only when it suppresses the saved task', (context) => {
+  const { launch } = fixture(context)
+  const first = launch()
+  const token = begin(first, 'old-task')
+  assert.ok(token)
+  assert.equal(first.finish(token, 'skipped'), true)
+
+  const restarted = launch()
+  assert.equal(restarted.skipsColdLanding('old-task'), true)
+  assert.equal(restarted.skipsColdLanding('other-task'), false)
+  assert.equal(restarted.skipsColdLanding(null), false)
+  assert.equal(restarted.manualOpened('old-task'), true)
+  assert.equal(launch().skipsColdLanding('old-task'), false)
+})
+
+test('boot persists the candidate before status or attempt IPC can run', (context) => {
+  const { marker, launch } = fixture(context)
+  const first = launch()
+  const attempts: (string | null)[] = []
+  first.subscribeAttempt((token) => attempts.push(token))
+  first.prepare('old-task', 1)
+  assert.deepEqual(JSON.parse(readFileSync(marker, 'utf8')), {
+    state: 'pending',
+    sessionId: 'old-task',
+  })
+  assert.equal(first.pendingToken(), null)
+  assert.deepEqual(attempts, [])
+  assert.equal(first.snapshot('other-task').preparedToken, undefined)
+  assert.equal(launch().snapshot('old-task').status, 'home')
+})
+
+test('prepared skip beats a late begin and a claim reuses the boot token', (context) => {
+  const { launch } = fixture(context)
+  const first = launch()
+  first.prepare('skip-before-begin', 1)
+  const skipped = first.snapshot('skip-before-begin').preparedToken
+  assert.ok(skipped)
+  assert.equal(first.finish(skipped, 'restored'), false)
+  assert.equal(first.finish(skipped, 'skipped'), true)
+  assert.equal(first.begin('skip-before-begin'), null)
+  assert.equal(first.snapshot('skip-before-begin').skippedSessionId, 'skip-before-begin')
+
+  const second = launch()
+  second.prepare('claim', 2)
+  const claimed = second.snapshot('claim').preparedToken
+  assert.ok(claimed)
+  assert.equal(second.snapshot('skip-before-begin').skippedSessionId, 'skip-before-begin')
+  assert.equal(second.snapshot('skip-before-begin').status, 'home')
+  second.prepare('claim', 2)
+  assert.equal(second.snapshot('claim').preparedToken, claimed)
+  assert.equal(second.begin('not-claimed'), null)
+  assert.equal(second.begin('claim'), claimed)
+  assert.equal(second.pendingToken(), claimed)
+  assert.equal(second.finish(claimed, 'restored'), true)
+})
+
+test('a new renderer cannot reclaim an unsettled prepared candidate', (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  recovery.prepare('old-task', 1)
+  recovery.prepare('replacement-task', 2)
+  assert.deepEqual(recovery.snapshot('replacement-task'), {
+    status: 'home',
+    skippedSessionId: 'old-task',
+    needsManualAcknowledgement: true,
+  })
+  assert.equal(recovery.begin('replacement-task'), null)
+  assert.equal(recovery.manualOpened('replacement-task'), true)
+  assert.equal(launch().snapshot('old-task').status, 'home')
+})
+
+test('records pending recovery before issuing a token and starts at home after interruption', (context) => {
+  const { marker, launch } = fixture(context)
+  const first = launch()
+  assert.equal(first.status('old-task'), 'eligible')
+  const token = begin(first, 'old-task')
+  assert.ok(token)
+  assert.deepEqual(JSON.parse(readFileSync(marker, 'utf8')), {
+    state: 'pending',
+    sessionId: 'old-task',
+  })
+  assert.equal(first.begin('second-task'), null)
+  const restarted = launch()
+  assert.equal(restarted.status('old-task'), 'home')
+  assert.equal(restarted.status('second-task'), 'home')
+  assert.equal(restarted.status(null), 'home')
+  assert.equal(restarted.begin('old-task'), null)
+  assert.equal(restarted.finish(token, 'restored'), false)
+  assert.equal(launch().status('old-task'), 'home')
+  assert.equal(launch().status('second-task'), 'eligible')
+  assert.equal(restarted.manualOpened('old-task'), true)
+  assert.equal(launch().status('old-task'), 'eligible')
+})
+
+test('skipping stays associated with the original task and success clears pending state', (context) => {
+  const { launch } = fixture(context)
+  const first = launch()
+  const firstToken = begin(first, 'old-task')
+  assert.ok(firstToken)
+  assert.equal(first.finish(firstToken, 'skipped'), true)
+  assert.equal(first.begin('second-task'), null)
+  const second = launch()
+  assert.equal(second.status('old-task'), 'home')
+  assert.equal(second.status('second-task'), 'eligible')
+  const secondToken = begin(second, 'second-task')
+  assert.ok(secondToken)
+  assert.equal(second.finish(firstToken, 'restored'), false)
+  assert.equal(second.finish(secondToken, 'restored'), true)
+  assert.equal(second.begin('second-task'), null)
+  assert.equal(launch().status('second-task'), 'eligible')
+})
+
+test('a native reopen and a different manual task keep the interrupted task suppressed', (context) => {
+  const { launch } = fixture(context)
+  const first = launch()
+  const token = begin(first, 'old-task')
+  assert.ok(token)
+  assert.equal(first.reopenHome(token), true)
+  assert.equal(first.status(null), 'home')
+  assert.equal(first.finish(token, 'restored'), false)
+  assert.equal(first.manualOpened('other-task'), true)
+  assert.equal(launch().status('old-task'), 'home')
+  assert.equal(launch().status('other-task'), 'eligible')
+})
+
+test('the recovery snapshot preserves the skipped task independently from the selected location', (context) => {
+  const { launch } = fixture(context)
+  const first = launch()
+  assert.deepEqual(first.snapshot('other-task'), {
+    status: 'eligible',
+    skippedSessionId: null,
+    needsManualAcknowledgement: false,
+  })
+  assert.ok(begin(first, 'old-task'))
+
+  const restarted = launch()
+  assert.deepEqual(restarted.snapshot('other-task'), {
+    status: 'home',
+    skippedSessionId: 'old-task',
+    needsManualAcknowledgement: true,
+  })
+  assert.equal(restarted.manualOpened('other-task'), true)
+  assert.deepEqual(restarted.snapshot('other-task'), {
+    status: 'eligible',
+    skippedSessionId: 'old-task',
+    needsManualAcknowledgement: false,
+  })
+  assert.deepEqual(launch().snapshot('old-task'), {
+    status: 'home',
+    skippedSessionId: 'old-task',
+    needsManualAcknowledgement: false,
+  })
+  assert.equal(restarted.manualOpened('old-task'), true)
+  assert.equal(launch().snapshot(null).skippedSessionId, null)
+})
+
+test('invalid on-disk recovery state fails closed and supports a manual open', (context) => {
+  const { marker, launch, messages } = fixture(context)
+  writeFileSync(marker, '{}')
+  const first = launch()
+  first.prepare('old-task', 1)
+  assert.deepEqual(first.snapshot('old-task'), {
+    status: 'home',
+    skippedSessionId: null,
+    needsManualAcknowledgement: true,
+  })
+  assert.equal(first.begin('old-task'), null)
+  assert.equal(messages.length, 1)
+  assert.equal(first.manualOpened('old-task'), true)
+  assert.equal(launch().status('old-task'), 'eligible')
+})
+
+test('failing to persist pending state denies the automatic attempt', (context) => {
+  const { marker, launch, messages } = fixture(context)
+  const recovery = launch()
+  mkdirSync(marker)
+  assert.equal(begin(recovery, 'old-task'), null)
+  assert.equal(recovery.pendingToken(), null)
+  assert.equal(recovery.status('old-task'), 'home')
+  assert.match(messages[0], /marker write failed/)
+})
+
+function nativeWindow(recovery: TaskRecovery) {
+  const actions: string[] = []
+  const prompts: AbortSignal[] = []
+  const logs: string[] = []
+  let reply: (value: boolean) => void = () => assert.fail('No prompt is open')
+  let crashed = false
+  const presentation = { allowed: true, visible: true, minimized: false }
+  const webContents = Object.assign(new EventEmitter(), {
+    isCrashed: () => crashed,
+    forcefullyCrashRenderer: () => {
+      actions.push('crash')
+    },
+  })
+  const window = Object.assign(new EventEmitter(), {
+    webContents,
+    isVisible: () => presentation.visible,
+    isMinimized: () => presentation.minimized,
+  }) as unknown as BrowserWindow
+  const onRendererExit = installTaskRecoveryFallback(window, recovery, {
+    canPresent: () => presentation.allowed,
+    prompt: (signal) => {
+      prompts.push(signal)
+      return new Promise<boolean>((resolve) => {
+        reply = resolve
+      })
+    },
+    reopen: async () => {
+      actions.push(recovery.status(null))
+      webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
+    },
+    log: (message) => logs.push(message),
+  })
+  return {
+    window,
+    webContents,
+    prompts,
+    presentation,
+    logs,
+    actions,
+    respond: (value: boolean) => reply(value),
+    rendererExited: () => {
+      crashed = true
+      onRendererExit()
+    },
+  }
+}
+
+test('a prepared recovery offers native Home on an Electron hang without starting the watchdog', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  recovery.prepare('old-task', 1)
+  context.mock.timers.tick(STARTUP_TASK_RECOVERY_MS + 1_000)
+  assert.equal(native.prompts.length, 0)
+  native.window.emit('unresponsive')
+  assert.equal(native.prompts.length, 1)
+  assert.equal(recovery.pendingToken(), null)
+  native.respond(true)
+  await Promise.resolve()
+  assert.deepEqual(native.actions, ['crash'])
+  assert.equal(recovery.snapshot('old-task').status, 'home')
+  native.rendererExited()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['crash', 'home'])
+  assert.equal(recovery.reopenToken(), null)
+})
+
+test('settling a hidden prepared candidate clears a deferred native offer', (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  recovery.prepare('old-task', 1)
+  native.presentation.visible = false
+  native.window.emit('unresponsive')
+  const prepared = recovery.snapshot('old-task').preparedToken
+  assert.ok(prepared)
+  assert.equal(recovery.finish(prepared, 'skipped'), true)
+  native.presentation.visible = true
+  native.window.emit('show')
+  assert.equal(native.prompts.length, 0)
+})
+
+test('returning to a hidden or minimized window presents the recovery prompt once', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const { launch } = fixture(context)
+  for (const { visible, minimized, event } of [
+    { visible: false, minimized: false, event: 'show' },
+    { visible: true, minimized: true, event: 'restore' },
+  ]) {
+    const recovery = launch()
+    const native = nativeWindow(recovery)
+    const token = begin(recovery, 'old-task')
+    assert.ok(token)
+    Object.assign(native.presentation, { visible, minimized })
+    context.mock.timers.tick(STARTUP_TASK_RECOVERY_MS + 1_000)
+    assert.equal(native.prompts.length, 0)
+    Object.assign(native.presentation, { visible: true, minimized: false })
+    native.window.emit(event)
+    native.window.emit('restore')
+    native.window.emit('show')
+    assert.equal(native.prompts.length, 1)
+    native.respond(false)
+    await Promise.resolve()
+    assert.ok(recovery.finish(token, 'restored'))
+  }
+})
+
+test('settling or closing while hidden retires the deferred recovery prompt', (context) => {
+  const { launch } = fixture(context)
+  for (const close of [false, true]) {
+    const recovery = launch()
+    const native = nativeWindow(recovery)
+    const token = begin(recovery, 'old-task')
+    assert.ok(token)
+    native.presentation.visible = false
+    native.window.emit('unresponsive')
+    assert.equal(native.prompts.length, 0)
+    if (close) native.window.emit('closed')
+    else assert.ok(recovery.finish(token, 'restored'))
+    native.presentation.visible = true
+    native.window.emit('show')
+    native.window.emit('restore')
+    assert.equal(native.prompts.length, 0)
+  }
+})
+
+test('native recovery sets home and waits for the old renderer to exit before reopening', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  native.window.emit('unresponsive')
+  assert.equal(native.prompts.length, 0)
+  assert.ok(begin(recovery, 'old-task'))
+  native.window.emit('unresponsive')
+  native.window.emit('unresponsive')
+  assert.equal(native.prompts.length, 1)
+  native.respond(true)
+  await Promise.resolve()
+  assert.deepEqual(native.actions, ['crash'])
+  assert.equal(native.prompts[0].aborted, false)
+  assert.equal(recovery.status(null), 'home')
+  native.rendererExited()
+  assert.deepEqual(native.actions, ['crash'])
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['crash', 'home'])
+  assert.equal(native.prompts.length, 1)
+  assert.equal(launch().status('old-task'), 'home')
+})
+
+test('native recovery reopens a renderer that already exited without crashing it again', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(begin(recovery, 'old-task'))
+  native.rendererExited()
+  assert.equal(native.prompts.length, 1)
+  native.respond(true)
+  await Promise.resolve()
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['home'])
+  assert.equal(native.prompts[0].aborted, false)
+})
+
+test('a newer main navigation invalidates a scheduled recovery reopen', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(begin(recovery, 'old-task'))
+  native.window.emit('unresponsive')
+  native.respond(true)
+  await Promise.resolve()
+  native.rendererExited()
+  native.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['crash'])
+})
+
+test('the native recovery log records when the exited renderer cannot reopen', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(begin(recovery, 'old-task'))
+  native.window.emit('unresponsive')
+  native.respond(true)
+  await Promise.resolve()
+  native.rendererExited()
+  native.presentation.allowed = false
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(native.actions, ['crash'])
+  assert.deepEqual(native.logs, ['native recovery reopen skipped: window presentation unavailable'])
+  assert.equal(launch().status('old-task'), 'home')
+})
+
+test('the watchdog offers recovery once without a Chromium hang signal', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(begin(recovery, 'old-task'))
+  context.mock.timers.tick(STARTUP_TASK_RECOVERY_MS)
+  assert.equal(native.prompts.length, 0)
+  context.mock.timers.tick(1_000)
+  assert.equal(native.prompts.length, 1)
+  native.respond(false)
+  await Promise.resolve()
+  native.window.emit('unresponsive')
+  native.rendererExited()
+  assert.equal(native.prompts.length, 1)
+  assert.deepEqual(native.actions, [])
+})
+
+test('settling within the renderer budget disarms the main watchdog', (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  const token = begin(recovery, 'old-task')
+  assert.ok(token)
+  context.mock.timers.tick(STARTUP_TASK_RECOVERY_MS)
+  assert.ok(recovery.finish(token, 'skipped'))
+  context.mock.timers.tick(2_000)
+  assert.deepEqual(native.prompts, [])
+})
+
+test('a late native dialog reply cannot reload a restored task', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  const token = begin(recovery, 'old-task')
+  assert.ok(token)
+  native.window.emit('unresponsive')
+  assert.ok(recovery.finish(token, 'restored'))
+  assert.ok(native.prompts[0].aborted)
+  native.respond(true)
+  await Promise.resolve()
+  assert.deepEqual(native.actions, [])
+})
+
+test('replacing the main document retires a pending recovery and its dialog', async (context) => {
+  const { launch } = fixture(context)
+  const recovery = launch()
+  const native = nativeWindow(recovery)
+  assert.ok(begin(recovery, 'old-task'))
+  native.window.emit('unresponsive')
+  native.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
+  assert.ok(native.prompts[0].aborted)
+  native.respond(true)
+  await Promise.resolve()
+  assert.deepEqual(native.actions, [])
+  assert.equal(recovery.status(null), 'home')
+})

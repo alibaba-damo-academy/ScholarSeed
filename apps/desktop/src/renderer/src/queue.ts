@@ -49,6 +49,7 @@ export const QUEUE_PRESENTATION_MESSAGE_KEYS = {
 export const QUEUED_MESSAGE_SAFE_ERRORS = {
   SESSION_OPEN_UNKNOWN,
   SUBMISSION_NOT_APPLIED: 'queued_submission_not_applied',
+  SEND_RECEIPT_UNCONFIRMED: 'queued_send_receipt_unconfirmed',
   TURN_OUTCOME_UNCONFIRMED: 'turn_outcome_unconfirmed',
 } as const
 const QUEUE_ERROR_MESSAGE_KEYS = {
@@ -135,6 +136,43 @@ export function queuedMessageNeedsStatusCheck(message: QueuedMessage): boolean {
     Boolean(message.retryBlockedErrorCode) ||
     queuedMessageHasUnknownOpen(message)
   )
+}
+
+export function queuedSendReceiptUnknown(message: QueuedMessage): boolean {
+  return message.safeErrorCode === QUEUED_MESSAGE_SAFE_ERRORS.SEND_RECEIPT_UNCONFIRMED
+}
+
+export function unconfirmedQueuedSend(message: QueuedMessage): QueuedMessage {
+  return {
+    ...message,
+    state: UNKNOWN_QUEUE_STATE,
+    safeErrorCode: QUEUED_MESSAGE_SAFE_ERRORS.SEND_RECEIPT_UNCONFIRMED,
+  }
+}
+
+/** The already failed server row does not establish what happened to a later send. */
+export function queuedSendStillUnconfirmed(
+  pending: QueuedMessage,
+  authoritative: QueuedMessage
+): boolean {
+  return (
+    pending.serverPresent === true &&
+    queuedSendReceiptUnknown(pending) &&
+    authoritative.state === 'failed' &&
+    (authoritative.operationSeq ?? 0) <= (pending.operationSeq ?? 0)
+  )
+}
+
+export function confirmedQueuedSendFailure(
+  pending: QueuedMessage | undefined,
+  observed: QueuedMessage
+): QueuedMessage | undefined {
+  return pending &&
+    pending.queuedMessageId === observed.queuedMessageId &&
+    (pending.operationSeq ?? 0) === (observed.operationSeq ?? 0) &&
+    queuedSendStillUnconfirmed(pending, observed)
+    ? observed
+    : undefined
 }
 
 /** Mirrors the Service admission gate: one unconfirmed outcome blocks the whole queue. */

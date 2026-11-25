@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 import * as preview from './preview.ts'
-import { isPreviewUpdateChannel } from '../updates.ts'
+import { isPreviewUpdateChannel, MACOS_UPDATE_ZIP } from '../updates.ts'
 import {
   appendMacUpdateFormat,
   buildUpdateCheckUrl,
@@ -16,10 +16,12 @@ import {
 import { isNewerRelease } from './version.ts'
 import type { LatestVersionMeta, PreviewUpdatePolicy } from '../updates.ts'
 import type * as Updater from './updater.ts'
-import { retryUpdate } from './retry.ts'
+import { retryUpdate, UpdateTransportError } from './retry.ts'
+import { macComponentDiagnostic } from './maccomponentfailure.ts'
 
 type PreviewFixtureExports = Pick<
   typeof Updater,
+  | 'authorizeActivation'
   | 'checkForUpdate'
   | 'getDownloadInfo'
   | 'getPreviewUpdatePolicy'
@@ -56,6 +58,7 @@ const names = new Set([
   'checkForUpdate',
   'packageDownloadUrl',
   'getDownloadInfo',
+  'logUpdateEvent',
   'readRejectedUpdate',
   'rejectedUpdatePath',
   'candidateStateDirectory',
@@ -65,6 +68,7 @@ const constants = new Set([
   'PREVIEW_CANDIDATE_DIRNAME',
   'REJECTED_STATE_FILE',
   'REJECTED_STATE_LIMIT',
+  'UPDATE_EVENT_SCHEMA_VERSION',
 ])
 const declarations = file.statements
   .filter(
@@ -97,6 +101,7 @@ function artifact(version = '0.2.1', channel = 'preview'): LatestVersionMeta {
 }
 function harness(channel = 'preview', stored?: unknown) {
   const requests: URL[] = []
+  const persisted: string[] = []
   const writes: unknown[] = []
   let response: unknown = { has_update: false, latest: null }
   let responder: (() => Promise<unknown>) | undefined
@@ -115,7 +120,7 @@ function harness(channel = 'preview', stored?: unknown) {
   let rejected: unknown
   const context = {
     ...preview,
-    process: { platform: 'darwin' },
+    process: { platform: 'darwin', pid: process.pid },
     MACOS_PLATFORM: 'darwin',
     UPDATE_CACHE_PROFILE_DIRNAME: 'profiles',
     updateProfileKey: () => 'profile',
@@ -164,6 +169,8 @@ function harness(channel = 'preview', stored?: unknown) {
       return Buffer.from(JSON.stringify(stored))
     },
     retryUpdate,
+    macComponentDiagnostic,
+    persistUpdateLog: (line: string) => persisted.push(line),
     getJson: async (url: string) => {
       requests.push(new URL(url))
       return responder ? responder() : response
@@ -173,6 +180,7 @@ function harness(channel = 'preview', stored?: unknown) {
   return {
     context,
     requests,
+    persisted,
     writes,
     reads: () => reads,
     rejectedReads: () => rejectedReads,
@@ -235,6 +243,89 @@ test('preview defaults to current line and rejects a server cross-line response'
   await assert.rejects(h.api.checkForUpdate(log), /outside/)
 })
 
+test('only the selected macOS ZIP download requests component URLs', async () => {
+  const h = harness('release')
+  const dmg = artifact('0.3.2', 'release')
+  const zip = { ...dmg, artifact_kind: MACOS_UPDATE_ZIP } as const
+  const components = { version: 1 }
+  for (const selected of [zip, dmg]) {
+    h.response({
+      ...selected,
+      download_url: 'https://cdn.example/package',
+      macos_zip_components: components,
+    })
+    for (const forDownload of [true, false]) {
+      const info = await h.api.getDownloadInfo(selected.id, log, undefined, selected, forDownload)
+      const negotiated = selected === zip && forDownload
+      assert.equal(h.requests.at(-1)!.searchParams.get('macos_components'), negotiated ? '1' : null)
+      assert.equal(info.macos_zip_components, negotiated ? components : undefined)
+      assert.deepEqual(h.persisted, [])
+    }
+  }
+})
+
+test('manifest negotiation logs one sanitized fallback for a confirmed full ZIP retry', async () => {
+  const selected = { ...artifact(), artifact_kind: MACOS_UPDATE_ZIP } as const
+  const expectedFailure = {
+    http: { errorCode: 'http-status', httpStatus: 503 },
+    timeout: { errorCode: 'timeout' },
+    network: { errorCode: 'transfer-failed' },
+  }
+  for (const outcome of [
+    'timeout',
+    'http',
+    'network',
+    'revoked',
+    'cancelled',
+    'cancelled-retry',
+  ] as const) {
+    const h = harness()
+    const controller = new AbortController()
+    h.responder(async () => {
+      if (outcome === 'revoked') throw new UpdateTransportError(409)
+      if (outcome === 'cancelled') controller.abort()
+      if (h.requests.length === 1) {
+        if (outcome === 'http') throw new UpdateTransportError(503)
+        if (outcome === 'network')
+          throw new TypeError('request failed ?signature=secret', { cause: { code: 'ECONNRESET' } })
+        throw new DOMException('late sidecar ?signature=secret', 'TimeoutError')
+      }
+      if (outcome === 'cancelled-retry') controller.abort()
+      if (outcome === 'http' && h.requests.length === 2) throw new UpdateTransportError(503)
+      return {
+        ...selected,
+        download_url: 'https://cdn.example/zip?signature=secret',
+        macos_zip_components: {},
+      }
+    })
+    const result = h.api.getDownloadInfo(selected.id, log, controller.signal, selected, true)
+    if (outcome === 'timeout' || outcome === 'http' || outcome === 'network') {
+      assert.equal((await result).macos_zip_components, undefined)
+      assert.equal(h.requests.length, outcome === 'http' ? 3 : 2)
+      const original = new URL(h.requests[0])
+      assert.equal(original.searchParams.get('macos_components'), '1')
+      original.searchParams.delete('macos_components')
+      assert.equal(h.requests[1].href, original.href)
+      assert.equal(h.persisted.length, 1)
+      const { timestampUtc, processId, schemaVersion, ...fields } = JSON.parse(h.persisted[0])
+      assert.equal(typeof timestampUtc, 'string')
+      assert.equal(schemaVersion, 1)
+      assert.equal(processId, process.pid)
+      assert.deepEqual(fields, {
+        phase: 'download',
+        event: 'zip-components-fallback',
+        updateId: selected.id,
+        stage: 'manifest-request',
+        ...expectedFailure[outcome],
+      })
+    } else {
+      await assert.rejects(result, outcome === 'revoked' ? /409/ : /aborted/i)
+      assert.equal(h.requests.length, outcome === 'cancelled-retry' ? 2 : 1)
+      assert.deepEqual(h.persisted, [])
+    }
+  }
+})
+
 test('manual preview discovery and selection bind the exact published artifact', async () => {
   const h = harness()
   const target = artifact('0.3.0')
@@ -255,6 +346,50 @@ test('manual preview discovery and selection bind the exact published artifact',
   h.api.writePreviewUpdatePolicy({ scope: 'current-version' }, log)
   assert.equal(h.api.previewCandidateValidated(selected, log), false)
   assert.throws(() => h.api.previewTarget(target.id, log), /no longer listed/)
+})
+
+test('final authorization preserves a ready DMG or ZIP after both are published under one release id', async () => {
+  const h = harness()
+  const dmg = artifact()
+  const zip: LatestVersionMeta = {
+    ...dmg,
+    artifact_kind: MACOS_UPDATE_ZIP,
+    sha512: 'b'.repeat(128),
+  }
+  const grants: LatestVersionMeta[] = []
+  Object.assign(h.context, {
+    REQUEST_TIMEOUT_MS: 1000,
+    logUpdateLine() {},
+    resolveProductConfig: () => ({
+      updateActivationKeys: { fixture: 'key' },
+      updateBaseUrl: 'https://updates.example',
+    }),
+    requestActivationGrant: async (_url: string, _keys: unknown, selected: LatestVersionMeta) => {
+      grants.push(selected)
+      return { revision: 'fixture', assertValid() {} }
+    },
+  })
+  h.responder(async () => {
+    const query = h.requests.at(-1)!.searchParams
+    assert.equal(query.get('preview_scope'), 'current-line')
+    assert.equal(query.has('target_id'), false)
+    return {
+      ...(query.get('update_format') === MACOS_UPDATE_ZIP ? zip : dmg),
+      download_url: 'https://cdn.example/fixed',
+    }
+  })
+  for (const selected of [dmg, zip]) {
+    const authorize = await h.api.authorizeActivation(selected, log, new AbortController().signal)
+    authorize()
+    assert.equal(
+      h.requests.at(-1)!.searchParams.get('update_format'),
+      selected.artifact_kind ?? null
+    )
+    assert.equal(grants.at(-1), selected)
+  }
+  h.responder(async () => ({ ...zip, download_url: 'https://cdn.example/fixed' }))
+  await assert.rejects(h.api.authorizeActivation(dmg, log, new AbortController().signal), /changed/)
+  assert.equal(grants.length, 2)
 })
 
 test('a delayed check cannot publish after scope changes', async () => {

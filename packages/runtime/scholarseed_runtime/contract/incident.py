@@ -7,6 +7,7 @@ INCIDENT_PAYLOAD_KEY = "incident"
 INCIDENT_ID_KEY = "incident_id"
 RESOLVED_AMBIGUOUS_INCIDENT_ID_KEY = "resolved_ambiguous_incident_id"
 RUNTIME_TURN_NOT_SUBMITTED = "runtime_turn_not_submitted"
+MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE = "model_history_content_unsupported"
 
 
 class RuntimeIncidentScope(str, Enum):

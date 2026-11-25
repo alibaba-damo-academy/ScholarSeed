@@ -98,13 +98,18 @@ export function assertSquirrelArchiveSize(size: number): void {
     throw new UpdateArchiveLimitError('Squirrel archive must be smaller than 1 GiB')
 }
 
-export function archiveApplicationArguments(source: string, archive: string): string[] {
+export function archiveApplicationArguments(
+  source: string,
+  archive: string,
+  compressionLevel: 1 | 6 = 1,
+  resourceMode: '--sequesterRsrc' | '--norsrc' = '--sequesterRsrc'
+): string[] {
   return [
     '-c',
     '-k',
     '--zlibCompressionLevel',
-    '1',
-    '--sequesterRsrc',
+    String(compressionLevel),
+    resourceMode,
     '--keepParent',
     source,
     archive,

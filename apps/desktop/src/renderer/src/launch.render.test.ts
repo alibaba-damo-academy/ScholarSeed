@@ -8,7 +8,7 @@ import { chromium, expect, type Page, type Request } from '@playwright/test'
 import { createServer } from 'vite'
 import { renderFixture } from '../../test-helpers/render.ts'
 import { PRODUCT_EVENT_SCHEMA_VERSION } from './api.ts'
-import type { ConvItem } from './model'
+import type { ConvItem, QueuedMessage } from './model'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const SCREENSHOTS = path.resolve(ROOT, '../../../test-results')
@@ -902,6 +902,479 @@ function opened() {
     project_path: null,
   }
 }
+
+test('manual recovery attaches the transcript before the authoritative queue arrives', async (context) => {
+  const queue = Promise.withResolvers<void>()
+  let statusRequested = false
+  let streamRequested = false
+  const snapshot = { ...opened(), title: 'Saved task', last_seq: 7, mtime: 1 }
+  await fixture(
+    context,
+    async (page) => {
+      try {
+        await page.evaluate((id) => {
+          Reflect.get(window, 'launchProbe').patch({
+            activeSession: id,
+            backendReady: true,
+            threads: {
+              [id]: {
+                id,
+                title: 'Saved task',
+                sessionId: id,
+                conversation: [],
+                lastSeq: 0,
+                resumeState: 'pending',
+              },
+            },
+          })
+        }, SESSION)
+        await expect
+          .poll(() =>
+            page.evaluate((id) => {
+              const thread = Reflect.get(window, 'launchProbe').state.threads[id]
+              return [
+                thread.resumeState,
+                thread.conversation.some(
+                  (item: ConvItem) =>
+                    item.kind === 'agent' && item.text === 'Readable while queue is pending'
+                ),
+              ]
+            }, SESSION)
+          )
+          .toEqual(['ready', true])
+        await expect.poll(() => streamRequested && statusRequested).toBe(true)
+        queue.resolve()
+        await expect
+          .poll(() =>
+            page.evaluate(
+              (id) =>
+                Reflect.get(window, 'launchProbe').state.threads[id].queuedMessages?.[0]
+                  ?.queuedMessageId,
+              SESSION
+            )
+          )
+          .toBe('saved-queue-item')
+      } finally {
+        queue.resolve()
+      }
+    },
+    async (page) => {
+      await page.addInitScript(() => Reflect.set(window, 'liveSessionFixture', true))
+      await page.route('**/api/content/projects', (route) =>
+        route.fulfill({ json: { projects: [] } })
+      )
+      await page.route('**/api/serve/sessions?*', (route) =>
+        route.fulfill({ json: { sessions: [snapshot] } })
+      )
+      await page.route('**/api/serve/runtime/reconfiguration', (route) =>
+        route.fulfill({ json: { state: null, service_instance_id: INSTANCE } })
+      )
+      await page.route('**/api/serve/sessions/open', (route) => route.fulfill({ json: snapshot }))
+      await page.route('**/api/serve/history/**', (route) =>
+        route.fulfill({
+          json: {
+            turns: [
+              {
+                kind: 'text',
+                role: 'assistant',
+                turn_id: 'first',
+                text: 'Readable while queue is pending',
+              },
+            ],
+          },
+        })
+      )
+      await page.route('**/api/serve/sessions/*/queue', async (route) => {
+        await queue.promise
+        await route.fulfill({ json: { messages: [] } })
+      })
+      await page.route('**/api/serve/status', async (route) => {
+        statusRequested = true
+        await queue.promise
+        await route.fulfill({
+          json: {
+            sessions: [
+              {
+                ...snapshot,
+                summary_seq: 7,
+                acknowledged_queue_ids: [],
+                queued_messages: [
+                  {
+                    queued_message_id: 'saved-queue-item',
+                    enqueue_seq: 1,
+                    state: 'queued',
+                    input: [],
+                  },
+                ],
+              },
+            ],
+          },
+        })
+      })
+      await page.route('**/api/serve/sessions/*/events?*', (route) => {
+        streamRequested = true
+        return route.fulfill({ contentType: 'text/event-stream', body: ': connected\n\n' })
+      })
+    }
+  )
+})
+
+function queueStatusMessage(id: string, seq: number) {
+  return {
+    queued_message_id: id,
+    enqueue_seq: seq,
+    state: 'queued',
+    submission_mode: 'queued',
+    input: [{ type: 'text', text: id }],
+  }
+}
+
+async function prepareQueueStatus(
+  page: Page,
+  readStatus: () => Promise<{ seq: number; messages: ReturnType<typeof queueStatusMessage>[] }>
+) {
+  const snapshot = { ...opened(), title: 'Saved task', last_seq: 7, mtime: 1 }
+  await page.addInitScript(() => {
+    Reflect.set(window, 'liveSessionFixture', true)
+    class QueueEventSource extends EventTarget {
+      onmessage?: (event: MessageEvent<string>) => void
+
+      constructor(url: string) {
+        super()
+        if (new URL(url, location.origin).pathname.startsWith('/api/serve/sessions/')) {
+          Reflect.set(window, 'emitQueueStatusEvent', (frame: object) => {
+            this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(frame) }))
+          })
+        }
+      }
+
+      close(): void {}
+    }
+    Reflect.set(window, 'EventSource', QueueEventSource)
+  })
+  await page.route('**/api/content/projects', (route) => route.fulfill({ json: { projects: [] } }))
+  await page.route('**/api/serve/sessions?*', (route) =>
+    route.fulfill({ json: { sessions: [snapshot] } })
+  )
+  await page.route('**/api/serve/status', async (route) => {
+    const status = await readStatus()
+    await route.fulfill({
+      json: {
+        sessions: [
+          {
+            ...snapshot,
+            summary_seq: status.seq,
+            acknowledged_queue_ids: [],
+            queued_messages: status.messages,
+          },
+        ],
+      },
+    })
+  })
+}
+
+async function openQueueStatusThread(page: Page, queuedMessages: QueuedMessage[] = []) {
+  await page.evaluate(
+    ({ session, instance, queuedMessages }) => {
+      Reflect.get(window, 'launchProbe').patch({
+        activeSession: session,
+        backendReady: true,
+        threads: {
+          [session]: {
+            id: session,
+            title: 'Saved task',
+            sessionId: session,
+            conversation: [],
+            queuedMessages,
+            lastSeq: 7,
+            resumeState: 'ready',
+            resumeServiceInstanceId: instance,
+          },
+        },
+      })
+    },
+    { session: SESSION, instance: INSTANCE, queuedMessages }
+  )
+}
+
+async function observeQueueReceiptWrites(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Reflect.set(window, 'strictQueueReceiptFixture', true)
+    Reflect.set(window, 'queueReceiptWrites', 0)
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'scholarseed.queue-outbox.v1')
+        Reflect.set(window, 'queueReceiptWrites', Reflect.get(window, 'queueReceiptWrites') + 1)
+      return setItem.call(this, key, value)
+    }
+  })
+}
+
+test('an unconfirmed queue resend requires explicit review before restoring the failed row', async (context) => {
+  const id = 'failed-resend'
+  const failed = { ...queueStatusMessage(id, 1), state: 'failed', operation_seq: 3 }
+  const started = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  let sends = 0
+  let withdrawals = 0
+  await fixture(
+    context,
+    async (page) => {
+      try {
+        await openQueueStatusThread(page, [
+          {
+            queuedMessageId: id,
+            enqueueSeq: 1,
+            operationSeq: 3,
+            state: 'failed',
+            submissionMode: 'queued',
+            text: id,
+            input: [{ type: 'text', text: id }],
+            assistantReferences: [],
+            serverPresent: true,
+          },
+        ])
+        const action = page.getByTestId('queued-send-' + id)
+        const withdraw = page.getByTestId('queued-delete-' + id)
+        await action.click()
+        await started.promise
+        await expect(action).toBeDisabled()
+        const otherId = 'other-message'
+        const otherSession = 'e'.repeat(32)
+        await page.evaluate(
+          ({ otherId, otherSession, session }) => {
+            const probe = Reflect.get(window, 'launchProbe')
+            const original = probe.state.threads[session]
+            probe.patch({
+              activeSession: otherSession,
+              foregroundError: null,
+              threads: {
+                ...probe.state.threads,
+                [otherSession]: {
+                  ...original,
+                  id: otherSession,
+                  sessionId: otherSession,
+                  queuedMessages: [
+                    { ...original.queuedMessages[0], queuedMessageId: otherId, state: 'queued' },
+                  ],
+                },
+              },
+            })
+          },
+          { otherId, otherSession, session: SESSION }
+        )
+        await expect(page.getByTestId('queued-delete-' + otherId)).toBeEnabled()
+        const oldQueue = page.waitForResponse('**/api/serve/sessions/' + SESSION + '/queue')
+        release.resolve()
+        await (await oldQueue).finished()
+        assert.equal(
+          await page.evaluate(async () => {
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            return Reflect.get(window, 'launchProbe').state.foregroundError
+          }),
+          null
+        )
+        await page.evaluate(
+          (id) => Reflect.get(window, 'launchProbe').patch({ activeSession: id }),
+          SESSION
+        )
+        await expect(action).toBeEnabled()
+        await expect(withdraw).toHaveCount(0)
+        await action.click()
+        const review = page.getByTestId('queued-receipt-review')
+        await expect(review).toBeVisible()
+        await expect(review).toContainText('本次重发结果尚未确认')
+        const writesBeforeApproval = await page.evaluate(() =>
+          Reflect.get(window, 'queueReceiptWrites')
+        )
+        await page.getByTestId('queued-receipt-review-accept').click()
+        await expect(review).toBeHidden()
+        await expect(withdraw).toBeEnabled()
+        await expect(action).toBeEnabled()
+        assert.equal(sends, 1)
+        assert.equal(withdrawals, 0)
+        assert.equal(
+          await page.evaluate(() => Reflect.get(window, 'queueReceiptWrites')),
+          writesBeforeApproval + 1
+        )
+      } finally {
+        release.resolve()
+      }
+    },
+    async (page) => {
+      await observeQueueReceiptWrites(page)
+      await page.route('**/api/serve/sessions/*/queue', (route) =>
+        route.fulfill({ json: { messages: [failed] } })
+      )
+      await page.route('**/api/serve/sessions/*/queue/*/send', async (route) => {
+        sends++
+        started.resolve()
+        await release.promise
+        await route.abort('failed')
+      })
+      await page.route('**/api/serve/sessions/*/queue/' + id, async (route) => {
+        withdrawals++
+        await route.fulfill({ json: { ok: true } })
+      })
+    }
+  )
+})
+
+test('a newly observed queue resend receipt acknowledges the durable row once', async (context) => {
+  const id = 'confirmed-resend'
+  await fixture(
+    context,
+    async (page) => {
+      await openQueueStatusThread(page, [
+        {
+          queuedMessageId: id,
+          enqueueSeq: 1,
+          operationSeq: 3,
+          state: 'failed',
+          submissionMode: 'queued',
+          text: id,
+          input: [{ type: 'text', text: id }],
+          assistantReferences: [],
+          serverPresent: true,
+        },
+      ])
+      const previous = await page.evaluate(() => Reflect.get(window, 'queueReceiptWrites'))
+      await page.getByTestId('queued-send-' + id).click()
+      await expect
+        .poll(() =>
+          page.evaluate((id) => {
+            const { state } = Reflect.get(window, 'launchProbe')
+            return state.threads[state.activeSession].queuedMessages.find(
+              (message: QueuedMessage) => message.queuedMessageId === id
+            ).state
+          }, id)
+        )
+        .toBe('waiting_resources')
+      assert.equal(
+        await page.evaluate(() => Reflect.get(window, 'queueReceiptWrites')),
+        previous + 2
+      )
+    },
+    async (page) => {
+      await observeQueueReceiptWrites(page)
+      await page.route('**/api/serve/sessions/*/queue/*/send', (route) => route.abort('failed'))
+      await page.route('**/api/serve/sessions/*/queue', (route) =>
+        route.fulfill({
+          json: {
+            messages: [
+              { ...queueStatusMessage(id, 1), state: 'waiting_resources', operation_seq: 4 },
+            ],
+          },
+        })
+      )
+    }
+  )
+})
+
+test('late manual recovery status cannot restore an already withdrawn queue item', async (context) => {
+  const oldStatus = Promise.withResolvers<void>()
+  const freshStatus = Promise.withResolvers<void>()
+  const withdrawnId = 'withdrawn-queue-item'
+  const deletion = Promise.withResolvers<void>()
+  let statusReads = 0
+  await fixture(
+    context,
+    async (page) => {
+      try {
+        await openQueueStatusThread(page, [
+          {
+            queuedMessageId: withdrawnId,
+            enqueueSeq: 1,
+            state: 'queued',
+            submissionMode: 'queued',
+            text: withdrawnId,
+            input: [{ type: 'text', text: withdrawnId }],
+            assistantReferences: [],
+            serverPresent: true,
+          },
+        ])
+        await expect.poll(() => statusReads).toBe(1)
+        await page.getByTestId(`queued-delete-${withdrawnId}`).click()
+        await deletion.promise
+        const withdrawn = page.getByTestId(`queued-message-${withdrawnId}`)
+        await expect(withdrawn).toHaveCount(0)
+
+        const response = page.waitForResponse('**/api/serve/status')
+        oldStatus.resolve()
+        await (await response).finished()
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+            )
+        )
+        await expect(withdrawn).toHaveCount(0)
+      } finally {
+        oldStatus.resolve()
+        freshStatus.resolve()
+      }
+    },
+    async (page) => {
+      await prepareQueueStatus(page, async () => {
+        const request = ++statusReads
+        if (request === 1) {
+          await oldStatus.promise
+          return { seq: 7, messages: [queueStatusMessage(withdrawnId, 1)] }
+        }
+        await freshStatus.promise
+        return { seq: 8, messages: [] }
+      })
+      await page.route(`**/api/serve/sessions/*/queue/${withdrawnId}`, async (route) => {
+        assert.equal(route.request().method(), 'DELETE')
+        await route.fulfill({ json: { ok: true } })
+        deletion.resolve()
+      })
+    }
+  )
+})
+
+test('manual recovery queue status ignores earlier SSE queue replay and accepts later events', async (context) => {
+  await fixture(
+    context,
+    async (page) => {
+      await openQueueStatusThread(page)
+      const currentQueue = () =>
+        page.evaluate((session) => {
+          const thread = Reflect.get(window, 'launchProbe').state.threads[session]
+          return {
+            seq: thread?.lastSeq,
+            ids: (thread?.queuedMessages ?? []).map(
+              (message: QueuedMessage) => message.queuedMessageId
+            ),
+          }
+        }, SESSION)
+      const emit = (seq: number, type: string, data: object) =>
+        page.evaluate((event) => Reflect.get(window, 'emitQueueStatusEvent')(event), {
+          v: PRODUCT_EVENT_SCHEMA_VERSION,
+          seq,
+          ts: 1,
+          session_id: SESSION,
+          turn_id: 'queue-turn',
+          type,
+          data,
+        })
+      await expect.poll(currentQueue).toEqual({ seq: 7, ids: ['current-queue-item'] })
+      await emit(8, 'message_queued', queueStatusMessage('older-queue-item', 1))
+      await expect.poll(currentQueue).toEqual({ seq: 8, ids: ['current-queue-item'] })
+      await emit(9, 'message_removed', { queued_message_id: 'older-queue-item' })
+      await emit(10, 'message_queued', queueStatusMessage('later-queue-item', 3))
+      await expect.poll(currentQueue).toEqual({
+        seq: 10,
+        ids: ['current-queue-item', 'later-queue-item'],
+      })
+    },
+    (page) =>
+      prepareQueueStatus(page, async () => ({
+        seq: 9,
+        messages: [queueStatusMessage('current-queue-item', 2)],
+      }))
+  )
+})
 
 for (const settlementSignal of ['stream', 'notification', 'missing'] as const) {
   test(

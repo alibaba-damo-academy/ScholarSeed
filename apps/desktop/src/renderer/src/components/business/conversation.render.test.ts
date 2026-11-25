@@ -10,6 +10,104 @@ import { ANSWER_SOURCES_CHANGED_EVENT } from '../../contracts/citations.ts'
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const FIXTURE = '/components/business/conversation.render.fixture.html'
 
+test('startup presentation waits for the transcript to become readable', async (context) => {
+  const fixture = await renderFixture(ROOT, {
+    launch: () => chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL }),
+  })
+  context.after(() => fixture.close())
+
+  const noHeight = '.conversation-stream { height: 0 !important; padding-block: 0 !important }'
+  const hidden = '[data-testid="conversation-content"] { visibility: hidden }'
+  const offscreen = '.conversation-stream { transform: translateX(-200vw) }'
+  const mask = `body:has([data-message-kind="agent"])::after {
+    content: ''; position: fixed; inset: 0; z-index: 1000; background: white;
+  }`
+  const cases = [
+    { name: 'zero-height viewport', style: noHeight },
+    { name: 'hidden transcript', style: hidden },
+    { name: 'off-screen transcript', style: offscreen },
+    { name: 'full-window mask', style: mask },
+    { name: 'local popover leaves the transcript usable', style: mask, shrinkMask: true },
+    { name: 'inert transcript', inert: true },
+    { name: 'recovery exits before layout', style: noHeight, leave: 'Leave recovery' },
+    { name: 'transcript unmounts before layout', style: noHeight, leave: 'Unmount transcript' },
+    { name: 'unobscured transcript' },
+    { name: 'empty conversation', empty: true },
+  ]
+  for (const { name, style, inert, leave, empty, shrinkMask } of cases) {
+    await context.test(name, async (subtest) => {
+      const page = await fixture.page(subtest)
+      const afterFrames = () =>
+        page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              let remaining = 8
+              const next = () => {
+                if (--remaining === 0) resolve()
+                else requestAnimationFrame(next)
+              }
+              requestAnimationFrame(next)
+            })
+        )
+      await page.goto(
+        new URL(`${FIXTURE}?startupPresentation=${empty ? 'empty' : 'history'}`, fixture.url).href,
+        { waitUntil: 'domcontentloaded' }
+      )
+      const blocker = style ? await page.addStyleTag({ content: style }) : null
+      const stream = page.locator('.conversation-stream')
+      if (inert) await stream.evaluate((element) => element.setAttribute('inert', ''))
+      const column = page.getByTestId('conversation-content')
+      const transcript = empty ? column : column.getByText('Recovered transcript')
+      const readable = page.getByLabel('Readable sessions')
+      const focus = page.getByRole('textbox', { name: 'Focus probe' })
+      await page.getByRole('button', { name: 'Present recovered conversation' }).click()
+      await expect(transcript).toBeAttached()
+      if (style === noHeight)
+        assert.equal(await stream.evaluate(({ clientHeight }) => clientHeight), 0)
+      if (style || inert) {
+        await afterFrames()
+        await expect(readable).toHaveText('none')
+      }
+      if (leave) await page.getByRole('button', { name: leave }).click()
+      await focus.focus()
+      if (shrinkMask && blocker) {
+        const bounds = await column.boundingBox()
+        assert.ok(bounds)
+        await blocker.evaluate((element, { x, y, width, height }) => {
+          element.textContent = `body::after { content: ''; position: fixed; z-index: 1000;
+              left: ${x + width / 2 - 36}px; top: ${y + height / 2 - 12}px;
+              width: 72px; height: 24px; background: white; }`
+        }, bounds)
+        assert.equal(
+          await column.evaluate((element) => {
+            const rect = element.getBoundingClientRect()
+            return element.contains(
+              document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+            )
+          }),
+          false
+        )
+      } else {
+        await blocker?.evaluate((element) => {
+          element.parentNode?.removeChild(element)
+        })
+      }
+      if (inert) await stream.evaluate((element) => element.removeAttribute('inert'))
+
+      if (leave) {
+        await afterFrames()
+        await expect(readable).toHaveText('none')
+      } else {
+        await expect(transcript).toBeVisible()
+        await expect(readable).toHaveText('conversation-layout')
+        await afterFrames()
+        await expect(readable).toHaveText('conversation-layout')
+      }
+      await expect(focus).toBeFocused()
+    })
+  }
+})
+
 function turnSourceResult(turnId: string) {
   return {
     answer_id: turnId,
@@ -883,6 +981,10 @@ test('tool details hide previews, retain batch timing, reveal the caret on hover
   await expect(caret).toHaveCSS('opacity', '1')
   await trigger.click()
   const cards = tool.getByTestId('execution-io')
+  await expect(cards.first().locator('pre')).toHaveText('cat research.md')
+  await expect(tool.getByText('bash', { exact: true })).toHaveCount(0)
+  await expect(tool.getByTitle('bash', { exact: true })).toHaveCount(0)
+  await expect(tool.getByText('退出码：0', { exact: true })).toHaveCount(0)
   const short = cards.first().locator('.vds-scroll-area')
   const long = cards.last().locator('.vds-scroll-area')
   await expect(short).toHaveAttribute('data-fade-bottom', 'false')
@@ -1167,10 +1269,19 @@ test(
     ).toBeVisible()
     await toolRecord.click()
     await page
-      .getByRole('button', { name: 'Command 失败 · 此工具步骤未成功完成。', exact: true })
+      .getByRole('button', { name: '终端命令 失败 · 命令未成功完成。', exact: true })
       .click()
     await page.getByRole('button', { name: '技术详情', exact: true }).click()
-    await expect(page.getByText('Failed command', { exact: true })).toBeVisible()
+    const failedStep = page.locator('[data-message-item-id="failed-step"]')
+    const output = failedStep.getByText('Failed command', { exact: true })
+    const exitCode = failedStep.getByText('退出码：2', { exact: true })
+    await expect(failedStep.getByText('bash', { exact: true })).toHaveCount(0)
+    await expect(failedStep.getByTitle('bash', { exact: true })).toHaveCount(0)
+    await expect(output).toBeVisible()
+    await expect(exitCode).toBeVisible()
+    const outputBox = await output.boundingBox()
+    const exitCodeBox = await exitCode.boundingBox()
+    assert.ok(outputBox && exitCodeBox && exitCodeBox.y >= outputBox.y + outputBox.height)
     await page.getByRole('button', { name: '无计划工具间隙', exact: true }).click()
     await expect(processes).toHaveCount(1)
     await expect(triggers).toHaveCount(0)

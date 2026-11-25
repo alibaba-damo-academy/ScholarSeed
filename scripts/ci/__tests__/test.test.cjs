@@ -8,7 +8,7 @@ const ts = require('../../../apps/desktop/node_modules/typescript')
 const test = require('node:test')
 const QUARANTINE = require('../quarantine.json')
 const DESKTOP_PACKAGE = require('../../../apps/desktop/package.json')
-const { TEST_FILES, TEST_GLOBS, NATIVE_TEST_FILES, testFiles, unitTestFiles, invocation } = require('../../../apps/desktop/scripts/ci/test.cjs')
+const { TEST_FILES, TEST_GLOBS, NATIVE_TEST_FILES, platformTestFiles, testFiles, unitTestFiles, invocation } = require('../../../apps/desktop/scripts/ci/test.cjs')
 const { CONTRACT_FILES, STANDARDS_ARGS } = require('../../../apps/desktop/scripts/ci/pretest.cjs')
 const { npmCommand, packageManagerCommand } = require('../../pre/toolchain.cjs')
 const { judgeRun } = require('../verdict.cjs')
@@ -120,7 +120,7 @@ test('migrated PDFE regressions are collected on both native platforms without l
         'native project center retains global login, theme and language through navigation and reset',
         'native composer menus coordinate stationary pointers and keyboard selection',
         'native dialog navigation preserves original entries, drafts and bilingual themed groups',
-        'native product uses top-level shared renderer, real OS fonts and isolated secure windows',
+        'native product uses top-level shared renderer without Office font APIs and isolated secure windows',
         'native scenario controls, F8 and help preserve the same product draft and component entry',
         'native dock and detach preserve both renderer documents, draft and workbench search',
         'native dialog application: project-group-rename',
@@ -298,9 +298,9 @@ test('migrated PDFE regressions are collected on both native platforms without l
       const documentWrite = 'native project documents preserve manual Markdown saves and rendered PDF samples after reload'
       assert.ok(stage.expectedTitles.includes(documentWrite), documentWrite)
       assert.ok(new RegExp(selected).test(documentWrite), documentWrite)
-      const officeRuntime = 'native legacy XLS uses its bounded Office child runtime and dedicated compilation policy'
-      assert.ok(stage.expectedTitles.includes(officeRuntime), officeRuntime)
-      assert.ok(new RegExp(selected).test(officeRuntime), officeRuntime)
+      const legacyXlsFallback = 'native legacy XLS exposes its external-open fallback without an Office engine'
+      assert.ok(stage.expectedTitles.includes(legacyXlsFallback), legacyXlsFallback)
+      assert.ok(new RegExp(selected).test(legacyXlsFallback), legacyXlsFallback)
       const comparison = 'native version comparison preserves one file and both immutable Monaco revisions without writes'
       assert.ok(stage.expectedTitles.includes(comparison), comparison)
       assert.ok(new RegExp(selected).test(comparison), comparison)
@@ -320,8 +320,7 @@ test('migrated PDFE regressions are collected on both native platforms without l
   }
 })
 
-test('the PDFE CI stage collects exactly its declared Playwright titles', () => {
-  const stage = planStages('darwin', {}, { profile: 'offline' }).find(item => item.id === 'desktop-pdfe')
+function listPlaywrightCases(stage) {
   const launch = stageLaunch(stage, stage.cwd)
   delete launch.env.PLAYWRIGHT_JSON_OUTPUT_FILE
   delete launch.env.PLAYWRIGHT_JSON_OUTPUT_NAME
@@ -332,11 +331,26 @@ test('the PDFE CI stage collects exactly its declared Playwright titles', () => 
   assert.equal(result.status, 0, result.stderr)
   const report = JSON.parse(result.stdout)
   assert.deepEqual(report.errors, [])
-  const collectTitles = suites => suites.flatMap(suite => [
-    ...(suite.specs || []).flatMap(spec => spec.tests.map(() => spec.title)),
-    ...collectTitles(suite.suites || [])
+  const collect = suites => suites.flatMap(suite => [
+    ...(suite.specs || []).flatMap(spec => spec.tests.map(entry => ({
+      project: entry.projectName, file: spec.file, title: spec.title
+    }))),
+    ...collect(suite.suites || [])
   ])
-  assert.deepEqual(collectTitles(report.suites).sort(), [...stage.expectedTitles].sort())
+  return collect(report.suites)
+}
+
+test('the PDFE CI stage collects exactly its declared Playwright titles', () => {
+  const stage = planStages('darwin', {}, { profile: 'offline' }).find(item => item.id === 'desktop-pdfe')
+  assert.deepEqual(listPlaywrightCases(stage).map(item => item.title).sort(), [...stage.expectedTitles].sort())
+})
+
+test('every declared E2E skip identifies a collected Playwright case', () => {
+  const stage = planStages('darwin', {}, { profile: 'offline' }).find(item => item.id === 'desktop-e2e')
+  const identity = item => JSON.stringify([item.project, item.file, item.title])
+  const collected = new Set(listPlaywrightCases(stage).map(identity))
+  const declared = [...QUARANTINE.playwright, ...require('../external-cases.json').cases]
+  assert.deepEqual(declared.map(identity).filter(key => !collected.has(key)), [])
 })
 
 test('a selected Playwright stage rejects omitted, replaced and duplicated titles', () => {
@@ -407,8 +421,10 @@ test('native probes and unit coverage partition the complete Desktop-owned test 
       `direct and aggregated test registration: ${dependency}`)
   }
   assert.deepEqual(NATIVE_TEST_FILES, [
+    'src/main/maccomponents.test.ts',
     'src/main/sandbox.test.ts', 'src/preload/menu.test.ts', 'src/preload/menureact.test.ts',
     'src/main/plugins.test.ts', 'src/main/preferences.test.ts',
+    'src/main/persistence.test.ts', 'src/main/policy.test.ts',
     'src/main/inspector.test.ts', 'src/main/binding.test.ts',
     'src/main/chromiumrelay.test.ts', 'src/main/agentbrowser.test.ts',
     'src/main/searchdom.test.ts', 'src/main/browser.test.ts',
@@ -417,14 +433,14 @@ test('native probes and unit coverage partition the complete Desktop-owned test 
     'native/shipit/fingerprint.test.cjs',
   ])
   const expected = unitTestFiles()
-  const all = testFiles()
+  const all = platformTestFiles(testFiles())
   for (const filename of ['editor', 'composer']) {
     const relative = `src/renderer/src/components/business/${filename}.render.test.ts`
     assert.equal(expected.filter(item => item === relative).length, 1)
   }
   assert.equal(QUARANTINE.playwright.some(item => item.file === 'editor-workbench.spec.ts'), false)
-  assert.deepEqual([...expected, ...NATIVE_TEST_FILES].sort(), [...all].sort())
-  assert.equal(new Set([...expected, ...NATIVE_TEST_FILES]).size, all.length)
+  assert.deepEqual([...expected, ...platformTestFiles(NATIVE_TEST_FILES)].sort(), [...all].sort())
+  assert.equal(new Set([...expected, ...platformTestFiles(NATIVE_TEST_FILES)]).size, all.length)
   for (const filename of NATIVE_TEST_FILES) {
     assert.equal(QUARANTINE.nodeCases.some(item => item.file === filename), false)
   }
@@ -436,17 +452,55 @@ test('native probes and unit coverage partition the complete Desktop-owned test 
       const stages = planStages(platform, {}, { profile: 'offline', quarantine, quota: 3 })
       const stage = stages.find(item => item.id === 'desktop-unit')
       const files = stage.args.slice(4).filter(argument => !argument.startsWith('--'))
-      assert.deepEqual(files, expected)
+      assert.deepEqual(files, unitTestFiles(undefined, platform))
       assert.equal(stage.ignoreLifecycle, true)
       const native = stages.find(item => item.id === 'desktop-extra-node')
       assert.ok(native.args.includes('--test-concurrency=1'))
       assert.equal(native.args.some(argument => argument.includes('c8')), false)
-      for (const filename of NATIVE_TEST_FILES) {
+      for (const filename of platformTestFiles(NATIVE_TEST_FILES, platform)) {
         const relative = `apps/desktop/${filename}`
         assert.equal(native.args.filter(argument => argument === relative).length, 1)
         assert.equal(files.includes(filename), false)
       }
     }
+  }
+})
+
+test('component update CI runs portable cache coverage, native macOS regressions and explicit sample acceptance', () => {
+  const unitCache = 'src/main/previewcache.test.ts'
+  const nativeCache = 'src/main/maccomponents.test.ts'
+  const policy = 'scripts/cd/__tests__/signed-policy.test.cjs'
+  const sample = 'scripts/cd/__tests__/signed-sample.acceptance.cjs'
+  assert.equal(testFiles().includes(sample), false)
+  for (const platform of ['darwin', 'win32']) {
+    const stages = planStages(platform, {}, { profile: 'offline' })
+    const unit = stages.find(stage => stage.id === 'desktop-unit')
+    const native = stages.find(stage => stage.id === 'desktop-extra-node')
+    assert.ok(unit.args.includes(unitCache))
+    assert.equal(unit.args.includes(nativeCache), false)
+    assert.equal(native.args.includes('apps/desktop/' + nativeCache), platform === 'darwin')
+    for (const filename of [policy, 'scripts/cd/__tests__/mac-sign-cache.test.cjs',
+      'scripts/cd/__tests__/sign-store.test.cjs'])
+      assert.equal(unit.args.includes(filename), platform === 'darwin')
+  }
+  const env = { ...process.env }
+  delete env.NODE_TEST_CONTEXT
+  delete env.SCHOLARSEED_SIGNED_RUNTIME_SAMPLE
+  env.SCHOLARSEED_LEASE_LIBRARY = path.join(os.tmpdir(), 'unused-library', 'lease.node')
+  const files = [unitCache, ...(process.platform === 'darwin' ? [policy] : [])]
+  const run = (args) => spawnSync(process.execPath, ['--experimental-transform-types', '--test', '--test-reporter=spec', ...args], {
+    cwd: path.resolve(sourceDirectory, '../../apps/desktop'), env, encoding: 'utf8',
+  })
+  const ordinary = run(files)
+  assert.equal(ordinary.status, 0, ordinary.stdout + ordinary.stderr)
+  assert.match(ordinary.stdout, /inactive lane pruning removes only stale artifacts/)
+  assert.match(ordinary.stdout, /ℹ skipped 0/)
+  assert.deepEqual(summarizeNodeTests(ordinary.stdout, 'desktop-unit', process.platform, process.arch),
+    [{ id: 'desktop-unit:node-run-1', status: 'passed', retries: 0 }])
+  if (process.platform === 'darwin') {
+    const missing = run([sample])
+    assert.equal(missing.status, 1)
+    assert.match(missing.stdout, /set SCHOLARSEED_SIGNED_RUNTIME_SAMPLE/)
   }
 })
 
@@ -479,7 +533,6 @@ test('shared example and real preparation contracts run in both platform CI plan
         assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
       }
       for (const file of ['scripts/ci/docs/__tests__/structure.test.mjs',
-        'apps/desktop/eval-scenarios/frozen/frozen.test.mjs',
         'scripts/ci/docs/__tests__/commands.test.cjs']) {
         assert.equal(stage.args.filter(argument => argument === file).length, 1, `${platform}/${profile}: ${file}`)
         const target = path.resolve(stage.cwd, file)
@@ -499,6 +552,23 @@ test('shared example and real preparation contracts run in both platform CI plan
           item.args.some(argument => path.resolve(item.cwd, argument) === target))
         assert.deepEqual(owners.map(item => item.id), ['desktop-unit'])
         assert.ok(owners[0].args[0].endsWith(path.join('c8', 'bin', 'c8.js')))
+      }
+    }
+  }
+})
+
+test('both Desktop Node stages launch test files present in the checkout', () => {
+  for (const platform of ['darwin', 'win32']) {
+    const stages = planStages(platform, {}, { profile: 'offline', quarantine: true })
+    for (const id of ['desktop-unit', 'desktop-extra-node']) {
+      const stage = stages.find(item => item.id === id)
+      const testIndex = stage.args.indexOf('--test')
+      assert.notEqual(testIndex, -1)
+      const files = stage.args.slice(testIndex + 1).filter(argument => !argument.startsWith('-'))
+      assert.ok(files.length > 0)
+      for (const file of files) {
+        const entry = fs.statSync(path.resolve(stage.cwd, file), { throwIfNoEntry: false })
+        assert.ok(entry?.isFile(), `${platform}/${id}: ${file}`)
       }
     }
   }
@@ -677,6 +747,18 @@ test('Node quarantine stays scoped to the declared stage', () => {
   assert.ok(new RegExp(nodeOmissionPattern(stage.id)).test(title))
   assert.ok(!new RegExp(nodeOmissionPattern()).test(title))
   assert.ok(stage.args.includes(`--test-skip-pattern=${nodeOmissionPattern(stage.id)}`))
+})
+
+test('the quarantined Desktop unit launch includes active literature attachment navigation', () => {
+  const stage = planStages('darwin', {}, { profile: 'offline', quarantine: true })
+    .find(item => item.id === 'desktop-unit')
+  const { args } = stageLaunch(stage, os.tmpdir())
+  assert.ok(args.includes('src/renderer/src/features/workbench/scope.test.ts'))
+  const option = '--test-skip-pattern='
+  const pattern = args.find(argument => argument.startsWith(option))
+  assert.ok(pattern)
+  assert.equal(new RegExp(pattern.slice(option.length)).test(
+    'literature attachment opening shares the rendered workspace scope and reports open failures'), false)
 })
 
 test('Node quarantine validates real declarations and uses exact anchored titles only', () => {

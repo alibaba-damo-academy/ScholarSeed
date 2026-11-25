@@ -64,6 +64,13 @@
     "detail": "Active tasks will stop. ScholarSeed will save pending settings and stop its background processes before the installer replaces the application. Your projects and history will be retained.",
     "confirm": "Quit and install"
   },
+  "taskRecovery": {
+    "title": "ScholarSeed task recovery",
+    "message": "ScholarSeed stopped responding while opening your last task.",
+    "detail": "You can reopen Home and open the task again from the task list. Background tasks will keep running.",
+    "reopen": "Reopen to Home",
+    "wait": "Keep waiting"
+  },
   "updateRecovery": {
     "title": "ScholarSeed update recovery",
     "message": "All update protection processes have stopped unexpectedly. Save your work, restart your computer, then open ScholarSeed again to retry recovery. Your existing data has been retained. This dialog will not restart your computer."

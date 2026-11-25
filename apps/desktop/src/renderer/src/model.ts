@@ -542,6 +542,24 @@ export type ApplicationRequestFailure = {
   diagnostic?: string
 }
 
+export type TurnFailureKind =
+  | 'capability'
+  | 'history_content'
+  | 'subscription_limit'
+  | 'quota'
+  | 'credits'
+  | 'rate_limit'
+  | 'auth'
+  | 'request'
+  | 'model_config'
+  | 'unavailable'
+  | 'timeout'
+  | 'connection'
+  | 'overloaded'
+  | 'content_policy'
+  | 'output_limit'
+  | 'unknown'
+
 export type RuntimeStatusMessage = (
   | {
       key:
@@ -651,22 +669,7 @@ export type ConvItem = TurnOwned &
         kind: 'error'
         applicationFailure?: ApplicationRequestFailure
         failure?: {
-          kind:
-            | 'capability'
-            | 'subscription_limit'
-            | 'quota'
-            | 'credits'
-            | 'rate_limit'
-            | 'auth'
-            | 'request'
-            | 'model_config'
-            | 'unavailable'
-            | 'timeout'
-            | 'connection'
-            | 'overloaded'
-            | 'content_policy'
-            | 'output_limit'
-            | 'unknown'
+          kind: TurnFailureKind
           fallback: 'frame' | 'runtime' | 'raw'
           authentication?: 'account' | 'model'
           automaticRetryAttempts?: number
@@ -974,6 +977,8 @@ export interface Thread {
   /** UI-visible activation state while the native runtime and durable history resume. */
   resumeState?: 'pending' | 'ready' | 'failed'
   resumeServiceInstanceId?: string
+  /** The startup projection already includes the durable transcript. */
+  startupHistoryLoaded?: boolean
   recoveryBlocked?: boolean
   recoveryIncidentId?: string | null
   recoverySourceSeq?: number
@@ -991,6 +996,8 @@ export interface Thread {
   terminated?: boolean
   readOnly?: boolean
   queuedMessages?: QueuedMessage[]
+  /** Latest authoritative queue snapshot. The transcript may still be replaying earlier events. */
+  queueSnapshotSeq?: number
   /** 本会话的后台任务生命周期态 (background_task_event 帧; StatusStrip 读 activeThread) — 每会话独立 */
   backgroundTasks?: Record<string, BgTask>
   /** 本会话最后一份完整 Codex plan snapshot。 */

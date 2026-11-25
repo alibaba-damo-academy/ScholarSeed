@@ -6,8 +6,144 @@ import { expect, type Page, chromium } from '@playwright/test'
 import { renderFixture } from '../../test-helpers/render.ts'
 import type { ModelInfo } from './api.ts'
 import type { AppState } from './store'
+import { STARTUP_TASK_RECOVERY_MS } from './startup.ts'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
+
+test(
+  'a resource tree waits for authorization independently of its completed read',
+  { timeout: 60_000 },
+  async () =>
+    fixture(async (page) => {
+      await page.evaluate(() =>
+        Reflect.get(window, 'preferenceProbe').patch({ homeSelectedProjectId: 'auth-project' })
+      )
+      await expect
+        .poll(() =>
+          page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.homeSelectedProjectId)
+        )
+        .toBe('auth-project')
+      const outcomes = await page.evaluate(async () => {
+        const originalFetch = window.fetch
+        const originalTimeout = AbortSignal.timeout
+        const originalSync = window.scholarseed.syncAuthorizedRoots
+        const probe = Reflect.get(window, 'preferenceProbe')
+        try {
+          const results = []
+          for (const approved of [true, false]) {
+            const deadlines: AbortController[] = []
+            const synced = Promise.withResolvers<boolean>()
+            const syncStarted = Promise.withResolvers<void>()
+            const treeRead = Promise.withResolvers<void>()
+            AbortSignal.timeout = (ms) => {
+              if (ms !== 15_000 && ms !== 10_000) return originalTimeout(ms)
+              const deadline = new AbortController()
+              deadlines.push(deadline)
+              return deadline.signal
+            }
+            window.scholarseed.syncAuthorizedRoots = async (_scope, roots) => {
+              if (roots.length === 0) return true
+              syncStarted.resolve()
+              return synced.promise
+            }
+            window.fetch = async (input, options) => {
+              if (String(input).includes('/api/content/roots?'))
+                return Response.json({ roots: [], writableRoots: ['/linked'] })
+              if (!String(input).includes('/api/resource/tree?'))
+                return originalFetch(input, options)
+              const path = approved ? 'acknowledged.md' : 'not-authorized.md'
+              const response = Response.json({
+                root: '/fixture',
+                resource_root: '/fixture/resources',
+                nodes: [{ path, name: path, kind: 'file' }],
+                total: 1,
+              })
+              const json = response.json.bind(response)
+              response.json = async () => {
+                const payload = await json()
+                treeRead.resolve()
+                return payload
+              }
+              return response
+            }
+            const pending = probe.reloadResourceTree()
+            await Promise.all([treeRead.promise, syncStarted.promise])
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            const before = probe.state.resource.tree[0]?.path ?? null
+            deadlines[0].abort()
+            synced.resolve(approved)
+            const applied = await pending
+            results.push([before, applied, probe.state.resource.tree[0]?.path ?? null])
+          }
+          return results
+        } finally {
+          window.fetch = originalFetch
+          AbortSignal.timeout = originalTimeout
+          window.scholarseed.syncAuthorizedRoots = originalSync
+        }
+      })
+      assert.deepEqual(outcomes, [
+        [null, true, 'acknowledged.md'],
+        ['acknowledged.md', false, 'acknowledged.md'],
+      ])
+    })
+)
+
+test(
+  'a stale resource reload reports that a newer tree queued with it won publication',
+  { timeout: 60_000 },
+  async () =>
+    fixture(async (page) => {
+      await page.evaluate(() => {
+        Reflect.get(window, 'preferenceProbe').patch({ homeSelectedProjectId: 'resource-project' })
+      })
+      const treePath = () =>
+        page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.resource.tree[0]?.path)
+      await page.evaluate(() => {
+        const probe = Reflect.get(window, 'preferenceProbe')
+        probe.patch((current: AppState) => ({
+          ...current,
+          resource: {
+            ...current.resource,
+            loadState: 'ready',
+            tree: [{ path: 'old.md', name: 'old.md', kind: 'file' }],
+          },
+        }))
+      })
+      await expect.poll(treePath).toBe('old.md')
+      const reloaded = await page.evaluate(async () => {
+        const originalFetch = window.fetch
+        window.fetch = async (input, options) => {
+          if (String(input).includes('/api/content/roots?'))
+            return Response.json({ roots: [], writableRoots: [] })
+          if (String(input).includes('/api/resource/tree?'))
+            return Response.json({
+              root: '/fixture',
+              resource_root: '/fixture/resources',
+              nodes: [{ path: 'stale.md', name: 'stale.md', kind: 'file' }],
+              total: 1,
+            })
+          return originalFetch(input, options)
+        }
+        try {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          const result = probe.reloadResourceTree()
+          probe.patch((current: AppState) => ({
+            ...current,
+            resource: {
+              ...current.resource,
+              tree: [{ path: 'newer.md', name: 'newer.md', kind: 'file' }],
+            },
+          }))
+          return await result
+        } finally {
+          window.fetch = originalFetch
+        }
+      })
+      await expect.poll(treePath).toBe('newer.md')
+      assert.equal(reloaded, false)
+    })
+)
 
 test(
   'project menu batched navigation preserves draft text, references and persisted owners',
@@ -1124,6 +1260,769 @@ async function fixture(
   }
 }
 
+const MANUAL_RECOVERY_SESSIONS = ['ordinary-first', 'ordinary-second', 'recovery-target']
+
+async function installRecoveryBridge(
+  page: Page,
+  marker: {
+    status: 'eligible' | 'home'
+    skippedSessionId: string | null
+    needsManualAcknowledgement: boolean
+    preparedToken?: string
+  },
+  holdClaim = false,
+  holdStatus = false
+): Promise<void> {
+  await page.addInitScript(
+    ({ marker, holdClaim, holdStatus }) => {
+      const calls: [string, string | null, string?][] = []
+      const claim = Promise.withResolvers<string>()
+      const finished = Promise.withResolvers<boolean>()
+      const initial = Promise.withResolvers<typeof marker>()
+      Reflect.set(window, 'manualRecoveryCalls', calls)
+      Reflect.set(window, 'releaseRecoveryClaim', () => claim.resolve('token-from-main'))
+      Reflect.set(window, 'releaseRecoveryFinish', () => finished.resolve(true))
+      Reflect.set(window, 'releaseRecoveryStatus', () => initial.resolve(marker))
+      if (holdClaim || holdStatus) {
+        localStorage.setItem(
+          'scholarseed.web.preferences',
+          JSON.stringify({ lastLocation: { view: 'conversation', sessionId: 'recovery-target' } })
+        )
+      }
+      Reflect.set(window, 'taskRecoveryBridgeFixture', {
+        getTaskRecoveryStatus: async (sessionId: string | null) => {
+          calls.push(['status', sessionId])
+          return holdStatus ? initial.promise : marker
+        },
+        beginTaskRecovery: async (sessionId: string) => {
+          calls.push(['begin', sessionId])
+          return claim.promise
+        },
+        finishTaskRecovery: async (token: string, outcome: string) => {
+          calls.push(['finish', token, outcome])
+          return finished.promise
+        },
+        clearTaskRecoveryOnManualOpen: async (sessionId: string) => {
+          const confirmed = Reflect.get(window, 'preferenceProbe').disk.lastLocation?.sessionId
+          calls.push(['manual-open', sessionId, confirmed])
+          return true
+        },
+      })
+    },
+    { marker, holdClaim, holdStatus }
+  )
+}
+
+async function readyForRecovery(page: Page): Promise<void> {
+  await page.evaluate((sessions) => {
+    const probe = Reflect.get(window, 'preferenceProbe')
+    probe.patch({
+      workspaceLoadState: 'ready',
+      projectsLoaded: true,
+      sessions: sessions.map((id) => ({ id, title: `Renamed ${id}`, status: 'dormant' })),
+    })
+  }, MANUAL_RECOVERY_SESSIONS)
+}
+
+async function openReadyRecoverySession(page: Page, sessionId: string): Promise<void> {
+  await page.evaluate((id) => {
+    const probe = Reflect.get(window, 'preferenceProbe')
+    probe.openSession(id)
+    probe.patch((state: AppState) => ({
+      ...state,
+      threads: {
+        ...state.threads,
+        [id]: { ...state.threads[id], resumeState: 'ready' },
+      },
+    }))
+  }, sessionId)
+  await expect
+    .poll(() =>
+      page.evaluate(() => Reflect.get(window, 'preferenceProbe').disk.lastLocation?.sessionId)
+    )
+    .toBe(sessionId)
+}
+
+const manualRecoveryCalls = (page: Page): Promise<[string, string | null, string?][]> =>
+  page.evaluate(() => Reflect.get(window, 'manualRecoveryCalls'))
+
+for (const scope of ['project', 'literature'] as const) {
+  test(
+    `${scope} continuity cannot reopen or acknowledge the skipped startup task`,
+    { timeout: 60_000 },
+    async () => {
+      await fixture(
+        async (page) => {
+          await page.evaluate((scope) => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            localStorage.setItem(
+              'scholarseed.lastConversations',
+              JSON.stringify({
+                [scope === 'project' ? 'project-a' : 'literature']: 'recovery-target',
+                'project-b': 'ordinary-first',
+              })
+            )
+            probe.patch({
+              workbenchReady: true,
+              workspaceLoadState: 'ready',
+              projectsLoaded: true,
+              projects: [
+                { id: 'project-a', path: '/project-a', name: 'Project A' },
+                { id: 'project-b', path: '/project-b', name: 'Project B' },
+              ],
+              sessions: [
+                {
+                  id: 'recovery-target',
+                  title: 'Prior task',
+                  projectPath: scope === 'project' ? '/project-a' : null,
+                  status: 'dormant',
+                },
+                {
+                  id: 'ordinary-first',
+                  title: 'Unrelated project task',
+                  projectPath: '/project-b',
+                  status: 'dormant',
+                },
+              ],
+            })
+          }, scope)
+          await expect.poll(() => manualRecoveryCalls(page)).toEqual([['status', null]])
+          await page.evaluate((scope) => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            if (scope === 'project') probe.project('project-a')
+            probe.view(scope === 'project' ? 'resource' : 'literature')
+          }, scope)
+          assert.equal(
+            await page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.activeSession),
+            null
+          )
+          assert.deepEqual(await manualRecoveryCalls(page), [['status', null]])
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').project('project-b'))
+          assert.equal(
+            await page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.activeSession),
+            'ordinary-first'
+          )
+          await page.evaluate(() => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            probe.patch((state: AppState) => ({
+              ...state,
+              threads: {
+                ...state.threads,
+                'ordinary-first': { ...state.threads['ordinary-first'], resumeState: 'ready' },
+              },
+            }))
+          })
+          await expect
+            .poll(() =>
+              page.evaluate(
+                () => Reflect.get(window, 'preferenceProbe').disk.lastLocation?.sessionId
+              )
+            )
+            .toBe('ordinary-first')
+          assert.deepEqual(await manualRecoveryCalls(page), [['status', null]])
+          await openReadyRecoverySession(page, 'recovery-target')
+          await expect
+            .poll(() => manualRecoveryCalls(page))
+            .toEqual([
+              ['status', null],
+              ['manual-open', 'recovery-target', 'recovery-target'],
+            ])
+        },
+        (page) =>
+          installRecoveryBridge(page, {
+            status: scope === 'project' ? 'eligible' : 'home',
+            skippedSessionId: 'recovery-target',
+            needsManualAcknowledgement: scope === 'literature',
+          })
+      )
+    }
+  )
+}
+
+for (const needsManualAcknowledgement of [false, true]) {
+  test(
+    `persisted task recovery follows the session ID after other opens and dismissal (forced Home=${needsManualAcknowledgement})`,
+    { timeout: 60_000 },
+    async () => {
+      await fixture(
+        async (page) => {
+          await readyForRecovery(page)
+          await expect.poll(() => manualRecoveryCalls(page)).toEqual([['status', null]])
+          await openReadyRecoverySession(page, 'ordinary-first')
+          if (needsManualAcknowledgement) {
+            await expect
+              .poll(() => manualRecoveryCalls(page))
+              .toEqual([
+                ['status', null],
+                ['manual-open', 'ordinary-first', 'ordinary-first'],
+              ])
+          } else {
+            assert.deepEqual(await manualRecoveryCalls(page), [['status', null]])
+          }
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').dismissStartupRecovery())
+          await openReadyRecoverySession(page, 'ordinary-second')
+          await openReadyRecoverySession(page, 'recovery-target')
+          const initialCalls = needsManualAcknowledgement
+            ? [
+                ['status', null],
+                ['manual-open', 'ordinary-first', 'ordinary-first'],
+              ]
+            : [['status', null]]
+          await expect
+            .poll(() => manualRecoveryCalls(page))
+            .toEqual([...initialCalls, ['manual-open', 'recovery-target', 'recovery-target']])
+          await openReadyRecoverySession(page, 'ordinary-second')
+          await openReadyRecoverySession(page, 'recovery-target')
+          assert.deepEqual(await manualRecoveryCalls(page), [
+            ...initialCalls,
+            ['manual-open', 'recovery-target', 'recovery-target'],
+          ])
+        },
+        (page) =>
+          installRecoveryBridge(page, {
+            status: needsManualAcknowledgement ? 'home' : 'eligible',
+            skippedSessionId: 'recovery-target',
+            needsManualAcknowledgement,
+          })
+      )
+    }
+  )
+}
+
+test(
+  'normal manual sessions never requery startup task recovery',
+  { timeout: 60_000 },
+  async () => {
+    await fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        const startupCalls = await manualRecoveryCalls(page)
+        await openReadyRecoverySession(page, 'ordinary-first')
+        await openReadyRecoverySession(page, 'ordinary-second')
+        assert.deepEqual(await manualRecoveryCalls(page), startupCalls)
+      },
+      (page) =>
+        installRecoveryBridge(page, {
+          status: 'eligible',
+          skippedSessionId: null,
+          needsManualAcknowledgement: false,
+        })
+    )
+  }
+)
+
+test(
+  'a skip before initial recovery status settles before a matching manual open can acknowledge it',
+  { timeout: 60_000 },
+  async () =>
+    fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        const pending = [['status', 'recovery-target']]
+        await expect.poll(() => manualRecoveryCalls(page)).toEqual(pending)
+        await page.evaluate(() => Reflect.get(window, 'preferenceProbe').skipStartupRecovery())
+        await openReadyRecoverySession(page, 'recovery-target')
+        assert.deepEqual(await manualRecoveryCalls(page), pending)
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryStatus')())
+        const skipped = [...pending, ['finish', 'token-from-main', 'skipped']]
+        await expect.poll(() => manualRecoveryCalls(page)).toEqual(skipped)
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryFinish')())
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([...skipped, ['manual-open', 'recovery-target', 'recovery-target']])
+      },
+      (page) =>
+        installRecoveryBridge(
+          page,
+          {
+            status: 'eligible',
+            skippedSessionId: null,
+            needsManualAcknowledgement: false,
+            preparedToken: 'token-from-main',
+          },
+          false,
+          true
+        )
+    )
+)
+
+test(
+  'a late startup claim can be acknowledged only after its skip and a matching manual open',
+  { timeout: 60_000 },
+  async () => {
+    await fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([
+            ['status', 'recovery-target'],
+            ['begin', 'recovery-target'],
+          ])
+        await openReadyRecoverySession(page, 'ordinary-first')
+        await page.evaluate(() => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          probe.dismissStartupRecovery()
+          Reflect.get(window, 'releaseRecoveryClaim')()
+        })
+        const skipped = [
+          ['status', 'recovery-target'],
+          ['begin', 'recovery-target'],
+          ['finish', 'token-from-main', 'skipped'],
+        ]
+        await expect.poll(() => manualRecoveryCalls(page)).toEqual(skipped)
+        await openReadyRecoverySession(page, 'recovery-target')
+        assert.deepEqual(await manualRecoveryCalls(page), skipped)
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryFinish')())
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([...skipped, ['manual-open', 'recovery-target', 'recovery-target']])
+      },
+      (page) =>
+        installRecoveryBridge(
+          page,
+          {
+            status: 'eligible',
+            skippedSessionId: null,
+            needsManualAcknowledgement: false,
+            preparedToken: 'token-from-main',
+          },
+          true
+        )
+    )
+  }
+)
+
+test(
+  'skipping a startup task during presentation removes its provisional transcript',
+  { timeout: 60_000 },
+  async () =>
+    fixture(
+      async (page) => {
+        await readyForRecovery(page)
+        await expect
+          .poll(() => manualRecoveryCalls(page))
+          .toEqual([
+            ['status', 'recovery-target'],
+            ['begin', 'recovery-target'],
+          ])
+        await page.evaluate(() => Reflect.get(window, 'releaseRecoveryClaim')())
+        const snapshot = () =>
+          page.evaluate(() => {
+            const { state } = Reflect.get(window, 'preferenceProbe')
+            return [
+              state.startupTaskRecovery,
+              state.activeSession,
+              Boolean(state.threads['recovery-target']),
+            ]
+          })
+        await expect.poll(snapshot).toEqual(['presenting', 'recovery-target', true])
+        await page.evaluate(() => Reflect.get(window, 'preferenceProbe').skipStartupRecovery())
+        await expect.poll(snapshot).toEqual(['skipped', null, false])
+      },
+      async (page) => {
+        await installRecoveryBridge(
+          page,
+          {
+            status: 'eligible',
+            skippedSessionId: null,
+            needsManualAcknowledgement: false,
+          },
+          true
+        )
+        await page.route('**/api/serve/sessions/open', (route) =>
+          route.fulfill({
+            json: {
+              session_id: 'recovery-target',
+              running: false,
+              last_seq: 3,
+              active_turn_id: null,
+              unknown_outcome: false,
+              uncertain_operations: [],
+            },
+          })
+        )
+        await page.route('**/api/serve/history/recovery-target?**', (route) =>
+          route.fulfill({ json: { turns: [] } })
+        )
+      }
+    )
+)
+
+test(
+  'startup document body times out without opening a late document tab',
+  { timeout: 60_000 },
+  async () => {
+    const requested = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    try {
+      await fixture(
+        async (page) => {
+          await page.evaluate(() =>
+            Reflect.get(window, 'preferenceProbe').patch({
+              workspaceLoadState: 'ready',
+              projectsLoaded: true,
+            })
+          )
+          await requested.promise
+          await expect
+            .poll(() =>
+              page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.startupTaskRecovery)
+            )
+            .toBe('waiting')
+          assert.deepEqual(
+            await page.evaluate(() => Reflect.get(window, 'preferenceProbe').documentTabs()),
+            []
+          )
+          await page.clock.fastForward(STARTUP_TASK_RECOVERY_MS)
+          await expect
+            .poll(() => page.evaluate(() => Reflect.get(window, 'restoreReadAborted')))
+            .toBe(true)
+          await expect
+            .poll(() =>
+              page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.startupTaskRecovery)
+            )
+            .toBe('skipped')
+          await page.evaluate(() => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            probe.openSettings()
+            probe.draft('New home draft')
+          })
+          release.resolve()
+          await expect
+            .poll(() => page.evaluate(() => Reflect.get(window, 'lateDocumentRead')))
+            .toBe(true)
+          assert.deepEqual(
+            await page.evaluate(() => {
+              const probe = Reflect.get(window, 'preferenceProbe')
+              return [
+                probe.state.mainView,
+                probe.state.accountSettingsPage,
+                probe.draft(),
+                probe.documentTabs(),
+              ]
+            }),
+            ['home', 'preferences', 'New home draft', []]
+          )
+        },
+        async (page) => {
+          await page.clock.install()
+          await page.addInitScript(() => {
+            localStorage.setItem(
+              'scholarseed.web.preferences',
+              JSON.stringify({
+                lastLocation: {
+                  view: 'resource',
+                  target: {
+                    kind: 'document',
+                    viewKind: 'edit',
+                    title: 'Previous Markdown',
+                    source: { kind: 'project', project: null, path: 'previous.md' },
+                  },
+                },
+              })
+            )
+            const original = window.fetch
+            window.fetch = async (input, init) => {
+              if (!String(input).includes('/api/workbench/content?')) return original(input, init)
+              init?.signal?.addEventListener('abort', () =>
+                Reflect.set(window, 'restoreReadAborted', true)
+              )
+              const response = await original(input, { ...init, signal: undefined })
+              Reflect.set(window, 'lateDocumentRead', true)
+              return response
+            }
+          })
+          await page.route('**/api/workbench/open?**', (route) =>
+            route.fulfill({
+              json: {
+                project_id: null,
+                viewer: 'markdown',
+                capabilities: { can_edit: true },
+                revision: 'test-revision',
+                media_type: 'text/markdown',
+                content_kind: 'text',
+              },
+            })
+          )
+          await page.route('**/api/workbench/content?**', async (route) => {
+            requested.resolve()
+            await release.promise
+            await route.fulfill({ body: '# Old document' })
+          })
+        }
+      )
+    } finally {
+      release.resolve()
+    }
+  }
+)
+
+for (const loss of ['workspace readiness', 'service generation', 'startup deadline'] as const) {
+  test(
+    `${loss === 'startup deadline' ? 'the startup deadline' : `losing ${loss}`} cancels the owned startup task without a second claim`,
+    { timeout: 60_000 },
+    async (context) => {
+      const history = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      try {
+        await fixture(
+          async (page) => {
+            const started = performance.now()
+            await readyForRecovery(page)
+            const claim = [
+              ['status', 'recovery-target'],
+              ['begin', 'recovery-target'],
+            ]
+            await expect.poll(() => manualRecoveryCalls(page)).toEqual(claim)
+            await page.evaluate(() => Reflect.get(window, 'releaseRecoveryClaim')())
+            await history.promise
+            if (loss !== 'startup deadline') {
+              await page.evaluate((loss) => {
+                Reflect.get(window, 'preferenceProbe').patch(
+                  loss === 'workspace readiness'
+                    ? { workspaceLoadState: 'loading' }
+                    : { serviceInstanceId: 'replacement' }
+                )
+              }, loss)
+            }
+            await expect
+              .poll(() => page.evaluate(() => Reflect.get(window, 'startupTaskReadAborted')), {
+                timeout: loss === 'startup deadline' ? STARTUP_TASK_RECOVERY_MS + 2_000 : 5_000,
+              })
+              .toBe(true)
+            if (loss === 'startup deadline') {
+              const elapsed = performance.now() - started
+              assert.ok(elapsed >= STARTUP_TASK_RECOVERY_MS)
+              context.diagnostic(`Held startup history aborted in ${Math.round(elapsed)} ms`)
+            }
+            const finished = [...claim, ['finish', 'token-from-main', 'skipped']]
+            await expect.poll(() => manualRecoveryCalls(page)).toEqual(finished)
+            release.resolve()
+            await readyForRecovery(page)
+            await expect
+              .poll(() =>
+                page.evaluate(() => Reflect.get(window, 'startupTaskLateHistoryReceived'))
+              )
+              .toBe(true)
+            await expect
+              .poll(() =>
+                page.evaluate(() => {
+                  const { state } = Reflect.get(window, 'preferenceProbe')
+                  return [
+                    state.startupTaskRecovery,
+                    state.activeSession,
+                    Boolean(state.threads['recovery-target']),
+                  ]
+                })
+              )
+              .toEqual(['skipped', null, false])
+            assert.deepEqual(await manualRecoveryCalls(page), finished)
+          },
+          async (page) => {
+            await installRecoveryBridge(
+              page,
+              { status: 'eligible', skippedSessionId: null, needsManualAcknowledgement: false },
+              true
+            )
+            await page.addInitScript(() => {
+              const fetch = window.fetch
+              window.fetch = (input, init) => {
+                if (String(input).includes('/api/serve/history/recovery-target')) {
+                  init?.signal?.addEventListener('abort', () =>
+                    Reflect.set(window, 'startupTaskReadAborted', true)
+                  )
+                  return fetch(input, { ...init, signal: undefined }).then((response) => {
+                    Reflect.set(window, 'startupTaskLateHistoryReceived', true)
+                    return response
+                  })
+                }
+                return fetch(input, init)
+              }
+            })
+            await page.route('**/api/serve/sessions/open', (route) =>
+              route.fulfill({
+                json: {
+                  session_id: 'recovery-target',
+                  running: false,
+                  last_seq: 3,
+                  active_turn_id: null,
+                  unknown_outcome: false,
+                  uncertain_operations: [],
+                },
+              })
+            )
+            await page.route('**/api/serve/history/recovery-target?**', async (route) => {
+              history.resolve()
+              await release.promise
+              await route.fulfill({ json: { turns: [] } })
+            })
+          }
+        )
+      } finally {
+        release.resolve()
+      }
+    }
+  )
+}
+
+test(
+  'disposing a document restore when the workspace loses readiness does not settle navigation',
+  { timeout: 60_000 },
+  async () => {
+    const requested = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let reads = 0
+    try {
+      await fixture(
+        async (page) => {
+          const ready = (workspaceLoadState: 'loading' | 'ready') =>
+            page.evaluate(
+              (workspaceLoadState) =>
+                Reflect.get(window, 'preferenceProbe').patch({
+                  workspaceLoadState,
+                  projectsLoaded: true,
+                }),
+              workspaceLoadState
+            )
+          await ready('ready')
+          await requested.promise
+          await ready('loading')
+          await expect
+            .poll(() => page.evaluate(() => Reflect.get(window, 'firstRestoreAborted')))
+            .toBe(true)
+          const snapshot = () =>
+            page.evaluate(() => {
+              const probe = Reflect.get(window, 'preferenceProbe')
+              return [
+                probe.state.navigationRestored,
+                probe.state.startupTaskRecovery,
+                probe.documentTabs().length,
+              ]
+            })
+          await expect.poll(snapshot).toEqual([false, 'waiting', 0])
+          await ready('ready')
+          await expect.poll(snapshot).toEqual([true, null, 1])
+          release.resolve()
+          assert.equal(reads, 2)
+        },
+        async (page) => {
+          await page.addInitScript(() => {
+            localStorage.setItem(
+              'scholarseed.web.preferences',
+              JSON.stringify({
+                lastLocation: {
+                  view: 'resource',
+                  target: {
+                    kind: 'document',
+                    viewKind: 'edit',
+                    title: 'Saved Markdown',
+                    source: { kind: 'project', project: null, path: 'previous.md' },
+                  },
+                },
+              })
+            )
+            const fetch = window.fetch
+            let reads = 0
+            window.fetch = (input, init) => {
+              if (String(input).includes('/api/workbench/content?') && ++reads === 1) {
+                init?.signal?.addEventListener('abort', () =>
+                  Reflect.set(window, 'firstRestoreAborted', true)
+                )
+                return fetch(input, { ...init, signal: undefined })
+              }
+              return fetch(input, init)
+            }
+          })
+          await page.route('**/api/workbench/open?**', (route) =>
+            route.fulfill({
+              json: {
+                project_id: null,
+                viewer: 'markdown',
+                capabilities: { can_edit: true },
+                revision: 'revision',
+                media_type: 'text/markdown',
+                content_kind: 'text',
+              },
+            })
+          )
+          await page.route('**/api/workbench/content?**', async (route) => {
+            if (++reads === 1) {
+              requested.resolve()
+              await release.promise
+            }
+            await route.fulfill({ body: '# Saved document' })
+          })
+        }
+      )
+    } finally {
+      release.resolve()
+    }
+  }
+)
+
+test(
+  'a skipped search restore can reload the search list when the user enters Literature',
+  { timeout: 60_000 },
+  async () => {
+    let reads = 0
+    await fixture(
+      async (page) => {
+        await page.evaluate(() =>
+          Reflect.get(window, 'preferenceProbe').patch({
+            workspaceLoadState: 'ready',
+            projectsLoaded: true,
+          })
+        )
+        await expect
+          .poll(() =>
+            page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.startupTaskRecovery)
+          )
+          .toBe('skipped')
+        assert.equal(reads, 1)
+        await page.evaluate(() => Reflect.get(window, 'preferenceProbe').view('literature'))
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              Reflect.get(window, 'preferenceProbe').state.tabs.some(
+                (tab: { id: string }) => tab.id === 'literature-search:previous-search'
+              )
+            )
+          )
+          .toBe(true)
+        assert.equal(reads, 2)
+        assert.equal(
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.activeTab),
+          'literature'
+        )
+      },
+      async (page) => {
+        await page.addInitScript(() => {
+          localStorage.setItem(
+            'scholarseed.web.preferences',
+            JSON.stringify({
+              lastLocation: {
+                view: 'literature',
+                target: { kind: 'tab', id: 'literature-search:previous-search' },
+              },
+            })
+          )
+        })
+        await page.route('**/api/literature/searches', (route) => {
+          reads += 1
+          return reads === 1
+            ? route.fulfill({ status: 503, json: { detail: 'unavailable' } })
+            : route.fulfill({
+                json: {
+                  items: [{ id: 'previous-search', query: 'Previous search', created_at: 1 }],
+                },
+              })
+        })
+      }
+    )
+  }
+)
+
 test('render failure can return home without reloading the store', { timeout: 60_000 }, async () =>
   fixture(async (page) => {
     await page.evaluate(() =>
@@ -1180,13 +2079,26 @@ for (const scenario of [
     outcome: 'failure',
     route: '/api/serve/sessions/restore-session/navigation',
   },
+  {
+    target: 'session',
+    outcome: 'success',
+    intervention: 'settings',
+    route: '/api/serve/sessions/restore-session/navigation',
+  },
+  {
+    target: 'session',
+    outcome: 'success',
+    intervention: 'typing',
+    route: '/api/serve/sessions/restore-session/navigation',
+  },
   { target: 'document', outcome: 'missing', route: '/api/workbench/open' },
   { target: 'document', outcome: 'failure', route: '/api/workbench/open' },
   { target: 'tab', outcome: 'failure', route: '/api/literature/searches' },
 ]) {
-  const { outcome, target } = scenario
+  const { outcome, target, intervention = 'return home' } = scenario
+  const expectedSettings = intervention === 'settings' ? 'preferences' : null
   test(
-    `return home persists and rejects a late ${target} restoration ${outcome}`,
+    `${intervention} persists and rejects a late ${target} restoration ${outcome}`,
     { timeout: 60_000 },
     async () => {
       let release!: () => void
@@ -1207,7 +2119,12 @@ for (const scenario of [
             })
           })
           await arrived
-          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').returnHome())
+          await page.evaluate((intervention) => {
+            const probe = Reflect.get(window, 'preferenceProbe')
+            if (intervention === 'settings') probe.openSettings()
+            else if (intervention === 'typing') probe.draft('New startup draft')
+            else probe.returnHome()
+          }, intervention)
           await expect
             .poll(() =>
               page.evaluate(() => Reflect.get(window, 'preferenceProbe').disk.lastLocation)
@@ -1217,7 +2134,7 @@ for (const scenario of [
               projectId: null,
               sessionId: null,
               sessionProjectId: null,
-              settingsPage: null,
+              settingsPage: expectedSettings,
               browserSettingsSection: null,
               aiPanelOpen: false,
               aiPanelCover: false,
@@ -1237,6 +2154,9 @@ for (const scenario of [
               view: probe.state.mainView,
               session: probe.state.activeSession,
               restored: probe.state.navigationRestored,
+              recovery: probe.state.startupTaskRecovery,
+              settings: probe.state.accountSettingsPage,
+              draft: probe.draft(),
               load: probe.state.workspaceLoadState,
               location: probe.disk.lastLocation,
             }
@@ -1244,8 +2164,13 @@ for (const scenario of [
           assert.equal(state.view, 'home')
           assert.equal(state.session, null)
           assert.equal(state.restored, true)
+          assert.equal(state.recovery, 'skipped')
+          assert.equal(state.settings, expectedSettings)
+          assert.equal(state.draft, intervention === 'typing' ? 'New startup draft' : '')
           assert.equal(state.load, 'ready')
           assert.equal(state.location.view, 'home')
+          assert.equal(await page.evaluate(() => Reflect.get(window, 'restoreReadAborted')), true)
+          assert.equal(requestCount, 1)
         },
         async (page) => {
           await page.addInitScript(
@@ -1273,19 +2198,24 @@ for (const scenario of [
                 })
               )
               const original = window.fetch
-              window.fetch = async (...args) => {
-                const response = await original(...args)
-                if (String(args[0]).includes(route)) {
+              window.fetch = async (input, init) => {
+                if (String(input).includes(route)) {
+                  init?.signal?.addEventListener('abort', () => {
+                    Reflect.set(window, 'restoreReadAborted', true)
+                  })
+                  // Deliver a late response even after cancellation to exercise the navigation fence.
+                  const response = await original(input, { ...init, signal: undefined })
                   Reflect.set(window, 'restoreResponseReceived', true)
+                  return response
                 }
-                return response
+                return original(input, init)
               }
             },
             { target, route: scenario.route }
           )
           await page.route(`**${scenario.route}*`, async (route) => {
             requestCount += 1
-            if (target !== 'tab' || requestCount >= 2) requested()
+            requested()
             await held
             await route.fulfill({
               status: outcome === 'success' ? 200 : outcome === 'missing' ? 404 : 503,
@@ -1913,6 +2843,73 @@ for (const scenario of [
     }
   )
 }
+
+test(
+  'a lost context receipt restores the server revision and preserves unsent text',
+  { timeout: 60_000 },
+  async () => {
+    const session = 'receipt-session'
+    const ref = {
+      ref_id: 'ref',
+      kind: 'file',
+      source_id: 'a.md',
+      label: 'a.md',
+      origin: 'explicit',
+      retention: 'session',
+    }
+    let selection = {
+      session_id: session,
+      revision: 4,
+      project_policy: 'explicit_only',
+      search_scope: 'web',
+      capabilities: [],
+      refs: [ref],
+      updated_at: 0,
+    }
+    const methods: string[] = []
+    await fixture(
+      async (page) => {
+        await page.evaluate(
+          (id) => Reflect.get(window, 'preferenceProbe').patch({ activeSession: id }),
+          session
+        )
+        const state = () =>
+          page.evaluate(() => Reflect.get(window, 'preferenceProbe').state.aiPanel)
+        await expect.poll(async () => (await state()).revision).toBe(4)
+        methods.length = 0
+        const accepted = await page.evaluate(async () => {
+          const probe = Reflect.get(window, 'preferenceProbe')
+          probe.draft('keep this draft')
+          return probe.detachContext('ref')
+        })
+        assert.equal(accepted, false)
+        await expect.poll(async () => (await state()).contextState).toBe('ready')
+        const panel = await state()
+        assert.deepEqual(
+          [panel.sessionId, panel.revision, panel.refs, panel.contextError.key],
+          [session, 5, [], 'contextErrors.saveReconciled']
+        )
+        assert.deepEqual(methods, ['PATCH', 'GET'])
+        assert.equal(
+          await page.evaluate(() => Reflect.get(window, 'preferenceProbe').draft()),
+          'keep this draft'
+        )
+      },
+      async (page) => {
+        await page.route('**/api/assistant/sessions/receipt-session/context', async (route) => {
+          methods.push(route.request().method())
+          if (route.request().method() === 'PATCH') {
+            assert.equal(route.request().postDataJSON().expected_revision, 4)
+            selection = { ...selection, revision: 5, refs: [] }
+            await route.abort('connectionreset')
+          } else {
+            await route.fulfill({ json: selection })
+          }
+        })
+      }
+    )
+  }
+)
 
 test(
   'context batch and single additions serialize without losing refs or draft, and retries deduplicate',

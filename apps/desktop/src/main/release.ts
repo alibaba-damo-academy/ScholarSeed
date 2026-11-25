@@ -25,14 +25,21 @@ export function appendMacUpdateFormat(
   url: URL,
   config: DesktopUpdateConfig,
   targetArchType: string,
-  pinnedArtifact?: LatestVersionMeta
-): void {
+  pinnedArtifact?: LatestVersionMeta,
+  forDownload = false
+): boolean {
   if (
     targetArchType.startsWith(MACOS_ARCH_TYPE_PREFIX) &&
     config.releaseLane === 'distribution' &&
     (!pinnedArtifact || pinnedArtifact.artifact_kind === MACOS_UPDATE_ZIP)
-  )
+  ) {
     url.searchParams.set(UPDATE_FORMAT_PARAM, MACOS_UPDATE_ZIP)
+    if (forDownload && pinnedArtifact?.artifact_kind === MACOS_UPDATE_ZIP) {
+      url.searchParams.set('macos_components', '1')
+      return true
+    }
+  }
+  return false
 }
 
 export interface DesktopUpdateConfig {
@@ -175,7 +182,8 @@ export function parseDownloadInfo(
   value: unknown,
   config: DesktopUpdateConfig,
   expectedArchType: string,
-  expectedId: string
+  expectedId: string,
+  requestedComponents = false
 ): DownloadInfo {
   const latest = parseLatest(value, config, expectedArchType)
   if (latest.id !== expectedId)
@@ -186,7 +194,15 @@ export function parseDownloadInfo(
   if (config.releaseLane === 'distribution' && parsed.protocol !== 'https:') {
     throw new Error('distribution download URL must use HTTPS')
   }
-  return { ...latest, download_url: downloadUrl }
+  return {
+    ...latest,
+    download_url: downloadUrl,
+    ...(requestedComponents &&
+    latest.artifact_kind === MACOS_UPDATE_ZIP &&
+    source.macos_zip_components
+      ? { macos_zip_components: source.macos_zip_components }
+      : {}),
+  }
 }
 
 export function buildUpdateCheckUrl(

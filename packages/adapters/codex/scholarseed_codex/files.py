@@ -1,10 +1,12 @@
 """Workspace file observations, independent of process and thread lifecycles."""
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
+from scholarseed_codex.git import worktree_status
 from scholarseed_codex.protocol.mcp import JsonValue
 
 CODEX_IGNORED_ARTIFACT_DIRECTORIES = frozenset({"node_modules", "__pycache__", ".venv", "venv"})
@@ -26,20 +28,24 @@ class FileStamp:
     changed_ns: int
 
 
-def workspace_snapshot(cwd: Path, report_error: Callable[[OSError], None]) -> dict[str, FileStamp]:
+def workspace_snapshot(
+    cwd: Path, report_error: Callable[[OSError], None], *, directory: Path | None = None
+) -> dict[str, FileStamp]:
     """Observe eligible regular files without reading contents or following directory links."""
     workspace = cwd.expanduser().resolve()
     result: dict[str, FileStamp] = {}
-    for root, directories, names in os.walk(workspace, onerror=report_error, followlinks=False):
-        directory = Path(root)
+    start = directory if directory is not None else workspace
+    for root, directories, names in os.walk(start, onerror=report_error, followlinks=False):
+        parent = Path(root)
         directories[:] = [
             name
             for name in directories
-            if is_artifact_candidate(str((directory / name).relative_to(workspace)))
-            and not (directory / name).is_symlink()
+            if is_artifact_candidate(str((parent / name).relative_to(workspace)))
+            and not (parent / name).is_symlink()
+            and not (parent / name).is_junction()
         ]
         for name in names:
-            path = directory / name
+            path = parent / name
             relative = str(path.relative_to(workspace))
             if not is_artifact_candidate(relative) or path.is_symlink():
                 continue
@@ -52,6 +58,80 @@ def workspace_snapshot(cwd: Path, report_error: Callable[[OSError], None]) -> di
             except OSError as error:
                 report_error(error)
     return result
+
+
+@dataclass(frozen=True)
+class TurnFiles:
+    stamps: dict[str, FileStamp]
+    git_paths: dict[str, bool] | None = None
+    artifact_directory: Path | None = None
+
+    def change_kind(self, path: str, current: "TurnFiles | None" = None) -> str:
+        if path in self.stamps:
+            return FILE_CHANGE_UPDATE
+        if self.git_paths is None or path in self.git_paths:
+            return FILE_CHANGE_ADD
+        if self.artifact_directory and Path(path).is_relative_to(self.artifact_directory):
+            return FILE_CHANGE_ADD
+        if current and current.git_paths and current.git_paths.get(path):
+            return FILE_CHANGE_ADD
+        # Clean tracked files were omitted from the initial Git snapshot.
+        return FILE_CHANGE_UPDATE
+
+
+def turn_files(
+    cwd: Path,
+    report_error: Callable[[OSError], None],
+    artifact_directory: Path | None = None,
+    previous: TurnFiles | None = None,
+) -> TurnFiles:
+    workspace = cwd.expanduser().resolve()
+    git_paths = (
+        worktree_status(workspace) if previous is None or previous.git_paths is not None else None
+    )
+    if git_paths is None:
+        if previous is None or previous.git_paths is None:
+            return TurnFiles(workspace_snapshot(workspace, report_error))
+        # Only recheck known paths. A full tree cannot be compared to a sparse baseline.
+        report_error(OSError("Git status unavailable at turn completion"))
+        git_paths = {}
+
+    stamps = {}
+    output = previous.artifact_directory if previous is not None else None
+    if artifact_directory is not None and artifact_directory.is_relative_to(workspace):
+        relative = artifact_directory.relative_to(workspace)
+        if relative.parts and is_artifact_candidate(str(relative)):
+            output = relative
+    if output is not None:
+        target = workspace / output
+        try:
+            if target.resolve(strict=True) == target and target.is_dir():
+                stamps.update(workspace_snapshot(workspace, report_error, directory=target))
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except (OSError, RuntimeError) as error:
+            report_error(OSError(str(error)))
+    paths = set(git_paths)
+    if previous is not None and previous.git_paths:
+        # A previously dirty tracked file can return to clean during this turn.
+        paths.update(previous.git_paths)
+    for path in paths:
+        if path in stamps or not is_artifact_candidate(path):
+            continue
+        target = workspace / path
+        try:
+            if target.resolve(strict=True) != target:
+                continue
+            metadata = target.stat(follow_symlinks=False)
+            if stat.S_ISREG(metadata.st_mode):
+                stamps[path] = FileStamp(
+                    metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns
+                )
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, RuntimeError) as error:
+            report_error(OSError(str(error)))
+    return TurnFiles(stamps, git_paths, output)
 
 
 def is_artifact_candidate(relative: str) -> bool:
@@ -76,7 +156,7 @@ def workspace_relative_path(cwd: Path, value: object) -> str:
         candidate = workspace / candidate
     try:
         return str(candidate.resolve().relative_to(workspace))
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return ""
 
 

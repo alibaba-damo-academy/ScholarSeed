@@ -9,6 +9,7 @@ import {
   QUEUE_PRESENTATION_MESSAGE_KEYS,
   canCancelQueuedMessage,
   confirmQueuedOutcome,
+  confirmedQueuedSendFailure,
   hasAcceptedMessageAwaitingRuntime,
   hasQueuedMessageAwaitingRuntime,
   markOptimisticQueueOutcomeUnknown,
@@ -16,16 +17,23 @@ import {
   queueBlockedByUnconfirmed,
   queuedMessageErrorText,
   queuedMessageNeedsStatusCheck,
+  queuedSendReceiptUnknown,
   queuedWithdrawalFeedback,
   queuedMessageFromPayload,
   rejectOptimisticQueuedMessage,
   settleOptimisticQueuedMessage,
   shouldOptimisticallyPresentUserMessage,
   shouldPresentQueuedMessage,
+  unconfirmedQueuedSend,
   upsertQueuedMessage,
   canEditQueuedMessage,
 } from './queue.ts'
-import { mergeQueuedOutbox, releaseQueuedOutbox, retainQueuedOutbox } from './outbox.ts'
+import {
+  acknowledgeQueuedOutboxMessage,
+  mergeQueuedOutbox,
+  releaseQueuedOutbox,
+  retainQueuedOutbox,
+} from './outbox.ts'
 
 const input = [{ type: 'text' as const, text: '继续补充证据' }]
 
@@ -574,6 +582,78 @@ test('restores an unacknowledged local outbox row and clears it on server acknow
   assert.deepEqual(mergeQueuedOutbox('session-outbox', [authoritative]), [authoritative])
   assert.deepEqual(mergeQueuedOutbox('session-outbox', []), [])
   releaseQueuedOutbox('session-outbox', 'client-outbox')
+})
+
+test('keeps the in-flight queue row when local storage cannot persist it', (context) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  context.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: () => null,
+        setItem: () => {
+          throw new Error('storage unavailable')
+        },
+      },
+    },
+  })
+  const pending = optimisticQueuedMessage([], 'local-only', input, [])
+  retainQueuedOutbox('saved-task', pending)
+  assert.deepEqual(mergeQueuedOutbox('saved-task', [], true, [pending]), [pending])
+})
+
+test('lost resend receipts survive reload and an unchanged failed server row or replay', (context) => {
+  const values = new Map<string, string>()
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  context.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'window', previous)
+    else Reflect.deleteProperty(globalThis, 'window')
+  })
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => values.set(key, value),
+      },
+    },
+  })
+  const failed = queuedMessageFromPayload({
+    queued_message_id: 'retry',
+    enqueue_seq: 1,
+    operation_seq: 4,
+    state: 'failed',
+    submission_mode: 'queued',
+    input,
+  })
+  const local = unconfirmedQueuedSend({ ...failed, serverPresent: false })
+  const server = unconfirmedQueuedSend(failed)
+  retainQueuedOutbox('local-task', local)
+  retainQueuedOutbox('server-task', server)
+  assert.deepEqual(mergeQueuedOutbox('local-task', []), JSON.parse(JSON.stringify([local])))
+  assert.deepEqual(mergeQueuedOutbox('server-task', []), JSON.parse(JSON.stringify([server])))
+  assert.deepEqual(mergeQueuedOutbox('server-task', [failed]), [server])
+  assert.deepEqual(acknowledgeQueuedOutboxMessage('server-task', failed, undefined, true), server)
+  for (const pending of [local, server]) {
+    assert.equal(queuedSendReceiptUnknown(pending), true)
+    assert.equal(queuedMessageNeedsStatusCheck(pending), true)
+    assert.equal(canEditQueuedMessage(pending), false)
+    assert.equal(canCancelQueuedMessage(pending), false)
+  }
+  const applied = { ...failed, operationSeq: 5 }
+  assert.equal(confirmedQueuedSendFailure(server, failed), failed)
+  assert.equal(confirmedQueuedSendFailure(local, failed), undefined)
+  assert.equal(confirmedQueuedSendFailure(applied, failed), undefined)
+  assert.equal(confirmedQueuedSendFailure(server, applied), undefined)
+  assert.equal(confirmedQueuedSendFailure(server, { ...failed, state: 'submitting' }), undefined)
+  assert.deepEqual(acknowledgeQueuedOutboxMessage('server-task', applied, server, true), applied)
+  assert.deepEqual(mergeQueuedOutbox('server-task', []), [])
+  assert.deepEqual(mergeQueuedOutbox('local-task', [failed]), [failed])
+  assert.deepEqual(mergeQueuedOutbox('local-task', []), [])
 })
 
 test('queue failure codes translate while unknown codes use state-specific fallbacks', async () => {

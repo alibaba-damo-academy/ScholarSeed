@@ -11,7 +11,27 @@ diff --git a/Squirrel/SQRLInstaller+Private.h b/Squirrel/SQRLInstaller+Private.h
 diff --git a/Squirrel/SQRLInstaller.m b/Squirrel/SQRLInstaller.m
 --- a/Squirrel/SQRLInstaller.m
 +++ b/Squirrel/SQRLInstaller.m
-@@ -261,0 +262,30 @@
+@@ -15,0 +16 @@
++#import <Security/Security.h>
+@@ -36,0 +38,17 @@
++static BOOL SSMissingSealedResources(NSError *error) {
++  if (![error.domain isEqual:SQRLCodeSignatureErrorDomain] || error.code != SQRLCodeSignatureErrorDidNotPass) return NO;
++  NSError *underlying = error.userInfo[NSUnderlyingErrorKey];
++  if (![underlying.domain isEqual:NSOSStatusErrorDomain] || underlying.code != errSecCSBadResource) return NO;
++  NSString *missingKey = (__bridge NSString *)kSecCFErrorResourceMissing;
++  id missing = underlying.userInfo[missingKey];
++  if (![missing isKindOfClass:NSURL.class] && !([missing isKindOfClass:NSArray.class] && [missing count] > 0)) return NO;
++  // Nested code and multi-architecture checks can add the failing component/architecture.
++  // Any other diagnostic (e.g. an altered or added resource) is a different failure.
++  for (NSString *key in underlying.userInfo) {
++    if (![key isEqual:missingKey] &&
++        ![key isEqual:(__bridge NSString *)kSecCFErrorPath] &&
++        ![key isEqual:(__bridge NSString *)kSecCFErrorArchitecture]) return NO;
++  }
++  return YES;
++}
++
+@@ -261,0 +280,30 @@
 +- (RACSignal *)normalizeAndVerifyCandidate:(NSURL *)candidate request:(SQRLShipItRequest *)request signature:(SQRLCodeSignature *)signature {
 +	return [RACSignal defer:^{
 +		NSError *error = nil;
@@ -42,7 +62,10 @@ diff --git a/Squirrel/SQRLInstaller.m b/Squirrel/SQRLInstaller.m
 +	}];
 +}
 +
-@@ -286,10 +316,4 @@
+@@ -284,0 +333,2 @@
++            __block NSURL *candidate = updateBundleURL;
++            __block BOOL attemptedRebuild = NO;
+@@ -286,9 +336,12 @@
 -                NSError *validationError = nil;
 -                if (!SSPreparationBeginOwnership(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &validationError)) return [RACSignal error:validationError];
 -                return [[[self verifyBundleAtURL:updateBundleURL usingSignature:codeSignature] ignoreValues]
@@ -52,12 +75,29 @@ diff --git a/Squirrel/SQRLInstaller.m b/Squirrel/SQRLInstaller.m
 -                        if (!SSPreparationValidate(request.updateBundleURL, request.targetBundleURL, request.binding, updateBundleURL, &error)) return [RACSignal error:error];
 -                        if (occupied()) return [RACSignal error:[NSError errorWithDomain:SQRLInstallerErrorDomain code:SQRLInstallerErrorAppStillRunning userInfo:nil]];
 -                        return [RACSignal empty];
--                    }];
-+                return [[self normalizeAndVerifyCandidate:updateBundleURL request:request signature:codeSignature] then:^RACSignal *{
++                RACSignal *validation = [self normalizeAndVerifyCandidate:candidate request:request signature:codeSignature];
++                return [[validation catch:^RACSignal *(NSError *error) {
++                    if (attemptedRebuild || !request.installationAuthorized || !request.launchAfterInstallation ||
++                        !SSMissingSealedResources(error)) return [RACSignal error:error];
++                    attemptedRebuild = YES;
++                    NSError *rebuildError = nil;
++                    NSURL *rebuilt = SSPreparationRebuildCandidate(request.updateBundleURL, request.targetBundleURL,
++                        request.binding, candidate, &rebuildError);
++                    if (!rebuilt) return [RACSignal error:rebuildError];
++                    candidate = rebuilt;
++                    return [[self clearQuarantineForDirectory:rebuilt] then:^RACSignal *{
++                        return [self normalizeAndVerifyCandidate:rebuilt request:request signature:codeSignature];
+@@ -295,0 +349,4 @@
++                }] then:^RACSignal *{
 +                    if (occupied()) return [RACSignal error:[NSError errorWithDomain:SQRLInstallerErrorDomain code:SQRLInstallerErrorAppStillRunning userInfo:nil]];
 +                    return [RACSignal empty];
 +                }];
-@@ -782,0 +807 @@
+@@ -298 +355,3 @@
+-            }, SSAdmissionTimeout) concat:[RACSignal return:updateBundleURL]];
++            }, SSAdmissionTimeout) then:^RACSignal *{
++                return [RACSignal return:candidate];
++            }];
+@@ -782,0 +842 @@
 +					if (SSPreparationFileSecurityMatches((__bridge CFFileSecurityRef)fileSecurity)) return [RACSignal empty];
 diff --git a/Squirrel/ShipIt-main.m b/Squirrel/ShipIt-main.m
 --- a/Squirrel/ShipIt-main.m

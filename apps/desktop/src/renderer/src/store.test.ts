@@ -244,6 +244,7 @@ function sessionDraftHarness() {
   runInNewContext(compiled, {
     result,
     composerDraft,
+    cancelStartupTask: () => {},
     composerDraftKey,
     readComposerDrafts,
     serializeComposerDrafts,
@@ -389,6 +390,7 @@ test('project literature entry preserves conversation and opens the files litera
   }
   runInNewContext(compiled, {
     availabilityPolicy: { routeAvailable: () => true },
+    cancelStartupTask: () => {},
     rememberSessionDraft: () => {},
     literatureNavigation,
     SURFACE_RESET: {},
@@ -436,6 +438,7 @@ test('browser navigation preserves layout for in-page links and reveals split la
       }
       runInNewContext(compiled, {
         availabilityPolicy: { routeAvailable: () => true },
+        cancelStartupTask: () => {},
         rememberSessionDraft: () => {},
         fixedTabForView: () => ({ id: 'browser', kind: 'browser', title: 'Browser' }),
         openFixedTab,
@@ -1232,6 +1235,7 @@ test('an exact draft checks its source before changing the existing draft and se
     const execute = () =>
       runInNewContext(compiled, {
         seed: { modelId: 'original-model', composerText: 'Visible history', submit: false },
+        cancelStartupTask: () => {},
         stateRef: {
           get current() {
             return state
@@ -1416,6 +1420,7 @@ test('a skill task retains its description through workbench tab synchronization
     let draft = ''
     runInNewContext(compiled, {
       ASSISTANT_FALLBACK_VIEW: 'resource',
+      cancelStartupTask: () => {},
       useCallback: (callback: unknown) => callback,
       stateRef: { current: state },
       settingsSurface: { current: { project: () => ({}) } },
@@ -1486,6 +1491,7 @@ test('contextual skill navigation preserves the draft and session; global naviga
     let draft = 'Keep this unsent text'
     runInNewContext(compiled, {
       options: preserveProject ? { preserveProject: true, returnProjectId: 'project' } : undefined,
+      cancelStartupTask: () => {},
       availabilityPolicy: { routeAvailable: () => true },
       fixedTabForView: () => null,
       activeTabForWorkbenchView: () => 'skills',
