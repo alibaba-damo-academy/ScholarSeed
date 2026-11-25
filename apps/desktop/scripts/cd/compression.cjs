@@ -4,6 +4,7 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const cache = require('../shared/component-cache.cjs')
 const state = require('../shared/build-state.cjs')
+const { restoreReviewedArchive } = require('./windows-runtime.cjs')
 
 function sourceIdentity(root) {
   const directories = []
@@ -29,7 +30,7 @@ function pack({cacheRoot, repo, kind, target, contentId, pythonArchiveSha256, py
   if (cached) fs.copyFileSync(cached.archive, output, fs.constants.COPYFILE_EXCL)
   else execFileSync(python, ['-I', '-B', path.join(__dirname, 'payload.py'), '--root', root,
     '--output', output, '--entry', entry, '--reproducible'], {env: environment, stdio: 'inherit', windowsHide: true})
-  const full = cached ? cache.reuse(output, cached.fullInventory) : cache.measure(python, output, environment, '', true)
+  const full = cached ? cache.reuse(output, cached.fullInventory) : restoreReviewedArchive(kind, output, cache.measure(python, output, environment, '', true), python, environment)
   const measured = cache.summary(full)
   if (cached && state.identity(cached.inventory) !== state.identity(measured))
     throw new Error('cached component changed before packing')

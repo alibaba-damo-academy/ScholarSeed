@@ -7,7 +7,7 @@ const wheelCache = require('./wheels.cjs')
 const { timed, timedAsync } = require('../../../../scripts/shared/timing.cjs')
 const assembly = require('./assembly.cjs')
 const compression = require('./compression.cjs')
-const { ARCHIVES_DIRECTORY, runtimeTreeEvidence, runtimeComponent, freezeRuntimeManifest } = require('./windows-runtime.cjs')
+const { ARCHIVES_DIRECTORY, runtimeTreeEvidence, runtimeComponent, restoreReviewedArchive, freezeRuntimeManifest } = require('./windows-runtime.cjs')
 const { artifact: texliveArtifact, probe: probeTexlive, PLATFORM_DIRECTORY, stageVerifiedTexlive } = require('../../runtime/texlive.cjs')
 const { artifact: powershellArtifact, probe: probePowerShell, stageVerifiedPowerShell } = require('../../runtime/powershell.cjs')
 const { SKILL_PYTHON_MODULE, skillPythonLauncherPath, writeSkillPythonLauncher } = require('../../runtime/python.cjs')
@@ -141,7 +141,7 @@ async function bundle(context, target, environment) {
     contentId, recipe: recipes[kind], ...extra })
   const pythonContentId = componentsEnabled ? derivePythonContentId({ target: componentTargetName,
     pythonArchiveSha256: context.runtime.sha256, requirementsSha256: prepared.requirements_sha256,
-    lockSha256: prepared.lock_sha256, binaryPackages: BINARY_PACKAGES,
+    sourceBuilds: prepared.source_builds, binaryPackages: BINARY_PACKAGES,
     bytecodeSha256: sha256FileSync(BYTECODE_COMPILER), recipe: cacheRecipe, skillWheels: prepared.skill_wheels.map(({path: _path, ...wheel}) => wheel) }) : null
   const pythonInputs = cacheInputs(PYTHON_KIND, pythonContentId,
     { skillWheels: prepared.skill_wheels.map(({path: _path, ...wheel}) => wheel) })
@@ -270,7 +270,7 @@ async function bundle(context, target, environment) {
         target: componentTargetName,
         pythonArchiveSha256: context.runtime.sha256,
         requirementsSha256: context.pythonDependencies.requirements_sha256,
-        lockSha256: context.pythonDependencies.lock_sha256,
+        sourceBuilds: prepared.source_builds,
         binaryPackages: BINARY_PACKAGES,
         bytecodeSha256, recipe: cacheRecipe, skillWheels: prepared.skill_wheels.map(({path: _path, ...wheel}) => wheel)
       }),
@@ -347,7 +347,8 @@ async function packWindowsComponents(context, args, environment) {
   }
   const fullInventory = archives.map((archive, index) => {
     const entry = context.componentCache?.entries[kinds[index]]
-    return entry ? cache.reuse(archive, entry.fullInventory) : cache.measure(python, archive, environment, kinds[index], true)
+    return entry ? cache.reuse(archive, entry.fullInventory) : restoreReviewedArchive(kinds[index], archive,
+      cache.measure(python, archive, environment, kinds[index], true), python, environment)
   })
   const measured = fullInventory.map(cache.summary)
   if (!Array.isArray(measured) || measured.length !== 3 ||

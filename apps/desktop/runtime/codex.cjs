@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFile, spawn } = require('node:child_process')
+const { withMacRuntimeCache } = require('./codex-cache.cjs')
 const { promisify } = require('node:util')
 const { nativeTar } = require('../../../scripts/shared/python.cjs')
 const { ensureArtifact } = require('../../../scripts/shared/artifacts.cjs')
@@ -101,9 +102,11 @@ function artifact(desktopRoot, platform, arch) {
   const key = `${platform}-${arch}`
   const selected = manifest.artifacts?.[key]
   const version = selected?.version ?? manifest.version
+  const reviewedReceipt = platform !== 'darwin' ||
+    (typeof selected?.receiptSha256 === 'string' && SHA256_PATTERN.test(selected.receiptSha256))
   if (manifest.package !== '@openai/codex' || !/^\d+\.\d+\.\d+$/.test(manifest.version) ||
       !/^\d+\.\d+\.\d+$/.test(version) ||
-      !selected || !INTEGRITY_PATTERN.test(selected.integrity) ||
+      !selected || !reviewedReceipt || !INTEGRITY_PATTERN.test(selected.integrity) ||
       !SHA256_PATTERN.test(selected.sha256) || typeof selected.url !== 'string' ||
       !Number.isSafeInteger(selected.bytes) || selected.bytes <= 0) {
     throw new Error(`Unsupported vendored Codex platform: ${key}`)
@@ -141,8 +144,11 @@ function sourceRecord(selected) {
 function cachedRuntime(directory, selected) {
   let receipt
   try {
-    state.regular(path.join(directory, CACHE_RECEIPT))
-    receipt = JSON.parse(fs.readFileSync(path.join(directory, CACHE_RECEIPT), 'utf8'))
+    const filename = path.join(directory, CACHE_RECEIPT)
+    if (state.regular(filename).size > METADATA_LIMIT) return null
+    const bytes = fs.readFileSync(filename)
+    if (selected.receiptSha256 && crypto.createHash('sha256').update(bytes).digest('hex') !== selected.receiptSha256) return null
+    receipt = JSON.parse(bytes)
   } catch (error) {
     return null
   }
@@ -225,15 +231,18 @@ function stageVendoredCodex(runtime, destination, platform = process.platform) {
 
 async function completeRuntime(directory, selected, runtime, options = {}) {
   const probe = options.probe || probeVersion
-  verifyCachedFiles(directory, runtime)
-  await probe(path.join(directory, runtime.entrypoint), selected.version)
-  verifyCachedFiles(directory, runtime)
-  fs.writeFileSync(path.join(directory, CACHE_RECEIPT), JSON.stringify({
+  const receipt = JSON.stringify({
     archive_sha256: selected.sha256,
     reported_version: selected.version,
     entrypoint: runtime.entrypoint,
     files: runtime.files
-  }), { flag: 'wx' })
+  })
+  if (selected.receiptSha256 && crypto.createHash('sha256').update(receipt).digest('hex') !== selected.receiptSha256)
+    throw new Error('Vendored Codex runtime receipt differs from the reviewed archive')
+  verifyCachedFiles(directory, runtime)
+  await probe(path.join(directory, runtime.entrypoint), selected.version)
+  verifyCachedFiles(directory, runtime)
+  fs.writeFileSync(path.join(directory, CACHE_RECEIPT), receipt, { flag: 'wx' })
 }
 
 async function resolveVendoredCodex(
@@ -254,75 +263,101 @@ async function resolveVendoredCodex(
     : path.join(desktopRoot, CACHE_DIRECTORY)
   fs.mkdirSync(cache, { recursive: true })
   const directory = path.join(cache, `${selected.version}-${selected.key}-${selected.sha256}`)
-  if ((persistent || cachedValidation === CACHE_VALIDATION.integrity) && fs.existsSync(directory)) {
-    state.noLinks(directory)
+  const resolve = registry => resolveRuntime({ platform, selected, cache, directory, log, persistent, cachedValidation, registry })
+  if (platform === 'darwin' && (persistent || process.env.SCHOLARSEED_CODEX_REGISTRY_COMMAND)) {
+    if (!persistent) throw new Error('Shared Codex runtime caching requires a private local cache directory')
+    return withMacRuntimeCache(directory, selected, resolve, log)
   }
-  const cached = cachedRuntime(directory, selected)
-  if (cached) {
-    try {
-      if (persistent || cachedValidation === CACHE_VALIDATION.integrity) {
-        state.noLinks(directory)
-        verifyCachedFiles(directory, cached)
-      }
-      if (cachedValidation === CACHE_VALIDATION.execution) {
-        await probeVersion(cached.executable, selected.version)
-      }
-      for (const file of cached.files) {
-        fs.chmodSync(path.join(directory, file.path), file.mode)
-      }
-      log(`Vendored Codex ${selected.version} (cached): ${cached.executable}`)
-      return {
-        path: cached.executable,
-        root: directory,
-        files: cached.files,
-        reported_version: selected.version,
-        sha256: cached.files.find(file => file.path === cached.entrypoint).sha256,
-        source: sourceRecord(selected)
-      }
-    } catch {
-      // Untrusted cache (failed probe or mode repair): fall through and rebuild.
-    }
+  return resolve(null)
+}
+
+function resolvedRuntime(directory, selected, runtime) {
+  return {
+    path: path.join(directory, runtime.entrypoint),
+    root: directory,
+    files: runtime.files,
+    reported_version: selected.version,
+    sha256: runtime.files.find(file => file.path === runtime.entrypoint).sha256,
+    source: sourceRecord(selected)
   }
+}
+
+async function extractRuntime(selected, runtime) {
   await ensureArtifact(selected.archive, selected)
   if (await digest(selected.archive, 'sha256', 'hex') !== selected.sha256) {
     throw new Error('Vendored Codex archive SHA-256 mismatch')
   }
   await verifyArchive(selected.archive, selected.integrity)
+  const prefix = `package/vendor/${selected.target}/`
+  const members = (await run(nativeTar(), ['-tzf', selected.archive], {
+    maxBuffer: METADATA_LIMIT
+  })).stdout.trim().split(/\r?\n/)
+  const files = []
+  for (const member of members.filter(name => name.startsWith(prefix) && !name.endsWith('/'))) {
+    const relative = member.slice(prefix.length)
+    if (!relative || relative.split('/').some(part => !part || part === '..' || part === '.') ||
+        path.isAbsolute(relative)) {
+      throw new Error('Unsafe Codex package member')
+    }
+    const destination = path.join(runtime, relative)
+    fs.mkdirSync(path.dirname(destination), { recursive: true })
+    await extractBinary(selected.archive, member, destination)
+    files.push({ path: relative, sha256: await digest(destination, 'sha256', 'hex'),
+      mode: RUNTIME_FILE_MODE })
+  }
+  const packageManifest = JSON.parse(fs.readFileSync(path.join(runtime, 'codex-package.json')))
+  if (packageManifest.target !== selected.target || typeof packageManifest.entrypoint !== 'string') {
+    throw new Error('Codex runtime package manifest differs from its target')
+  }
+  for (const file of files) {
+    const cached = path.join(runtime, file.path)
+    if (await digest(cached, 'sha256', 'hex') !== file.sha256) {
+      throw new Error(`Cached Codex runtime was modified: ${file.path}`)
+    }
+    fs.chmodSync(cached, file.mode)
+  }
+  return { entrypoint: packageManifest.entrypoint, files }
+}
+
+async function resolveRuntime({ platform, selected, cache, directory, log, persistent, cachedValidation, registry }) {
+  const checkInventory = Boolean(selected.receiptSha256 || persistent || cachedValidation === CACHE_VALIDATION.integrity)
+  if (checkInventory && fs.existsSync(directory)) state.noLinks(directory)
+  let cached = cachedRuntime(directory, selected)
+  if (cached) {
+    try {
+      if (checkInventory) verifyCachedFiles(directory, cached)
+      for (const file of cached.files) fs.chmodSync(path.join(directory, file.path), file.mode)
+      if (cachedValidation === CACHE_VALIDATION.execution) await probeVersion(cached.executable, selected.version)
+    } catch {
+      cached = null
+    }
+  }
+  if (cached) {
+    if (registry) await registry.confirmLocal(directory)
+    log(`Vendored Codex ${selected.version} (cached): ${cached.executable}`)
+    return resolvedRuntime(directory, selected, cached)
+  }
+
+  // Remove an invalid entry before building its replacement. A new entry that
+  // appears during extraction belongs to a concurrent publisher.
   if (fs.existsSync(directory)) {
     fs.rmSync(directory, { recursive: true, force: true,
       maxRetries: platform === WINDOWS_PLATFORM ? WINDOWS_PUBLISH_RETRY_DELAYS_MS.length : 0,
       retryDelay: WINDOWS_CLEANUP_RETRY_DELAY_MS })
   }
   const stage = fs.mkdtempSync(path.join(cache, 'resolve-'))
+  const runtime = path.join(stage, 'runtime')
   try {
-    const prefix = `package/vendor/${selected.target}/`
-    const members = (await run(nativeTar(), ['-tzf', selected.archive], {
-      maxBuffer: METADATA_LIMIT
-    })).stdout.trim().split(/\r?\n/)
-    const files = []
-    const runtime = path.join(stage, 'runtime')
-    for (const member of members.filter(name => name.startsWith(prefix) && !name.endsWith('/'))) {
-      const relative = member.slice(prefix.length)
-      if (!relative || relative.split('/').some(part => !part || part === '..' || part === '.') ||
-          path.isAbsolute(relative)) {
-        throw new Error('Unsafe Codex package member')
-      }
-      const destination = path.join(runtime, relative)
-      fs.mkdirSync(path.dirname(destination), { recursive: true })
-      await extractBinary(selected.archive, member, destination)
-      files.push({ path: relative, sha256: await digest(destination, 'sha256', 'hex'),
-        mode: RUNTIME_FILE_MODE })
-    }
-    const packageManifest = JSON.parse(fs.readFileSync(path.join(runtime, 'codex-package.json')))
-    if (packageManifest.target !== selected.target || typeof packageManifest.entrypoint !== 'string') {
-      throw new Error('Codex runtime package manifest differs from its target')
-    }
-    for (const file of files) {
-      const cached = path.join(runtime, file.path)
-      if (await digest(cached, 'sha256', 'hex') !== file.sha256) {
-        throw new Error(`Cached Codex runtime was modified: ${file.path}`)
-      }
-      fs.chmodSync(cached, file.mode)
+    const restored = registry && await registry.fetch(runtime)
+    let prepared
+    if (restored) {
+      state.noLinks(runtime)
+      prepared = cachedRuntime(runtime, selected)
+      if (!prepared) throw new Error('Shared Codex runtime receipt differs from the reviewed archive')
+      verifyCachedFiles(runtime, prepared)
+      fs.unlinkSync(path.join(runtime, CACHE_RECEIPT))
+    } else {
+      prepared = await extractRuntime(selected, runtime)
     }
     let published = false
     try {
@@ -332,22 +367,14 @@ async function resolveVendoredCodex(
       // A concurrent build may have published the same fully verified input.
       const winner = cachedRuntime(directory, selected)
       if (!winner || !['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error
-      verifyCachedFiles(directory, { files })
+      verifyCachedFiles(directory, prepared)
       await probeVersion(winner.executable, selected.version)
     }
-    if (published) {
-      await completeRuntime(directory, selected, { entrypoint: packageManifest.entrypoint, files })
-    }
-    const destination = path.join(directory, packageManifest.entrypoint)
-    log(`Vendored Codex ${selected.version}: ${destination}`)
-    return {
-      path: destination,
-      root: directory,
-      files,
-      reported_version: selected.version,
-      sha256: files.find(file => file.path === packageManifest.entrypoint).sha256,
-      source: sourceRecord(selected)
-    }
+    if (published) await completeRuntime(directory, selected, prepared)
+    if (registry && !restored) await registry.publish(directory)
+    const result = resolvedRuntime(directory, selected, prepared)
+    log(`Vendored Codex ${selected.version}: ${result.path}`)
+    return result
   } catch (error) {
     log(`Vendored Codex resolution failed before cleanup: ${error.stack || error}`)
     throw error

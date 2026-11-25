@@ -76,6 +76,7 @@ from scholarseed_runtime.gateway.driver import (
     RuntimeTurnOutcome,
     RuntimeTurnResult,
 )
+from service.assistant.service.public_pdf import PublicPdfCache
 from service.capabilities.service.canvas import CanvasDocument
 from service.capabilities.service.components import ComponentRegistry
 from service.capabilities.service.declarative import CANVAS_SLOT, OPENUI_SLOT, ConversationDocument
@@ -383,6 +384,7 @@ class LiveSession:
         self._browser_delivery_lock = asyncio.Lock()
         self._browser_scope_end_pending = False
         self.local_socket = local_socket
+        self.public_pdf_cache = PublicPdfCache()
         self.network_domains = network_domains
         if not runtime_id.strip():
             raise ValueError("runtime id must not be empty")
@@ -2301,6 +2303,7 @@ class LiveSession:
                         model_key=self.model_id,
                         session_id=self.id,
                         turn_id=event.native_turn_id,
+                        cached_page=self.public_pdf_cache.evidence_page,
                     )
                 )
                 try:

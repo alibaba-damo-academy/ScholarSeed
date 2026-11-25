@@ -73,7 +73,7 @@ function sortedReplacer(key, value) {
 }
 
 /** python 组件内容标识：解释器归档 + 第三方依赖锁定输入的哈希。 */
-function derivePythonContentId({ target, pythonArchiveSha256, requirementsSha256, lockSha256, binaryPackages, bytecodeSha256, recipe, skillWheels = [] }) {
+function derivePythonContentId({ target, pythonArchiveSha256, requirementsSha256, sourceBuilds, binaryPackages, bytecodeSha256, recipe, skillWheels = [] }) {
   if (!CONTENT_ID_PATTERN.test(bytecodeSha256 || '')) throw new Error('Python component requires its bytecode compiler digest')
   return canonicalSha256({
     kind: PYTHON_KIND,
@@ -84,7 +84,7 @@ function derivePythonContentId({ target, pythonArchiveSha256, requirementsSha256
     target,
     pythonArchiveSha256,
     requirementsSha256,
-    lockSha256,
+    sourceBuilds,
     binaryPackages: [...binaryPackages].sort()
   })
 }

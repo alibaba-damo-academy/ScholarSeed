@@ -1,7 +1,7 @@
 
 
 // Contract fixtures only; real Electron and installers are separate acceptance.
-const { test } = require('node:test')
+const { after, before, test } = require('node:test')
 
 const assert = require('node:assert/strict')
 
@@ -14,12 +14,25 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const { runInNewContext } = require('node:vm')
+const { nativeTar } = require('../../../scripts/shared/python.cjs')
 const { verifyMacOSTree } = require('../scripts/shared/macos.cjs')
 const { ensurePrivateDirectory } = require('../scripts/shared/build-state.cjs')
 
 const { artifact, bundledCodex, CACHE_VALIDATION, completeRuntime, publishRuntime, resolveVendoredCodex, stageVendoredCodex, verifyArchive } = require('./codex.cjs')
 
 const REVIEWED_CODEX_VERSION = '0.171.0'
+
+// Distribution CI passes real registry settings down to child processes. Each
+// synthetic resolver test opts in to its own provider.
+const inheritedRegistry = {}
+before(() => {
+  for (const key of ['SCHOLARSEED_CODEX_REGISTRY_COMMAND', 'SCHOLARSEED_CI_CACHE_VERSION_DARWIN_ARM64_CODEX',
+    'SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX']) {
+    if (process.env[key] !== undefined) inheritedRegistry[key] = process.env[key]
+    delete process.env[key]
+  }
+})
+after(() => Object.assign(process.env, inheritedRegistry))
 
 test('Windows and macOS packaging preserve official prebuilt Codex without compiling', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../scripts/cd/build.cjs'), 'utf8')
@@ -160,33 +173,52 @@ test('Windows Codex component version follows the official vendored release', ()
     'review CI component-version-observed.json when upgrading official Codex')
 })
 
-function cacheFixture() {
+function cacheFixture({ platform = process.platform, arch = process.arch, reviewedArchive = false } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codex-cache-contract-')))
   const desktop = path.join(root, 'apps', 'desktop')
   const vendor = path.join(root, 'scripts', 'vendor', 'codex')
   fs.mkdirSync(desktop, { recursive: true })
   fs.mkdirSync(vendor, { recursive: true })
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../scripts/vendor/codex/manifest.json')))
-  const selected = manifest.artifacts[`${process.platform}-${process.arch}`]
-  const archive = Buffer.from('invalid archive, contract fixture only')
-  selected.sha256 = crypto.createHash('sha256').update(archive).digest('hex')
-  selected.integrity = 'sha512-' + crypto.createHash('sha512').update(archive).digest('base64')
-  selected.bytes = archive.length
-  fs.writeFileSync(path.join(vendor, 'manifest.json'), JSON.stringify(manifest))
-  fs.writeFileSync(path.join(vendor, selected.file), archive)
-  const cache = ensurePrivateDirectory(path.join(root, 'cache'))
-  const directory = path.join(cache,
-    `${selected.version ?? manifest.version}-${process.platform}-${process.arch}-${selected.sha256}`)
+  const key = `${platform}-${arch}`
+  const selected = manifest.artifacts[key]
+  const version = selected.version ?? manifest.version
   const entrypoint = 'bin/codex'
-  fs.mkdirSync(path.join(directory, 'bin'), { recursive: true })
-  const executable = path.join(directory, entrypoint)
-  fs.writeFileSync(executable, 'not an executable', { mode: 0o755 })
-  const receipt = {
-    archive_sha256: selected.sha256, reported_version: selected.version ?? manifest.version, entrypoint,
-    files: [{ path: entrypoint, mode: 0o755,
-      sha256: crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex') }],
+  const contents = { [entrypoint]: 'not an executable' }
+  const archive = path.join(vendor, selected.file)
+  if (reviewedArchive) {
+    contents[entrypoint] = '#!/bin/sh\nprintf "probe\\n" >> "$CODEX_TEST_PROBE_FILE"\nprintf "codex-cli ' + version + '\\n"\n'
+    contents['codex-package.json'] = JSON.stringify({ target: selected.target, entrypoint })
+    const prefix = `package/vendor/${selected.target}/`
+    for (const [name, content] of Object.entries(contents)) {
+      const member = path.join(root, prefix, name)
+      fs.mkdirSync(path.dirname(member), { recursive: true })
+      fs.writeFileSync(member, content)
+    }
+    execFileSync(nativeTar(), ['-czf', archive, '-C', root, ...Object.keys(contents).map(name => prefix + name)])
+  } else {
+    fs.writeFileSync(archive, 'invalid archive, contract fixture only')
   }
-  fs.writeFileSync(path.join(directory, 'resolve-receipt.json'), JSON.stringify(receipt))
+  const bytes = fs.readFileSync(archive)
+  selected.sha256 = crypto.createHash('sha256').update(bytes).digest('hex')
+  selected.integrity = 'sha512-' + crypto.createHash('sha512').update(bytes).digest('base64')
+  selected.bytes = bytes.length
+  selected.url = 'http://127.0.0.1:1/unavailable'
+  const cache = ensurePrivateDirectory(path.join(root, 'cache'))
+  const directory = path.join(cache, `${version}-${key}-${selected.sha256}`)
+  const executable = path.join(directory, entrypoint)
+  const files = Object.entries(contents).map(([name, content]) => {
+    const filename = path.join(directory, name)
+    fs.mkdirSync(path.dirname(filename), { recursive: true })
+    fs.writeFileSync(filename, content, { mode: 0o755 })
+    return { path: name, sha256: crypto.createHash('sha256').update(content).digest('hex'), mode: 0o755 }
+  })
+  const receipt = { archive_sha256: selected.sha256, reported_version: version, entrypoint, files }
+  const receiptBytes = JSON.stringify(receipt)
+  fs.writeFileSync(path.join(directory, 'resolve-receipt.json'), receiptBytes)
+  if (platform === 'darwin') selected.receiptSha256 = crypto.createHash('sha256').update(receiptBytes).digest('hex')
+  const manifestFile = path.join(vendor, 'manifest.json')
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest))
   const previous = process.env.SCHOLARSEED_CODEX_RUNTIME_CACHE
   process.env.SCHOLARSEED_CODEX_RUNTIME_CACHE = cache
   const dispose = () => {
@@ -194,8 +226,196 @@ function cacheFixture() {
     else process.env.SCHOLARSEED_CODEX_RUNTIME_CACHE = previous
     fs.rmSync(root, { recursive: true, force: true })
   }
-  return { root, desktop, directory, executable, dispose }
+  return { root, desktop, directory, executable, archive, manifestFile, selected, dispose }
 }
+
+function runFixtureRegistry() {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const [state, operation, ...args] = process.argv.slice(2)
+  const options = Object.fromEntries(Array.from({ length: args.length / 2 }, (_, i) => [args[2 * i], args[2 * i + 1]]))
+  const directory = options['--root']
+  if (args.length !== 8 || !/^\d+\.\d+\.\d+-r[1-9]\d*$/.test(options['--version']) || !path.isAbsolute(directory) ||
+      !['darwin-arm64', 'darwin-x86_64'].includes(options['--target']) || !/^[a-f0-9]{64}$/.test(options['--key'])) {
+    throw new Error('invalid Codex registry invocation')
+  }
+  fs.appendFileSync(path.join(state, 'calls'), JSON.stringify({ operation, ...options }) + '\n')
+  if (fs.existsSync(path.join(state, 'fail-' + operation))) process.exit(9)
+  const shared = path.join(state, options['--version'])
+  if (operation === 'fetch') {
+    if (!fs.existsSync(shared)) process.exit(3)
+    fs.cpSync(shared, directory, { recursive: true })
+  } else if (operation === 'confirm') {
+    if (!fs.existsSync(shared)) process.exit(3)
+  } else if (operation === 'publish') {
+    if (fs.existsSync(path.join(state, 'delay-publish'))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
+    fs.cpSync(directory, shared, { recursive: true })
+  } else throw new Error('unknown operation')
+}
+
+function registryFixture(context, { platform = 'darwin', arch = 'arm64' } = {}) {
+  const fixture = cacheFixture({ platform, arch, reviewedArchive: true })
+  const script = path.join(fixture.root, 'registry.cjs')
+  fs.writeFileSync(script, '(' + runFixtureRegistry.toString() + ')()')
+  const probe = path.join(fixture.root, 'probe')
+  const environment = {
+    CODEX_TEST_PROBE_FILE: probe,
+    SCHOLARSEED_ARTIFACT_CACHE: path.join(fixture.root, 'artifacts'),
+    SCHOLARSEED_CODEX_REGISTRY_COMMAND: JSON.stringify([process.execPath, script, fixture.root]),
+    SCHOLARSEED_CODEX_REGISTRY_SCOPE: 'a'.repeat(64),
+  }
+  const previous = Object.fromEntries(Object.keys(environment).map(key => [key, process.env[key]]))
+  Object.assign(process.env, environment)
+  context.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    fixture.dispose()
+  })
+  const callsPath = path.join(fixture.root, 'calls')
+  const calls = () => fs.existsSync(callsPath)
+    ? fs.readFileSync(callsPath, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : []
+  const resolve = validation => resolveVendoredCodex(fixture.desktop, platform, arch, () => {}, validation)
+  return { ...fixture, probe, calls, resolve, shared: path.join(fixture.root, REVIEWED_CODEX_VERSION + '-r1') }
+}
+
+test('macOS Codex pins require a lowercase SHA-256 string for each architecture', () => {
+  for (const arch of ['arm64', 'x64']) {
+    const fixture = cacheFixture({ platform: 'darwin', arch })
+    try {
+      const manifest = JSON.parse(fs.readFileSync(fixture.manifestFile))
+      assert.equal(artifact(fixture.desktop, 'darwin', arch).receiptSha256, fixture.selected.receiptSha256)
+      for (const invalid of [undefined, 'a'.repeat(63), 'A'.repeat(64), [fixture.selected.receiptSha256]]) {
+        manifest.artifacts['darwin-' + arch].receiptSha256 = invalid
+        fs.writeFileSync(fixture.manifestFile, JSON.stringify(manifest))
+        assert.throws(() => artifact(fixture.desktop, 'darwin', arch))
+      }
+    } finally { fixture.dispose() }
+  }
+})
+
+test('macOS backfills the requested Codex version after a failed write, cleanup or private revision change', async context => {
+  const fixture = registryFixture(context, { arch: 'x64' })
+  const failure = path.join(fixture.root, 'fail-publish')
+  fs.writeFileSync(failure, '')
+  await assert.rejects(fixture.resolve(CACHE_VALIDATION.integrity))
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['confirm', 'publish'])
+  fs.unlinkSync(failure)
+  fs.unlinkSync(fixture.archive)
+  await fixture.resolve(CACHE_VALIDATION.integrity)
+  await fixture.resolve(CACHE_VALIDATION.integrity)
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['confirm', 'publish', 'confirm', 'publish', 'confirm'])
+  fs.rmSync(fixture.shared, { recursive: true })
+  await fixture.resolve(CACHE_VALIDATION.integrity)
+  const override = 'SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX'
+  const oldVersion = process.env[override]
+  context.after(() => {
+    if (oldVersion === undefined) delete process.env[override]
+    else process.env[override] = oldVersion
+  })
+  process.env[override] = REVIEWED_CODEX_VERSION + '-r2'
+  await fixture.resolve(CACHE_VALIDATION.integrity)
+  const calls = fixture.calls()
+  assert.deepEqual(calls.slice(-4).map(call => [call.operation, call['--version']]), [
+    ['confirm', REVIEWED_CODEX_VERSION + '-r1'], ['publish', REVIEWED_CODEX_VERSION + '-r1'],
+    ['confirm', REVIEWED_CODEX_VERSION + '-r2'], ['publish', REVIEWED_CODEX_VERSION + '-r2'],
+  ])
+  for (const call of calls) {
+    assert.equal(call['--target'], 'darwin-x86_64')
+    assert.equal(call['--key'], fixture.selected.receiptSha256)
+  }
+})
+
+test('macOS restores a pinned Codex tree on a fresh runner without using the vendor artifact', {
+  skip: process.platform === 'win32',
+}, async context => {
+  const fixture = registryFixture(context)
+  fs.renameSync(fixture.directory, fixture.shared)
+  fs.unlinkSync(fixture.archive)
+  const fetch = context.mock.method(globalThis, 'fetch', () => assert.fail('unexpected vendor fetch'))
+  const resolved = await fixture.resolve()
+  assert.equal(resolved.path, fixture.executable)
+  assert.equal(resolved.reported_version, REVIEWED_CODEX_VERSION)
+  assert.equal(fs.readFileSync(fixture.probe, 'utf8'), 'probe\n')
+  fs.writeFileSync(path.join(fixture.root, 'fail-fetch'), '')
+  await fixture.resolve(CACHE_VALIDATION.integrity)
+  assert.equal(fetch.mock.callCount(), 0)
+  assert.deepEqual(fixture.calls().map(call => [call.operation, call['--target'], call['--key']]),
+    [['fetch', 'darwin-arm64', fixture.selected.receiptSha256], ['confirm', 'darwin-arm64', fixture.selected.receiptSha256]])
+})
+
+test('macOS rejects modified shared Codex bytes and forged receipts before executing or using the vendor', async context => {
+  for (const forgeReceipt of [false, true]) {
+    await context.test(forgeReceipt ? 'self-consistent forged receipt' : 'modified executable', async sub => {
+      const fixture = registryFixture(sub)
+      fs.renameSync(fixture.directory, fixture.shared)
+      const executable = path.join(fixture.shared, 'bin/codex')
+      fs.appendFileSync(executable, '\n# modified\n')
+      if (forgeReceipt) {
+        const receiptPath = path.join(fixture.shared, 'resolve-receipt.json')
+        const receipt = JSON.parse(fs.readFileSync(receiptPath))
+        receipt.files.find(file => file.path === receipt.entrypoint).sha256 =
+          crypto.createHash('sha256').update(fs.readFileSync(executable)).digest('hex')
+        fs.writeFileSync(receiptPath, JSON.stringify(receipt))
+      }
+      await assert.rejects(fixture.resolve())
+      assert.equal(fs.existsSync(fixture.probe), false)
+      assert.equal(fs.existsSync(fixture.directory), false)
+      assert.deepEqual(fixture.calls().map(call => call.operation), ['fetch'])
+    })
+  }
+})
+
+test('macOS takes the vendor path only after an explicit registry miss', { skip: process.platform === 'win32' }, async context => {
+  const fixture = registryFixture(context)
+  fs.rmSync(fixture.directory, { recursive: true })
+  const failure = path.join(fixture.root, 'fail-fetch')
+  fs.writeFileSync(failure, '')
+  await assert.rejects(fixture.resolve())
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['fetch'])
+  assert.equal(fs.existsSync(fixture.probe), false)
+  fs.unlinkSync(failure)
+  await fixture.resolve()
+  await fixture.resolve(CACHE_VALIDATION.integrity)
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['fetch', 'fetch', 'publish', 'confirm'])
+  assert.equal(fs.readFileSync(fixture.probe, 'utf8'), 'probe\n')
+  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(
+    path.join(fixture.shared, 'resolve-receipt.json'))).digest('hex'), fixture.selected.receiptSha256)
+})
+
+test('a different reviewed receipt blocks a cold archive before its first executable probe', async context => {
+  const fixture = registryFixture(context)
+  fs.rmSync(fixture.directory, { recursive: true })
+  const manifest = JSON.parse(fs.readFileSync(fixture.manifestFile))
+  manifest.artifacts['darwin-arm64'].receiptSha256 = 'f'.repeat(64)
+  fs.writeFileSync(fixture.manifestFile, JSON.stringify(manifest))
+  await assert.rejects(fixture.resolve(), /receipt/i)
+  assert.equal(fs.existsSync(fixture.probe), false)
+  assert.equal(fs.existsSync(path.join(fixture.directory, 'resolve-receipt.json')), false)
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['fetch'])
+})
+
+
+test('separate resolver processes backfill the shared Codex cache once', async context => {
+  const fixture = registryFixture(context)
+  fs.writeFileSync(path.join(fixture.root, 'delay-publish'), '')
+  const run = require('node:util').promisify(require('node:child_process').execFile)
+  const code = `const {resolveVendoredCodex, CACHE_VALIDATION} = require(process.argv[1])
+    resolveVendoredCodex(process.argv[2], 'darwin', 'arm64', () => {}, CACHE_VALIDATION.integrity)
+      .catch(error => {console.error(error); process.exitCode = 1})`
+  const args = ['-e', code, require.resolve('./codex.cjs'), fixture.desktop]
+  await Promise.all([run(process.execPath, args), run(process.execPath, args)])
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['confirm', 'publish', 'confirm'])
+})
+
+test('Windows resolves its Codex runtime without invoking a configured macOS registry', async context => {
+  const fixture = registryFixture(context, { platform: 'win32', arch: 'x64' })
+  const resolved = await fixture.resolve(CACHE_VALIDATION.integrity)
+  assert.equal(resolved.path, fixture.executable)
+  assert.deepEqual(fixture.calls(), [])
+})
+
 
 test('launch cache validation verifies inventory without executing; default still executes', async () => {
   const fixture = cacheFixture()
@@ -343,6 +563,7 @@ test('vendored manifest selects only reviewed platforms', () => {
     assert.match(selected.url, /^https:\/\//)
     assert.match(selected.sha256, /^[a-f0-9]{64}$/)
     assert.ok(selected.bytes > 0)
+    if (selected !== windows) assert.match(selected.receiptSha256, /^[a-f0-9]{64}$/)
   }
   assert.throws(() => artifact(desktop, 'win32', 'arm64'), /Unsupported/)
 })

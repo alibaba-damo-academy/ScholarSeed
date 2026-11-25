@@ -19,6 +19,11 @@ test('standalone protected generation builder exists', () => {
 const desktop = fileURLToPath(new URL('.', import.meta.url))
 const DEPENDENCY_DIRECTORY = 'node_modules'
 const HANDOFF_TIMEOUTS = 'updater/handoff/timeouts.json'
+const COMPONENT_MANIFESTS = [
+  'scripts/vendor/codex/manifest.json',
+  'scripts/vendor/python-build-standalone/manifest.json',
+  'scripts/vendor/texlive/manifest.json',
+]
 const INSPECTION_PROBE_TIMEOUT_MS = 10000
 function isolatedSource() {
   const container = mkdtempSync(join(tmpdir(), 'protected-build-'))
@@ -38,8 +43,11 @@ function isolatedSource() {
   for (const owner of ['ops-cli.cjs', 'pre', 'dev', 'ci', 'cd', 'shared']) cpSync(join(desktop, '../../scripts', owner), join(container, 'scripts', owner), {
     recursive: true, filter: source => !source.split(/[\\/]/).some(part => ['__tests__', '__pycache__'].includes(part))
   })
-  mkdirSync(join(container, 'scripts/vendor/texlive'), { recursive: true })
-  cpSync(join(desktop, '../../scripts/vendor/texlive/manifest.json'), join(container, 'scripts/vendor/texlive/manifest.json'))
+  for (const file of COMPONENT_MANIFESTS) {
+    const target = join(container, file)
+    mkdirSync(dirname(target), { recursive: true })
+    cpSync(join(desktop, '../..', file), target)
+  }
   // Native compilation verifies every generated security-policy output.
   const security = JSON.parse(readFileSync(join(desktop, 'native/security.outputs.json'), 'utf8'))
   for (const file of Object.keys(security.outputs)) {
@@ -70,6 +78,12 @@ test('actual standalone serve/build generation includes local fonts and minimal 
     assert.ok(manifest.sources.some((file: { path: string }) => file.path === '../../scripts/shared/python.cjs'))
     assert.ok(manifest.sources.some((file: { path: string }) => file.path === 'scripts/shared/lease.mjs'))
     assert.ok(manifest.sources.some((file: { path: string }) => file.path === '../../packages/ui/library.tsx'))
+    for (const path of COMPONENT_MANIFESTS) {
+      assert.ok(
+        manifest.sources.some((file: { path: string }) => file.path === `../../${path}`),
+        `missing frozen component manifest: ${path}`,
+      )
+    }
     assert.equal(manifest.sources.some((file: { path: string }) => file.path.includes('/__tests__/')), false)
     assert.ok(manifest.files.some((file: { path: string }) => file.path.endsWith('.woff2')))
     assert.ok(manifest.files.some((file: { path: string }) => file.path.endsWith('.css')))

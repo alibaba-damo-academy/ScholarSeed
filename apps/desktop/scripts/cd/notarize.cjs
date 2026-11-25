@@ -22,6 +22,10 @@ const NOTARY_MAX_POLLS = 240
 // Replacing `--wait` also dropped its internal retries, so a transient network
 // or token error on one `info` call must not fail an already uploaded build.
 const NOTARY_REQUEST_ATTEMPTS = 3
+// `submit` opens its own connection before uploading anything, so a short
+// connect timeout costs no bandwidth; retry it instead of discarding a signed app.
+const NOTARY_SUBMIT_ATTEMPTS = 3
+const NOTARY_SUBMIT_BACKOFF_MS = 10000
 const LOG_PREFIX = '[notarize]'
 
 function log(message) {
@@ -42,6 +46,36 @@ function command(executable, args) {
 
 function notaryRequest(args) {
   return JSON.parse(command('xcrun', ['notarytool', ...args, '--output-format', 'json']))
+}
+
+function errorSummary(error) {
+  const text = (error && (error.stderr || error.message)) || ''
+  const line = String(text)
+    .split('\n')
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0)
+  return line || 'unknown error'
+}
+
+// Retry `submit` itself: a connect timeout fails before any work is accepted by
+// Apple, and a retry that lands after a partial upload only costs bandwidth.
+// The worst case is one extra Apple submission record for the same archive.
+function submitArchive(archive, credentialArgs, options = {}) {
+  const attempts = options.attempts || NOTARY_SUBMIT_ATTEMPTS
+  const backoff = options.backoffMs === undefined ? NOTARY_SUBMIT_BACKOFF_MS : options.backoffMs
+  const request = options.request || ((args) => notaryRequest(['submit', ...args]))
+  const wait = options.wait || sleep
+  let lastError
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return request([archive, ...credentialArgs])
+    } catch (error) {
+      lastError = error
+      log(`submit attempt ${attempt}/${attempts} failed: ${errorSummary(error)}`)
+      if (attempt < attempts) wait(backoff * attempt)
+    }
+  }
+  throw lastError
 }
 
 function credentials(environment) {
@@ -111,6 +145,7 @@ exports.default = async function notarizeMacApplication(context) {
   )
   const archive = path.join(frozen.runDirectory, 'notarization.zip')
   const credentialArgs = credentials(process.env)
+  let notarized = false
   try {
     const compressStartedAt = Date.now()
     log(`compressing ${appPath}`)
@@ -118,7 +153,7 @@ exports.default = async function notarizeMacApplication(context) {
     log(`archive ${fs.statSync(archive).size} bytes in ${elapsedSeconds(compressStartedAt)}s`)
 
     log('submitting to Apple (upload and queueing can take several minutes)')
-    const submission = notaryRequest(['submit', archive, ...credentialArgs])
+    const submission = submitArchive(archive, credentialArgs)
     if (!submission.id) {
       throw new Error(`Apple notarization submission missing id: ${submission.status || 'unknown'}`)
     }
@@ -137,10 +172,18 @@ exports.default = async function notarizeMacApplication(context) {
       message: typeof receipt.message === 'string' ? receipt.message : ''
     })
     log(`notarization complete: ${receipt.id}`)
+    notarized = true
   } finally {
-    fs.rmSync(archive, { force: true })
+    // Keep the archive after a failure so the notarization step can be re-run
+    // without paying for a full repack, resign and recompress cycle.
+    if (notarized) {
+      fs.rmSync(archive, { force: true })
+    } else if (fs.existsSync(archive)) {
+      log(`kept ${archive} (${fs.statSync(archive).size} bytes) for retry`)
+    }
   }
 }
 
 module.exports.credentials = credentials
+module.exports.submitArchive = submitArchive
 module.exports.waitForNotarization = waitForNotarization

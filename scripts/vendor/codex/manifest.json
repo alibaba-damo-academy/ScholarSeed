@@ -7,6 +7,7 @@
       "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.171.0-darwin-arm64.tgz",
       "sha256": "185e1c789e5fd528390c1a89a6968dca791e9aa3138db830d53afffdc9079ae3",
       "bytes": 157740951,
+      "receiptSha256": "05a29a18f0bbb838a76fc94da958f701325e62cae437e5e06e6b7e4977fbaefe",
       "integrity": "sha512-hIYTkRUpuYpkVfTq4cpby0PXqhAVcIgE7f6FoyY1lt2RyARj3GXS1Can/dIYUBItVhXzhb98HYHZNzCX74QRlQ==",
       "target": "aarch64-apple-darwin"
     },
@@ -15,6 +16,7 @@
       "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.171.0-darwin-x64.tgz",
       "sha256": "05f9cf2fb4a88938df609759b73d8d649d5318a2088e78575888d480d63dd5f0",
       "bytes": 167908356,
+      "receiptSha256": "dbb89425a071db64cff47034227929b47291ffd52f9de4f5b50dbcb53d0a6fd4",
       "integrity": "sha512-pwN5uNEKx/mZjwBEf/6CKq6SJMfJS5kruV3sJQAk7ebIPvC58Ote3CicIxETDZtjLj35rNv3PLPd7mHCg6hGPw==",
       "target": "x86_64-apple-darwin"
     },

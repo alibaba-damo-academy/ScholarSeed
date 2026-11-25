@@ -130,6 +130,7 @@ BLOCKING_OPERATIONS = frozenset(
         ("resource", "import"),
         ("resource", "read-text"),
         ("resource", "read-external"),
+        ("pdf", "read-url"),
         ("literature", "acquire"),
         ("literature", "fulltext"),
         ("literature", "authorize"),
@@ -667,6 +668,15 @@ class PdfQuery(BaseModel):
     retry: bool = False
 
 
+class PdfReadUrl(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    url: str = Field(min_length=1, max_length=2048, description="Public full-text PDF URL")
+    query: str = Field(default="", max_length=PDF_QUERY_CHARS, description="Text to locate")
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=PDF_READ_LIMIT, ge=1, le=PDF_MAX_LIMIT)
+
+
 class PdfMaterialize(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -859,6 +869,7 @@ PDF_REQUESTS: dict[str, type[BaseModel]] = {
     name: PdfQuery for name in ("list", "prepare", "status", "read", "search", "library")
 }
 
+PDF_REQUESTS["read-url"] = PdfReadUrl
 PDF_REQUESTS[PDF_MATERIALIZE_OPERATION] = PdfMaterialize
 PDF_REQUESTS[PAPERCARD_REGISTER_OPERATION] = PaperCardRegister
 PDF_REQUESTS[ANNOTATIONS_OPERATION] = PdfAnnotations
@@ -1804,7 +1815,12 @@ LITERATURE_CURATION_ROUTES = {
 }
 LITERATURE_CURATION_READS = frozenset(("counts", "facets", "tag-facets", "projects", "notes"))
 LITERATURE_CURATION_DESTRUCTIVE = frozenset(
-    ("delete", "attachment-delete", "tag-delete", "collection-delete")
+    (
+        "delete",
+        "attachment-delete",
+        "tag-delete",
+        "collection-delete",
+    )
 )
 LITERATURE_CURATION_EXTERNAL = frozenset(("import-identifier", "fulltext"))
 BRIDGE_REQUESTS.update(
