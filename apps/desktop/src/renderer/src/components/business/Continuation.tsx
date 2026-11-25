@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getSessionContinuation, type SessionContinuationPreview } from '../../api'
+import { needsCompatibleContinuation } from '../../failures'
 import type { ConvItem } from '../../model'
 import { activeThread, useApp, type AppState, type ComposerReference } from '../../store'
 import {
@@ -42,7 +43,7 @@ function continuationScope(state: AppState, item: FailureItem): string | null {
   const thread = activeThread(state)
   const latestTurnId = [...thread.conversation].reverse().find((entry) => entry.turnId)?.turnId
   if (
-    item.failure?.kind !== 'capability' ||
+    !needsCompatibleContinuation(item.failure?.kind) ||
     !item.turnId ||
     latestTurnId !== item.turnId ||
     !thread.sessionId ||

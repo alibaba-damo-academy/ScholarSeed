@@ -1712,6 +1712,20 @@ class CompletionBridgeContract(unittest.TestCase):
         _, returned = self.model_response(body, native=True, streaming=True)
         self.assertEqual(returned, body)
 
+    def test_upstream_stream_cannot_diagnose_history_content(self):
+        error = {"code": "model_history_content_unsupported", "message": "private"}
+        for frame in (
+            {"type": "error", **error},
+            {"type": "response.failed", "response": {"error": error}},
+        ):
+            with self.subTest(frame=frame["type"]):
+                body = b"data: " + json.dumps(frame).encode() + b"\n\n"
+                self.model_response(body, native=True, streaming=True)
+                fields = self.diagnostics[-1][1]
+                self.assertEqual(fields["downstream"]["terminal_event"], "response.failed")
+                self.assertEqual(fields["downstream"]["error_code"], error["code"])
+                self.assertEqual(terminal_provider_failure(fields), {})
+
     def test_native_content_safety_failure_is_normalized_before_codex(self):
         body = (
             b'data: {"type":"response.failed","response":{"status":"failed","error":'

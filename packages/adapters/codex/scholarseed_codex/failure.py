@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
 
-from scholarseed_runtime.contract.incident import RuntimeRetryability
+from scholarseed_runtime.contract.incident import (
+    MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE,
+    RuntimeRetryability,
+)
 
 CODEX_PROVIDER_FAILED = "codex_provider_failed"
 CONTENT_SAFETY_BLOCKED = "CONTENT_SAFETY_BLOCKED"
@@ -130,6 +133,7 @@ _TERMINAL_CODES = (
     | _CONTENT_POLICY_CODES
     | _CREDIT_CODES
     | _SUBSCRIPTION_CAPABILITY_CODES
+    | {MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE}
 )
 _CODE_BY_MESSAGE = {
     "incomplete response returned, reason: content_filter": CONTENT_SAFETY_BLOCKED,
@@ -153,6 +157,7 @@ _CODE_BY_HTTP_STATUS: dict[int, str] = {
     **dict.fromkeys(_TRANSIENT_HTTP_STATUSES, "server_error"),
 }
 _SAFE_MESSAGES = {
+    MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE: "The selected model cannot accept part of this conversation's history.",
     "max_output_tokens": PROVIDER_OUTPUT_LIMIT_MESSAGE,
     **dict.fromkeys(_CONTENT_POLICY_CODES, PROVIDER_CONTENT_POLICY_MESSAGE),
     **dict.fromkeys(_QUOTA_CODES, PROVIDER_QUOTA_MESSAGE),
@@ -194,9 +199,12 @@ def provider_failure(value: Any) -> ProviderFailure:
     # Codex 的散文包装挡住前缀锚定的状态/签名提取，先剥一层再解析（无包装时 sub 是 no-op）。
     probe_text = _CODEX_STREAM_DISCONNECTED_PREFIX.sub("", message, count=1)
     http_status = _native_http_status(value) or _http_status(probe_text)
-    sse_error = _sse_error(probe_text) or _http_error(probe_text)
+    stream_error = _sse_error(probe_text)
+    envelope_text = message
+    sse_error = stream_error or _http_error(probe_text)
     if sse_error is None and isinstance(value, Mapping):
         details = str(value.get("additionalDetails") or "")
+        envelope_text = details
         sse_error = _http_error(details)
         http_status = http_status or _http_status(details)
     if sse_error is not None:
@@ -209,6 +217,14 @@ def provider_failure(value: Any) -> ProviderFailure:
     if not code and http_status is not None:
         code = _CODE_BY_HTTP_STATUS.get(http_status, "")
     code = _canonical_provider_code(code, probe_text)
+    if code.casefold() == MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE and not (
+        stream_error is None
+        and sse_error is not None
+        and _HTTP_ERROR_PREFIX.match(envelope_text)
+        and http_status == HTTPStatus.BAD_REQUEST
+    ):
+        # Only the bridge's HTTP rejection can establish a history-format failure.
+        code = CODEX_PROVIDER_FAILED
     # Some providers use a generic request code even for rejected credentials.
     # Preserve known auth identities (notably account recovery), but never let
     # a generic body code hide the explicit HTTP authentication failure.

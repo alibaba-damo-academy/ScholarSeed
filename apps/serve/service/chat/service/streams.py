@@ -80,6 +80,20 @@ ERROR_MESSAGE_LIMIT = 500
 INPUT_SHAPE_LIMIT = 128
 INPUT_FIELD_LIMIT = 32
 INPUT_TEXT_FINGERPRINT_LIMIT = 16
+RESPONSE_CONTENT_PATH = re.compile(r"input\[(0|[1-9][0-9]*)\]\.content")
+RESPONSE_ITEM_TYPES = ("message", "reasoning", "function_call", "function_call_output")
+RESPONSE_ITEM_ROLES = ("user", "assistant", "system", "developer")
+RESPONSE_PART_TYPES = (
+    "input_text",
+    "output_text",
+    "reasoning_text",
+    "summary_text",
+    "refusal",
+    "input_image",
+    "input_file",
+    "input_audio",
+    "encrypted_content",
+)
 ERROR_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 METADATA_PATTERN = re.compile(r"[a-zA-Z0-9_.:/+\-]+")
 RESPONSE_TERMINALS = frozenset(("response.completed", "response.failed", "response.incomplete"))
@@ -753,6 +767,7 @@ class CompletionDiagnostic:
     downstream_send_max_ms: float = 0.0
     converted_input_items: dict[str, int] = field(default_factory=dict)
     input_shapes: list[dict[str, Any]] = field(default_factory=list)
+    rejected_input: dict[str, Any] = field(default_factory=dict)
     user_input_fingerprints: list[dict[str, Any]] = field(default_factory=list)
     tool_schema_fingerprints: list[dict[str, Any]] = field(default_factory=list)
     output_format_type: str = ""
@@ -880,6 +895,48 @@ class CompletionDiagnostic:
                         -INPUT_TEXT_FINGERPRINT_LIMIT:
                     ]
 
+    def observe_rejected_content(self, payload: Mapping[str, Any], param: str) -> bool:
+        """Inspect the final outbound item named by a provider; never record arbitrary values."""
+        match = RESPONSE_CONTENT_PATH.fullmatch(param)
+        items = payload.get("input")
+        if match is None or not isinstance(items, list):
+            return False
+        index = int(match[1])
+        if index >= len(items) or not isinstance(item := items[index], Mapping):
+            return False
+        content = item.get("content")
+        if not isinstance(content, list):
+            return False
+        role = item.get("role", "")
+        kind = item.get("type", "message" if role in RESPONSE_ITEM_ROLES else "")
+        counts: dict[str, int] = {}
+        for part in content:
+            part_type = part.get("type") if isinstance(part, Mapping) else None
+            label = part_type if part_type in RESPONSE_PART_TYPES else "other"
+            counts[label] = counts.get(label, 0) + 1
+        self.rejected_input = {
+            "index": index,
+            "type": kind if kind in RESPONSE_ITEM_TYPES else "other",
+            "role": role if role in RESPONSE_ITEM_ROLES else "",
+            "content_count": len(content),
+            "part_counts": counts,
+        }
+        # Multiple user items may belong to the current turn. A prior user
+        # message needs an intervening assistant output and a later user input.
+        model_output = kind == "reasoning" or (kind == "message" and role == "assistant")
+        if not content or (not model_output and not (kind == "message" and role == "user")):
+            return False
+        for later_index in range(index + 1, len(items)):
+            later = items[later_index]
+            if not isinstance(later, Mapping):
+                continue
+            if later.get("type", "message") == "message":
+                if later.get("role") == "user" and model_output:
+                    return True
+                if later.get("role") == "assistant":
+                    model_output = True
+        return False
+
     def protect(self, headers: Mapping[str, str]) -> None:
         secrets = tuple(
             value.removeprefix("Bearer ") for value in headers.values() if len(value) >= 4
@@ -992,6 +1049,8 @@ class CompletionDiagnostic:
             "downstream": self.downstream.snapshot(),
         }
         if phase == "finished":
+            if self.rejected_input:
+                fields["rejected_input"] = self.rejected_input
             if self.first_connect_failure_category:
                 fields["first_connect_failure_category"] = self.first_connect_failure_category
             if self.cancellation_source:

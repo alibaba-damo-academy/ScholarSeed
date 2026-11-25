@@ -161,7 +161,7 @@ import {
   canContinueFailedTurn,
   canOfferTurnRecovery,
   effectiveReadiness,
-  hasCurrentTurnCapabilityFailure,
+  currentTurnNeedsCompatibleContinuation,
   isResourceFinalizing,
   permissionModeFeedback,
   permissionModeNeedsConfirmation,
@@ -3411,10 +3411,10 @@ export function Composer({
     <>
       {header?.({
         continueTurn: () =>
-          continueDisabled || hasCurrentTurnCapabilityFailure(thread)
+          continueDisabled || currentTurnNeedsCompatibleContinuation(thread)
             ? Promise.resolve(false)
             : submit(t('stream.continueTaskPrompt'), [], true),
-        continueDisabled: continueDisabled || hasCurrentTurnCapabilityFailure(thread),
+        continueDisabled: continueDisabled || currentTurnNeedsCompatibleContinuation(thread),
       })}
       {notice}
       <div

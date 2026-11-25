@@ -56,7 +56,7 @@ import {
   effectiveReadiness,
   formatRuntimeStatus,
   formatTurnUnknown,
-  hasCurrentTurnCapabilityFailure,
+  currentTurnNeedsCompatibleContinuation,
   permissionModeFailure,
   permissionModeNeedsConfirmation,
   permissionModeShowsNextTurn,
@@ -856,7 +856,7 @@ test('subscription capability incident explains the terminal rejection in both l
   )
 })
 
-test('composer header continuation blocks only the current capability failure', async () => {
+test('composer header continuation blocks the current incompatible request', async () => {
   const source = readFileSync(
     new URL('./components/business/Composer.tsx', import.meta.url),
     'utf8'
@@ -883,15 +883,26 @@ test('composer header continuation blocks only the current capability failure', 
     ...describeTurnFailure({ code: 'subscription_sharing_unsupported_capability' }),
     turnId: 'capability-turn',
   }
+  const history = {
+    ...describeTurnFailure({
+      code: 'codex_provider_failed',
+      provider_error_code: 'model_history_content_unsupported',
+      retryable: true,
+    }),
+    turnId: 'history-turn',
+  }
+  assert.equal(history.failure?.kind, 'history_content')
+  assert.equal(history.runtimeAction, undefined)
   for (const [conversation, blocked] of [
     [[capability], true],
+    [[history], true],
     [[capability, { kind: 'user', text: 'new task', turnId: 'next-turn' }], false],
     [[{ ...describeTurnFailure({ retryable: true }), turnId: 'ordinary-turn' }], false],
   ] as [ConvItem[], boolean][]) {
     let submissions = 0
     let controls: { continueTurn: () => Promise<boolean>; continueDisabled: boolean } | undefined
     runInNewContext(script, {
-      hasCurrentTurnCapabilityFailure,
+      currentTurnNeedsCompatibleContinuation,
       thread: { ...thread(), running: false, status: 'failed', conversation },
       continueDisabled: false,
       header: (value: typeof controls) => {
@@ -919,6 +930,12 @@ test('classified turn failures keep a distinct reason in their complete guidance
   })
   const display = (item: ReturnType<typeof describeTurnFailure>) =>
     formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+
+  const history = describeTurnFailure({ code: 'model_history_content_unsupported', retryable: true })
+  assert.equal(history.failure?.kind, 'history_content')
+  assert.equal(history.runtimeAction, undefined)
+  assert.equal(display(history).message, zh.failure.historyContent.message)
+  assert.equal(display(history).action, zh.failure.historyContent.action)
 
   // 适配器 _AUTH_CODES 里有这个码，渲染层曾漏登记，于是塌缩成 unknown 并只剩英文脱敏原文。
   const bridge = describeTurnFailure({
@@ -958,6 +975,8 @@ test('classified turn failures keep a distinct reason in their complete guidance
 
   await locale.changeLanguage('en')
   assert.equal(display(bridge).message, 'Model service authentication failed.')
+  assert.equal(display(history).message, en.failure.historyContent.message)
+  assert.equal(display(history).action, en.failure.historyContent.action)
   assert.equal(display(rateLimit).message, en.failure.rateLimit.message)
   assert.equal(display(rateLimit).action, en.failure.rateLimit.action)
   assert.match(display(rateLimit).action, /Too many requests.*429/)

@@ -653,6 +653,7 @@ export type ConvItem = TurnOwned &
         failure?: {
           kind:
             | 'capability'
+            | 'history_content'
             | 'subscription_limit'
             | 'quota'
             | 'credits'

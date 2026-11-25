@@ -4,6 +4,7 @@ import type { ConvItem } from './model'
 
 export type ProviderFailureKind =
   | 'capability'
+  | 'history_content'
   | 'subscription_limit'
   | 'quota'
   | 'credits'
@@ -30,6 +31,7 @@ const ACCOUNT_AUTH_FAILURE_CODE = 'model_bridge_credential_required'
 const GATEWAY_CREDENTIAL_REQUIRED_CODE = 'gateway_credential_required'
 export const SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE =
   'subscription_sharing_unsupported_capability'
+export const MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE = 'model_history_content_unsupported'
 const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
   'output_limit',
   'unavailable',
@@ -42,6 +44,7 @@ const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
 const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>>> = {
   max_output_tokens: 'output_limit',
   [SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE]: 'capability',
+  [MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE]: 'history_content',
   subscription_sharing_usage_limit_exceeded: 'subscription_limit',
   content_safety_blocked: 'content_policy',
   content_policy_violation: 'content_policy',
@@ -70,6 +73,15 @@ const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>
   service_unavailable: 'unavailable',
   timeout: 'timeout',
   connection_error: 'connection',
+}
+
+export function needsCompatibleContinuation(kind?: string): boolean {
+  return kind === 'capability' || kind === 'history_content'
+}
+
+export function compatibleContinuationCode(value: unknown): string | undefined {
+  const code = typeof value === 'string' ? value.trim().toLowerCase() : undefined
+  return code && needsCompatibleContinuation(FAILURE_KIND_BY_CODE[code]) ? code : undefined
 }
 
 function providerFrame(message: string): { code: string; message: string } | null {
@@ -105,6 +117,10 @@ const FAILURE_TEXT = {
     actionKey: 'failure.outputLimit.action',
   },
   capability: { messageKey: 'failure.capability.message', actionKey: 'failure.capability.action' },
+  history_content: {
+    messageKey: 'failure.historyContent.message',
+    actionKey: 'failure.historyContent.action',
+  },
   subscription_limit: {
     messageKey: 'failure.subscriptionLimit.message',
     actionKey: 'failure.subscriptionLimit.action',
@@ -147,13 +163,9 @@ export function describeTurnFailure(data: {
 }): Extract<ConvItem, { kind: 'error' }> {
   const rawMessage = String(data.message || '').trim()
   const frame = providerFrame(rawMessage)
-  const providerCode = String(data.provider_error_code || '')
-    .trim()
-    .toLowerCase()
   const code =
-    providerCode === SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE
-      ? providerCode
-      : String(data.code || frame?.code || '').trim()
+    compatibleContinuationCode(data.provider_error_code) ||
+    String(data.code || frame?.code || '').trim()
   const classified = Object.prototype.hasOwnProperty.call(FAILURE_KIND_BY_CODE, code.toLowerCase())
     ? FAILURE_KIND_BY_CODE[code.toLowerCase()]
     : undefined
@@ -266,6 +278,7 @@ export function formatTurnFailure(
 const LEGACY_FAILURE_MESSAGES = {
   output_limit: '',
   capability: SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE,
+  history_content: MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE,
   subscription_limit: '',
   content_policy: '',
   model_config: '',

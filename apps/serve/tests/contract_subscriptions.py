@@ -358,6 +358,31 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["store"])
         self.assertTrue(result["stream"])
 
+    def test_subscription_projects_fragmented_assistant_history_without_changing_the_thread(self):
+        fragments = [{"type": "output_text", "text": str(i) + "\n"} for i in range(500)]
+        citation = {"type": "output_text", "text": "source", "annotations": [{"start_index": 0}]}
+        tail = {"type": "output_text", "text": " end", "annotations": []}
+        content = [*fragments, citation, tail, tail]
+        items = [
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "a"}] * 2},
+            {"type": "message", "role": "assistant", "content": content},
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ]
+        original = copy.deepcopy(items)
+        result = SubscriptionService.request_policy({"input": items})["input"]
+        self.assertEqual(result[0], original[0])
+        self.assertEqual(
+            result[1]["content"],
+            [
+                {"type": "output_text", "text": "".join(part["text"] for part in fragments)},
+                citation,
+                {**tail, "text": " end end"},
+            ],
+        )
+        self.assertEqual(result[2], original[2])
+        self.assertEqual(items, original)
+        self.assertEqual(SubscriptionService.request_policy({"input": result})["input"], result)
+
     def test_unsupported_requests_fail_before_upstream(self):
         for payload in (
             {"input": "text"},
@@ -988,6 +1013,11 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(self.bridge._upstreams), {other.bridge_id})
 
     async def test_oauth_selected_effort_reaches_outbound_responses_request(self):
+        directory = copy.deepcopy(UPSTREAM_MODELS_PAYLOAD)
+        directory["models"][0]["supported_reasoning_levels"].extend(
+            {"effort": effort} for effort in ("xhigh", "max", "ultra")
+        )
+        self.reinstall(lambda request: httpx.Response(200, json=directory))
         connection = await self.connected()
         await self.subscriptions.sync_directory(OWNER, connection)
         app = FastAPI()
@@ -1014,31 +1044,46 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         ):
             self.bridge._clients[SUBSCRIPTION_TRUST_ENV] = upstream_client
             with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
-                for selected, stale in (("low", "high"), ("high", "low")):
-                    with self.subTest(selected=selected):
+                for selected, native, expected, wire_log in (
+                    ("low", "high", "low", "low"),
+                    ("high", "low", "high", "high"),
+                    ("ultra", "xhigh", "xhigh", "xhigh"),
+                    ("ultra", "max", "max", "max"),
+                    ("ultra", "unrecognized-effort", "unrecognized-effort", "-"),
+                ):
+                    with self.subTest(selected=selected, native=native):
                         spec = self.models.session_spec(
                             personal_model_key(connection, MODEL),
-                            session_id="effort-" + selected,
+                            session_id="effort-session",
                             user_id=OWNER,
                             reasoning_effort=selected,
                         )
-                        intent, _ = spec.runtime_model()
-                        response = await bridge_client.post(
-                            intent.transport.endpoint + "/responses",
-                            json={
-                                "model": MODEL,
-                                "input": [{"role": "user", "content": "Check effort forwarding"}],
-                                "reasoning": {"effort": stale},
-                                "stream": True,
-                            },
-                        )
+                        intent, _ = spec.runtime_model(selected)
+                        self.assertEqual(intent.reasoning_effort, selected)
+                        with self.assertLogs("service.chat.service.completions") as logs:
+                            response = await bridge_client.post(
+                                intent.transport.endpoint + "/responses",
+                                json={
+                                    "model": MODEL,
+                                    "input": [{"role": "user", "content": "Check forwarding"}],
+                                    "reasoning": {"effort": native, "context": "all_turns"},
+                                    "stream": True,
+                                },
+                            )
                         self.assertEqual(response.status_code, 200)
-                        self.assertEqual(sent[-1].get("reasoning", {}).get("effort"), selected)
+                        self.assertEqual(
+                            sent[-1]["reasoning"], {"effort": expected, "context": "all_turns"}
+                        )
+                        reasoning_log = next(
+                            entry for entry in logs.output if "model_bridge_reasoning" in entry
+                        )
+                        self.assertIn(f"wire_effort={wire_log}", reasoning_log)
+                        self.assertNotIn("unrecognized-effort", reasoning_log)
                         self.assertFalse(sent[-1]["store"])
                         self.assertTrue(sent[-1]["stream"])
-            self.assertEqual(len(sent), 2)
+            self.assertEqual(len(sent), 5)
             finished = [event for event in diagnostics if event["phase"] == "finished"]
-            self.assertEqual(len(finished), 2)
+            self.assertEqual(len(finished), 5)
 
     async def test_tool_free_inference_crosses_bridge_without_unsupported_output_budget(self):
         connection = await self.connected()

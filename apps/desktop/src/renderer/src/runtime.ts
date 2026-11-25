@@ -28,7 +28,12 @@ import type {
 } from './model'
 import { projectHilCard, hilResolution, hilSubmissionFailure } from './hil.ts'
 import { insertTurnRuntimeItem, settleInterruptedActivities } from './transcript.ts'
-import { SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE } from './failures.ts'
+import {
+  compatibleContinuationCode,
+  MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE,
+  needsCompatibleContinuation,
+  SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE,
+} from './failures.ts'
 
 const SERVICE_TRANSPORT_INCIDENT_ID = 'service-transport'
 const UNKNOWN_RESPONSE_RPC_METHODS = new Set(['server-response/hil', 'server-response/tool'])
@@ -101,6 +106,7 @@ const SANDBOX_INCIDENT_MESSAGE_KEYS = {
 const INCIDENT_MESSAGE_KEYS = {
   ...SANDBOX_INCIDENT_MESSAGE_KEYS,
   [SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE]: 'runtime.reason.subscription_capability_unsupported',
+  [MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE]: 'failure.historyContent.message',
   agent_runtime_exit: 'runtime.reason.agent_runtime_exit',
   runtime_transport_lost: 'runtime.reason.runtime_transport_lost',
   runtime_rpc_timeout: 'runtime.reason.runtime_rpc_timeout',
@@ -264,12 +270,12 @@ export function canContinueFailedTurn(
     !canOfferTurnRecovery(thread) ||
     thread.terminated ||
     thread.recoveryPending ||
-    failure.failure?.kind === 'capability' ||
+    needsCompatibleContinuation(failure.failure?.kind) ||
     thread.conversation.some(
       (item) =>
         item.kind === 'error' &&
         item.turnId === failure.turnId &&
-        item.failure?.kind === 'capability'
+        needsCompatibleContinuation(item.failure?.kind)
     ) ||
     !failure.turnId ||
     failure.runtimeAction !== 'continue_turn' ||
@@ -285,13 +291,17 @@ export function canContinueFailedTurn(
   )
 }
 
-export function hasCurrentTurnCapabilityFailure(thread: Pick<Thread, 'conversation'>): boolean {
+export function currentTurnNeedsCompatibleContinuation(
+  thread: Pick<Thread, 'conversation'>
+): boolean {
   const turnId = [...thread.conversation].reverse().find((item) => Boolean(item.turnId))?.turnId
   return Boolean(
     turnId &&
     thread.conversation.some(
       (item) =>
-        item.kind === 'error' && item.turnId === turnId && item.failure?.kind === 'capability'
+        item.kind === 'error' &&
+        item.turnId === turnId &&
+        needsCompatibleContinuation(item.failure?.kind)
     )
   )
 }
@@ -669,10 +679,7 @@ function runtimeIncidentText(data: RuntimeIncidentData): {
   text: RuntimeStatusMessage
   tone: Cognitive
 } {
-  const reason =
-    data.provider_error_code === SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE
-      ? SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE
-      : data.safe_error
+  const reason = compatibleContinuationCode(data.provider_error_code) || data.safe_error
   if (data.state === 'retrying') {
     if (data.kind === 'provider_retry' || data.strategy === 'vendor_retry') {
       return { text: { key: 'runtime.providerRetrying', reason }, tone: 'inference' }
