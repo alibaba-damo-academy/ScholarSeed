@@ -15,6 +15,7 @@ import { DEVELOPMENT_CONTROL_ARGUMENT, DEVELOPMENT_CONTROL_TIMEOUT_MS } from '..
 import debugging from '../../../../scripts/dev/desktop.cjs'
 import source from '../../../../scripts/shared/source.cjs'
 import execution from '../../../../scripts/shared/execution.cjs'
+import leases from '../../../../scripts/shared/lease.cjs'
 import leasing from './runner.cjs'
 import worker from './worker.cjs'
 
@@ -395,6 +396,35 @@ async function ready(instance, repo, interrupted) {
   throw new Error('development readiness unconfirmed')
 }
 
+export function completionCapability(channel = process) {
+  if (!channel.send) return Promise.resolve(null)
+  return new Promise((resolve, reject) => {
+    const finish = (error, ticket) => {
+      clearTimeout(timer)
+      channel.removeListener('message', receive)
+      channel.removeListener('disconnect', disconnect)
+      if (error) reject(error)
+      else resolve(ticket)
+    }
+    const receive = value => {
+      if (value?.kind !== leasing.DEVELOPMENT_LEASE) return
+      if (Object.keys(value).length !== 3 || value.version !== leasing.DEVELOPMENT_PROTOCOL_VERSION || !value.ticket) {
+        finish(new Error('invalid development lease capability'))
+      } else finish(null, value.ticket)
+    }
+    const disconnect = () => finish(new Error('development lease holder disconnected before admission'))
+    const timer = setTimeout(() => finish(new Error('development lease admission timed out')), DEVELOPMENT_CONTROL_TIMEOUT_MS)
+    channel.on('message', receive)
+    channel.once('disconnect', disconnect)
+    if (!channel.connected) { disconnect(); return }
+    try {
+      channel.send({ kind: leasing.DEVELOPMENT_LEASE_REQUEST, version: leasing.DEVELOPMENT_PROTOCOL_VERSION }, error => {
+        if (error) finish(error)
+      })
+    } catch (error) { finish(error) }
+  })
+}
+
 export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_ROOT) {
   const settings = developmentArguments(argv)
   const root = await fs.realpath(desktopRoot)
@@ -411,6 +441,7 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
   const signal = name => { interrupted ??= name }
   const interrupt = () => signal('SIGINT')
   const terminate = () => signal('SIGTERM')
+  const disconnect = () => signal('SIGTERM')
   const stopMessage = value => {
     if (value && typeof value === 'object' && Object.keys(value).length === 3 &&
       value.kind === leasing.DEVELOPMENT_STOP && value.version === leasing.DEVELOPMENT_PROTOCOL_VERSION && Object.hasOwn(SIGNAL_STATUS, value.signal)) signal(value.signal)
@@ -418,9 +449,13 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
   process.on('SIGINT', interrupt)
   process.on('SIGTERM', terminate)
   process.on('message', stopMessage)
+  process.on('disconnect', disconnect)
   let initial
   let familyHost
+  let completion
   try {
+    completion = await completionCapability()
+    if (process.send && !process.connected) disconnect()
     closeWatcher = debugging.watchRestartSources(repo, report, () => { state.dirty = true })
     const snapshot = source.developmentSourceSnapshot(repo)
     initial = await compileCandidate({ desktopRoot: root })
@@ -527,7 +562,9 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
           if (instance.family) instance.family.terminate()
           else if (process.platform === 'win32') instance.child.kill(interrupted)
           else {
-            try { process.kill(-instance.child.pid, interrupted) }
+            // Let Electron save preferences and drain its backend before checking
+            // the whole group. Terminating its renderer first can withhold quit.
+            try { process.kill(instance.child.pid, 'SIGINT') }
             catch (error) { if (error.code !== 'ESRCH') throw error }
           }
         },
@@ -554,6 +591,15 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
     process.removeListener('SIGINT', interrupt)
     process.removeListener('SIGTERM', terminate)
     process.removeListener('message', stopMessage)
+    process.removeListener('disconnect', disconnect)
+    if (finalStatus === null && completion) {
+      try { leases.complete(completion) }
+      catch (error) {
+        report(`Read lease completion could not be recorded (${error.code || error.name}); reservation retained.`)
+        finalStatus = execution.PROCESS_TREE_UNCONFIRMED_EXIT
+        try { await record('retained'); await handle?.close() } catch {}
+      }
+    }
     if (finalStatus === null && process.send && process.connected) {
       try {
         await new Promise((resolve, reject) => process.send({ kind: leasing.DEVELOPMENT_STOPPED, version: leasing.DEVELOPMENT_PROTOCOL_VERSION }, error => error ? reject(error) : resolve()))

@@ -7,8 +7,10 @@ const net = require('node:net')
 const http = require('node:http')
 const child = require('node:child_process')
 const { EventEmitter } = require('node:events')
+const { randomUUID } = require('node:crypto')
 const test = require('node:test')
 const toolchain = require('../../pre/toolchain.cjs')
+const leases = require('../../shared/lease.cjs')
 const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer } = require('../desktop.cjs')
 
 test('automatic reload reports its triggering paths before notifying the supervisor', async context => {
@@ -447,4 +449,21 @@ test('supervision cleans descendants even if the immediate launcher exits first'
   const launcher = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'inherit'});setTimeout(()=>process.exit(0),500)`
   const code = await supervise({ executable: process.execPath, args: ['-e', launcher], options: { stdio: 'inherit' } })
   assert.equal(code, 0)
+})
+
+test('launcher waits for its own environment holder after the package-manager wrapper exits', async context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-lease-'))
+  const scope = randomUUID()
+  const reader = leases.acquire({mode:'read', resources:[directory], scope})
+  context.after(() => { reader.release(); fs.rmSync(directory, {recursive:true, force:true}) })
+  let returned = false
+  const stopped = supervise({executable:process.execPath, args:['-e', 'process.exit(0)'], options:{stdio:'ignore'}}, {scope})
+    .then(code => { returned = true; return code })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.equal(returned, false)
+  assert.equal(leases.pending(scope), true)
+  assert.equal(leases.pending(randomUUID()), false)
+  reader.release()
+  assert.equal(await stopped, 0)
+  assert.equal(leases.pending(scope), false)
 })

@@ -6,7 +6,6 @@ import ctypes
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import stat
@@ -14,6 +13,7 @@ import struct
 import subprocess
 import tempfile
 import zipfile
+from pathlib import Path
 
 FRAMEWORKS = {
     "electron": ("Electron Framework.framework",),
@@ -22,7 +22,10 @@ FRAMEWORKS = {
 KINDS = (*FRAMEWORKS, "python", "texlive")
 PRODUCT_WHEELS = {"scholarseed", "scholarseed-runtime", "scholarseed-codex", "damoatrace"}
 BUNDLE_SUFFIXES = (".app", ".framework", ".bundle", ".plugin", ".xpc", ".appex")
-MACHO = {bytes.fromhex(magic) for magic in ("feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca")}
+MACHO = {
+    bytes.fromhex(magic)
+    for magic in ("feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca")
+}
 MIB = 1024 * 1024
 MAX_SEAL = 16 * MIB
 SIGNATURE_ROOM = 4 * MIB
@@ -30,12 +33,21 @@ NOFOLLOW = 1  # Darwin XATTR_NOFOLLOW
 LIBC = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
 LIBC.listxattr.argtypes = (ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
 LIBC.listxattr.restype = ctypes.c_ssize_t
-LIBC.getxattr.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int)
+LIBC.getxattr.argtypes = (
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_uint32,
+    ctypes.c_int,
+)
 LIBC.getxattr.restype = ctypes.c_ssize_t
 
 
 def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def file_hash(path):
@@ -48,14 +60,20 @@ def slices(image):
     magic = image.read(4)
     if magic not in (b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
         return [(0, 0, 0, size, 0)]
-    endian = ">" if magic[0] == 0xca else "<"
-    count, = struct.unpack(endian + "I", image.read(4))
+    endian = ">" if magic[0] == 0xCA else "<"
+    (count,) = struct.unpack(endian + "I", image.read(4))
     if not 0 < count <= 32:
         raise ValueError("invalid universal Mach-O")
     entries = [struct.unpack(endian + "IIIII", image.read(20)) for _ in range(count)]
     cursor = image.tell()
     for _, _, start, length, align in sorted(entries, key=lambda e: e[2]):
-        if align > 30 or start % (1 << align) or start < cursor or not length or length > size - start:
+        if (
+            align > 30
+            or start % (1 << align)
+            or start < cursor
+            or not length
+            or length > size - start
+        ):
             raise ValueError("invalid universal Mach-O slice")
         while cursor < start:
             data = image.read(min(MIB, start - cursor))
@@ -76,8 +94,8 @@ def validate_signature_spans(path):
             header = image.read(32)
             if len(header) != 32 or header[:4] not in MACHO:
                 raise ValueError("invalid Mach-O header")
-            endian = "<" if header[0] in (0xce, 0xcf) else ">"
-            header_size = 32 if 0xcf in header[:4] else 28
+            endian = "<" if header[0] in (0xCE, 0xCF) else ">"
+            header_size = 32 if 0xCF in header[:4] else 28
             count, length = struct.unpack_from(endian + "II", header, 16)
             if length > min(MIB, size - header_size) or count > length // 8:
                 raise ValueError("invalid Mach-O load commands")
@@ -88,9 +106,14 @@ def validate_signature_spans(path):
                 command, n = struct.unpack_from(endian + "II", commands, cursor)
                 if n < 8 or cursor + n > length:
                     raise ValueError("invalid Mach-O load command")
-                if command == 0x1d:  # LC_CODE_SIGNATURE
+                if command == 0x1D:  # LC_CODE_SIGNATURE
                     offset, signature = struct.unpack_from(endian + "II", commands, cursor + 8)
-                    if n != 16 or offset < header_size + length or not signature or offset + signature != size:
+                    if (
+                        n != 16
+                        or offset < header_size + length
+                        or not signature
+                        or offset + signature != size
+                    ):
                         raise ValueError("non-terminal Mach-O signature")
                 cursor += n
             if cursor != length:
@@ -202,15 +225,20 @@ def framework_seals(root):
 def inspect(app, kind):
     backend = app / "Contents/Resources/backend"
     framework = kind in FRAMEWORKS
-    roots = ([app / "Contents/Frameworks" / name for name in FRAMEWORKS[kind]]
-             if framework else [backend / kind])
+    roots = (
+        [app / "Contents/Frameworks" / name for name in FRAMEWORKS[kind]]
+        if framework
+        else [backend / kind]
+    )
     inputs, unchanged, files, seals, bundles = [], [], [], [], []
     for root in roots:
         if not root.exists():
             continue
         physical(root, app)
         members = list(walk(root))
-        if framework and any(p.is_dir() and not p.is_symlink() and p.name.endswith(BUNDLE_SUFFIXES) for p in members):
+        if framework and any(
+            p.is_dir() and not p.is_symlink() and p.name.endswith(BUNDLE_SUFFIXES) for p in members
+        ):
             # A future nested bundle needs its own seal and policy verification.
             continue
         owned = product_files(root) if kind == "python" else set()
@@ -251,8 +279,11 @@ def inspect(app, kind):
             if macho:
                 files.append(name)
     return {
-        "inputSha256": digest(inputs), "unchangedSha256": digest(unchanged),
-        "files": sorted(files), "seals": sorted(seals), "bundles": sorted(bundles),
+        "inputSha256": digest(inputs),
+        "unchangedSha256": digest(unchanged),
+        "files": sorted(files),
+        "seals": sorted(seals),
+        "bundles": sorted(bundles),
     }
 
 
@@ -302,7 +333,10 @@ def verify_overlay(path, name, expected, directory):
 def restore(app, expected, kind, archive):
     current = inspect(app, kind)
     names = overlay_paths(current, expected)
-    with tempfile.TemporaryDirectory(dir=app.parent, prefix=".signed-runtime-") as scratch, zipfile.ZipFile(archive) as z:
+    with (
+        tempfile.TemporaryDirectory(dir=app.parent, prefix=".signed-runtime-") as scratch,
+        zipfile.ZipFile(archive) as z,
+    ):
         stage = Path(scratch)
         # A publisher that lost a concurrent first write can already be signed.
         # Only its signature envelope may have changed since the frozen plan.
@@ -318,8 +352,11 @@ def restore(app, expected, kind, archive):
             destination = physical(app / name, app)
             member = z.getinfo(name)
             limit = MAX_SEAL + expected["proofs"].get(name, [None, 0])[1]
-            if (member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
-                    or not 0 < member.file_size <= limit or member.flag_bits & 1):
+            if (
+                member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                or not 0 < member.file_size <= limit
+                or member.flag_bits & 1
+            ):
                 raise ValueError(f"unsupported signed runtime archive entry: {name}")
             staged = stage / str(index)
             mode = 0o644
@@ -358,7 +395,14 @@ def main():
         prepare_proofs(app, plans, args.plan_file.parent)
         with args.plan_file.open("x") as output:
             json.dump(plans, output)
-        print(json.dumps({kind: {k: p[k] for k in ("inputSha256", "files", "bundles")} for kind, p in plans.items()}))
+        print(
+            json.dumps(
+                {
+                    kind: {k: p[k] for k in ("inputSha256", "files", "bundles")}
+                    for kind, p in plans.items()
+                }
+            )
+        )
     else:
         expected = json.loads(args.plan_file.read_text())[args.kind]
         (pack if args.operation == "pack" else restore)(app, expected, args.kind, args.archive)

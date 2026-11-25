@@ -359,12 +359,12 @@ and ticket on Squirrel's existing extraction. If ticket verification is
 temporarily inconclusive, it can retry the same bound request. Installation
 requires a fresh online grant.
 
-The 0.3.2 macOS distribution build can reuse signed runtime files from a previous
-build. The first build signs and stores Electron Framework, the
-Mantle/ReactiveObjC/Squirrel frameworks, third-party Python Mach-O files, and
-TeX Live Mach-O files as four separate groups. An app-code-only build restores
-each matching group before running the signer. The cache key binds the group's input bytes, target
-architecture, Developer ID certificate, entitlements and signing tools. CI checks
+The macOS distribution build can reuse signed Electron Framework, third-party
+Python Mach-O files and TeX Live Mach-O files as three separate groups. CI signs
+the Mantle, ReactiveObjC and Squirrel frameworks on every build. An app-code-only
+build restores each matching cache group before running the signer. The cache key
+binds the group's input bytes, target architecture, Developer ID Application
+policy, Team ID, entitlements and signing tools. CI checks
 the restored code against the current inputs and verifies its signature on every
 architecture. It signs the current outer app and runs notarization and installer
 acceptance for each release. The private distribution runner shares this cache
@@ -394,8 +394,7 @@ flow. A missing sidecar or failed object transfer uses the same release's full Z
 
 Each release stores `app.bin`, `layout.gz` and `macos-zip-components-v3.json` alongside
 `scholarseed-update.zip` in `<channel>/<arch>/<version>-<build_number>/`. The app object
-includes Mantle, ReactiveObjC and Squirrel. CI can restore their signed binaries from
-the private frameworks cache when producing the app object. The entire bundled
+includes Mantle, ReactiveObjC and Squirrel. The entire bundled
 `site-packages/service/capabilities/skills/` tree also belongs to `app.bin`,
 including its generated manifests and bytecode. The first macOS Python revision
 with this split is `3.14.10-r2`. The publisher uses `workspace_wheels` in
@@ -428,10 +427,10 @@ CI 从挂载的 DMG 按旧客户端的方式生成 1 级 ZIP。正式分发时�
 记录发布 ZIP 的大小和摘要。客户端复用 Squirrel 解出的应用校验身份和
 票据。票据暂无法判定时可以重试同一笔已绑定的请求。正式安装仍需重新获取在线授权。
 
-0.3.2 的 macOS 正式构建支持复用已签名运行时。首次构建将 Electron Framework、
-Mantle/ReactiveObjC/Squirrel 框架、Python 第三方 Mach-O 和 TeX Live Mach-O 分成四组签名并缓存。
+macOS 正式构建支持复用已签名的 Electron Framework、Python 第三方 Mach-O 和 TeX Live Mach-O，
+共三组缓存。Mantle、ReactiveObjC 和 Squirrel 框架在每次构建中签名。
 仅改应用代码时，CI 在签名前恢复命中的组。缓存键绑定该组输入、目标架构、Developer ID
-证书、entitlements 和签名工具。恢复时比对本次构建的代码，并逐架构验签。每次发布仍会签署
+Application 签名策略、Team ID、entitlements 和签名工具。恢复时比对本次构建的代码，并逐架构验签。每次发布仍会签署
 本次外层应用，执行公证与安装器验收。私有分发 CI 默认跨机器共享缓存，也可用
 `--no-shared-components` 切换到本机复用。日志中每组的 `[sign-cache]` 行会给出
 `miss`（首次签名）、`local`（本机命中）或 `registry`（共享库命中）。
@@ -439,6 +438,24 @@ macOS 和 Windows 共用私有目录 `scholarseed-components/v3/<平台>/<组件
 每版保存 `receipt.json` 和 `<组件>.zip`。CI 按版本读取收据，核对完整输入 SHA、归档摘要和大小。
 远端版本目录缺失时，热构建机可从已校验的本机副本补库。输入冲突时显式指定新的私有修订，例如
 `SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX=0.171.0-r2`。此设置只选择构建缓存。
+
+恢复时逐架构校验 Apple 信任链、Developer ID Application 证书类型、配置的 Team ID，
+以及代码标识、指定要求、安全时间戳、hardened runtime 和 entitlements。使用不同证书的同团队
+构建机可在其他缓存输入一致时共享签名结果。
+签名策略文件或 Team ID 变化会改变缓存键。若旧任务和新任务需要并行，请为每个受影响组配置
+未占用的私有缓存修订号，并在共享同一输入的新任务之间使用相同修订。
+若要沿用旧修订，先停止使用旧输入的任务，完成签名策略和输入切换，再清理对应平台、组件和修订
+前缀下的收据及 ZIP，由新任务重新填充。
+
+Cache restore verifies the Apple trust chain, Developer ID Application certificate type, configured
+Team ID, code identifier, designated requirement, secure timestamp, hardened runtime, and entitlements
+for every architecture. Runners using different certificates from the same team can share results
+when all other cache inputs match. Policy source or Team ID changes alter the cache key. To run old and new jobs
+in parallel, allocate an unused private revision per affected component and share it across new
+jobs with identical inputs.
+To reuse an existing revision, stop jobs that can publish the former input and coordinate the
+policy and input cutover before clearing the receipt and ZIP under that exact version prefix.
+
 在 macOS 上用正式分发包运行签名样本验收：
 `SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`。
 默认 CI 独立运行缓存与签名策略回归。
@@ -451,7 +468,7 @@ Python wheel 安装时间、来源 URL 和引用它们的 RECORD 随应用组件
 
 每次发布在 `<渠道>/<架构>/<版本>-<构建号>/` 下存放 `app.bin`、`layout.gz`、
 `macos-zip-components-v3.json` 和 `scholarseed-update.zip`。`app.bin` 包含 Mantle、
-ReactiveObjC 和 Squirrel。CI 构建应用时可从私有 frameworks 缓存恢复这三个框架的签名文件。
+ReactiveObjC 和 Squirrel。
 内置 Skill 的整棵 `site-packages/service/capabilities/skills/` 目录及其中生成的清单和字节码也随
 `app.bin` 发布。采用此划分的首个 macOS Python 组件版本是 `3.14.10-r2`。发布器按
 `backend/python-dependencies.json` 的 `workspace_wheels` 识别 `deep-rnd-l1` 等产品 wheel。
@@ -1147,17 +1164,23 @@ without the cache option, the full assembly runs each time.
 Codex cache keys bind the actual input tree, entry point, archive recipe, target,
 and packaging-Python archive digest. A hit skips only compression; it still checks the
 complete ZIP inventory and final runtime-version binding. The Python recipe is owned by
-`assembly.cjs` for dependency sync, normalization, bytecode, and archive steps; it is no
-longer bound to the entire `bundle.cjs`. Its inputs include the interpreter, exported runtime
+`assembly.cjs` for dependency sync, normalization, bytecode and archive steps. Go cache
+and temporary directory permissions are managed outside this recipe. Its inputs include the interpreter, exported runtime
 requirements, locked source-build dependencies and build constraints, Skill wheels and uv version.
-The Windows TeX Live key includes the installed PE normalizer used to build the archive.
+The Windows TeX Live and PowerShell keys include the vendor archive digest and the
+archive writer. TeX Live also binds its build-time normalization script and the
+installed PE library. Runtime staging options such as window visibility are outside
+these keys.
 Application version bumps and unrelated development dependencies can reuse both caches.
 Each build still runs its tests, signature verification and installer acceptance.
 Before publishing under the default private cache version, Windows checks the file tree
 and ZIP against the hashes in `versions.json`. If only the ZIP encoding differs, CI
 retrieves the reviewed archive and verifies its file inventory before caching it.
 
-Windows Python 使用导出的运行时依赖及源码包构建约束，TeX Live 使用实际安装的 PE 规范化工具。
+Windows Python 使用导出的运行时依赖及源码包构建约束。Go 缓存和临时目录权限独立管理，
+无需进入 Python 缓存键。Windows 的 TeX Live 和 PowerShell 缓存键包含上游归档摘要
+和归档生成脚本。TeX Live 还校验构建规范化脚本和实际安装的 PE 库。窗口显示等运行时
+准备选项不进入这两个缓存键。
 只改应用版本或无关开发依赖时，两组均可复用已有缓存，每次构建仍执行测试、验签和安装验收。
 写入默认私有缓存版本前，Windows 会核对 `versions.json` 中的文件树和 ZIP 摘要。
 如果只有 ZIP 编码不同，CI 会取回该版本已审核的归档，逐文件核对通过后再写入缓存。

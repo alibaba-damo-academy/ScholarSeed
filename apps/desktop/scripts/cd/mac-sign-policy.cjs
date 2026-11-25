@@ -2,7 +2,6 @@
 const cp = require('node:child_process')
 const {createHash, X509Certificate} = require('node:crypto')
 const fs = require('node:fs')
-const os = require('node:os')
 const path = require('node:path')
 const {isDeepStrictEqual} = require('node:util')
 
@@ -23,7 +22,7 @@ function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-function certificate(options, signing) {
+function verifiedSigningTeam(options, signing) {
   if (signing?.mode !== 'developer-id' || !/^[A-Z0-9]{10}$/.test(signing.teamId) ||
       !signing.identity.startsWith('Developer ID Application: ') || options.platform !== 'darwin' ||
       options.type !== 'distribution' || typeof options.identity !== 'string')
@@ -41,9 +40,9 @@ function certificate(options, signing) {
     const subject = cert.toLegacyObject().subject
     if (cert.fingerprint.replaceAll(':', '') === hashes[0] &&
         subject.CN === signing.identity && subject.OU === signing.teamId)
-      return {name: signing.identity, team: signing.teamId, sha1: hashes[0], sha256: digest(cert.raw)}
+      return signing.teamId
   }
-  throw new Error('Cannot pin the selected Developer ID certificate')
+  throw new Error('Selected Developer ID certificate does not match the configured signing identity and team')
 }
 
 function plistValue(data) {
@@ -80,29 +79,27 @@ function binaryIdentifier(filename, arch) {
   return name.replace(/([^\d.]\.?\d*)[\d.]*$/, '$1')
 }
 
-function verifySignature(target, framework, expected, cert, prefix, decoded) {
+function verifySignature(target, framework, expected, signing, decoded) {
   // Apply the Apple Developer ID requirement to every slice, independent of
   // what the cache object declares about its own signing requirements.
-  const requirement = `=${SIGNING_CHAIN} and certificate leaf = H"${cert.sha1}"`
-  command(CODESIGN, ['--verify', '--strict', '--all-architectures', '-R', requirement, target])
+  const {team, requirement} = signing
+  command(CODESIGN, ['--verify', '--strict', '--all-architectures', '-R', `=${requirement}`, target])
   const executable = framework?.executable || target
   const archs = command('/usr/bin/lipo', ['-archs', executable]).stdout.trim().split(/\s+/)
   for (const arch of archs) {
-    fs.rmSync(prefix + '0', {force: true})
     const {stdout, stderr} = command(CODESIGN, ['--display', '--architecture', arch, '--verbose=4', '-r-',
-      '--xml', '--entitlements', '-', '--extract-certificates=' + prefix, target])
+      '--xml', '--entitlements', '-', target])
     const identifier = /^Identifier=(.+)$/m.exec(stderr)?.[1]
     if (identifier !== (framework?.identifier || binaryIdentifier(executable, arch)))
       throw new Error(`Cached signature identifier differs from the signing input: ${target} (${arch})`)
     const end = stdout.indexOf('\n')
     const designated = stdout.slice(0, end).replaceAll(' /* exists */', '')
-    const required = ` and ${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${cert.team}`
+    const required = ` and ${requirement}`
     const lines = stderr.split(/\r?\n/)
     if (!identifier || end < 0 ||
         ![`designated => identifier ${identifier}${required}`, `designated => identifier "${identifier}"${required}`].includes(designated) ||
         !/^CodeDirectory .* flags=0x10000\(runtime\) /m.test(stderr) || !/^Timestamp=.+$/m.test(stderr) ||
-        !lines.includes('Authority=' + cert.name) || !lines.includes('TeamIdentifier=' + cert.team) ||
-        digest(fs.readFileSync(prefix + '0')) !== cert.sha256)
+        !/^Authority=Developer ID Application: .+$/m.test(stderr) || !lines.includes('TeamIdentifier=' + team))
       throw new Error(`Cached signature differs from the Developer ID policy: ${target} (${arch})`)
     const xml = stdout.slice(end + 1)
     if (!decoded.has(xml)) decoded.set(xml, plistValue(xml))
@@ -112,13 +109,14 @@ function verifySignature(target, framework, expected, cert, prefix, decoded) {
 }
 
 function createRuntimeSigningPolicy(options, frozen) {
-  const cert = certificate(options, frozen.native.signing)
+  const team = verifiedSigningTeam(options, frozen.native.signing)
+  const signing = {team, requirement: `${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${team}`}
   // Fingerprint the actual tools, independent of per-runner installation paths.
   const allocator = command('/usr/bin/xcrun', ['--find', 'codesign_allocate']).stdout.trim()
   const sources = [CODESIGN, '/usr/bin/codesign_allocate', allocator, __filename, ...['signer.cjs', 'macho.cjs', 'osx-sign.cjs'].map(name => path.join(__dirname, name)),
     require.resolve('@electron/osx-sign/dist/cjs/sign'), require.resolve('@electron/osx-sign/dist/cjs/util')]
   if (process.env.CODESIGN_ALLOCATE) sources.push(process.env.CODESIGN_ALLOCATE)
-  const policy = {cert, electron: options.version, system: command('/usr/bin/sw_vers', ['-buildVersion']).stdout.trim(),
+  const policy = {signing, electron: options.version, system: command('/usr/bin/sw_vers', ['-buildVersion']).stdout.trim(),
     recipe: sources.map(filename => digest(fs.readFileSync(filename)))}
   const entitlements = new Map()
   return {
@@ -146,15 +144,11 @@ function createRuntimeSigningPolicy(options, frozen) {
       return {
         digest: digest(JSON.stringify([policy, members.map(m => [m.relative, m.bundle, m.entitlements.digest])])),
         verify() {
-          const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'signed-runtime-cert-'))
-          try {
-            const decoded = new Map()
-            const frameworks = frameworkExecutables(members.filter(m => m.bundle).map(m => m.filename))
-            for (const member of members)
-              verifySignature(member.filename, frameworks.get(member.filename) || frameworks.get(fs.realpathSync(member.filename)),
-                member.entitlements.value, cert, path.join(directory, 'leaf'), decoded)
-          } finally {
-            fs.rmSync(directory, {force: true, recursive: true})
+          const decoded = new Map()
+          const frameworks = frameworkExecutables(members.filter(m => m.bundle).map(m => m.filename))
+          for (const member of members) {
+            verifySignature(member.filename, frameworks.get(member.filename) || frameworks.get(fs.realpathSync(member.filename)),
+              member.entitlements.value, signing, decoded)
           }
         },
       }
