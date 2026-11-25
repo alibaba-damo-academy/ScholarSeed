@@ -4,51 +4,50 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { setTimeout: delay } = require('node:timers/promises')
 const state = require('../scripts/shared/build-state.cjs')
+const { ciCacheVersion } = require('../scripts/shared/ci-cache-version.cjs')
 
 const run = promisify(execFile)
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000
 const SQLITE_BUSY = 5
 
-function sharedRegistry(selected, database, log) {
+function sharedRegistry(selected, log) {
   const command = process.env.SCHOLARSEED_CODEX_REGISTRY_COMMAND
   if (command === undefined) return null
   const argv = JSON.parse(command)
-  const scope = process.env.SCHOLARSEED_CODEX_REGISTRY_SCOPE
-  if (!Array.isArray(argv) || !argv.length || argv.some(arg => typeof arg !== 'string' || !arg) || !state.SHA256.test(scope))
-    throw new Error('Invalid macOS Codex registry command or scope')
+  if (!Array.isArray(argv) || !argv.length || argv.some(arg => typeof arg !== 'string' || !arg))
+    throw new Error('Invalid macOS Codex registry command')
   const target = { 'darwin-arm64': 'darwin-arm64', 'darwin-x64': 'darwin-x86_64' }[selected.key]
   if (!target) throw new Error('Unsupported shared Codex runtime target')
   const key = selected.receiptSha256
-  database.exec('CREATE TABLE IF NOT EXISTS published (scope TEXT, receipt TEXT, PRIMARY KEY(scope, receipt))')
-  const recordPublication = () => database.prepare('INSERT OR IGNORE INTO published VALUES (?, ?)').run(scope, key)
+  const { macComponentVersions } = require('../scripts/cd/mac-component-versions.cjs')
+  const version = ciCacheVersion(target, 'codex', macComponentVersions(selected.version).codex)
   const invoke = async (operation, root) => {
     try {
-      await run(argv[0], [...argv.slice(1), operation, '--target', target, '--key', key, '--root', root])
+      await run(argv[0], [...argv.slice(1), operation, '--target', target, '--version', version, '--key', key, '--root', root])
     } catch (error) {
-      if (operation === 'fetch' && error.code === 3) return false
+      if ((operation === 'fetch' || operation === 'confirm') && error.code === 3) return false
       throw error
     }
     return true
   }
   const publish = async root => {
     await invoke('publish', root)
-    recordPublication()
-    log(`[codex-cache] published ${target} key=${key}`)
+    log(`[codex-cache] published ${target}/codex/${version} key=${key}`)
   }
   return {
     async fetch(root) {
       const found = await invoke('fetch', root)
-      log(`[codex-cache] shared ${found ? 'hit' : 'miss'} ${target} key=${key}`)
+      log(`[codex-cache] shared ${found ? 'hit' : 'miss'} ${target}/codex/${version} key=${key}`)
       return found
     },
     async confirmLocal(root) {
-      if (database.prepare('SELECT 1 FROM published WHERE scope = ? AND receipt = ?').get(scope, key)) {
-        log(`[codex-cache] local hit ${target} key=${key}`)
+      if (await invoke('confirm', root)) {
+        log(`[codex-cache] local hit ${target}/codex/${version} key=${key}`)
         return
       }
       await publish(root)
     },
-    publish, recordPublication
+    publish
   }
 }
 
@@ -70,7 +69,7 @@ async function withMacRuntimeCache(directory, selected, resolve, log) {
         await delay(250)
       }
     }
-    const runtime = await resolve(sharedRegistry(selected, database, log))
+    const runtime = await resolve(sharedRegistry(selected, log))
     database.exec('COMMIT')
     return runtime
   } finally {

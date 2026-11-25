@@ -4,11 +4,11 @@ const codex = require('../../../../scripts/vendor/codex/manifest.json').version
 const python = require('../../../../scripts/vendor/python-build-standalone/manifest.json').python
 const texlive = require('../../../../scripts/vendor/texlive/manifest.json').texlive
 
-function macComponentVersions() {
+function macComponentVersions(codexVersion = codex) {
   // Bump a runtime's revision if its shipped bytes change at the same upstream version.
   const versions = {
     browser: `${browserNode}-r1`,
-    codex: `${codex}-r1`,
+    codex: `${codexVersion}-r1`,
     electron: `${electron}-r1`,
     python: `${python}-r2`,
     texlive: `${texlive}-r1`,

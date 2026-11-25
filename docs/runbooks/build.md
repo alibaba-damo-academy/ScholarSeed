@@ -370,13 +370,11 @@ architecture. It signs the current outer app and runs notarization and installer
 acceptance for each release. The private distribution runner shares this cache
 across machines by default. Use `--no-shared-components` for local reuse. The
 signer logs `[sign-cache]` with `miss`, `local` or `registry` for each group.
-The private CI registry defaults to `scholarseed-components/v2` on both platforms.
-For example, a macOS signing job stores its Python input receipt under
-`inputs/python/darwin-arm64/<input-key>.json` and the signed archive under
-`objects/<archive-sha256>.zip`. The receipt identifies the component, target,
-input key, archive digest and size. On the runner, the registry-scoped cache stores
-`component.zip` and `receipt.json` together under
-`shared-v2/<kind>/<target>/<input-key>/`. Local-only builds use `local-v2/`.
+Both platforms use `scholarseed-components/v3/<target>/<kind>/<version>/` in the private CI registry.
+Each version owns `receipt.json` and `<kind>.zip`. CI reads the receipt by version and verifies
+the full input SHA, archive digest and size. A warm runner can repopulate a missing version from
+its verified local copy. A conflicting input requires an explicit private revision, such as
+`SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX=0.171.0-r2`. This only selects the build cache.
 On macOS, run the signed-sample acceptance against the distribution app with
 `SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`.
 Default CI exercises cache and policy regressions without a distribution sample.
@@ -437,12 +435,10 @@ Mantle/ReactiveObjC/Squirrel 框架、Python 第三方 Mach-O 和 TeX Live Mach-
 本次外层应用，执行公证与安装器验收。私有分发 CI 默认跨机器共享缓存，也可用
 `--no-shared-components` 切换到本机复用。日志中每组的 `[sign-cache]` 行会给出
 `miss`（首次签名）、`local`（本机命中）或 `registry`（共享库命中）。
-macOS 和 Windows 的 CI 私有仓库默认都使用 `scholarseed-components/v2`。例如，
-macOS Python 签名缓存的输入记录位于 `inputs/python/darwin-arm64/<输入键>.json`，
-已签名归档位于 `objects/<归档 SHA-256>.zip`。记录中包含组件名、目标架构、输入键、
-归档摘要和字节数。构建机在对应仓库的缓存目录下按
-`shared-v2/<组件>/<目标>/<输入键>/` 存放 `component.zip` 和 `receipt.json`，
-仅使用本机缓存时采用 `local-v2/`。
+macOS 和 Windows 共用私有目录 `scholarseed-components/v3/<平台>/<组件>/<版本>/`。
+每版保存 `receipt.json` 和 `<组件>.zip`。CI 按版本读取收据，核对完整输入 SHA、归档摘要和大小。
+远端版本目录缺失时，热构建机可从已校验的本机副本补库。输入冲突时显式指定新的私有修订，例如
+`SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX=0.171.0-r2`。此设置只选择构建缓存。
 在 macOS 上用正式分发包运行签名样本验收：
 `SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`。
 默认 CI 独立运行缓存与签名策略回归。
@@ -1152,9 +1148,19 @@ Codex cache keys bind the actual input tree, entry point, archive recipe, target
 and packaging-Python archive digest. A hit skips only compression; it still checks the
 complete ZIP inventory and final runtime-version binding. The Python recipe is owned by
 `assembly.cjs` for dependency sync, normalization, bytecode, and archive steps; it is no
-longer bound to the entire `bundle.cjs`. The interpreter, requirements, full uv.lock,
-skill wheels, and uv version still contribute to its identity. Caches do not reuse test,
-signature-verification, or installer-acceptance results. macOS does not use this path.
+longer bound to the entire `bundle.cjs`. Its inputs include the interpreter, exported runtime
+requirements, locked source-build dependencies and build constraints, Skill wheels and uv version.
+The Windows TeX Live key includes the installed PE normalizer used to build the archive.
+Application version bumps and unrelated development dependencies can reuse both caches.
+Each build still runs its tests, signature verification and installer acceptance.
+Before publishing under the default private cache version, Windows checks the file tree
+and ZIP against the hashes in `versions.json`. If only the ZIP encoding differs, CI
+retrieves the reviewed archive and verifies its file inventory before caching it.
+
+Windows Python 使用导出的运行时依赖及源码包构建约束，TeX Live 使用实际安装的 PE 规范化工具。
+只改应用版本或无关开发依赖时，两组均可复用已有缓存，每次构建仍执行测试、验签和安装验收。
+写入默认私有缓存版本前，Windows 会核对 `versions.json` 中的文件树和 ZIP 摘要。
+如果只有 ZIP 编码不同，CI 会取回该版本已审核的归档，逐文件核对通过后再写入缓存。
 
 On a Windows Python-component cache miss, synchronize dependencies in a private short
 directory, then copy them to the final component directory through the Node filesystem

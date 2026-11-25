@@ -105,7 +105,7 @@ test('component kind and version must be valid Windows directory names', () => {
 test('delivery identity follows measured tree rather than a changed CI recipe identity', () => {
   const files = [{path: 'python/python.exe', size: 5, sha256: 'c'.repeat(64)}]
   const measured = {treeSha256: 'a'.repeat(64), archiveSha256: 'b'.repeat(64), archiveBytes: 10, expandedBytes: 5, files}
-  const inputs = {target: 'win32-x86_64', pythonArchiveSha256: 'f'.repeat(64), requirementsSha256: 'a'.repeat(64), lockSha256: 'b'.repeat(64), bytecodeSha256: 'c'.repeat(64), binaryPackages: []}
+  const inputs = {target: 'win32-x86_64', pythonArchiveSha256: 'f'.repeat(64), requirementsSha256: 'a'.repeat(64), sourceBuilds: [], bytecodeSha256: 'c'.repeat(64), binaryPackages: []}
   const firstBuild = {inputContentId: derivePythonContentId({...inputs, recipe: {files: [['bundle.cjs', '1'.repeat(64)]]}}), inventory: measured}
   const changedRecipe = {inputContentId: derivePythonContentId({...inputs, recipe: {files: [['bundle.cjs', '2'.repeat(64)]]}}), inventory: structuredClone(measured)}
   assert.notEqual(firstBuild.inputContentId, changedRecipe.inputContentId)

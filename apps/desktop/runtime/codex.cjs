@@ -371,10 +371,7 @@ async function resolveRuntime({ platform, selected, cache, directory, log, persi
       await probeVersion(winner.executable, selected.version)
     }
     if (published) await completeRuntime(directory, selected, prepared)
-    if (registry) {
-      if (restored) registry.recordPublication()
-      else await registry.publish(directory)
-    }
+    if (registry && !restored) await registry.publish(directory)
     const result = resolvedRuntime(directory, selected, prepared)
     log(`Vendored Codex ${selected.version}: ${result.path}`)
     return result

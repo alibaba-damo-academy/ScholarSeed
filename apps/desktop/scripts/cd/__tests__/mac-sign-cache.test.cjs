@@ -129,11 +129,11 @@ test('application-only builds reuse the signed bytes and sign a new outer bundle
   process.env.SCHOLARSEED_MAC_SIGN_CACHE = path.join(temporary, 'second-runner')
   const sharedHit = await build('fresh-runner')
   const localHit = await build('fresh-runner-app-only')
-  assert.equal(fs.readFileSync(path.join(registry, 'calls'), 'utf8'), 'fetch 3\nfetch 3\npublish 0\npublish 0\nfetch 0\nfetch 0\n')
+  assert.equal(fs.readFileSync(path.join(registry, 'calls'), 'utf8'), 'fetch 3\nfetch 3\npublish 0\npublish 0\nfetch 0\nfetch 0\nconfirm 0\nconfirm 0\n')
   for (const kind of ['python', 'texlive']) {
-    const inputs = fs.readdirSync(path.join(registry, kind, 'darwin-' + frozen.arch))
-    assert.equal(inputs.length, 1)
-    assert.match(inputs[0], /^[a-f0-9]{64}$/)
+    const version = require('../mac-component-versions.cjs').macComponentVersions()[kind]
+    const receipt = path.join(registry, 'darwin-' + (frozen.arch === 'x64' ? 'x86_64' : frozen.arch), kind, version, 'receipt.json')
+    assert.match(JSON.parse(fs.readFileSync(receipt)).inputSha256, /^[a-f0-9]{64}$/)
   }
   for (const hit of [sharedHit, localHit]) {
     assert.deepEqual(hit.signed.filter(name => name.includes('/backend/')), [])
