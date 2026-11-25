@@ -5,22 +5,27 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const state = require('../shared/build-state.cjs')
 
-const ARCHIVE = 'signed.zip'
-const DIGEST = 'sha256'
+const ARCHIVE = 'component.zip'
+const RECEIPT = 'receipt.json'
+const KINDS = new Set(['electron', 'frameworks', 'python', 'texlive'])
+const TARGETS = new Set(['darwin-arm64', 'darwin-x86_64'])
 
-function signedRuntimeStore(root, command) {
+function signedRuntimeStore(root, command, kind, target) {
   if (!path.isAbsolute(root)) throw new Error('macOS signed runtime cache must use an absolute directory')
+  if (!KINDS.has(kind) || !TARGETS.has(target)) throw new Error('Invalid macOS signed runtime kind or target')
   const registry = command === undefined ? null : JSON.parse(command)
   if (command !== undefined && (!Array.isArray(registry) || !registry.length ||
       registry.some(part => typeof part !== 'string' || !part))) {
     throw new Error('Invalid macOS signed runtime registry command')
   }
   root = state.ensurePrivateDirectory(root)
-  const directory = state.ensurePrivateDirectory(path.join(root, registry ? 'shared-v1' : 'local-v1'))
+  const scope = state.ensurePrivateDirectory(path.join(root, registry ? 'shared-v2' : 'local-v2'))
+  const group = state.ensurePrivateDirectory(path.join(scope, kind))
+  const directory = state.ensurePrivateDirectory(path.join(group, target))
 
   function exchange(operation, key, archive) {
     const [binary, ...args] = registry
-    const run = spawnSync(binary, [...args, operation, '--key', key, '--archive', archive], {
+    const run = spawnSync(binary, [...args, operation, '--kind', kind, '--target', target, '--key', key, '--archive', archive], {
       stdio: ['ignore', 'inherit', 'inherit'],
     })
     if (run.error) throw run.error
@@ -35,27 +40,35 @@ function signedRuntimeStore(root, command) {
 
   function local(key) {
     validateKey(key)
+    state.assertPrivateDirectory(directory)
     const entry = path.join(directory, key)
     if (!fs.lstatSync(entry, {throwIfNoEntry: false})) return null
     state.assertPrivateDirectory(entry)
     const archive = path.join(entry, ARCHIVE)
-    const receipt = path.join(entry, DIGEST)
-    state.assertPrivateFile(receipt)
+    const receiptFile = path.join(entry, RECEIPT)
+    state.assertPrivateFile(receiptFile)
     state.assertPrivateFile(archive)
-    if (state.regular(receipt).size !== 65) throw new Error('Invalid macOS signed runtime receipt')
-    const digest = fs.readFileSync(receipt, 'utf8').trim()
-    if (!state.SHA256.test(digest) || state.hashFile(archive) !== digest)
+    if (state.regular(receiptFile).size > 1024) throw new Error('Invalid macOS signed runtime receipt')
+    const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'))
+    const inputs = receipt?.inputs
+    const inventory = receipt?.inventory
+    if (receipt?.schema !== 2 || inputs?.kind !== kind || inputs.target !== target || inputs.key !== key ||
+        typeof inventory?.archiveSha256 !== 'string' || !state.SHA256.test(inventory.archiveSha256))
+      throw new Error('Invalid macOS signed runtime receipt')
+    if (inventory.archiveBytes !== state.regular(archive).size || state.hashFile(archive) !== inventory.archiveSha256)
       throw new Error('macOS signed runtime cache digest mismatch')
-    return {archive, digest}
+    return {archive, digest: inventory.archiveSha256}
   }
 
   function retain(key, archive, digest) {
+    state.assertPrivateDirectory(directory)
     const stage = fs.mkdtempSync(path.join(directory, '.publish-'))
     try {
       const copy = path.join(stage, ARCHIVE)
       fs.copyFileSync(archive, copy, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL)
       if (state.hashFile(copy) !== digest) throw new Error('Signed runtime changed during publication')
-      fs.writeFileSync(path.join(stage, DIGEST), digest + '\n', {mode: 0o600, flag: 'wx'})
+      const receipt = {schema: 2, inputs: {kind, target, key}, inventory: {archiveSha256: digest, archiveBytes: state.regular(copy).size}}
+      fs.writeFileSync(path.join(stage, RECEIPT), JSON.stringify(receipt, null, 2) + '\n', {mode: 0o600, flag: 'wx'})
       const entry = path.join(directory, key)
       try {
         fs.renameSync(stage, entry)
@@ -87,6 +100,7 @@ function signedRuntimeStore(root, command) {
     },
     publish(key, archive, temporary, restore) {
       validateKey(key)
+      state.assertPrivateDirectory(directory)
       state.assertPrivateFile(archive)
       const signed = state.hashFile(archive)
       let digest = signed

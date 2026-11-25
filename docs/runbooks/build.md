@@ -370,6 +370,13 @@ architecture. It signs the current outer app and runs notarization and installer
 acceptance for each release. The private distribution runner shares this cache
 across machines by default. Use `--no-shared-components` for local reuse. The
 signer logs `[sign-cache]` with `miss`, `local` or `registry` for each group.
+The private CI registry defaults to `scholarseed-components/v2` on both platforms.
+For example, a macOS signing job stores its Python input receipt under
+`inputs/python/darwin-arm64/<input-key>.json` and the signed archive under
+`objects/<archive-sha256>.zip`. The receipt identifies the component, target,
+input key, archive digest and size. On the runner, the registry-scoped cache stores
+`component.zip` and `receipt.json` together under
+`shared-v2/<kind>/<target>/<input-key>/`. Local-only builds use `local-v2/`.
 On macOS, run the signed-sample acceptance against the distribution app with
 `SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`.
 Default CI exercises cache and policy regressions without a distribution sample.
@@ -386,6 +393,15 @@ a new runtime object when its contents change.
 The client reconstructs the published ZIP,
 checks its release SHA-512, and hands it to the existing Squirrel preparation
 flow. A missing sidecar or failed object transfer uses the same release's full ZIP.
+
+The accepted build records component versions in `artifacts.macos_update_zip.component_versions`.
+Both macOS architectures use `components/<arch>/<kind>/<version>/`, with an immutable
+`identity.json` and a subdirectory named for the full SHA-256. For example,
+`components/darwin-arm64/codex/0.171.0-r1/<sha256>/codex.bin` holds the Codex ZIP
+fragments. The layout file is named `layout.gz`. Runtime versions use the pinned
+upstream version and a packaging revision from `apps/desktop/scripts/cd/mac-component-versions.cjs`.
+Bump the affected revision when packaged runtime bytes change at the same upstream version.
+App and layout versions include the release channel and build number.
 
 macOS 签名分发构建从同一份应用生成安装 DMG 和更新 ZIP。官网下载和只支持安装器协议的
 旧客户端都使用普通 DMG。安装这个普通版本后，后续自动更新优先使用 CI 生成的 ZIP。
@@ -410,6 +426,12 @@ Mantle/ReactiveObjC/Squirrel 框架、Python 第三方 Mach-O 和 TeX Live Mach-
 本次外层应用，执行公证与安装器验收。私有分发 CI 默认跨机器共享缓存，也可用
 `--no-shared-components` 切换到本机复用。日志中每组的 `[sign-cache]` 行会给出
 `miss`（首次签名）、`local`（本机命中）或 `registry`（共享库命中）。
+macOS 和 Windows 的 CI 私有仓库默认都使用 `scholarseed-components/v2`。例如，
+macOS Python 签名缓存的输入记录位于 `inputs/python/darwin-arm64/<输入键>.json`，
+已签名归档位于 `objects/<归档 SHA-256>.zip`。记录中包含组件名、目标架构、输入键、
+归档摘要和字节数。构建机在对应仓库的缓存目录下按
+`shared-v2/<组件>/<目标>/<输入键>/` 存放 `component.zip` 和 `receipt.json`，
+仅使用本机缓存时采用 `local-v2/`。
 在 macOS 上用正式分发包运行签名样本验收：
 `SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`。
 默认 CI 独立运行缓存与签名策略回归。
@@ -419,6 +441,14 @@ Mantle/ReactiveObjC/Squirrel 框架、Python 第三方 Mach-O 和 TeX Live Mach-
 对框架、Python 和 TeX 中受支持的已签名 Mach-O，CI 将代码与签名数据分段压缩。重新签名的字节、
 Python wheel 安装时间、来源 URL 和引用它们的 RECORD 随应用组件传输。运行时组件的内容发生变化时，客户端会下载该组件的新版本。客户端重组发布 ZIP，核对该版本的 SHA-512，
 再交给原有 Squirrel 准备安装。清单缺失或组件传输失败时，客户端回退到同一候选的完整 ZIP。
+
+通过验收的构建在 `artifacts.macos_update_zip.component_versions` 中记录组件版本。
+两种 macOS 架构都按 `components/<架构>/<组件>/<版本>/` 存放组件，每个版本下有不可变的
+`identity.json` 和以完整 SHA-256 命名的子目录。例如
+`components/darwin-arm64/codex/0.171.0-r1/<sha256>/codex.bin` 存放 Codex 的 ZIP 数据片段，
+布局文件名为 `layout.gz`。运行时版本取自锁定的上游依赖，打包修订号由
+`apps/desktop/scripts/cd/mac-component-versions.cjs` 维护。同一上游版本的运行时字节发生变化时，
+递增对应组件的修订号。应用和布局的版本包含渠道与构建号。
 
 <a id="cicd-渠道与发布职责"></a>
 ### CI/CD Channels and Release Responsibilities

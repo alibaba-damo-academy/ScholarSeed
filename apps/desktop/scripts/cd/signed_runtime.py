@@ -132,9 +132,9 @@ def attributes(path):
     names = read(lambda buf, n: LIBC.listxattr(filename, buf, n, NOFOLLOW))
     result = []
     for name in sorted(names.rstrip(b"\0").split(b"\0")) if names else ():
-        # macOS attaches the local creator's provenance to copied files and
-        # symlinks. It does not describe the component and is never archived.
-        if name == b"com.apple.provenance":
+        # Neither local creator provenance nor the host EDR scan record is
+        # archived. The scanner can attach its record between plan and pack.
+        if name in (b"com.apple.provenance", b"com.alibaba.security.edr.antivirus.cloudquery"):
             continue
         value = read(lambda buf, n: LIBC.getxattr(filename, name, buf, n, 0, NOFOLLOW))
         result.append([name.hex(), hashlib.sha256(value).hexdigest()])

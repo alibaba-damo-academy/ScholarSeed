@@ -53,10 +53,14 @@ class SignedRuntimeTest(unittest.TestCase):
     def sign(self, path, identity):
         subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", "--identifier", identity, str(path)], check=True, capture_output=True)
 
-    def test_only_host_provenance_is_ignored(self):
+    def test_provenance_is_ignored_and_signing_attributes_are_bound(self):
         # The provenance attribute is managed by macOS. Feed both forms at the
         # libc boundary so this also runs on CI hosts that never attach it.
-        attributes = {b"com.apple.quarantine": b"origin"}
+        attributes = {
+            b"com.apple.quarantine": b"origin",
+            b"com.apple.ResourceFork": b"resources",
+            b"com.apple.cs.CodeDirectory": b"seal",
+        }
 
         def read(data, buf):
             if buf is not None:
@@ -66,10 +70,44 @@ class SignedRuntimeTest(unittest.TestCase):
         with patch.object(runtime, "LIBC") as libc:
             libc.listxattr.side_effect = lambda path, buf, size, flags: read(b"\0".join(attributes) + b"\0", buf)
             libc.getxattr.side_effect = lambda path, name, buf, size, position, flags: read(attributes[name], buf)
-            expected = [[b"com.apple.quarantine".hex(), hashlib.sha256(b"origin").hexdigest()]]
+            expected = [[name.hex(), hashlib.sha256(value).hexdigest()] for name, value in sorted(attributes.items())]
             self.assertEqual(runtime.attributes(self.python), expected)
             attributes[b"com.apple.provenance"] = b"local host"
             self.assertEqual(runtime.attributes(self.python), expected)
+
+    def test_python_cache_tolerates_only_the_exact_edr_scan_record(self):
+        scan = "com.alibaba.security.edr.antivirus.cloudquery"
+        other = scan + ".fixture"
+        destination = self.plain / self.python.relative_to(self.app)
+        archive = self.root / "python.zip"
+
+        def write(path, name, value):
+            subprocess.run(["/usr/bin/xattr", "-w", name, value, path], check=True)
+
+        for path in (self.python, destination):
+            write(path, other, "initial")
+        plans = runtime.plan(self.app)
+        expected = plans["python"]
+        write(self.python, scan, "scan after plan")
+        self.assertEqual(runtime.inspect(self.app, "python"), expected)
+        runtime.prepare_proofs(self.app, {"python": expected}, self.root)
+        self.sign(self.python, "cold-job")
+        write(self.python, other, "changed")
+        with self.assertRaisesRegex(ValueError, "runtime input inventory changed"):
+            runtime.pack(self.app, expected, "python", archive)
+        write(self.python, other, "initial")
+        runtime.pack(self.app, expected, "python", archive)
+
+        write(destination, scan, "fresh host scan")
+        self.assertEqual(runtime.inspect(self.plain, "python")["inputSha256"], expected["inputSha256"])
+        write(destination, other, "changed")
+        self.assertNotEqual(runtime.inspect(self.plain, "python")["inputSha256"], expected["inputSha256"])
+        with self.assertRaisesRegex(ValueError, "runtime input inventory changed"):
+            runtime.restore(self.plain, expected, "python", archive)
+        write(destination, other, "initial")
+        runtime.restore(self.plain, expected, "python", archive)
+        self.assertEqual(destination.read_bytes(), self.python.read_bytes())
+        self.assertEqual(subprocess.check_output(["/usr/bin/xattr", "-p", scan, destination]).strip(), b"fresh host scan")
 
     def test_round_trip_and_input_invalidation(self):
         owned = self.site / "scholarseed-0.3.2.dist-info"
