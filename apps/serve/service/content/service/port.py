@@ -2043,7 +2043,7 @@ class ContentService:
         return enumeration.scan_files(self._resource_space(project_id), observer, paths=paths)
 
     def scan_resource_inventory(
-        self, project_id: str, *, include_missing: tuple[str, ...] = ()
+        self, project_id: str, *, include_missing: tuple[str, ...] = (), exclude_git: bool = False
     ) -> tuple[tuple[ResourceEntry, ...], dict[str, str | None]]:
         """Qualify each inventory entry once, including missing baseline paths."""
 
@@ -2052,9 +2052,18 @@ class ContentService:
         repositories: dict[str, str | None] = {}
 
         def observe(entry: ResourceEntry, target: Path) -> None:
-            repositories[entry.path] = lookup.for_scanned_file(entry.path, target)
+            repositories[entry.path] = lookup.for_scanned_path(
+                entry.path, target, is_directory=False
+            )
 
-        entries = enumeration.scan_files(scope, observe_resolved=observe)
+        def outside_git(path: str, target: Path) -> bool:
+            return lookup.for_scanned_path(path, target, is_directory=True) is None
+
+        entries = enumeration.scan_files(
+            scope,
+            observe_resolved=observe,
+            include_directory=outside_git if exclude_git else None,
+        )
         for path in include_missing:
             if path not in repositories:
                 repositories[path] = lookup.for_path(path)

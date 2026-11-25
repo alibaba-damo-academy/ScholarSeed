@@ -1500,6 +1500,7 @@ class CodexRuntimeSession:
             submission_attempts=request.submission_attempts,
             retry_observer=observe_retry if request.retry_authorizer is not None else None,
             output_schema=request.output_schema,
+            artifact_directory=request.artifact_directory,
         )
         self._generation_submitted = True
         self._active_command_id = request.command_id

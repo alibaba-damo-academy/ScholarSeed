@@ -506,6 +506,7 @@
     "acceptAll": "Accept all"
   },
   "finalizations": {
+    "checkingFiles": "Checking file changes…",
     "notReadyTitle": "Review snapshot not ready",
     "refresh": "Refresh review snapshot status",
     "refreshAction": "Refresh status",

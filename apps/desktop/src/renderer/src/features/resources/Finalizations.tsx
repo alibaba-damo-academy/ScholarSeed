@@ -125,50 +125,59 @@ export function Finalizations({
           description={t(error.key, { detail: error.detail ?? '', path: error.path ?? '' })}
         />
       )}
-      {entries.map((entry, index) => (
-        <Alert
-          key={entry.turn_id}
-          tone="warning"
-          data-testid="resource-finalization-warning"
-          layout="stacked"
-          title={<AlertTitle>{t('finalizations.notReadyTitle')}</AlertTitle>}
-          action={index === 0 ? refreshAction : undefined}
-        >
-          <AlertDescription truncate={false}>{t(finalizationMessage(entry))}</AlertDescription>
-          <AlertDescription truncate={false}>
-            {t('finalizations.startedAt')}{' '}
-            {format.date(entry.created_at_ms, { dateStyle: 'short', timeStyle: 'medium' })}
-          </AlertDescription>
-          {entry.error && (
+      {entries.map((entry, index) =>
+        entry.error === null ? (
+          <Alert
+            key={entry.turn_id}
+            tone="neutral"
+            description={t('finalizations.checkingFiles')}
+            action={index === 0 ? refreshAction : undefined}
+          />
+        ) : (
+          <Alert
+            key={entry.turn_id}
+            tone="warning"
+            data-testid="resource-finalization-warning"
+            layout="stacked"
+            title={<AlertTitle>{t('finalizations.notReadyTitle')}</AlertTitle>}
+            action={index === 0 ? refreshAction : undefined}
+          >
+            <AlertDescription truncate={false}>{t(finalizationMessage(entry))}</AlertDescription>
+            <AlertDescription truncate={false}>
+              {t('finalizations.startedAt')}{' '}
+              {format.date(entry.created_at_ms, { dateStyle: 'short', timeStyle: 'medium' })}
+            </AlertDescription>
             <AlertDescription truncate={false}>
               {t('finalizations.reason')} {t(finalizationReason(entry.error))}
             </AlertDescription>
-          )}
-          <ul>
-            {entry.paths.map((path) => (
-              <li key={path}>
-                <Button
-                  variant="ghost"
-                  size="content"
-                  className="max-w-full min-w-0 !whitespace-normal text-left [overflow-wrap:anywhere]"
-                  onClick={() => void inspect(path)}
-                >
-                  {path}
-                </Button>
-              </li>
-            ))}
-          </ul>
-          {entry.retryable && (
-            <Button
-              size="sm"
-              disabled={running || retrying !== null}
-              onClick={() => void retry(entry)}
-            >
-              {retrying === entry.turn_id ? t('finalizations.retrying') : t('finalizations.retry')}
-            </Button>
-          )}
-        </Alert>
-      ))}
+            <ul>
+              {entry.paths.map((path) => (
+                <li key={path}>
+                  <Button
+                    variant="ghost"
+                    size="content"
+                    className="max-w-full min-w-0 !whitespace-normal text-left [overflow-wrap:anywhere]"
+                    onClick={() => void inspect(path)}
+                  >
+                    {path}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+            {entry.retryable && (
+              <Button
+                size="sm"
+                disabled={running || retrying !== null}
+                onClick={() => void retry(entry)}
+              >
+                {retrying === entry.turn_id
+                  ? t('finalizations.retrying')
+                  : t('finalizations.retry')}
+              </Button>
+            )}
+          </Alert>
+        )
+      )}
       {cursor && (
         <Button
           variant="ghost"
