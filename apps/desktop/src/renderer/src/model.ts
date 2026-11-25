@@ -542,6 +542,24 @@ export type ApplicationRequestFailure = {
   diagnostic?: string
 }
 
+export type TurnFailureKind =
+  | 'capability'
+  | 'history_content'
+  | 'subscription_limit'
+  | 'quota'
+  | 'credits'
+  | 'rate_limit'
+  | 'auth'
+  | 'request'
+  | 'model_config'
+  | 'unavailable'
+  | 'timeout'
+  | 'connection'
+  | 'overloaded'
+  | 'content_policy'
+  | 'output_limit'
+  | 'unknown'
+
 export type RuntimeStatusMessage = (
   | {
       key:
@@ -651,23 +669,7 @@ export type ConvItem = TurnOwned &
         kind: 'error'
         applicationFailure?: ApplicationRequestFailure
         failure?: {
-          kind:
-            | 'capability'
-            | 'history_content'
-            | 'subscription_limit'
-            | 'quota'
-            | 'credits'
-            | 'rate_limit'
-            | 'auth'
-            | 'request'
-            | 'model_config'
-            | 'unavailable'
-            | 'timeout'
-            | 'connection'
-            | 'overloaded'
-            | 'content_policy'
-            | 'output_limit'
-            | 'unknown'
+          kind: TurnFailureKind
           fallback: 'frame' | 'runtime' | 'raw'
           authentication?: 'account' | 'model'
           automaticRetryAttempts?: number

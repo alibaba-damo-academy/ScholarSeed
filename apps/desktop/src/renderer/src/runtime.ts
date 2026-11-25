@@ -30,6 +30,7 @@ import { projectHilCard, hilResolution, hilSubmissionFailure } from './hil.ts'
 import { insertTurnRuntimeItem, settleInterruptedActivities } from './transcript.ts'
 import {
   compatibleContinuationCode,
+  HISTORY_CONTENT_MESSAGE_KEY,
   MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE,
   needsCompatibleContinuation,
   SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE,
@@ -106,7 +107,8 @@ const SANDBOX_INCIDENT_MESSAGE_KEYS = {
 const INCIDENT_MESSAGE_KEYS = {
   ...SANDBOX_INCIDENT_MESSAGE_KEYS,
   [SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE]: 'runtime.reason.subscription_capability_unsupported',
-  [MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE]: 'failure.historyContent.message',
+  // The status and error card describe the same rejected history item.
+  [MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE]: HISTORY_CONTENT_MESSAGE_KEY,
   agent_runtime_exit: 'runtime.reason.agent_runtime_exit',
   runtime_transport_lost: 'runtime.reason.runtime_transport_lost',
   runtime_rpc_timeout: 'runtime.reason.runtime_rpc_timeout',

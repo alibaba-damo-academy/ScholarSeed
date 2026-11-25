@@ -1,23 +1,8 @@
 import type { TFunction } from 'i18next'
 import type { ModelInfo } from './api'
-import type { ConvItem } from './model'
+import type { ConvItem, TurnFailureKind } from './model'
 
-export type ProviderFailureKind =
-  | 'capability'
-  | 'history_content'
-  | 'subscription_limit'
-  | 'quota'
-  | 'credits'
-  | 'rate_limit'
-  | 'auth'
-  | 'request'
-  | 'model_config'
-  | 'unavailable'
-  | 'timeout'
-  | 'connection'
-  | 'overloaded'
-  | 'content_policy'
-  | 'output_limit'
+export type ProviderFailureKind = Exclude<TurnFailureKind, 'unknown'>
 
 const QUOTA_FAILURE =
   /(?:insufficient|exceeded).*(?:balance|quota|credit)|(?:balance|quota|credit).*(?:insufficient|exceeded)|余额|额度/i
@@ -32,6 +17,7 @@ const GATEWAY_CREDENTIAL_REQUIRED_CODE = 'gateway_credential_required'
 export const SUBSCRIPTION_UNSUPPORTED_CAPABILITY_CODE =
   'subscription_sharing_unsupported_capability'
 export const MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE = 'model_history_content_unsupported'
+export const HISTORY_CONTENT_MESSAGE_KEY = 'failure.historyContent.message'
 const RECOVERABLE_FAILURE_KINDS: ReadonlySet<string> = new Set([
   'output_limit',
   'unavailable',
@@ -75,7 +61,7 @@ const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>
   connection_error: 'connection',
 }
 
-export function needsCompatibleContinuation(kind?: string): boolean {
+export function needsCompatibleContinuation(kind?: TurnFailureKind): boolean {
   return kind === 'capability' || kind === 'history_content'
 }
 
@@ -118,7 +104,7 @@ const FAILURE_TEXT = {
   },
   capability: { messageKey: 'failure.capability.message', actionKey: 'failure.capability.action' },
   history_content: {
-    messageKey: 'failure.historyContent.message',
+    messageKey: HISTORY_CONTENT_MESSAGE_KEY,
     actionKey: 'failure.historyContent.action',
   },
   subscription_limit: {

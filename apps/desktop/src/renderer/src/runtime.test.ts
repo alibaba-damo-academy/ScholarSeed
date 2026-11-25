@@ -856,6 +856,40 @@ test('subscription capability incident explains the terminal rejection in both l
   )
 })
 
+test('history rejection status uses the error card reason in both languages', async () => {
+  const locale = createInstance()
+  await locale.init({
+    lng: 'zh',
+    fallbackLng: false,
+    resources: { zh: { conversation: zh }, en: { conversation: en } },
+  })
+  const code = 'model_history_content_unsupported'
+  const failure = describeTurnFailure({ code })
+  const update = reportRuntimeIncident(
+    thread(),
+    {
+      ...incident('detected'),
+      scope: 'turn',
+      kind: 'rpc_rejected',
+      strategy: 'none',
+      retryability: 'terminal',
+      safe_error: "The selected model cannot accept part of this conversation's history.",
+      provider_error_code: code,
+    },
+    'history-turn'
+  )
+  const status = update.conversation?.find((item) => item.kind === 'status')
+  assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
+  for (const language of ['zh', 'en']) {
+    const t = locale.getFixedT(language, 'conversation')
+    const detail = formatTurnFailure(failure, t).message
+    assert.equal(
+      formatRuntimeStatus(status.text, t),
+      t('runtime.detected') + t('runtime.detail', { detail })
+    )
+  }
+})
+
 test('composer header continuation blocks the current incompatible request', async () => {
   const source = readFileSync(
     new URL('./components/business/Composer.tsx', import.meta.url),
@@ -931,7 +965,10 @@ test('classified turn failures keep a distinct reason in their complete guidance
   const display = (item: ReturnType<typeof describeTurnFailure>) =>
     formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
 
-  const history = describeTurnFailure({ code: 'model_history_content_unsupported', retryable: true })
+  const history = describeTurnFailure({
+    code: 'model_history_content_unsupported',
+    retryable: true,
+  })
   assert.equal(history.failure?.kind, 'history_content')
   assert.equal(history.runtimeAction, undefined)
   assert.equal(display(history).message, zh.failure.historyContent.message)
