@@ -66,7 +66,7 @@ test('Windows development accepts only its private final receipt and forwards ex
   let messages = []
   context.mock.method(childProcess, 'spawn', (_executable, args, options) => {
     assert.deepEqual(args, ['--experimental-transform-types', path.resolve(__dirname, '../supervision.mjs')])
-    assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe', 'ipc'])
+    assert.deepEqual(options.stdio, ['ignore', 'inherit', 'inherit', 'ipc'])
     assert.equal(options.detached, true)
     const child = new EventEmitter()
     child.stdout = new (require('node:stream').PassThrough)()
@@ -288,7 +288,10 @@ test('development releases after Ctrl+C only with its final cleanup receipt', { 
   fs.mkdirSync(registry, { mode: 0o700 })
   const resource = path.join(directory, 'runtime')
   const host = path.join(directory, 'host.cjs')
-  fs.writeFileSync(host, `process.on('SIGINT',()=>{if(process.send)process.send({kind:'development-stopped',version:1},()=>process.exit(130));else process.exit(130)});process.stdout.write('ready\\n');setInterval(()=>{},1000);`)
+  fs.writeFileSync(host, `const {complete}=require(${JSON.stringify(require.resolve('../../../../../scripts/shared/lease.cjs'))});
+let ticket;const stop=()=>{complete(ticket);process.send({kind:'development-stopped',version:1},()=>process.exit(130))};
+process.on('message',value=>{if(value.kind==='development-lease'){ticket=value.ticket;process.stdout.write('ready\\n')}
+else if(value.kind==='development-stop')stop()});process.send({kind:'development-lease-request',version:1});setInterval(()=>{},1000);`)
   const helper = `const cp=require('node:child_process');const spawn=cp.spawn;cp.spawn=(executable,args,options)=>spawn(executable,[process.argv[5]],options);
 const {acquire}=require(process.argv[1]);const {start}=require(process.argv[2]);
 start(require('node:path').resolve(process.argv[2],'../supervision.mjs'),[],acquire({mode:'read',resources:[process.argv[4]],directory:process.argv[3]})).then(code=>{process.exitCode=code});`
@@ -299,6 +302,7 @@ start(require('node:path').resolve(process.argv[2],'../supervision.mjs'),[],acqu
     fs.rmSync(directory, { recursive: true, force: true })
   })
   await once(runner.stdout, 'data')
+  assert.throws(() => acquire({mode:'write', resources:[resource], directory:registry}), {code:'LEASE_CONFLICT'})
   runner.kill('SIGINT')
   const [code] = await once(runner, 'exit')
   assert.equal(code, 130)

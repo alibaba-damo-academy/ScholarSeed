@@ -5,11 +5,14 @@ const leases = require('../../../../scripts/shared/lease.cjs')
 const python = require('../../../../scripts/shared/python.cjs')
 const toolchain = require('../../../../scripts/pre/toolchain.cjs')
 const { waitForGroupExit, PROCESS_TREE_UNCONFIRMED_EXIT } = require('../../../../scripts/shared/execution.cjs')
+const { DEVELOPMENT_SCOPE_ENV } = require('../../../../scripts/dev/desktop.cjs')
 
 const DESKTOP = path.resolve(__dirname, '../..')
 const ROOT = path.resolve(DESKTOP, '../..')
 const DEVELOPMENT_STOP = 'development-stop'
 const DEVELOPMENT_STOPPED = 'development-stopped'
+const DEVELOPMENT_LEASE_REQUEST = 'development-lease-request'
+const DEVELOPMENT_LEASE = 'development-lease'
 const DEVELOPMENT_PROTOCOL_VERSION = 1
 const MAX_EXIT_STATUS = 255
 
@@ -42,7 +45,8 @@ function main(argv = process.argv.slice(2), acquire = leases.acquire) {
     python = desktopPythonPrefix()
     resources.push(python.prefix)
   }
-  const lease = acquire({ mode: 'read', resources })
+  const lease = acquire({ mode: 'read', resources,
+    ...(process.env[DEVELOPMENT_SCOPE_ENV] ? { scope: process.env[DEVELOPMENT_SCOPE_ENV] } : {}) })
   try {
     if (python) {
       const current = desktopPythonPrefix()
@@ -61,22 +65,27 @@ async function start(entry, args, lease) {
   const controlled = development
   let developmentStopped = false
   let invalidReceipt = false
+  let leaseSent = false
+  let closed = false
+  const forwarded = new Set()
   let interrupted = false
   let interruptCode = 130
   const forward = signal => {
     interrupted = true
     interruptCode = signal === 'SIGTERM' ? 143 : 130
+    if (closed || forwarded.has(signal)) return
+    forwarded.add(signal)
     try {
       if (!child) return
-      if (controlled && process.platform === 'win32') {
+      if (controlled) {
         if (child.connected) child.send({ kind: DEVELOPMENT_STOP, version: DEVELOPMENT_PROTOCOL_VERSION, signal }, error => {
-          if (error) invalidReceipt = true
+          if (error && !closed && !developmentStopped) invalidReceipt = true
         })
         else invalidReceipt = true
       } else if (process.platform === 'win32') child.kill(signal)
       else process.kill(-child.pid, signal)
     } catch (error) {
-      if (controlled) invalidReceipt = true
+      if (controlled && !closed && !developmentStopped) invalidReceipt = true
       else if (error.code !== 'ESRCH') throw error
     }
   }
@@ -86,14 +95,18 @@ async function start(entry, args, lease) {
   process.on('SIGTERM', onTerminate)
   try {
     child = spawn(process.execPath, [...(development ? ['--experimental-transform-types'] : []), entry, ...args], {
-      cwd: DESKTOP, env: process.env, stdio: controlled ? ['ignore', 'pipe', 'pipe', 'ipc'] : 'inherit', windowsHide: true,
+      cwd: DESKTOP, env: process.env, stdio: controlled ? ['ignore', 'inherit', 'inherit', 'ipc'] : 'inherit', windowsHide: true,
       detached: controlled || process.platform !== 'win32'
     })
-    if (controlled) {
-      child.stdout.pipe(process.stdout, { end: false })
-      child.stderr.pipe(process.stderr, { end: false })
-    }
     if (controlled) child.on('message', message => {
+      if (!leaseSent && !developmentStopped && message && Object.keys(message).length === 2 &&
+          message.kind === DEVELOPMENT_LEASE_REQUEST && message.version === DEVELOPMENT_PROTOCOL_VERSION) {
+        leaseSent = true
+        child.send({ kind: DEVELOPMENT_LEASE, version: DEVELOPMENT_PROTOCOL_VERSION, ticket: lease.completion() }, error => {
+          if (error) invalidReceipt = true
+        })
+        return
+      }
       if (developmentStopped || !message || Array.isArray(message) ||
           Object.keys(message).length !== 2 || message.kind !== DEVELOPMENT_STOPPED || message.version !== DEVELOPMENT_PROTOCOL_VERSION) {
         invalidReceipt = true
@@ -102,7 +115,7 @@ async function start(entry, args, lease) {
     })
     const result = await new Promise((resolve, reject) => {
       child.once('error', reject)
-      child.once('close', (status, signal) => resolve({ status, signal }))
+      child.once('close', (status, signal) => { closed = true; resolve({ status, signal }) })
     })
     if (development && result.status === PROCESS_TREE_UNCONFIRMED_EXIT) {
       console.error(`[desktop] Development process-family shutdown unconfirmed; environment lease retained at ${lease.directory}`)
@@ -149,7 +162,7 @@ function windowsShutdownConfirmed(result, interrupted, developmentStopped = fals
 }
 
 module.exports = { command, desktopPythonPrefix, main, start, waitForGroupExit, windowsShutdownConfirmed,
-  DEVELOPMENT_STOP, DEVELOPMENT_STOPPED, DEVELOPMENT_PROTOCOL_VERSION }
+  DEVELOPMENT_STOP, DEVELOPMENT_STOPPED, DEVELOPMENT_PROTOCOL_VERSION, DEVELOPMENT_LEASE_REQUEST, DEVELOPMENT_LEASE }
 if (require.main === module) {
   Promise.resolve().then(() => main()).then(code => { process.exitCode = code }).catch(error => {
     console.error(`[desktop] ${error.message}`)

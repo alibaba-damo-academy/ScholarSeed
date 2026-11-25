@@ -153,7 +153,10 @@ function readReceipt(directory, filename) {
     finally { fs.closeSync(descriptor) }
     if (receipt.schema !== SCHEMA || !UUID.test(receipt.id) || filename !== `${receipt.id}${RECEIPT_SUFFIX}` ||
         !MODES.has(receipt.mode) || !DIGEST.test(receipt.owner) || !Number.isSafeInteger(receipt.pid) ||
-        receipt.pid <= 0 || !Array.isArray(receipt.resources) || !receipt.resources.length ||
+        receipt.pid <= 0 || (receipt.scope !== undefined && !UUID.test(receipt.scope)) ||
+        (receipt.completedBy !== undefined &&
+          (receipt.mode !== 'read' || !Number.isSafeInteger(receipt.completedBy) || receipt.completedBy <= 0)) ||
+        !Array.isArray(receipt.resources) || !receipt.resources.length ||
         receipt.resources.some(resource => typeof resource !== 'string' || !path.isAbsolute(resource))) {
       throw new Error('invalid receipt')
     }
@@ -163,8 +166,53 @@ function readReceipt(directory, filename) {
   }
 }
 
+function exited(pid) {
+  try { process.kill(pid, 0); return false }
+  catch (error) { return error.code === 'ESRCH' }
+}
+
+// A cleanup host records this only after verifying its entire resource-using
+// process family has stopped. PID disappearance alone never authorizes recovery.
+function complete(ticket) {
+  if (!ticket || !UUID.test(ticket.id) || !DIGEST.test(ticket.owner) ||
+      typeof ticket.directory !== 'string' || !path.isAbsolute(ticket.directory) ||
+      !Number.isSafeInteger(ticket.pid) || ticket.pid <= 0 || !Array.isArray(ticket.resources) ||
+      !ticket.resources.length || ticket.resources.some(resource => typeof resource !== 'string' || !path.isAbsolute(resource))) {
+    throw failure('LEASE_ARGUMENT_INVALID', 'invalid read lease completion capability')
+  }
+  const directory = registry(ticket.directory)
+  admitted(directory, () => {
+    const filename = `${ticket.id}${RECEIPT_SUFFIX}`
+    const receipt = readReceipt(directory, filename)
+    if (receipt.mode !== 'read' || receipt.pid !== ticket.pid ||
+        receipt.owner !== crypto.createHash('sha256').update(ticket.owner).digest('hex') ||
+        JSON.stringify(receipt.resources) !== JSON.stringify(ticket.resources)) {
+      throw failure('LEASE_STATE_INVALID', 'lease ownership changed; refusing completion', directory)
+    }
+    receipt.completedBy = process.pid
+    const absolute = path.join(directory, filename)
+    const descriptor = fs.openSync(absolute, process.platform === 'win32'
+      ? fs.constants.O_WRONLY : fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW)
+    try {
+      fs.ftruncateSync(descriptor, 0)
+      fs.writeFileSync(descriptor, `${JSON.stringify(receipt)}\n`)
+      fs.fsyncSync(descriptor)
+    } finally { fs.closeSync(descriptor) }
+  })
+}
+
+function pending(scope) {
+  if (!UUID.test(scope)) throw failure('LEASE_ARGUMENT_INVALID', 'invalid development lease scope')
+  const directory = registry()
+  return admitted(directory, () => fs.readdirSync(directory).filter(entry => entry !== ADMISSION)
+    .map(entry => readReceipt(directory, entry))
+    .some(receipt => receipt.scope === scope &&
+      (!receipt.completedBy || !exited(receipt.pid) || !exited(receipt.completedBy))))
+}
+
 function acquire(options) {
   if (!options || !MODES.has(options.mode) || !Array.isArray(options.resources) || !options.resources.length ||
+      (options.scope !== undefined && (options.mode !== 'read' || !UUID.test(options.scope))) ||
       options.resources.some(resource => typeof resource !== 'string' || !path.isAbsolute(resource))) {
     throw failure('LEASE_ARGUMENT_INVALID', 'lease requires read/write mode and absolute resource paths')
   }
@@ -174,6 +222,7 @@ function acquire(options) {
     schema: SCHEMA, id: crypto.randomUUID(), mode: options.mode, pid: process.pid,
     owner: crypto.createHash('sha256').update(owner).digest('hex'), resources: []
   }
+  if (options.scope !== undefined) receipt.scope = options.scope
   const filename = `${receipt.id}${RECEIPT_SUFFIX}`
   admitted(directory, () => {
     receipt.resources = identities(options.resources)
@@ -182,6 +231,10 @@ function acquire(options) {
       const existing = readReceipt(directory, entry)
       if ((receipt.mode === 'write' || existing.mode === 'write') &&
           receipt.resources.some(resource => existing.resources.some(other => overlaps(resource, other)))) {
+        if (existing.completedBy && exited(existing.pid) && exited(existing.completedBy)) {
+          fs.unlinkSync(path.join(directory, entry))
+          continue
+        }
         throw failure('LEASE_CONFLICT', `environment resource is reserved by ${existing.mode} lease ${existing.id} (PID ${existing.pid} is diagnostic only)`, directory)
       }
     }
@@ -191,6 +244,13 @@ function acquire(options) {
   return Object.freeze({
     directory,
     id: receipt.id,
+    completion() {
+      if (receipt.mode !== 'read' || released) {
+        throw failure('LEASE_ARGUMENT_INVALID', 'completion requires an unreleased read lease')
+      }
+      return Object.freeze({ directory, id: receipt.id, owner, pid: receipt.pid,
+        resources: Object.freeze([...receipt.resources]) })
+    },
     release() {
       if (released) return
       admitted(directory, () => {
@@ -207,4 +267,4 @@ function acquire(options) {
   })
 }
 
-module.exports = { acquire }
+module.exports = { acquire, complete, pending }

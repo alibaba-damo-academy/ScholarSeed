@@ -111,6 +111,54 @@ native('killed child writer leaves a conservative reservation rather than PID re
   assert.throws(() => take(state, 'read'), { code: 'LEASE_CONFLICT' })
 })
 
+native('completed readers recover only after both the holder and cleanup host exit', async context => {
+  const state = fixture(context)
+  const script = `const lease=require(process.argv[1]).acquire(JSON.parse(process.argv[2]));process.send(lease.completion());process.on('message',()=>process.exit(0))`
+  const holder = spawn(process.execPath, ['-e', script, MODULE,
+    JSON.stringify({ directory: state.directory, resources: [state.resource], mode: 'read' })],
+  { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
+  context.after(() => { if (holder.exitCode === null) holder.kill() })
+  const [ticket] = await once(holder, 'message')
+  const cleanup = spawn(process.execPath, ['-e',
+    `require(process.argv[1]).complete(JSON.parse(process.argv[2]));process.send('stopped');process.on('message',()=>process.exit(0))`,
+    MODULE, JSON.stringify(ticket)], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
+  context.after(() => { if (cleanup.exitCode === null) cleanup.kill() })
+  await once(cleanup, 'message')
+  assert.throws(() => take(state), { code: 'LEASE_CONFLICT' })
+  const holderExited = once(holder, 'exit')
+  holder.send('exit')
+  await holderExited
+  assert.throws(() => take(state), { code: 'LEASE_CONFLICT' })
+  const cleanupExited = once(cleanup, 'exit')
+  cleanup.send('exit')
+  await cleanupExited
+  take(state).release()
+  assert.deepEqual(fs.readdirSync(state.directory), [])
+})
+
+native('an exited reader without cleanup proof remains protected', async context => {
+  const state = fixture(context)
+  const child = spawn(process.execPath, ['-e',
+    `require(process.argv[1]).acquire(JSON.parse(process.argv[2]));process.exit(0)`, MODULE,
+    JSON.stringify({ directory: state.directory, resources: [state.resource], mode: 'read' })])
+  await once(child, 'exit')
+  assert.throws(() => take(state), { code: 'LEASE_CONFLICT' })
+})
+
+native('cleanup proof is restricted to the exact read lease capability', context => {
+  const state = fixture(context)
+  const reader = take(state, 'read')
+  const ticket = reader.completion()
+  assert.throws(() => leases.complete({ ...ticket, owner: '0'.repeat(64) }), { code: 'LEASE_STATE_INVALID' })
+  assert.throws(() => leases.complete({ ...ticket, resources: [path.join(state.resource, 'other')] }), { code: 'LEASE_STATE_INVALID' })
+  leases.complete(ticket)
+  assert.throws(() => take(state), { code: 'LEASE_CONFLICT' })
+  reader.release()
+  const writer = take(state)
+  assert.throws(() => writer.completion(), { code: 'LEASE_ARGUMENT_INVALID' })
+  writer.release()
+})
+
 // Deterministic admission interleavings, not a substitute for native ACL tests.
 for (const boundary of ['lstat', 'windows-acl', 'persistent-acl']) {
   test(`admission inspection handles ${boundary} without trusting unsafe state`, context => {
