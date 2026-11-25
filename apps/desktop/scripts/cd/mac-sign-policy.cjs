@@ -2,7 +2,6 @@
 const cp = require('node:child_process')
 const {createHash, X509Certificate} = require('node:crypto')
 const fs = require('node:fs')
-const os = require('node:os')
 const path = require('node:path')
 const {isDeepStrictEqual} = require('node:util')
 
@@ -11,8 +10,6 @@ const SECURITY = '/usr/bin/security'
 const INTERMEDIATE = 'certificate 1[field.1.2.840.113635.100.6.2.6]'
 const APPLICATION = 'certificate leaf[field.1.2.840.113635.100.6.1.13]'
 const SIGNING_CHAIN = `anchor apple generic and ${INTERMEDIATE} and ${APPLICATION}`
-const APPROVED_CERTIFICATES_ENV = 'SCHOLARSEED_MAC_SIGN_APPROVED_CERT_SHA256'
-const SHA256 = /^[0-9a-f]{64}$/
 
 function command(program, args, input) {
   const result = cp.spawnSync(program, args, {encoding: 'utf8', input, timeout: 120_000, maxBuffer: 4 * 1024 * 1024})
@@ -25,7 +22,7 @@ function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
-function certificate(options, signing) {
+function verifiedSigningTeam(options, signing) {
   if (signing?.mode !== 'developer-id' || !/^[A-Z0-9]{10}$/.test(signing.teamId) ||
       !signing.identity.startsWith('Developer ID Application: ') || options.platform !== 'darwin' ||
       options.type !== 'distribution' || typeof options.identity !== 'string')
@@ -43,30 +40,9 @@ function certificate(options, signing) {
     const subject = cert.toLegacyObject().subject
     if (cert.fingerprint.replaceAll(':', '') === hashes[0] &&
         subject.CN === signing.identity && subject.OU === signing.teamId)
-      return {name: signing.identity, team: signing.teamId, sha1: hashes[0], sha256: digest(cert.raw)}
+      return signing.teamId
   }
-  throw new Error('Cannot pin the selected Developer ID certificate')
-}
-
-function certificatePolicy(cert, configured) {
-  if (configured === undefined) {
-    return {
-      identity: cert,
-      requirement: `${SIGNING_CHAIN} and certificate leaf = H"${cert.sha1}"`,
-      accepts: fingerprint => fingerprint === cert.sha256,
-    }
-  }
-
-  const approved = [...new Set(configured.split(',').map(value => value.trim().toLowerCase()))].sort()
-  if (approved.some(fingerprint => !SHA256.test(fingerprint))) {
-    throw new Error(`${APPROVED_CERTIFICATES_ENV}: expected a comma-separated list of approved certificate SHA-256 fingerprints`)
-  }
-  if (!approved.includes(cert.sha256)) throw new Error('Selected Developer ID certificate is not approved for shared signing cache')
-  return {
-    identity: {name: cert.name, team: cert.team, approvedSha256: approved},
-    requirement: `${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${cert.team}`,
-    accepts: fingerprint => approved.includes(fingerprint),
-  }
+  throw new Error('Selected Developer ID certificate does not match the configured signing identity and team')
 }
 
 function plistValue(data) {
@@ -103,29 +79,27 @@ function binaryIdentifier(filename, arch) {
   return name.replace(/([^\d.]\.?\d*)[\d.]*$/, '$1')
 }
 
-function verifySignature(target, framework, expected, signers, prefix, decoded) {
+function verifySignature(target, framework, expected, signing, decoded) {
   // Apply the Apple Developer ID requirement to every slice, independent of
   // what the cache object declares about its own signing requirements.
-  command(CODESIGN, ['--verify', '--strict', '--all-architectures', '-R', `=${signers.requirement}`, target])
+  const {team, requirement} = signing
+  command(CODESIGN, ['--verify', '--strict', '--all-architectures', '-R', `=${requirement}`, target])
   const executable = framework?.executable || target
   const archs = command('/usr/bin/lipo', ['-archs', executable]).stdout.trim().split(/\s+/)
   for (const arch of archs) {
-    fs.rmSync(prefix + '0', {force: true})
     const {stdout, stderr} = command(CODESIGN, ['--display', '--architecture', arch, '--verbose=4', '-r-',
-      '--xml', '--entitlements', '-', '--extract-certificates=' + prefix, target])
+      '--xml', '--entitlements', '-', target])
     const identifier = /^Identifier=(.+)$/m.exec(stderr)?.[1]
     if (identifier !== (framework?.identifier || binaryIdentifier(executable, arch)))
       throw new Error(`Cached signature identifier differs from the signing input: ${target} (${arch})`)
     const end = stdout.indexOf('\n')
     const designated = stdout.slice(0, end).replaceAll(' /* exists */', '')
-    const {name, team} = signers.identity
-    const required = ` and ${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${team}`
+    const required = ` and ${requirement}`
     const lines = stderr.split(/\r?\n/)
     if (!identifier || end < 0 ||
         ![`designated => identifier ${identifier}${required}`, `designated => identifier "${identifier}"${required}`].includes(designated) ||
         !/^CodeDirectory .* flags=0x10000\(runtime\) /m.test(stderr) || !/^Timestamp=.+$/m.test(stderr) ||
-        !lines.includes('Authority=' + name) || !lines.includes('TeamIdentifier=' + team) ||
-        !signers.accepts(digest(fs.readFileSync(prefix + '0'))))
+        !/^Authority=Developer ID Application: .+$/m.test(stderr) || !lines.includes('TeamIdentifier=' + team))
       throw new Error(`Cached signature differs from the Developer ID policy: ${target} (${arch})`)
     const xml = stdout.slice(end + 1)
     if (!decoded.has(xml)) decoded.set(xml, plistValue(xml))
@@ -134,15 +108,15 @@ function verifySignature(target, framework, expected, signers, prefix, decoded) 
   }
 }
 
-function createRuntimeSigningPolicy(options, frozen, environment = process.env) {
-  const cert = certificate(options, frozen.native.signing)
-  const signers = certificatePolicy(cert, environment[APPROVED_CERTIFICATES_ENV])
+function createRuntimeSigningPolicy(options, frozen) {
+  const team = verifiedSigningTeam(options, frozen.native.signing)
+  const signing = {team, requirement: `${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${team}`}
   // Fingerprint the actual tools, independent of per-runner installation paths.
   const allocator = command('/usr/bin/xcrun', ['--find', 'codesign_allocate']).stdout.trim()
   const sources = [CODESIGN, '/usr/bin/codesign_allocate', allocator, __filename, ...['signer.cjs', 'macho.cjs', 'osx-sign.cjs'].map(name => path.join(__dirname, name)),
     require.resolve('@electron/osx-sign/dist/cjs/sign'), require.resolve('@electron/osx-sign/dist/cjs/util')]
-  if (environment.CODESIGN_ALLOCATE) sources.push(environment.CODESIGN_ALLOCATE)
-  const policy = {cert: signers.identity, electron: options.version, system: command('/usr/bin/sw_vers', ['-buildVersion']).stdout.trim(),
+  if (process.env.CODESIGN_ALLOCATE) sources.push(process.env.CODESIGN_ALLOCATE)
+  const policy = {signing, electron: options.version, system: command('/usr/bin/sw_vers', ['-buildVersion']).stdout.trim(),
     recipe: sources.map(filename => digest(fs.readFileSync(filename)))}
   const entitlements = new Map()
   return {
@@ -170,15 +144,11 @@ function createRuntimeSigningPolicy(options, frozen, environment = process.env) 
       return {
         digest: digest(JSON.stringify([policy, members.map(m => [m.relative, m.bundle, m.entitlements.digest])])),
         verify() {
-          const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'signed-runtime-cert-'))
-          try {
-            const decoded = new Map()
-            const frameworks = frameworkExecutables(members.filter(m => m.bundle).map(m => m.filename))
-            for (const member of members)
-              verifySignature(member.filename, frameworks.get(member.filename) || frameworks.get(fs.realpathSync(member.filename)),
-                member.entitlements.value, signers, path.join(directory, 'leaf'), decoded)
-          } finally {
-            fs.rmSync(directory, {force: true, recursive: true})
+          const decoded = new Map()
+          const frameworks = frameworkExecutables(members.filter(m => m.bundle).map(m => m.filename))
+          for (const member of members) {
+            verifySignature(member.filename, frameworks.get(member.filename) || frameworks.get(fs.realpathSync(member.filename)),
+              member.entitlements.value, signing, decoded)
           }
         },
       }
