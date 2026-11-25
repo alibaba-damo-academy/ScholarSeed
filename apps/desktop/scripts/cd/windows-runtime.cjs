@@ -3,13 +3,41 @@ const state = require('../shared/build-state.cjs')
 const fs = require('node:fs')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
+const componentCache = require('../shared/component-cache.cjs')
 const { envelope } = require('./velopack.cjs')
 const { RUNTIME_DOMAIN, RUNTIME_COMPONENT_KINDS, COMPONENT_VERSION_PATTERN,
-  RUNTIME_MANIFEST_FILENAME, RUNTIME_MANIFEST_LIMIT, RUNTIME_ENTRIES, CONTENT_ID_PATTERN, validateRuntimeManifest, sha256FileSync } = require('../../runtime/components.cjs')
+  COMPONENT_KINDS, RUNTIME_MANIFEST_FILENAME, RUNTIME_MANIFEST_LIMIT, RUNTIME_ENTRIES, CONTENT_ID_PATTERN, validateRuntimeManifest, sha256FileSync } = require('../../runtime/components.cjs')
 const VERSIONS_FILE = path.join(__dirname, '../../runtime/versions.json')
 const ARCHIVES_DIRECTORY = 'runtime-components'
 const PUBLISH_COMMAND_ENV = 'SCHOLARSEED_RUNTIME_PUBLISH_COMMAND'
 const CI_NAMES = ['CI', 'GITLAB_CI', 'GITHUB_ACTIONS', 'AONE_CI']
+const FETCH_COMMAND_ENV = 'SCHOLARSEED_RUNTIME_FETCH_COMMAND'
+function restoreReviewedArchive(kind, output, original, python, environment,
+  bindings = JSON.parse(fs.readFileSync(VERSIONS_FILE, 'utf8'))) {
+  const binding = bindings.components?.[kind]
+  // A changed tree must be rebuilt; never replace changed contents with an old ZIP.
+  if (!binding || binding.contentId !== original.treeSha256 || binding.archiveSha256 === original.archiveSha256 ||
+      !environment[FETCH_COMMAND_ENV]) return original
+  const temporary = fs.mkdtempSync(path.join(path.dirname(output), '.reviewed-'))
+  try {
+    const archive = path.join(temporary, `${kind}.zip`)
+    let command
+    try { command = JSON.parse(environment[FETCH_COMMAND_ENV]) } catch { throw new Error('invalid runtime fetch command') }
+    if (!Array.isArray(command) || !command.length || command.some(item => typeof item !== 'string' || !item))
+      throw new Error('invalid runtime fetch command')
+    execFileSync(command[0], [...command.slice(1), '--target', bindings.target, '--kind', kind,
+      '--version', binding.version, '--content-id', binding.contentId, '--sha256', binding.archiveSha256,
+      '--output', archive], {env: environment, stdio: 'inherit', windowsHide: true})
+    const prefix = COMPONENT_KINDS.includes(kind) ? kind : ''
+    const inventory = componentCache.measure(python, archive, environment, prefix, true)
+    if (inventory.archiveSha256 !== binding.archiveSha256 || inventory.treeSha256 !== binding.contentId ||
+        JSON.stringify(inventory.files) !== JSON.stringify(original.files))
+      throw new Error(`reviewed runtime archive differs: ${kind}`)
+    fs.renameSync(archive, output)
+    console.log(`[runtime] reused reviewed archive ${kind} ${binding.version} ${binding.archiveSha256}`)
+    return inventory
+  } finally { fs.rmSync(temporary, {recursive: true, force: true}) }
+}
 function bindComponentVersions(components, bindings) {
   if (bindings?.schema !== 1 || bindings.target !== 'win32-x86_64') throw new Error('invalid runtime version bindings')
   return components.map(component => {
@@ -97,4 +125,4 @@ function runtimeTreeEvidence(directory) {
   if (!files.length) throw new Error('bundled runtime tree is empty')
   return { sha256: state.identity(files), files: files.length, bytes: files.reduce((total, file) => total + file.bytes, 0) }
 }
-module.exports = { ARCHIVES_DIRECTORY, runtimeTreeEvidence, bindComponentVersions, runtimeComponent, freezeRuntimeManifest, freezeRuntimeProduct, runtimeArtifacts, publishRuntime }
+module.exports = { ARCHIVES_DIRECTORY, runtimeTreeEvidence, bindComponentVersions, runtimeComponent, restoreReviewedArchive, freezeRuntimeManifest, freezeRuntimeProduct, runtimeArtifacts, publishRuntime }

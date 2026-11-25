@@ -6,6 +6,7 @@ const path = require('node:path')
 const {registryCommand} = require('./signing.fixture.cjs')
 const {hashFile} = require('../../shared/build-state.cjs')
 const { signedRuntimeStore } = require('../mac-sign-store.cjs')
+const {macComponentVersions} = require('../mac-component-versions.cjs')
 
 const key = 'ab'.repeat(32)
 const posix = {skip: process.platform === 'win32' && 'macOS cache uses POSIX directory rename semantics'}
@@ -18,8 +19,8 @@ function fixture(t) {
   const registry = path.join(dir, 'registry')
   fs.mkdirSync(registry, {mode: 0o700})
   const command = registryCommand(registry)
-  function runner(name, shared = true, kind = 'python', target = 'darwin-arm64') {
-    return signedRuntimeStore(path.join(dir, name), shared ? command : undefined, kind, target)
+  function runner(name, shared = true, kind = 'python', target = 'darwin-arm64', environment = {}) {
+    return signedRuntimeStore(path.join(dir, name), shared ? command : undefined, kind, target, environment)
   }
   function source(name, value) {
     const filename = path.join(dir, name)
@@ -61,7 +62,7 @@ test('two cold runners converge on the published winner and a fresh runner retai
   assert.equal(runner('three').lookup(key, download(), restore), 'local')
   assert.deepEqual(restored, Array(4).fill('timestamp one'))
   assert.deepEqual(read(path.join(registry, 'calls')).trim().split('\n'), [
-    'fetch 3', 'fetch 3', 'publish 0', 'publish 4', 'fetch 0', 'fetch 0',
+    'fetch 3', 'fetch 3', 'publish 0', 'publish 4', 'fetch 0', 'confirm 0', 'fetch 0', 'confirm 0',
   ])
 })
 
@@ -77,13 +78,104 @@ test('local-only and shared caches use separate namespaces under the same root',
   assert.equal(runner('other-root', false).lookup(key, download(), neverRestore), null)
 })
 
+test('a hot signing cache backfills a purged version and converges on a different verified winner', posix, t => {
+  const {registry, runner, source, download} = fixture(t)
+  const store = runner('hot')
+  const signed = source('before.zip', 'original signature')
+  store.publish(key, signed, download(), neverRestore)
+  const folder = path.join(registry, 'darwin-arm64', 'python', macComponentVersions().python)
+  fs.rmSync(folder, {recursive: true})
+  const restored = []
+  const restore = file => restored.push(read(file))
+  assert.equal(store.lookup(key, download(), restore), 'local')
+  assert.equal(read(path.join(folder, 'component.zip')), 'original signature')
+  fs.rmSync(folder, {recursive: true})
+  runner('new-winner').publish(key, source('new.zip', 'new signature'), download(), neverRestore)
+  assert.equal(store.lookup(key, download(), restore), 'registry')
+  assert.equal(store.lookup(key, download(), restore), 'local')
+  assert.deepEqual(restored, ['original signature', 'new signature', 'new signature'])
+  assert.equal(read(path.join(registry, 'calls')), 'publish 0\nconfirm 3\npublish 0\npublish 0\nconfirm 4\nfetch 0\nconfirm 0\n')
+})
+
+test('a different unregistered signing archive must pass the active policy before publication or local retention', posix, t => {
+  const {dir, registry, runner, source, download} = fixture(t)
+  const store = runner('recovery')
+  const folder = path.join(registry, 'darwin-arm64', 'python', macComponentVersions().python)
+  fs.mkdirSync(folder, {recursive: true})
+  const orphan = path.join(folder, 'component.zip')
+  const receipt = path.join(folder, 'receipt.json')
+  fs.writeFileSync(orphan, 'invalid signature')
+  const local = source('ours.zip', 'separately verified signature')
+  assert.equal(store.lookup(key, download(), neverRestore), null)
+  function verify(archive) {
+    assert.equal(fs.existsSync(receipt), false, 'public fetch cannot discover the candidate during verification')
+    if (read(archive) !== 'valid signature') throw new Error('signature differs from active policy')
+  }
+  assert.throws(() => store.publish(key, local, download(), verify), /active policy/)
+  assert.equal(fs.existsSync(receipt), false)
+  assert.equal(fs.existsSync(path.join(dir, 'recovery', 'shared-v3', 'python', 'darwin-arm64', macComponentVersions().python, key)), false)
+  fs.writeFileSync(orphan, 'valid signature')
+  assert.equal(store.publish(key, local, download(), verify), true)
+  assert.equal(JSON.parse(read(receipt)).inputSha256, key)
+  assert.equal(store.lookup(key, download(), archive => assert.equal(read(archive), 'valid signature')), 'local')
+  assert.equal(read(path.join(registry, 'calls')), 'fetch 3\npublish 5\nrecover 0\npublish 5\nrecover 0\npublish 0\nconfirm 0\n')
+  fs.rmSync(receipt)
+  fs.writeFileSync(orphan, 'new invalid signature')
+  assert.throws(() => store.lookup(key, download(), verify), /active policy/)
+  assert.equal(fs.existsSync(receipt), false)
+})
+
+test('a verified v2 local signing entry can provision the selected private version', posix, t => {
+  const {dir, registry, runner, source, download} = fixture(t)
+  const previous = path.join(dir, 'previous-scope')
+  const legacy = path.join(previous, 'shared-v2', 'frameworks', 'darwin-x86_64', key)
+  fs.mkdirSync(legacy, {recursive: true, mode: 0o700})
+  const zip = source('framework.zip', 'signed frameworks')
+  fs.copyFileSync(zip, path.join(legacy, 'component.zip'))
+  fs.writeFileSync(path.join(legacy, 'receipt.json'), JSON.stringify({
+    schema: 2, inputs: {kind: 'frameworks', target: 'darwin-x86_64', key},
+    inventory: {archiveSha256: hashFile(zip), archiveBytes: fs.statSync(zip).size},
+  }))
+  const env = {SCHOLARSEED_MAC_SIGN_PREVIOUS_CACHE: previous}
+  const restore = file => assert.equal(read(file), read(zip))
+  const version = macComponentVersions().electron.replace(/-r\d+$/, '-r1')
+  for (const label of [version, '44.3.0-r9']) {
+    if (label !== version) env.SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_FRAMEWORKS = label
+    const store = runner('same', true, 'frameworks', 'darwin-x86_64', env)
+    assert.equal(store.lookup(key, download(), restore), 'local')
+    assert.equal(read(path.join(registry, 'darwin-x86_64', 'frameworks', label, 'component.zip')), read(zip))
+    assert.equal(store.lookup(key, download(), restore), 'local')
+  }
+  fs.writeFileSync(path.join(legacy, 'receipt.json'), 'unrelated corrupt v2 entry')
+  assert.equal(runner('another', true, 'frameworks', 'darwin-x86_64', env).lookup(key, download(), restore), 'registry')
+  assert.equal(read(path.join(registry, 'calls')), 'fetch 3\npublish 0\nconfirm 0\nfetch 3\npublish 0\nconfirm 0\nfetch 0\n')
+})
+
+test('a different signing input needs its own revision even on the original runner', posix, t => {
+  const {registry, runner, source, download} = fixture(t)
+  const file = source('first.zip', 'production signature')
+  const otherKey = 'bc'.repeat(32)
+  const first = runner('machine')
+  first.publish(key, file, download(), neverRestore)
+  assert.throws(() => first.lookup(otherKey, download(), neverRestore), /registry fetch failed/)
+  const second = runner('machine', true, 'python', 'darwin-arm64', {SCHOLARSEED_CI_CACHE_VERSION_DARWIN_ARM64_PYTHON: '3.14.10-r7'})
+  assert.equal(second.lookup(otherKey, download(), neverRestore), null)
+  second.publish(otherKey, file, download(), neverRestore)
+  const receipt = version => JSON.parse(read(path.join(registry, 'darwin-arm64', 'python', version, 'receipt.json'))).inputSha256
+  assert.equal(receipt(macComponentVersions().python), key)
+  assert.equal(receipt('3.14.10-r7'), otherKey)
+  assert.throws(() => runner('wrong', true, 'python', 'darwin-arm64', {
+    SCHOLARSEED_CI_CACHE_VERSION_DARWIN_ARM64_PYTHON: '3.14.11-r1',
+  }), /Invalid private CI cache version/)
+})
+
 test('corrupt local bytes stop before restore, and failed remote verification never warms a runner', posix, t => {
   const {runner, source, download, registry} = fixture(t)
   const store = runner('one')
   store.publish(key, source('good', 'verified signature'), download(), neverRestore)
   assert.equal(store.lookup(key, download(), file => fs.writeFileSync(file, 'corrupt')), 'local')
   assert.throws(() => store.lookup(key, download(), neverRestore), /digest mismatch/)
-  assert.equal(read(path.join(registry, 'calls')), 'publish 0\n')
+  assert.equal(read(path.join(registry, 'calls')), 'publish 0\nconfirm 0\n')
   const fresh = runner('two')
   const verify = () => { throw new Error('codesign verification failed') }
   assert.throws(() => fresh.lookup(key, download(), verify), /codesign verification failed/)
@@ -110,10 +202,11 @@ test('identical input keys have separate signing receipts for each kind and cano
     const local = runner('machine', true, kind, target)
     assert.equal(local.lookup(key, download(), neverRestore), null)
     assert.equal(local.publish(key, file, download(), neverRestore), false)
-    const folder = path.join(dir, 'machine', 'shared-v2', kind, target, key)
-    assert.equal(read(path.join(folder, 'component.zip')), data)
+    const version = macComponentVersions()[kind]
+    const folder = path.join(dir, 'machine', 'shared-v3', kind, target, version, key)
+    assert.equal(read(path.join(folder, hashFile(file) + '.zip')), data)
     assert.deepEqual(JSON.parse(read(path.join(folder, 'receipt.json'))), {
-      schema: 2, inputs: {kind, target, key}, inventory: {archiveSha256: hashFile(file), archiveBytes: data.length},
+      schema: 3, inputs: {kind, target, version, key}, inventory: {archiveSha256: hashFile(file), archiveBytes: data.length},
     })
     const verify = archive => assert.equal(read(archive), data)
     assert.equal(local.lookup(key, download(), verify), 'local')
@@ -152,7 +245,7 @@ test('invalid kind, target, or redirected parent cannot access local or remote s
   }
   assert.equal(fs.existsSync(path.join(dir, 'invalid')), false)
   const store = runner('machine')
-  const kindFolder = path.join(dir, 'machine', 'shared-v2', 'python')
+  const kindFolder = path.join(dir, 'machine', 'shared-v3', 'python')
   fs.renameSync(kindFolder, kindFolder + '-real')
   fs.symlinkSync(kindFolder + '-real', kindFolder, 'dir')
   const archive = source('signed-archive', 'test bytes')

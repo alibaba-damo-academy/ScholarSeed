@@ -22,7 +22,7 @@ test('Python cache ignores bundle orchestration but binds every actual recipe so
   }
   const identity = (overrides = {}, tools = {uv: 'locked'}) => derivePythonContentId({
     target: 'win32-x86_64', pythonArchiveSha256: '1'.repeat(64), requirementsSha256: '2'.repeat(64),
-    lockSha256: '3'.repeat(64), binaryPackages: ['cryptography'], bytecodeSha256: '4'.repeat(64),
+    sourceBuilds: [], binaryPackages: ['cryptography'], bytecodeSha256: '4'.repeat(64),
     skillWheels: [{name: 'skill', sha256: '5'.repeat(64)}], recipe: cache.recipe(repo, tools), ...overrides})
   const original = identity()
   fs.writeFileSync(path.join(repo, 'apps/desktop/scripts/cd/bundle.cjs'), '// unrelated Office/installer orchestration\n')
@@ -34,8 +34,9 @@ test('Python cache ignores bundle orchestration but binds every actual recipe so
     fs.writeFileSync(filename, bytes)
   }
   assert.notEqual(identity({}, {uv: 'new'}), original)
-  for (const field of ['target', 'pythonArchiveSha256', 'requirementsSha256', 'lockSha256'])
+  for (const field of ['target', 'pythonArchiveSha256', 'requirementsSha256'])
     assert.notEqual(identity({[field]: '6'.repeat(64)}), original, field)
+  assert.notEqual(identity({sourceBuilds: [{name: 'fastcdc', sha256: '3'.repeat(64), buildConstraints: 'locked'}]}), original)
   assert.notEqual(identity({skillWheels: [{name: 'skill', sha256: '7'.repeat(64)}]}), original)
 })
 

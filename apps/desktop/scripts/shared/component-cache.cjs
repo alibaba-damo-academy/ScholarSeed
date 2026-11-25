@@ -5,6 +5,8 @@ const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const { nativeTar } = require('../../../../scripts/shared/python.cjs')
 const state = require('./build-state.cjs')
+const {ciCacheVersion} = require('./ci-cache-version.cjs')
+const reviewed = require('../../runtime/versions.json')
 const { timed } = require('../../../../scripts/shared/timing.cjs')
 const SCHEMA = 2
 const ARCHIVE = 'component.zip'
@@ -16,8 +18,7 @@ const RECIPE_FILES = {
     'apps/serve/service/capabilities/service/dependencies.py', 'scripts/shared/platform.cjs',
     'apps/desktop/native/toolchain.json', 'apps/desktop/scripts/cd/wheels.cjs', 'apps/desktop/scripts/cd/cache.cjs',
     'apps/desktop/scripts/shared/macos.cjs'],
-  texlive: ['apps/desktop/runtime/texlive.cjs', 'apps/desktop/scripts/cd/texlive.cjs', 'apps/desktop/scripts/cd/payload.py',
-    'apps/desktop/package.json', 'apps/desktop/pnpm-lock.yaml'],
+  texlive: ['apps/desktop/runtime/texlive.cjs', 'apps/desktop/scripts/cd/texlive.cjs', 'apps/desktop/scripts/cd/payload.py'],
   powershell: ['apps/desktop/runtime/powershell.cjs', 'apps/desktop/scripts/cd/payload.py'],
   codex: ['apps/desktop/scripts/cd/compression.cjs', 'apps/desktop/scripts/cd/payload.py'],
   electron: ['apps/desktop/scripts/cd/engine.cjs', 'apps/desktop/runtime/electron/bootstrap.cjs',
@@ -26,16 +27,33 @@ const RECIPE_FILES = {
 }
 function recipe(repo, tools, kind = 'python') {
   if (!RECIPE_FILES[kind]) throw new Error('unknown component recipe')
+  if (kind === 'texlive') {
+    // The PE normalizer uses the installed, dependency-free pe-library CJS distribution.
+    const dist = path.dirname(require.resolve('pe-library', {paths: [path.join(repo, 'apps/desktop')]}))
+    const modules = fs.readdirSync(dist, {recursive: true}).filter(name => name.endsWith('.js'))
+      .map(name => name.split(path.sep).join('/')).sort()
+    tools = {...tools, peLibrary: state.identity(modules.map(name =>
+      [name, crypto.createHash('sha256').update(fs.readFileSync(path.join(dist, name))).digest('hex')]))}
+  }
   return { tools, files: RECIPE_FILES[kind].map(file => [file,
     crypto.createHash('sha256').update(fs.readFileSync(path.join(repo, file), 'utf8').replaceAll('\r\n', '\n')).digest('hex')]) }
 }
-function shared(operation, root, inputs, environment = process.env) {
-  const configured = environment.SCHOLARSEED_COMPONENT_REGISTRY_COMMAND
-  if (!configured) return
-  const command = JSON.parse(configured)
+function registryVersion(inputs, environment, inventory) {
+  if (!environment?.SCHOLARSEED_COMPONENT_REGISTRY_COMMAND) return
+  if (inputs.target !== reviewed.target) throw new Error('invalid Windows component registry target')
+  const binding = reviewed.components[inputs.kind]
+  const version = ciCacheVersion(inputs.target, inputs.kind, binding?.version, environment)
+  if (inventory && version === binding?.version &&
+      (inventory.treeSha256 !== binding.contentId || inventory.archiveSha256 !== binding.archiveSha256))
+    throw new Error(`cannot populate reviewed cache version ${inputs.kind}/${version} from unreviewed component bytes`)
+  return version
+}
+function shared(operation, root, inputs, environment = process.env, version = registryVersion(inputs, environment)) {
+  if (!version) return
+  const command = JSON.parse(environment.SCHOLARSEED_COMPONENT_REGISTRY_COMMAND)
   if (!Array.isArray(command) || !command.length || command.some(item => typeof item !== 'string' || !item))
     throw new Error('invalid component registry command')
-  execFileSync(command[0], [...command.slice(1), operation, '--root', root, '--key', key(inputs)],
+  execFileSync(command[0], [...command.slice(1), operation, '--root', root, '--key', key(inputs), '--version', version],
     { input: JSON.stringify(inputs), env: environment, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true })
 }
 function key(inputs) { return state.identity({ schema: SCHEMA, inputs }) }
@@ -52,7 +70,7 @@ function reuse(archive, inventory) {
       state.hashFile(archive) !== inventory.archiveSha256) throw new Error('component changed after inventory')
   return inventory
 }
-function lookup(root, inputs, python, environment) {
+function lookup(root, inputs, python, environment = process.env) {
   const started=Date.now()
   if (!root) return null
   root = state.ensurePrivateDirectory(root)
@@ -75,7 +93,7 @@ function lookup(root, inputs, python, environment) {
   const fullInventory = measure(python, archive, environment, prefix, true)
   const actual = summary(fullInventory)
   if (JSON.stringify(actual) !== JSON.stringify(receipt.inventory)) throw new Error('component cache inventory mismatch')
-  shared('publish', root, inputs, environment)
+  shared('publish', root, inputs, environment, registryVersion(inputs, environment, actual))
   console.log(`[component-cache] hit ${inputs.kind} ${key(inputs)} (${Date.now()-started}ms)` )
   return { archive, ...receipt, fullInventory }
 }
@@ -88,6 +106,7 @@ function restore(entry, backend, tree) {
 }
 function publish(root, inputs, archive, measured, evidence, environment = process.env) {
   if (!root) return
+  const version = registryVersion(inputs, environment, measured)
   root = state.ensurePrivateDirectory(root)
   const directory = path.join(root, key(inputs))
   const temporary = fs.mkdtempSync(path.join(root, '.publish-'))
@@ -107,7 +126,7 @@ function publish(root, inputs, archive, measured, evidence, environment = proces
           state.hashFile(path.join(directory, ARCHIVE)) !== winner.inventory.archiveSha256) throw new Error('invalid concurrent component cache publisher')
       if (state.identity(winner.inventory) !== state.identity(measured)) throw new Error('component reproducibility conflict: same inputs produced different archives')
     }
-    shared('publish', root, inputs, environment)
+    shared('publish', root, inputs, environment, version)
     console.log(`[component-cache] stored ${inputs.kind} ${key(inputs)}`)
   } finally { fs.rmSync(temporary, { recursive: true, force: true }) }
 }

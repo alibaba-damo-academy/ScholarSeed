@@ -32,23 +32,34 @@ function keychain(t, cert, identityCount = 1) {
 function registryProvider() {
   const fs = require('node:fs')
   const path = require('node:path')
-  const [root, operation, kindFlag, kind, targetFlag, target, keyFlag, key, archiveFlag, archive] = process.argv.slice(1)
+  const [root, operation, kindFlag, kind, targetFlag, target, versionFlag, version, keyFlag, key, archiveFlag, archive] = process.argv.slice(1)
   if (kindFlag !== '--kind' || !['electron', 'frameworks', 'python', 'texlive'].includes(kind) ||
-      targetFlag !== '--target' || !['darwin-arm64', 'darwin-x86_64'].includes(target) || keyFlag !== '--key' || archiveFlag !== '--archive' || !/^[a-f0-9]{64}$/.test(key) || !path.isAbsolute(archive))
+      targetFlag !== '--target' || !['darwin-arm64', 'darwin-x86_64'].includes(target) ||
+      versionFlag !== '--version' || !/^[a-z0-9][a-z0-9.-]*-r[1-9][0-9]*$/.test(version) ||
+      keyFlag !== '--key' || archiveFlag !== '--archive' || !/^[a-f0-9]{64}$/.test(key) || !path.isAbsolute(archive))
     throw new Error('invalid provider arguments')
-  const entry = path.join(root, kind, target, key)
+  const folder = path.join(root, target, kind, version)
+  const entry = path.join(folder, 'component.zip')
+  const receipt = path.join(folder, 'receipt.json')
+  if (fs.existsSync(receipt) && JSON.parse(fs.readFileSync(receipt)).inputSha256 !== key)
+    throw new Error('cache version already bound to another input')
   let code = 0
-  if (operation === 'fetch') {
-    if (fs.existsSync(entry)) fs.copyFileSync(entry, archive, fs.constants.COPYFILE_EXCL)
+  if (operation === 'fetch' || operation === 'recover') {
+    if (fs.existsSync(entry) && (operation === 'recover' || fs.existsSync(receipt)))
+      fs.copyFileSync(entry, archive, fs.constants.COPYFILE_EXCL)
     else code = 3
+  } else if (operation === 'confirm') {
+    if (!fs.existsSync(receipt)) code = 3
+    else if (!fs.readFileSync(archive).equals(fs.readFileSync(entry))) code = 4
   } else if (operation === 'publish') {
-    fs.mkdirSync(path.dirname(entry), {recursive: true})
+    fs.mkdirSync(folder, {recursive: true})
     try {
       fs.copyFileSync(archive, entry, fs.constants.COPYFILE_EXCL)
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
-      if (!fs.readFileSync(archive).equals(fs.readFileSync(entry))) code = 4
+      if (!fs.readFileSync(archive).equals(fs.readFileSync(entry))) code = fs.existsSync(receipt) ? 4 : 5
     }
+    if (code === 0 && !fs.existsSync(receipt)) fs.writeFileSync(receipt, JSON.stringify({inputSha256: key}), {flag: 'wx'})
   } else throw new Error('unknown operation')
   fs.appendFileSync(path.join(root, 'calls'), operation + ' ' + code + '\n')
   process.exitCode = code

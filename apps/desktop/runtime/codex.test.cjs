@@ -26,7 +26,8 @@ const REVIEWED_CODEX_VERSION = '0.171.0'
 // synthetic resolver test opts in to its own provider.
 const inheritedRegistry = {}
 before(() => {
-  for (const key of ['SCHOLARSEED_CODEX_REGISTRY_COMMAND', 'SCHOLARSEED_CODEX_REGISTRY_SCOPE']) {
+  for (const key of ['SCHOLARSEED_CODEX_REGISTRY_COMMAND', 'SCHOLARSEED_CI_CACHE_VERSION_DARWIN_ARM64_CODEX',
+    'SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX']) {
     if (process.env[key] !== undefined) inheritedRegistry[key] = process.env[key]
     delete process.env[key]
   }
@@ -234,16 +235,18 @@ function runFixtureRegistry() {
   const [state, operation, ...args] = process.argv.slice(2)
   const options = Object.fromEntries(Array.from({ length: args.length / 2 }, (_, i) => [args[2 * i], args[2 * i + 1]]))
   const directory = options['--root']
-  if (args.length !== 6 || !path.isAbsolute(directory) ||
+  if (args.length !== 8 || !/^\d+\.\d+\.\d+-r[1-9]\d*$/.test(options['--version']) || !path.isAbsolute(directory) ||
       !['darwin-arm64', 'darwin-x86_64'].includes(options['--target']) || !/^[a-f0-9]{64}$/.test(options['--key'])) {
     throw new Error('invalid Codex registry invocation')
   }
   fs.appendFileSync(path.join(state, 'calls'), JSON.stringify({ operation, ...options }) + '\n')
   if (fs.existsSync(path.join(state, 'fail-' + operation))) process.exit(9)
-  const shared = path.join(state, 'shared')
+  const shared = path.join(state, options['--version'])
   if (operation === 'fetch') {
     if (!fs.existsSync(shared)) process.exit(3)
     fs.cpSync(shared, directory, { recursive: true })
+  } else if (operation === 'confirm') {
+    if (!fs.existsSync(shared)) process.exit(3)
   } else if (operation === 'publish') {
     if (fs.existsSync(path.join(state, 'delay-publish'))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
     fs.cpSync(directory, shared, { recursive: true })
@@ -274,7 +277,7 @@ function registryFixture(context, { platform = 'darwin', arch = 'arm64' } = {}) 
   const calls = () => fs.existsSync(callsPath)
     ? fs.readFileSync(callsPath, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : []
   const resolve = validation => resolveVendoredCodex(fixture.desktop, platform, arch, () => {}, validation)
-  return { ...fixture, probe, calls, resolve, shared: path.join(fixture.root, 'shared') }
+  return { ...fixture, probe, calls, resolve, shared: path.join(fixture.root, REVIEWED_CODEX_VERSION + '-r1') }
 }
 
 test('macOS Codex pins require a lowercase SHA-256 string for each architecture', () => {
@@ -292,22 +295,32 @@ test('macOS Codex pins require a lowercase SHA-256 string for each architecture'
   }
 })
 
-test('macOS backfills a warm Codex cache, retries failed publication and confirms each scope once', async context => {
+test('macOS backfills the requested Codex version after a failed write, cleanup or private revision change', async context => {
   const fixture = registryFixture(context, { arch: 'x64' })
   const failure = path.join(fixture.root, 'fail-publish')
   fs.writeFileSync(failure, '')
   await assert.rejects(fixture.resolve(CACHE_VALIDATION.integrity))
-  assert.deepEqual(fixture.calls().map(call => call.operation), ['publish'])
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['confirm', 'publish'])
   fs.unlinkSync(failure)
   fs.unlinkSync(fixture.archive)
   await fixture.resolve(CACHE_VALIDATION.integrity)
   await fixture.resolve(CACHE_VALIDATION.integrity)
-  assert.deepEqual(fixture.calls().map(call => call.operation), ['publish', 'publish'])
-  process.env.SCHOLARSEED_CODEX_REGISTRY_SCOPE = 'b'.repeat(64)
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['confirm', 'publish', 'confirm', 'publish', 'confirm'])
+  fs.rmSync(fixture.shared, { recursive: true })
   await fixture.resolve(CACHE_VALIDATION.integrity)
+  const override = 'SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX'
+  const oldVersion = process.env[override]
+  context.after(() => {
+    if (oldVersion === undefined) delete process.env[override]
+    else process.env[override] = oldVersion
+  })
+  process.env[override] = REVIEWED_CODEX_VERSION + '-r2'
   await fixture.resolve(CACHE_VALIDATION.integrity)
   const calls = fixture.calls()
-  assert.deepEqual(calls.map(call => call.operation), ['publish', 'publish', 'publish'])
+  assert.deepEqual(calls.slice(-4).map(call => [call.operation, call['--version']]), [
+    ['confirm', REVIEWED_CODEX_VERSION + '-r1'], ['publish', REVIEWED_CODEX_VERSION + '-r1'],
+    ['confirm', REVIEWED_CODEX_VERSION + '-r2'], ['publish', REVIEWED_CODEX_VERSION + '-r2'],
+  ])
   for (const call of calls) {
     assert.equal(call['--target'], 'darwin-x86_64')
     assert.equal(call['--key'], fixture.selected.receiptSha256)
@@ -329,7 +342,7 @@ test('macOS restores a pinned Codex tree on a fresh runner without using the ven
   await fixture.resolve(CACHE_VALIDATION.integrity)
   assert.equal(fetch.mock.callCount(), 0)
   assert.deepEqual(fixture.calls().map(call => [call.operation, call['--target'], call['--key']]),
-    [['fetch', 'darwin-arm64', fixture.selected.receiptSha256]])
+    [['fetch', 'darwin-arm64', fixture.selected.receiptSha256], ['confirm', 'darwin-arm64', fixture.selected.receiptSha256]])
 })
 
 test('macOS rejects modified shared Codex bytes and forged receipts before executing or using the vendor', async context => {
@@ -365,7 +378,7 @@ test('macOS takes the vendor path only after an explicit registry miss', { skip:
   fs.unlinkSync(failure)
   await fixture.resolve()
   await fixture.resolve(CACHE_VALIDATION.integrity)
-  assert.deepEqual(fixture.calls().map(call => call.operation), ['fetch', 'fetch', 'publish'])
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['fetch', 'fetch', 'publish', 'confirm'])
   assert.equal(fs.readFileSync(fixture.probe, 'utf8'), 'probe\n')
   assert.equal(crypto.createHash('sha256').update(fs.readFileSync(
     path.join(fixture.shared, 'resolve-receipt.json'))).digest('hex'), fixture.selected.receiptSha256)
@@ -393,7 +406,7 @@ test('separate resolver processes backfill the shared Codex cache once', async c
       .catch(error => {console.error(error); process.exitCode = 1})`
   const args = ['-e', code, require.resolve('./codex.cjs'), fixture.desktop]
   await Promise.all([run(process.execPath, args), run(process.execPath, args)])
-  assert.deepEqual(fixture.calls().map(call => call.operation), ['publish'])
+  assert.deepEqual(fixture.calls().map(call => call.operation), ['confirm', 'publish', 'confirm'])
 })
 
 test('Windows resolves its Codex runtime without invoking a configured macOS registry', async context => {
