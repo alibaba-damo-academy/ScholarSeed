@@ -266,7 +266,8 @@ def test_plan_projection(_catalog: AsyncMock) -> None:
     )
     check(
         "host can disable the native tool at thread creation",
-        asyncio.run(native_config(native_plan_enabled=False)).get("tools.update_plan.enabled") is False,
+        asyncio.run(native_config(native_plan_enabled=False)).get("tools.update_plan.enabled")
+        is False,
     )
     check(
         "native sessions enable structured input in default mode",
@@ -6388,9 +6389,8 @@ def test_subscription_capability_rejection_is_terminal() -> None:
 
 def test_history_content_rejection_is_terminal() -> None:
     rejection = {"error": {"code": "model_history_content_unsupported", "message": "private"}}
-    failure = provider_failure(
-        {"message": "unexpected status 400 Bad Request: " + json.dumps(rejection)}
-    )
+    http_rejection = "unexpected status 400 Bad Request: " + json.dumps(rejection)
+    failure = provider_failure({"message": http_rejection})
     check(
         "history format rejection stays terminal across the native HTTP boundary",
         failure.retryability is RuntimeRetryability.TERMINAL
@@ -6400,6 +6400,8 @@ def test_history_content_rejection_is_terminal() -> None:
     )
     for raw in (
         rejection,
+        {"message": json.dumps(rejection), "codexErrorInfo": "other", "additionalDetails": None},
+        {"message": "stream disconnected before completion: " + http_rejection},
         {"message": "event:error\ndata:" + json.dumps(rejection)},
         {"message": ":HTTP_STATUS/400\nevent:error\ndata:" + json.dumps(rejection)},
         {"message": "unexpected status 403 Forbidden: " + json.dumps(rejection)},

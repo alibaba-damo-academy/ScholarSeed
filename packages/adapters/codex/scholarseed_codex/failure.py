@@ -200,6 +200,8 @@ def provider_failure(value: Any) -> ProviderFailure:
     probe_text = _CODEX_STREAM_DISCONNECTED_PREFIX.sub("", message, count=1)
     http_status = _native_http_status(value) or _http_status(probe_text)
     stream_error = _sse_error(probe_text)
+    # A disconnected stream can quote HTTP error text. Only the original envelope
+    # can identify a bridge HTTP rejection.
     envelope_text = message
     sse_error = stream_error or _http_error(probe_text)
     if sse_error is None and isinstance(value, Mapping):
