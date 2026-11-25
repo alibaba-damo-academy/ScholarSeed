@@ -359,12 +359,12 @@ and ticket on Squirrel's existing extraction. If ticket verification is
 temporarily inconclusive, it can retry the same bound request. Installation
 requires a fresh online grant.
 
-The 0.3.2 macOS distribution build can reuse signed runtime files from a previous
-build. The first build signs and stores Electron Framework, the
-Mantle/ReactiveObjC/Squirrel frameworks, third-party Python Mach-O files, and
-TeX Live Mach-O files as four separate groups. An app-code-only build restores
-each matching group before running the signer. The cache key binds the group's input bytes, target
-architecture, Developer ID certificate, entitlements and signing tools. CI checks
+The macOS distribution build can reuse signed Electron Framework, third-party
+Python Mach-O files and TeX Live Mach-O files as three separate groups. CI signs
+the Mantle, ReactiveObjC and Squirrel frameworks on every build. An app-code-only
+build restores each matching cache group before running the signer. The cache key
+binds the group's input bytes, target architecture, Developer ID Application
+policy, Team ID, entitlements and signing tools. CI checks
 the restored code against the current inputs and verifies its signature on every
 architecture. It signs the current outer app and runs notarization and installer
 acceptance for each release. The private distribution runner shares this cache
@@ -394,8 +394,7 @@ flow. A missing sidecar or failed object transfer uses the same release's full Z
 
 Each release stores `app.bin`, `layout.gz` and `macos-zip-components-v3.json` alongside
 `scholarseed-update.zip` in `<channel>/<arch>/<version>-<build_number>/`. The app object
-includes Mantle, ReactiveObjC and Squirrel. CI can restore their signed binaries from
-the private frameworks cache when producing the app object. The entire bundled
+includes Mantle, ReactiveObjC and Squirrel. The entire bundled
 `site-packages/service/capabilities/skills/` tree also belongs to `app.bin`,
 including its generated manifests and bytecode. The first macOS Python revision
 with this split is `3.14.10-r2`. The publisher uses `workspace_wheels` in
@@ -428,8 +427,8 @@ CI 从挂载的 DMG 按旧客户端的方式生成 1 级 ZIP。正式分发时�
 记录发布 ZIP 的大小和摘要。客户端复用 Squirrel 解出的应用校验身份和
 票据。票据暂无法判定时可以重试同一笔已绑定的请求。正式安装仍需重新获取在线授权。
 
-0.3.2 的 macOS 正式构建支持复用已签名运行时。首次构建将 Electron Framework、
-Mantle/ReactiveObjC/Squirrel 框架、Python 第三方 Mach-O 和 TeX Live Mach-O 分成四组签名并缓存。
+macOS 正式构建支持复用已签名的 Electron Framework、Python 第三方 Mach-O 和 TeX Live Mach-O，
+共三组缓存。Mantle、ReactiveObjC 和 Squirrel 框架在每次构建中签名。
 仅改应用代码时，CI 在签名前恢复命中的组。缓存键绑定该组输入、目标架构、Developer ID
 Application 签名策略、Team ID、entitlements 和签名工具。恢复时比对本次构建的代码，并逐架构验签。每次发布仍会签署
 本次外层应用，执行公证与安装器验收。私有分发 CI 默认跨机器共享缓存，也可用
@@ -469,7 +468,7 @@ Python wheel 安装时间、来源 URL 和引用它们的 RECORD 随应用组件
 
 每次发布在 `<渠道>/<架构>/<版本>-<构建号>/` 下存放 `app.bin`、`layout.gz`、
 `macos-zip-components-v3.json` 和 `scholarseed-update.zip`。`app.bin` 包含 Mantle、
-ReactiveObjC 和 Squirrel。CI 构建应用时可从私有 frameworks 缓存恢复这三个框架的签名文件。
+ReactiveObjC 和 Squirrel。
 内置 Skill 的整棵 `site-packages/service/capabilities/skills/` 目录及其中生成的清单和字节码也随
 `app.bin` 发布。采用此划分的首个 macOS Python 组件版本是 `3.14.10-r2`。发布器按
 `backend/python-dependencies.json` 的 `workspace_wheels` 识别 `deep-rnd-l1` 等产品 wheel。

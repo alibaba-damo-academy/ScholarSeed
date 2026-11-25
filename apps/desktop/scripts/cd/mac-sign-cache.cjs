@@ -34,6 +34,9 @@ async function withSignedRuntimes(options, frozen, baseIgnore, sign) {
     const hits = new Set()
     const misses = []
     for (const [kind, group] of Object.entries(groups)) {
+      // ShipIt and Squirrel are rebuilt from branch-specific sources. Keep the
+      // updater frameworks in the regular signing pass.
+      if (kind === 'frameworks') continue
       const targets = [...group.files, ...group.bundles].map(relative => path.join(options.app, relative))
       const selected = targets.some(baseIgnore) ? null : policy.forGroup(group)
       if (!selected) {
