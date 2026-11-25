@@ -109,7 +109,7 @@ fs.appendFileSync(log, JSON.stringify({operation, options, input: JSON.parse(fs.
   assert.throws(() => cache.lookup(root, f.inputs, f.python, environment), /Invalid private CI cache version/)
 })
 
-test('TeX cache key follows the PE normalizer through unrelated Desktop package and lock changes', t => {
+test('Windows vendor cache recipes track content processing independently of staging', t => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-tex-recipe-'))
   t.after(() => fs.rmSync(repo, {recursive: true, force: true}))
   const desktop = path.join(repo, 'apps/desktop')
@@ -124,13 +124,34 @@ test('TeX cache key follows the PE normalizer through unrelated Desktop package 
   fs.writeFileSync(path.join(pe, 'index.js'), 'module.exports = require("./writer")')
   const writer = path.join(pe, 'writer.js')
   fs.writeFileSync(writer, 'module.exports = 1')
+  const runtimeScripts = ['texlive', 'powershell'].map(kind => 'apps/desktop/runtime/' + kind + '.cjs')
+  for (const file of runtimeScripts) {
+    const staged = path.join(repo, file)
+    fs.mkdirSync(path.dirname(staged), {recursive: true})
+    fs.copyFileSync(path.join(REPO, file), staged)
+  }
   const recipe = () => cache.recipe(repo, {}, 'texlive')
   const before = recipe()
+  const powershell = () => cache.recipe(repo, {}, 'powershell')
+  const powershellBefore = powershell()
   fs.writeFileSync(path.join(desktop, 'package.json'), '{"version":"0.3.3"}')
   fs.writeFileSync(path.join(desktop, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n')
+  for (const file of runtimeScripts)
+    fs.appendFileSync(path.join(repo, file), '\n// independent runtime orchestration\n')
   assert.deepEqual(recipe(), before)
-  fs.writeFileSync(writer, 'module.exports = 2')
+  assert.deepEqual(powershell(), powershellBefore)
+  const payload = path.join(desktop, 'scripts/cd/payload.py')
+  const originalPayload = fs.readFileSync(payload)
+  fs.appendFileSync(payload, '\n# changed archive processing\n')
   assert.notDeepEqual(recipe(), before)
+  assert.notDeepEqual(powershell(), powershellBefore)
+  fs.writeFileSync(payload, originalPayload)
+  fs.appendFileSync(path.join(desktop, 'scripts/cd/texlive.cjs'), '\n// changed TeX normalization\n')
+  assert.notDeepEqual(recipe(), before)
+  assert.deepEqual(powershell(), powershellBefore)
+  const beforeToolChange = recipe()
+  fs.writeFileSync(writer, 'module.exports = 2')
+  assert.notDeepEqual(recipe(), beforeToolChange)
 })
 
 // The reusable member list is process-local; persisted schema-2 receipts stay compact.
