@@ -50,6 +50,7 @@ test('macOS finalization requires both accepted artifacts for distribution', () 
     python: require('../../../../../scripts/vendor/python-build-standalone/manifest.json').python,
     texlive: require('../../../../../scripts/vendor/texlive/manifest.json').texlive,
   }
+  assert.equal(versions.python, `${runtimeSources.python}-r2`, 'the bundled Skills moved from the r1 runtime to the app object')
   assert.deepEqual(Object.keys(versions).sort(), Object.keys(runtimeSources))
   for (const [kind, upstream] of Object.entries(runtimeSources)) {
     assert.ok(versions[kind].startsWith(upstream + '-r'), kind)
