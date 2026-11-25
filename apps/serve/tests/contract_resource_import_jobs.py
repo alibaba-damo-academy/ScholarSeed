@@ -228,7 +228,7 @@ class ImportShutdownContract(unittest.IsolatedAsyncioTestCase):
             idempotency_key="retry",
         )
 
-    async def test_poll_recovers_and_prepare_checks_storage_before_handoff(self):
+    async def assert_poll_recovers(self, open_unavailable):
         job = self.queue_source()
         failures = []
         available = threading.Event()
@@ -237,10 +237,7 @@ class ImportShutdownContract(unittest.IsolatedAsyncioTestCase):
             if available.is_set():
                 return open_database(*args, **kwargs)
             failures.append(time.monotonic())
-            error = sqlite3.OperationalError("private storage location")
-            error.sqlite_errorcode = sqlite3.SQLITE_IOERR_SHMOPEN
-            error.sqlite_errorname = "SQLITE_IOERR_SHMOPEN"
-            raise error
+            return open_unavailable()
 
         with (
             patch("service.resources.persistence.jobs.open_database", side_effect=open_ledger),
@@ -271,9 +268,36 @@ class ImportShutdownContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.activities.snapshot().counts, {})
         messages = "\n".join(logs.output)
         self.assertIn("resource_import_poll_unavailable", messages)
-        self.assertIn(str(sqlite3.SQLITE_IOERR_SHMOPEN), messages)
         self.assertIn("resource_import_poll_recovered", messages)
+        return messages
+
+    async def test_poll_recovers_and_prepare_checks_storage_before_handoff(self):
+        def fail_open():
+            error = sqlite3.OperationalError("private storage location")
+            error.sqlite_errorcode = sqlite3.SQLITE_IOERR_SHMOPEN
+            error.sqlite_errorname = "SQLITE_IOERR_SHMOPEN"
+            raise error
+
+        messages = await self.assert_poll_recovers(fail_open)
+        self.assertIn(str(sqlite3.SQLITE_IOERR_SHMOPEN), messages)
         self.assertNotIn("private storage location", messages)
+
+    async def test_poll_recovers_after_sqlite_refuses_wal(self):
+        operations = []
+
+        def observe(operation, *_args):
+            operations.append(operation)
+            return sqlite3.SQLITE_OK
+
+        def open_without_wal():
+            # In-memory SQLite returns "memory" even when WAL is requested.
+            connection = sqlite3.connect(":memory:")
+            connection.set_authorizer(observe)
+            return connection
+
+        await self.assert_poll_recovers(open_without_wal)
+        self.assertIn(sqlite3.SQLITE_PRAGMA, operations)
+        self.assertNotIn(sqlite3.SQLITE_TRANSACTION, operations)
 
     async def test_uncertain_claim_commit_is_not_replayed(self):
         job = self.queue_source()

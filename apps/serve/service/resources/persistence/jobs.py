@@ -78,7 +78,7 @@ class ImportSchema:
 class ImportPollUnavailable(RuntimeError):
     """Storage rejected a poll before it entered its write transaction."""
 
-    def __init__(self, error: OSError | sqlite3.Error) -> None:
+    def __init__(self, error: OSError | sqlite3.Error | ImportJournalModeError) -> None:
         super().__init__("resource import polling storage unavailable")
         self.error = error
 
@@ -203,10 +203,11 @@ class ImportJobStore:
                 connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
                 if bounded:
                     connection.execute("BEGIN IMMEDIATE")
-            except (OSError, sqlite3.Error) as error:
+            except (OSError, sqlite3.Error, ImportJournalModeError) as error:
                 primary_code = getattr(error, "sqlite_errorcode", 0) & SQLITE_PRIMARY_RESULT_MASK
                 if polling and (
-                    classify_storage_failure(error) is not None
+                    isinstance(error, ImportJournalModeError)
+                    or classify_storage_failure(error) is not None
                     or primary_code in POLL_RETRYABLE_SQLITE_CODES
                     or (isinstance(error, OSError) and error.errno == EIO)
                 ):
