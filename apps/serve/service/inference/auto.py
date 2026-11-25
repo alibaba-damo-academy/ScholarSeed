@@ -313,7 +313,7 @@ async def request(client, headers, state, questions):
                 "POST",
                 DEEPRD_GATEWAY_BASE_URL + "/decisions",
                 headers=headers,
-                json={"model": "decision-openrouter-jev", "state": state, "questions": questions},
+                json={"model": "decision-model", "state": state, "questions": questions},
                 follow_redirects=False,
             ) as response:
                 if response.is_error and response.status_code not in (401, 403):
