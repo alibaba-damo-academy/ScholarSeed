@@ -106,6 +106,45 @@ shasum -a 256 "scripts/vendor/codex/codex-${VERSION}-darwin-arm64.tgz"
 
 Record the URL, byte count, SHA-256, and npm SHA-512 integrity together in `manifest.json`.
 
+For each macOS target, also record `receiptSha256`, the SHA-256 of the complete
+resolver receipt. Derive it from the reviewed archive, including voice files,
+before seeding the shared CI cache. The following command takes the platform
+key and reads the archive identified by the updated manifest.
+
+macOS 升级 Codex 时，还需从已审核的官方包计算各架构的 `receiptSha256` 并写入
+`manifest.json`。清单涵盖完整运行时，包括打包时会排除的 voice 文件。在仓库根目录执行以下命令，
+分别传入 `darwin-arm64` 和 `darwin-x64`。
+
+```bash
+python3 - darwin-arm64 <<'PYTHON'
+import base64, hashlib, json, pathlib, sys, tarfile
+
+vendor = pathlib.Path("scripts/vendor/codex")
+manifest = json.loads((vendor / "manifest.json").read_text())
+item = manifest["artifacts"][sys.argv[1]]
+archive = vendor / item["file"]
+with archive.open("rb") as stream:
+    sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+with archive.open("rb") as stream:
+    sri = "sha512-" + base64.b64encode(hashlib.file_digest(stream, "sha512").digest()).decode()
+if archive.stat().st_size != item["bytes"] or sha256 != item["sha256"] or sri != item["integrity"]:
+    raise SystemExit("Official archive integrity mismatch")
+prefix = f'package/vendor/{item["target"]}/'
+files = []
+with tarfile.open(archive, "r|gz") as package:
+    for member in package:
+        if member.name.startswith(prefix) and member.isfile():
+            name = member.name[len(prefix):]
+            content = package.extractfile(member).read()
+            files.append(dict(path=name, sha256=hashlib.sha256(content).hexdigest(), mode=0o755))
+            if name == "codex-package.json":
+                entrypoint = json.loads(content)["entrypoint"]
+receipt = dict(archive_sha256=item["sha256"], reported_version=item.get("version", manifest["version"]),
+               entrypoint=entrypoint, files=files)
+print(hashlib.sha256(json.dumps(receipt, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest())
+PYTHON
+```
+
 <a id="内容检查"></a>
 ## Content Checks
 
@@ -147,4 +186,4 @@ cd ../..
 pnpm ops cd build local
 ```
 
-Build and acceptance-test Windows artifacts on a device using the Velopack personal installation flow in [`scripts/BUILD.md`](../../BUILD.md); contract tests do not replace installation acceptance.
+Build and acceptance-test Windows artifacts on a device using the Velopack personal installation flow in the [build runbook](../../../docs/runbooks/build.md); contract tests do not replace installation acceptance.

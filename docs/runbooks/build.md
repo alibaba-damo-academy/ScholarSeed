@@ -1343,6 +1343,19 @@ the npm installation snapshot. On a hit, verify the path, file digests, and actu
 and the version probe, atomically publish the complete runtime with its receipt to avoid
 re-extracting it on the next clean checkout.
 
+macOS distribution CI can provide a shared cache for the complete OpenAI-signed
+runtime. A clean runner verifies the downloaded receipt against the platform's
+`receiptSha256`, checks every file, then runs the version probe at its final path.
+A shared miss publishes the verified upstream runtime. A local entry from an
+earlier build can seed the same shared cache, including after an interrupted
+upload. Subsequent local hits skip OSS. The Desktop packaging step still applies
+the macOS voice exclusion to its staging copy.
+
+macOS 正式构建可通过共享缓存复用保留 OpenAI 原签名的完整运行时。新构建机先核对该架构的
+`receiptSha256` 和所有文件摘要，再在最终路径探测版本。共享缓存缺失时，
+CI 会上传已校验的运行时。本机已有缓存也可用于首次补传或失败重试。
+确认上传后，同一构建机可直接复用。Desktop 仍在打包副本中排除 voice 文件。
+
 Windows Velopack acceptance does not start Go sessions or retirement for the old
 store/launcher. Clean only the installation directory and isolated HOME owned by this
 acceptance run; if uninstall fails, preserve the state and fail acceptance.
