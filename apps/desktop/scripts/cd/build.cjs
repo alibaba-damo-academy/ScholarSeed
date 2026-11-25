@@ -1044,6 +1044,9 @@ async function main(argv = process.argv.slice(2)) {
       await timedAsync('components.publish', () => publishRuntime(context, environment))
     }
     if (args.platform === 'darwin') {
+      timed('python.relocate-launchers', () => run(python, [
+        '-I', '-B', path.join(__dirname, 'launchers.py'), path.join(backend, 'python'),
+      ], { env: productEnv }))
       context.pythonDependencies.bytecode = timed('python.bytecode-freeze', () =>
         freezeBytecode({backend, python}, productEnv))
       context.browser = await prepareBrowser(resourceRoot, args.arch, environment)

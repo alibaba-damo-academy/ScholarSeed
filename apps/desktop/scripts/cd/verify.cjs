@@ -1020,11 +1020,24 @@ async function verifyVelopackInstaller(installer, frozen) {
   })
 }
 
-async function createMeasuredApplicationArchive(archive, args) {
-  command(MACOS_DITTO, args, {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
+async function measureApplicationArchive(archive) {
   const size = fs.statSync(archive).size
   assertSquirrelArchiveSize(size)
   return { size, ...await verifyApplicationArchive(archive) }
+}
+
+async function createPublishedApplicationArchive(application, archive, python) {
+  const original = archive + '.ditto'
+  try {
+    command(MACOS_DITTO, publishedZipArguments(application, original), {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
+    await measureApplicationArchive(original)
+    command(python, ['-I', '-S', '-B', path.join(__dirname, 'maczip.py'), original, archive], {
+      timeout: MACOS_ARCHIVE_TIMEOUT_MS,
+    })
+    return await measureApplicationArchive(archive)
+  } finally {
+    fs.rmSync(original, {force: true})
+  }
 }
 
 async function verify(builderContext) {
@@ -1082,10 +1095,11 @@ async function verify(builderContext) {
           const archive = path.join(directory, 'application.zip')
           try {
             // Measure the exact archive produced by a DMG-only client.
-            dmgArchiveBudget = await createMeasuredApplicationArchive(archive, archiveApplicationArguments(mounted, archive))
+            command(MACOS_DITTO, archiveApplicationArguments(mounted, archive), {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
+            dmgArchiveBudget = await measureApplicationArchive(archive)
             if (context.lane === 'distribution') {
               fs.unlinkSync(archive)
-              const zipBudget = await createMeasuredApplicationArchive(archive, publishedZipArguments(mounted, archive))
+              const zipBudget = await createPublishedApplicationArchive(mounted, archive, layout(mounted, context).python)
               const unpacked = path.join(directory, 'unpacked')
               fs.mkdirSync(unpacked)
               command(MACOS_DITTO, ['-x', '-k', archive, unpacked], {timeout: MACOS_ARCHIVE_TIMEOUT_MS})
@@ -1148,6 +1162,7 @@ module.exports.sha256 = sha256
 module.exports.sha512 = sha512
 module.exports.verifyApplication = verifyApplication
 module.exports.publishedZipArguments = publishedZipArguments
+module.exports.createPublishedApplicationArchive = createPublishedApplicationArchive
 module.exports.unsignedPackageCheck = unsignedPackageCheck
 module.exports.runPackageCheck = runPackageCheck
 module.exports.packageCheckEnvironment = packageCheckEnvironment

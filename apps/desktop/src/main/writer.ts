@@ -160,14 +160,25 @@ export function writePrivateRecord(path: string, bytes: string | Uint8Array): vo
   }
 }
 
+export function desktopDirectoryNative(): DomainNative {
+  return require('./lease.node') as DomainNative
+}
+
 /** Scope to the actual persistence directory, never a broad home lease. */
 export function desktopDirectoryWriter(root: string): RecordWriter {
-  const native = require('./lease.node') as DomainNative
-  return acquireDirectoryWriter(native, join(userInfo().homedir, REGISTRY_DIRECTORY), root)
+  return acquireDirectoryWriter(
+    desktopDirectoryNative(),
+    join(userInfo().homedir, REGISTRY_DIRECTORY),
+    root
+  )
 }
 
 /** Exclusive maintenance refuses active ancestors, descendants and family owners. */
 export function desktopDirectoryMaintenance(root: string): RecordWriter {
-  const native = require('./lease.node') as DomainNative
-  return acquireDirectoryWriter(native, join(userInfo().homedir, REGISTRY_DIRECTORY), root, true)
+  return acquireDirectoryWriter(
+    desktopDirectoryNative(),
+    join(userInfo().homedir, REGISTRY_DIRECTORY),
+    root,
+    true
+  )
 }

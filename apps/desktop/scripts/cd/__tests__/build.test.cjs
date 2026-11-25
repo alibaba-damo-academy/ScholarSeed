@@ -788,7 +788,7 @@ test('discovery keeps newer builds available without discarding a macOS ready pa
   )
   assert.match(
     SHELL_SOURCE,
-    /const sameReadyBuild =\s*process\.platform === MACOS_PLATFORM &&\s*ready\?\.id === latest\.id &&\s*ready\.version === latest\.version &&\s*ready\.build_number === latest\.build_number &&\s*!samePreviewArtifact\(ready, latest\) &&\s*updater\.macPreparationReady\(ready\)\s*updatePreparation\.observe\(sameReadyBuild \? ready : latest\)/
+    /const sameReadyBuild =\s*process\.platform === MACOS_PLATFORM &&\s*ready !== undefined &&\s*ready\.id === latest\.id &&\s*ready\.version === latest\.version &&\s*ready\.build_number === latest\.build_number &&\s*!samePreviewArtifact\(ready, latest\) &&\s*updater\.macPreparationReady\(ready\)\s*updatePreparation\.observe\(sameReadyBuild \? ready : latest\)/
   )
   assert.match(SHELL_SOURCE, /updatePreparation\.background\(enabled\)/)
   assert.match(SHELL_SOURCE, /snapshot\.latestCandidate \?\? snapshot\.candidate/)

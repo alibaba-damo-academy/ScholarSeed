@@ -10,6 +10,14 @@ const TEST_GLOBS = Object.freeze({
   'preview/*.test.ts': { directory: 'preview', recursive: false },
   'e2e/fixtures/*.test.ts': { directory: 'e2e/fixtures', recursive: false },
 })
+const MAC_SIGNING_FILES = [
+  'scripts/cd/__tests__/mac-sign-cache.test.cjs',
+  'scripts/cd/__tests__/signed-policy.test.cjs',
+  'scripts/cd/__tests__/sign-store.test.cjs',
+]
+const MAC_COMPONENTS_FILE = 'src/main/maccomponents.test.ts'
+const MAC_ONLY_FILES = new Set([...MAC_SIGNING_FILES, MAC_COMPONENTS_FILE])
+
 const TEST_FILES = Object.freeze([
   'e2e/fixtures/evidence.test.mjs',
   'e2e/fixtures/observation.test.mjs',
@@ -58,6 +66,7 @@ const TEST_FILES = Object.freeze([
   'scripts/cd/__tests__/windows-runtime.test.cjs',
   'scripts/recovery.test.ts',
   'scripts/cd/__tests__/signer.test.cjs',
+  ...MAC_SIGNING_FILES,
   'scripts/cd/__tests__/wheels.test.cjs',
   'scripts/cd/__tests__/velobundle.test.mjs',
   'scripts/dev/__tests__/development.test.mjs',
@@ -81,6 +90,7 @@ const TEST_FILES = Object.freeze([
 const NODE_ARGS = Object.freeze(['--experimental-transform-types', '--test'])
 const TEST_CONCURRENCY = 1
 const NATIVE_TEST_FILES = Object.freeze([
+  MAC_COMPONENTS_FILE,
   'src/main/sandbox.test.ts',
   'src/preload/menu.test.ts',
   'src/preload/menureact.test.ts',
@@ -133,8 +143,13 @@ function testFiles(directory = DESKTOP) {
   ]
 }
 
-function unitTestFiles(directory = DESKTOP) {
-  return testFiles(directory).filter((filename) => !NATIVE_TEST_FILES.includes(filename))
+function platformTestFiles(files, platform = process.platform) {
+  return files.filter((filename) => platform === 'darwin' || !MAC_ONLY_FILES.has(filename))
+}
+
+function unitTestFiles(directory = DESKTOP, platform = process.platform) {
+  return platformTestFiles(testFiles(directory), platform)
+    .filter((filename) => !NATIVE_TEST_FILES.includes(filename))
 }
 
 function invocation(coverage = false, forwarded = []) {
@@ -169,6 +184,7 @@ module.exports = {
   TEST_CONCURRENCY,
   NATIVE_TEST_FILES,
   expandTestGlob,
+  platformTestFiles,
   testFiles,
   unitTestFiles,
   invocation,

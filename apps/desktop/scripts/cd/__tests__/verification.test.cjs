@@ -8,6 +8,8 @@ const { runInNewContext } = require('node:vm')
 const { createRequire } = require('node:module')
 const { execFileSync } = require('node:child_process')
 const { createHash } = require('node:crypto')
+const { developmentPython } = require('../../../../../scripts/shared/python.cjs')
+const { hostArch } = require('../../shared/target.cjs')
 const { removeTemporary } = require('../../shared/temporary-cleanup.cjs')
 
 const source = fs.readFileSync(path.join(__dirname, '../verify.cjs'), 'utf8')
@@ -28,10 +30,11 @@ for (const scenario of ['distribution', 'resource fork', 'local', 'oversized leg
     fs.writeFileSync(path.join(directory, 'app.json'), JSON.stringify({path: app}))
     const lane = scenario === 'local' ? 'local' : 'distribution'
     const frozen = {
-      platform: 'darwin', installer: 'dmg', stage: 'dmg', productName: 'ScholarSeed',
+      platform: 'darwin', arch: hostArch(), installer: 'dmg', stage: 'dmg', productName: 'ScholarSeed',
       runDirectory: directory, signingRequired: lane === 'distribution', lane,
     }
     const packed = []
+    let publishedSize
     const nativeRequire = createRequire(require.resolve('../verify.cjs'))
     const verify = runInNewContext(`${source}
       context = () => frozen
@@ -46,6 +49,12 @@ for (const scenario of ['distribution', 'resource fork', 'local', 'oversized leg
       } : nativeRequire(name),
       runCommand(executable, args) {
         if (executable === 'hdiutil') return
+        if (executable === path.join(app, 'Contents/Resources/backend/python/bin/python3')) {
+          const python = developmentPython(path.resolve(__dirname, '../../../../..'), process.env.VENV)
+          execFileSync(python, args)
+          publishedSize = fs.statSync(args.at(-1)).size
+          return
+        }
         const result = execFileSync(executable, args, {encoding: 'utf8'}).trim()
         if (args[0] !== '-c') return result
         const level = Number(args[args.indexOf('--zlibCompressionLevel') + 1])
@@ -75,9 +84,9 @@ for (const scenario of ['distribution', 'resource fork', 'local', 'oversized leg
     const zip = read('macos-update-zip.json')
     const bytes = fs.readFileSync(path.join(directory, 'scholarseed-update.zip'))
     assert.ok(packed[1].size < packed[0].size)
-    assert.equal(zip.archive_budget.size, packed[1].size)
+    assert.equal(zip.archive_budget.size, publishedSize)
     assert.equal(zip.size, bytes.length)
-    assert.equal(zip.size, packed[1].size)
+    assert.equal(zip.size, publishedSize)
     for (const hash of ['sha256', 'sha512'])
       assert.equal(zip[hash], createHash(hash).update(bytes).digest('hex'))
   })

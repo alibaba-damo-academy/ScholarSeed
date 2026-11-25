@@ -73,6 +73,8 @@ export interface UpdateCheckResult {
 
 export interface DownloadInfo extends LatestVersionMeta {
   download_url: string
+  /** Ephemeral transport details, validated against the selected ZIP before use. */
+  macos_zip_components?: unknown
 }
 
 export type UpdatePhase =
