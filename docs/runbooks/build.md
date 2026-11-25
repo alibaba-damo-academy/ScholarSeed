@@ -431,7 +431,7 @@ CI 从挂载的 DMG 按旧客户端的方式生成 1 级 ZIP。正式分发时�
 0.3.2 的 macOS 正式构建支持复用已签名运行时。首次构建将 Electron Framework、
 Mantle/ReactiveObjC/Squirrel 框架、Python 第三方 Mach-O 和 TeX Live Mach-O 分成四组签名并缓存。
 仅改应用代码时，CI 在签名前恢复命中的组。缓存键绑定该组输入、目标架构、Developer ID
-证书、entitlements 和签名工具。恢复时比对本次构建的代码，并逐架构验签。每次发布仍会签署
+Application 签名策略、Team ID、entitlements 和签名工具。恢复时比对本次构建的代码，并逐架构验签。每次发布仍会签署
 本次外层应用，执行公证与安装器验收。私有分发 CI 默认跨机器共享缓存，也可用
 `--no-shared-components` 切换到本机复用。日志中每组的 `[sign-cache]` 行会给出
 `miss`（首次签名）、`local`（本机命中）或 `registry`（共享库命中）。
@@ -439,6 +439,24 @@ macOS 和 Windows 共用私有目录 `scholarseed-components/v3/<平台>/<组件
 每版保存 `receipt.json` 和 `<组件>.zip`。CI 按版本读取收据，核对完整输入 SHA、归档摘要和大小。
 远端版本目录缺失时，热构建机可从已校验的本机副本补库。输入冲突时显式指定新的私有修订，例如
 `SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX=0.171.0-r2`。此设置只选择构建缓存。
+
+恢复时逐架构校验 Apple 信任链、Developer ID Application 证书类型、配置的 Team ID，
+以及代码标识、指定要求、安全时间戳、hardened runtime 和 entitlements。使用不同证书的同团队
+构建机可在其他缓存输入一致时共享签名结果。
+签名策略文件或 Team ID 变化会改变缓存键。若旧任务和新任务需要并行，请为每个受影响组配置
+未占用的私有缓存修订号，并在共享同一输入的新任务之间使用相同修订。
+若要沿用旧修订，先停止使用旧输入的任务，完成签名策略和输入切换，再清理对应平台、组件和修订
+前缀下的收据及 ZIP，由新任务重新填充。
+
+Cache restore verifies the Apple trust chain, Developer ID Application certificate type, configured
+Team ID, code identifier, designated requirement, secure timestamp, hardened runtime, and entitlements
+for every architecture. Runners using different certificates from the same team can share results
+when all other cache inputs match. Policy source or Team ID changes alter the cache key. To run old and new jobs
+in parallel, allocate an unused private revision per affected component and share it across new
+jobs with identical inputs.
+To reuse an existing revision, stop jobs that can publish the former input and coordinate the
+policy and input cutover before clearing the receipt and ZIP under that exact version prefix.
+
 在 macOS 上用正式分发包运行签名样本验收：
 `SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`。
 默认 CI 独立运行缓存与签名策略回归。
