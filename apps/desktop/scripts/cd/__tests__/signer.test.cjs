@@ -5,7 +5,7 @@ const path = require('node:path')
 const { runInNewContext } = require('node:vm')
 
 function fixture(failures, guardFailure = false) {
-  const calls = { options: [], delays: [], verified: 0, native: [] }
+  const calls = { options: [], delays: [], verified: 0, native: [], cache: [] }
   const module = { exports: {} }
   const source = fs.readFileSync(path.join(__dirname, '../signer.cjs'), 'utf8')
   runInNewContext(source, { module, console: { warn() {} }, require(name) {
@@ -16,7 +16,16 @@ function fixture(failures, guardFailure = false) {
     } }
     if (name === 'node:timers/promises') return { async setTimeout(ms) { calls.delays.push(ms) } }
     if (name === './macho.cjs') return { signableIgnore: () => name => name.endsWith('.txt') }
-    if (name === './sign.cjs') return { frozenContext: () => ({ native: {} }) }
+    if (name === './sign.cjs') return {
+      frozenContext: () => ({ native: {} }),
+      trackSignProgress: async () => () => {},
+    }
+    if (name === './mac-sign-cache.cjs') return {
+      async withSignedRuntimes(options, frozen, baseIgnore, run) {
+        calls.cache.push(options.app)
+        await run(name => name.endsWith('cached-runtime') || baseIgnore(name))
+      },
+    }
     if (name === './seal.cjs') return { nativeSignatureGuard(app, native) {
       calls.native.push({ app, native })
       return {
@@ -38,6 +47,7 @@ const options = { app: '/app', identity: 'identity', timestamp: 'http://timestam
 test('timestamp failure retries the same signing policy and retains native exclusions', async () => {
   const f = fixture([timestampFailure(), null])
   await f.sign(options)
+  assert.deepEqual(f.calls.cache, ['/app'])
   assert.equal(f.calls.options.length, 2)
   assert.deepEqual(f.calls.delays, [2000])
   for (const actual of f.calls.options) {
@@ -45,6 +55,7 @@ test('timestamp failure retries the same signing policy and retains native exclu
     assert.equal(actual.timestamp, options.timestamp)
     assert.equal(actual.ignore('lease.node'), true)
     assert.equal(actual.ignore('resource.txt'), true)
+    assert.equal(actual.ignore('cached-runtime'), true)
     assert.equal(actual.ignore('ScholarSeed'), false)
   }
   assert.ok(f.calls.verified >= 2)

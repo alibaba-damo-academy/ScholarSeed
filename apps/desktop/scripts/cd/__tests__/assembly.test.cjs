@@ -6,6 +6,8 @@ const os = require('node:os')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
+const { execFileSync } = require('node:child_process')
+const { developmentPython } = require('../../../../../scripts/shared/python.cjs')
 const cache = require('../../shared/component-cache.cjs')
 const { derivePythonContentId, sha256FileSync } = require('../../../runtime/components.cjs')
 const REPO = path.resolve(sourceDirectory, '../../../..')
@@ -112,14 +114,21 @@ test('packaged verification imports only the read-only bytecode operation', () =
   assert.doesNotMatch(source, /freezeBytecode/)
 })
 
-test('macOS bytecode freezes after skill provisioning and before context and packaging', () => {
+test('macOS launchers relocate and bytecode freezes after provisioning and before packaging', () => {
   const source = fs.readFileSync(path.join(sourceDirectory, 'build.cjs'), 'utf8')
   const provision = source.indexOf("await timedAsync('skills.build-provision-verify'")
+  const relocate = source.indexOf("timed('python.relocate-launchers'")
   const freeze = source.indexOf("timed('python.bytecode-freeze'")
   const context = source.indexOf('verify.atomicJSON(context.file, context)', freeze)
   const builder = source.indexOf('if (args.stage !== \'backend\')', freeze)
-  assert.ok(provision >= 0 && freeze > provision && context > freeze && builder > context)
+  assert.ok(provision >= 0 && relocate > provision && freeze > relocate && context > freeze && builder > context)
 })
+
+test('macOS wheel launchers survive relocating the interpreter and refresh wheel records',
+  { skip: process.platform !== 'darwin' }, () => {
+    const python = process.env.TEST_PYTHON || developmentPython(REPO, process.env.VENV, { context: process.env.CI ? 'ci' : 'local' })
+    execFileSync(python, ['-I', '-B', path.join(__dirname, 'launchers_test.py')])
+  })
 
 
 test('cold Python sync stages privately, replaces only after success and always cleans up', async t => {

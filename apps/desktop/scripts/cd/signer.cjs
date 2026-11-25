@@ -4,7 +4,8 @@ const { signAsync } = require('./osx-sign.cjs')
 const { setTimeout: delay } = require('node:timers/promises')
 const { signableIgnore } = require('./macho.cjs')
 const { nativeSignatureGuard } = require('./seal.cjs')
-const { frozenContext } = require('./sign.cjs')
+const { frozenContext, trackSignProgress } = require('./sign.cjs')
+const { withSignedRuntimes } = require('./mac-sign-cache.cjs')
 
 const TIMESTAMP_RETRY_DELAYS_MS = Object.freeze([2000, 5000])
 const TIMESTAMP_UNAVAILABLE = 'The timestamp service is not available.'
@@ -13,23 +14,25 @@ async function sign(options) {
   const frozen = frozenContext()
   const native = nativeSignatureGuard(options.app, frozen.native)
   const baseIgnore = signableIgnore(options.ignore)
-  const signing = { ...options, ignore: filename => native.ignore(filename) || baseIgnore(filename) }
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await signAsync(signing)
-      break
-    } catch (error) {
-      const message = String(error?.message || error)
-      if (!message.includes(TIMESTAMP_UNAVAILABLE) || attempt >= TIMESTAMP_RETRY_DELAYS_MS.length)
-        throw error
-      // A failed pass can already have signed some entries. Preserve the frozen
-      // native inputs before repeating the same signing policy and exclusions.
-      native.verify()
+  await withSignedRuntimes(options, frozen, filename => native.ignore(filename) || baseIgnore(filename), async ignore => {
+    for (let attempt = 0; ; attempt++) {
+      const restoreProgress = await trackSignProgress(options.app, ignore)
+      try {
+        await signAsync({ ...options, ignore })
+        break
+      } catch (error) {
+        const message = String(error?.message || error)
+        if (!message.includes(TIMESTAMP_UNAVAILABLE) || attempt >= TIMESTAMP_RETRY_DELAYS_MS.length)
+          throw error
+        native.verify()
+      } finally {
+        restoreProgress()
+      }
       const waitMs = TIMESTAMP_RETRY_DELAYS_MS[attempt]
       console.warn(`[sign] timestamp unavailable; retry ${attempt + 1}/${TIMESTAMP_RETRY_DELAYS_MS.length} in ${waitMs}ms`)
       await delay(waitMs)
     }
-  }
+  })
   native.verify()
 }
 

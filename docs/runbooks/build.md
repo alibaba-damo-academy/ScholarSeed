@@ -359,6 +359,34 @@ and ticket on Squirrel's existing extraction. If ticket verification is
 temporarily inconclusive, it can retry the same bound request. Installation
 requires a fresh online grant.
 
+The 0.3.2 macOS distribution build can reuse signed runtime files from a previous
+build. The first build signs and stores Electron Framework, the
+Mantle/ReactiveObjC/Squirrel frameworks, third-party Python Mach-O files, and
+TeX Live Mach-O files as four separate groups. An app-code-only build restores
+each matching group before running the signer. The cache key binds the group's input bytes, target
+architecture, Developer ID certificate, entitlements and signing tools. CI checks
+the restored code against the current inputs and verifies its signature on every
+architecture. It signs the current outer app and runs notarization and installer
+acceptance for each release. The private distribution runner shares this cache
+across machines by default. Use `--no-shared-components` for local reuse. The
+signer logs `[sign-cache]` with `miss`, `local` or `registry` for each group.
+On macOS, run the signed-sample acceptance against the distribution app with
+`SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`.
+Default CI exercises cache and policy regressions without a distribution sample.
+
+Component-capable clients request `macos_components=1` on the selected ZIP's
+download endpoint. On the first component update the client fetches all required
+objects. Later updates reuse SHA-256-verified objects from the profile's cache.
+When only app code changes, this downloads the app object and the ZIP layout.
+For signed Mach-O files in frameworks, Python and TeX, CI compresses the code
+and its signing envelope independently inside the ZIP. New signatures travel
+with the app object. Python wheel installation timestamps, source URLs and the
+wheel records that hash them also travel with the app object. The client fetches
+a new runtime object when its contents change.
+The client reconstructs the published ZIP,
+checks its release SHA-512, and hands it to the existing Squirrel preparation
+flow. A missing sidecar or failed object transfer uses the same release's full ZIP.
+
 macOS 签名分发构建从同一份应用生成安装 DMG 和更新 ZIP。官网下载和只支持安装器协议的
 旧客户端都使用普通 DMG。安装这个普通版本后，后续自动更新优先使用 CI 生成的 ZIP。
 选定的发布没有 ZIP 时使用 DMG。
@@ -374,6 +402,23 @@ CI 从挂载的 DMG 按旧客户端的方式生成 1 级 ZIP。正式分发时�
 校验 Developer ID 签名、公证票据及应用身份，并在 `artifacts.macos_update_zip`
 记录发布 ZIP 的大小和摘要。客户端复用 Squirrel 解出的应用校验身份和
 票据。票据暂无法判定时可以重试同一笔已绑定的请求。正式安装仍需重新获取在线授权。
+
+0.3.2 的 macOS 正式构建支持复用已签名运行时。首次构建将 Electron Framework、
+Mantle/ReactiveObjC/Squirrel 框架、Python 第三方 Mach-O 和 TeX Live Mach-O 分成四组签名并缓存。
+仅改应用代码时，CI 在签名前恢复命中的组。缓存键绑定该组输入、目标架构、Developer ID
+证书、entitlements 和签名工具。恢复时比对本次构建的代码，并逐架构验签。每次发布仍会签署
+本次外层应用，执行公证与安装器验收。私有分发 CI 默认跨机器共享缓存，也可用
+`--no-shared-components` 切换到本机复用。日志中每组的 `[sign-cache]` 行会给出
+`miss`（首次签名）、`local`（本机命中）或 `registry`（共享库命中）。
+在 macOS 上用正式分发包运行签名样本验收：
+`SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`。
+默认 CI 独立运行缓存与签名策略回归。
+
+支持组件的客户端在所选 ZIP 的下载接口请求 `macos_components=1`。首次组件更新需要获取全部对象。
+后续按 SHA-256 校验并复用当前用户配置的缓存。如果只有应用代码变化，仅需下载应用组件和 ZIP 布局。
+对框架、Python 和 TeX 中受支持的已签名 Mach-O，CI 将代码与签名数据分段压缩。重新签名的字节、
+Python wheel 安装时间、来源 URL 和引用它们的 RECORD 随应用组件传输。运行时组件的内容发生变化时，客户端会下载该组件的新版本。客户端重组发布 ZIP，核对该版本的 SHA-512，
+再交给原有 Squirrel 准备安装。清单缺失或组件传输失败时，客户端回退到同一候选的完整 ZIP。
 
 <a id="cicd-渠道与发布职责"></a>
 ### CI/CD Channels and Release Responsibilities

@@ -1,5 +1,8 @@
 import { retryUpdate, transientUpdateFailure, UpdateTransportError } from './retry.ts'
 import { assertDownloadSpace, assertUpdateSpace, downloadWithProgress } from './download.ts'
+import { rebuildMacUpdateZip } from './maccomponents.ts'
+import { macComponentDiagnostic } from './maccomponentfailure.ts'
+import { reclaimMacComponentCache } from './maccomponentcache.ts'
 import {
   archiveApplicationArguments,
   assertSquirrelArchiveSize,
@@ -8,7 +11,11 @@ import {
   preflightApplicationArchive,
   UpdateArchiveLimitError,
 } from './archive.ts'
-import { desktopDirectoryMaintenance, desktopDirectoryWriter } from './writer'
+import {
+  desktopDirectoryMaintenance,
+  desktopDirectoryNative,
+  desktopDirectoryWriter,
+} from './writer'
 import { SuccessorUpdater, type SuccessorBridge } from './successor.ts'
 import {
   captureRecord,
@@ -718,7 +725,8 @@ export async function getDownloadInfo(
   id: string,
   log: LogSink,
   signal?: AbortSignal,
-  selected?: LatestVersionMeta
+  selected?: LatestVersionMeta,
+  forDownload = false
 ): Promise<DownloadInfo> {
   const targetArchType = archType()
   if (!targetArchType) throw new Error('unsupported desktop target')
@@ -726,13 +734,33 @@ export async function getDownloadInfo(
   const preview = previewUpdatesEnabled(log)
   const url = packageDownloadUrl(config, id)
   const target = selected ?? (preview ? getPreviewUpdatePolicy(log).target : undefined)
-  appendMacUpdateFormat(url, config, targetArchType, target)
+  let requestComponents = appendMacUpdateFormat(url, config, targetArchType, target, forDownload)
+  let manifestFallback: ReturnType<typeof macComponentDiagnostic> | undefined
   if (preview) appendPreviewContext(url, currentPreviewContext(log))
   const revision = previewRevision
-  const raw = await retryUpdate(() => getJson(url.toString(), log, signal), signal)
-  const info = parseDownloadInfo(raw, config, targetArchType, id)
+  const raw = await retryUpdate(
+    () => getJson(url.toString(), log, signal),
+    signal,
+    (_attempt, error) => {
+      // Optional storage metadata may time out even when the selected full ZIP is available.
+      if (requestComponents) {
+        manifestFallback = macComponentDiagnostic(error, 'manifest-request')
+        requestComponents = false
+        url.searchParams.delete('macos_components')
+      }
+    }
+  )
+  const info = parseDownloadInfo(raw, config, targetArchType, id, requestComponents)
   if (preview && (revision !== previewRevision || !previewCandidateAllowed(info, log)))
     throw new Error('Preview download is outside the selected range')
+  signal?.throwIfAborted()
+  if (manifestFallback)
+    logUpdateEvent(log, {
+      phase: 'download',
+      event: 'zip-components-fallback',
+      updateId: id,
+      ...manifestFallback,
+    })
   return info
 }
 
@@ -764,27 +792,36 @@ function updateCacheDir(): string {
   return directory
 }
 
-async function pruneInactiveMacCache(log: LogSink): Promise<void> {
-  if (process.platform !== MACOS_PLATFORM || macHandoffCommitted()) return
+function inactiveMacCache(active: string): string | null {
+  if (process.platform !== MACOS_PLATFORM || macHandoffCommitted()) return null
   const root = updateCacheRoot()
-  const active = updateCacheDir()
-  const inactive = active === root ? join(root, PREVIEW_CANDIDATE_DIRNAME) : root
+  const preview = join(root, PREVIEW_CANDIDATE_DIRNAME)
+  if (active !== root && active !== preview) return null
+  const inactive = active === root ? preview : root
+  const location = lstatSync(inactive, { throwIfNoEntry: false })
+  if (
+    !location?.isDirectory() ||
+    realpathSync(inactive) !== inactive ||
+    location.dev !== statSync(active).dev
+  )
+    return null
+  const mounted = readdirSync(inactive, { withFileTypes: true }).some(
+    (entry) =>
+      entry.isDirectory() &&
+      updateArtifactKind(entry.name) === 'mount' &&
+      readdirSync(join(inactive, entry.name)).length > 0
+  )
+  return mounted ? null : inactive
+}
+
+async function pruneInactiveMacCache(log: LogSink, signal?: AbortSignal): Promise<void> {
+  if (process.platform !== MACOS_PLATFORM) return
   try {
-    if (!existsSync(inactive)) return
-    const location = lstatSync(inactive)
-    if (!location.isDirectory() || realpathSync(inactive) !== inactive) return
+    const inactive = inactiveMacCache(updateCacheDir())
+    if (!inactive) return
+    const location = statSync(inactive)
     const cutoff = Date.now() - INACTIVE_UPDATE_CACHE_RETENTION_MS
-    const entries = readdirSync(inactive, { withFileTypes: true })
-    if (
-      entries.some(
-        (entry) =>
-          entry.isDirectory() &&
-          updateArtifactKind(entry.name) === 'mount' &&
-          readdirSync(join(inactive, entry.name)).length > 0
-      )
-    )
-      return
-    for (const entry of entries) {
+    for (const entry of readdirSync(inactive, { withFileTypes: true })) {
       const kind = updateArtifactKind(entry.name)
       if (!(kind === 'payload' && entry.isFile()) && !(kind === 'prepared' && entry.isDirectory()))
         continue
@@ -794,6 +831,14 @@ async function pruneInactiveMacCache(log: LogSink): Promise<void> {
       if ((kind === 'payload' && info.isFile()) || (kind === 'prepared' && info.isDirectory()))
         await removeUpdateArtifact(path)
     }
+    const cache = join(inactive, 'mac-components')
+    if (existsSync(cache))
+      await reclaimMacComponentCache(
+        desktopDirectoryNative(),
+        cache,
+        signal ?? new AbortController().signal,
+        cutoff
+      )
   } catch (error) {
     log(`[update] inactive cache cleanup deferred: ${String(error)}\n`)
   }
@@ -980,6 +1025,7 @@ interface UpdateEventFields {
   httpStatus?: number
   expectedBytes?: number
   receivedBytes?: number
+  reusedBytes?: number
   writtenBytes?: number
   updateId?: string
   fromVersion?: string
@@ -1355,11 +1401,55 @@ export function macPreparationReady(meta: LatestVersionMeta): boolean {
   }
 }
 
-function assertSquirrelPreparationSpace(
+async function ensureMacUpdateSpace(
+  destination: string,
+  check: () => void,
+  signal?: AbortSignal,
+  options: { volume?: string; preserveActiveCache?: boolean } = {}
+): Promise<void> {
+  try {
+    check()
+  } catch (pressure) {
+    if ((pressure as NodeJS.ErrnoException).code !== 'ENOSPC') throw pressure
+    const cleanupSignal = signal ?? new AbortController().signal
+    cleanupSignal.throwIfAborted()
+    const active = dirname(destination)
+    if (options.volume && statSync(options.volume).dev !== statSync(active).dev) throw pressure
+
+    // An assembly holds the active cache lock and still needs its verified objects.
+    const lanes = options.preserveActiveCache ? ['inactive'] : ['inactive', 'active']
+    for (const lane of lanes) {
+      try {
+        const directory = lane === 'inactive' ? inactiveMacCache(active) : active
+        if (!directory) continue
+        await reclaimMacComponentCache(
+          desktopDirectoryNative(),
+          join(directory, 'mac-components'),
+          cleanupSignal,
+          Infinity
+        )
+      } catch {
+        // A damaged or inaccessible cache is optional. Recheck even after a partial cleanup.
+      }
+      cleanupSignal.throwIfAborted()
+      try {
+        check()
+        return
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOSPC') throw error
+      }
+    }
+    throw pressure
+  }
+}
+
+async function assertSquirrelPreparationSpace(
   archive: SquirrelArchive,
   expandedBytes: number,
-  allowInteraction: boolean
-): void {
+  allowInteraction: boolean,
+  destination: string,
+  signal: AbortSignal
+): Promise<void> {
   const application = resolve(dirname(process.execPath), '..', '..')
   const expanded = BigInt(expandedBytes)
   const volumes = new Map<number, { path: string; bytes: bigint }>()
@@ -1376,7 +1466,10 @@ function assertSquirrelPreparationSpace(
   const candidateDevice = allowInteraction ? undefined : reserve(app.getPath('appData'), expanded)
   if (candidateDevice !== statSync(dirname(application)).dev)
     reserve(dirname(application), expanded)
-  for (const { path, bytes } of volumes.values()) assertUpdateSpace(path, bytes)
+  for (const { path, bytes } of volumes.values())
+    await ensureMacUpdateSpace(destination, () => assertUpdateSpace(path, bytes), signal, {
+      volume: path,
+    })
 }
 
 function assertSquirrelInstallSpace(expandedBytes: number, prepared?: SquirrelNativeCapture): void {
@@ -1814,7 +1907,14 @@ export async function prepareMacSuccessor(
     )
     const archive = await revalidateMacArchive(prepared, ready, progress, log, signal)
     checkSelection()
-    assertSquirrelPreparationSpace(archive, prepared.receipt.expandedBytes, false)
+    await assertSquirrelPreparationSpace(
+      archive,
+      prepared.receipt.expandedBytes,
+      false,
+      ready.path,
+      signal
+    )
+    checkSelection()
     pending = newMacInstallation(
       port,
       join(workspace, SUCCESSOR_HANDOFF_FILE),
@@ -2171,7 +2271,11 @@ async function prepareDmg(
             'source'
           )
           const budget = await preflightApplicationArchive({ path: source, fs: physicalFs }, signal)
-          assertUpdateSpace(directory, BigInt(Math.max(budget.expanded, budget.metadata)))
+          await ensureMacUpdateSpace(
+            dmgPath,
+            () => assertUpdateSpace(directory, BigInt(Math.max(budget.expanded, budget.metadata))),
+            signal
+          )
           installation.step('copying', MACOS_ARCHIVE_TIMEOUT_MS)
           await runLoggedCommand(
             log,
@@ -2433,7 +2537,7 @@ export async function stageUpdate(
   }
   let info: DownloadInfo
   try {
-    info = await getDownloadInfo(candidate.id, log, signal, candidate)
+    info = await getDownloadInfo(candidate.id, log, signal, candidate, true)
     if (!samePreviewArtifact(candidate, info))
       throw new Error('Download artifact differs from the selected update')
     signal?.throwIfAborted()
@@ -2468,7 +2572,7 @@ export async function stageUpdate(
       previousReady ? [basename(preparedApplicationDirectory(previousReady.meta))] : [],
       retained
     )
-    await pruneInactiveMacCache(log)
+    await pruneInactiveMacCache(log, signal)
     signal?.throwIfAborted()
   } catch (error) {
     return { ok: false, error: String(error), errorOrigin: 'preparation', resumable: false }
@@ -2479,21 +2583,81 @@ export async function stageUpdate(
     previousReady ? [basename(previousReady.path)] : []
   )
   onProgress({ phase: 'downloading', percent: 0, receivedBytes: 0 })
+  const { download_url, macos_zip_components, ...meta } = info
   try {
-    if (process.platform === MACOS_PLATFORM) assertDownloadSpace(destination, info.file_size)
     const downloadStartedAt = Date.now()
-    await retryUpdate(
-      () =>
-        downloadWithProgress(
-          info.download_url,
+    const report = (percent: number, receivedBytes: number) =>
+      onProgress({ phase: 'downloading', percent, receivedBytes })
+    let assembled = false
+    let componentFallback = false
+    if (
+      macos_zip_components &&
+      meta.artifact_kind === MACOS_UPDATE_ZIP &&
+      !existsSync(destination)
+    ) {
+      try {
+        const transfer = await rebuildMacUpdateZip({
+          native: desktopDirectoryNative(),
+          downloadUrl: download_url,
+          components: macos_zip_components,
+          expected: meta,
+          cacheDirectory: join(dirname(destination), 'mac-components'),
           destination,
-          info.file_size,
-          (percent, receivedBytes) => onProgress({ phase: 'downloading', percent, receivedBytes }),
+          checkSpaceAfterPruning: (check, activeSignal) =>
+            ensureMacUpdateSpace(destination, check, activeSignal, { preserveActiveCache: true }),
+          signal,
+          onProgress: report,
+        })
+        assembled = true
+        logUpdateEvent(log, {
+          phase: 'download',
+          event: 'zip-components',
+          updateId: meta.id,
+          receivedBytes: transfer.downloadedBytes,
+          reusedBytes: transfer.reusedBytes,
+        })
+      } catch (error) {
+        signal?.throwIfAborted()
+        componentFallback = true
+        logUpdateEvent(log, {
+          phase: 'download',
+          event: 'zip-components-fallback',
+          updateId: meta.id,
+          ...macComponentDiagnostic(error),
+        })
+      }
+    }
+    if (!assembled) {
+      if (process.platform === MACOS_PLATFORM)
+        await ensureMacUpdateSpace(
+          destination,
+          () => assertDownloadSpace(destination, info.file_size),
           signal
-        ),
-      signal,
-      (attempt) => logUpdateEvent(log, { phase: 'download', event: 'transient-retry', attempt })
-    )
+        )
+      const fetchArchive = (url: string) =>
+        retryUpdate(
+          () => downloadWithProgress(url, destination, info.file_size, report, signal),
+          signal,
+          (attempt) => logUpdateEvent(log, { phase: 'download', event: 'transient-retry', attempt })
+        )
+      try {
+        await fetchArchive(download_url)
+      } catch (error) {
+        signal?.throwIfAborted()
+        if (
+          !componentFallback ||
+          !(error instanceof UpdateTransportError) ||
+          (error.status !== 401 && error.status !== 403)
+        )
+          throw error
+        // A slow component transfer can outlive all URLs issued with its manifest.
+        const renewed = await getDownloadInfo(candidate.id, log, signal, candidate)
+        if (!samePreviewArtifact(candidate, renewed))
+          throw new Error('Download artifact differs from the selected update', { cause: error })
+        signal?.throwIfAborted()
+        await fetchArchive(renewed.download_url)
+      }
+    }
     logTiming(log, `downloaded installer (${info.file_size} bytes)`, downloadStartedAt)
     onProgress({ phase: 'verifying' })
     if (info.artifact_kind !== MACOS_UPDATE_ZIP) {
@@ -2514,8 +2678,6 @@ export async function stageUpdate(
       resumable: downloadResumable(destination, info.file_size),
     }
   }
-  // 签名下载链接是短期的、安装阶段也用不到，不落盘。
-  const { download_url: _downloadUrl, ...meta } = info
   let archive: SquirrelArchive | undefined
   let prepared: MacPreparedApplication | null = null
   if (process.platform === MACOS_PLATFORM) {
@@ -2835,7 +2997,13 @@ export async function prepareMacUpdate(
     if (!retryingVerification) {
       const startedAt = Date.now()
       frozen = await revalidateMacArchive(prepared, staged, installation, log, signal)
-      assertSquirrelPreparationSpace(frozen, prepared.receipt.expandedBytes, allowInteraction)
+      await assertSquirrelPreparationSpace(
+        frozen,
+        prepared.receipt.expandedBytes,
+        allowInteraction,
+        staged.path,
+        signal
+      )
       logTiming(log, 'final ZIP and current source trust recheck', startedAt)
     }
     logUpdateEvent(log, {

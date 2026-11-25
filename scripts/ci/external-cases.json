@@ -198,11 +198,6 @@
     },
     {
       "project": "workbench",
-      "file": "office.spec.ts",
-      "title": "large Calc AI actions use authoritative cell content"
-    },
-    {
-      "project": "workbench",
       "file": "workbench.spec.ts",
       "title": "Markdown saved citation from a real answer opens its PDF evidence"
     },

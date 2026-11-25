@@ -6,7 +6,7 @@ const path = require('node:path')
 const {execFileSync} = require('node:child_process')
 const {build} = require('../../../package.json')
 const {inventory, verifyImage} = require('../dmg.cjs')
-const {publishedZipArguments} = require('../verify.cjs')
+const {createPublishedApplicationArchive} = require('../verify.cjs')
 const {developmentPython} = require('../../../../../scripts/shared/python.cjs')
 
 for (const scenario of ['valid', 'missing', 'tampered', 'signature', 'detach', 'attach']) {
@@ -57,9 +57,14 @@ test('DMG adapter checks copy, detach recovery and occupancy diagnostics', {skip
   execFileSync(python, ['-I', '-B', path.join(__dirname, 'image_test.py')], {stdio: 'pipe'})
 })
 
+test('published ZIP separates signed Mach-O ranges and preserves ordinary members', {skip: process.platform !== 'darwin'}, () => {
+  const python = developmentPython(path.resolve(__dirname, '../../../../..'), process.env.VENV)
+  execFileSync(python, ['-I', '-B', path.join(__dirname, 'maczip_test.py')], {stdio: 'pipe'})
+})
+
 for (const hasResourceFork of [false, true]) {
   const scenario = hasResourceFork ? 'retains a nonempty resource fork' : 'omits host metadata'
-  test(`published update ZIP ${scenario}`, {skip: process.platform !== 'darwin'}, t => {
+  test(`published update ZIP ${scenario}`, {skip: process.platform !== 'darwin'}, async t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'published-zip-'))
     t.after(() => fs.rmSync(root, {recursive: true, force: true}))
     const source = path.join(root, 'ScholarSeed.app')
@@ -75,7 +80,8 @@ for (const hasResourceFork of [false, true]) {
     if (hasResourceFork) fs.writeFileSync(path.join(binary, forkName), fork)
 
     const archive = path.join(root, 'update.zip')
-    execFileSync('/usr/bin/ditto', publishedZipArguments(source, archive))
+    const python = developmentPython(path.resolve(__dirname, '../../../../..'), process.env.VENV)
+    await createPublishedApplicationArchive(source, archive, python)
     const entries = execFileSync('/usr/bin/zipinfo', ['-1', archive], {encoding: 'utf8'}).trimEnd().split('\n')
     assert.ok(entries.includes('ScholarSeed.app/' + member))
     if (!hasResourceFork) assert.ok(entries.every(name => !name.startsWith('__MACOSX/')))
