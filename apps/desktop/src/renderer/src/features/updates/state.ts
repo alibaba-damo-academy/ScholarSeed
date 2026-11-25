@@ -19,6 +19,8 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 
 import { primaryLanguageSubtag } from '../../../../locale.ts'
 import {
+  isUpdatePreflightFailure,
+  UPDATE_PREFLIGHT_FAILURE,
   updateCandidateKey,
   type LatestVersionMeta,
   type UpdateErrorOrigin,
@@ -200,9 +202,10 @@ export async function runUpdateAction(
     if (!result.ok) {
       const after = await window.scholarseed.getUpdateState()
       if (after.candidate?.id !== current.candidate.id) return 'candidate-changed'
+      // The update UI localizes the refusal from the snapshot. Returning here preserves that
+      // specific message when the same refusal repeats.
       if (
-        (result.errorFallback === 'update_storage_full' ||
-          result.errorFallback === 'update_import_store_unavailable') &&
+        isUpdatePreflightFailure(result.errorFallback) &&
         result.errorFallback === after.errorFallback
       )
         return
@@ -478,8 +481,9 @@ export function updateFailureText(
   if (failure.fallback === 'preparation_failed') return accountText('update.preparationFailed')
   if (failure.fallback === 'download_failed') return t('update.downloadFailed')
   if (failure.fallback === 'storage_exhausted') return t('update.insufficientSpace')
-  if (failure.fallback === 'update_storage_full') return accountText('update.preflightStorageFull')
-  if (failure.fallback === 'update_import_store_unavailable')
+  if (failure.fallback === UPDATE_PREFLIGHT_FAILURE.storageFull)
+    return accountText('update.preflightStorageFull')
+  if (failure.fallback === UPDATE_PREFLIGHT_FAILURE.importStoreUnavailable)
     return accountText('update.preflightImportStoreUnavailable')
   if (failure.fallback === 'activation_recovery_required')
     return accountText('update.activationRecoveryRequired')

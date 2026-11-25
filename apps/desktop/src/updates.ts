@@ -133,12 +133,23 @@ export interface UpdateInstallation {
  */
 export type UpdateErrorOrigin = 'check' | 'download' | 'preparation' | 'install'
 
+export const UPDATE_PREFLIGHT_FAILURE = {
+  storageFull: 'update_storage_full',
+  importStoreUnavailable: 'update_import_store_unavailable',
+} as const
+
+/** Storage refusals confirmed by the backend `prepare_update` response. */
+export type UpdatePreflightFailure =
+  (typeof UPDATE_PREFLIGHT_FAILURE)[keyof typeof UPDATE_PREFLIGHT_FAILURE]
+
+export function isUpdatePreflightFailure(value: unknown): value is UpdatePreflightFailure {
+  return Object.values(UPDATE_PREFLIGHT_FAILURE).some((failure) => failure === value)
+}
+
 /**
  * Main-process failure classification for localized update messages. Keep
  * native diagnostics in logs and pass only the classification to the renderer.
  */
-export type UpdatePreflightFailure = 'update_storage_full' | 'update_import_store_unavailable'
-
 export type UpdateInstallFallback =
   | UpdatePreflightFailure
   | 'download_failed'

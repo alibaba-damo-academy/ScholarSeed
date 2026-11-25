@@ -1011,6 +1011,7 @@ for (const failure of [
     preparation.offer(selected)
     await preparation.settled()
     const events: string[] = []
+    const updateEvents: Array<Record<string, unknown>> = []
     let install!: (
       _event: unknown,
       expectedId: string
@@ -1107,7 +1108,8 @@ for (const failure of [
       },
       updateInstallFailure,
       updater: {
-        logUpdateEvent: () => {},
+        logUpdateEvent: (_log: unknown, event: Record<string, unknown>) =>
+          updateEvents.push({ ...event }),
         NO_STAGED_UPDATE: 'none',
         macHandoffCommitted: () => false,
         macHandoffReady: () => true,
@@ -1189,6 +1191,20 @@ for (const failure of [
       failure === 'update_import_store_unavailable'
     ) {
       const refused = failure !== 'lost-prepare-update'
+      const reason = PREFLIGHT_FAILURES.find((value) => value === failure)
+      assert.deepEqual(
+        updateEvents,
+        reason
+          ? [
+              {
+                phase: 'macos-install',
+                event: 'prepare-update-rejected',
+                result: 'failed',
+                errorCode: reason,
+              },
+            ]
+          : []
+      )
       assert.equal(result.ok, false)
       assert.equal(events.includes('commit'), false)
       assert.equal(events.includes('drain'), false)

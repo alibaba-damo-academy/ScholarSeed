@@ -1,7 +1,7 @@
 import { createServer } from 'node:net'
 import type { Server, Socket } from 'node:net'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import type { UpdatePreflightFailure } from '../updates.ts'
+import { UPDATE_PREFLIGHT_FAILURE, type UpdatePreflightFailure } from '../updates.ts'
 import type { CompilerResources } from './toolchain.ts'
 
 const MAX_BYTES = 33 // Status byte plus the exact maintenance generation.
@@ -12,8 +12,8 @@ const SKILL_PYTHON_OPERATION = 'skill-python'
 const IDLE_OPERATION = 'quiesce_if_idle'
 const UPDATE_OPERATION = 'prepare_update'
 const UPDATE_REFUSAL_REASONS: ReadonlyMap<number, UpdatePreflightFailure> = new Map([
-  [1, 'update_storage_full'],
-  [2, 'update_import_store_unavailable'],
+  [1, UPDATE_PREFLIGHT_FAILURE.storageFull],
+  [2, UPDATE_PREFLIGHT_FAILURE.importStoreUnavailable],
 ])
 type ControlCloseReason = 'closed' | 'connection_timeout' | 'response_timeout' | 'startup_timeout'
 type ControlCommand =
@@ -52,7 +52,10 @@ export interface BackendConnectionDiagnostic {
 
 // Only an exact refusal receipt proves this request retained no maintenance.
 export class BackendMaintenanceRejected extends Error {
-  constructor(message: string, readonly reason?: UpdatePreflightFailure) {
+  constructor(
+    message: string,
+    readonly reason?: UpdatePreflightFailure
+  ) {
     super(message)
   }
 }

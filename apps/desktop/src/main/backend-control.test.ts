@@ -231,6 +231,7 @@ test('only an exact no-maintenance refusal permits retry', { timeout: 10_000 }, 
       ],
       ['retained', Buffer.from([2]), false, undefined],
       ['malformed', Buffer.from([0, 0]), false, undefined],
+      ['unregistered refusal code', Buffer.from([0, 3]), false, undefined],
       ['overlong', Buffer.from([0, 1, 0]), false, undefined],
     ] as const) {
       await t.test(`${operation}: ${name}`, async (t) => {
@@ -261,6 +262,7 @@ test('only an exact no-maintenance refusal permits retry', { timeout: 10_000 }, 
           return true
         })
         if (retryable) await assert.rejects(control[method](), BackendMaintenanceRejected)
+        else await assert.rejects(control.whenAuthenticated(), /control unavailable/)
       })
     }
   }

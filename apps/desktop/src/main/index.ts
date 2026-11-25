@@ -4490,6 +4490,14 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
                   macMaintenanceUncertain = false
                   macUpdateMaintenanceActive = false
                   maintenanceFailure = error.reason
+                  if (maintenanceFailure) {
+                    updater.logUpdateEvent(pushLog, {
+                      phase: 'macos-install',
+                      event: 'prepare-update-rejected',
+                      result: 'failed',
+                      errorCode: maintenanceFailure,
+                    })
+                  }
                 }
                 throw error
               }
