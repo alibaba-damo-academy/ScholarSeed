@@ -112,6 +112,39 @@ test('installation requires explicit confirmation for the same ready candidate',
   }
 })
 
+test('only confirmed preflight refusals are handled when an install error repeats', async () => {
+  const original = globalThis.window
+  let current = snapshot('ready', {
+    candidate: CANDIDATE,
+    errorOrigin: 'install',
+  })
+  let retries = 0
+  Object.assign(globalThis, {
+    window: {
+      scholarseed: {
+        getUpdateState: async () => current,
+        installUpdate: async () => {
+          retries++
+          return { ok: false, errorFallback: current.errorFallback }
+        },
+      },
+    },
+  })
+  try {
+    const key = updateCandidateKey(CANDIDATE)!
+    for (const errorFallback of ['update_storage_full', 'update_import_store_unavailable'] as const) {
+      current = { ...current, errorFallback }
+      assert.equal(updateActionOf(current), 'install')
+      await runUpdateAction(current, key)
+    }
+    current = { ...current, errorFallback: 'install_failed' }
+    await assert.rejects(runUpdateAction(current, key), /Update restart could not start/)
+    assert.equal(retries, 3)
+  } finally {
+    Object.assign(globalThis, { window: original })
+  }
+})
+
 test('ready retains its install action while explicit newer download binds the observed identity', async () => {
   const calls: string[] = []
   const reported: unknown[] = []
@@ -689,6 +722,8 @@ test('update preparation and activation failures use current-language resources 
     ['activation_recovery_required', 'activationRecoveryRequired', 'install'],
     ['preparation_unverified', 'preparationUnverified', 'install'],
     ['activation_authorization_required', 'activationAuthorizationRequired', 'install'],
+    ['update_storage_full', 'preflightStorageFull', 'install'],
+    ['update_import_store_unavailable', 'preflightImportStoreUnavailable', 'install'],
   ] as const
   for (const [code, key, origin] of cases) {
     const state = snapshot('failed', {

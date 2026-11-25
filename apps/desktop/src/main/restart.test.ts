@@ -7,6 +7,7 @@ import { StartupState, STARTUP_PHASE } from '../startup.ts'
 import { backgroundPreparationPolicy, UpdatePreparation } from './preparation.ts'
 import { BackendMaintenanceRejected } from './backend-control.ts'
 import { installationFailure } from './family.ts'
+import { updateInstallFailure } from './failure.ts'
 import { redactDiagnosticError } from './redaction.ts'
 import { retryUpdate } from './retry.ts'
 import { PreferenceQuiescence } from '../quiescence.ts'
@@ -55,6 +56,8 @@ assert.equal(declarations.length, 7)
 const code = ts.transpileModule(declarations.join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
+
+const PREFLIGHT_FAILURES = ['update_storage_full', 'update_import_store_unavailable'] as const
 
 test('native quit cleanup failure keeps maintenance writes fenced but exposes recovery', async () => {
   let registration = ''
@@ -595,6 +598,7 @@ for (const failure of [
   'occupancy-unknown-after-drain',
   'occupied-at-commit',
   'refused',
+  ...PREFLIGHT_FAILURES,
   'lost-prepare-update',
   'authorization',
   'candidate-conflict',
@@ -753,6 +757,8 @@ for (const failure of [
         prepareUpdate: async () => {
           events.push('prepare-update')
           if (failure === 'refused') throw new BackendMaintenanceRejected('busy')
+          if (failure === 'update_storage_full' || failure === 'update_import_store_unavailable')
+            throw new BackendMaintenanceRejected('private diagnostic', failure)
           if (failure === 'lost-prepare-update') throw new Error('response lost')
           return 'owned-generation'
         },
@@ -911,6 +917,15 @@ for (const failure of [
     }
     if (['uac-cancelled', 'cancel-authorizing'].includes(failure))
       assert.equal(result.cancelled, true)
+    if (failure === 'update_storage_full' || failure === 'update_import_store_unavailable') {
+      assert.equal(result.errorFallback, failure)
+      assert.equal(snapshot.errorFallback, failure)
+      assert.equal(snapshot.error, undefined)
+      assert.equal(snapshot.candidate?.id, selected.id)
+      assert.equal(events.includes('drain'), false)
+      assert.equal(events.includes('apply'), false)
+      assert.equal(context.backend, owned)
+    }
     if (events.includes('restart-runtime'))
       assert.ok(events.indexOf('close') < events.indexOf('restart-runtime'))
     if (failure === 'grant-expired') assert.equal(events.filter((e) => e === 'authorize').length, 2)
@@ -981,6 +996,7 @@ for (const failure of [
   'none',
   'preferences',
   'refused',
+  ...PREFLIGHT_FAILURES,
   'lost-prepare-update',
   'offline',
   'shutdown',
@@ -995,6 +1011,7 @@ for (const failure of [
     preparation.offer(selected)
     await preparation.settled()
     const events: string[] = []
+    const updateEvents: Array<Record<string, unknown>> = []
     let install!: (
       _event: unknown,
       expectedId: string
@@ -1072,6 +1089,8 @@ for (const failure of [
         prepareUpdate: async () => {
           events.push('prepare-update')
           if (failure === 'refused') throw new BackendMaintenanceRejected('busy')
+          if (failure === 'update_storage_full' || failure === 'update_import_store_unavailable')
+            throw new BackendMaintenanceRejected('private diagnostic', failure)
           if (failure === 'lost-prepare-update') throw new Error('response lost')
           return 'generation'
         },
@@ -1087,9 +1106,10 @@ for (const failure of [
         getVersion: () => '0.2.0',
         getPath: () => '/Applications/ScholarSeed.app/Contents/MacOS/ScholarSeed',
       },
-      updateInstallFailure: () => ({ errorOrigin: 'install' }),
+      updateInstallFailure,
       updater: {
-        logUpdateEvent: () => {},
+        logUpdateEvent: (_log: unknown, event: Record<string, unknown>) =>
+          updateEvents.push({ ...event }),
         NO_STAGED_UPDATE: 'none',
         macHandoffCommitted: () => false,
         macHandoffReady: () => true,
@@ -1164,14 +1184,34 @@ for (const failure of [
       assert.equal(preparation.claim(selected), true)
       return
     }
-    if (failure === 'refused' || failure === 'lost-prepare-update') {
+    if (
+      failure === 'refused' ||
+      failure === 'lost-prepare-update' ||
+      failure === 'update_storage_full' ||
+      failure === 'update_import_store_unavailable'
+    ) {
+      const refused = failure !== 'lost-prepare-update'
+      const reason = PREFLIGHT_FAILURES.find((value) => value === failure)
+      assert.deepEqual(
+        updateEvents,
+        reason
+          ? [
+              {
+                phase: 'macos-install',
+                event: 'prepare-update-rejected',
+                result: 'failed',
+                errorCode: reason,
+              },
+            ]
+          : []
+      )
       assert.equal(result.ok, false)
       assert.equal(events.includes('commit'), false)
       assert.equal(events.includes('drain'), false)
       assert.equal(events.includes('resume'), false)
       assert.equal(events.includes('authorize'), false)
-      assert.equal(events.includes('preferences-resume'), failure === 'refused')
-      assert.equal(snapshot.phase, failure === 'refused' ? 'ready' : 'failed')
+      assert.equal(events.includes('preferences-resume'), refused)
+      assert.equal(snapshot.phase, refused ? 'ready' : 'failed')
       if (failure === 'lost-prepare-update') {
         assert.equal(result.errorFallback, 'activation_recovery_required')
         assert.equal(context.macMaintenanceUncertain, true)
@@ -1180,6 +1220,11 @@ for (const failure of [
         assert.equal(context.macMaintenanceUncertain, false)
         assert.equal(context.macUpdateMaintenanceActive, false)
         assert.equal(preparation.claim(selected), true)
+        if (failure !== 'refused') {
+          assert.equal(result.errorFallback, failure)
+          assert.equal(snapshot.errorFallback, failure)
+          assert.equal(snapshot.error, undefined)
+        }
       }
       return
     }

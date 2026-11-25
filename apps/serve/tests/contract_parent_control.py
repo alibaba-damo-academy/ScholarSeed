@@ -18,7 +18,7 @@ from service.platform.activity import (
     MaintenanceActive,
     MaintenanceStale,
 )
-from service.platform.parent_control import ParentControl, ParentControlError
+from service.platform.parent_control import ParentControl, ParentControlError, UpdateStorageRefusal
 from service.platform.toolchain import CompilerResources, ToolchainReadiness
 
 COMPILER_DESCRIPTION = {
@@ -29,6 +29,52 @@ COMPILER_DESCRIPTION = {
 
 
 class ParentControlContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_storage_refusal_reopens_before_session_preparation_and_allows_retry(self):
+        activities = Activities()
+        probe = AsyncMock(
+            side_effect=(
+                UpdateStorageRefusal.DISK_FULL,
+                UpdateStorageRefusal.IMPORT_UNAVAILABLE,
+                None,
+            )
+        )
+        prepare = AsyncMock()
+        control = ParentControl(
+            activities, prepare_update=prepare, resume_update=Mock(), check_update_storage=probe
+        )
+        command = {"operation": "prepare_update", "generation": None}
+        try:
+            for receipt in (b"\x00\x01", b"\x00\x02"):
+                self.assertEqual(await control._command(command), receipt)
+                self.assertIs(activities.snapshot().phase, ActivityPhase.OPEN)
+                prepare.assert_not_awaited()
+            response = await control._command(command)
+            generation = response[1:].decode("ascii")
+            self.assertEqual(generation, activities.snapshot().generation)
+            prepare.assert_awaited_once_with(generation)
+        finally:
+            await control.aclose()
+
+    async def test_storage_refusal_preserves_a_previous_restart_fence(self):
+        activities = Activities()
+        original = activities.begin()
+        activities.release_for_restart(original)
+        prepare = AsyncMock()
+        control = ParentControl(
+            activities,
+            prepare_update=prepare,
+            resume_update=Mock(),
+            check_update_storage=AsyncMock(return_value=UpdateStorageRefusal.DISK_FULL),
+        )
+        try:
+            with self.assertRaises(ParentControlError):
+                await control._command({"operation": "prepare_update", "generation": None})
+            self.assertEqual(activities.snapshot().generation, original)
+            self.assertIs(activities.snapshot().phase, ActivityPhase.DRAINING)
+            prepare.assert_not_awaited()
+        finally:
+            await control.aclose()
+
     async def test_confirmed_update_prepares_without_claiming_attachment_release(self):
         activities = Activities()
         resource = activities.enter(ActivityDomain.RESOURCE, root=True)

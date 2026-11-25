@@ -219,6 +219,32 @@ test('macOS offers Restart and update only after preparation in both update entr
   }
 })
 
+test('the update panel keeps the restart action and reason after two preflight refusals', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      const fixture = Reflect.get(window, 'updateFixture')
+      const errorFallback = 'update_storage_full'
+      Reflect.set(window.scholarseed, 'platform', 'darwin')
+      fixture.publish({ phase: 'ready' })
+      window.scholarseed.installUpdate = async () => {
+        fixture.publish({ phase: 'ready', errorOrigin: 'install', errorFallback })
+        return { ok: false, errorFallback }
+      }
+    })
+    await page.getByTestId('activity-update').click()
+    const action = page.getByTestId('update-panel-action')
+    for (const _ of [1, 2]) {
+      await expect(action).toHaveText('重启更新')
+      await expect(action).toBeEnabled()
+      await action.click()
+      await page.getByTestId('update-restart-confirm').click()
+      await expect(page.getByTestId('update-restart-confirmation')).toHaveCount(0)
+      await expect(page.getByTestId('update-panel-error')).toContainText('磁盘空间不足')
+    }
+    await expect(action).toBeEnabled()
+  })
+})
+
 test('candidate version includes its build stamp throughout the About update states', async () => {
   await withFixture(async (page) => {
     for (const language of ['zh', 'en']) {
