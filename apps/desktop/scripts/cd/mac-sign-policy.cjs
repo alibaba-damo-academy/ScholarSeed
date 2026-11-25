@@ -11,6 +11,8 @@ const SECURITY = '/usr/bin/security'
 const INTERMEDIATE = 'certificate 1[field.1.2.840.113635.100.6.2.6]'
 const APPLICATION = 'certificate leaf[field.1.2.840.113635.100.6.1.13]'
 const SIGNING_CHAIN = `anchor apple generic and ${INTERMEDIATE} and ${APPLICATION}`
+const APPROVED_CERTIFICATES_ENV = 'SCHOLARSEED_MAC_SIGN_APPROVED_CERT_SHA256'
+const SHA256 = /^[0-9a-f]{64}$/
 
 function command(program, args, input) {
   const result = cp.spawnSync(program, args, {encoding: 'utf8', input, timeout: 120_000, maxBuffer: 4 * 1024 * 1024})
@@ -44,6 +46,27 @@ function certificate(options, signing) {
       return {name: signing.identity, team: signing.teamId, sha1: hashes[0], sha256: digest(cert.raw)}
   }
   throw new Error('Cannot pin the selected Developer ID certificate')
+}
+
+function certificatePolicy(cert, configured) {
+  if (configured === undefined) {
+    return {
+      identity: cert,
+      requirement: `${SIGNING_CHAIN} and certificate leaf = H"${cert.sha1}"`,
+      accepts: fingerprint => fingerprint === cert.sha256,
+    }
+  }
+
+  const approved = [...new Set(configured.split(',').map(value => value.trim().toLowerCase()))].sort()
+  if (approved.some(fingerprint => !SHA256.test(fingerprint))) {
+    throw new Error(`${APPROVED_CERTIFICATES_ENV}: expected a comma-separated list of approved certificate SHA-256 fingerprints`)
+  }
+  if (!approved.includes(cert.sha256)) throw new Error('Selected Developer ID certificate is not approved for shared signing cache')
+  return {
+    identity: {name: cert.name, team: cert.team, approvedSha256: approved},
+    requirement: `${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${cert.team}`,
+    accepts: fingerprint => approved.includes(fingerprint),
+  }
 }
 
 function plistValue(data) {
@@ -80,11 +103,10 @@ function binaryIdentifier(filename, arch) {
   return name.replace(/([^\d.]\.?\d*)[\d.]*$/, '$1')
 }
 
-function verifySignature(target, framework, expected, cert, prefix, decoded) {
+function verifySignature(target, framework, expected, signers, prefix, decoded) {
   // Apply the Apple Developer ID requirement to every slice, independent of
   // what the cache object declares about its own signing requirements.
-  const requirement = `=${SIGNING_CHAIN} and certificate leaf = H"${cert.sha1}"`
-  command(CODESIGN, ['--verify', '--strict', '--all-architectures', '-R', requirement, target])
+  command(CODESIGN, ['--verify', '--strict', '--all-architectures', '-R', `=${signers.requirement}`, target])
   const executable = framework?.executable || target
   const archs = command('/usr/bin/lipo', ['-archs', executable]).stdout.trim().split(/\s+/)
   for (const arch of archs) {
@@ -96,13 +118,14 @@ function verifySignature(target, framework, expected, cert, prefix, decoded) {
       throw new Error(`Cached signature identifier differs from the signing input: ${target} (${arch})`)
     const end = stdout.indexOf('\n')
     const designated = stdout.slice(0, end).replaceAll(' /* exists */', '')
-    const required = ` and ${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${cert.team}`
+    const {name, team} = signers.identity
+    const required = ` and ${SIGNING_CHAIN} and certificate leaf[subject.OU] = ${team}`
     const lines = stderr.split(/\r?\n/)
     if (!identifier || end < 0 ||
         ![`designated => identifier ${identifier}${required}`, `designated => identifier "${identifier}"${required}`].includes(designated) ||
         !/^CodeDirectory .* flags=0x10000\(runtime\) /m.test(stderr) || !/^Timestamp=.+$/m.test(stderr) ||
-        !lines.includes('Authority=' + cert.name) || !lines.includes('TeamIdentifier=' + cert.team) ||
-        digest(fs.readFileSync(prefix + '0')) !== cert.sha256)
+        !lines.includes('Authority=' + name) || !lines.includes('TeamIdentifier=' + team) ||
+        !signers.accepts(digest(fs.readFileSync(prefix + '0'))))
       throw new Error(`Cached signature differs from the Developer ID policy: ${target} (${arch})`)
     const xml = stdout.slice(end + 1)
     if (!decoded.has(xml)) decoded.set(xml, plistValue(xml))
@@ -111,14 +134,15 @@ function verifySignature(target, framework, expected, cert, prefix, decoded) {
   }
 }
 
-function createRuntimeSigningPolicy(options, frozen) {
+function createRuntimeSigningPolicy(options, frozen, environment = process.env) {
   const cert = certificate(options, frozen.native.signing)
+  const signers = certificatePolicy(cert, environment[APPROVED_CERTIFICATES_ENV])
   // Fingerprint the actual tools, independent of per-runner installation paths.
   const allocator = command('/usr/bin/xcrun', ['--find', 'codesign_allocate']).stdout.trim()
   const sources = [CODESIGN, '/usr/bin/codesign_allocate', allocator, __filename, ...['signer.cjs', 'macho.cjs', 'osx-sign.cjs'].map(name => path.join(__dirname, name)),
     require.resolve('@electron/osx-sign/dist/cjs/sign'), require.resolve('@electron/osx-sign/dist/cjs/util')]
-  if (process.env.CODESIGN_ALLOCATE) sources.push(process.env.CODESIGN_ALLOCATE)
-  const policy = {cert, electron: options.version, system: command('/usr/bin/sw_vers', ['-buildVersion']).stdout.trim(),
+  if (environment.CODESIGN_ALLOCATE) sources.push(environment.CODESIGN_ALLOCATE)
+  const policy = {cert: signers.identity, electron: options.version, system: command('/usr/bin/sw_vers', ['-buildVersion']).stdout.trim(),
     recipe: sources.map(filename => digest(fs.readFileSync(filename)))}
   const entitlements = new Map()
   return {
@@ -152,7 +176,7 @@ function createRuntimeSigningPolicy(options, frozen) {
             const frameworks = frameworkExecutables(members.filter(m => m.bundle).map(m => m.filename))
             for (const member of members)
               verifySignature(member.filename, frameworks.get(member.filename) || frameworks.get(fs.realpathSync(member.filename)),
-                member.entitlements.value, cert, path.join(directory, 'leaf'), decoded)
+                member.entitlements.value, signers, path.join(directory, 'leaf'), decoded)
           } finally {
             fs.rmSync(directory, {force: true, recursive: true})
           }

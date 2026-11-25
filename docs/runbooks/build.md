@@ -439,6 +439,27 @@ macOS 和 Windows 共用私有目录 `scholarseed-components/v3/<平台>/<组件
 每版保存 `receipt.json` 和 `<组件>.zip`。CI 按版本读取收据，核对完整输入 SHA、归档摘要和大小。
 远端版本目录缺失时，热构建机可从已校验的本机副本补库。输入冲突时显式指定新的私有修订，例如
 `SCHOLARSEED_CI_CACHE_VERSION_DARWIN_X86_64_CODEX=0.171.0-r2`。此设置只选择构建缓存。
+
+同一 Developer ID 团队可为参与共享的 CI 构建设置相同的
+`SCHOLARSEED_MAC_SIGN_APPROVED_CERT_SHA256`，填写逗号分隔的批准叶证书 SHA-256 指纹，
+每项为 64 位十六进制且无冒号。当前签名证书须在清单中。缓存按团队、证书名称及完整批准清单绑定，
+恢复时逐架构校验 Apple 信任链、签名团队、批准证书和原有签名策略。未设置时仍绑定当前签名证书。
+签名策略文件或批准清单变化会改变缓存键。若旧任务和新任务需要并行，请为每个受影响组配置
+未占用的私有缓存修订号，并在共享同一输入的新任务之间使用相同修订。
+若要沿用旧修订，先停止使用旧输入的任务，完成签名策略和输入切换，再清理对应平台、组件和修订
+前缀下的收据及 ZIP，由新任务重新填充。
+
+To share the cache across approved Developer ID certificates, set the same
+`SCHOLARSEED_MAC_SIGN_APPROVED_CERT_SHA256` on each participating CI job. Use comma-separated
+64-digit SHA-256 leaf certificate fingerprints without colons and include each job's active
+signing certificate. Cache restore verifies the Apple trust chain, Team ID, approved certificate
+and existing per-architecture policy. With the variable unset, restore requires the active
+certificate. Policy source or approval-list changes alter the cache key. To run old and new jobs
+in parallel, allocate an unused private revision per affected component and share it across new
+jobs with identical inputs.
+To reuse an existing revision, stop jobs that can publish the former input and coordinate the
+policy and input cutover before clearing the receipt and ZIP under that exact version prefix.
+
 在 macOS 上用正式分发包运行签名样本验收：
 `SCHOLARSEED_SIGNED_RUNTIME_SAMPLE=/path/to/ScholarSeed.app node --test apps/desktop/scripts/cd/__tests__/signed-sample.acceptance.cjs`。
 默认 CI 独立运行缓存与签名策略回归。
