@@ -72,7 +72,7 @@ const {
   trackSignProgress,
 } = require('../sign.cjs')
 const { isMachO, isBundle, isSignable, signableIgnore } = require('../macho.cjs')
-const { credentials, waitForNotarization } = require('../notarize.cjs')
+const { credentials, submitArchive, waitForNotarization } = require('../notarize.cjs')
 const {
   packageCheckEnvironment,
   packageCheckArguments,
@@ -2155,6 +2155,43 @@ test('notary polling fails instead of waiting forever', () => {
       }),
     /did not settle/
   )
+})
+
+test('notary submit retries a connect timeout and returns the later submission', () => {
+  const attempts = []
+  const waits = []
+  const submission = submitArchive('/tmp/notarization.zip', ['--key', '/key'], {
+    attempts: 3,
+    backoffMs: 1000,
+    request: (args) => {
+      attempts.push(args)
+      if (attempts.length < 3) throw new Error('Error: HTTPClientError.connectTimeout')
+      return { id: 'submission-id', status: 'In Progress' }
+    },
+    wait: (milliseconds) => waits.push(milliseconds),
+  })
+  assert.equal(submission.id, 'submission-id')
+  assert.equal(attempts.length, 3)
+  assert.deepEqual(attempts[0], ['/tmp/notarization.zip', '--key', '/key'])
+  assert.deepEqual(waits, [1000, 2000])
+})
+
+test('notary submit gives up after the last attempt', () => {
+  let calls = 0
+  assert.throws(
+    () =>
+      submitArchive('/tmp/notarization.zip', [], {
+        attempts: 2,
+        backoffMs: 0,
+        request: () => {
+          calls += 1
+          throw new Error('Error: HTTPClientError.connectTimeout')
+        },
+        wait: () => {},
+      }),
+    /connectTimeout/
+  )
+  assert.equal(calls, 2)
 })
 
 test('signed distribution freezes reviewed Ed25519 public roots and rejects missing roots', () => {
