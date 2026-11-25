@@ -266,7 +266,8 @@ def test_plan_projection(_catalog: AsyncMock) -> None:
     )
     check(
         "host can disable the native tool at thread creation",
-        asyncio.run(native_config(native_plan_enabled=False)).get("tools.update_plan.enabled") is False,
+        asyncio.run(native_config(native_plan_enabled=False)).get("tools.update_plan.enabled")
+        is False,
     )
     check(
         "native sessions enable structured input in default mode",
@@ -6386,6 +6387,39 @@ def test_subscription_capability_rejection_is_terminal() -> None:
         )
 
 
+def test_history_content_rejection_is_terminal() -> None:
+    rejection = {"error": {"code": "model_history_content_unsupported", "message": "private"}}
+    http_rejection = "unexpected status 400 Bad Request: " + json.dumps(rejection)
+    failure = provider_failure({"message": http_rejection})
+    check(
+        "history format rejection stays terminal across the native HTTP boundary",
+        failure.retryability is RuntimeRetryability.TERMINAL
+        and failure.diagnostic_code == "model_history_content_unsupported"
+        and failure.message
+        == "The selected model cannot accept part of this conversation's history.",
+    )
+    for raw in (
+        rejection,
+        {"message": json.dumps(rejection), "codexErrorInfo": "other", "additionalDetails": None},
+        {"message": "stream disconnected before completion: " + http_rejection},
+        {"message": "event:error\ndata:" + json.dumps(rejection)},
+        {"message": ":HTTP_STATUS/400\nevent:error\ndata:" + json.dumps(rejection)},
+        {"message": "unexpected status 403 Forbidden: " + json.dumps(rejection)},
+    ):
+        failure = provider_failure(raw)
+        check(
+            "an upstream error cannot identify a local history-format rejection",
+            failure.code == "codex_provider_failed"
+            and failure.diagnostic_code == "codex_provider_failed"
+            and failure.retryability is RuntimeRetryability.USER_RETRYABLE,
+        )
+    unclassified = provider_failure({"code": "array_above_max_length", "message": "private"})
+    check(
+        "an unrelated array error retains the fallback",
+        unclassified.diagnostic_code == "codex_provider_failed",
+    )
+
+
 def test_provider_http_authentication() -> None:
     for code in ("connection_error", "timeout"):
         failure = provider_failure({"code": code, "message": "private provider detail"})
@@ -7663,6 +7697,7 @@ def main() -> int:
     test_content_filter_incomplete_is_terminal()
     test_context_compaction_remains_native_after_truncation()
     test_subscription_capability_rejection_is_terminal()
+    test_history_content_rejection_is_terminal()
     test_provider_http_authentication()
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0

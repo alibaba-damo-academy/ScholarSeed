@@ -299,6 +299,10 @@
       "message": "The ChatGPT subscription connection does not support this request capability.",
       "action": "Use a compatible model source or start a task without that capability; retrying unchanged will fail. Your task history has been retained."
     },
+    "historyContent": {
+      "message": "The selected model cannot accept part of this conversation’s history.",
+      "action": "Switch models or start a new task with the visible conversation text."
+    },
     "subscriptionLimit": {
       "message": "Your ChatGPT subscription usage limit was reached, so generation has stopped.",
       "action": "Generated content, your question and context have been retained. Wait for the subscription limit to reset, or switch to another model source before starting generation again."

@@ -24,7 +24,10 @@ from enum import Enum
 from http import HTTPStatus
 from typing import Any, Mapping
 
-from scholarseed_runtime.contract.incident import RuntimeRetryability
+from scholarseed_runtime.contract.incident import (
+    MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE,
+    RuntimeRetryability,
+)
 from service.chat.service.streams import (
     CODEX_INVALID_PROMPT,
     CONTENT_SAFETY_BLOCKED,
@@ -149,6 +152,14 @@ TRANSIENT_PROVIDER_CODES = frozenset(
 # 头部 5xx 耗尽由上方 HTTP 状态集合单独恢复；流内 200 的瞬时 5xx 码走 TRANSIENT_PROVIDER_CODES。
 # 键一律 casefold（匹配时 ``code.casefold()``）。
 PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
+    MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE: RejectionPolicy(
+        retryability=RuntimeRetryability.TERMINAL,
+        http_status=HTTPStatus.BAD_REQUEST,
+        message=RejectionMessage.FIXED,
+        safe_message="The selected model cannot accept part of this conversation's history.",
+        product_code=MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE,
+        subscription_visible=True,
+    ),
     OUTPUT_LIMIT_CODE: RejectionPolicy(
         retryability=RuntimeRetryability.USER_RETRYABLE,
         http_status=HTTPStatus.OK,
@@ -390,6 +401,9 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
     ):
         return {}
     code = str(downstream.get("error_code") or "")
+    if code.casefold() == MODEL_HISTORY_CONTENT_UNSUPPORTED_CODE:
+        # A provider stream cannot establish this locally diagnosed HTTP rejection.
+        return {}
     error_type = str(downstream.get("error_type") or "")
     policy = PRODUCT_PROVIDER_REJECTIONS.get(code.casefold())
     if policy is None:

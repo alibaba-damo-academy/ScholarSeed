@@ -2852,6 +2852,38 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.payload["message"], CONTENT_SAFETY_MESSAGE)
         self.assertFalse(record.payload["retryable"])
 
+    async def test_confirmed_history_rejection_reaches_product_after_generic_codex_error(
+        self,
+    ) -> None:
+        client_turn_id = "client-history-rejection-turn"
+        self.live.active_product_turn_id = client_turn_id
+        self.live.trace_completion(
+            {
+                "client_user_message_id": client_turn_id,
+                "phase": "finished",
+                "status_code": 400,
+                "http_error_code": "model_history_content_unsupported",
+            }
+        )
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={
+                "error_code": "codex_provider_failed",
+                "safe_error": "The model provider rejected the request.",
+                "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            },
+        )
+        await self.settle_pending(client_turn_id)
+
+        record = self._settled_failure()
+        self.assertEqual(record.kind, PRODUCT_EVENT_TURN_FAILED)
+        self.assertEqual(record.payload["code"], "model_history_content_unsupported")
+        self.assertEqual(
+            record.payload["message"],
+            "The selected model cannot accept part of this conversation's history.",
+        )
+        self.assertFalse(record.payload["retryable"])
+
     async def test_exhausted_bridge_retry_count_reaches_product_failure(self) -> None:
         client_turn_id = "client-transient-failure-turn"
         self.live.active_product_turn_id = client_turn_id
