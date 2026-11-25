@@ -10,7 +10,7 @@ function macComponentVersions() {
     browser: `${browserNode}-r1`,
     codex: `${codex}-r1`,
     electron: `${electron}-r1`,
-    python: `${python}-r1`,
+    python: `${python}-r2`,
     texlive: `${texlive}-r1`,
   }
   for (const [kind, version] of Object.entries(versions)) {
