@@ -63,6 +63,7 @@ from service.platform.context import (
     ContextResolutionState,
     FulltextBindingScope,
     FulltextTaskContext,
+    SearchScope,
 )
 from service.platform.records import ProjectPdfRecordPort, feedback_entries
 
@@ -346,6 +347,14 @@ class CitationService:
         self._records = records
         self._preview = preview
         self._fulltexts = fulltexts
+
+    def web_read_allowed(self, session_id: str, snapshot_id: str) -> bool:
+        snapshot = self._snapshot_by_id(session_id, snapshot_id)
+        return bool(
+            snapshot
+            and snapshot.search_scope is SearchScope.WEB
+            and snapshot.project_id == self._project(session_id)
+        )
 
     def filter_answer(self, session_id: str, snapshot_id: str, markdown: str) -> str:
         """Keep current receipts and same-scope library evidence from earlier turns."""
