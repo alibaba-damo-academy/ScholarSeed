@@ -34,6 +34,50 @@ class PublicPdfContracts(IsolatedAsyncioTestCase):
         self.assertIs(a, b)
         fetch.assert_awaited_once_with(url)
 
+    async def test_citation_and_redirect_urls_reuse_session_read(self):
+        url = "https://Example.org/paper.pdf"
+        final = "https://cdn.example.org/paper.pdf"
+        fetch = AsyncMock(return_value=(final, pdf_bytes("first page", "second page")))
+        cache = PublicPdfCache()
+        activities = Activities()
+        paper = await cache.open(url, fetch, activities, lambda: True)
+        for again in (
+            "https://example.org/paper.pdf#page=2",
+            final + "#page=1",
+            final,
+        ):
+            self.assertIs(await cache.open(again, fetch, activities, lambda: True), paper)
+        fetch.assert_awaited_once_with(url)
+        other = AsyncMock(return_value=(url + "?v=2", pdf_bytes("other version")))
+        self.assertIsNot(await cache.open(url + "?v=2", other, activities, lambda: True), paper)
+        other.assert_awaited_once()
+        denied = AsyncMock()
+        with self.assertRaisesRegex(ValueError, "access_denied"):
+            await cache.open(url + "#page=2", denied, activities, lambda: False)
+        denied.assert_not_awaited()
+
+    async def test_recent_reads_survive_bounded_eviction(self):
+        cache = PublicPdfCache()
+        activities = Activities()
+        papers = {}
+        for index in range(4):
+            url = f"https://example.org/{index}.pdf"
+            fetch = AsyncMock(return_value=(url, pdf_bytes(f"paper {index}")))
+            papers[index] = await cache.open(url, fetch, activities, lambda: True)
+        reused = AsyncMock()
+        self.assertIs(
+            await cache.open("https://example.org/0.pdf#page=1", reused, activities, lambda: True),
+            papers[0],
+        )
+        reused.assert_not_awaited()
+        url = "https://example.org/4.pdf"
+        await cache.open(
+            url, AsyncMock(return_value=(url, pdf_bytes("paper 4"))), activities, lambda: True
+        )
+        self.assertIs(cache.resolve(papers[0].ref_id), papers[0])
+        with self.assertRaisesRegex(ValueError, "reference_unavailable"):
+            cache.resolve(papers[1].ref_id)
+
     async def test_revoked_scope_does_not_publish_or_cache(self):
         url = "https://example.org/test.pdf"
         cache = PublicPdfCache()
