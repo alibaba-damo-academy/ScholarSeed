@@ -18,6 +18,7 @@ from service.assistant.service.authorization import (
 )
 from service.assistant.service.citations import CitationService
 from service.assistant.service.excerpts import model_excerpt
+from service.assistant.service.public_pdf import PUBLIC_PDF_PREFIX
 from service.chat.api.bridge import bridge_caller, session_bridge_admission
 from service.chat.runtime.live import LiveSession
 from service.chat.service.sessions import SessionService
@@ -45,6 +46,7 @@ from service.platform.bridge import (
     PdfAnnotations,
     PdfMaterialize,
     PdfQuery,
+    PdfReadUrl,
 )
 from service.platform.citations import (
     MANAGED_STORAGE_SCOPE,
@@ -100,6 +102,7 @@ def register_citation_bridge(
     materializer: PdfMaterializerPort | None = None,
     *,
     activities: Activities,
+    fetch_public_pdf=None,
 ) -> APIRouter:
     router = APIRouter(dependencies=[Depends(session_bridge_admission(sessions, activities))])
 
@@ -162,7 +165,44 @@ def register_citation_bridge(
             materialized: PdfMaterialization | None = None
             materialize_request: PdfMaterialize | None = None
             prepared: dict[str, Any] | None = None
-            if operation == PDF_MATERIALIZE_OPERATION:
+            if isinstance(query, PdfReadUrl) or (
+                operation in {"read", "search"}
+                and isinstance(query, PdfQuery)
+                and query.ref_id.startswith(PUBLIC_PDF_PREFIX)
+            ):
+
+                def authorized() -> bool:
+                    return (
+                        _active_scope(sessions, live, snapshot_id, turn_id)
+                        and not live.active_task_type
+                        and not live.interrupting
+                        and not live.terminating
+                        and citations.web_read_allowed(live.id, snapshot_id)
+                    )
+
+                if not authorized() or fetch_public_pdf is None:
+                    return JSONResponse({"ok": False, "error": "public_pdf_access_denied"}, 403)
+                cache = live.public_pdf_cache
+                if isinstance(query, PdfReadUrl):
+                    try:
+                        paper = await cache.open(
+                            query.url, fetch_public_pdf, activities, authorized
+                        )
+                    except TimeoutError as error:
+                        raise ValueError("public_pdf_fetch_timeout") from error
+                else:
+                    if operation == "search" and not query.query.strip():
+                        raise ValueError("pdf_query_required")
+                    if query.path:
+                        raise ValueError("public_pdf_path_not_applicable")
+                    paper = cache.resolve(query.ref_id)
+                prepared = paper.excerpts(
+                    query.query,
+                    query.offset,
+                    query.limit,
+                    query.span if isinstance(query, PdfQuery) else 1,
+                )
+            elif operation == PDF_MATERIALIZE_OPERATION:
                 if materializer is None or not isinstance(query, PdfMaterialize):
                     raise ValueError("pdf_materializer_unavailable")
                 materialize_request = query

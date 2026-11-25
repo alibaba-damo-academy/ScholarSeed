@@ -316,6 +316,26 @@ def _string_value(*values):
     return ""
 
 
+_DOI_QUERY_RE = re.compile(
+    r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[^\s]+)$", re.IGNORECASE
+)
+_TRAILING_VOLUME_RE = re.compile(
+    r"(?:,\s*|\s+)(?:vol(?:ume)?\.?\s*\d+(?:\s*\([^)]*\))?)$", re.IGNORECASE
+)
+
+
+def _clean_venue_name(raw_venue):
+    text = str(raw_venue or "").strip()
+    if not text:
+        return ""
+    return _TRAILING_VOLUME_RE.sub("", text).strip()
+
+
+def _extract_doi_query(query):
+    match = _DOI_QUERY_RE.match(str(query or "").strip())
+    return match.group(1).rstrip(".,;)") if match else ""
+
+
 def _normalize_paper(paper):
     """Extract clean paper metadata from a PaperHub result."""
     authors = []
@@ -326,14 +346,20 @@ def _normalize_paper(paper):
             authors.append(str(a))
     external_ids = paper.get("externalids") or paper.get("external_ids") or {}
     publication_date = paper.get("publicationdate") or paper.get("publication_date") or ""
+    acl_id = _external_id(external_ids, "ACL") or str(paper.get("acl_id") or "")
+    acl_url = (
+        f"https://aclanthology.org/{acl_id}/"
+        if acl_id and re.fullmatch(r"[A-Za-z0-9.-]+", acl_id)
+        else ""
+    )
     return {
         "paper_id": str(paper.get("id") or paper.get("paper_id") or ""),
         "title": paper.get("title") or "",
         "authors": authors,
         "year": _year_from_paper(paper),
-        "venue": paper.get("venue") or "",
-        "journal_name": _string_value(
-            paper.get("journalname"), paper.get("journal_name"),
+        "venue": _clean_venue_name(paper.get("venue")),
+        "journal_name": _clean_venue_name(
+            _string_value(paper.get("journalname"), paper.get("journal_name"))
         ),
         "journal_pages": _string_value(
             paper.get("journalpages"), paper.get("journal_pages"), paper.get("pages"),
@@ -345,6 +371,8 @@ def _normalize_paper(paper):
         "citation_count": _int_value(paper.get("citationcount", paper.get("citation_count", 0))),
         "doi": _external_id(external_ids, "DOI") or str(paper.get("doi") or ""),
         "arxiv_id": _external_id(external_ids, "ArXiv") or str(paper.get("arxiv_id") or ""),
+        "acl_id": acl_id,
+        "acl_url": acl_url,
         "is_open_access": paper.get("isopenaccess", paper.get("is_open_access")),
         "url": paper.get("url") or "",
         "publication_date": str(publication_date),
@@ -399,6 +427,21 @@ def keyword_search(query, limit=20, year_start=None, year_end=None, ensure_abstr
             "papers": [],
             "elapsed": 0,
         }
+    doi = _extract_doi_query(query)
+    if doi:
+        doi_payload = _search_payload(limit, False, year_start, year_end)
+        doi_payload["doi"] = doi
+        doi_body, doi_elapsed = _post(PAPERSEARCH_URL, doi_payload)
+        doi_results, doi_error = _extract_data(doi_body)
+        if not doi_error and doi_results:
+            papers = [_normalize_paper(r) for r in doi_results]
+            return {
+                "papers": papers,
+                "count": len(papers),
+                "elapsed": doi_elapsed,
+                "query": query,
+                "mode": "keyword",
+            }
     payload = _search_payload(limit, ensure_abstract, year_start, year_end)
     payload["query"] = query
     body, elapsed = _post(PAPERSEARCH_URL, payload)

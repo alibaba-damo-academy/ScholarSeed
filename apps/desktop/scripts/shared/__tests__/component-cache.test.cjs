@@ -74,6 +74,65 @@ test('same input cannot publish different valid archive bytes', t => {
   assert.equal(cache.lookup(root, f.inputs, f.python, process.env).inventory.archiveSha256, f.measured.archiveSha256)
 })
 
+test('Windows registry labels use the reviewed component version independently of input fingerprints', t => {
+  const f = fixture(t)
+  const root = path.join(f.root, 'cache')
+  const log = path.join(f.root, 'provider.ndjson')
+  const script = path.join(f.root, 'provider.cjs')
+  fs.writeFileSync(script, `const fs = require('node:fs')
+const [log, operation, ...options] = process.argv.slice(2)
+fs.appendFileSync(log, JSON.stringify({operation, options, input: JSON.parse(fs.readFileSync(0, 'utf8'))}) + '\\n')
+`)
+  const environment = {...process.env, SCHOLARSEED_COMPONENT_REGISTRY_COMMAND: JSON.stringify([process.execPath, script, log])}
+  const originalKey = cache.key(f.inputs)
+  assert.equal(cache.lookup(root, f.inputs, f.python, environment), null)
+  assert.throws(() => cache.publish(root, f.inputs, f.archive, f.measured, {}, environment), /unreviewed component bytes/)
+  // A local-only archive with different bytes must also stop before any v3 publication.
+  cache.publish(root, f.inputs, f.archive, f.measured, {}, {})
+  assert.throws(() => cache.lookup(root, f.inputs, f.python, environment), /unreviewed component bytes/)
+  const published = require('../../../runtime/versions.json').components.python
+  const original = {...published}
+  t.after(() => Object.assign(published, original))
+  Object.assign(published, {contentId: f.measured.treeSha256, archiveSha256: f.measured.archiveSha256})
+  cache.publish(root, f.inputs, f.archive, f.measured, {}, environment)
+  const version = require('../../../runtime/versions.json').components.python.version
+  environment.SCHOLARSEED_CI_CACHE_VERSION_WIN32_X86_64_PYTHON = '3.14.10-r8'
+  assert.ok(cache.lookup(root, f.inputs, f.python, environment))
+  assert.equal(cache.key(f.inputs), originalKey)
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(calls.map(call => call.operation), ['fetch', 'publish', 'publish'])
+  for (const [index, {options, input}] of calls.entries()) {
+    assert.deepEqual(input, f.inputs)
+    assert.deepEqual(options, ['--root', root, '--key', originalKey, '--version', index === 2 ? '3.14.10-r8' : version])
+  }
+  environment.SCHOLARSEED_CI_CACHE_VERSION_WIN32_X86_64_PYTHON = '../bad'
+  assert.throws(() => cache.lookup(root, f.inputs, f.python, environment), /Invalid private CI cache version/)
+})
+
+test('TeX cache key follows the PE normalizer through unrelated Desktop package and lock changes', t => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-tex-recipe-'))
+  t.after(() => fs.rmSync(repo, {recursive: true, force: true}))
+  const desktop = path.join(repo, 'apps/desktop')
+  for (const [name] of cache.recipe(REPO, {}, 'texlive').files) {
+    const file = path.join(repo, name)
+    fs.mkdirSync(path.dirname(file), {recursive: true})
+    fs.copyFileSync(path.join(REPO, name), file)
+  }
+  const pe = path.join(desktop, 'node_modules/pe-library/dist')
+  fs.mkdirSync(pe, {recursive: true})
+  fs.writeFileSync(path.join(pe, '../package.json'), '{"name":"pe-library","main":"dist/index.js"}')
+  fs.writeFileSync(path.join(pe, 'index.js'), 'module.exports = require("./writer")')
+  const writer = path.join(pe, 'writer.js')
+  fs.writeFileSync(writer, 'module.exports = 1')
+  const recipe = () => cache.recipe(repo, {}, 'texlive')
+  const before = recipe()
+  fs.writeFileSync(path.join(desktop, 'package.json'), '{"version":"0.3.3"}')
+  fs.writeFileSync(path.join(desktop, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n')
+  assert.deepEqual(recipe(), before)
+  fs.writeFileSync(writer, 'module.exports = 2')
+  assert.notDeepEqual(recipe(), before)
+})
+
 // The reusable member list is process-local; persisted schema-2 receipts stay compact.
 test('full member inventory survives a verified copy and rejects later ZIP changes', t => {
   const f = fixture(t), root = path.join(f.root, 'cache')

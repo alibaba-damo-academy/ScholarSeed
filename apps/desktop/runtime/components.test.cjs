@@ -40,7 +40,7 @@ test('contentId 由冻结输入派生：确定性 + 每个输入单独敏感', (
     target: 'win32-x86_64',
     pythonArchiveSha256: 'a1'.repeat(32),
     requirementsSha256: 'b2'.repeat(32),
-    lockSha256: 'c3'.repeat(32),
+    sourceBuilds: [{name: 'fastcdc', version: '1.7.0', sha256: 'c3'.repeat(32), buildConstraints: 'build==1 --hash=sha256:abc'}],
     bytecodeSha256: 'e1'.repeat(32),
     binaryPackages: ['cryptography', 'orjson']
   }
@@ -55,7 +55,10 @@ test('contentId 由冻结输入派生：确定性 + 每个输入单独敏感', (
   // 每个输入都参与派生
   assert.notEqual(components.derivePythonContentId({ ...base, pythonArchiveSha256: 'd4'.repeat(32) }), id)
   assert.notEqual(components.derivePythonContentId({ ...base, requirementsSha256: 'd4'.repeat(32) }), id)
-  assert.notEqual(components.derivePythonContentId({ ...base, lockSha256: 'd4'.repeat(32) }), id)
+  // A workspace package version can change uv.lock without changing the interpreter's dependencies.
+  assert.equal(components.derivePythonContentId({ ...base, lockSha256: 'd4'.repeat(32) }), id)
+  assert.notEqual(components.derivePythonContentId({ ...base, sourceBuilds: [{...base.sourceBuilds[0], repairWheel: true}] }), id)
+  assert.notEqual(components.derivePythonContentId({ ...base, sourceBuilds: [{...base.sourceBuilds[0], buildConstraints: 'different'}] }), id)
   assert.notEqual(components.derivePythonContentId({ ...base, binaryPackages: ['cryptography'] }), id)
   assert.notEqual(components.derivePythonContentId({ ...base, target: 'win32-x86' }), id)
   const texlive = components.deriveTexliveContentId({ target: 'win32-x86_64', archiveSha256: 'e5'.repeat(32), texlive: '2025' })
