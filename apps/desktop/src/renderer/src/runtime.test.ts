@@ -1343,7 +1343,7 @@ test('resource finalization projects separately from blocked recovery', () => {
   assert.equal('resourceFinalizing' in incremental, false)
 })
 
-test('assistant copy action requires text, a stopped turn and no pending confirmation', () => {
+test('assistant copy requires text and an eligible answer in a stopped turn without pending confirmation', () => {
   const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
   const syntax = ts.createSourceFile(
     'Stream.tsx',
@@ -1388,24 +1388,27 @@ test('assistant copy action requires text, a stopped turn and no pending confirm
   const contentScript = ts.transpileModule(`Boolean(${contentGates[0].getText(syntax)})`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText
-  for (const awaitingConfirmation of [false, true]) {
-    for (const turnOutcome of [
-      'running',
-      'completed',
-      'failed',
-      'interrupted',
-      'unknown',
-      undefined,
-    ]) {
-      const copyEnabled = runInNewContext(gateScript, { awaitingConfirmation, turnOutcome })
-      const expected = !awaitingConfirmation && turnOutcome !== 'running'
-      assert.equal(copyEnabled, expected, `${turnOutcome}/${awaitingConfirmation}`)
-      for (const text of ['', '完整回答']) {
-        assert.equal(
-          runInNewContext(contentScript, { item: { text }, copyEnabled }),
-          Boolean(text) && expected,
-          `${turnOutcome}/${awaitingConfirmation}/${text}`
-        )
+  for (const [turnOutcome, allowsFragment, allowsFinal] of [
+    ['running', false, false],
+    ['completed', false, true],
+    ['failed', true, true],
+    ['interrupted', true, true],
+    ['unknown', true, true],
+    [undefined, true, true],
+  ] as const) {
+    for (const finalAnswer of [false, true]) {
+      for (const awaitingConfirmation of [false, true]) {
+        const row = { turnOutcome, finalAnswer, awaitingConfirmation }
+        const copyEnabled = runInNewContext(gateScript, row)
+        const expected = !awaitingConfirmation && (finalAnswer ? allowsFinal : allowsFragment)
+        assert.equal(copyEnabled, expected, JSON.stringify(row))
+        for (const text of ['', '完整回答']) {
+          assert.equal(
+            runInNewContext(contentScript, { item: { text }, copyEnabled }),
+            Boolean(text) && expected,
+            JSON.stringify({ ...row, text })
+          )
+        }
       }
     }
   }
@@ -2899,20 +2902,18 @@ test('application status descriptors can be redrawn in either language', async (
   const locale = createInstance()
   await locale.init({
     lng: 'zh',
+    fallbackLng: false,
     resources: { zh: { conversation: zh }, en: { conversation: en } },
     defaultNS: 'conversation',
   })
   const t = locale.getFixedT(null, 'conversation')
   const compacted = { key: 'context.compacted' } as const
   const missing = { key: 'artifactFailure.missing' } as const
-  assert.equal(formatRuntimeStatus(compacted, t), '上下文已压缩，正在继续执行')
-  assert.equal(formatRuntimeStatus(missing, t), '文件不存在，未能展示产物。')
+  assert.equal(formatRuntimeStatus(compacted, t), zh.context.compacted)
+  assert.equal(formatRuntimeStatus(missing, t), zh.artifactFailure.missing)
   await locale.changeLanguage('en')
-  assert.equal(formatRuntimeStatus(compacted, t), 'Context compacted. Continuing execution.')
-  assert.equal(
-    formatRuntimeStatus(missing, t),
-    'The file does not exist, so the artifact could not be displayed.'
-  )
+  assert.equal(formatRuntimeStatus(compacted, t), en.context.compacted)
+  assert.equal(formatRuntimeStatus(missing, t), en.artifactFailure.missing)
   assert.deepEqual(compacted, { key: 'context.compacted' })
 })
 
