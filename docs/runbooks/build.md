@@ -394,14 +394,19 @@ The client reconstructs the published ZIP,
 checks its release SHA-512, and hands it to the existing Squirrel preparation
 flow. A missing sidecar or failed object transfer uses the same release's full ZIP.
 
-The accepted build records component versions in `artifacts.macos_update_zip.component_versions`.
-Both macOS architectures use `components/<arch>/<kind>/<version>/`, with an immutable
+Each release stores `app.bin`, `layout.gz` and `macos-zip-components-v3.json` alongside
+`scholarseed-update.zip` in `<channel>/<arch>/<version>-<build_number>/`. The app object
+includes Mantle, ReactiveObjC and Squirrel. CI can restore their signed binaries from
+the private frameworks cache when producing the app object.
+
+The accepted build records versions for the five shared runtimes (browser, Codex, Electron,
+Python and TeX Live) in `artifacts.macos_update_zip.component_versions`.
+Both macOS architectures store those runtimes in `components/<arch>/<kind>/<version>/`, with an immutable
 `identity.json` and a subdirectory named for the full SHA-256. For example,
 `components/darwin-arm64/codex/0.171.0-r1/<sha256>/codex.bin` holds the Codex ZIP
-fragments. The layout file is named `layout.gz`. Runtime versions use the pinned
+fragments. Runtime versions use the pinned
 upstream version and a packaging revision from `apps/desktop/scripts/cd/mac-component-versions.cjs`.
 Bump the affected revision when packaged runtime bytes change at the same upstream version.
-App and layout versions include the release channel and build number.
 
 macOS 签名分发构建从同一份应用生成安装 DMG 和更新 ZIP。官网下载和只支持安装器协议的
 旧客户端都使用普通 DMG。安装这个普通版本后，后续自动更新优先使用 CI 生成的 ZIP。
@@ -442,13 +447,18 @@ macOS Python 签名缓存的输入记录位于 `inputs/python/darwin-arm64/<输�
 Python wheel 安装时间、来源 URL 和引用它们的 RECORD 随应用组件传输。运行时组件的内容发生变化时，客户端会下载该组件的新版本。客户端重组发布 ZIP，核对该版本的 SHA-512，
 再交给原有 Squirrel 准备安装。清单缺失或组件传输失败时，客户端回退到同一候选的完整 ZIP。
 
-通过验收的构建在 `artifacts.macos_update_zip.component_versions` 中记录组件版本。
-两种 macOS 架构都按 `components/<架构>/<组件>/<版本>/` 存放组件，每个版本下有不可变的
+每次发布在 `<渠道>/<架构>/<版本>-<构建号>/` 下存放 `app.bin`、`layout.gz`、
+`macos-zip-components-v3.json` 和 `scholarseed-update.zip`。`app.bin` 包含 Mantle、
+ReactiveObjC 和 Squirrel。CI 构建应用时可从私有 frameworks 缓存恢复这三个框架的签名文件。
+
+通过验收的构建在 `artifacts.macos_update_zip.component_versions` 中记录 browser、Codex、
+Electron、Python 和 TeX Live 五组共享运行时的版本。两种 macOS 架构都按
+`components/<架构>/<组件>/<版本>/` 存放这些运行时，每个版本下有不可变的
 `identity.json` 和以完整 SHA-256 命名的子目录。例如
-`components/darwin-arm64/codex/0.171.0-r1/<sha256>/codex.bin` 存放 Codex 的 ZIP 数据片段，
-布局文件名为 `layout.gz`。运行时版本取自锁定的上游依赖，打包修订号由
+`components/darwin-arm64/codex/0.171.0-r1/<sha256>/codex.bin` 存放 Codex 的 ZIP 数据片段。
+运行时版本取自锁定的上游依赖，打包修订号由
 `apps/desktop/scripts/cd/mac-component-versions.cjs` 维护。同一上游版本的运行时字节发生变化时，
-递增对应组件的修订号。应用和布局的版本包含渠道与构建号。
+递增对应组件的修订号。
 
 <a id="cicd-渠道与发布职责"></a>
 ### CI/CD Channels and Release Responsibilities

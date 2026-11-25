@@ -19,12 +19,16 @@ function finalResult(base, app, installer, velopack, runtime, updateZip) {
         !/^[a-f0-9]{64}$/.test(updateZip.sha256) || !/^[a-f0-9]{128}$/.test(updateZip.sha512))
       throw new Error('Final macOS update ZIP acceptance is incomplete')
     assertMeasuredUpdateArchive(updateZip.archive_budget)
+    const release = base.release
+    if (!/^\d+\.\d+\.\d+$/.test(release?.version) ||
+        !['preview', 'release'].includes(release.channel) || !/^[1-9]\d{11}$/.test(release.build_number))
+      throw new Error('Invalid macOS release identity')
   } else if (updateZip) throw new Error('Unexpected macOS update ZIP evidence')
   if (base.stage === 'velopack' && (!velopack || !installer?.installed_check?.ok || !installer.installed_check.retirement?.complete || !app?.package_check?.ok)) throw new Error('Velopack installed acceptance is incomplete')
   if (base.stage === 'velopack' && base.publishable && (!velopack.signed || !installer.signature_valid || !app.signature_valid)) throw new Error('Velopack distribution requires signed artifacts')
   if (base.stage === 'velopack' && (!runtime?.manifest_path || !runtime.components?.length)) throw new Error('Velopack runtime delivery artifacts are incomplete')
   const macosUpdateZip = macRelease
-    ? { ...updateZip, component_versions: macComponentVersions(base.release) }
+    ? { ...updateZip, component_versions: macComponentVersions() }
     : undefined
   return {...base,status:'passed',artifacts:{app,...(installer?{[base.stage==='dmg'?'dmg':'exe']:installer}:{}),
     ...(macosUpdateZip ? { macos_update_zip: macosUpdateZip } : {}),
