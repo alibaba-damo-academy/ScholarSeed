@@ -1167,7 +1167,10 @@ complete ZIP inventory and final runtime-version binding. The Python recipe is o
 `assembly.cjs` for dependency sync, normalization, bytecode and archive steps. Go cache
 and temporary directory permissions are managed outside this recipe. Its inputs include the interpreter, exported runtime
 requirements, locked source-build dependencies and build constraints, Skill wheels and uv version.
-The Windows TeX Live key includes the installed PE normalizer used to build the archive.
+The Windows TeX Live and PowerShell keys include the vendor archive digest and the
+archive writer. TeX Live also binds its build-time normalization script and the
+installed PE library. Runtime staging options such as window visibility are outside
+these keys.
 Application version bumps and unrelated development dependencies can reuse both caches.
 Each build still runs its tests, signature verification and installer acceptance.
 Before publishing under the default private cache version, Windows checks the file tree
@@ -1175,7 +1178,9 @@ and ZIP against the hashes in `versions.json`. If only the ZIP encoding differs,
 retrieves the reviewed archive and verifies its file inventory before caching it.
 
 Windows Python 使用导出的运行时依赖及源码包构建约束。Go 缓存和临时目录权限独立管理，
-无需进入 Python 缓存键。TeX Live 使用实际安装的 PE 规范化工具。
+无需进入 Python 缓存键。Windows 的 TeX Live 和 PowerShell 缓存键包含上游归档摘要
+和归档生成脚本。TeX Live 还校验构建规范化脚本和实际安装的 PE 库。窗口显示等运行时
+准备选项不进入这两个缓存键。
 只改应用版本或无关开发依赖时，两组均可复用已有缓存，每次构建仍执行测试、验签和安装验收。
 写入默认私有缓存版本前，Windows 会核对 `versions.json` 中的文件树和 ZIP 摘要。
 如果只有 ZIP 编码不同，CI 会取回该版本已审核的归档，逐文件核对通过后再写入缓存。
