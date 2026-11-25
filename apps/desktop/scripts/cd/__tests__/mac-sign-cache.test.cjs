@@ -9,6 +9,8 @@ const {adHocOptions} = require('../sign.cjs')
 const {signAsync} = require('../osx-sign.cjs')
 const {signableIgnore} = require('../macho.cjs')
 const {hashFile} = require('../../shared/build-state.cjs')
+const {hostArch} = require('../../shared/target.cjs')
+const {registryCommand} = require('./signing.fixture.cjs')
 
 const darwin = process.platform === 'darwin'
 const repo = path.resolve(__dirname, '../../../../..')
@@ -54,9 +56,13 @@ test('application-only builds reuse the signed bytes and sign a new outer bundle
     return file
   }
   const original = compile(0), changed = compile(1)
-  const frozen = {repo, arch: process.arch, appId: 'org.example.cache', lane: 'distribution',
+  const frozen = {repo, arch: hostArch(), appId: 'org.example.cache', lane: 'distribution',
     platform: 'darwin', signingRequired: true, runDirectory: temporary}
   const baseIgnore = signableIgnore()
+  await assert.rejects(
+    withSignedRuntimes({}, {...frozen, arch: '../arm64'}, baseIgnore, () => assert.fail('invalid frozen target')),
+    /unsupported desktop target/
+  )
   async function build(label, tex = original, concurrentWinner) {
     const app = path.join(temporary, label, 'Example.app')
     for (const [file, binary] of [[pythonFile, original], [texFile, tex], ['Contents/MacOS/Example', original]]) {
@@ -113,4 +119,25 @@ test('application-only builds reuse the signed bytes and sign a new outer bundle
   assert.equal(loser.signed.filter(name => name === '').length, 2, 'restore winner and re-sign outer bundle')
   assert.equal(loser.python, winner.python)
   assert.equal(loser.tex, winner.tex)
+
+  const registry = path.join(temporary, 'registry')
+  fs.mkdirSync(registry, {mode: 0o700})
+  process.env.SCHOLARSEED_MAC_SIGN_REGISTRY_COMMAND = registryCommand(registry)
+  const sharedCold = await build('shared-cold')
+  assert.ok(sharedCold.signed.includes(pythonFile))
+  assert.ok(sharedCold.signed.includes(texFile))
+  process.env.SCHOLARSEED_MAC_SIGN_CACHE = path.join(temporary, 'second-runner')
+  const sharedHit = await build('fresh-runner')
+  const localHit = await build('fresh-runner-app-only')
+  assert.equal(fs.readFileSync(path.join(registry, 'calls'), 'utf8'), 'fetch 3\nfetch 3\npublish 0\npublish 0\nfetch 0\nfetch 0\n')
+  for (const kind of ['python', 'texlive']) {
+    const inputs = fs.readdirSync(path.join(registry, kind, 'darwin-' + frozen.arch))
+    assert.equal(inputs.length, 1)
+    assert.match(inputs[0], /^[a-f0-9]{64}$/)
+  }
+  for (const hit of [sharedHit, localHit]) {
+    assert.deepEqual(hit.signed.filter(name => name.includes('/backend/')), [])
+    assert.equal(hit.python, sharedCold.python)
+    assert.equal(hit.tex, sharedCold.tex)
+  }
 })

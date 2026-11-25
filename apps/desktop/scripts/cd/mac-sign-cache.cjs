@@ -3,6 +3,7 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const { developmentPython } = require('../../../../scripts/shared/python.cjs')
 const state = require('../shared/build-state.cjs')
+const { target } = require('../shared/target.cjs')
 const { createRuntimeSigningPolicy } = require('./mac-sign-policy.cjs')
 const { signedRuntimeStore } = require('./mac-sign-store.cjs')
 
@@ -18,7 +19,7 @@ async function withSignedRuntimes(options, frozen, baseIgnore, sign) {
     if (command !== undefined) throw new Error('macOS signing registry requires a local cache directory')
     return sign(baseIgnore)
   }
-  const store = signedRuntimeStore(root, command)
+  const cacheTarget = target(frozen.platform, frozen.arch).archType
   const policy = createRuntimeSigningPolicy(options, frozen)
   // Use the build interpreter throughout. Restoring the bundled interpreter is
   // one of the cache operations, so it cannot be the verifier of that operation.
@@ -39,7 +40,8 @@ async function withSignedRuntimes(options, frozen, baseIgnore, sign) {
         console.log(`[sign-cache] ${kind} uses the normal signing policy`)
         continue
       }
-      const key = state.identity({schema: 1, kind, arch: frozen.arch, appId: frozen.appId,
+      const store = signedRuntimeStore(root, command, kind, cacheTarget)
+      const key = state.identity({schema: 2, kind, target: cacheTarget, appId: frozen.appId,
         input: group.inputSha256, policy: selected.digest, recipe})
       const restore = archive => {
         content('restore', kind, archive)
@@ -51,12 +53,12 @@ async function withSignedRuntimes(options, frozen, baseIgnore, sign) {
       if (hit) {
         for (const target of targets) hits.add(fs.realpathSync(target))
       } else {
-        misses.push({kind, key, selected, restore, temporary})
+        misses.push({kind, key, store, selected, restore, temporary})
       }
     }
     await sign(filename => baseIgnore(filename) || (hits.size > 0 && hits.has(fs.realpathSync(filename))))
     let reseal = false
-    for (const {kind, key, selected, restore, temporary} of misses) {
+    for (const {kind, key, store, selected, restore, temporary} of misses) {
       selected.verify()
       const archive = path.join(work, key + '.zip')
       content('pack', kind, archive)

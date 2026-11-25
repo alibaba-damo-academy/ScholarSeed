@@ -3,6 +3,8 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const {registryCommand} = require('./signing.fixture.cjs')
+const {hashFile} = require('../../shared/build-state.cjs')
 const { signedRuntimeStore } = require('../mac-sign-store.cjs')
 
 const key = 'ab'.repeat(32)
@@ -10,38 +12,14 @@ const posix = {skip: process.platform === 'win32' && 'macOS cache uses POSIX dir
 const neverRestore = () => assert.fail('unexpected archive restoration')
 const read = file => fs.readFileSync(file, 'utf8')
 
-// Run in a separate Node process to exercise the actual argv/exit-code boundary.
-function registryProvider() {
-  const fs = require('node:fs')
-  const path = require('node:path')
-  const [root, operation, keyFlag, key, archiveFlag, archive] = process.argv.slice(1)
-  if (keyFlag !== '--key' || archiveFlag !== '--archive' || !/^[a-f0-9]{64}$/.test(key) || !path.isAbsolute(archive))
-    throw new Error('invalid provider arguments')
-  const entry = path.join(root, key)
-  let code = 0
-  if (operation === 'fetch') {
-    if (fs.existsSync(entry)) fs.copyFileSync(entry, archive, fs.constants.COPYFILE_EXCL)
-    else code = 3
-  } else if (operation === 'publish') {
-    try {
-      fs.copyFileSync(archive, entry, fs.constants.COPYFILE_EXCL)
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error
-      if (!fs.readFileSync(archive).equals(fs.readFileSync(entry))) code = 4
-    }
-  } else throw new Error('unknown operation')
-  fs.appendFileSync(path.join(root, 'calls'), operation + ' ' + code + '\n')
-  process.exitCode = code
-}
-
 function fixture(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mac sign cache-')))
   t.after(() => fs.rmSync(dir, {recursive: true, force: true}))
   const registry = path.join(dir, 'registry')
   fs.mkdirSync(registry, {mode: 0o700})
-  const command = JSON.stringify([process.execPath, '-e', '(' + registryProvider.toString() + ')()', '--', registry])
-  function runner(name, shared = true) {
-    return signedRuntimeStore(path.join(dir, name), shared ? command : undefined)
+  const command = registryCommand(registry)
+  function runner(name, shared = true, kind = 'python', target = 'darwin-arm64') {
+    return signedRuntimeStore(path.join(dir, name), shared ? command : undefined, kind, target)
   }
   function source(name, value) {
     const filename = path.join(dir, name)
@@ -114,12 +92,72 @@ test('corrupt local bytes stop before restore, and failed remote verification ne
 
 test('reject invalid registry configuration and publish keys before writing to either store', posix, t => {
   const {dir, runner, source, download, registry} = fixture(t)
-  assert.throws(() => signedRuntimeStore(path.join(dir, 'null-command'), 'null'), /registry command/)
+  assert.throws(() => signedRuntimeStore(path.join(dir, 'null-command'), 'null', 'python', 'darwin-arm64'), /registry command/)
   const archive = source('signed', 'bytes')
   for (const shared of [true, false]) {
     const store = runner('invalid', shared)
     assert.throws(() => store.publish('../other', archive, download(), neverRestore), /key/)
   }
   assert.equal(fs.existsSync(path.join(dir, 'invalid', 'other')), false)
+  assert.equal(fs.existsSync(path.join(registry, 'calls')), false)
+})
+
+test('identical input keys have separate signing receipts for each kind and canonical target', posix, t => {
+  const {dir, runner, source, download} = fixture(t)
+  for (const [kind, target] of [['python', 'darwin-arm64'], ['texlive', 'darwin-arm64'], ['python', 'darwin-x86_64']]) {
+    const data = kind + '-' + target
+    const file = source(data, data)
+    const local = runner('machine', true, kind, target)
+    assert.equal(local.lookup(key, download(), neverRestore), null)
+    assert.equal(local.publish(key, file, download(), neverRestore), false)
+    const folder = path.join(dir, 'machine', 'shared-v2', kind, target, key)
+    assert.equal(read(path.join(folder, 'component.zip')), data)
+    assert.deepEqual(JSON.parse(read(path.join(folder, 'receipt.json'))), {
+      schema: 2, inputs: {kind, target, key}, inventory: {archiveSha256: hashFile(file), archiveBytes: data.length},
+    })
+    const verify = archive => assert.equal(read(archive), data)
+    assert.equal(local.lookup(key, download(), verify), 'local')
+    assert.equal(runner('fresh', true, kind, target).lookup(key, download(), verify), 'registry')
+  }
+})
+
+test('flat v1 entries stay cold and forged v2 receipt identities cannot be restored', posix, t => {
+  const {dir, runner, source, download} = fixture(t)
+  const file = source('old-code', 'previous signature')
+  const store = runner('machine', false)
+  const legacy = path.join(dir, 'machine', 'local-v1', key)
+  fs.mkdirSync(legacy, {recursive: true, mode: 0o700})
+  fs.copyFileSync(file, path.join(legacy, 'signed.zip'))
+  fs.writeFileSync(path.join(legacy, 'sha256'), hashFile(file) + '\n')
+  assert.equal(store.lookup(key, download(), neverRestore), null)
+  store.publish(key, file, download(), neverRestore)
+  const filename = path.join(dir, 'machine', 'local-v2', 'python', 'darwin-arm64', key, 'receipt.json')
+  const original = read(filename)
+  for (const [section, field, value] of [
+    ['inputs', 'kind', 'texlive'], ['inputs', 'target', 'darwin-x86_64'], ['inputs', 'key', 'bc'.repeat(32)],
+    ['inventory', 'archiveSha256', 'dd'.repeat(32)], ['inventory', 'archiveBytes', 1],
+  ]) {
+    const invalid = JSON.parse(original)
+    invalid[section][field] = value
+    fs.writeFileSync(filename, JSON.stringify(invalid))
+    assert.throws(() => store.lookup(key, download(), neverRestore), /receipt|digest mismatch/)
+  }
+})
+
+test('invalid kind, target, or redirected parent cannot access local or remote signing entries', posix, t => {
+  const {dir, runner, source, download, registry} = fixture(t)
+  for (const [kind, target] of [['../python', 'darwin-arm64'], ['browser', 'darwin-arm64'],
+    ['electron', '../darwin-arm64'], ['electron', 'darwin-x64'], ['frameworks', 'win32-x86_64']]) {
+    assert.throws(() => runner('invalid', true, kind, target), /kind or target/)
+  }
+  assert.equal(fs.existsSync(path.join(dir, 'invalid')), false)
+  const store = runner('machine')
+  const kindFolder = path.join(dir, 'machine', 'shared-v2', 'python')
+  fs.renameSync(kindFolder, kindFolder + '-real')
+  fs.symlinkSync(kindFolder + '-real', kindFolder, 'dir')
+  const archive = source('signed-archive', 'test bytes')
+  assert.throws(() => store.lookup(key, download(), neverRestore), /invalid build state object/)
+  assert.throws(() => store.publish(key, archive, download(), neverRestore), /invalid build state object/)
+  assert.throws(() => runner('machine'), /invalid build state object/)
   assert.equal(fs.existsSync(path.join(registry, 'calls')), false)
 })
