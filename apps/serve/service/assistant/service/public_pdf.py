@@ -247,8 +247,9 @@ class PublicPdfCache:
         async with self.lock:
             if not authorized():
                 raise ValueError("public_pdf_access_denied")
-            if url in self.documents:
-                return self.documents[url]
+            cached = self._cached(url)
+            if cached is not None:
+                return cached
             final, payload = await fetch(url)
             raw_pages = await activities.to_thread(
                 ActivityDomain.BRIDGE, pdf_document_text, payload
@@ -271,6 +272,20 @@ class PublicPdfCache:
                 self.documents.pop(next(iter(self.documents)))
             self.documents[url] = paper
             return paper
+
+    def _cached(self, url: str) -> PublicPaper | None:
+        # A fragment never reaches the server, so "#page=N" citation URLs and the
+        # redirected final URL name the same bytes already read in this session.
+        canonical = _canonical_pdf_url(url.split("#", 1)[0])
+        for key, paper in tuple(self.documents.items()):
+            if canonical in (
+                _canonical_pdf_url(key.split("#", 1)[0]),
+                _canonical_pdf_url(paper.url),
+            ):
+                # Keep recently used papers out of the bounded eviction order.
+                self.documents[key] = self.documents.pop(key)
+                return paper
+        return None
 
     def resolve(self, ref_id: str) -> PublicPaper:
         for paper in self.documents.values():
