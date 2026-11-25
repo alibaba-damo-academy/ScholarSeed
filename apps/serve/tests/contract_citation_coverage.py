@@ -347,6 +347,39 @@ class CoverageContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sources"], [])
         self.assertEqual(result["coverage"]["status"], "unavailable")
 
+    async def test_review_uses_selected_auxiliary_model_and_cached_pdf_page(self) -> None:
+        reader = Mock(fetch_page=AsyncMock())
+        model = Mock(
+            invoke=AsyncMock(
+                return_value=ModelInvocationResult(
+                    "review",
+                    ModelInvocationStatus.COMPLETED,
+                    output_text=output(),
+                )
+            )
+        )
+        coverage = CitationCoverage(
+            reader,
+            model,
+            lambda *_: True,
+            select_model=lambda current, owner: f"fast:{owner}:{current}",
+        )
+        result = await coverage.review(
+            ANSWER,
+            projection(),
+            invocation_id="review",
+            owner_id="user-1",
+            project_id="project",
+            model_key="qwen4-max",
+            cached_page=lambda url: PAGE if url == URL else None,
+        )
+        reader.fetch_page.assert_not_called()
+        model.invoke.assert_awaited_once()
+        invoked_request = model.invoke.await_args.args[0]
+        self.assertEqual(invoked_request.model_key, "fast:user-1:qwen4-max")
+        self.assertEqual(result["coverage"]["status"], "partial")
+        self.assertEqual(len(result["sources"]), 1)
+
     async def test_subscription_does_not_spawn_unrestricted_temporary_agent(self) -> None:
         models = Mock()
 

@@ -2615,7 +2615,10 @@ def create_app(
         else:
             home = SCHOLARSEED_HOME.absolute()
             for private_root in dict.fromkeys(
-                (home, *runtime_discovery.private_configuration_roots(home))
+                (
+                    home,
+                    *runtime_discovery.private_configuration_roots(home),
+                )
             ):
                 prepare_private_root(native, coordinator, private_root)
     with startup_phase("storage.seed"):
@@ -2670,8 +2673,9 @@ def create_app(
             coordinator,
             (str(SCHOLARSEED_HOME.absolute()), str(SERVICE_DIR.absolute())),
             inspect_initial,
-            lambda state: startup_storage_needs_write(state)
-            or state.catalog.has_pending_operations,
+            lambda state: (
+                startup_storage_needs_write(state) or state.catalog.has_pending_operations
+            ),
             lambda state: initialize_startup_storage(
                 state,
                 project_failed=seed.project_failures.__setitem__,
@@ -4190,6 +4194,7 @@ def _compose_app(
         app.state.assistant_citations,
         app.state.fulltext_authorizer,
         PdfMaterializer(content),
+        fetch_public_pdf=web_fetcher.fetch_pdf,
         activities=activities,
     )
     library_projection = LibraryLinkProjection(
@@ -4398,6 +4403,7 @@ def _compose_app(
                 (snapshot := citation_snapshot(session_id, turn_id)) is not None
                 and snapshot.search_scope is SearchScope.WEB
             ),
+            select_model=app.state.model_service.title_model_key,
         )
     )
     direct_actions = AssistantActionService(

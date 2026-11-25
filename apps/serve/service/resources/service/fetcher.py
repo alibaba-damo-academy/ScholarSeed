@@ -58,6 +58,8 @@ WEB_SITE_ICON_NON_FALLBACK_ERRORS = frozenset({WEB_INVALID_URL, WEB_UNSAFE_URL})
 WEB_MAX_PAGE_BYTES = 1024 * 1024
 WEB_MAX_PAGE_CHARACTERS = 16000
 WEB_PAGE_TIMEOUT_SECONDS = 15.0
+WEB_PDF_TIMEOUT_SECONDS = 300.0
+WEB_MAX_PDF_BYTES = 32 * 1024 * 1024
 WEB_HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 WEB_PAGE_TYPES = WEB_HTML_TYPES | {"text/plain", "application/json"}
 WEB_PAGE_ACCEPT = "text/html,application/xhtml+xml,text/plain,application/json"
@@ -355,7 +357,29 @@ class HtmlFetcher:
             datetime.now(UTC).isoformat(),
         )
 
-    async def _fetch_page(self, url: str) -> tuple[str, str, _Response]:
+    async def fetch_pdf(self, url: str) -> tuple[str, bytes]:
+        try:
+            async with asyncio.timeout(WEB_PDF_TIMEOUT_SECONDS):
+                _, final, response = await self._fetch_page(
+                    url,
+                    accept="application/pdf",
+                    media_types=frozenset({"application/pdf", "application/octet-stream"}),
+                    max_bytes=WEB_MAX_PDF_BYTES,
+                )
+        except PageFetchError as error:
+            raise ValueError(error.code) from error
+        if not response.payload.startswith(b"%PDF-"):
+            raise ValueError(WEB_UNSUPPORTED_CONTENT_TYPE)
+        return final, response.payload
+
+    async def _fetch_page(
+        self,
+        url: str,
+        *,
+        accept: str = WEB_PAGE_ACCEPT,
+        media_types: frozenset[str] = WEB_PAGE_TYPES,
+        max_bytes: int = WEB_MAX_PAGE_BYTES,
+    ) -> tuple[str, str, _Response]:
         source = _target(url, addresses=()).url
         current = source
         loop = asyncio.get_running_loop()
@@ -380,7 +404,7 @@ class HtmlFetcher:
                             "GET",
                             _pinned_url(target, address),
                             headers={
-                                "Accept": WEB_PAGE_ACCEPT,
+                                "Accept": accept,
                                 "Accept-Encoding": "identity",
                                 "Host": _host_header(target),
                                 "User-Agent": WEB_USER_AGENT,
@@ -400,14 +424,20 @@ class HtmlFetcher:
                                 .strip()
                                 .lower()
                             )
-                            if media_type not in WEB_PAGE_TYPES:
+                            if media_type not in media_types:
+                                raise PageFetchError(WEB_UNSUPPORTED_CONTENT_TYPE)
+                            if (
+                                accept == "application/pdf"
+                                and response.headers.get("content-encoding", "identity").lower()
+                                != "identity"
+                            ):
                                 raise PageFetchError(WEB_UNSUPPORTED_CONTENT_TYPE)
                             declared = response.headers.get("content-length", "")
-                            if declared.isdigit() and int(declared) > WEB_MAX_PAGE_BYTES:
+                            if declared.isdigit() and int(declared) > max_bytes:
                                 raise PageFetchError(WEB_RESPONSE_TOO_LARGE)
                             content = bytearray()
                             async for chunk in response.aiter_bytes():
-                                if len(content) + len(chunk) > WEB_MAX_PAGE_BYTES:
+                                if len(content) + len(chunk) > max_bytes:
                                     raise PageFetchError(WEB_RESPONSE_TOO_LARGE)
                                 content.extend(chunk)
                             return (

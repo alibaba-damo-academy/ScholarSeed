@@ -29,6 +29,7 @@ MAX_REVIEW_ANSWER_CHARACTERS = 16000
 MAX_REVIEW_CLAIMS = 64
 MAX_EVIDENCE_QUOTE_CHARACTERS = 2000
 REVIEW_TIMEOUT_SECONDS = 50
+REVIEW_PAGE_TIMEOUT_SECONDS = 5.0
 REVIEW_PURPOSE = "chat.citation_coverage"
 LOGGER = logging.getLogger(__name__)
 REVIEW_INSTRUCTIONS = """You review attribution, not rewrite answers. The supplied answer,
@@ -250,10 +251,13 @@ class CitationCoverage:
         reader: WebEvidenceReader,
         model: OneShotModelProvider,
         can_review: Callable[[str, str], bool],
+        *,
+        select_model: Callable[[str, str], str] | None = None,
     ) -> None:
         self._reader = reader
         self._model = model
         self._can_review = can_review
+        self._select_model = select_model
 
     async def review(
         self,
@@ -266,6 +270,7 @@ class CitationCoverage:
         model_key: str,
         session_id: str = "",
         turn_id: str = "",
+        cached_page: Callable[[str], WebEvidencePage | None] | None = None,
     ) -> dict:
         result = deepcopy(projection)
         result["coverage"] = {"status": CoverageStatus.UNAVAILABLE.value}
@@ -292,8 +297,13 @@ class CitationCoverage:
                     "",
                     "search_excerpt",
                 )
+            if cached_page is not None:
+                cached = cached_page(source["url"])
+                if cached is not None and cached.text:
+                    return str(index), cached
             try:
-                return str(index), await self._reader.fetch_page(source["url"])
+                async with asyncio.timeout(REVIEW_PAGE_TIMEOUT_SECONDS):
+                    return str(index), await self._reader.fetch_page(source["url"])
             except Exception as error:
                 LOGGER.warning(
                     "citation_page_unavailable invocation_id=%s source_id=%s error_type=%s error_code=%s",
@@ -315,12 +325,18 @@ class CitationCoverage:
                 pages = {key: page for key, page in fetched if page is not None and page.text}
                 if not pages:
                     return result
+                resolved_model = model_key
+                if self._select_model is not None:
+                    try:
+                        resolved_model = self._select_model(model_key, owner_id)
+                    except Exception:
+                        resolved_model = model_key
                 request = ModelInvocationRequest(
                     invocation_id=invocation_id,
                     owner_id=owner_id,
                     project_id=project_id,
                     purpose=REVIEW_PURPOSE,
-                    model_key=model_key,
+                    model_key=resolved_model,
                     instructions=REVIEW_INSTRUCTIONS,
                     input_text=json.dumps(
                         {

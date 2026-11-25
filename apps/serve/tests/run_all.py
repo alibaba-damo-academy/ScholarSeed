@@ -149,6 +149,7 @@ SUITES = [
     "contract_inference",
     "contract_pdf_layout",
     "contract_pdf_materialize",
+    "contract_public_pdf",
     "contract_history",
     "contract_local",
     "contract_bridge",
