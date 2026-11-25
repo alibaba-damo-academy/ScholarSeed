@@ -6,7 +6,7 @@ const state = require('../shared/build-state.cjs')
 const buildCache = require('./cache.cjs')
 const wheelBuilder = require('./wheels.cjs')
 const { pythonEnvironment, pythonPlatformArguments } = require('../../../../scripts/shared/platform.cjs')
-const { protectWindowsDirectory } = require('../../../../scripts/shared/permissions.cjs')
+const { prepareBuildDirectoryPermissions } = require('../../../../scripts/shared/permissions.cjs')
 const { execFileSync, spawnSync } = require('node:child_process')
 const { sha256FileSync } = require('../../runtime/components.cjs')
 
@@ -143,8 +143,7 @@ async function stageSync(uv, python, requirements, cwd, environment, temporaryRo
   const original = path.dirname(python)
   let primary
   try {
-    if (process.platform === 'win32') protectWindowsDirectory(directory)
-    else fs.chmodSync(directory, 0o700)
+    prepareBuildDirectoryPermissions(directory)
     state.assertPrivateDirectory(directory)
     fs.cpSync(original, staged, {recursive: true, errorOnExist: true, force: false})
     await installSources(uv, path.join(staged, path.basename(python)), requirements, directory, cwd, environment, sourceBuilds)

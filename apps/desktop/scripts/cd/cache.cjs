@@ -1,4 +1,4 @@
-// Private immutable build cache. Never caches signatures, tests or acceptance.
+// Immutable build cache. Never caches signatures, tests or acceptance.
 const fs = require('node:fs')
 const path = require('node:path')
 const state = require('../shared/build-state.cjs')
@@ -62,7 +62,4 @@ function expanded(archive, expected, environment, populate) {
   if (state.hashFile(archive) !== expected.sha256) throw new Error('toolchain archive changed during preparation')
   return data
 }
-function goObjects(environment, archiveSha256) {
-  return state.ensurePrivateDirectory(path.join(root(environment), 'go', archiveSha256))
-}
-module.exports = { root, key, materialize, expanded, goObjects }
+module.exports = { root, key, materialize, expanded }

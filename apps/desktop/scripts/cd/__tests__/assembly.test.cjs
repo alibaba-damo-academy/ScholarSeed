@@ -12,7 +12,7 @@ const cache = require('../../shared/component-cache.cjs')
 const { derivePythonContentId, sha256FileSync } = require('../../../runtime/components.cjs')
 const REPO = path.resolve(sourceDirectory, '../../../..')
 
-test('Python cache ignores bundle orchestration but binds every actual recipe source and tool', t => {
+test('Python cache binds recipe sources and tools independently of build orchestration', t => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ss-recipe-')))
   t.after(() => fs.rmSync(repo, {recursive: true, force: true}))
   for (const [file] of cache.recipe(REPO, {}).files) {
@@ -25,8 +25,11 @@ test('Python cache ignores bundle orchestration but binds every actual recipe so
     sourceBuilds: [], binaryPackages: ['cryptography'], bytecodeSha256: '4'.repeat(64),
     skillWheels: [{name: 'skill', sha256: '5'.repeat(64)}], recipe: cache.recipe(repo, tools), ...overrides})
   const original = identity()
-  fs.writeFileSync(path.join(repo, 'apps/desktop/scripts/cd/bundle.cjs'), '// unrelated Office/installer orchestration\n')
-  assert.equal(identity(), original)
+  for (const file of ['apps/desktop/scripts/cd/bundle.cjs', 'apps/desktop/scripts/cd/go-cache.cjs', 'scripts/shared/permissions.cjs']) {
+    fs.copyFileSync(path.join(REPO, file), path.join(repo, file))
+    fs.appendFileSync(path.join(repo, file), '\n// changed build orchestration\n')
+    assert.equal(identity(), original, file)
+  }
   for (const [file] of cache.recipe(repo, {}).files) {
     const filename = path.join(repo, file), bytes = fs.readFileSync(filename)
     fs.appendFileSync(filename, '\n# changed recipe\n')
