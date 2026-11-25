@@ -8,7 +8,20 @@ import { RENDERER_SHARED_DEPENDENCIES, supportedFontSources } from './renderer.t
 import { PROTECTED_ASSETS, protectedDigest, verifyProtectedAssets, type ProtectedManifest } from './src/main/vaultipc.ts'
 import { VAULT_ERROR } from './src/vault.ts'
 
-const BUILD_FILES = ['electron.vite.config.ts', 'protected.ts', 'renderer.ts', 'endpoints.ts', 'package-lock.json', 'package.json', 'tsconfig.base.json', 'tsconfig.web.json', '../../scripts/vendor/texlive/manifest.json', 'updater/handoff/timeouts.json']
+const BUILD_FILES = [
+  'electron.vite.config.ts',
+  'protected.ts',
+  'renderer.ts',
+  'endpoints.ts',
+  'package-lock.json',
+  'package.json',
+  'tsconfig.base.json',
+  'tsconfig.web.json',
+  '../../scripts/vendor/codex/manifest.json',
+  '../../scripts/vendor/python-build-standalone/manifest.json',
+  '../../scripts/vendor/texlive/manifest.json',
+  'updater/handoff/timeouts.json',
+]
 const SCRIPT_DOMAINS = ['pre', 'dev', 'ci', 'cd', 'shared']
 const COMPILATION_DIRECTORIES = ['runtime', 'scripts', ...SCRIPT_DOMAINS.map(domain => `scripts/${domain}`)]
 const SOURCE_LOADERS: Record<string, Loader> = { '.ts': 'ts', '.tsx': 'tsx', '.js': 'js', '.jsx': 'jsx', '.cjs': 'js', '.mjs': 'js', '.json': 'json' }
