@@ -1164,8 +1164,8 @@ without the cache option, the full assembly runs each time.
 Codex cache keys bind the actual input tree, entry point, archive recipe, target,
 and packaging-Python archive digest. A hit skips only compression; it still checks the
 complete ZIP inventory and final runtime-version binding. The Python recipe is owned by
-`assembly.cjs` for dependency sync, normalization, bytecode, and archive steps; it is no
-longer bound to the entire `bundle.cjs`. Its inputs include the interpreter, exported runtime
+`assembly.cjs` for dependency sync, normalization, bytecode and archive steps. Go cache
+and temporary directory permissions are managed outside this recipe. Its inputs include the interpreter, exported runtime
 requirements, locked source-build dependencies and build constraints, Skill wheels and uv version.
 The Windows TeX Live key includes the installed PE normalizer used to build the archive.
 Application version bumps and unrelated development dependencies can reuse both caches.
@@ -1174,7 +1174,8 @@ Before publishing under the default private cache version, Windows checks the fi
 and ZIP against the hashes in `versions.json`. If only the ZIP encoding differs, CI
 retrieves the reviewed archive and verifies its file inventory before caching it.
 
-Windows Python 使用导出的运行时依赖及源码包构建约束，TeX Live 使用实际安装的 PE 规范化工具。
+Windows Python 使用导出的运行时依赖及源码包构建约束。Go 缓存和临时目录权限独立管理，
+无需进入 Python 缓存键。TeX Live 使用实际安装的 PE 规范化工具。
 只改应用版本或无关开发依赖时，两组均可复用已有缓存，每次构建仍执行测试、验签和安装验收。
 写入默认私有缓存版本前，Windows 会核对 `versions.json` 中的文件树和 ZIP 摘要。
 如果只有 ZIP 编码不同，CI 会取回该版本已审核的归档，逐文件核对通过后再写入缓存。

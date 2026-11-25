@@ -33,7 +33,8 @@ function fixture(t, {failures = [], platform = 'win32', realDelay = false} = {})
     }}
     if (name === 'node:child_process') return {spawnSync: () => ({status: 0, stdout: 'go version fixture windows/amd64'})}
     if (name === '../../../../scripts/shared/artifacts.cjs') return {ensureArtifact: () => assert.fail('unexpected download')}
-    if (name === './cache.cjs') return {expanded: () => directory, goObjects: () => directory}
+    if (name === './cache.cjs') return {expanded: () => directory}
+    if (name === './go-cache.cjs') return {goObjects: () => directory}
     if (name === '../../updater/toolchain.json') return {version: 'fixture', archives: [selected]}
     return require(name)
   }})
