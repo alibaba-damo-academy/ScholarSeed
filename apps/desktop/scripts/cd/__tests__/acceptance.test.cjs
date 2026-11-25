@@ -40,9 +40,6 @@ test('macOS finalization requires both accepted artifacts for distribution', () 
   }
   const accepted = acceptance.finalResult(base, app, installer, undefined, undefined, zip)
   const versions = accepted.artifacts.macos_update_zip.component_versions
-  assert.deepEqual(Object.keys(versions).sort(), ['app', 'browser', 'codex', 'electron', 'frameworks', 'layout', 'python', 'texlive'])
-  assert.equal(versions.app, '0.3.2-preview-r202611251339')
-  assert.equal(versions.layout, versions.app)
   assert.deepEqual(accepted, {
     ...base, status: 'passed', artifacts: {app, dmg: installer, macos_update_zip: {...zip, component_versions: versions}}, trust: {...base.trust, ...installer.trust},
   })
@@ -50,9 +47,13 @@ test('macOS finalization requires both accepted artifacts for distribution', () 
     browser: require('../browser.json').version,
     codex: require('../../../../../scripts/vendor/codex/manifest.json').version,
     electron: require('../../../package.json').devDependencies.electron,
-    frameworks: require('../../../package.json').devDependencies.electron,
     python: require('../../../../../scripts/vendor/python-build-standalone/manifest.json').python,
     texlive: require('../../../../../scripts/vendor/texlive/manifest.json').texlive,
+  }
+  assert.deepEqual(Object.keys(versions).sort(), Object.keys(runtimeSources))
+  for (const [kind, upstream] of Object.entries(runtimeSources)) {
+    assert.ok(versions[kind].startsWith(upstream + '-r'), kind)
+    assert.match(versions[kind], /-r[1-9][0-9]*$/)
   }
   for (const release of [
     {...base.release, build_number: '202611261200'},
@@ -60,16 +61,10 @@ test('macOS finalization requires both accepted artifacts for distribution', () 
   ]) {
     const next = acceptance.finalResult({...base, release}, app, installer, undefined, undefined, zip)
       .artifacts.macos_update_zip.component_versions
-    assert.notEqual(next.app, versions.app)
-    assert.notEqual(next.layout, versions.layout)
-    for (const [kind, upstream] of Object.entries(runtimeSources)) {
-      assert.equal(next[kind], versions[kind])
-      assert.ok(versions[kind].startsWith(upstream + '-r'), kind)
-      assert.match(versions[kind], /-r[1-9][0-9]*$/)
-    }
+    assert.deepEqual(next, versions)
   }
   for (const release of [{...base.release, channel: '../preview'}, {...base.release, build_number: 'not-a-build'}]) {
-    assert.throws(() => acceptance.finalResult({...base, release}, app, installer, undefined, undefined, zip), /component version/)
+    assert.throws(() => acceptance.finalResult({...base, release}, app, installer, undefined, undefined, zip), /release identity/)
   }
   const localBuild = { ...base, publishable: false }
   assert.deepEqual(acceptance.finalResult(localBuild, app, installer).artifacts, { app, dmg: installer })
