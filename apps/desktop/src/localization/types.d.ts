@@ -3224,7 +3224,7 @@ declare module 'i18next' {
         },
         "sandbox": {
             "toolProbeFailed": "Windows 安全运行环境的内置工具检查失败，消息尚未发送。请提交问题反馈，并附上工具检查日志以便定位原因。",
-            "policyRejected": "Windows 安全运行环境未通过安全检查。请提交问题反馈以检查安装和权限；重复授权无法解决此问题。",
+            "policyRejected": "Windows 安全运行环境未通过安全检查。请联系管理员检查安装和目录权限，或提交问题反馈并附上诊断日志。",
             "setupCancelled": "Windows 安全运行环境的系统授权已取消。请重新发送，并在系统请求时完成授权。",
             "passwordPolicyRejected": "Windows 拒绝了沙箱账户密码（错误 2245）：密码不符合系统策略。消息尚未发送，已停止自动重试。可主动重新发送以再次初始化；若仍失败，请联系管理员核查密码策略或提交反馈，不要降低安全策略。"
         },

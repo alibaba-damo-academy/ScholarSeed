@@ -13,7 +13,7 @@ func TestSandboxBinOwnerPreservesNativePolicy(t *testing.T) {
 	// Match the worker's explicit privilege without widening the native DACL.
 	// The helper restores the original token state after this test.
 	sandboxTestPrivilege(t, "SeRestorePrivilege", true)
-	home, user, group := sandboxTestNativeBin(t)
+	home, user := sandboxTestNativeBin(t)
 	target := filepath.Join(home, ".sandbox-bin")
 	child := filepath.Join(target, "untouched")
 	sandboxTestDirectory(t, child, "O:"+user+"D:(A;;FA;;;"+user+")(A;;FA;;;SY)")
@@ -36,7 +36,7 @@ func TestSandboxBinOwnerPreservesNativePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	elevated := func(string) error { t.Fatal("elevated native test unexpectedly requested UAC"); return nil }
-	if err = sandboxEnsureBinOwner(home, user, group, elevated); err != nil {
+	if err = sandboxEnsureBinOwner(home, user, elevated); err != nil {
 		t.Fatal(err)
 	}
 	after, err := sandboxSnapshot(h)
@@ -50,7 +50,7 @@ func TestSandboxBinOwnerPreservesNativePolicy(t *testing.T) {
 	if err != nil || childAfter.fingerprint() != childBefore.fingerprint() {
 		t.Fatalf("descendant changed: %v", err)
 	}
-	if err = sandboxEnsureBinOwner(home, user, group, elevated); err != nil {
+	if err = sandboxEnsureBinOwner(home, user, elevated); err != nil {
 		t.Fatal(err)
 	}
 	writer, err := sandboxOpen(target, toolReadControl|toolWriteDACL)
@@ -60,16 +60,17 @@ func TestSandboxBinOwnerPreservesNativePolicy(t *testing.T) {
 	syscall.CloseHandle(writer)
 }
 
-func sandboxTestNativeBin(t *testing.T) (home, user, group string) {
+func sandboxTestNativeBin(t *testing.T) (home, user string) {
 	t.Helper()
-	user, group = metadataTestUser(t), "S-1-5-21-1-2-3-1002"
+	user = metadataTestUser(t)
+	const reader = "S-1-5-21-1-2-3-1002"
 	home = t.TempDir()
-	sandboxTestDirectory(t, filepath.Join(home, ".sandbox-bin"), "O:"+user+"D:P(A;OICI;0x1701bf;;;"+user+")(A;OICI;0x1301bf;;;SY)(A;OICI;0x1301bf;;;BA)(A;OICI;FRFX;;;"+group+")")
+	sandboxTestDirectory(t, filepath.Join(home, ".sandbox-bin"), "O:"+user+"D:P(A;OICI;0x1701bf;;;"+user+")(A;OICI;0x1301bf;;;SY)(A;OICI;0x1301bf;;;BA)(A;OICI;FRFX;;;"+reader+")")
 	return
 }
 
 func TestSandboxBinOwnerWithoutPrivilegeRequiresElevation(t *testing.T) {
-	home, user, group := sandboxTestNativeBin(t)
+	home, user := sandboxTestNativeBin(t)
 	h, err := sandboxOpen(filepath.Join(home, ".sandbox-bin"), toolReadControl)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +83,7 @@ func TestSandboxBinOwnerWithoutPrivilegeRequiresElevation(t *testing.T) {
 	denied := errors.New("test elevation declined")
 	calls := 0
 	sandboxTestWithoutPrivileges(t, func() {
-		err = sandboxEnsureBinOwner(home, user, group, func(expected string) error {
+		err = sandboxEnsureBinOwner(home, user, func(expected string) error {
 			calls++
 			if expected != before.fingerprint() {
 				t.Fatal("elevation did not bind the original security snapshot")
@@ -104,7 +105,7 @@ func TestSandboxBinOwnerRequiresExplicitUserMaintenance(t *testing.T) {
 	home := t.TempDir()
 	target := filepath.Join(home, ".sandbox-bin")
 	sandboxTestDirectory(t, target, "O:"+user+"D:P(A;;0x1201bf;;;"+user+")(A;;FA;;;SY)(A;;FA;;;BA)")
-	if err := sandboxEnsureBinOwner(home, user, "", func(string) error { t.Fatal("unsafe ownership requested elevation"); return nil }); err == nil {
+	if err := sandboxEnsureBinOwner(home, user, func(string) error { t.Fatal("unsafe ownership requested elevation"); return nil }); err == nil {
 		t.Fatal("owner transfer could remove original-user maintenance")
 	}
 }

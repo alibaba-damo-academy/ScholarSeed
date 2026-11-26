@@ -15,15 +15,11 @@ const sandboxBinSnapshotPrefix = "bin:"
 // Native refresh replaces the bin DACL on every execution. Administrators must
 // own this one directory so their implicit WRITE_DAC survives that replacement.
 // The original user must retain explicit native maintenance rights after transfer.
-func sandboxValidateBinOwner(before sandboxSecurity, user, group string, readers ...string) error {
+func sandboxValidateBinOwner(before sandboxSecurity, user string) error {
 	if before.owner != user && before.owner != sandboxAdminSID {
 		return errors.New("sandbox bin owner is not reviewed")
 	}
-	allowed := append([]string{}, readers...)
-	if group != "" {
-		allowed = append(allowed, group)
-	}
-	if _, err := sandboxMetadataACL(before, user, "", true, allowed...); err != nil {
+	if _, err := sandboxBinACL(before, user); err != nil {
 		return err
 	}
 	position := toolACLHeaderBytes
@@ -44,7 +40,7 @@ func sandboxValidateBinOwner(before sandboxSecurity, user, group string, readers
 	return errors.New("sandbox bin original-user maintenance would be lost")
 }
 
-func sandboxEnsureBinOwner(home, user, group string, elevate func(string) error, readers ...string) error {
+func sandboxEnsureBinOwner(home, user string, elevate func(string) error) error {
 	target := filepath.Join(home, ".sandbox-bin")
 	handle, err := sandboxOpen(target, toolReadControl)
 	if err != nil {
@@ -55,7 +51,7 @@ func sandboxEnsureBinOwner(home, user, group string, elevate func(string) error,
 	if err != nil {
 		return err
 	}
-	if err = sandboxValidateBinOwner(before, user, group, readers...); err != nil {
+	if err = sandboxValidateBinOwner(before, user); err != nil {
 		return err
 	}
 	if before.owner == sandboxAdminSID {
@@ -92,23 +88,8 @@ func sandboxBinOwnerWorker(home, user, group, expected string, parent processWai
 	if err := sandboxReadPrivilege(); err != nil {
 		return err
 	}
-	for index, path := range []string{filepath.Dir(filepath.Dir(home)), filepath.Dir(home), home} {
-		h, err := sandboxOpen(path, toolReadControl)
-		if err != nil {
-			return err
-		}
-		snapshot, err := sandboxSnapshot(h)
-		syscall.CloseHandle(h)
-		if err != nil {
-			return err
-		}
-		mode := sandboxAncestorACL
-		if index == 0 {
-			mode = sandboxProfileACL
-		}
-		if err = validateSandboxACL(snapshot, user, group, mode, readers...); err != nil {
-			return err
-		}
+	if _, err := sandboxCheckAncestors(filepath.Dir(filepath.Dir(home)), home, user, group, readers...); err != nil {
+		return err
 	}
 	target := filepath.Join(home, ".sandbox-bin")
 	h, err := sandboxOpen(target, toolReadControl)
@@ -123,7 +104,7 @@ func sandboxBinOwnerWorker(home, user, group, expected string, parent processWai
 	if expected == "" || before.fingerprint() != expected || before.owner != user {
 		return errors.New("sandbox bin ownership snapshot changed")
 	}
-	if err = sandboxValidateBinOwner(before, user, group, readers...); err != nil {
+	if err = sandboxValidateBinOwner(before, user); err != nil {
 		return err
 	}
 	if parent == nil || !parent.Alive() {

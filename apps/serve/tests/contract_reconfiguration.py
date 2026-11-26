@@ -24,6 +24,7 @@ from scholarseed_runtime.contract.resource import (
     RESOURCE_HOST_CONFIGURATION_CONFLICT,
     RESOURCE_HOST_CONFIGURATION_UNCERTAIN,
 )
+from scholarseed_runtime.contract.sandbox import SANDBOX_POLICY_ERROR
 from service.chat.api.sessions import mount_session_routes
 from service.chat.constants import SESSION_ARCHIVED_ERROR
 from service.chat.persistence.catalog import SessionAccessError, SessionPrincipal
@@ -1214,6 +1215,54 @@ class ModelAdmissionContracts(unittest.IsolatedAsyncioTestCase):
         self.apply.assert_not_awaited()
         self.assertIs(self.activities.snapshot().phase, ActivityPhase.DRAINING)
         self.assertEqual(self.activities.snapshot().counts, {})
+
+    async def test_prewarm_policy_fence_explains_prepare_only_to_its_actor(self):
+        self.warm.return_value = CommandReceipt(
+            RUNTIME_HOST_WARMUP_COMMAND,
+            CommandState.RESTART_REQUIRED,
+            safe_error=SANDBOX_POLICY_ERROR,
+        )
+        app = FastAPI()
+        actor = "first"
+
+        @app.middleware("http")
+        async def identity(request, call_next):
+            request.state.user_id = actor
+            return await call_next(request)
+
+        mount_session_routes(
+            app,
+            sessions=self.service,
+            turns=Mock(),
+            events=Mock(),
+            artifacts=Mock(),
+            credentials=Mock(),
+        )
+        url = "/api/serve/runtime/prepare"
+        intent = {"model_id": "target", "service_instance_id": self.activities.instance_id}
+        request_id = str(uuid4())
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://contract.test"
+        ) as client:
+            initial = await client.post(
+                url, json={**intent, "request_id": request_id, "warmup_only": True}
+            )
+            self.assertEqual(initial.status_code, 200)
+            await self.manager.wait_pending()
+            status = await client.get(f"{url}/{request_id}")
+            self.assertEqual(status.json()["state"], "restart_required")
+            self.assertEqual(status.json()["error"], SANDBOX_POLICY_ERROR)
+            for actor, expected in (
+                ("first", SANDBOX_POLICY_ERROR),
+                ("second", RESOURCE_HOST_CONFIGURATION_UNCERTAIN),
+            ):
+                retry = await client.post(url, json={**intent, "request_id": str(uuid4())})
+                self.assertEqual(retry.status_code, 409)
+                self.assertEqual(retry.json()["error"], expected)
+        self.assertIs(self.manager.state, CommandState.RESTART_REQUIRED)
+        self.warm.assert_awaited_once()
+        self.drain.assert_not_awaited()
+        self.apply.assert_not_awaited()
 
     async def test_busy_without_pending_operation_is_terminal(self):
         async def send():

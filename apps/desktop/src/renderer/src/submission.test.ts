@@ -8,7 +8,7 @@ import { SESSION_OPEN_UNKNOWN } from './contracts/feedback.ts'
 import { MODEL_SELECTION_UNCONFIRMED } from './api.ts'
 import { runtimePreparationFailure } from './preparation.ts'
 
-for (const [name, delivered, rejected, preparationMessage] of [
+for (const [name, delivered, rejected, preparationMessage, namespace = 'components'] of [
   [
     'model selection fence',
     { code: MODEL_SELECTION_UNCONFIRMED, submissionOutcome: 'rejected' },
@@ -37,6 +37,18 @@ for (const [name, delivered, rejected, preparationMessage] of [
     true,
     'runtimeSwitch.restartRequired',
   ],
+  [
+    'Windows sandbox policy rejection',
+    {
+      preparation_error: true,
+      preparation_state: 'restart_required',
+      error: 'windows_sandbox_policy_rejected',
+      submissionOutcome: 'rejected',
+    },
+    true,
+    'sandbox.policyRejected',
+    'conversation',
+  ],
   ['unknown transport', { code: SESSION_OPEN_UNKNOWN, submissionOutcome: 'unknown' }, false],
 ] as const) {
   test(`submission cleanup preserves admission evidence: ${name}`, async () => {
@@ -55,7 +67,7 @@ for (const [name, delivered, rejected, preparationMessage] of [
     function visit(node: ts.Node): void {
       if (
         ts.isIfStatement(node) &&
-        node.expression.getText(parsed).includes('MODEL_SELECTION_UNCONFIRMED')
+        node.expression.getText(parsed).includes('delivered.code === MODEL_SELECTION_UNCONFIRMED')
       )
         branch = node.getText(parsed)
       ts.forEachChild(node, visit)
@@ -104,7 +116,7 @@ for (const [name, delivered, rejected, preparationMessage] of [
     assert.equal(launch, rejected ? null : 'preparing')
     if (preparationMessage)
       assert.deepEqual(foregroundError, {
-        ns: 'components',
+        ns: namespace,
         key: preparationMessage,
         values: undefined,
       })
