@@ -135,7 +135,12 @@ async function start(entry, args, lease) {
       console.error(`[desktop] Process-tree shutdown was not confirmed; environment lease retained at ${lease.directory}`)
       return PROCESS_TREE_UNCONFIRMED_EXIT
     }
-    lease.release()
+    // The Windows console or enclosing Job can disappear as the wrapper exits.
+    // After the host attests cleanup, let the surviving launcher collect the
+    // receipt instead of re-entering global admission from this dying process.
+    if (!(process.platform === 'win32' && controlled && leaseSent && process.env[DEVELOPMENT_SCOPE_ENV])) {
+      lease.release()
+    }
     return interrupted ? interruptCode : result.signal ? 1 : result.status ?? 1
   } catch (error) {
     if (child?.pid && process.platform !== 'win32') {

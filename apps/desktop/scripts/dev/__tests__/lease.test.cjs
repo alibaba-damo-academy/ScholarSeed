@@ -101,6 +101,20 @@ test('Windows development accepts only its private final receipt and forwards ex
     assert.equal(code, scenario.release ? scenario.status : PROCESS_TREE_UNCONFIRMED_EXIT)
     assert.deepEqual(messages, scenario.interrupt ? [{ kind: 'development-stop', version: 1, signal: 'SIGINT' }] : [])
   }
+  const name = 'SCHOLARSEED_DEVELOPMENT_SCOPE'
+  const previous = process.env[name]
+  process.env[name] = 'a8dd3128-2c67-4db2-863e-6e05e5855b9c'
+  try {
+    scenario = { receipts: [{ kind: 'development-lease-request', version: 1 }, receipt], status: 143 }
+    const code = await start(path.resolve(__dirname, '../supervision.mjs'), [], {
+      completion() { return { id: 'unit-lease' } },
+      release() { assert.fail('the terminating Windows runner must not reopen global admission') }
+    })
+    assert.equal(code, 143)
+  } finally {
+    if (previous === undefined) delete process.env[name]
+    else process.env[name] = previous
+  }
 })
 
 test('Desktop Python lease follows the backend interpreter rather than VENV', context => {

@@ -219,7 +219,7 @@ async function recoverLauncher(paths, timeoutMs = WAIT_TIMEOUT_MS) {
   while (sameLauncher(readLock(paths.lock), owner)) {
     const proof = readLock(filename)
     if (proof && !sameLauncher(proof.owner, owner)) throw new Error('development cleanup proof does not match launcher')
-    if (proof && hasExited(owner.pid) && hasExited(proof.holder) && hasExited(proof.host) && !leases.pending(owner.scope)) {
+    if (proof && hasExited(owner.pid) && hasExited(proof.holder) && hasExited(proof.host) && !leases.pending(owner.scope, { collect: process.platform === WINDOWS })) {
       try { await freePort(owner.port) }
       catch (error) {
         if (error.code !== 'EADDRINUSE' || Date.now() >= deadline) throw error
@@ -436,7 +436,7 @@ async function supervise(invocation, observation = {}) {
     }
     if (observation.scope) {
       const deadline = Date.now() + (process.platform === WINDOWS ? WINDOWS_SHUTDOWN_TIMEOUT_MS : SHUTDOWN_TIMEOUT_MS)
-      while (leases.pending(observation.scope)) {
+      while (leases.pending(observation.scope, { collect: process.platform === WINDOWS })) {
         if (Date.now() >= deadline) throw new Error('development environment shutdown unconfirmed; launcher lock retained')
         await delay(WAIT_INTERVAL_MS)
       }
