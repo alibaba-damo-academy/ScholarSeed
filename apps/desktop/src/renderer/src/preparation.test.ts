@@ -34,6 +34,21 @@ test('preparation failure feedback follows the recovery state, never a guessed m
   assert.equal(runtimePreparationFailure().key, 'runtimePreparation.unknown')
 })
 
+test('confirmed sandbox policy rejection explains the permission check and preserves the restart fence', () => {
+  const error = 'windows_sandbox_policy_rejected'
+  for (const result of [
+    runtimePreparationFailure({ state: 'rejected', error }),
+    runtimePreparationRequestFailure(Object.assign(new Error(error), { status: 409 })),
+  ]) {
+    assert.equal(result.ns, 'conversation')
+    assert.equal(result.key, 'sandbox.policyRejected')
+  }
+  assert.equal(
+    runtimePreparationFailure({ state: 'restart_required', error }).key,
+    'runtimeSwitch.restartRequired'
+  )
+})
+
 test('preparation distinguishes definite request rejection from a lost response', () => {
   const statusError = (status: number, message = 'private-token') =>
     Object.assign(new Error(message), { status })

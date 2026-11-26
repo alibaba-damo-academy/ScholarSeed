@@ -98,7 +98,11 @@ from scholarseed_runtime.contract.resource import (
     ResourceState,
 )
 from scholarseed_runtime.contract.runtime import ProviderConfiguration
-from scholarseed_runtime.contract.sandbox import SandboxRecovery, SandboxResources
+from scholarseed_runtime.contract.sandbox import (
+    SANDBOX_POLICY_ERROR,
+    SandboxRecovery,
+    SandboxResources,
+)
 from scholarseed_runtime.contract.session import RuntimeExecutionThread
 from scholarseed_runtime.contract.storage import (
     RuntimeConfigurationStorage,
@@ -395,6 +399,8 @@ class CodexRuntimeProvider:
         except RetiredExecutionAuthority as error:
             return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
         except AppServerError as error:
+            if not reconfigure and error.safe_error == SANDBOX_POLICY_ERROR:
+                return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
             if reconfigure and error.safe_error == RESOURCE_HOST_BUSY:
                 return CommandReceipt(command, CommandState.REJECTED, safe_error=error.safe_error)
             if error.safe_error not in {
