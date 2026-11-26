@@ -72,7 +72,7 @@ test('Windows development accepts only its private final receipt and forwards ex
     child.stdout = new (require('node:stream').PassThrough)()
     child.stderr = new (require('node:stream').PassThrough)()
     child.connected = true
-    child.send = message => { messages.push(message) }
+    child.send = (message, done) => { messages.push(message); done?.() }
     process.nextTick(() => {
       if (scenario.interrupt) process.emit('SIGINT')
       for (const message of scenario.receipts) child.emit('message', message)
@@ -106,10 +106,12 @@ test('Windows development accepts only its private final receipt and forwards ex
   process.env[name] = 'a8dd3128-2c67-4db2-863e-6e05e5855b9c'
   try {
     scenario = { receipts: [{ kind: 'development-lease-request', version: 1 }, receipt], status: 143 }
+    let admissions = 0
     const code = await start(path.resolve(__dirname, '../supervision.mjs'), [], {
       completion() { return { id: 'unit-lease' } },
       release() { assert.fail('the terminating Windows runner must not reopen global admission') }
-    })
+    }, () => { admissions++ })
+    assert.equal(admissions, 1)
     assert.equal(code, 143)
   } finally {
     if (previous === undefined) delete process.env[name]

@@ -14,7 +14,7 @@ const test = require('node:test')
 const toolchain = require('../../pre/toolchain.cjs')
 const leases = require('../../shared/lease.cjs')
 const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer,
-  monitorLauncher, recoverLauncher, requestLauncherStop } = require('../desktop.cjs')
+  monitorLauncher, recoverLauncher, requestLauncherStop, waitForWindowsHost } = require('../desktop.cjs')
 
 test('automatic reload reports its triggering paths before notifying the supervisor', async context => {
   const watchers = []
@@ -38,9 +38,9 @@ test('automatic reload reports its triggering paths before notifying the supervi
     resolveChange()
   })
   context.after(close)
-  assert.equal(watchers.some(watcher => watcher.filename.includes('src/renderer')), false)
+  assert.equal(watchers.some(watcher => watcher.filename.includes(path.join('src', 'renderer'))), false)
   fs.writeFileSync(path.join(main, 'index.ts'), 'after')
-  watchers.find(watcher => watcher.filename.endsWith('src/main')).listener('change', 'index.ts')
+  watchers.find(watcher => watcher.filename === main).listener('change', 'index.ts')
   await Promise.race([changed, new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('watch notification timed out')), 2000)
     context.after(() => clearTimeout(timer))
@@ -304,12 +304,20 @@ test('a dead launcher requests shutdown; recovery requires its own proof, exited
   await recoverLauncher(paths, 0)
   assert.ok(fs.existsSync(paths.lock))
   assert.throws(() => monitorLauncher(paths, randomUUID(), port, () => {}), /scoped launcher/)
+  await waitForWindowsHost(paths, holder, randomUUID(), 0)
+  await waitForWindowsHost(paths, holder, undefined, 0)
+  await assert.rejects(waitForWindowsHost(paths, owner.pid, undefined, 0), /unconfirmed/)
   watcher.complete(holder)
+  await assert.rejects(waitForWindowsHost(paths, owner.pid, owner.scope, 0), /supervised child/)
   for (const pid of [holder, process.pid]) {
+    await assert.rejects(waitForWindowsHost(paths, holder, owner.scope, 0), /unconfirmed/)
     await recoverLauncher(paths, 0)
     assert.ok(fs.existsSync(paths.lock))
     dead.add(pid)
   }
+  await waitForWindowsHost(paths, holder, owner.scope, 0)
+  await waitForWindowsHost(paths, owner.pid, undefined, 0)
+  assert.ok(fs.existsSync(paths.lock))
   await recoverLauncher(paths, 0)
   assert.ok(fs.existsSync(paths.lock))
   pending = false

@@ -178,6 +178,25 @@ function stopFile(lock, owner) {
   return `${lock}.${owner.scope}.stop`
 }
 
+// Keep the enclosing Windows command alive while its own cleanup host drains
+// the process family. Only the next launcher consumes the completed receipt.
+async function waitForWindowsHost(paths, childPid, scope, timeoutMs = WINDOWS_SHUTDOWN_TIMEOUT_MS) {
+  const owner = readLock(paths.lock)
+  if (!owner || owner.repo !== paths.repo || owner.cleanup !== CLEANUP_PROTOCOL ||
+      !UUID.test(owner.scope) || (scope ? owner.scope !== scope : owner.pid !== childPid)) return
+  const deadline = Date.now() + timeoutMs
+  while (sameLauncher(readLock(paths.lock), owner)) {
+    const proof = readLock(proofFile(paths.lock, owner))
+    if (proof) {
+      if (!sameLauncher(owner, proof.owner) || (scope && proof.holder !== childPid))
+        throw new Error('development cleanup proof does not match the supervised child')
+      if (hasExited(proof.host) && hasExited(proof.holder)) return
+    }
+    if (Date.now() >= deadline) throw new Error('development host shutdown unconfirmed; ownership records retained')
+    await delay(WAIT_INTERVAL_MS)
+  }
+}
+
 function requestLauncherStop(lock, owner) {
   if (!sameLauncher(readLock(lock), owner)) throw new Error('development launcher identity changed')
   try { fs.writeFileSync(stopFile(lock, owner), '', { flag: 'wx', mode: 0o600 }) }
@@ -520,7 +539,7 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   }
 }
 
-module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, monitorLauncher, recoverLauncher, requestLauncherStop, main, DEVELOPMENT_SCOPE_ENV }
+module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, monitorLauncher, recoverLauncher, requestLauncherStop, waitForWindowsHost, main, DEVELOPMENT_SCOPE_ENV }
 if (require.main === module) {
   main(process.argv.slice(2)).then(code => { process.exitCode = code }).catch(error => {
     console.error(`[debug] ${error.message}`)

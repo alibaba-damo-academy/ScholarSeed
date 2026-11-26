@@ -41,7 +41,7 @@ function launch(executable, args, options = {}) {
   return result
 }
 
-function launchLong(executable, args, options = {}) {
+function launchLong(executable, args, options = {}, afterExit) {
   return new Promise((resolve, reject) => {
     let child
     let interrupted = null
@@ -92,6 +92,10 @@ function launchLong(executable, args, options = {}) {
     child.once('error', error => finish(new CommandError('PREREQUISITE_MISSING', error.message, 1, { shutdownConfirmed: true })))
     child.once('close', (status, signal) => {
       const complete = async () => {
+        if (afterExit) {
+          cleanup()
+          await afterExit(child.pid)
+        }
         let shutdownConfirmed = process.platform !== 'win32'
         if (shutdownConfirmed && !(await waitForGroupExit(child.pid, GROUP_SHUTDOWN_TIMEOUT_MS))) {
           signalGroup(child.pid, 'SIGTERM')
