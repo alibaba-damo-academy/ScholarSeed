@@ -5,7 +5,7 @@ const { COMMANDS, resolveCommand, invalid, unsupported } = require('./shared/com
 const { CommandError, launch, launchLong, forward, repository, managerContext } = require('./shared/execution.cjs')
 const { prepareDesktop } = require('./shared/desktop.cjs')
 const { createWorkspace } = require('./shared/workspace.cjs')
-const { instanceLogs, inspectDebug, waitForRenderer } = require('./dev/desktop.cjs')
+const { debugPaths, instanceLogs, inspectDebug, waitForRenderer, waitForWindowsHost } = require('./dev/desktop.cjs')
 const { format } = require('./ci/format.cjs')
 
 const ROOT = path.resolve(__dirname, '..')
@@ -85,7 +85,9 @@ function executeStep(step, settings, environment, runner = launch) {
       if (status !== 0) throw new CommandError('CHILD_EXIT', 'Formatting failed', status, { origin: 'child' })
       return status
     }
-    return runner(process.execPath, [...(step.test ? ['--test'] : []), ...(step.types ? ['--experimental-transform-types'] : []), path.join(settings.repo, step.file), ...step.args], base)
+    const afterExit = process.platform === 'win32' && step.file === 'scripts/dev/desktop.cjs' && runner === launchLong
+      ? pid => waitForWindowsHost(debugPaths(settings.repo), pid) : undefined
+    return runner(process.execPath, [...(step.test ? ['--test'] : []), ...(step.types ? ['--experimental-transform-types'] : []), path.join(settings.repo, step.file), ...step.args], base, afterExit)
   }
   if (step.kind === 'desktop') {
     const invocation = settings.context === 'ci'
