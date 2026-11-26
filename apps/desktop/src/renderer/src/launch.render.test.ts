@@ -863,13 +863,14 @@ test('skill menu localizes generated source labels without translating custom ca
 
 async function preparation(page: Page) {
   let state = 'accepted'
+  let error = ''
   let terminalObserved = false
   let request: { request_id: string; model_id: string } | null = null
   const receipt = () => ({
     ...request,
     session_id: null,
     state,
-    error: state === 'rejected' ? 'test_preparation_failed' : '',
+    error,
     service_instance_id: INSTANCE,
   })
   await page.route('**/api/serve/runtime/reconfiguration', (route) =>
@@ -881,8 +882,9 @@ async function preparation(page: Page) {
     return route.fulfill({ json: receipt() })
   })
   return {
-    finish: (next = 'applied') => {
+    finish: (next = 'applied', reason = next === 'rejected' ? 'test_preparation_failed' : '') => {
       state = next
+      error = reason
     },
     terminalObserved: () => terminalObserved,
   }
@@ -2779,13 +2781,14 @@ test(
   }
 )
 
-for (const [state, expected] of [
-  ['restart_required', 'runtimeSwitch.restartRequired'],
-  ['rejected', 'runtimePreparation.failed'],
-  ['unsupported', 'runtimeSwitch.unsupported'],
+for (const [state, error, expected] of [
+  ['restart_required', '', 'runtimeSwitch.restartRequired'],
+  ['restart_required', 'windows_sandbox_policy_rejected', 'sandbox.policyRejected'],
+  ['rejected', 'test_preparation_failed', 'runtimePreparation.failed'],
+  ['unsupported', '', 'runtimeSwitch.unsupported'],
 ]) {
   test(
-    `first-send preparation ${state} preserves the draft without submission or replay`,
+    `first-send preparation ${error || state} preserves the draft without submission or replay`,
     { timeout: 60000 },
     async (context) => {
       await fixture(context, async (page) => {
@@ -2799,7 +2802,7 @@ for (const [state, expected] of [
             submissions += 1
         })
         await chooseAndSend(page)
-        control.finish(state)
+        control.finish(state, error)
         await expect(page.getByTestId('composer-input')).toHaveValue('first prepared message')
         await expect.poll(() => control.terminalObserved()).toBe(true)
         await expect
@@ -3496,6 +3499,23 @@ async function startupReady(page: Page): Promise<void> {
   )
   await settleStartup(page)
 }
+
+test('startup warmup shows a Windows policy rejection before first send', async (context) => {
+  await fixture(context, async (page) => {
+    const control = await preparation(page)
+    const warmup = page.waitForRequest(
+      (request) =>
+        request.method() === 'POST' &&
+        new URL(request.url()).pathname === '/api/serve/runtime/prepare'
+    )
+    await startupReady(page)
+    assert.equal((await warmup).postDataJSON().warmup_only, true)
+    control.finish('restart_required', 'windows_sandbox_policy_rejected')
+    await expect(page.getByTestId('runtime-preparation')).toContainText('目录权限')
+    await page.getByTestId('composer-input').fill('first message')
+    await expect(page.getByTestId('composer-send')).toBeDisabled()
+  })
+})
 
 test(
   'startup prepares only the restored session target after current-instance hydration',

@@ -137,19 +137,21 @@ Credential maintenance is the bounded change described above.
 
 中文：当前辅助程序仅接受已审查的官方 0.171.0，并严格核对已认证组件版本、入口摘要和原始用户身份；本次不放宽 ACL、目录资格或 UAC，Windows 真机验收仍待完成。
 
-Recovery ancestor qualification additionally accepts allow ACEs limited to FILE_TRAVERSE
-and SYNCHRONIZE, applying only to that directory (an inherited marker is allowed,
-but propagation flags are not). This is a rights-based exception, not trust in a
-capability SID prefix. It does not allow listing, reading file contents, writing,
-changing security, or passing the exception into the secrets policy. The actual
-machine-local sandbox alias may retain at most RX on an ancestor, including child
-inheritance; this does not trust arbitrary group names, other readers or mutation
-permissions. On the repair target, only that same group's inherited RX may be
+The product directory (`%USERPROFILE%\.scholarseed`) and the native binary
+directory (`.sandbox-bin`) accept existing read and execute grants for any SID,
+including grants that propagate to children. The helper checks Codex Home,
+sandbox metadata, logs and the private credential directory independently.
+On Codex Home, another SID may have directory-only FILE_TRAVERSE and SYNCHRONIZE
+access. The machine-local sandbox alias may retain at most RX on an ancestor,
+including child inheritance. On the repair target, only that same group's inherited RX may be
 accepted when preceded by the exact effective, explicit OI|CI native deny. The deny
 must cover the allowed mask and cannot be inherit-only, inherited or propagation-
 limited. Other untrusted allow entries remain refused. No existing ancestor DACL is rewritten; target mutation is limited to the
 original-user directory-only deletion grant above. The helper does not inspect credential contents or
 certify an entire secrets tree's access policy.
+
+中文：产品目录 `%USERPROFILE%\.scholarseed` 和原生二进制目录 `.sandbox-bin` 允许已有的读取和执行权限，
+包括可继承的权限项。Codex Home、沙箱元数据、日志和私有凭据目录分别按各自的权限策略校验。
 
 Sandbox failures return only bounded `event=failed`, `stage`, `reason`, and an
 optional numeric `system_error`; they never return the underlying exception text.

@@ -20,7 +20,7 @@ func TestSandboxMetadataFailureDiagnostic(t *testing.T) {
 	user := metadataTestUser(t)
 	home := t.TempDir()
 	target := filepath.Join(home, ".sandbox-bin")
-	sandboxTestDirectory(t, target, "O:"+user+"D:P(A;;FA;;;"+user+")(A;;FA;;;SY)(A;;FR;;;WD)")
+	sandboxTestDirectory(t, target, "O:"+user+"D:P(A;;FA;;;"+user+")(A;;FA;;;SY)(A;;FW;;;WD)")
 	handle, err := sandboxOpen(target, toolReadControl)
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestSandboxMetadataFailureDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failure := sandboxPrepareBin(home, user, "")
+	failure := sandboxPrepareBin(home, user)
 	if failure == nil {
 		t.Fatal("unsafe policy accepted")
 	}
@@ -64,6 +64,43 @@ func TestSandboxMetadataFailureDiagnostic(t *testing.T) {
 	}
 }
 
+func TestSandboxProductReadPermissions(t *testing.T) {
+	user := metadataTestUser(t)
+	private := "O:" + user + "D:P(A;;FA;;;SY)(A;;FA;;;" + user + ")"
+	const reader = "S-1-5-21-1-2-3-1003"
+	for _, tc := range []struct {
+		name, productACE, homeACE, rejectedObject string
+	}{
+		{"product reader", "(A;OICI;FRFX;;;" + reader + ")", "", ""},
+		{"product writer", "(A;OICI;FW;;;" + reader + ")", "", sandboxObjectProduct},
+		{"product ACL editor", "(A;OICI;WD;;;" + reader + ")", "", sandboxObjectProduct},
+		{"private home reader", "", "(A;OICI;FRFX;;;" + reader + ")", sandboxObjectHome},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := filepath.Join(t.TempDir(), "profile")
+			product := filepath.Join(profile, sandboxProduct)
+			home := filepath.Join(product, sandboxHomeName)
+			sandboxTestDirectory(t, profile, private)
+			sandboxTestDirectory(t, product, private+tc.productACE)
+			sandboxTestDirectory(t, home, private+tc.homeACE)
+			err := sandboxMetadataAncestors(home, user, "")
+			if tc.rejectedObject == "" {
+				if err != nil {
+					t.Fatalf("read-only product access rejected: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected %s access to be rejected", tc.rejectedObject)
+			}
+			detail := SandboxDiagnostic(sandboxFailure(sandboxStageMetadata, err))
+			if detail.Object != tc.rejectedObject || detail.Rule != sandboxRulePrincipal {
+				t.Fatalf("unexpected rejection: %+v", detail)
+			}
+		})
+	}
+}
+
 func TestSandboxPrivatePreparationWithOrdinaryProfileAccess(t *testing.T) {
 	sandboxTestPrivilege(t, "SeRestorePrivilege", true)
 	user := metadataTestUser(t)
@@ -71,7 +108,7 @@ func TestSandboxPrivatePreparationWithOrdinaryProfileAccess(t *testing.T) {
 	profile := filepath.Join(t.TempDir(), "profile")
 	product, home := filepath.Join(profile, sandboxProduct), filepath.Join(profile, sandboxProduct, sandboxHomeName)
 	sandboxTestDirectory(t, profile, "O:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1201bf;;;"+other+")(A;OICI;FA;;;"+user+")")
-	sandboxTestDirectory(t, product, "O:"+user+"D:P(A;;FA;;;SY)(A;;FA;;;"+user+")")
+	sandboxTestDirectory(t, product, "O:"+user+"D:P(A;;FA;;;SY)(A;;FA;;;"+user+")(A;OICI;FRFX;;;"+other+")")
 	sandboxTestDirectory(t, home, "O:"+user+"D:P(A;;FA;;;SY)(A;;FA;;;"+user+")")
 	sandboxTestDirectory(t, filepath.Join(home, sandboxMetadata), "O:BAD:(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;"+reader+")")
 	profileHandle, err := sandboxOpen(profile, toolReadControl)
@@ -400,7 +437,7 @@ func TestSandboxBinRejectsGroupWrite(t *testing.T) {
 	home := t.TempDir()
 	target := filepath.Join(home, ".sandbox-bin")
 	sandboxTestDirectory(t, target, "O:"+user+"D:P(A;;FA;;;"+user+")(A;;FA;;;SY)(A;;0x1301bf;;;"+group+")")
-	if err := sandboxPrepareBin(home, user, group); err == nil {
+	if err := sandboxPrepareBin(home, user); err == nil {
 		t.Fatal("writable native bin group accepted")
 	}
 }
@@ -409,7 +446,7 @@ func TestSandboxBinExistingDirectory(t *testing.T) {
 	user := metadataTestUser(t)
 	home := t.TempDir()
 	target := filepath.Join(home, ".sandbox-bin")
-	sandboxTestDirectory(t, target, "O:"+user+"D:P(A;;FA;;;"+user+")(A;;FA;;;SY)")
+	sandboxTestDirectory(t, target, "O:"+user+"D:P(A;;FA;;;"+user+")(A;;FA;;;SY)(A;OICI;FRFX;;;S-1-5-21-1-2-3-1003)")
 	child := filepath.Join(target, "untouched")
 	sandboxTestDirectory(t, child, "O:"+user+"D:(A;;FA;;;"+user+")(A;;FA;;;SY)")
 	h, err := sandboxOpen(child, toolReadControl)
@@ -421,14 +458,14 @@ func TestSandboxBinExistingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = sandboxPrepareBin(home, user, ""); err != nil {
+	if err = sandboxPrepareBin(home, user); err != nil {
 		t.Fatal(err)
 	}
 	after, err := sandboxSnapshot(h)
 	if err != nil || before.fingerprint() != after.fingerprint() {
 		t.Fatalf("binary descendant changed: %v", err)
 	}
-	if err = sandboxPrepareBin(home, user, ""); err != nil {
+	if err = sandboxPrepareBin(home, user); err != nil {
 		t.Fatal(err)
 	}
 }

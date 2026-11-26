@@ -101,6 +101,7 @@ from scholarseed_runtime.contract.resource import (
     RESOURCE_QUEUE_FULL,
     ResourceState,
 )
+from scholarseed_runtime.contract.sandbox import SANDBOX_POLICY_ERROR
 from scholarseed_runtime.contract.session import (
     RUNTIME_SUSPEND_BUSY,
     RUNTIME_SUSPEND_STALE,
@@ -667,6 +668,17 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
                 await runtime.reconfigure(request("target"))
             self.assertFalse(self.hosts[0].closed)
             self.assertTrue(runtime._pool.execution_configured)
+
+    async def test_sandbox_policy_rejection_preserves_blocked_prewarm_receipt(self) -> None:
+        failure = AppServerError(TEST_SECRET_VALUE, safe_error=SANDBOX_POLICY_ERROR)
+        self.host_hook = lambda host: setattr(host, "start_error", failure)
+        with self.warmup_provider() as (runtime, request, _compiled):
+            with self.assertLogs(RESOURCE_LIFECYCLE_LOGGER, level="ERROR"):
+                result = await runtime.prewarm(request("target"))
+        self.assertIs(result.state, CommandState.RESTART_REQUIRED)
+        self.assertEqual(result.safe_error, SANDBOX_POLICY_ERROR)
+        self.assertFalse(result.correlation_id)
+        self.assertEqual(len(self.hosts), 1)
 
     async def test_provider_failure_after_reset_fences_default_prewarm(self) -> None:
         with self.warmup_provider() as (runtime, request, _compiled):

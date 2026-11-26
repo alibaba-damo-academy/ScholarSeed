@@ -1,6 +1,8 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 import { currentRuntimeReconfiguration, getRuntimeReconfiguration } from '../../api'
+import { renderFeedback, type FeedbackDescriptor } from '../../contracts/feedback'
+import { isSandboxPolicyRejection, runtimePreparationFailure } from '../../preparation'
 import {
   RECONFIGURATION_POLL_MS,
   RECONFIGURATION_ERRORS,
@@ -20,8 +22,6 @@ type ReconfigureMessage = `runtimeSwitch.${
   | 'previous'
   | 'pending'
   | 'applied'
-  | 'restartRequired'
-  | 'unsupported'
   | 'stale'
   | 'busy'
   | 'failed'
@@ -32,7 +32,10 @@ function reconfigureStatus(
   modelId: string,
   unknown: boolean,
   queryFailed: boolean
-): { messageKey: ReconfigureMessage; tone: AlertTone } | null {
+):
+  | { messageKey: ReconfigureMessage; tone: AlertTone }
+  | { failure: FeedbackDescriptor; tone: 'error' }
+  | null {
   if (queryFailed) return { messageKey: 'runtimeSwitch.queryUnavailable', tone: 'warning' }
   if (unknown) return { messageKey: 'runtimeSwitch.unknown', tone: 'warning' }
   if (!operation) return null
@@ -44,10 +47,13 @@ function reconfigureStatus(
     return { messageKey: 'runtimeSwitch.previous', tone: 'info' }
   }
   if (operation.state === 'applied') return { messageKey: 'runtimeSwitch.applied', tone: 'success' }
-  if (operation.state === 'restart_required')
-    return { messageKey: 'runtimeSwitch.restartRequired', tone: 'error' }
-  if (operation.state === 'unsupported')
-    return { messageKey: 'runtimeSwitch.unsupported', tone: 'error' }
+  if (
+    operation.state === 'restart_required' ||
+    operation.state === 'unsupported' ||
+    isSandboxPolicyRejection(operation)
+  ) {
+    return { failure: runtimePreparationFailure(operation), tone: 'error' }
+  }
   if (operation.error === RECONFIGURATION_ERRORS.stale)
     return { messageKey: 'runtimeSwitch.stale', tone: 'error' }
   if (
@@ -60,7 +66,7 @@ function reconfigureStatus(
 }
 
 export function Reconfigure(props: ReconfigureProps): React.JSX.Element | null {
-  const { t } = useTranslation('components')
+  const { t, i18n } = useTranslation('components')
   const [operation, setOperation] = React.useState<ReconfigurationOperation | null>(null)
   const [unknown, setUnknown] = React.useState(false)
   const [queryFailed, setQueryFailed] = React.useState(false)
@@ -111,7 +117,7 @@ export function Reconfigure(props: ReconfigureProps): React.JSX.Element | null {
       data-testid="runtime-reconfigure-status"
       className="mb-[var(--vds-space-3)]"
       tone={status.tone}
-      title={t(status.messageKey)}
+      title={'failure' in status ? renderFeedback(i18n, status.failure) : t(status.messageKey)}
     />
   )
 }

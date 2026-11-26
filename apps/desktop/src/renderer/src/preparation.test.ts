@@ -52,6 +52,11 @@ test('preparation distinguishes definite request rejection from a lost response'
     runtimePreparationRequestFailure(statusError(409, 'runtime_host_configuration_uncertain')).key,
     'runtimeSwitch.restartRequired'
   )
+  const policy = runtimePreparationRequestFailure(
+    statusError(409, 'windows_sandbox_policy_rejected')
+  )
+  assert.equal(policy.ns, 'conversation')
+  assert.equal(policy.key, 'sandbox.policyRejected')
   for (const error of [
     new TypeError('connection lost'),
     new SyntaxError('invalid response'),
@@ -249,6 +254,20 @@ test('a completed preparation is never reused as an unverified future admission'
     [true, false]
   )
   assert.deepEqual(probe.publications, [first, second])
+})
+
+test('startup publishes a confirmed Windows policy rejection for the current composer', async () => {
+  const probe = fixture()
+  probe.handlers.prepare = async () => ({
+    ...probe.operation('restart_required'),
+    error: 'windows_sandbox_policy_rejected',
+  })
+  const result = await probe.controller.prepare('model-a', false, true)
+  assert.deepEqual(probe.publications, [result])
+  const message = runtimePreparationForegroundFailure(result)
+  assert.equal(message?.ns, 'conversation')
+  assert.equal(message?.key, 'sandbox.policyRejected')
+  assert.equal(result.state, 'restart_required')
 })
 
 test('foreground preparation cannot join a deferred startup warmup', async () => {
