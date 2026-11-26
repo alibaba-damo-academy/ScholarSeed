@@ -499,7 +499,7 @@ The development Desktop, browser development surface, Electron preview, and Serv
 conflicts with them, the operation is rejected first; active processes are not terminated. If child processes or write state after an abnormal exit cannot be confirmed,
 the lease receipt is retained for manual review; the tool does not delete the receipt automatically merely because a PID has exited.
 
-Desktop development records verified cleanup through a private read-lease completion capability. A disconnected launcher asks its host to stop its own process family. If cleanup was confirmed but normal lease release was lost, the next conflicting operation recovers that read receipt after both holder and host have exited. This does not recover unfinished writes or legacy receipts without cleanup proof.
+Desktop development records verified cleanup through a private read-lease completion capability. A disconnected lease holder or the loss of the scoped root launcher asks the development host to stop its own process family. After the host verifies cleanup and records lease completion, it publishes a receipt for that launcher generation. If the root has exited, the next launch waits for both lease owners to exit and the CDP port to become available before consuming the receipt and releasing the stale launcher lock. If cleanup was confirmed but normal lease release was lost, the next conflicting operation recovers that read receipt after both holder and host have exited. This does not recover unfinished writes or legacy receipts without cleanup proof.
 
 Desktop 开发宿主通过私有读租约凭据记录清理确认；与启动包装进程断连时，会停止自己所属的进程族。若清理已确认但正常释放未完成，下一次冲突操作会在持有者和宿主均退出后回收该读租约。未完成的写操作、没有清理确认的旧租约继续保留。
 

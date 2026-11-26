@@ -11,7 +11,8 @@ const { randomUUID } = require('node:crypto')
 const test = require('node:test')
 const toolchain = require('../../pre/toolchain.cjs')
 const leases = require('../../shared/lease.cjs')
-const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer } = require('../desktop.cjs')
+const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer,
+  monitorLauncher, recoverLauncher } = require('../desktop.cjs')
 
 test('automatic reload reports its triggering paths before notifying the supervisor', async context => {
   const watchers = []
@@ -274,6 +275,51 @@ test('malformed lock fails closed rather than deleting unknown ownership', conte
   fs.writeFileSync(lock, '')
   assert.throws(() => acquire(lock, { pid: process.pid }), /lock/)
   assert.equal(fs.readFileSync(lock, 'utf8'), '')
+})
+
+test('a dead launcher requests shutdown; recovery requires its own proof, exited owners and a released port', async context => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-recovery-'))
+  context.after(() => fs.rmSync(repo, { recursive: true, force: true }))
+  const paths = { repo, lock: path.join(repo, 'launcher.json') }
+  const port = await freePort()
+  const owner = { repo, pid: process.pid + 1, port, scope: randomUUID(), cleanup: 1 }
+  const holder = process.pid + 2
+  acquire(paths.lock, owner)
+  const dead = new Set([owner.pid])
+  context.mock.method(process, 'kill', pid => {
+    if (dead.has(pid)) throw Object.assign(new Error('gone'), { code: 'ESRCH' })
+  })
+  let pending = true
+  context.mock.method(leases, 'pending', scope => { assert.equal(scope, owner.scope); return pending })
+  let requested = false
+  const watcher = monitorLauncher(paths, owner.scope, port, () => { requested = true })
+  context.after(watcher.close)
+  assert.equal(requested, true)
+  await recoverLauncher(paths, 0)
+  assert.ok(fs.existsSync(paths.lock))
+  assert.throws(() => monitorLauncher(paths, randomUUID(), port, () => {}), /scoped launcher/)
+  watcher.complete(holder)
+  for (const pid of [holder, process.pid]) {
+    await recoverLauncher(paths, 0)
+    assert.ok(fs.existsSync(paths.lock))
+    dead.add(pid)
+  }
+  await recoverLauncher(paths, 0)
+  assert.ok(fs.existsSync(paths.lock))
+  pending = false
+  const server = net.createServer()
+  await new Promise(resolve => server.listen(port, '127.0.0.1', resolve))
+  try { await assert.rejects(recoverLauncher(paths, 0), { code: 'EADDRINUSE' }) }
+  finally { await new Promise(resolve => server.close(resolve)) }
+  assert.ok(fs.existsSync(paths.lock))
+  const replacement = { ...owner, scope: randomUUID() }
+  fs.writeFileSync(paths.lock, JSON.stringify(replacement))
+  assert.throws(() => watcher.complete(holder), /identity changed/)
+  await recoverLauncher(paths, 0)
+  assert.deepEqual(JSON.parse(fs.readFileSync(paths.lock)), replacement)
+  fs.writeFileSync(paths.lock, JSON.stringify(owner))
+  await Promise.all([recoverLauncher(paths), recoverLauncher(paths)])
+  assert.deepEqual(fs.readdirSync(repo), [])
 })
 
 test('CDP uses an available loopback port and rejects occupied explicit ports', async context => {

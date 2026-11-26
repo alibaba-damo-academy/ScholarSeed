@@ -304,7 +304,7 @@ pnpm ops dev   # starts Electron
 
 Run both on a fresh clone; afterwards `pnpm ops dev` alone, and rerun `pnpm ops pre` after dependency or Skill changes. The first run needs internet. No separate Python install or Git LFS is needed.
 
-Keep the terminal open while developing. Press Ctrl+C to stop, wait for the command to return, then run `pnpm ops dev` again. Running instances protect their dependencies against installation or cleanup. If a launcher exits unexpectedly, its development host shuts down its own process family; leases with verified cleanup are recovered automatically after both owners exit. Unconfirmed shutdowns and interrupted dependency writes retain their diagnostic records; do not delete an active instance's locks.
+Keep the terminal open while developing. Press Ctrl+C to stop, wait for the command to return, then run `pnpm ops dev` again. Running instances protect their dependencies against installation or cleanup. If the root launcher or read-lease holder is force-quit while the desktop is running, its development host stops the processes it started. Run `pnpm ops dev` again. The command waits for verified cleanup before reusing the environment. Unconfirmed shutdowns and interrupted dependency writes retain their diagnostic records; do not delete an active instance's locks.
 
 - Package a macOS DMG or Windows EXE: [Packaging](CONTRIBUTING.md#packaging).
 - Rebuild the Skill pack: `pnpm ops cd build local --target skills`; check it against source: `pnpm ops ci check skills product --mode source`.
