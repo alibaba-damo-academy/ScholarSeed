@@ -6,7 +6,9 @@ const path = require('node:path')
 const net = require('node:net')
 const http = require('node:http')
 const child = require('node:child_process')
-const { EventEmitter } = require('node:events')
+const { EventEmitter, once } = require('node:events')
+const { PassThrough } = require('node:stream')
+const { openOutput, removeOutput } = require('../output.cjs')
 const { randomUUID } = require('node:crypto')
 const test = require('node:test')
 const toolchain = require('../../pre/toolchain.cjs')
@@ -342,6 +344,32 @@ test('a detached host receives the scoped stop request while its live launcher r
   await assert.rejects(recoverLauncher(paths, 0), /still stopping/)
   release()
   assert.deepEqual(fs.readdirSync(repo), [])
+})
+
+test('detached children can write independently while the console receives both streams', async context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-output-'))
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const lock = path.join(directory, 'launcher.json')
+  const scope = randomUUID()
+  const targets = { stdout: new PassThrough(), stderr: new PassThrough() }
+  const output = openOutput(lock, scope, 10, targets)
+  const ready = once(targets.stdout, 'data')
+  const diagnostic = once(targets.stderr, 'data')
+  const worker = child.spawn(process.execPath, ['-e',
+    "process.stdout.write('ready');process.stderr.write('diagnostic');process.on('message',()=>{process.stdout.write('after close');process.disconnect()})"],
+  { detached: true, windowsHide: true, stdio: [...output.stdio, 'ipc'] })
+  const ended = once(worker, 'exit')
+  context.after(() => { if (worker.exitCode === null && worker.signalCode === null) worker.kill() })
+  try {
+    const [[out], [err]] = await Promise.all([ready, diagnostic])
+    assert.equal(out.toString(), 'ready')
+    assert.equal(err.toString(), 'diagnostic')
+  } finally { output.close() }
+  worker.send('finish')
+  assert.equal((await ended)[0], 0)
+  assert.equal(fs.readFileSync(`${lock}.${scope}.stdout.log`, 'utf8'), 'readyafter close')
+  removeOutput(lock, scope)
+  assert.deepEqual(fs.readdirSync(directory), [])
 })
 
 test('CDP uses an available loopback port and rejects occupied explicit ports', async context => {

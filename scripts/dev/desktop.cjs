@@ -8,6 +8,7 @@ const { setTimeout: delay } = require('node:timers/promises')
 const { prepareDesktop } = require('../shared/desktop.cjs')
 const { waitForGroupExit, PROCESS_TREE_UNCONFIRMED_EXIT } = require('../shared/execution.cjs')
 const leases = require('../shared/lease.cjs')
+const { openOutput, removeOutput } = require('./output.cjs')
 
 const LOOPBACK = '127.0.0.1'
 const MAX_PORT = 65535
@@ -236,6 +237,7 @@ async function recoverLauncher(paths, timeoutMs = WAIT_TIMEOUT_MS) {
       }
       fs.unlinkSync(paths.lock)
       fs.rmSync(stopFile(paths.lock, owner), { force: true })
+      if (process.platform === WINDOWS) removeOutput(paths.lock, owner.scope)
       return
     }
     if (Date.now() >= deadline) {
@@ -273,6 +275,7 @@ function acquire(lock, owner) {
       if (owner.cleanup === CLEANUP_PROTOCOL) {
         fs.rmSync(proofFile(lock, owner), { force: true })
         fs.rmSync(stopFile(lock, owner), { force: true })
+        if (process.platform === WINDOWS) removeOutput(lock, owner.scope)
       }
     }
   }
@@ -488,6 +491,7 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   const release = acquire(paths.lock, owner)
   if (!release) return 0
   let releaseAllowed = true
+  let output
   try {
     owner.port = await freePort(args.length ? Number(args[1]) : undefined)
     fs.writeFileSync(paths.lock, JSON.stringify(owner))
@@ -495,6 +499,10 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
     fs.mkdirSync(paths.profile, { recursive: true, mode: 0o700 })
     console.log(`[debug] worktree ${paths.repo}\n[debug] Home ${paths.home}\n[debug] profile ${paths.profile}\n[debug] CDP http://${LOOPBACK}:${owner.port}\n[debug] playwright-cli -s=scholarseed-${owner.port} attach --cdp=http://${LOOPBACK}:${owner.port}`)
     const invocation = prepareDesktop(paths.repo, debugArguments(owner.port, paths.profile), environment)
+    if (process.platform === WINDOWS) {
+      output = openOutput(paths.lock, owner.scope, WAIT_INTERVAL_MS)
+      invocation.options.stdio = output.stdio
+    }
     releaseAllowed = false
     const code = await supervise(invocation, { scope: owner.scope,
       requestStop: process.platform === WINDOWS ? () => requestLauncherStop(paths.lock, owner) : undefined,
@@ -504,8 +512,11 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
     releaseAllowed = true
     return code
   } finally {
-    if (releaseAllowed) release()
-    else console.error(`[debug] shutdown not confirmed; lock retained: ${paths.lock}`)
+    try { output?.close() }
+    finally {
+      if (releaseAllowed) release()
+      else console.error(`[debug] shutdown not confirmed; lock retained: ${paths.lock}`)
+    }
   }
 }
 
