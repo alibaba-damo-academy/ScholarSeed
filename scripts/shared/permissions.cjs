@@ -152,4 +152,9 @@ function protectWindowsDirectory(directory) {
   }
 }
 
-module.exports = { assertWindowsPermissions, protectWindowsDirectory };
+function prepareBuildDirectoryPermissions(directory) {
+  if (process.platform === "win32") protectWindowsDirectory(directory);
+  else fs.chmodSync(directory, 0o700);
+}
+
+module.exports = { assertWindowsPermissions, protectWindowsDirectory, prepareBuildDirectoryPermissions };

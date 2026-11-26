@@ -2,11 +2,12 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const net = require('node:net')
-const { createHash } = require('node:crypto')
+const { createHash, randomUUID } = require('node:crypto')
 const { spawn } = require('node:child_process')
 const { setTimeout: delay } = require('node:timers/promises')
 const { prepareDesktop } = require('../shared/desktop.cjs')
 const { waitForGroupExit, PROCESS_TREE_UNCONFIRMED_EXIT } = require('../shared/execution.cjs')
+const leases = require('../shared/lease.cjs')
 
 const LOOPBACK = '127.0.0.1'
 const MAX_PORT = 65535
@@ -14,6 +15,7 @@ const ID_LENGTH = 16
 const DEBUG_ROOT = '.ss-debug'
 const LOCK_FILE = 'launcher.json'
 const CODEX_DIRECTORY = 'codex'
+const DEVELOPMENT_SCOPE_ENV = 'SCHOLARSEED_DEVELOPMENT_SCOPE'
 const WINDOWS = 'win32'
 const SHUTDOWN_TIMEOUT_MS = 30000
 const WINDOWS_SHUTDOWN_TIMEOUT_MS = 60000
@@ -319,6 +321,13 @@ async function supervise(invocation, observation = {}) {
       if (!(await waitForGroupExit(child.pid, SHUTDOWN_TIMEOUT_MS)))
         throw new Error('debug process group has not exited; lock retained, inspect task-owned processes')
     }
+    if (observation.scope) {
+      const deadline = Date.now() + (process.platform === WINDOWS ? WINDOWS_SHUTDOWN_TIMEOUT_MS : SHUTDOWN_TIMEOUT_MS)
+      while (leases.pending(observation.scope)) {
+        if (Date.now() >= deadline) throw new Error('development environment shutdown unconfirmed; launcher lock retained')
+        await delay(WAIT_INTERVAL_MS)
+      }
+    }
     return code
   } finally {
     clearTimeout(shutdownTimer)
@@ -360,7 +369,8 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   const paths = debugPaths(directory)
   const environment = debugEnvironment(paths)
   fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 })
-  const owner = { pid: process.pid, repo: paths.repo }
+  const owner = { pid: process.pid, repo: paths.repo, scope: randomUUID() }
+  environment[DEVELOPMENT_SCOPE_ENV] = owner.scope
   const release = acquire(paths.lock, owner)
   if (!release) return 0
   let releaseAllowed = true
@@ -372,7 +382,8 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
     console.log(`[debug] worktree ${paths.repo}\n[debug] Home ${paths.home}\n[debug] profile ${paths.profile}\n[debug] CDP http://${LOOPBACK}:${owner.port}\n[debug] playwright-cli -s=scholarseed-${owner.port} attach --cdp=http://${LOOPBACK}:${owner.port}`)
     const invocation = prepareDesktop(paths.repo, debugArguments(owner.port, paths.profile), environment)
     releaseAllowed = false
-    const code = await supervise(invocation, { observe: () => inspectDebug(paths.repo, undefined, Date.now() + PROBE_TIMEOUT_MS) })
+    const code = await supervise(invocation, { scope: owner.scope,
+      observe: () => inspectDebug(paths.repo, undefined, Date.now() + PROBE_TIMEOUT_MS) })
     if (code === PROCESS_TREE_UNCONFIRMED_EXIT) return code
     await freePort(owner.port)
     releaseAllowed = true
@@ -383,7 +394,7 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   }
 }
 
-module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, main }
+module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, main, DEVELOPMENT_SCOPE_ENV }
 if (require.main === module) {
   main(process.argv.slice(2)).then(code => { process.exitCode = code }).catch(error => {
     console.error(`[debug] ${error.message}`)

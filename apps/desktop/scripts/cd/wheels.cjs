@@ -1,11 +1,11 @@
-// Product wheels: lock-derived build environment, source-keyed private cache.
+// Product wheels: lock-derived build environment, source-keyed cache.
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const { timedAsync } = require('../../../../scripts/shared/timing.cjs')
 const state = require('../shared/build-state.cjs')
-const { protectWindowsDirectory } = require('../../../../scripts/shared/permissions.cjs')
+const { prepareBuildDirectoryPermissions } = require('../../../../scripts/shared/permissions.cjs')
 const cache = require('./cache.cjs')
 const EPOCH = '315532800'
 function source(project) {
@@ -34,8 +34,7 @@ async function withBuilder(options, operation) {
   const directory = fs.mkdtempSync(path.join(root, 'wb-'))
   let primary
   try {
-    if (process.platform === 'win32') protectWindowsDirectory(directory)
-    else fs.chmodSync(directory, 0o700)
+    prepareBuildDirectoryPermissions(directory)
     state.assertPrivateDirectory(directory)
     const prepared = await prepare({...options, directory: path.join(directory, 'tools')})
     return await operation(prepared)

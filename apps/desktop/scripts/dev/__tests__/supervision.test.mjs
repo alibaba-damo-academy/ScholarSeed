@@ -1,13 +1,33 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { attemptReload, developmentArguments, finishHost, spawnWorker, nativeCache, main } from '../supervision.mjs'
+import { attemptReload, developmentArguments, finishHost, spawnWorker, nativeCache, main, completionCapability } from '../supervision.mjs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { once } from 'node:events'
+import { once, EventEmitter } from 'node:events'
 import execution from '../../../../../scripts/shared/execution.cjs'
 import debugging from '../../../../../scripts/dev/desktop.cjs'
 import source from '../../../../../scripts/shared/source.cjs'
+
+test('development lease admission uses private IPC and rejects disconnection or malformed capabilities', async () => {
+  for (const outcome of ['valid', 'disconnected', 'malformed']) {
+    const channel = new EventEmitter()
+    channel.connected = true
+    const ticket = { id: 'private-capability' }
+    channel.send = value => {
+      assert.deepEqual(value, { kind: 'development-lease-request', version: 1 })
+      queueMicrotask(() => {
+        if (outcome === 'disconnected') channel.emit('disconnect')
+        else channel.emit('message', {kind:'development-lease', version:1, ticket:outcome === 'valid' ? ticket : null})
+      })
+    }
+    const admitted = completionCapability(channel)
+    if (outcome === 'valid') assert.equal(await admitted, ticket)
+    else await assert.rejects(admitted, /disconnected|invalid/)
+    assert.equal(channel.listenerCount('message'), 0)
+    assert.equal(channel.listenerCount('disconnect'), 0)
+  }
+})
 
 test('initial development watches source before snapshot or any compilation and closes the watcher on failure', async context => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'scholarseed-startup-watch-'))

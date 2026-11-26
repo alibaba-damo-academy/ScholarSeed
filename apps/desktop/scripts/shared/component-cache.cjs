@@ -18,8 +18,10 @@ const RECIPE_FILES = {
     'apps/serve/service/capabilities/service/dependencies.py', 'scripts/shared/platform.cjs',
     'apps/desktop/native/toolchain.json', 'apps/desktop/scripts/cd/wheels.cjs', 'apps/desktop/scripts/cd/cache.cjs',
     'apps/desktop/scripts/shared/macos.cjs'],
-  texlive: ['apps/desktop/runtime/texlive.cjs', 'apps/desktop/scripts/cd/texlive.cjs', 'apps/desktop/scripts/cd/payload.py'],
-  powershell: ['apps/desktop/runtime/powershell.cjs', 'apps/desktop/scripts/cd/payload.py'],
+  // The vendor archive digest is bound separately. Hash only the scripts that
+  // transform the staged files or write the normalized component archive.
+  texlive: ['apps/desktop/scripts/cd/texlive.cjs', 'apps/desktop/scripts/cd/payload.py'],
+  powershell: ['apps/desktop/scripts/cd/payload.py'],
   codex: ['apps/desktop/scripts/cd/compression.cjs', 'apps/desktop/scripts/cd/payload.py'],
   electron: ['apps/desktop/scripts/cd/engine.cjs', 'apps/desktop/runtime/electron/bootstrap.cjs',
     'apps/desktop/runtime/electron/package.json', 'apps/desktop/runtime/electron.json',

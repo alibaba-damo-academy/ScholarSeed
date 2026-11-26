@@ -6,6 +6,7 @@ const { spawnSync } = require('node:child_process')
 const { setTimeout: delay } = require('node:timers/promises')
 const { ensureArtifact } = require('../../../../scripts/shared/artifacts.cjs')
 const cache = require('./cache.cjs')
+const { goObjects } = require('./go-cache.cjs')
 const toolchain = require('../../updater/toolchain.json')
 const CLEANUP_RETRIES = 6
 const CLEANUP_DELAY_MS = 200
@@ -53,7 +54,7 @@ async function withCompiler({runDirectory, goArchive, environment}, operation) {
     const env = Object.fromEntries(Object.entries(environment).filter(([name]) => !name.toUpperCase().startsWith('GO') && !name.toUpperCase().startsWith('CGO')))
     Object.assign(env, {GOROOT: goRoot, GOTOOLCHAIN: 'local', GOENV: 'off', GOWORK: 'off', GO111MODULE: 'on',
       GOFLAGS: '', GOPROXY: 'off', GOSUMDB: 'off', CGO_ENABLED: '0', GOOS: 'windows', GOARCH: 'amd64',
-      GOPATH: path.join(temporary, 'path'), GOCACHE: cache.goObjects(environment, selected.sha256), GOMODCACHE: path.join(temporary, 'modules'),
+      GOPATH: path.join(temporary, 'path'), GOCACHE: goObjects(environment, selected.sha256), GOMODCACHE: path.join(temporary, 'modules'),
       TMPDIR: temporary, TEMP: temporary, TMP: temporary})
     if (run(go, ['version'], env) !== `go version ${toolchain.version} windows/amd64`) throw new Error('native compiler version differs')
     return await operation({temporary, goRoot, go, env, selected})

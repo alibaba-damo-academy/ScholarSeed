@@ -17,12 +17,14 @@ const repo = path.resolve(__dirname, '../../../../..')
 const pythonFile = 'Contents/Resources/backend/python/bin/python'
 const texFile = 'Contents/Resources/backend/texlive/bin/tex'
 const pythonAlias = 'Contents/Resources/backend/python/bin/python3'
+const mantleFramework = 'Contents/Frameworks/Mantle.framework'
+const mantleFile = mantleFramework + '/Versions/A/Mantle'
 
 test('Mach-O content proofs preserve signed files and reject unexpected overlay members', {skip: !darwin}, () => {
   execFileSync(developmentPython(repo, process.env.VENV), ['-I', '-S', '-B', path.join(__dirname, 'signed_runtime_test.py')], {stdio: 'pipe'})
 })
 
-test('application-only builds reuse the signed bytes and sign a new outer bundle', {skip: !darwin}, async t => {
+test('reuse signed runtimes while signing the updater frameworks and outer bundle on every build', {skip: !darwin}, async t => {
   const temporary = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mac-sign-build-')))
   t.after(() => fs.rmSync(temporary, {recursive: true, force: true}))
   const cache = path.join(temporary, 'cache')
@@ -69,6 +71,17 @@ test('application-only builds reuse the signed bytes and sign a new outer bundle
       fs.mkdirSync(path.dirname(path.join(app, file)), {recursive: true})
       fs.copyFileSync(binary, path.join(app, file))
     }
+    const framework = path.join(app, mantleFramework)
+    fs.mkdirSync(path.join(framework, 'Versions/A/Resources'), {recursive: true})
+    fs.copyFileSync(original, path.join(app, mantleFile))
+    fs.symlinkSync('A', path.join(framework, 'Versions/Current'))
+    fs.symlinkSync('Versions/Current/Mantle', path.join(framework, 'Mantle'))
+    fs.symlinkSync('Versions/Current/Resources', path.join(framework, 'Resources'))
+    fs.writeFileSync(path.join(framework, 'Resources/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict>
+      <key>CFBundleIdentifier</key><string>org.example.Mantle</string>
+      <key>CFBundlePackageType</key><string>FMWK</string>
+      <key>CFBundleExecutable</key><string>Mantle</string>
+      <key>CFBundleVersion</key><string>1</string></dict></plist>`)
     fs.symlinkSync('python', path.join(app, pythonAlias))
     fs.writeFileSync(path.join(app, 'Contents/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict>
       <key>CFBundleIdentifier</key><string>org.example.cache</string>
@@ -101,6 +114,7 @@ test('application-only builds reuse the signed bytes and sign a new outer bundle
   assert.ok(cold.signed.includes(pythonFile))
   assert.ok(cold.signed.includes(texFile))
   const hot = await build('app-only')
+  assert.ok(hot.signed.includes(mantleFramework) || hot.signed.includes(mantleFile), 'fresh updater framework signature')
   assert.deepEqual(hot.signed.filter(name => name.includes('/backend/')), [])
   assert.equal(hot.python, cold.python)
   assert.equal(hot.tex, cold.tex)
@@ -136,6 +150,7 @@ test('application-only builds reuse the signed bytes and sign a new outer bundle
     assert.match(JSON.parse(fs.readFileSync(receipt)).inputSha256, /^[a-f0-9]{64}$/)
   }
   for (const hit of [sharedHit, localHit]) {
+    assert.ok(hit.signed.includes(mantleFramework) || hit.signed.includes(mantleFile), 'fresh updater framework signature')
     assert.deepEqual(hit.signed.filter(name => name.includes('/backend/')), [])
     assert.equal(hit.python, sharedCold.python)
     assert.equal(hit.tex, sharedCold.tex)
