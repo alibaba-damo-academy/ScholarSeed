@@ -70,6 +70,10 @@ function launchLong(executable, args, options = {}, afterExit) {
     }
     const onSignal = signal => {
       interrupted ||= signal
+      // Both console processes receive Ctrl+C on Windows. The scoped Desktop
+      // launcher owns its shutdown deadline and can still be inside lease
+      // admission when the generic process-group escalation would kill it.
+      if (process.platform === 'win32' && signal === 'SIGINT' && afterExit) return
       if (process.platform !== 'win32' || signal !== 'SIGINT') forward(signal)
       if (signalTimers.length) return
       signalTimers.push(setTimeout(() => forward('SIGTERM'), GROUP_SHUTDOWN_TIMEOUT_MS))
