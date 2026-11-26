@@ -8,12 +8,15 @@ const { setTimeout: delay } = require('node:timers/promises')
 const { prepareDesktop } = require('../shared/desktop.cjs')
 const { waitForGroupExit, PROCESS_TREE_UNCONFIRMED_EXIT } = require('../shared/execution.cjs')
 const leases = require('../shared/lease.cjs')
+const { openOutput, removeOutput } = require('./output.cjs')
 
 const LOOPBACK = '127.0.0.1'
 const MAX_PORT = 65535
 const ID_LENGTH = 16
 const DEBUG_ROOT = '.ss-debug'
 const LOCK_FILE = 'launcher.json'
+const CLEANUP_PROTOCOL = 1
+const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/
 const CODEX_DIRECTORY = 'codex'
 const DEVELOPMENT_SCOPE_ENV = 'SCHOLARSEED_DEVELOPMENT_SCOPE'
 const WINDOWS = 'win32'
@@ -145,6 +148,125 @@ function instanceLogs(directory, home = os.homedir()) {
     .filter(filename => fs.lstatSync(filename).isFile() && !fs.lstatSync(filename).isSymbolicLink() && fs.realpathSync(filename).startsWith(boundary))
 }
 
+function readLock(filename) {
+  try {
+    const stat = fs.lstatSync(filename)
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error(`invalid debug lock: ${filename}`)
+    return JSON.parse(fs.readFileSync(filename, 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+function hasExited(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0); return false }
+  catch (error) { return error.code === 'ESRCH' }
+}
+
+function sameLauncher(left, right) {
+  return !!left && !!right && left.pid === right.pid && left.repo === right.repo &&
+    left.scope === right.scope && left.port === right.port && left.cleanup === right.cleanup
+}
+
+function proofFile(lock, owner) {
+  return `${lock}.${owner.scope}.stopped`
+}
+
+function stopFile(lock, owner) {
+  return `${lock}.${owner.scope}.stop`
+}
+
+// Keep the enclosing Windows command alive while its own cleanup host drains
+// the process family. Only the next launcher consumes the completed receipt.
+async function waitForWindowsHost(paths, childPid, scope, timeoutMs = WINDOWS_SHUTDOWN_TIMEOUT_MS) {
+  const owner = readLock(paths.lock)
+  if (!owner || owner.repo !== paths.repo || owner.cleanup !== CLEANUP_PROTOCOL ||
+      !UUID.test(owner.scope) || (scope ? owner.scope !== scope : owner.pid !== childPid)) return
+  const deadline = Date.now() + timeoutMs
+  while (sameLauncher(readLock(paths.lock), owner)) {
+    const proof = readLock(proofFile(paths.lock, owner))
+    if (proof) {
+      if (!sameLauncher(owner, proof.owner) || (scope && proof.holder !== childPid))
+        throw new Error('development cleanup proof does not match the supervised child')
+      if (hasExited(proof.host) && hasExited(proof.holder)) return
+    }
+    if (Date.now() >= deadline) throw new Error('development host shutdown unconfirmed; ownership records retained')
+    await delay(WAIT_INTERVAL_MS)
+  }
+}
+
+function requestLauncherStop(lock, owner) {
+  if (!sameLauncher(readLock(lock), owner)) throw new Error('development launcher identity changed')
+  try { fs.writeFileSync(stopFile(lock, owner), '', { flag: 'wx', mode: 0o600 }) }
+  catch (error) { if (error.code !== 'EEXIST') throw error }
+}
+
+// Root death only requests shutdown. The host publishes proof *after* verifying
+// the process family and recording completion with its private lease capability.
+function monitorLauncher(paths, scope, port, stop) {
+  const owner = readLock(paths.lock)
+  if (!owner || !UUID.test(scope) || owner.scope !== scope || owner.repo !== paths.repo ||
+      owner.port !== port || owner.cleanup !== CLEANUP_PROTOCOL || !Number.isSafeInteger(owner.pid) || owner.pid <= 0)
+    throw new Error('development host cannot identify its scoped launcher')
+  const observe = () => {
+    if (hasExited(owner.pid)) stop('SIGTERM')
+    else if (fs.existsSync(stopFile(paths.lock, owner))) stop('SIGINT')
+  }
+  const timer = setInterval(observe, WAIT_INTERVAL_MS)
+  timer.unref()
+  observe()
+  return {
+    close: () => clearInterval(timer),
+    complete(holder) {
+      if (!sameLauncher(readLock(paths.lock), owner)) throw new Error('development launcher identity changed')
+      const filename = proofFile(paths.lock, owner)
+      const staging = `${filename}.tmp`
+      fs.writeFileSync(staging, JSON.stringify({ owner, holder, host: process.pid }), { flag: 'wx', mode: 0o600 })
+      fs.renameSync(staging, filename)
+    }
+  }
+}
+
+async function recoverLauncher(paths, timeoutMs = WAIT_TIMEOUT_MS) {
+  const owner = readLock(paths.lock)
+  if (!owner || owner.cleanup !== CLEANUP_PROTOCOL || owner.repo !== paths.repo ||
+      !UUID.test(owner.scope) || !Number.isInteger(owner.port) || owner.port < 1 || owner.port > MAX_PORT ||
+      (!hasExited(owner.pid) && !fs.existsSync(stopFile(paths.lock, owner)))) return
+  const filename = proofFile(paths.lock, owner)
+  const deadline = Date.now() + timeoutMs
+  while (sameLauncher(readLock(paths.lock), owner)) {
+    const proof = readLock(filename)
+    if (proof && !sameLauncher(proof.owner, owner)) throw new Error('development cleanup proof does not match launcher')
+    if (proof && hasExited(owner.pid) && hasExited(proof.holder) && hasExited(proof.host) && !leases.pending(owner.scope, { collect: process.platform === WINDOWS })) {
+      try { await freePort(owner.port) }
+      catch (error) {
+        if (error.code !== 'EADDRINUSE' || Date.now() >= deadline) throw error
+        await delay(WAIT_INTERVAL_MS)
+        continue
+      }
+      if (!sameLauncher(readLock(paths.lock), owner)) return
+      // Only the contender that consumes this generation's proof can unlink its lock.
+      try { fs.unlinkSync(filename) }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error
+        await delay(WAIT_INTERVAL_MS)
+        continue
+      }
+      fs.unlinkSync(paths.lock)
+      fs.rmSync(stopFile(paths.lock, owner), { force: true })
+      if (process.platform === WINDOWS) removeOutput(paths.lock, owner.scope)
+      return
+    }
+    if (Date.now() >= deadline) {
+      if (!hasExited(owner.pid)) throw new Error('the previous development launcher is still stopping; retry after shutdown')
+      return
+    }
+    await delay(WAIT_INTERVAL_MS)
+  }
+}
+
 function acquire(lock, owner) {
   let descriptor
   try {
@@ -167,7 +289,14 @@ function acquire(lock, owner) {
   fs.closeSync(descriptor)
   return () => {
     const current = JSON.parse(fs.readFileSync(lock, 'utf8'))
-    if (current.pid === owner.pid) fs.unlinkSync(lock)
+    if (sameLauncher(current, owner)) {
+      fs.unlinkSync(lock)
+      if (owner.cleanup === CLEANUP_PROTOCOL) {
+        fs.rmSync(proofFile(lock, owner), { force: true })
+        fs.rmSync(stopFile(lock, owner), { force: true })
+        if (process.platform === WINDOWS) removeOutput(lock, owner.scope)
+      }
+    }
   }
 }
 
@@ -261,7 +390,9 @@ async function waitForRenderer(directory, options = {}) {
 
 async function supervise(invocation, observation = {}) {
   const child = spawn(invocation.executable, invocation.args, {
-    ...invocation.options, detached: process.platform !== WINDOWS
+    // A Windows launcher-owned package-manager tree dies with its root. Keep
+    // the scoped cleanup host alive to drain its Job and attest shutdown.
+    ...invocation.options, detached: process.platform !== WINDOWS || !!observation.requestStop
   })
   let interrupted = null
   let observing = true
@@ -292,6 +423,10 @@ async function supervise(invocation, observation = {}) {
     }
   }
   const interrupt = signal => {
+    if (!interrupted && observation.requestStop) {
+      try { observation.requestStop() }
+      catch (error) { console.error(`[debug] Could not notify the development host to stop: ${error.message}`) }
+    }
     interrupted ??= signal
     if (process.platform === WINDOWS && !shutdownTimer) shutdownTimer = setTimeout(() => {
       console.error('[debug] Windows development shutdown deadline exceeded; preserve the launcher lock and task-owned process receipts.')
@@ -323,7 +458,7 @@ async function supervise(invocation, observation = {}) {
     }
     if (observation.scope) {
       const deadline = Date.now() + (process.platform === WINDOWS ? WINDOWS_SHUTDOWN_TIMEOUT_MS : SHUTDOWN_TIMEOUT_MS)
-      while (leases.pending(observation.scope)) {
+      while (leases.pending(observation.scope, { collect: process.platform === WINDOWS })) {
         if (Date.now() >= deadline) throw new Error('development environment shutdown unconfirmed; launcher lock retained')
         await delay(WAIT_INTERVAL_MS)
       }
@@ -369,11 +504,13 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   const paths = debugPaths(directory)
   const environment = debugEnvironment(paths)
   fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 })
-  const owner = { pid: process.pid, repo: paths.repo, scope: randomUUID() }
+  await recoverLauncher(paths)
+  const owner = { pid: process.pid, repo: paths.repo, scope: randomUUID(), cleanup: CLEANUP_PROTOCOL }
   environment[DEVELOPMENT_SCOPE_ENV] = owner.scope
   const release = acquire(paths.lock, owner)
   if (!release) return 0
   let releaseAllowed = true
+  let output
   try {
     owner.port = await freePort(args.length ? Number(args[1]) : undefined)
     fs.writeFileSync(paths.lock, JSON.stringify(owner))
@@ -381,20 +518,28 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
     fs.mkdirSync(paths.profile, { recursive: true, mode: 0o700 })
     console.log(`[debug] worktree ${paths.repo}\n[debug] Home ${paths.home}\n[debug] profile ${paths.profile}\n[debug] CDP http://${LOOPBACK}:${owner.port}\n[debug] playwright-cli -s=scholarseed-${owner.port} attach --cdp=http://${LOOPBACK}:${owner.port}`)
     const invocation = prepareDesktop(paths.repo, debugArguments(owner.port, paths.profile), environment)
+    if (process.platform === WINDOWS) {
+      output = openOutput(paths.lock, owner.scope, WAIT_INTERVAL_MS)
+      invocation.options.stdio = output.stdio
+    }
     releaseAllowed = false
     const code = await supervise(invocation, { scope: owner.scope,
+      requestStop: process.platform === WINDOWS ? () => requestLauncherStop(paths.lock, owner) : undefined,
       observe: () => inspectDebug(paths.repo, undefined, Date.now() + PROBE_TIMEOUT_MS) })
     if (code === PROCESS_TREE_UNCONFIRMED_EXIT) return code
     await freePort(owner.port)
     releaseAllowed = true
     return code
   } finally {
-    if (releaseAllowed) release()
-    else console.error(`[debug] shutdown not confirmed; lock retained: ${paths.lock}`)
+    try { output?.close() }
+    finally {
+      if (releaseAllowed) release()
+      else console.error(`[debug] shutdown not confirmed; lock retained: ${paths.lock}`)
+    }
   }
 }
 
-module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, main, DEVELOPMENT_SCOPE_ENV }
+module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, monitorLauncher, recoverLauncher, requestLauncherStop, waitForWindowsHost, main, DEVELOPMENT_SCOPE_ENV }
 if (require.main === module) {
   main(process.argv.slice(2)).then(code => { process.exitCode = code }).catch(error => {
     console.error(`[debug] ${error.message}`)

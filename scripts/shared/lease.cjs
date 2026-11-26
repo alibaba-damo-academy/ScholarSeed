@@ -201,13 +201,22 @@ function complete(ticket) {
   })
 }
 
-function pending(scope) {
+function completedAndExited(receipt) {
+  return !!receipt.completedBy && exited(receipt.pid) && exited(receipt.completedBy)
+}
+
+function pending(scope, { collect = false } = {}) {
   if (!UUID.test(scope)) throw failure('LEASE_ARGUMENT_INVALID', 'invalid development lease scope')
   const directory = registry()
-  return admitted(directory, () => fs.readdirSync(directory).filter(entry => entry !== ADMISSION)
-    .map(entry => readReceipt(directory, entry))
-    .some(receipt => receipt.scope === scope &&
-      (!receipt.completedBy || !exited(receipt.pid) || !exited(receipt.completedBy))))
+  return admitted(directory, () => {
+    const receipts = fs.readdirSync(directory).filter(entry => entry !== ADMISSION)
+      .map(entry => readReceipt(directory, entry)).filter(receipt => receipt.scope === scope)
+    if (receipts.some(receipt => !completedAndExited(receipt))) return true
+    if (collect) {
+      for (const receipt of receipts) fs.unlinkSync(path.join(directory, receipt.id + RECEIPT_SUFFIX))
+    }
+    return false
+  })
 }
 
 function acquire(options) {
@@ -231,7 +240,7 @@ function acquire(options) {
       const existing = readReceipt(directory, entry)
       if ((receipt.mode === 'write' || existing.mode === 'write') &&
           receipt.resources.some(resource => existing.resources.some(other => overlaps(resource, other)))) {
-        if (existing.completedBy && exited(existing.pid) && exited(existing.completedBy)) {
+        if (completedAndExited(existing)) {
           fs.unlinkSync(path.join(directory, entry))
           continue
         }

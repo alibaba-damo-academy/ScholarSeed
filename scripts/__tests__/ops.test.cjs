@@ -398,6 +398,23 @@ test('process group observation falls back to exact process listing only when si
   assert.equal(processGroupExited(314, denied, () => true), false)
 })
 
+test('a Windows Desktop console interrupt lets the scoped launcher finish its own cleanup', {
+  skip: process.platform !== 'win32',
+}, async context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-console-cleanup-'))
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const receipt = path.join(directory, 'finished')
+  const program = "setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'done'), 10500)"
+  let checked = false
+  const result = launchLong(process.execPath, ['-e', program, receipt], { stdio: 'ignore' }, () => {
+    assert.equal(fs.readFileSync(receipt, 'utf8'), 'done')
+    checked = true
+  })
+  process.emit('SIGINT')
+  await assert.rejects(result, error => error.exitCode === 130)
+  assert.equal(checked, true)
+})
+
 test('long-running execution waits for signal cleanup before returning', async context => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ops-long-run-'))
   const marker = path.join(directory, 'stopped')
