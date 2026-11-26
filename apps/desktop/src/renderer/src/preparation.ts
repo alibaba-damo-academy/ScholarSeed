@@ -22,6 +22,8 @@ type PreparationOutcome = Pick<RuntimePreparation, 'state' | 'error'>
 export function runtimePreparationFailure(operation?: PreparationOutcome) {
   if (operation?.state === 'restart_required')
     return feedback('components', 'runtimeSwitch.restartRequired')
+  if (operation?.state === 'rejected' && operation.error === 'windows_sandbox_policy_rejected')
+    return feedback('conversation', 'sandbox.policyRejected')
   if (operation?.state === 'unsupported') return feedback('components', 'runtimeSwitch.unsupported')
   if (operation?.error === HOST_CONFIGURATION_UNCERTAIN)
     return feedback('components', 'runtimeSwitch.restartRequired')

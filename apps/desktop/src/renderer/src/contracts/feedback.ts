@@ -32,6 +32,7 @@ export function runtimePreparationMessageKey(code: unknown) {
 const FEEDBACK_KEYS = {
   conversation: {
     'authorization.renewed': 'none',
+    'sandbox.policyRejected': 'none',
     'clarification.useCard': 'none',
     'clarification.editingFailed': 'none',
     'queue.sessionOpenUnknown': 'none',
