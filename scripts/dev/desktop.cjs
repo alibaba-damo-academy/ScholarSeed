@@ -173,6 +173,16 @@ function proofFile(lock, owner) {
   return `${lock}.${owner.scope}.stopped`
 }
 
+function stopFile(lock, owner) {
+  return `${lock}.${owner.scope}.stop`
+}
+
+function requestLauncherStop(lock, owner) {
+  if (!sameLauncher(readLock(lock), owner)) throw new Error('development launcher identity changed')
+  try { fs.writeFileSync(stopFile(lock, owner), '', { flag: 'wx', mode: 0o600 }) }
+  catch (error) { if (error.code !== 'EEXIST') throw error }
+}
+
 // Root death only requests shutdown. The host publishes proof *after* verifying
 // the process family and recording completion with its private lease capability.
 function monitorLauncher(paths, scope, port, stop) {
@@ -180,7 +190,10 @@ function monitorLauncher(paths, scope, port, stop) {
   if (!owner || !UUID.test(scope) || owner.scope !== scope || owner.repo !== paths.repo ||
       owner.port !== port || owner.cleanup !== CLEANUP_PROTOCOL || !Number.isSafeInteger(owner.pid) || owner.pid <= 0)
     throw new Error('development host cannot identify its scoped launcher')
-  const observe = () => { if (hasExited(owner.pid)) stop() }
+  const observe = () => {
+    if (hasExited(owner.pid)) stop('SIGTERM')
+    else if (fs.existsSync(stopFile(paths.lock, owner))) stop('SIGINT')
+  }
   const timer = setInterval(observe, WAIT_INTERVAL_MS)
   timer.unref()
   observe()
@@ -196,17 +209,17 @@ function monitorLauncher(paths, scope, port, stop) {
   }
 }
 
-async function recoverLauncher(paths, timeoutMs = process.platform === WINDOWS ? WINDOWS_SHUTDOWN_TIMEOUT_MS : SHUTDOWN_TIMEOUT_MS) {
+async function recoverLauncher(paths, timeoutMs = WAIT_TIMEOUT_MS) {
   const owner = readLock(paths.lock)
   if (!owner || owner.cleanup !== CLEANUP_PROTOCOL || owner.repo !== paths.repo ||
       !UUID.test(owner.scope) || !Number.isInteger(owner.port) || owner.port < 1 || owner.port > MAX_PORT ||
-      !hasExited(owner.pid)) return
+      (!hasExited(owner.pid) && !fs.existsSync(stopFile(paths.lock, owner)))) return
   const filename = proofFile(paths.lock, owner)
   const deadline = Date.now() + timeoutMs
   while (sameLauncher(readLock(paths.lock), owner)) {
     const proof = readLock(filename)
     if (proof && !sameLauncher(proof.owner, owner)) throw new Error('development cleanup proof does not match launcher')
-    if (proof && hasExited(proof.holder) && hasExited(proof.host) && !leases.pending(owner.scope)) {
+    if (proof && hasExited(owner.pid) && hasExited(proof.holder) && hasExited(proof.host) && !leases.pending(owner.scope)) {
       try { await freePort(owner.port) }
       catch (error) {
         if (error.code !== 'EADDRINUSE' || Date.now() >= deadline) throw error
@@ -222,9 +235,13 @@ async function recoverLauncher(paths, timeoutMs = process.platform === WINDOWS ?
         continue
       }
       fs.unlinkSync(paths.lock)
+      fs.rmSync(stopFile(paths.lock, owner), { force: true })
       return
     }
-    if (Date.now() >= deadline) return
+    if (Date.now() >= deadline) {
+      if (!hasExited(owner.pid)) throw new Error('the previous development launcher is still stopping; retry after shutdown')
+      return
+    }
     await delay(WAIT_INTERVAL_MS)
   }
 }
@@ -253,7 +270,10 @@ function acquire(lock, owner) {
     const current = JSON.parse(fs.readFileSync(lock, 'utf8'))
     if (sameLauncher(current, owner)) {
       fs.unlinkSync(lock)
-      if (owner.cleanup === CLEANUP_PROTOCOL) fs.rmSync(proofFile(lock, owner), { force: true })
+      if (owner.cleanup === CLEANUP_PROTOCOL) {
+        fs.rmSync(proofFile(lock, owner), { force: true })
+        fs.rmSync(stopFile(lock, owner), { force: true })
+      }
     }
   }
 }
@@ -348,7 +368,9 @@ async function waitForRenderer(directory, options = {}) {
 
 async function supervise(invocation, observation = {}) {
   const child = spawn(invocation.executable, invocation.args, {
-    ...invocation.options, detached: process.platform !== WINDOWS
+    // A Windows launcher-owned package-manager tree dies with its root. Keep
+    // the scoped cleanup host alive to drain its Job and attest shutdown.
+    ...invocation.options, detached: process.platform !== WINDOWS || !!observation.requestStop
   })
   let interrupted = null
   let observing = true
@@ -379,6 +401,10 @@ async function supervise(invocation, observation = {}) {
     }
   }
   const interrupt = signal => {
+    if (!interrupted && observation.requestStop) {
+      try { observation.requestStop() }
+      catch (error) { console.error(`[debug] Could not notify the development host to stop: ${error.message}`) }
+    }
     interrupted ??= signal
     if (process.platform === WINDOWS && !shutdownTimer) shutdownTimer = setTimeout(() => {
       console.error('[debug] Windows development shutdown deadline exceeded; preserve the launcher lock and task-owned process receipts.')
@@ -471,6 +497,7 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
     const invocation = prepareDesktop(paths.repo, debugArguments(owner.port, paths.profile), environment)
     releaseAllowed = false
     const code = await supervise(invocation, { scope: owner.scope,
+      requestStop: process.platform === WINDOWS ? () => requestLauncherStop(paths.lock, owner) : undefined,
       observe: () => inspectDebug(paths.repo, undefined, Date.now() + PROBE_TIMEOUT_MS) })
     if (code === PROCESS_TREE_UNCONFIRMED_EXIT) return code
     await freePort(owner.port)
@@ -482,7 +509,7 @@ async function main(argv, directory = path.resolve(__dirname, '../..')) {
   }
 }
 
-module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, monitorLauncher, recoverLauncher, main, DEVELOPMENT_SCOPE_ENV }
+module.exports = { debugPaths, debugEnvironment, instanceLogs, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer, watchRestartSources, monitorLauncher, recoverLauncher, requestLauncherStop, main, DEVELOPMENT_SCOPE_ENV }
 if (require.main === module) {
   main(process.argv.slice(2)).then(code => { process.exitCode = code }).catch(error => {
     console.error(`[debug] ${error.message}`)

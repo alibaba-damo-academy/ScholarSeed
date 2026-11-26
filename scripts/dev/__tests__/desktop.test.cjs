@@ -12,7 +12,7 @@ const test = require('node:test')
 const toolchain = require('../../pre/toolchain.cjs')
 const leases = require('../../shared/lease.cjs')
 const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer,
-  monitorLauncher, recoverLauncher } = require('../desktop.cjs')
+  monitorLauncher, recoverLauncher, requestLauncherStop } = require('../desktop.cjs')
 
 test('automatic reload reports its triggering paths before notifying the supervisor', async context => {
   const watchers = []
@@ -160,8 +160,10 @@ test('Windows interruption lets the owned host drain and retains unknown shutdow
   let orderly = true
   let unreferenced = false
   let forced = false
+  let stopRequests = 0
   context.mock.method(child, 'spawnSync', () => { forced = true; return { status: 0 } })
-  context.mock.method(child, 'spawn', () => {
+  context.mock.method(child, 'spawn', (_executable, _args, options) => {
+    assert.equal(options.detached, true)
     const processChild = new EventEmitter()
     processChild.pid = 987654
     processChild.unref = () => { unreferenced = true }
@@ -175,10 +177,12 @@ test('Windows interruption lets the owned host drain and retains unknown shutdow
   context.after(() => { delete require.cache[require.resolve('../desktop.cjs')] })
   const { supervise: windowsSupervise } = require('../desktop.cjs')
   const invocation = { executable: process.execPath, args: [], options: {} }
-  assert.equal(await windowsSupervise(invocation, { shutdownTimeoutMs: 10 }), 130)
+  const observation = { shutdownTimeoutMs: 10, requestStop: () => { stopRequests++ } }
+  assert.equal(await windowsSupervise(invocation, observation), 130)
   assert.equal(unreferenced, false)
   orderly = false
-  assert.equal(await windowsSupervise(invocation, { shutdownTimeoutMs: 10 }), 74)
+  assert.equal(await windowsSupervise(invocation, observation), 74)
+  assert.equal(stopRequests, 2)
   assert.equal(unreferenced, true)
   assert.equal(forced, false)
 })
@@ -319,6 +323,24 @@ test('a dead launcher requests shutdown; recovery requires its own proof, exited
   assert.deepEqual(JSON.parse(fs.readFileSync(paths.lock)), replacement)
   fs.writeFileSync(paths.lock, JSON.stringify(owner))
   await Promise.all([recoverLauncher(paths), recoverLauncher(paths)])
+  assert.deepEqual(fs.readdirSync(repo), [])
+})
+
+test('a detached host receives the scoped stop request while its live launcher retains ownership', async context => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-stop-'))
+  context.after(() => fs.rmSync(repo, { recursive: true, force: true }))
+  const paths = { repo, lock: path.join(repo, 'launcher.json') }
+  const owner = { repo, pid: process.pid, scope: randomUUID(), port: await freePort(), cleanup: 1 }
+  const release = acquire(paths.lock, owner)
+  assert.throws(() => requestLauncherStop(paths.lock, { ...owner, scope: randomUUID() }), /identity changed/)
+  requestLauncherStop(paths.lock, owner)
+  requestLauncherStop(paths.lock, owner)
+  let signal
+  const watcher = monitorLauncher(paths, owner.scope, owner.port, value => { signal = value })
+  context.after(watcher.close)
+  assert.equal(signal, 'SIGINT')
+  await assert.rejects(recoverLauncher(paths, 0), /still stopping/)
+  release()
   assert.deepEqual(fs.readdirSync(repo), [])
 })
 

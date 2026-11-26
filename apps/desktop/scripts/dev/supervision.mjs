@@ -457,9 +457,10 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
   try {
     completion = await completionCapability()
     if (completion && process.env[debugging.DEVELOPMENT_SCOPE_ENV]) {
-      launcher = debugging.monitorLauncher(isolation, process.env[debugging.DEVELOPMENT_SCOPE_ENV], settings.port, terminate)
+      launcher = debugging.monitorLauncher(isolation, process.env[debugging.DEVELOPMENT_SCOPE_ENV], settings.port, signal)
     }
     if (process.send && !process.connected) disconnect()
+    if (interrupted) return SIGNAL_STATUS[interrupted]
     closeWatcher = debugging.watchRestartSources(repo, report, () => { state.dirty = true })
     const snapshot = source.developmentSourceSnapshot(repo)
     initial = await compileCandidate({ desktopRoot: root })

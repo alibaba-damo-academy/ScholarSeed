@@ -385,7 +385,7 @@ so Electron is not left running even if Vite exits early. On Windows, the develo
 native Job, then allows Electron to start; it does not end other workspaces by process name or let the root entry point run `taskkill /T` prematurely.
 Explicit exit terminates only its own Job. Automatic reload is allowed only after private idle admission and normal backend drain.
 After the host confirms the Job's active-process count is zero, it sends a terminal proof through private IPC to the lease holder. Missing, duplicate, invalid proof,
-or uncertain exit retains the lease and lock. The Windows root entry waits for bounded shutdown; on timeout it retains ownership information and does not claim cleanup is complete.
+or uncertain exit retains the lease and lock. The Windows root starts its package manager in a separate process group so its cleanup host can outlive a forced launcher exit. A scoped stop request forwards terminal Ctrl+C to that host. The Windows root entry waits for bounded shutdown; on timeout it retains ownership information and does not claim cleanup is complete.
 After `Ctrl+C` stops this entry point, release the lock only after confirming the process group exited and the CDP port was released; retain state. If this cannot be confirmed, keep the lock to prevent another startup.
 If forced termination or a crash leaves an old lock, fail closed: first check the exact lock path in the output and confirm that this instance's Electron/Serve
 have both exited, then manually delete that `launcher.json`. Do not automatically guess cleanup by PID or delete the entire Home/profile.
@@ -501,7 +501,7 @@ the lease receipt is retained for manual review; the tool does not delete the re
 
 Desktop development records verified cleanup through a private read-lease completion capability. A disconnected lease holder or the loss of the scoped root launcher asks the development host to stop its own process family. After the host verifies cleanup and records lease completion, it publishes a receipt for that launcher generation. If the root has exited, the next launch waits for both lease owners to exit and the CDP port to become available before consuming the receipt and releasing the stale launcher lock. If cleanup was confirmed but normal lease release was lost, the next conflicting operation recovers that read receipt after both holder and host have exited. This does not recover unfinished writes or legacy receipts without cleanup proof.
 
-Desktop 开发宿主通过私有读租约凭据记录清理确认；与启动包装进程断连时，会停止自己所属的进程族。若清理已确认但正常释放未完成，下一次冲突操作会在持有者和宿主均退出后回收该读租约。未完成的写操作、没有清理确认的旧租约继续保留。
+Desktop 开发宿主通过私有读租约凭据记录清理确认；当读租约持有者断连或最外层启动器退出时，宿主会停止本次启动的进程族。宿主确认清理后留下与本次启动匹配的凭据；若启动器已退出，下次启动会核对凭据、持有者和宿主的退出状态以及调试端口，再回收启动锁。若清理已确认但正常释放未完成，下一次冲突操作会在持有者和宿主均退出后回收该读租约。未完成的写操作、没有清理确认的旧租约继续保留。
 
 User data must be handled separately: first run the read-only `npm run user-data:preview` and inspect the normalized absolute path,
 existence status, and deletion scope for the entire directory (configuration, credentials, sessions, and assets). Then explicitly decide whether to run
