@@ -453,9 +453,14 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
   let initial
   let familyHost
   let completion
+  let launcher
   try {
     completion = await completionCapability()
+    if (completion && process.env[debugging.DEVELOPMENT_SCOPE_ENV]) {
+      launcher = debugging.monitorLauncher(isolation, process.env[debugging.DEVELOPMENT_SCOPE_ENV], settings.port, signal)
+    }
     if (process.send && !process.connected) disconnect()
+    if (interrupted) return SIGNAL_STATUS[interrupted]
     closeWatcher = debugging.watchRestartSources(repo, report, () => { state.dirty = true })
     const snapshot = source.developmentSourceSnapshot(repo)
     initial = await compileCandidate({ desktopRoot: root })
@@ -533,6 +538,7 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
     }
     return SIGNAL_STATUS[interrupted]
   } finally {
+    launcher?.close()
     const receipt = path.join(isolation.root, `development-${process.pid}.json`)
     let handle
     let identity
@@ -593,9 +599,12 @@ export async function main(argv = process.argv.slice(2), desktopRoot = DESKTOP_R
     process.removeListener('message', stopMessage)
     process.removeListener('disconnect', disconnect)
     if (finalStatus === null && completion) {
-      try { leases.complete(completion) }
+      try {
+        leases.complete(completion)
+        launcher?.complete(completion.pid)
+      }
       catch (error) {
-        report(`Read lease completion could not be recorded (${error.code || error.name}); reservation retained.`)
+        report(`Development cleanup proof could not be recorded (${error.code || error.name}); reservation retained.`)
         finalStatus = execution.PROCESS_TREE_UNCONFIRMED_EXIT
         try { await record('retained'); await handle?.close() } catch {}
       }

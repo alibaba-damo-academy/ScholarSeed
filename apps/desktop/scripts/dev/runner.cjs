@@ -1,11 +1,11 @@
 const fs = require('node:fs')
 const path = require('node:path')
-const { spawn } = require('node:child_process')
+const { fork, spawn } = require('node:child_process')
 const leases = require('../../../../scripts/shared/lease.cjs')
 const python = require('../../../../scripts/shared/python.cjs')
 const toolchain = require('../../../../scripts/pre/toolchain.cjs')
 const { waitForGroupExit, PROCESS_TREE_UNCONFIRMED_EXIT } = require('../../../../scripts/shared/execution.cjs')
-const { DEVELOPMENT_SCOPE_ENV } = require('../../../../scripts/dev/desktop.cjs')
+const { DEVELOPMENT_SCOPE_ENV, debugPaths, waitForWindowsHost } = require('../../../../scripts/dev/desktop.cjs')
 
 const DESKTOP = path.resolve(__dirname, '../..')
 const ROOT = path.resolve(DESKTOP, '../..')
@@ -15,6 +15,7 @@ const DEVELOPMENT_LEASE_REQUEST = 'development-lease-request'
 const DEVELOPMENT_LEASE = 'development-lease'
 const DEVELOPMENT_PROTOCOL_VERSION = 1
 const MAX_EXIT_STATUS = 255
+const WINDOWS_LEASE_HOLDER = '--development-lease-holder'
 
 function desktopPythonPrefix(environment = process.env) {
   const repo = path.resolve(environment.SCHOLARSEED_REPO || ROOT)
@@ -35,7 +36,7 @@ function command(binary, args) {
   return path.resolve(path.dirname(packagePath), entry)
 }
 
-function main(argv = process.argv.slice(2), acquire = leases.acquire) {
+function main(argv = process.argv.slice(2), acquire = leases.acquire, onHostAdmission) {
   const [kind, binary, ...args] = argv
   if (!['desktop', 'modules'].includes(kind) || !binary) throw new Error('invalid leased Desktop command')
   if (binary === 'development' && kind !== 'desktop') throw new Error('development requires the full Desktop environment lease')
@@ -54,12 +55,12 @@ function main(argv = process.argv.slice(2), acquire = leases.acquire) {
         throw new Error('Desktop Python environment changed while acquiring its lease')
       }
     }
-    return start(command(binary, args), args, lease)
+    return start(command(binary, args), args, lease, onHostAdmission)
   }
   catch (error) { lease.release(); throw error }
 }
 
-async function start(entry, args, lease) {
+async function start(entry, args, lease, onHostAdmission) {
   let child
   const development = entry === path.join(__dirname, 'supervision.mjs')
   const controlled = development
@@ -104,6 +105,7 @@ async function start(entry, args, lease) {
         leaseSent = true
         child.send({ kind: DEVELOPMENT_LEASE, version: DEVELOPMENT_PROTOCOL_VERSION, ticket: lease.completion() }, error => {
           if (error) invalidReceipt = true
+          else onHostAdmission?.()
         })
         return
       }
@@ -135,7 +137,12 @@ async function start(entry, args, lease) {
       console.error(`[desktop] Process-tree shutdown was not confirmed; environment lease retained at ${lease.directory}`)
       return PROCESS_TREE_UNCONFIRMED_EXIT
     }
-    lease.release()
+    // The Windows console or enclosing Job can disappear as the wrapper exits.
+    // After the host attests cleanup, let the surviving launcher collect the
+    // receipt instead of re-entering global admission from this dying process.
+    if (!(process.platform === 'win32' && controlled && leaseSent && process.env[DEVELOPMENT_SCOPE_ENV])) {
+      lease.release()
+    }
     return interrupted ? interruptCode : result.signal ? 1 : result.status ?? 1
   } catch (error) {
     if (child?.pid && process.platform !== 'win32') {
@@ -163,8 +170,38 @@ function windowsShutdownConfirmed(result, interrupted, developmentStopped = fals
 
 module.exports = { command, desktopPythonPrefix, main, start, waitForGroupExit, windowsShutdownConfirmed,
   DEVELOPMENT_STOP, DEVELOPMENT_STOPPED, DEVELOPMENT_PROTOCOL_VERSION, DEVELOPMENT_LEASE_REQUEST, DEVELOPMENT_LEASE }
+
+async function entry(argv) {
+  const scope = process.env[DEVELOPMENT_SCOPE_ENV]
+  if (process.platform !== 'win32' || !scope) return main(argv)
+  if (argv[0] === WINDOWS_LEASE_HOLDER) {
+    if (!process.send || argv[1] !== 'desktop' || argv[2] !== 'development')
+      throw new Error('scoped development holder requires its package command')
+    return main(argv.slice(1), leases.acquire, () => {
+      if (process.connected) process.send(scope, error => {
+        if (error) console.error(`[desktop] Could not notify the package command of host admission: ${error.message}`)
+      })
+    })
+  }
+  if (argv[0] !== 'desktop' || argv[1] !== 'development') return main(argv)
+
+  // The package manager waits on this command. If the actual lease holder is
+  // killed, keep its cleanup host alive until it attests that the Job drained.
+  const child = fork(__filename, [WINDOWS_LEASE_HOLDER, ...argv], {
+    stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true,
+  })
+  let admitted = false
+  child.once('message', message => { admitted = message === scope })
+  const status = await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', code => resolve(code ?? 1))
+  })
+  if (admitted) await waitForWindowsHost(debugPaths(ROOT), child.pid, scope)
+  return status
+}
+
 if (require.main === module) {
-  Promise.resolve().then(() => main()).then(code => { process.exitCode = code }).catch(error => {
+  entry(process.argv.slice(2)).then(code => { process.exitCode = code }).catch(error => {
     console.error(`[desktop] ${error.message}`)
     process.exitCode = 1
   })

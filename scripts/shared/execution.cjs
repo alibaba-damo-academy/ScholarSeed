@@ -41,7 +41,7 @@ function launch(executable, args, options = {}) {
   return result
 }
 
-function launchLong(executable, args, options = {}) {
+function launchLong(executable, args, options = {}, afterExit) {
   return new Promise((resolve, reject) => {
     let child
     let interrupted = null
@@ -70,6 +70,10 @@ function launchLong(executable, args, options = {}) {
     }
     const onSignal = signal => {
       interrupted ||= signal
+      // Both console processes receive Ctrl+C on Windows. The scoped Desktop
+      // launcher owns its shutdown deadline and can still be inside lease
+      // admission when the generic process-group escalation would kill it.
+      if (process.platform === 'win32' && signal === 'SIGINT' && afterExit) return
       if (process.platform !== 'win32' || signal !== 'SIGINT') forward(signal)
       if (signalTimers.length) return
       signalTimers.push(setTimeout(() => forward('SIGTERM'), GROUP_SHUTDOWN_TIMEOUT_MS))
@@ -92,6 +96,10 @@ function launchLong(executable, args, options = {}) {
     child.once('error', error => finish(new CommandError('PREREQUISITE_MISSING', error.message, 1, { shutdownConfirmed: true })))
     child.once('close', (status, signal) => {
       const complete = async () => {
+        if (afterExit) {
+          cleanup()
+          await afterExit(child.pid)
+        }
         let shutdownConfirmed = process.platform !== 'win32'
         if (shutdownConfirmed && !(await waitForGroupExit(child.pid, GROUP_SHUTDOWN_TIMEOUT_MS))) {
           signalGroup(child.pid, 'SIGTERM')

@@ -309,7 +309,7 @@ pnpm ops dev   # 启动 Electron
 
 首次克隆后运行以上两条命令；后续只需运行 `pnpm ops dev`，依赖或 Skill 发生变化时重新运行 `pnpm ops pre`。首次运行需要联网，无需另外安装 Python 或 Git LFS。
 
-开发时保持终端运行。按 Ctrl+C 停止后，等待命令退出，再运行 `pnpm ops dev` 即可重新启动。运行中的实例会保护依赖，阻止并发安装或清理。启动包装进程异常退出时，开发宿主会关闭自己所属的进程；完成清理确认的租约，会在持有者和开发宿主都退出后自动回收。无法确认退出的情况和被中断的依赖写入仍会保留诊断记录，请勿删除仍在使用中的锁。
+开发时保持终端运行。按 Ctrl+C 停止后，等待命令退出，再运行 `pnpm ops dev` 即可重新启动。运行中的实例会保护依赖，阻止并发安装或清理。桌面端运行期间，如果强制结束最外层启动器或持有读租约的进程，开发宿主会关闭本次启动的进程。再次运行 `pnpm ops dev` 时，启动命令会等待清理完成并核对凭据，然后复用该环境。无法确认退出的情况和被中断的依赖写入仍会保留诊断记录，请勿删除仍在使用中的锁。
 
 - 生成 macOS DMG 或 Windows EXE：[打包说明](CONTRIBUTING_zh.md#打包)。
 - 重建技能包：`pnpm ops cd build local --target skills`；检查与源码的一致性：`pnpm ops ci check skills product --mode source`。

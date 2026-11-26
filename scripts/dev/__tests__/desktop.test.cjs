@@ -6,12 +6,15 @@ const path = require('node:path')
 const net = require('node:net')
 const http = require('node:http')
 const child = require('node:child_process')
-const { EventEmitter } = require('node:events')
+const { EventEmitter, once } = require('node:events')
+const { PassThrough } = require('node:stream')
+const { openOutput, removeOutput } = require('../output.cjs')
 const { randomUUID } = require('node:crypto')
 const test = require('node:test')
 const toolchain = require('../../pre/toolchain.cjs')
 const leases = require('../../shared/lease.cjs')
-const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer } = require('../desktop.cjs')
+const { debugPaths, debugEnvironment, acquire, freePort, debugArguments, supervise, inspectDebug, waitForRenderer,
+  monitorLauncher, recoverLauncher, requestLauncherStop, waitForWindowsHost } = require('../desktop.cjs')
 
 test('automatic reload reports its triggering paths before notifying the supervisor', async context => {
   const watchers = []
@@ -35,9 +38,9 @@ test('automatic reload reports its triggering paths before notifying the supervi
     resolveChange()
   })
   context.after(close)
-  assert.equal(watchers.some(watcher => watcher.filename.includes('src/renderer')), false)
+  assert.equal(watchers.some(watcher => watcher.filename.includes(path.join('src', 'renderer'))), false)
   fs.writeFileSync(path.join(main, 'index.ts'), 'after')
-  watchers.find(watcher => watcher.filename.endsWith('src/main')).listener('change', 'index.ts')
+  watchers.find(watcher => watcher.filename === main).listener('change', 'index.ts')
   await Promise.race([changed, new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('watch notification timed out')), 2000)
     context.after(() => clearTimeout(timer))
@@ -159,8 +162,10 @@ test('Windows interruption lets the owned host drain and retains unknown shutdow
   let orderly = true
   let unreferenced = false
   let forced = false
+  let stopRequests = 0
   context.mock.method(child, 'spawnSync', () => { forced = true; return { status: 0 } })
-  context.mock.method(child, 'spawn', () => {
+  context.mock.method(child, 'spawn', (_executable, _args, options) => {
+    assert.equal(options.detached, true)
     const processChild = new EventEmitter()
     processChild.pid = 987654
     processChild.unref = () => { unreferenced = true }
@@ -174,10 +179,12 @@ test('Windows interruption lets the owned host drain and retains unknown shutdow
   context.after(() => { delete require.cache[require.resolve('../desktop.cjs')] })
   const { supervise: windowsSupervise } = require('../desktop.cjs')
   const invocation = { executable: process.execPath, args: [], options: {} }
-  assert.equal(await windowsSupervise(invocation, { shutdownTimeoutMs: 10 }), 130)
+  const observation = { shutdownTimeoutMs: 10, requestStop: () => { stopRequests++ } }
+  assert.equal(await windowsSupervise(invocation, observation), 130)
   assert.equal(unreferenced, false)
   orderly = false
-  assert.equal(await windowsSupervise(invocation, { shutdownTimeoutMs: 10 }), 74)
+  assert.equal(await windowsSupervise(invocation, observation), 74)
+  assert.equal(stopRequests, 2)
   assert.equal(unreferenced, true)
   assert.equal(forced, false)
 })
@@ -274,6 +281,103 @@ test('malformed lock fails closed rather than deleting unknown ownership', conte
   fs.writeFileSync(lock, '')
   assert.throws(() => acquire(lock, { pid: process.pid }), /lock/)
   assert.equal(fs.readFileSync(lock, 'utf8'), '')
+})
+
+test('a dead launcher requests shutdown; recovery requires its own proof, exited owners and a released port', async context => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-recovery-'))
+  context.after(() => fs.rmSync(repo, { recursive: true, force: true }))
+  const paths = { repo, lock: path.join(repo, 'launcher.json') }
+  const port = await freePort()
+  const owner = { repo, pid: process.pid + 1, port, scope: randomUUID(), cleanup: 1 }
+  const holder = process.pid + 2
+  acquire(paths.lock, owner)
+  const dead = new Set([owner.pid])
+  context.mock.method(process, 'kill', pid => {
+    if (dead.has(pid)) throw Object.assign(new Error('gone'), { code: 'ESRCH' })
+  })
+  let pending = true
+  context.mock.method(leases, 'pending', scope => { assert.equal(scope, owner.scope); return pending })
+  let requested = false
+  const watcher = monitorLauncher(paths, owner.scope, port, () => { requested = true })
+  context.after(watcher.close)
+  assert.equal(requested, true)
+  await recoverLauncher(paths, 0)
+  assert.ok(fs.existsSync(paths.lock))
+  assert.throws(() => monitorLauncher(paths, randomUUID(), port, () => {}), /scoped launcher/)
+  await waitForWindowsHost(paths, holder, randomUUID(), 0)
+  await waitForWindowsHost(paths, holder, undefined, 0)
+  await assert.rejects(waitForWindowsHost(paths, owner.pid, undefined, 0), /unconfirmed/)
+  watcher.complete(holder)
+  await assert.rejects(waitForWindowsHost(paths, owner.pid, owner.scope, 0), /supervised child/)
+  for (const pid of [holder, process.pid]) {
+    await assert.rejects(waitForWindowsHost(paths, holder, owner.scope, 0), /unconfirmed/)
+    await recoverLauncher(paths, 0)
+    assert.ok(fs.existsSync(paths.lock))
+    dead.add(pid)
+  }
+  await waitForWindowsHost(paths, holder, owner.scope, 0)
+  await waitForWindowsHost(paths, owner.pid, undefined, 0)
+  assert.ok(fs.existsSync(paths.lock))
+  await recoverLauncher(paths, 0)
+  assert.ok(fs.existsSync(paths.lock))
+  pending = false
+  const server = net.createServer()
+  await new Promise(resolve => server.listen(port, '127.0.0.1', resolve))
+  try { await assert.rejects(recoverLauncher(paths, 0), { code: 'EADDRINUSE' }) }
+  finally { await new Promise(resolve => server.close(resolve)) }
+  assert.ok(fs.existsSync(paths.lock))
+  const replacement = { ...owner, scope: randomUUID() }
+  fs.writeFileSync(paths.lock, JSON.stringify(replacement))
+  assert.throws(() => watcher.complete(holder), /identity changed/)
+  await recoverLauncher(paths, 0)
+  assert.deepEqual(JSON.parse(fs.readFileSync(paths.lock)), replacement)
+  fs.writeFileSync(paths.lock, JSON.stringify(owner))
+  await Promise.all([recoverLauncher(paths), recoverLauncher(paths)])
+  assert.deepEqual(fs.readdirSync(repo), [])
+})
+
+test('a detached host receives the scoped stop request while its live launcher retains ownership', async context => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-stop-'))
+  context.after(() => fs.rmSync(repo, { recursive: true, force: true }))
+  const paths = { repo, lock: path.join(repo, 'launcher.json') }
+  const owner = { repo, pid: process.pid, scope: randomUUID(), port: await freePort(), cleanup: 1 }
+  const release = acquire(paths.lock, owner)
+  assert.throws(() => requestLauncherStop(paths.lock, { ...owner, scope: randomUUID() }), /identity changed/)
+  requestLauncherStop(paths.lock, owner)
+  requestLauncherStop(paths.lock, owner)
+  let signal
+  const watcher = monitorLauncher(paths, owner.scope, owner.port, value => { signal = value })
+  context.after(watcher.close)
+  assert.equal(signal, 'SIGINT')
+  await assert.rejects(recoverLauncher(paths, 0), /still stopping/)
+  release()
+  assert.deepEqual(fs.readdirSync(repo), [])
+})
+
+test('detached children can write independently while the console receives both streams', async context => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-output-'))
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const lock = path.join(directory, 'launcher.json')
+  const scope = randomUUID()
+  const targets = { stdout: new PassThrough(), stderr: new PassThrough() }
+  const output = openOutput(lock, scope, 10, targets)
+  const ready = once(targets.stdout, 'data')
+  const diagnostic = once(targets.stderr, 'data')
+  const worker = child.spawn(process.execPath, ['-e',
+    "process.stdout.write('ready');process.stderr.write('diagnostic');process.on('message',()=>{process.stdout.write('after close');process.disconnect()})"],
+  { detached: true, windowsHide: true, stdio: [...output.stdio, 'ipc'] })
+  const ended = once(worker, 'exit')
+  context.after(() => { if (worker.exitCode === null && worker.signalCode === null) worker.kill() })
+  try {
+    const [[out], [err]] = await Promise.all([ready, diagnostic])
+    assert.equal(out.toString(), 'ready')
+    assert.equal(err.toString(), 'diagnostic')
+  } finally { output.close() }
+  worker.send('finish')
+  assert.equal((await ended)[0], 0)
+  assert.equal(fs.readFileSync(`${lock}.${scope}.stdout.log`, 'utf8'), 'readyafter close')
+  removeOutput(lock, scope)
+  assert.deepEqual(fs.readdirSync(directory), [])
 })
 
 test('CDP uses an available loopback port and rejects occupied explicit ports', async context => {

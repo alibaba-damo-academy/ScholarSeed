@@ -136,6 +136,31 @@ native('completed readers recover only after both the holder and cleanup host ex
   assert.deepEqual(fs.readdirSync(state.directory), [])
 })
 
+native('a launcher collects only its own completed readers after exit', async context => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lease-collection-'))
+  context.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  context.mock.method(os, 'homedir', () => home)
+  const scope = crypto.randomUUID()
+  const script = `const leases=require(process.argv[1]);const reader=leases.acquire(JSON.parse(process.argv[2]));
+    leases.complete(reader.completion());process.send(reader.id);process.on('message',()=>process.exit(0))`
+  const child = spawn(process.execPath, ['-e', script, MODULE,
+    JSON.stringify({ mode: 'read', resources: [home], scope })],
+  { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
+  context.after(() => { if (child.exitCode === null) child.kill() })
+  const [id] = await once(child, 'message')
+  const receipt = path.join(home, '.ss-debug', 'leases', id + '.json')
+  assert.equal(leases.pending(scope, { collect: true }), true)
+  assert.ok(fs.existsSync(receipt))
+  const ended = once(child, 'exit')
+  child.send('exit')
+  await ended
+  assert.equal(leases.pending(crypto.randomUUID(), { collect: true }), false)
+  assert.equal(leases.pending(scope), false)
+  assert.ok(fs.existsSync(receipt))
+  assert.equal(leases.pending(scope, { collect: true }), false)
+  assert.equal(fs.existsSync(receipt), false)
+})
+
 native('an exited reader without cleanup proof remains protected', async context => {
   const state = fixture(context)
   const child = spawn(process.execPath, ['-e',
